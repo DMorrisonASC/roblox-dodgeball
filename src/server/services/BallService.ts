@@ -1,22 +1,27 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { BALL_NAME } from "shared/constants";
+import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
+import { planPlayerThrow } from "shared/throw";
+import { TrailEffect } from "shared/TrailEffect";
 import { SphereService } from "./SphereService";
 
-const BALL_SIZE = 2;
-const THROW_SPEED = 100; // studs per second
 const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
 const NEW_BALL_DELAY = 3; // seconds after a throw before the player gets another ball
-const MIN_THROW_ANGLE = math.rad(5);
 
 /** Where the ball sits relative to the hand while it is being held. */
 const GRIP_OFFSET = new CFrame();
 
+/** A ball currently welded to a player's hand, plus its (disabled) trail. */
+interface HeldBall {
+	ball: Part;
+	trail: TrailEffect;
+}
+
 @Service()
 export class BallService implements OnStart {
 	private throwRemote?: RemoteEvent;
-	private readonly heldBalls = new Map<Player, Part>();
+	private readonly heldBalls = new Map<Player, HeldBall>();
 
 	constructor(private readonly spheres: SphereService) {}
 
@@ -49,7 +54,7 @@ export class BallService implements OnStart {
 	/** Creates a ball and welds it into the hand of the given character. */
 	private attachBall(player: Player, character: Model) {
 		// Respawn safety: never leave an orphaned ball behind.
-		this.heldBalls.get(player)?.Destroy();
+		this.heldBalls.get(player)?.ball.Destroy();
 		this.heldBalls.delete(player);
 
 		const hand = this.getRightHand(character);
@@ -58,7 +63,10 @@ export class BallService implements OnStart {
 			return;
 		}
 
-		const ball = this.spheres.createBall(BALL_SIZE);
+		const ball = this.spheres.createBall(BALL_SIZE, { trail: false });
+		// The trail stays off until the throw — otherwise it streams purple off
+		// the player's hand every time they walk around.
+		const trail = this.spheres.addTrail(ball, { enabled: false });
 		ball.Name = BALL_NAME;
 		ball.CanCollide = false; // don't shove the player around while held
 		ball.Massless = true;
@@ -71,7 +79,7 @@ export class BallService implements OnStart {
 		grip.Part1 = ball;
 		grip.Parent = ball;
 
-		this.heldBalls.set(player, ball);
+		this.heldBalls.set(player, { ball, trail });
 		print(`[Ball] ${player.Name} is holding a dodgeball`);
 	}
 
@@ -115,22 +123,26 @@ export class BallService implements OnStart {
 
 	private throwBall(player: Player, target: Vector3) {
 		const character = player.Character;
-		const ball = this.heldBalls.get(player);
-		if (!character || !ball || ball.Parent !== character) return;
+		const held = this.heldBalls.get(player);
+		if (!character || !held || held.ball.Parent !== character) return;
+
+		const ball = held.ball;
 
 		// Release the ball from the hand before launching it.
 		ball.FindFirstChild("DodgeballGrip")?.Destroy();
 
-		const origin = ball.Position;
-		const velocity = this.computeLaunchVelocity(origin, target, THROW_SPEED);
-		const direction = velocity.Unit;
+		// The client runs this exact same plan to draw its aim guide, so the
+		// throw and the predicted arc can never disagree.
+		const plan = planPlayerThrow(character, target);
 
 		ball.CanCollide = true;
 		ball.Massless = false;
-		// Start the ball clear of the thrower's body so it can't hit them.
-		ball.Position = origin.add(direction.mul(BALL_SIZE));
+		ball.Position = plan.origin;
 		ball.Parent = Workspace;
-		ball.AssemblyLinearVelocity = velocity;
+		ball.AssemblyLinearVelocity = plan.velocity;
+
+		// Airborne now, so the trail can start drawing behind it.
+		held.trail.setEnabled(true);
 
 		this.heldBalls.delete(player);
 
@@ -142,38 +154,5 @@ export class BallService implements OnStart {
 				this.attachBall(player, current);
 			}
 		});
-	}
-
-	/**
-	 * Solves for the launch velocity that sends the ball from `origin` toward
-	 * `target` along a parabolic arc using a fixed throw speed. Gravity then
-	 * shapes the parabola naturally.
-	 */
-	private computeLaunchVelocity(origin: Vector3, target: Vector3, speed: number): Vector3 {
-		const gravity = Workspace.Gravity;
-		const delta = target.sub(origin);
-		const horizontal = new Vector3(delta.X, 0, delta.Z);
-		const distance = horizontal.Magnitude;
-		const height = delta.Y;
-
-		const horizontalDir = distance > 0.001 ? horizontal.div(distance) : new Vector3(0, 0, -1);
-
-		const speedSq = speed * speed;
-		const discriminant = speedSq * speedSq - gravity * (gravity * distance * distance + 2 * height * speedSq);
-
-		let angle: number;
-		if (distance > 0.001 && discriminant >= 0) {
-			const root = math.sqrt(discriminant);
-			// Lower root = flatter (direct) throw; higher root = lobbed throw.
-			const flat = math.atan((speedSq - root) / (gravity * distance));
-			angle = math.clamp(flat, MIN_THROW_ANGLE, math.rad(85));
-		} else {
-			// Target is out of range for the given speed — lob at 45° for max range.
-			angle = math.rad(45);
-		}
-
-		const horizontalSpeed = speed * math.cos(angle);
-		const verticalSpeed = speed * math.sin(angle);
-		return horizontalDir.mul(horizontalSpeed).add(new Vector3(0, verticalSpeed, 0));
 	}
 }
