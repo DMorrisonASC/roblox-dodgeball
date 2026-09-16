@@ -4,7 +4,7 @@ import { BALL_NAME } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { SphereService } from "./SphereService";
 
-const BALL_SIZE = 4;
+const BALL_SIZE = 2;
 const THROW_SPEED = 100; // studs per second
 const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
 const NEW_BALL_DELAY = 3; // seconds after a throw before the player gets another ball
