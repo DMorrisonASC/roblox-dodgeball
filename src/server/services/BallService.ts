@@ -1,6 +1,7 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { BALL_NAME, BALL_SIZE } from "shared/constants";
+import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow } from "shared/throw";
 import { TrailEffect } from "shared/TrailEffect";
@@ -8,6 +9,7 @@ import { SphereService } from "./SphereService";
 
 const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
 const NEW_BALL_DELAY = 3; // seconds after a throw before the player gets another ball
+const DEBUG = true; // prints where each throw was launched from
 
 /** Where the ball sits relative to the hand while it is being held. */
 const GRIP_OFFSET = new CFrame();
@@ -133,13 +135,34 @@ export class BallService implements OnStart {
 
 		// The client runs this exact same plan to draw its aim guide, so the
 		// throw and the predicted arc can never disagree.
+		const releasePosition = ball.Position;
 		const plan = planPlayerThrow(character, target);
+		if (DEBUG) {
+			print(`[Ball] ${player.Name}: release ${releasePosition} -> launch ${plan.origin}`);
+		}
 
-		ball.CanCollide = true;
-		ball.Massless = false;
+		// The thrower can never be hit by their own ball. Without this, a throw
+		// aimed back across the body clips it, and the engine resolves that
+		// overlap the only way it can — by shoving the player. Ball size and
+		// muzzle distance only ever changed how hard that shove was.
+		CollisionIgnore.between(ball, character);
+
+		// Move the ball before it can collide. Setting collision this frame
+		// while the ball is still inside the hand would leave the thrower's own
+		// overlap to be resolved if this frame's constraint changes haven't
+		// replicated yet.
+		ball.CanCollide = false;
 		ball.Position = plan.origin;
 		ball.Parent = Workspace;
 		ball.AssemblyLinearVelocity = plan.velocity;
+
+		// Arm the ball a frame later, by which point the ignore above has
+		// certainly replicated. This also means the ball is never solid while it
+		// is still sitting in the hand.
+		task.delay(0, () => {
+			ball.CanCollide = true;
+			ball.Massless = false;
+		});
 
 		// Airborne now, so the trail can start drawing behind it.
 		held.trail.setEnabled(true);

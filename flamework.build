@@ -8,7 +8,8 @@
 		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService",
 		"roblox-dodgeball:out/shared/TrailEffect@TrailEffect": "shared/TrailEffect@TrailEffect",
 		"roblox-dodgeball:out/shared/Trajectory@Trajectory": "shared/Trajectory@Trajectory",
-		"roblox-dodgeball:out/shared/AimGuide@AimGuide": "shared/AimGuide@AimGuide"
+		"roblox-dodgeball:out/shared/AimGuide@AimGuide": "shared/AimGuide@AimGuide",
+		"roblox-dodgeball:out/shared/CollisionIgnore@CollisionIgnore": "shared/CollisionIgnore@CollisionIgnore"
 	},
 	"metadata": {}
 }

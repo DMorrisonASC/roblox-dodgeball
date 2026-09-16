@@ -7,15 +7,18 @@
 export const BALL_NAME = "DodgeballBall";
 
 /** Diameter of the ball, in studs. */
-export const BALL_SIZE = 2;
+export const BALL_SIZE = 3;
 
 /**
- * How far in front of the thrower the ball starts its flight, in studs.
+ * How far in front of the thrower's torso the ball starts its flight, in studs,
+ * measured along the direction the torso is facing.
  *
- * Measured along the throw direction from the thrower's head, so it clears the
- * body no matter which way you aim. Raise it if the ball still clips you.
+ * This is the one number to change to move the launch point. It is read in
+ * exactly one place — `shared/throw.ts` → `getThrowMuzzle` — which both the
+ * server (real throw) and the client (aim guide) call, so tuning it moves both
+ * together and the guide keeps telling the truth.
  */
-export const THROW_CLEARANCE = 3;
+export const THROW_MUZZLE_DISTANCE = 5;
 
 /**
  * Speed the ball leaves the hand at, in studs per second.

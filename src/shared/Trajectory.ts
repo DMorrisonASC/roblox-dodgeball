@@ -69,10 +69,11 @@ export function solveLaunchVelocity(
  *
  * `clearance` nudges the start point that many studs along the throw, so the
  * projectile begins its flight outside the thrower instead of inside them.
- * Note that the offset follows the *throw direction*, so it is only as safe as
- * the point it is measured from — offset from a hand held against your side and
- * an inward throw will push the start point straight through your own chest.
- * `shared/throw.ts` handles that by measuring from the thrower's head.
+ * Because the offset follows the *throw direction*, it is only as safe as the
+ * point it is measured from — offset from a hand held against your side and an
+ * inward throw will push the start point straight through your own chest.
+ * Player throws place their muzzle directly (see `shared/throw.ts`) and leave
+ * this at zero; it is here for projectiles that launch from a fixed point.
  */
 export function planLaunch(
 	from: Vector3,
