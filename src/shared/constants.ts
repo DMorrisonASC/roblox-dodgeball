@@ -7,7 +7,7 @@
 export const BALL_NAME = "DodgeballBall";
 
 /** Diameter of the ball, in studs. */
-export const BALL_SIZE = 3;
+export const BALL_SIZE = 1;
 
 /**
  * How far in front of the thrower's torso the ball starts its flight, in studs,
@@ -21,9 +21,19 @@ export const BALL_SIZE = 3;
 export const THROW_MUZZLE_DISTANCE = 5;
 
 /**
- * Speed the ball leaves the hand at, in studs per second.
+ * Speed the ball leaves the hand at, in studs per second, for any target within
+ * reach. Maximum range at this speed is `v² / g`, about 51 studs.
  *
- * Shared because the client's aim guide has to predict the same arc the server
- * is actually going to throw. Change this and both sides move together.
+ * This is the *base* speed, not the final one — a throw that needs to reach
+ * further is wound up automatically, up to {@link THROW_MAX_SPEED}.
  */
 export const THROW_SPEED = 100;
+
+/**
+ * Ceiling on that automatic wind-up, in studs per second. Maximum range at this
+ * speed is about 204 studs.
+ *
+ * Past that a throw can't reach, and the ball falls short — which the aim
+ * guide's landing marker shows you before you commit to it.
+ */
+export const THROW_MAX_SPEED = 200;

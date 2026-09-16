@@ -1,5 +1,5 @@
-import { THROW_MUZZLE_DISTANCE, THROW_SPEED } from "shared/constants";
-import { LaunchPlan, planLaunch } from "shared/Trajectory";
+import { THROW_MAX_SPEED, THROW_MUZZLE_DISTANCE, THROW_SPEED } from "shared/constants";
+import { LaunchPlan, minimumReachSpeed, planLaunch } from "shared/Trajectory";
 
 /**
  * How a player's throw is planned. This is the game's rulebook, kept in one
@@ -47,9 +47,16 @@ function findTorso(character: Model): BasePart | undefined {
 }
 
 /**
- * Plans a player's throw at `target`: solves the arc from the muzzle to the
- * target at the game's throw speed.
+ * Plans a player's throw at `target` by solving the arc from the muzzle.
+ *
+ * The throw is at {@link THROW_SPEED} for anything within its reach, and only
+ * winds up harder when the target is genuinely further than that can carry —
+ * up to {@link THROW_MAX_SPEED}. Without this, anything past ~51 studs silently
+ * fell back to a 45° lob that landed short of where you aimed.
  */
 export function planPlayerThrow(character: Model, target: Vector3): LaunchPlan {
-	return planLaunch(getThrowMuzzle(character), target, THROW_SPEED);
+	const muzzle = getThrowMuzzle(character);
+	const speed = math.clamp(minimumReachSpeed(muzzle, target), THROW_SPEED, THROW_MAX_SPEED);
+
+	return planLaunch(muzzle, target, speed);
 }

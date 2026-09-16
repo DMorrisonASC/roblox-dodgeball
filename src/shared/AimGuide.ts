@@ -9,6 +9,16 @@ import { Workspace } from "@rbxts/services";
  *
  * Nothing here knows about balls or throwing — hand it any list of points.
  */
+/** Look of the sphere drawn where the path ends. */
+export interface MarkerOptions {
+	/** Defaults to a bright green. */
+	color?: Color3;
+	/** Defaults to 0.5 — solid enough to see, sheer enough to see through. */
+	transparency?: number;
+	/** Diameter in studs. Defaults to 1. */
+	size?: number;
+}
+
 export interface AimGuideOptions {
 	/** Colour of the line. Defaults to a bright violet. */
 	color?: Color3;
@@ -20,6 +30,8 @@ export interface AimGuideOptions {
 	thickness?: number;
 	/** How many segments to pre-build. Paths longer than this are cut short. */
 	maxSegments?: number;
+	/** Sphere marking the end of the path. On by default; `false` to omit it. */
+	marker?: MarkerOptions | false;
 	/** Where to keep the segments. Defaults to `Workspace`. */
 	parent?: Instance;
 }
@@ -30,6 +42,10 @@ const DEFAULT_FADE = 0.4;
 const DEFAULT_THICKNESS = 0.12;
 const DEFAULT_MAX_SEGMENTS = 48;
 
+const DEFAULT_MARKER_COLOR = Color3.fromRGB(60, 255, 80);
+const DEFAULT_MARKER_TRANSPARENCY = 0.5;
+const DEFAULT_MARKER_SIZE = 1;
+
 /** Segments are run slightly long so the joins don't show as gaps. */
 const SEGMENT_OVERLAP = 0.05;
 
@@ -39,6 +55,8 @@ export class AimGuide {
 
 	private readonly folder: Folder;
 	private readonly segments: Part[] = [];
+	private readonly marker: Part | undefined;
+	private readonly markerTransparency: number;
 	private readonly color: Color3;
 	private readonly transparency: number;
 	private readonly fade: number;
@@ -56,6 +74,16 @@ export class AimGuide {
 		for (let i = 0; i < count; i++) {
 			this.segments.push(this.createSegment(folder, i));
 		}
+
+		if (options.marker !== false) {
+			const markerOptions = options.marker ?? {};
+			this.markerTransparency = markerOptions.transparency ?? DEFAULT_MARKER_TRANSPARENCY;
+			this.marker = this.createMarker(folder, markerOptions);
+		} else {
+			this.markerTransparency = 1;
+			this.marker = undefined;
+		}
+
 		folder.Parent = options.parent ?? Workspace;
 
 		this.folder = folder;
@@ -90,6 +118,17 @@ export class AimGuide {
 			segment.Transparency = math.clamp(this.transparency + (i / wanted) * this.fade, 0, 1);
 		}
 
+		if (this.marker) {
+			// Sit the sphere on the last point, so it reads as "the ball stops
+			// here" whether the path ended on the ground or against a wall.
+			if (wanted > 0) {
+				this.marker.CFrame = new CFrame(points[points.size() - 1]);
+				this.marker.Transparency = this.markerTransparency;
+			} else {
+				this.marker.Transparency = 1;
+			}
+		}
+
 		return this;
 	}
 
@@ -97,6 +136,9 @@ export class AimGuide {
 	public hide(): this {
 		for (const segment of this.segments) {
 			segment.Transparency = 1;
+		}
+		if (this.marker) {
+			this.marker.Transparency = 1;
 		}
 		return this;
 	}
@@ -123,5 +165,25 @@ export class AimGuide {
 		segment.Size = new Vector3(this.thickness, this.thickness, this.thickness);
 		segment.Parent = parent;
 		return segment;
+	}
+
+	private createMarker(parent: Folder, options: MarkerOptions): Part {
+		const marker = new Instance("Part");
+		marker.Name = "LandingMarker";
+		marker.Shape = Enum.PartType.Ball;
+		marker.Anchored = true;
+		marker.CanCollide = false;
+		// Same reason as the segments: it sits at the aim point, so it must not
+		// be able to intercept the ray that produced it.
+		marker.CanQuery = false;
+		marker.CanTouch = false;
+		marker.CastShadow = false;
+		marker.Material = Enum.Material.Neon;
+		marker.Color = options.color ?? DEFAULT_MARKER_COLOR;
+		marker.Transparency = 1;
+		const size = options.size ?? DEFAULT_MARKER_SIZE;
+		marker.Size = new Vector3(size, size, size);
+		marker.Parent = parent;
+		return marker;
 	}
 }

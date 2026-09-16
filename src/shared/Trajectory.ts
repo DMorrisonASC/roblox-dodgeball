@@ -86,6 +86,25 @@ export function planLaunch(
 	return { origin: from.add(velocity.Unit.mul(clearance)), velocity };
 }
 
+/**
+ * The slowest launch speed that can still reach `target` from `origin`.
+ *
+ * The cheapest arc to a point is launched at 45° plus half the angle to the
+ * target, and that arc's speed works out to `sqrt(g * (h + sqrt(h² + d²)))` for
+ * horizontal distance `d` and height difference `h`. At `h = 0` it agrees with
+ * the familiar `v² / g` range limit: reaching 51 studs takes exactly 100 studs/s.
+ *
+ * Targets below `origin` need less speed, and one directly below needs none —
+ * which is correct, it just has to fall.
+ */
+export function minimumReachSpeed(origin: Vector3, target: Vector3, gravity = Workspace.Gravity): number {
+	const delta = target.sub(origin);
+	const distance = new Vector3(delta.X, 0, delta.Z).Magnitude;
+	const height = delta.Y;
+
+	return math.sqrt(gravity * (height + math.sqrt(height * height + distance * distance)));
+}
+
 /** How to simulate the arc. All optional. */
 export interface TrajectoryOptions {
 	/** Gravity to integrate against. Defaults to `Workspace.Gravity`. */
