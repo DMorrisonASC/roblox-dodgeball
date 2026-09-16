@@ -1,19 +1,19 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players } from "@rbxts/services";
-import { SphereService } from "./SphereService";
+import { BallService } from "./BallService";
 
 @Service()
 export class JoinService implements OnStart {
-    constructor(private readonly spheres: SphereService) {}
+    constructor(private readonly balls: BallService) {}
 
     onStart() {
         Players.PlayerAdded.Connect((player) => {
-            this.spheres.spawnAt(new Vector3(0, 10, 0), `${player.Name}_Sphere`);
+            this.balls.giveBall(player);
         });
 
         // Catch players who joined before this service started
         for (const player of Players.GetPlayers()) {
-            this.spheres.spawnAt(new Vector3(0, 10, 0), `${player.Name}_Sphere`);
+            this.balls.giveBall(player);
         }
     }
 }

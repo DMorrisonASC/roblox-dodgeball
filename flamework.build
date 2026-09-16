@@ -3,8 +3,8 @@
 	"flameworkVersion": "1.3.2",
 	"identifiers": {
 		"roblox-dodgeball:out/client/controllers/ThrowController@ThrowController": "client/controllers/ThrowController@ThrowController",
-		"roblox-dodgeball:out/server/services/BallService@BallService": "server/services/BallService@BallService",
 		"roblox-dodgeball:out/server/services/SphereService@SphereService": "server/services/SphereService@SphereService",
+		"roblox-dodgeball:out/server/services/BallService@BallService": "server/services/BallService@BallService",
 		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService"
 	},
 	"metadata": {}

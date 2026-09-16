@@ -5,6 +5,7 @@
 		"editor.defaultFormatter": "dbaeumer.vscode-eslint",
 		"editor.formatOnSave": true
 	},
+	"files.autoSave": "onFocusChange",
 	"[typescriptreact]": {
 		"editor.defaultFormatter": "dbaeumer.vscode-eslint",
 		"editor.formatOnSave": true
