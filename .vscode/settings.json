@@ -11,5 +11,11 @@
 	},
 	"eslint.run": "onType",
 	"eslint.format.enable": true,
-	"eslint.useFlatConfig": false
+	"eslint.useFlatConfig": false,
+	"chat.tools.terminal.autoApprove": {
+		"/^npm run build$/": {
+			"approve": true,
+			"matchCommandLine": true
+		}
+	}
 }
