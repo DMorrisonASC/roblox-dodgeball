@@ -1,0 +1,9 @@
+{
+	"version": 1,
+	"flameworkVersion": "1.3.2",
+	"identifiers": {
+		"roblox-dodgeball:out/client/controllers/ThrowController@ThrowController": "client/controllers/ThrowController@ThrowController",
+		"roblox-dodgeball:out/server/services/BallService@BallService": "server/services/BallService@BallService"
+	},
+	"metadata": {}
+}
