@@ -1,5 +1,6 @@
 import { Flamework } from "@flamework/core";
 
-Flamework.addPaths("src/server/components");
+print("[main] igniting");
 Flamework.addPaths("src/server/services");
 Flamework.ignite();
+print("[main] ignited");

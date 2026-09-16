@@ -1,5 +1,5 @@
 {
-	"typescript.tsdk": "node_modules/typescript/lib",
+	"js/ts.tsdk.promptToUseWorkspaceVersion": true,
 	"files.eol": "\n",
 	"[typescript]": {
 		"editor.defaultFormatter": "dbaeumer.vscode-eslint",
@@ -11,5 +11,12 @@
 	},
 	"eslint.run": "onType",
 	"eslint.format.enable": true,
-	"eslint.useFlatConfig": false
+	"eslint.useFlatConfig": false,
+	"chat.tools.terminal.autoApprove": {
+		"/^npm run build$/": {
+			"approve": true,
+			"matchCommandLine": true
+		}
+	},
+	"js/ts.tsdk.path": "node_modules/typescript/lib"
 }
