@@ -58,3 +58,24 @@ export const THROW_REACH_HEADROOM = 1.1;
  * and the aim guide's landing marker shows you exactly where.
  */
 export const THROW_MAX_SPEED = 220;
+
+/**
+ * Vertical velocity the aim guide subtracts from its own prediction, in studs
+ * per second, to match how the engine actually flies the ball.
+ *
+ * The engine's integration consistently leaves the ball roughly 2.5 studs/s
+ * slower vertically than the ballistic solve predicts — measured server-side at
+ * the base throw speed, where the real ball starts about 2.4 studs/s below the
+ * plan and stays there. Because it is a velocity difference rather than an
+ * acceleration, it compounds into a *position* error proportional to flight
+ * time: about 0.5 studs over 0.2s, 2.5 studs over a full second.
+ *
+ * Applying the same deficit to the drawn arc makes the guide describe the ball
+ * you are actually going to get. It is client-side only — the server still
+ * throws with the unbiased plan, so this changes what you are shown, not what
+ * you throw.
+ *
+ * Set to 0 to draw the ideal arc again, or negate it and move it onto the plan
+ * in `planPlayerThrow` if you would rather throw harder and land on the mark.
+ */
+export const PREDICTION_VERTICAL_BIAS = 3.5;

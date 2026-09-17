@@ -8,7 +8,7 @@ import {
 	Workspace,
 } from "@rbxts/services";
 import { AimGuide } from "shared/AimGuide";
-import { BALL_NAME, BALL_SIZE } from "shared/constants";
+import { BALL_NAME, BALL_SIZE, PREDICTION_VERTICAL_BIAS } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
 import { Trajectory } from "shared/Trajectory";
@@ -99,7 +99,12 @@ export class ThrowController implements OnStart {
 		// The radius matters: the ball bounces when its edge touches a surface, a
 		// full half-diameter before its centre gets there. Tracing the centre
 		// alone always marked the impact too far along.
-		const arc = new Trajectory(plan.origin, plan.velocity, {
+		// The engine flies the ball a touch lower than the solve predicts, so the
+		// drawn arc carries the same deficit — the guide should describe the throw
+		// you are going to get, not an idealised one. The real throw is unaffected;
+		// this only changes what is drawn. See PREDICTION_VERTICAL_BIAS.
+		const predicted = plan.velocity.sub(new Vector3(0, PREDICTION_VERTICAL_BIAS, 0));
+		const arc = new Trajectory(plan.origin, predicted, {
 			ignore: [character, this.guide.instance],
 			radius: BALL_SIZE / 2,
 		});
