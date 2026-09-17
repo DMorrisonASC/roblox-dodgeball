@@ -1,5 +1,6 @@
-import { THROW_MAX_SPEED, THROW_MUZZLE_DISTANCE, THROW_REACH_HEADROOM, THROW_SPEED } from "shared/constants";
-import { LaunchPlan, minimumReachSpeed, planLaunch } from "shared/Trajectory";
+import { Workspace } from "@rbxts/services";
+import { BALL_SIZE, THROW_ARC_SPREAD, THROW_MAX_SPEED, THROW_MUZZLE_DISTANCE, THROW_SPEED } from "shared/constants";
+import { LaunchPlan, minimumReachSpeed, planLaunch, ThrowArc } from "shared/Trajectory";
 
 /**
  * How a player's throw is planned. This is the game's rulebook, kept in one
@@ -56,6 +57,38 @@ function findTorso(character: Model): BasePart | undefined {
 	return undefined;
 }
 
+/** How far the ball's edge sits from the point its centre is aimed at. */
+const BALL_RADIUS = BALL_SIZE / 2;
+
+/**
+ * The point to aim the ball's *centre* at so that its *surface* arrives at
+ * `target`.
+ *
+ * A ball stops when its edge touches something — a full radius before its
+ * centre gets there. How far short that is depends on the angle it arrives at,
+ * so a flat throw and a lobbed one would otherwise stop in visibly different
+ * places even though the solve says they land together. Aiming the centre one
+ * radius out along the surface normal removes the approach angle from the
+ * answer entirely.
+ *
+ * The normal comes from a ray down the aim line, which both sides can cast for
+ * themselves. No extra data crosses the wire, and the server never has to trust
+ * the client for it.
+ */
+function centreAimPoint(character: Model, muzzle: Vector3, target: Vector3): Vector3 {
+	const params = new RaycastParams();
+	params.FilterType = Enum.RaycastFilterType.Exclude;
+	params.FilterDescendantsInstances = [character];
+	params.IgnoreWater = true;
+
+	const hit = Workspace.Raycast(muzzle, target.sub(muzzle), params);
+	// When the aim line is blocked, assume level ground — the usual landing
+	// anyway. Being one radius out in the wrong direction is bounded and small.
+	const normal = hit ? hit.Normal : new Vector3(0, 1, 0);
+
+	return target.add(normal.mul(BALL_RADIUS));
+}
+
 /**
  * Plans a player's throw at `target` by solving the arc from the muzzle.
  *
@@ -64,16 +97,19 @@ function findTorso(character: Model): BasePart | undefined {
  * up to {@link THROW_MAX_SPEED}. Without this, anything past ~51 studs silently
  * fell back to a 45° lob that landed short of where you aimed.
  *
- * The reach figure carries {@link THROW_REACH_HEADROOM}. Solving for the exact
- * minimum puts the discriminant at zero and the target at the arc's limit, and
- * the answer then depends on floating-point noise — which showed up as the
- * landing marker wandering about on long throws but sitting still on short
- * ones.
+ * The reach figure carries {@link THROW_ARC_SPREAD}, which sets how far apart
+ * the two arcs sit and keeps the solve off the discriminant-zero knife edge.
+ * See that constant for both jobs.
+ *
+ * `arc` is which of the two the player asked for. It changes the shape and the
+ * duration of the flight, never the landing: both roots reach the same point,
+ * which is what makes it safe to let the player choose.
  */
-export function planPlayerThrow(character: Model, target: Vector3): LaunchPlan {
+export function planPlayerThrow(character: Model, target: Vector3, arc: ThrowArc): LaunchPlan {
 	const muzzle = getThrowMuzzle(character);
-	const needed = minimumReachSpeed(muzzle, target) * THROW_REACH_HEADROOM;
+	const aim = centreAimPoint(character, muzzle, target);
+	const needed = minimumReachSpeed(muzzle, aim) * THROW_ARC_SPREAD;
 	const speed = math.clamp(needed, THROW_SPEED, THROW_MAX_SPEED);
 
-	return planLaunch(muzzle, target, speed);
+	return planLaunch(muzzle, aim, speed, arc);
 }

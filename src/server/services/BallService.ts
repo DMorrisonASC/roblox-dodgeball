@@ -4,6 +4,7 @@ import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow } from "shared/throw";
+import { ThrowArc } from "shared/Trajectory";
 import { TrailEffect } from "shared/TrailEffect";
 import { SphereService } from "./SphereService";
 
@@ -38,8 +39,14 @@ export class BallService implements OnStart {
 
 	onStart() {
 		this.throwRemote = this.createThrowRemote();
-		this.throwRemote.OnServerEvent.Connect((player, target) => {
-			this.throwBall(player, target as Vector3);
+		this.throwRemote.OnServerEvent.Connect((player, target, arc) => {
+			if (!typeIs(target, "Vector3")) return;
+
+			// Anything unrecognised falls back to the regular throw. Both arcs reach
+			// the same point, so a bad value costs the player the arc they asked for
+			// and nothing else.
+			const chosen: ThrowArc = arc === "straight" ? "straight" : "overhead";
+			this.throwBall(player, target, chosen);
 		});
 
 		Players.PlayerRemoving.Connect((player) => this.heldBalls.delete(player));
@@ -132,7 +139,7 @@ export class BallService implements OnStart {
 		return folder;
 	}
 
-	private throwBall(player: Player, target: Vector3) {
+	private throwBall(player: Player, target: Vector3, arc: ThrowArc) {
 		const character = player.Character;
 		const held = this.heldBalls.get(player);
 		if (!character || !held || held.ball.Parent !== character) return;
@@ -145,7 +152,7 @@ export class BallService implements OnStart {
 		// The client runs this exact same plan to draw its aim guide, so the
 		// throw and the predicted arc can never disagree.
 		const releasePosition = ball.Position;
-		const plan = planPlayerThrow(character, target);
+		const plan = planPlayerThrow(character, target, arc);
 		if (DEBUG) {
 			print(`[Ball] ${player.Name}: release ${releasePosition} -> launch ${plan.origin}`);
 		}

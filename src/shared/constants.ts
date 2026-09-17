@@ -36,46 +36,33 @@ export const THROW_MUZZLE_DISTANCE = 2;
 export const THROW_SPEED = 100;
 
 /**
- * Headroom over the bare minimum speed needed to reach a target, as a
- * multiplier.
+ * How much faster than the bare minimum a throw is launched, as a multiplier.
  *
- * Solving at exactly the minimum is a numerical knife edge: the solver's
- * discriminant is zero there and the target sits precisely at the arc's limit,
- * so the whole result swings on floating-point noise in the launch point. A
- * little extra speed moves the solve onto a well-conditioned arc that crosses
- * surfaces at a real angle instead of grazing along them.
+ * This one number does two jobs.
  *
- * This sets the effective ceiling too: the furthest reachable target is
- * `(THROW_MAX_SPEED / THROW_REACH_HEADROOM)² / gravity`.
+ * **It separates the two throw modes.** For a given speed there are exactly two
+ * launch angles that reach a point, and they always sum to 90°. Throwing at
+ * `1.0x` the minimum collapses them into a single arc; the further above, the
+ * wider they spread. At 1.4x a level target is met at roughly 23° (the straight
+ * throw) and 67° (the overhead one).
+ *
+ * **It keeps the solve off a numerical knife edge.** At exactly 1.0x the
+ * discriminant is zero and the target sits precisely at the arc's limit, so the
+ * whole answer swings on floating-point noise in the launch point. That was a
+ * real bug here: the landing marker wandered on long throws and sat still on
+ * short ones. Do not take this below about 1.05.
+ *
+ * A side effect worth knowing: the furthest reachable target is
+ * `(THROW_MAX_SPEED / THROW_ARC_SPREAD)² / gravity`, so raising this eats into
+ * range unless {@link THROW_MAX_SPEED} comes up with it.
  */
-export const THROW_REACH_HEADROOM = 1.1;
+export const THROW_ARC_SPREAD = 1.4;
 
 /**
  * Ceiling on the automatic wind-up, in studs per second.
  *
- * Note this is the *pre-headroom* figure. After the multiplier above, the
+ * Note this is the *pre-spread* figure. After {@link THROW_ARC_SPREAD}, the
  * furthest reachable target is about 204 studs — past that a throw falls short
  * and the aim guide's landing marker shows you exactly where.
  */
-export const THROW_MAX_SPEED = 220;
-
-/**
- * Vertical velocity the aim guide subtracts from its own prediction, in studs
- * per second, to match how the engine actually flies the ball.
- *
- * The engine's integration consistently leaves the ball roughly 2.5 studs/s
- * slower vertically than the ballistic solve predicts — measured server-side at
- * the base throw speed, where the real ball starts about 2.4 studs/s below the
- * plan and stays there. Because it is a velocity difference rather than an
- * acceleration, it compounds into a *position* error proportional to flight
- * time: about 0.5 studs over 0.2s, 2.5 studs over a full second.
- *
- * Applying the same deficit to the drawn arc makes the guide describe the ball
- * you are actually going to get. It is client-side only — the server still
- * throws with the unbiased plan, so this changes what you are shown, not what
- * you throw.
- *
- * Set to 0 to draw the ideal arc again, or negate it and move it onto the plan
- * in `planPlayerThrow` if you would rather throw harder and land on the mark.
- */
-export const PREDICTION_VERTICAL_BIAS = 3.5;
+export const THROW_MAX_SPEED = 280;

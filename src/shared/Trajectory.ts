@@ -16,6 +16,15 @@ import { Workspace } from "@rbxts/services";
 const MIN_THROW_ANGLE = math.rad(5);
 const MAX_THROW_ANGLE = math.rad(85);
 
+/**
+ * The two ways to reach a point at a given speed.
+ *
+ * Both land on it — exactly, not approximately. `overhead` is the lofted arc
+ * that drops in from above; `straight` is the flatter one that gets there
+ * sooner. Their launch angles always sum to 90°.
+ */
+export type ThrowArc = "overhead" | "straight";
+
 /** A launch position and velocity, ready to hand to a projectile. */
 export interface LaunchPlan {
 	/** Where the projectile actually starts — clear of the thrower. */
@@ -28,13 +37,19 @@ export interface LaunchPlan {
  * Solves for the launch velocity that sends a projectile from `origin` to
  * `target` at a fixed `speed`. Gravity then shapes the parabola.
  *
- * When the target is further away than `speed` can reach, this falls back to a
+ * There are two answers and `arc` picks between them. They are not
+ * approximations of one another — the quadratic's two roots both reach the
+ * target, which is what lets a game offer a flat throw and a lobbed one without
+ * either of them missing.
+ *
+ * When the target is further away than `speed` can reach, both collapse to a
  * 45° lob, which is the maximum range for that speed.
  */
 export function solveLaunchVelocity(
 	origin: Vector3,
 	target: Vector3,
 	speed: number,
+	arc: ThrowArc,
 	gravity = Workspace.Gravity,
 ): Vector3 {
 	const delta = target.sub(origin);
@@ -50,9 +65,11 @@ export function solveLaunchVelocity(
 	let angle: number;
 	if (distance > 0.001 && discriminant >= 0) {
 		const root = math.sqrt(discriminant);
-		// Lower root = flatter (direct) throw; higher root = lobbed throw.
-		const flat = math.atan((speedSq - root) / (gravity * distance));
-		angle = math.clamp(flat, MIN_THROW_ANGLE, MAX_THROW_ANGLE);
+		// Higher root = lofted arc, lower root = flat arc. At the exact minimum
+		// speed the two roots coincide and the arcs merge; more speed separates
+		// them. See THROW_ARC_SPREAD.
+		const tangent = arc === "overhead" ? speedSq + root : speedSq - root;
+		angle = math.clamp(math.atan(tangent / (gravity * distance)), MIN_THROW_ANGLE, MAX_THROW_ANGLE);
 	} else {
 		// Out of range for this speed — lob at 45° for the most distance we can get.
 		angle = math.rad(45);
@@ -67,23 +84,17 @@ export function solveLaunchVelocity(
  * Turns "throw this at that" into the exact origin/velocity pair a projectile
  * needs.
  *
- * `clearance` nudges the start point that many studs along the throw, so the
- * projectile begins its flight outside the thrower instead of inside them.
- * Because the offset follows the *throw direction*, it is only as safe as the
- * point it is measured from — offset from a hand held against your side and an
- * inward throw will push the start point straight through your own chest.
- * Player throws place their muzzle directly (see `shared/throw.ts`) and leave
- * this at zero; it is here for projectiles that launch from a fixed point.
+ * `arc` chooses between the two that reach the target; see
+ * {@link solveLaunchVelocity}.
  */
 export function planLaunch(
 	from: Vector3,
 	target: Vector3,
 	speed: number,
-	clearance = 0,
+	arc: ThrowArc,
 	gravity = Workspace.Gravity,
 ): LaunchPlan {
-	const velocity = solveLaunchVelocity(from, target, speed, gravity);
-	return { origin: from.add(velocity.Unit.mul(clearance)), velocity };
+	return { origin: from, velocity: solveLaunchVelocity(from, target, speed, arc, gravity) };
 }
 
 /**

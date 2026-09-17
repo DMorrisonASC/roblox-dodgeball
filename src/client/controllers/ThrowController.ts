@@ -8,12 +8,13 @@ import {
 	Workspace,
 } from "@rbxts/services";
 import { AimGuide } from "shared/AimGuide";
-import { BALL_NAME, BALL_SIZE, PREDICTION_VERTICAL_BIAS } from "shared/constants";
+import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
-import { Trajectory } from "shared/Trajectory";
+import { Trajectory, ThrowArc } from "shared/Trajectory";
 
 const ACTION_NAME = "ThrowDodgeball";
+const ARC_ACTION_NAME = "SelectThrowArc";
 const AIM_DISTANCE = 500; // how far to project the aim ray when nothing is hit
 
 /**
@@ -49,6 +50,15 @@ export class ThrowController implements OnStart {
 	/** Last accepted aim point — see {@link AIM_DEADZONE}. */
 	private steadyTarget: Vector3 | undefined;
 
+	/**
+	 * Which of the two arcs the next throw uses.
+	 *
+	 * This changes the flight, not the landing: for a given speed exactly two
+	 * launch angles reach a point and both do so precisely. Selecting here only
+	 * picks which one, so the guide's landing marker stays put when you switch.
+	 */
+	private arc: ThrowArc = "overhead";
+
 	onStart() {
 		this.throwRemote = this.getThrowRemote();
 
@@ -65,7 +75,7 @@ export class ThrowController implements OnStart {
 
 				const target = this.getSteadyAimTarget(character);
 				if (DEBUG) print(`[Throw] throwing at ${target}`);
-				this.throwRemote?.FireServer(target);
+				this.throwRemote?.FireServer(target, this.arc);
 				return Enum.ContextActionResult.Sink;
 			},
 			false,
@@ -73,6 +83,23 @@ export class ThrowController implements OnStart {
 		);
 
 		RunService.RenderStepped.Connect(() => this.updateGuide());
+
+		// X for the regular overhead throw, C for the flat one. The guide redraws
+		// with the new shape immediately, which is the only feedback needed — the
+		// landing marker deliberately does not move.
+		ContextActionService.BindAction(
+			ARC_ACTION_NAME,
+			(_actionName, inputState, input) => {
+				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
+
+				this.arc = input.KeyCode === Enum.KeyCode.C ? "straight" : "overhead";
+				if (DEBUG) print(`[Throw] arc: ${this.arc}`);
+				return Enum.ContextActionResult.Sink;
+			},
+			false,
+			Enum.KeyCode.X,
+			Enum.KeyCode.C,
+		);
 	}
 
 	/**
@@ -91,7 +118,7 @@ export class ThrowController implements OnStart {
 		// This is not an approximation of the arc — it is the same plan the
 		// server will run when the click arrives, from the same origin.
 		const target = this.getSteadyAimTarget(character);
-		const plan = planPlayerThrow(character, target);
+		const plan = planPlayerThrow(character, target, this.arc);
 		// The guide itself is ignored as well as the thrower. Its own parts sit
 		// right along this arc, and an arc that can hit the line drawn to
 		// represent it will chase itself around the world.
@@ -99,12 +126,10 @@ export class ThrowController implements OnStart {
 		// The radius matters: the ball bounces when its edge touches a surface, a
 		// full half-diameter before its centre gets there. Tracing the centre
 		// alone always marked the impact too far along.
-		// The engine flies the ball a touch lower than the solve predicts, so the
-		// drawn arc carries the same deficit — the guide should describe the throw
-		// you are going to get, not an idealised one. The real throw is unaffected;
-		// this only changes what is drawn. See PREDICTION_VERTICAL_BIAS.
-		const predicted = plan.velocity.sub(new Vector3(0, PREDICTION_VERTICAL_BIAS, 0));
-		const arc = new Trajectory(plan.origin, predicted, {
+		// The radius matters twice over: the guide sweeps a sphere the size of the
+		// ball, and the solve above aimed the ball's *centre* a radius out so its
+		// *surface* is what arrives on the mark.
+		const arc = new Trajectory(plan.origin, plan.velocity, {
 			ignore: [character, this.guide.instance],
 			radius: BALL_SIZE / 2,
 		});
