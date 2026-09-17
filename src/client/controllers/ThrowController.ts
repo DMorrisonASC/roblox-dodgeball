@@ -22,7 +22,7 @@ const AIM_DISTANCE = 500; // how far to project the aim ray when nothing is hit
  * stability. Flip to `true` when chasing an aiming or landing problem — the
  * jitter report is rate limited so it won't flood the output.
  */
-const DEBUG = false;
+const DEBUG = true;
 
 /**
  * Aim changes smaller than this, in studs, are ignored.
@@ -32,7 +32,7 @@ const DEBUG = false;
  * large legitimate changes in where the ray lands, and those must still come
  * through. Gating on distance keeps both behaviours.
  */
-const AIM_DEADZONE = 0.25;
+const AIM_DEADZONE = 0.50;
 
 @Controller()
 export class ThrowController implements OnStart {
@@ -45,17 +45,20 @@ export class ThrowController implements OnStart {
 	private lastTarget: Vector3 | undefined;
 	private lastMuzzle: Vector3 | undefined;
 	private lastLanding: Vector3 | undefined;
+	private lastMid: Vector3 | undefined;
 	private nextReport = 0;
 
 	/** Last accepted aim point — see {@link AIM_DEADZONE}. */
 	private steadyTarget: Vector3 | undefined;
 
 	/**
-	 * Which of the two arcs the next throw uses.
+	 * Which of the three throws the next click uses.
 	 *
-	 * This changes the flight, not the landing: for a given speed exactly two
-	 * launch angles reach a point and both do so precisely. Selecting here only
-	 * picks which one, so the guide's landing marker stays put when you switch.
+	 * X is the arcing throw: lofted off the hand and dropped onto the mark.
+	 * C is the straight one: barely thrown at all, with gravity alone curving it
+	 * down onto the same mark. V is the curveball: a straight throw with a
+	 * sideways force on it, so it bows out to the left and swings back onto the
+	 * same mark again. Different shapes, different flight times, same landing.
 	 */
 	private arc: ThrowArc = "overhead";
 
@@ -84,21 +87,30 @@ export class ThrowController implements OnStart {
 
 		RunService.RenderStepped.Connect(() => this.updateGuide());
 
-		// X for the regular overhead throw, C for the flat one. The guide redraws
-		// with the new shape immediately, which is the only feedback needed — the
-		// landing marker deliberately does not move.
+		// X for the arcing throw, C for the straight one, V for the curveball. The
+		// guide redraws with the new shape immediately, which is the only feedback
+		// needed — the landing marker deliberately does not move.
 		ContextActionService.BindAction(
 			ARC_ACTION_NAME,
 			(_actionName, inputState, input) => {
 				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
 
-				this.arc = input.KeyCode === Enum.KeyCode.C ? "straight" : "overhead";
+				const key = input.KeyCode;
+				if (key === Enum.KeyCode.C) {
+					this.arc = "straight";
+				} else if (key === Enum.KeyCode.V) {
+					this.arc = "curve";
+				} else {
+					this.arc = "overhead";
+				}
+
 				if (DEBUG) print(`[Throw] arc: ${this.arc}`);
 				return Enum.ContextActionResult.Sink;
 			},
 			false,
 			Enum.KeyCode.X,
 			Enum.KeyCode.C,
+			Enum.KeyCode.V,
 		);
 	}
 
@@ -130,8 +142,12 @@ export class ThrowController implements OnStart {
 		// ball, and the solve above aimed the ball's *centre* a radius out so its
 		// *surface* is what arrives on the mark.
 		const arc = new Trajectory(plan.origin, plan.velocity, {
-			ignore: [character, this.guide.instance],
+			ignore: [character, this.guide.instance, ...this.looseBalls()],
 			radius: BALL_SIZE / 2,
+			// The curve is a force, not a launch angle, so it has to be simulated
+			// as well as applied. Same vector as the server's, taken from the same
+			// plan, which is the only reason the drawn path can be trusted.
+			acceleration: plan.acceleration,
 		});
 
 		if (DEBUG) this.reportJitter(target, getThrowMuzzle(character), arc);
@@ -143,28 +159,47 @@ export class ThrowController implements OnStart {
 	 * Scaffolding for tracking down jittery aim. Only fires when the mouse is
 	 * still, so anything it reports is genuine jitter rather than you aiming.
 	 *
-	 * Read it as a bisection. `target` moving means the aim raycast is landing
-	 * somewhere different each frame. A steady target with a moving `muzzle`
-	 * means the launch point is drifting underneath it. Steady target *and*
-	 * muzzle means the arc simulation itself is at fault — and then `points` and
-	 * `hit` matter, because an arc that never collides runs to `maxTime` and
-	 * reports a point in mid-air as its landing.
+	 * Read it as a bisection.
+	 *
+	 * - `target` moving means the aim raycast is landing somewhere different each
+	 *   frame. That is mouse-side and the deadzone's business.
+	 * - A steady `target` with a moving `muzzle` means the launch point is
+	 *   drifting underneath it. The solve absorbs that, so the landing stays put
+	 *   while the arc swings — which is exactly the whole-line wobble, and why
+	 *   `mid` exists: a point in the middle of the path catches a line that is
+	 *   moving without its ends moving.
+	 * - Steady `target` and `muzzle` with a moving `landing` means the arc
+	 *   simulation itself is at fault, and then `points` and `hit` matter — an arc
+	 *   that never collides runs to `maxTime` and reports mid-air as its landing.
 	 */
 	private reportJitter(target: Vector3, muzzle: Vector3, arc: Trajectory) {
 		const mouse = UserInputService.GetMouseLocation();
 		const still = this.lastMouse !== undefined && mouse.sub(this.lastMouse).Magnitude < 0.5;
 
-		// Rate limited. This fires every frame the landing moves, and printing
+		// The middle of the path: the honest test for "the whole line moved".
+		const mid = arc.points[math.floor(arc.points.size() / 2)];
+
+		// Rate limited. This fires every frame the path moves, and printing
 		// thousands of lines a second costs real frame time in Studio — which
 		// would make the very stutter it is trying to measure worse.
 		const now = os.clock();
-		if (still && this.lastTarget && this.lastMuzzle && this.lastLanding && now >= this.nextReport) {
+		if (
+			still &&
+			this.lastTarget &&
+			this.lastMuzzle &&
+			this.lastLanding &&
+			this.lastMid &&
+			now >= this.nextReport
+		) {
 			const landingJump = arc.landing.sub(this.lastLanding).Magnitude;
-			if (landingJump > 0.5) {
+			const midJump = mid.sub(this.lastMid).Magnitude;
+			if (math.max(landingJump, midJump) > 0.2) {
 				this.nextReport = now + 0.5;
+				const jump = (to: Vector3, from: Vector3) => string.format("%.2f", to.sub(from).Magnitude);
 				print(
-					`[Aim] landing +${landingJump} | target +${target.sub(this.lastTarget).Magnitude}` +
-						` | muzzle +${muzzle.sub(this.lastMuzzle).Magnitude} | points ${arc.points.size()}` +
+					`[Aim] landing +${jump(arc.landing, this.lastLanding)}` +
+						` | mid +${jump(mid, this.lastMid)} | target +${jump(target, this.lastTarget)}` +
+						` | muzzle +${jump(muzzle, this.lastMuzzle)} | points ${arc.points.size()}` +
 						` | hit ${ThrowController.describeHit(arc)}`,
 				);
 			}
@@ -174,6 +209,7 @@ export class ThrowController implements OnStart {
 		this.lastTarget = target;
 		this.lastMuzzle = muzzle;
 		this.lastLanding = arc.landing;
+		this.lastMid = mid;
 	}
 
 	/**
@@ -186,6 +222,30 @@ export class ThrowController implements OnStart {
 
 		const parent = hit.Parent;
 		return parent ? `${parent.Name}.${hit.Name}` : hit.Name;
+	}
+
+	/**
+	 * Every dodgeball that has already been thrown, so the guide can pass
+	 * through them.
+	 *
+	 * They are honest obstacles and the real ball does bounce off them — but they
+	 * are small, round and scattered around the landing area, so a swept sphere
+	 * that grazes one flips between touching it and missing it from frame to
+	 * frame. That showed up in the probe as the arc collapsing to a two-point
+	 * stub (landing +26.78, points 2) and springing back while the player stood
+	 * perfectly still. The arc can only ever be a curve plus one impact; bounces
+	 * are past what it can predict, so predicting them badly is worse than not
+	 * predicting them.
+	 */
+	private looseBalls(): BasePart[] {
+		const balls: BasePart[] = [];
+		for (const child of Workspace.GetChildren()) {
+			if (child.Name === BALL_NAME && child.IsA("BasePart")) {
+				balls.push(child);
+			}
+		}
+
+		return balls;
 	}
 
 	private getThrowRemote(): RemoteEvent | undefined {

@@ -12,18 +12,75 @@ import { Workspace } from "@rbxts/services";
  * `shared/throw.ts` for those.
  */
 
-/** Steepest and shallowest throws the solver will produce. */
+/**
+ * The flat throw's launch angle, in radians, and the shallow end of what the
+ * overhead solver will produce.
+ *
+ * The curveball deliberately does not use it: for a flat launch the angle *is*
+ * the speed control, so the curve gets its own steeper one — see
+ * `THROW_CURVE_ANGLE` in `shared/constants.ts`.
+ */
 const MIN_THROW_ANGLE = math.rad(5);
 const MAX_THROW_ANGLE = math.rad(85);
 
 /**
- * The two ways to reach a point at a given speed.
+ * The ways to reach a point.
  *
- * Both land on it — exactly, not approximately. `overhead` is the lofted arc
- * that drops in from above; `straight` is the flatter one that gets there
- * sooner. Their launch angles always sum to 90°.
+ * `overhead` is a real thrown arc: lofted off the hand, carried by its own
+ * velocity, and dropping onto the target.
+ *
+ * `straight` barely leaves the hand at all — it goes out at the flattest angle
+ * the game allows and gravity alone curves it down onto the mark. Its speed is
+ * not a free parameter: it is solved from the fall, see {@link flatLaunchSpeed}.
+ *
+ * `curve` is a `straight` throw flown under a sideways force: the same flat
+ * launch and the same fall, plus a constant lateral acceleration that bows the
+ * path out and then brings it back. See {@link solveLaunchVelocity}.
+ *
+ * All of them land on the target exactly, which is what makes it safe to let
+ * the player choose.
  */
-export type ThrowArc = "overhead" | "straight";
+export type ThrowArc = "overhead" | "straight" | "curve";
+
+/**
+ * Unit horizontal direction from `origin` toward `target`.
+ *
+ * Falls back to due north when the two points sit on top of each other, which
+ * only happens on a throw aimed at your own feet — the direction is meaningless
+ * there, but a real one keeps every formula downstream finite.
+ */
+function horizontalDirection(origin: Vector3, target: Vector3): Vector3 {
+	const horizontal = new Vector3(target.X - origin.X, 0, target.Z - origin.Z);
+	return horizontal.Magnitude > 0.001 ? horizontal.Unit : new Vector3(0, 0, -1);
+}
+
+/** Distance between two points as seen from above, ignoring the height between them. */
+function horizontalDistance(origin: Vector3, target: Vector3): number {
+	return new Vector3(target.X - origin.X, 0, target.Z - origin.Z).Magnitude;
+}
+
+/** Builds a velocity of `speed` from a launch angle toward `target`. */
+function velocityAtAngle(origin: Vector3, target: Vector3, speed: number, angle: number): Vector3 {
+	const direction = horizontalDirection(origin, target);
+
+	return direction.mul(speed * math.cos(angle)).add(new Vector3(0, speed * math.sin(angle), 0));
+}
+
+/**
+ * The horizontal unit vector pointing to the thrower's **left**, for a throw
+ * from `origin` toward `target`.
+ *
+ * "Left" has to be left *relative to the throw*. A world axis would send every
+ * curveball the same compass way — correct only for the one facing that happens
+ * to line up, and wrong for anyone throwing the other way.
+ *
+ * Derived from the aim rather than from a solved launch velocity, because the
+ * velocity depends on the acceleration the caller is about to choose, and that
+ * would be circular.
+ */
+export function leftAxis(origin: Vector3, target: Vector3): Vector3 {
+	return new Vector3(0, 1, 0).Cross(horizontalDirection(origin, target)).Unit;
+}
 
 /** A launch position and velocity, ready to hand to a projectile. */
 export interface LaunchPlan {
@@ -31,33 +88,106 @@ export interface LaunchPlan {
 	origin: Vector3;
 	/** Velocity to apply at that origin. */
 	velocity: Vector3;
+	/**
+	 * The arc that was actually used, which is not always the one asked for: a
+	 * `straight` or `curve` throw aimed above the launch line has no fall to solve
+	 * with and comes back as an `overhead` one. Read this, not your input, when
+	 * you want to know what happened.
+	 */
+	arc: ThrowArc;
+	/**
+	 * Constant world-space acceleration the flight runs under, on top of gravity.
+	 * Zero for every arc except the curve, which needs one: an initial velocity
+	 * alone can never bend a path.
+	 *
+	 * The server turns this into a force and the client simulates the identical
+	 * vector, from this same field, so the guide and the ball fly one curve.
+	 */
+	acceleration: Vector3;
+	/**
+	 * How long the flight to the target is expected to take, in seconds.
+	 *
+	 * The server uses it to stop applying {@link acceleration} once the throw has
+	 * arrived: a curve is a flight phenomenon, and a force still attached to a
+	 * ball that has landed would keep shoving it sideways across the floor.
+	 */
+	flightTime: number;
+}
+
+/** How a launch is shaped, and the forces it flies under. All optional. */
+export interface LaunchOptions {
+	/** Gravity to solve against. Defaults to `Workspace.Gravity`. */
+	gravity?: number;
+	/**
+	 * Constant sideways acceleration, in studs per second squared — the pull a
+	 * `curve` flies under. Ignored by the other arcs.
+	 */
+	acceleration?: Vector3;
+	/**
+	 * Whether a `curve` cancels that pull's drift in its launch, so it arrives on
+	 * the mark. Defaults to true; see {@link withLateralCompensation} for what
+	 * false does instead.
+	 */
+	compensate?: boolean;
+	/**
+	 * Launch angle for the flat arcs, in radians. Defaults to
+	 * {@link MIN_THROW_ANGLE}.
+	 *
+	 * Worth knowing what this can and cannot do, because it looks like a "how much
+	 * does it curve" knob and is not one. On level ground a flat launch has exactly
+	 * one speed that lands on a given point, `v = √(g·d / sin 2θ)`, so a steeper
+	 * angle buys a *slower* throw and a longer flight — and since the sideways pull
+	 * has that longer flight to work in, more bend per unit of it. It cannot change
+	 * how far the ball bows for a given launcher angle off the aim line: see
+	 * {@link withLateralCompensation}.
+	 */
+	angle?: number;
 }
 
 /**
  * Solves for the launch velocity that sends a projectile from `origin` to
- * `target` at a fixed `speed`. Gravity then shapes the parabola.
+ * `target` at a given `speed`. Gravity then shapes the parabola.
  *
- * There are two answers and `arc` picks between them. They are not
- * approximations of one another — the quadratic's two roots both reach the
- * target, which is what lets a game offer a flat throw and a lobbed one without
- * either of them missing.
+ * `overhead` picks between the quadratic's two roots and takes the flatter one.
+ * Both roots reach the target exactly; the flatter one gets there sooner and
+ * lower. When the target is out of reach for `speed`, it falls back to a 45°
+ * lob, which is the maximum range for that speed.
  *
- * When the target is further away than `speed` can reach, both collapse to a
- * 45° lob, which is the maximum range for that speed.
+ * `straight` and `curve` both ignore `speed` as a tunable and launch flat —
+ * `straight` at {@link MIN_THROW_ANGLE}, `curve` at
+ * {@link LaunchOptions.angle} if the caller gave one. The caller must have taken
+ * that speed from {@link flatLaunchSpeed} *at the same angle*, or the throw will
+ * miss. `curve` then either cancels `acceleration`'s drift in the launch, so it
+ * arrives on the mark, or leaves the launch alone and lets the pull carry it off
+ * the mark; see {@link LaunchOptions.compensate}.
  */
 export function solveLaunchVelocity(
 	origin: Vector3,
 	target: Vector3,
 	speed: number,
 	arc: ThrowArc,
-	gravity = Workspace.Gravity,
+	options: LaunchOptions = {},
 ): Vector3 {
+	const gravity = options.gravity ?? Workspace.Gravity;
+
+	if (arc === "straight" || arc === "curve") {
+		// No launch arc to speak of: out flat, and let gravity do the shaping.
+		const flat = velocityAtAngle(origin, target, speed, options.angle ?? MIN_THROW_ANGLE);
+		if (arc === "straight") return flat;
+
+		return withLateralCompensation(
+			origin,
+			target,
+			flat,
+			options.acceleration ?? new Vector3(),
+			options.compensate ?? true,
+		);
+	}
+
 	const delta = target.sub(origin);
 	const horizontal = new Vector3(delta.X, 0, delta.Z);
 	const distance = horizontal.Magnitude;
 	const height = delta.Y;
-
-	const horizontalDir = distance > 0.001 ? horizontal.div(distance) : new Vector3(0, 0, -1);
 
 	const speedSq = speed * speed;
 	const discriminant = speedSq * speedSq - gravity * (gravity * distance * distance + 2 * height * speedSq);
@@ -65,36 +195,144 @@ export function solveLaunchVelocity(
 	let angle: number;
 	if (distance > 0.001 && discriminant >= 0) {
 		const root = math.sqrt(discriminant);
-		// Higher root = lofted arc, lower root = flat arc. At the exact minimum
-		// speed the two roots coincide and the arcs merge; more speed separates
-		// them. See THROW_ARC_SPREAD.
-		const tangent = arc === "overhead" ? speedSq + root : speedSq - root;
-		angle = math.clamp(math.atan(tangent / (gravity * distance)), MIN_THROW_ANGLE, MAX_THROW_ANGLE);
+		// Lower root = the flatter of the two arcs that reach the target. At the
+		// exact minimum speed the roots coincide and the arcs merge; more speed
+		// separates them, so how hard a throw is pushed decides how flat it sits.
+		// See THROW_ARC_SPREAD.
+		const flat = math.atan((speedSq - root) / (gravity * distance));
+		angle = math.clamp(flat, MIN_THROW_ANGLE, MAX_THROW_ANGLE);
 	} else {
 		// Out of range for this speed — lob at 45° for the most distance we can get.
 		angle = math.rad(45);
 	}
 
-	const horizontalSpeed = speed * math.cos(angle);
-	const verticalSpeed = speed * math.sin(angle);
-	return horizontalDir.mul(horizontalSpeed).add(new Vector3(0, verticalSpeed, 0));
+	return velocityAtAngle(origin, target, speed, angle);
+}
+
+/**
+ * Bends a flat launch sideways, so a lateral `acceleration` either still lands
+ * the throw on the mark or visibly carries it off.
+ *
+ * The pull is constant, so the offset it accumulates over a flight of length `T`
+ * is just a parabola: `offset(t) = ½·a·t² + v_lat·t`.
+ *
+ * - **Compensated** (the default) forces `offset(T) = 0`, so the launch leaves
+ *   the aim line by `v_lat = -½·a·T` and the pull brings it back. Nothing to
+ *   iterate — it is closed form, unlike the in-plane solve.
+ * - **Uncompensated** returns the launch untouched: straight at the target, with
+ *   the pull carrying the ball `½·a·T²` wide of it. Four times as far, because
+ *   the compensated path only gets half the flight to fall away and spends the
+ *   other half coming back. The caller's aim guide has to show that landing, and
+ *   in this project it does — it simulates the same pull.
+ *
+ * **Both ends pinned is expensive, and this is the thing to know when tuning.**
+ * The compensated bow works out to `d·tan φ / 4`, where `tan φ = a·tan θ / g` is
+ * the angle the launch leaves the aim line by. So the bend and the launch's
+ * off-line angle are *the same quantity*: a flight that bows by 20% of its range
+ * has to be slung 39° wide to do it. Leaving it uncompensated is the way to get
+ * a bend without a side-armed launch.
+ *
+ * Only the part of `acceleration` perpendicular to the aim is compensated. A
+ * pull along the aim line changes the flight time rather than the heading, and
+ * that is a faster or slower throw, not a curve.
+ */
+function withLateralCompensation(
+	origin: Vector3,
+	target: Vector3,
+	flat: Vector3,
+	acceleration: Vector3,
+	compensate: boolean,
+): Vector3 {
+	const direction = horizontalDirection(origin, target);
+	const lateral = acceleration.sub(direction.mul(acceleration.Dot(direction)));
+	if (lateral.Magnitude < 0.001) return flat;
+
+	if (!compensate) return flat;
+
+	// The along-aim speed is what carries the ball to the target, and a
+	// perpendicular force never touches it — so this flight time is exact.
+	const alongSpeed = new Vector3(flat.X, 0, flat.Z).Magnitude;
+	if (alongSpeed < 0.001) return flat;
+
+	const flight = horizontalDistance(origin, target) / alongSpeed;
+	return flat.add(lateral.mul(-0.5 * flight));
+}
+
+/**
+ * The speed a launch at `angle` needs so that gravity alone drops it onto
+ * `target`. Defaults to {@link MIN_THROW_ANGLE}, the flat throw's angle.
+ *
+ * A throw at a fixed angle only has one speed that lands on a given point, and
+ * it follows from how much fall the flight has to work with:
+ * `v² = g·d² / (2·cos²θ·(d·tanθ - h))`. That is why a steeper angle is a slower
+ * throw and not a different way of aiming one.
+ *
+ * Returns `undefined` when the target sits above the launch line — there is no
+ * fall to work with, so no speed exists and the caller should use the arcing
+ * throw instead. A steeper `angle` raises that line, so it fails less often.
+ */
+export function flatLaunchSpeed(
+	origin: Vector3,
+	target: Vector3,
+	angle = MIN_THROW_ANGLE,
+	gravity = Workspace.Gravity,
+): number | undefined {
+	const delta = target.sub(origin);
+	const distance = new Vector3(delta.X, 0, delta.Z).Magnitude;
+	const height = delta.Y;
+
+	// How far the launch line climbs over the distance, minus how far it must
+	// climb to reach the target. This is the drop gravity gets to work with.
+	const drop = distance * math.tan(angle) - height;
+	if (distance <= 0.001 || drop <= 0) return undefined;
+
+	const cos = math.cos(angle);
+	return math.sqrt((gravity * distance * distance) / (2 * cos * cos * drop));
+}
+
+/**
+ * Seconds for a projectile launched at `velocity` to cover the horizontal
+ * distance to `target`.
+ *
+ * Exact for all three arcs: nothing in this module accelerates a projectile
+ * *along* the aim line, so the along-aim speed it leaves with is the one it
+ * arrives with. A perpendicular pull changes the heading, not the progress.
+ *
+ * Returns zero for a launch that never travels, which only happens on a
+ * degenerate aim with nothing to throw at.
+ */
+function flightTimeTo(origin: Vector3, target: Vector3, velocity: Vector3): number {
+	const along = velocity.Dot(horizontalDirection(origin, target));
+	return along > 0.001 ? horizontalDistance(origin, target) / along : 0;
 }
 
 /**
  * Turns "throw this at that" into the exact origin/velocity pair a projectile
  * needs.
  *
- * `arc` chooses between the two that reach the target; see
- * {@link solveLaunchVelocity}.
+ * `arc` chooses between the ways to reach the target; see
+ * {@link solveLaunchVelocity}. For `straight` and `curve`, `speed` must come
+ * from {@link flatLaunchSpeed} rather than being chosen freely.
+ *
+ * `options.acceleration` is the constant sideways pull the flight runs under,
+ * which is what makes a curve; leave it out for the gravity-only arcs, and leave
+ * it out for a `curve` too if you want that throw to fly straight.
  */
 export function planLaunch(
 	from: Vector3,
 	target: Vector3,
 	speed: number,
 	arc: ThrowArc,
-	gravity = Workspace.Gravity,
+	options: LaunchOptions = {},
 ): LaunchPlan {
-	return { origin: from, velocity: solveLaunchVelocity(from, target, speed, arc, gravity) };
+	const velocity = solveLaunchVelocity(from, target, speed, arc, options);
+	return {
+		origin: from,
+		velocity,
+		arc,
+		acceleration: options.acceleration ?? new Vector3(),
+		flightTime: flightTimeTo(from, target, velocity),
+	};
 }
 
 /**
@@ -120,6 +358,12 @@ export function minimumReachSpeed(origin: Vector3, target: Vector3, gravity = Wo
 export interface TrajectoryOptions {
 	/** Gravity to integrate against. Defaults to `Workspace.Gravity`. */
 	gravity?: number;
+	/**
+	 * Constant world acceleration on top of gravity, in studs per second squared.
+	 * This is what makes a curve — pass {@link LaunchPlan.acceleration} so the
+	 * drawn path matches the force the server applies.
+	 */
+	acceleration?: Vector3;
 	/** Simulation timestep, in seconds. Smaller is smoother and costlier. */
 	step?: number;	/** Give up after this many seconds of flight. */
 	maxTime?: number;
@@ -133,7 +377,7 @@ export interface TrajectoryOptions {
 	 *
 	 * Worth setting for anything with real size: a ball bounces off a surface
 	 * when its *edge* touches, which is a full radius before its centre arrives.
-	 * PreDicting with a bare ray always marks the impact too late.
+	 * Predicting with a bare ray always marks the impact too late.
 	 */
 	radius?: number;
 }
@@ -189,6 +433,11 @@ export class Trajectory {
 
 	constructor(origin: Vector3, velocity: Vector3, options: TrajectoryOptions = {}) {
 		const gravity = options.gravity ?? Workspace.Gravity;
+		// Gravity and a constant acceleration are the same thing to an
+		// integrator, so they collapse into one pull vector. Keeping them
+		// separate in the options is for the reader, not the maths.
+		const acceleration = options.acceleration ?? new Vector3();
+		const pull = new Vector3(acceleration.X, acceleration.Y - gravity, acceleration.Z);
 		const step = options.step ?? DEFAULT_STEP;
 		const maxTime = options.maxTime ?? DEFAULT_MAX_TIME;
 		const collide = options.collide ?? true;
@@ -208,12 +457,10 @@ export class Trajectory {
 		let normal: Vector3 | undefined;
 
 		while (elapsed < maxTime) {
-			// Semi-implicit Euler: advance by the current velocity, then let
-			// gravity bend it — which is what the engine does to the real ball.
-			const stepPosition = position
-				.add(currentVelocity.mul(step))
-				.add(new Vector3(0, -0.5 * gravity * step * step, 0));
-			currentVelocity = currentVelocity.add(new Vector3(0, -gravity * step, 0));
+			// Semi-implicit Euler: advance by the current velocity, then let the
+			// pull bend it — which is what the engine does to the real ball.
+			const stepPosition = position.add(currentVelocity.mul(step)).add(pull.mul(0.5 * step * step));
+			currentVelocity = currentVelocity.add(pull.mul(step));
 			elapsed += step;
 
 			const offset = stepPosition.sub(position);

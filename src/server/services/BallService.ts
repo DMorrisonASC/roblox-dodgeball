@@ -4,9 +4,10 @@ import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow } from "shared/throw";
-import { ThrowArc } from "shared/Trajectory";
+import { LaunchPlan, ThrowArc } from "shared/Trajectory";
 import { TrailEffect } from "shared/TrailEffect";
 import { SphereService } from "./SphereService";
+import { watchThrow } from "../ThrowProbe";
 
 const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
 
@@ -19,7 +20,7 @@ const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
  */
 const NEW_BALL_DELAY = 0;
 
-const DEBUG = true; // prints where each throw was launched from
+const DEBUG = true; // prints the mode, speed and angle of each throw
 
 /** Where the ball sits relative to the hand while it is being held. */
 const GRIP_OFFSET = new CFrame();
@@ -42,10 +43,16 @@ export class BallService implements OnStart {
 		this.throwRemote.OnServerEvent.Connect((player, target, arc) => {
 			if (!typeIs(target, "Vector3")) return;
 
-			// Anything unrecognised falls back to the regular throw. Both arcs reach
-			// the same point, so a bad value costs the player the arc they asked for
-			// and nothing else.
-			const chosen: ThrowArc = arc === "straight" ? "straight" : "overhead";
+			// Anything unrecognised falls back to the regular throw. All three arcs
+			// reach the same point, so a bad value costs the player the shape they
+			// asked for and nothing else.
+			let chosen: ThrowArc = "overhead";
+			if (arc === "straight") {
+				chosen = "straight";
+			} else if (arc === "curve") {
+				chosen = "curve";
+			}
+
 			this.throwBall(player, target, chosen);
 		});
 
@@ -154,7 +161,10 @@ export class BallService implements OnStart {
 		const releasePosition = ball.Position;
 		const plan = planPlayerThrow(character, target, arc);
 		if (DEBUG) {
-			print(`[Ball] ${player.Name}: release ${releasePosition} -> launch ${plan.origin}`);
+			print(
+				`[Ball] ${player.Name}: ${plan.arc} ${this.describeThrow(plan)}, ` +
+					`release ${releasePosition} -> launch ${plan.origin}`,
+			);
 		}
 
 		// The thrower can never be hit by their own ball. Without this, a throw
@@ -163,22 +173,38 @@ export class BallService implements OnStart {
 		// muzzle distance only ever changed how hard that shove was.
 		CollisionIgnore.between(ball, character);
 
-		// Move the ball before it can collide. Setting collision this frame
-		// while the ball is still inside the hand would leave the thrower's own
-		// overlap to be resolved if this frame's constraint changes haven't
-		// replicated yet.
+		// Move the ball, hand it to this machine's solver, and arm it — all inside
+		// the one frame.
+		//
+		// Every line of this used to be spread across `task.delay(0)`, which left
+		// the ball non-colliding, massless and unforced for a physics step. That
+		// step's length depends on the frame, so the ball had a window it could
+		// pass through something by, and a different-sized one every throw — the
+		// exact shape of "it does not land in the same place twice".
+		//
+		// The old reason for the delay was that a solid ball still sitting in the
+		// hand got the thrower shoved. `CollisionIgnore` above settles that
+		// structurally: the ball cannot collide with its thrower's body at all, so
+		// being close to the hand for a frame no longer matters.
 		ball.CanCollide = false;
 		ball.Position = plan.origin;
 		ball.Parent = Workspace;
-		ball.AssemblyLinearVelocity = plan.velocity;
 
-		// Arm the ball a frame later, by which point the ignore above has
-		// certainly replicated. This also means the ball is never solid while it
-		// is still sitting in the hand.
-		task.delay(0, () => {
-			ball.CanCollide = true;
-			ball.Massless = false;
-		});
+		// The ball was welded into the character, so it belonged to the thrower's
+		// client's physics — and that machine was the one simulating it, including
+		// the frame it was released on. Called with no argument the server takes it
+		// back, so the whole flight is simulated in one place.
+		ball.SetNetworkOwner();
+
+		ball.AssemblyLinearVelocity = plan.velocity;
+		ball.CanCollide = true;
+		ball.Massless = false;
+		// After `Massless`, never before: the force is sized from the ball's
+		// mass, and a massless ball reads zero and gets nothing.
+		this.applyAcceleration(ball, plan.acceleration, plan.flightTime);
+
+		// How far the engine's flight actually is from the plan's, per throw.
+		if (DEBUG) watchThrow(ball, plan, character);
 
 		// Airborne now, so the trail can start drawing behind it.
 		held.trail.setEnabled(true);
@@ -193,5 +219,66 @@ export class BallService implements OnStart {
 				this.attachBall(player, current);
 			}
 		});
+	}
+
+	/**
+	 * Formats a plan's launch for the debug print: the in-plane flight, plus the
+	 * sideways part of it when there is one.
+	 *
+	 * The in-plane figure is the honest one. A curve's sideways launch is not part
+	 * of how fast the throw travels — it is what bends it — and printing the raw
+	 * vector made a curveball read as the fastest throw in the game at 265 studs/s
+	 * when the throw itself was only doing 95.
+	 */
+	private describeThrow(plan: LaunchPlan): string {
+		const sideways = plan.acceleration.Magnitude > 0.001 ? plan.acceleration.Unit : undefined;
+		const inPlane = sideways
+			? plan.velocity.sub(sideways.mul(plan.velocity.Dot(sideways)))
+			: plan.velocity;
+
+		const horizontal = new Vector3(inPlane.X, 0, inPlane.Z);
+		const angle = math.deg(math.atan2(inPlane.Y, horizontal.Magnitude));
+		const travel =
+			`${string.format("%.1f", inPlane.Magnitude)} studs/s at ${string.format("%.1f", angle)}deg`;
+
+		if (!sideways) return travel;
+
+		return `${travel} + ${string.format("%.1f", math.abs(plan.velocity.Dot(sideways)))} sideways`;
+	}
+
+	/**
+	 * Applies the constant force a curveball flies under.
+	 *
+	 * This is the part that cannot be done with a velocity. A ball thrown in a
+	 * straight line is a ball travelling in a straight line, however hard it is
+	 * thrown; bending it takes a force acting *during* the flight. The plan solved
+	 * the launch so the drift this force accumulates is cancelled by the time the
+	 * ball arrives, which is why the throw still lands on the mark the guide drew.
+	 *
+	 * A no-op for every other arc, and for a curve that unfurled into an overhead
+	 * throw because the aim had no fall to solve with.
+	 */
+	private applyAcceleration(ball: BasePart, acceleration: Vector3, flightTime: number) {
+		if (acceleration.Magnitude < 0.001) return;
+
+		// Parented to the ball, so it can never outlive the projectile it belongs
+		// to — the same trick `CollisionIgnore` uses.
+		const attachment = new Instance("Attachment");
+		attachment.Parent = ball;
+
+		const force = new Instance("VectorForce");
+		force.Attachment0 = attachment;
+		// Without this the force is applied where the attachment sits, which is
+		// not the centre of mass, and it spins the ball like an off-centre
+		// thruster instead of curving it.
+		force.ApplyAtCenterOfMass = true;
+		force.RelativeTo = Enum.ActuatorRelativeTo.World;
+		force.Force = acceleration.mul(ball.GetMass());
+		force.Parent = attachment;
+
+		// The curve belongs to the flight. Left attached once the ball has landed
+		// it would keep shoving it sideways along the ground, at a constant
+		// acceleration, for the rest of its lifetime.
+		task.delay(flightTime + 0.1, () => force.Destroy());
 	}
 }

@@ -36,21 +36,22 @@ export const THROW_MUZZLE_DISTANCE = 2;
 export const THROW_SPEED = 100;
 
 /**
- * How much faster than the bare minimum a throw is launched, as a multiplier.
+ * How much faster than the bare minimum the arcing throw is launched, as a
+ * multiplier.
  *
- * This one number does two jobs.
+ * The throw is solved by picking between the quadratic's two roots, and at
+ * exactly the minimum speed those roots coincide — one arc, not two. This is
+ * how far above that minimum it is thrown, so it sets how flat the arcing throw
+ * sits: a level target is met at about 23° at 1.4x, 15° at 2.0x, 33° at 1.1x.
  *
- * **It separates the two throw modes.** For a given speed there are exactly two
- * launch angles that reach a point, and they always sum to 90°. Throwing at
- * `1.0x` the minimum collapses them into a single arc; the further above, the
- * wider they spread. At 1.4x a level target is met at roughly 23° (the straight
- * throw) and 67° (the overhead one).
- *
- * **It keeps the solve off a numerical knife edge.** At exactly 1.0x the
+ * **It also keeps the solve off a numerical knife edge.** At exactly 1.0x the
  * discriminant is zero and the target sits precisely at the arc's limit, so the
  * whole answer swings on floating-point noise in the launch point. That was a
  * real bug here: the landing marker wandered on long throws and sat still on
  * short ones. Do not take this below about 1.05.
+ *
+ * It does not affect the straight throw at all — that one is barely thrown and
+ * gets its speed from the fall instead. See `flatLaunchSpeed`.
  *
  * A side effect worth knowing: the furthest reachable target is
  * `(THROW_MAX_SPEED / THROW_ARC_SPREAD)² / gravity`, so raising this eats into
@@ -66,3 +67,98 @@ export const THROW_ARC_SPREAD = 1.4;
  * and the aim guide's landing marker shows you exactly where.
  */
 export const THROW_MAX_SPEED = 280;
+
+/**
+ * Launch angle of the curveball, in degrees.
+ *
+ * A flat launch at a fixed angle has exactly one speed that lands on a given
+ * point (`v = √(g·d / sin 2θ)` on level ground), so **this is the curve's speed
+ * control**: flatter means harder. At 36 studs, 5° needs ~146 studs/s and 20°
+ * needs ~95 — which is what lets the curve be the slow, readable throw a
+ * curveball should be rather than the fastest thing on the field.
+ *
+ * Steeper also buys bend per unit of pull, because the pull has a longer flight
+ * to work in; it buys a slower flight for the same reason. It does **not** change
+ * how far the ball bows for a given launch angle off the aim line — that
+ * relationship is the same at every angle, see {@link THROW_CURVE_ACCELERATION}.
+ *
+ * Two side effects worth knowing:
+ *
+ * - The curve is deliberately never floored at {@link THROW_SPEED}. A flat throw
+ *   launched faster than its solve overshoots the mark, and at this angle the
+ *   solve sits under the floor for every target inside ~33 studs — most of them.
+ * - Aiming above the launch line no longer forces a fallback to an overhead
+ *   throw so easily: the line climbs `d·tan 20°` instead of `d·tan 5°`, so a
+ *   target 14 studs above the hand is still reachable at 40 studs, against 3.5.
+ */
+export const THROW_CURVE_ANGLE = 20;
+
+/**
+ * How hard a curveball is pulled sideways, in studs per second squared, toward
+ * the thrower's left.
+ *
+ * A curve is not a launch angle — it is a force acting for the whole flight, so
+ * this is an **acceleration** (studs/s²), not a velocity. There is no "how fast
+ * does it go sideways" number to eyeball, so these are the formulas.
+ *
+ * **The maths.** The pull is perpendicular to the throw, so it never touches the
+ * in-plane flight: the flat solve runs exactly as `straight` runs it, and the
+ * sideways offset rides on top of it. With the flight time `T` that
+ * {@link THROW_CURVE_ANGLE} sets, the two ways to fly it are one line each:
+ *
+ * ```
+ * compensated:    bow   = a·T² / 8
+ * uncompensated:  drift = a·T² / 2       (4× as far)
+ * ```
+ *
+ * On level ground at the curve's own 20° those reduce to
+ *
+ * ```
+ * bow ≈ a·d / 2156       drift ≈ a·d / 539       tan φ = a·tan 20° / g
+ * ```
+ *
+ * so **`a ≈ 2156·B/d` for a bend of `B` studs** — about 54 per stud of bow at 40
+ * studs. At 300 that is a bow of 2.8 studs at 20, 5.6 at 40, 8.4 at 60, from a
+ * launch that leaves the aim line 29° wide at *every* range.
+ *
+ * **That launch angle is geometry, not tuning.** Written as `d·tan φ / 4`, the bow
+ * and the launch's off-line angle are revealed as one quantity: with both ends of
+ * the flight pinned to the mark, the only way to bow is to leave wide of it.
+ * {@link THROW_CURVE_ANGLE} cannot change that — it decides how fast and how long
+ * the flight is, not how far it bends. See {@link THROW_CURVE_COMPENSATED} if a
+ * side-armed launch is not the look you want.
+ *
+ * **This number is also the curve's speed.** The sideways launch the compensation
+ * needs adds to the throw rather than replacing any of it — `v_lat = ½·a·T` — so
+ * at 20° and 300 that is ~58 studs/s sideways on top of ~110 along the aim. The
+ * curve still comes out slower than the other two modes. That is the trap this
+ * value was tuned around: at 1800 it left the hand at 265 studs/s and read as the
+ * fastest throw in the game, because 217 of those studs per second were sideways.
+ *
+ * The sign is a handedness, not a direction: positive bends left, left being
+ * relative to the throw, so it stays correct whichever way you are facing — see
+ * `leftAxis` in `shared/Trajectory.ts`.
+ */
+export const THROW_CURVE_ACCELERATION = 300;
+
+/**
+ * Whether a curveball's launch cancels its own drift, so it lands on the mark.
+ *
+ * - `true` (the default): the launch leaves the aim line wide by `φ` and the pull
+ *   brings it back. The ball arrives where the marker is, and the visible bend is
+ *   its deviation from the straight line.
+ * - `false`: the launch goes straight at the target, the pull carries the ball
+ *   off it, and it lands `a·d/539` studs short of the aim point. The aim guide's
+ *   marker moves with it, so the guide is still showing the truth — it is the
+ *   throw that changed, not the honesty.
+ *
+ * Off is the natural-looking version: aimed at the target and visibly bending
+ * away from it, instead of slung wide and swung back in. What it gives up is the
+ * guarantee that every arc lands on the same mark — a curveball becomes a place
+ * you aim off, not a place you point at.
+ *
+ * **Flipping this changes what {@link THROW_CURVE_ACCELERATION} looks like by
+ * 4×.** To keep the same visible bend across the flip, divide it by 4 — and read
+ * that constant's comment for where the factor comes from.
+ */
+export const THROW_CURVE_COMPENSATED = true;
