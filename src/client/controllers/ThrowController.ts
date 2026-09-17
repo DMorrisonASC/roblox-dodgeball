@@ -8,7 +8,7 @@ import {
 	Workspace,
 } from "@rbxts/services";
 import { AimGuide } from "shared/AimGuide";
-import { BALL_NAME } from "shared/constants";
+import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
 import { Trajectory } from "shared/Trajectory";
@@ -95,11 +95,18 @@ export class ThrowController implements OnStart {
 		// The guide itself is ignored as well as the thrower. Its own parts sit
 		// right along this arc, and an arc that can hit the line drawn to
 		// represent it will chase itself around the world.
-		const arc = new Trajectory(plan.origin, plan.velocity, { ignore: [character, this.guide.instance] });
+		//
+		// The radius matters: the ball bounces when its edge touches a surface, a
+		// full half-diameter before its centre gets there. Tracing the centre
+		// alone always marked the impact too far along.
+		const arc = new Trajectory(plan.origin, plan.velocity, {
+			ignore: [character, this.guide.instance],
+			radius: BALL_SIZE / 2,
+		});
 
-		// if (DEBUG) this.reportJitter(target, getThrowMuzzle(character), arc);
+		if (DEBUG) this.reportJitter(target, getThrowMuzzle(character), arc);
 
-		this.guide.update(arc.points);
+		this.guide.update(arc.points, { position: arc.contact ?? arc.landing, normal: arc.normal });
 	}
 
 	/**

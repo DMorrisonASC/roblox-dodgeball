@@ -9,14 +9,23 @@ import { Workspace } from "@rbxts/services";
  *
  * Nothing here knows about balls or throwing — hand it any list of points.
  */
-/** Look of the sphere drawn where the path ends. */
+/** Look of the disc drawn where the path ends. */
 export interface MarkerOptions {
 	/** Defaults to a bright green. */
 	color?: Color3;
 	/** Defaults to 0.5 — solid enough to see, sheer enough to see through. */
 	transparency?: number;
-	/** Diameter in studs. Defaults to 1. */
+	/** Diameter in studs. Defaults to 3, which reads as a landing zone rather than a point. */
 	size?: number;
+	/** Thickness of the disc, in studs. */
+	thickness?: number;
+}
+
+/** Where to place the marker, and which way its face points. */
+export interface MarkerPlacement {
+	position: Vector3;
+	/** Surface normal to lie flush against. Defaults to upright. */
+	normal?: Vector3;
 }
 
 export interface AimGuideOptions {
@@ -49,7 +58,8 @@ const DEFAULT_MAX_SEGMENTS = 144;
 
 const DEFAULT_MARKER_COLOR = Color3.fromRGB(60, 255, 80);
 const DEFAULT_MARKER_TRANSPARENCY = 0.5;
-const DEFAULT_MARKER_SIZE = 1;
+const DEFAULT_MARKER_SIZE = 3;
+const DEFAULT_MARKER_THICKNESS = 0.1;
 
 /** Segments are run slightly long so the joins don't show as gaps. */
 const SEGMENT_OVERLAP = 0.05;
@@ -99,8 +109,13 @@ export class AimGuide {
 	/**
 	 * Draws the line along `points`. Any pooled segment the path doesn't reach
 	 * is hidden, so this doubles as a clear for shorter paths.
+	 *
+	 * `placement` positions the disc separately from the end of the line, which
+	 * is what you want for a projectile with size: the path ends where its
+	 * *centre* stopped, while the mark belongs flat against the surface its edge
+	 * touched.
 	 */
-	public update(points: ReadonlyArray<Vector3>): this {
+	public update(points: ReadonlyArray<Vector3>, placement?: MarkerPlacement): this {
 		const available = this.segments.size();
 		const wanted = math.min(points.size() - 1, available);
 
@@ -126,10 +141,10 @@ export class AimGuide {
 		}
 
 		if (this.marker) {
-			// Sit the sphere on the last point, so it reads as "the ball stops
-			// here" whether the path ended on the ground or against a wall.
 			if (wanted > 0) {
-				this.marker.CFrame = new CFrame(points[points.size() - 1]);
+				const at = placement ? placement.position : points[points.size() - 1];
+				const normal = placement && placement.normal ? placement.normal : new Vector3(0, 1, 0);
+				this.marker.CFrame = AimGuide.discCFrame(at, normal);
 				this.marker.Transparency = this.markerTransparency;
 			} else {
 				this.marker.Transparency = 1;
@@ -174,10 +189,26 @@ export class AimGuide {
 		return segment;
 	}
 
+	/**
+	 * CFrame laying a disc flat against a surface.
+	 *
+	 * A `Cylinder` part's flat faces are perpendicular to its local X axis, so X
+	 * is what has to line up with the surface normal. Built from matrix axes
+	 * rather than `CFrame.lookAt`, because looking straight up or down is
+	 * degenerate for `lookAt` and a flat landing is the common case.
+	 */
+	private static discCFrame(position: Vector3, normal: Vector3): CFrame {
+		const reference = math.abs(normal.Y) > 0.9 ? new Vector3(1, 0, 0) : new Vector3(0, 1, 0);
+		const perpendicular = normal.Cross(reference).Unit;
+		return CFrame.fromMatrix(position, normal, perpendicular);
+	}
+
 	private createMarker(parent: Folder, options: MarkerOptions): Part {
 		const marker = new Instance("Part");
 		marker.Name = "LandingMarker";
-		marker.Shape = Enum.PartType.Ball;
+		// A cylinder with a thin axis reads as a flat disc, which suits a landing
+		// zone better than a sphere half-buried in the surface.
+		marker.Shape = Enum.PartType.Cylinder;
 		marker.Anchored = true;
 		marker.CanCollide = false;
 		// Same reason as the segments: it sits at the aim point, so it must not
@@ -189,7 +220,8 @@ export class AimGuide {
 		marker.Color = options.color ?? DEFAULT_MARKER_COLOR;
 		marker.Transparency = 1;
 		const size = options.size ?? DEFAULT_MARKER_SIZE;
-		marker.Size = new Vector3(size, size, size);
+		const thickness = options.thickness ?? DEFAULT_MARKER_THICKNESS;
+		marker.Size = new Vector3(thickness, size, size);
 		marker.Parent = parent;
 		return marker;
 	}

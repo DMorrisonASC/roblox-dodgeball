@@ -116,6 +116,15 @@ export interface TrajectoryOptions {
 	ignore?: Instance[];
 	/** Set false for pure maths with no collision checks at all. */
 	collide?: boolean;
+	/**
+	 * Radius of the projectile, in studs. Zero (the default) traces the path as a
+	 * mathematical line instead.
+	 *
+	 * Worth setting for anything with real size: a ball bounces off a surface
+	 * when its *edge* touches, which is a full radius before its centre arrives.
+	 * PreDicting with a bare ray always marks the impact too late.
+	 */
+	radius?: number;
 }
 
 /**
@@ -151,8 +160,17 @@ export class Trajectory {
 	public readonly velocity: Vector3;
 	/** Sampled positions along the arc, starting at `origin`. */
 	public readonly points: ReadonlyArray<Vector3>;
-	/** Final point — the ground, a wall, or wherever `maxTime` ran out. */
+	/**
+	 * Final point of the path — where the projectile's *centre* comes to rest.
+	 *
+	 * For anything with a radius this sits one radius clear of the surface; see
+	 * {@link contact} for the point that actually stopped it.
+	 */
 	public readonly landing: Vector3;
+	/** The point on a surface that stopped the projectile, if anything did. */
+	public readonly contact: Vector3 | undefined;
+	/** Which way that surface faces, if anything was hit. */
+	public readonly normal: Vector3 | undefined;
 	/** What the arc hit, if anything. */
 	public readonly hit: BasePart | undefined;
 	/** Flight time to `landing`, in seconds. */
@@ -163,6 +181,7 @@ export class Trajectory {
 		const step = options.step ?? DEFAULT_STEP;
 		const maxTime = options.maxTime ?? DEFAULT_MAX_TIME;
 		const collide = options.collide ?? true;
+		const radius = options.radius ?? 0;
 
 		const params = new RaycastParams();
 		params.FilterType = Enum.RaycastFilterType.Exclude;
@@ -174,6 +193,8 @@ export class Trajectory {
 		let currentVelocity = velocity;
 		let elapsed = 0;
 		let hit: BasePart | undefined;
+		let contact: Vector3 | undefined;
+		let normal: Vector3 | undefined;
 
 		while (elapsed < maxTime) {
 			// Semi-implicit Euler: advance by the current velocity, then let
@@ -184,11 +205,26 @@ export class Trajectory {
 			currentVelocity = currentVelocity.add(new Vector3(0, -gravity * step, 0));
 			elapsed += step;
 
-			const result = collide ? Workspace.Raycast(position, stepPosition.sub(position), params) : undefined;
+			const offset = stepPosition.sub(position);
+			let result: RaycastResult | undefined;
+			if (collide && offset.Magnitude > 0.001) {
+				// A sphere sweep asks "where does this ball touch?", where a ray
+				// only asks where its centre would go.
+				result =
+					radius > 0
+						? Workspace.Spherecast(position, radius, offset, params)
+						: Workspace.Raycast(position, offset, params);
+			}
+
 			if (result) {
-				points.push(result.Position);
+				// `Distance` is how far the shape travelled, so this is where the
+				// projectile's centre stops. `Position` is the point on the surface
+				// that stopped it — a radius away from that centre.
+				points.push(position.add(offset.Unit.mul(result.Distance)));
 				hit = result.Instance;
-				position = result.Position;
+				contact = result.Position;
+				normal = result.Normal;
+				position = points[points.size() - 1];
 				break;
 			}
 
@@ -200,6 +236,8 @@ export class Trajectory {
 		this.velocity = velocity;
 		this.points = points;
 		this.landing = position;
+		this.contact = contact;
+		this.normal = normal;
 		this.hit = hit;
 		this.duration = elapsed;
 	}

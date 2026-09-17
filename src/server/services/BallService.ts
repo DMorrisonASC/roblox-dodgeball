@@ -8,7 +8,16 @@ import { TrailEffect } from "shared/TrailEffect";
 import { SphereService } from "./SphereService";
 
 const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
-const NEW_BALL_DELAY = 3; // seconds after a throw before the player gets another ball
+
+/**
+ * Seconds after a throw before the player gets another ball.
+ *
+ * Zero means no cooldown — you can throw as fast as you can click. The callback
+ * still runs a frame later rather than inline, which keeps the new ball from
+ * being created while the old one is mid-launch.
+ */
+const NEW_BALL_DELAY = 0;
+
 const DEBUG = true; // prints where each throw was launched from
 
 /** Where the ball sits relative to the hand while it is being held. */
