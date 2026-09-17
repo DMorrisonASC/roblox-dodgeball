@@ -1,4 +1,4 @@
-import { THROW_MAX_SPEED, THROW_MUZZLE_DISTANCE, THROW_SPEED } from "shared/constants";
+import { THROW_MAX_SPEED, THROW_MUZZLE_DISTANCE, THROW_REACH_HEADROOM, THROW_SPEED } from "shared/constants";
 import { LaunchPlan, minimumReachSpeed, planLaunch } from "shared/Trajectory";
 
 /**
@@ -17,24 +17,34 @@ const TORSO_PARTS = ["UpperTorso", "Torso", "HumanoidRootPart"];
 
 /**
  * Where a throw starts: {@link THROW_MUZZLE_DISTANCE} studs in front of the
- * thrower's torso, along the direction the torso is facing.
+ * thrower's torso.
  *
  * The torso, not the head. The head is animated, so idle turns — looking left
  * and right — visibly swing the launch point around. The torso only moves when
  * the body itself does, so the ball always leaves from the same place relative
  * to the player no matter what the head is doing.
  *
+ * The *direction* comes from the `HumanoidRootPart` rather than the torso.
+ * Motor6Ds hang off the root, so animation moves the torso but never the root —
+ * and because this offset is a multi-stud lever, any torso rotation gets
+ * multiplied into the launch point several times over, which shows up as the
+ * aim guide wobbling along with the walk cycle. The root's facing only changes
+ * when the character itself actually turns.
+ *
  * When a throw animation lands, this is the seam it plugs into: return the
  * animated hand's release point instead, and nothing else has to change.
  */
 export function getThrowMuzzle(character: Model): Vector3 {
-	const torso = findTorso(character);
-	if (torso) {
-		return torso.CFrame.Position.add(torso.CFrame.LookVector.mul(THROW_MUZZLE_DISTANCE));
+	const anchor = findTorso(character);
+	if (!anchor) {
+		warn(`[Throw] ${character.Name}: no torso, throwing from the pivot`);
+		return character.GetPivot().Position;
 	}
 
-	warn(`[Throw] ${character.Name}: no torso, throwing from the pivot`);
-	return character.GetPivot().Position;
+	const root = character.FindFirstChild("HumanoidRootPart");
+	const forward = root && root.IsA("BasePart") ? root.CFrame.LookVector : anchor.CFrame.LookVector;
+
+	return anchor.CFrame.Position.add(forward.mul(THROW_MUZZLE_DISTANCE));
 }
 
 function findTorso(character: Model): BasePart | undefined {
@@ -53,10 +63,17 @@ function findTorso(character: Model): BasePart | undefined {
  * winds up harder when the target is genuinely further than that can carry —
  * up to {@link THROW_MAX_SPEED}. Without this, anything past ~51 studs silently
  * fell back to a 45° lob that landed short of where you aimed.
+ *
+ * The reach figure carries {@link THROW_REACH_HEADROOM}. Solving for the exact
+ * minimum puts the discriminant at zero and the target at the arc's limit, and
+ * the answer then depends on floating-point noise — which showed up as the
+ * landing marker wandering about on long throws but sitting still on short
+ * ones.
  */
 export function planPlayerThrow(character: Model, target: Vector3): LaunchPlan {
 	const muzzle = getThrowMuzzle(character);
-	const speed = math.clamp(minimumReachSpeed(muzzle, target), THROW_SPEED, THROW_MAX_SPEED);
+	const needed = minimumReachSpeed(muzzle, target) * THROW_REACH_HEADROOM;
+	const speed = math.clamp(needed, THROW_SPEED, THROW_MAX_SPEED);
 
 	return planLaunch(muzzle, target, speed);
 }

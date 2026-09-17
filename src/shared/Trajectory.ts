@@ -110,8 +110,7 @@ export interface TrajectoryOptions {
 	/** Gravity to integrate against. Defaults to `Workspace.Gravity`. */
 	gravity?: number;
 	/** Simulation timestep, in seconds. Smaller is smoother and costlier. */
-	step?: number;
-	/** Give up after this many seconds of flight. */
+	step?: number;	/** Give up after this many seconds of flight. */
 	maxTime?: number;
 	/** Instances the arc flies straight through — usually the thrower. */
 	ignore?: Instance[];
@@ -119,7 +118,21 @@ export interface TrajectoryOptions {
 	collide?: boolean;
 }
 
-const DEFAULT_STEP = 0.1;
+/**
+ * Simulation timestep. This is a real trade-off, not a detail:
+ *
+ * - Each step adds a corner to the drawn path, so a large step renders the arc
+ *   as a visibly angular polygon rather than a curve.
+ * - Each step's collision test runs along a straight *chord*, which sags below
+ *   the true parabola by `g * step² / 8`. At 0.1s that is nearly a quarter of a
+ *   stud, so hits are detected early by a variable margin — and which chord
+ *   crosses a surface first can flip from frame to frame, which makes the
+ *   reported landing point jump while the arc itself is barely moving.
+ *
+ * 0.03s keeps the sag under 0.03 studs and the corners small enough to read as
+ * a curve, at roughly three times the raycast count of the old 0.1s.
+ */
+const DEFAULT_STEP = 0.03;
 const DEFAULT_MAX_TIME = 4;
 
 /**

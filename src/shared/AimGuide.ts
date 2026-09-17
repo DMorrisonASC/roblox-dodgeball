@@ -40,7 +40,12 @@ const DEFAULT_COLOR = Color3.fromRGB(160, 100, 255);
 const DEFAULT_TRANSPARENCY = 0.55;
 const DEFAULT_FADE = 0.4;
 const DEFAULT_THICKNESS = 0.12;
-const DEFAULT_MAX_SEGMENTS = 48;
+/**
+ * Segments in the pool. Must cover the longest path the simulator can produce:
+ * `maxTime / step + 1` points, one segment each. At the current settings that
+ * is 4 / 0.03 = 134 points, so 144 leaves headroom.
+ */
+const DEFAULT_MAX_SEGMENTS = 144;
 
 const DEFAULT_MARKER_COLOR = Color3.fromRGB(60, 255, 80);
 const DEFAULT_MARKER_TRANSPARENCY = 0.5;
@@ -53,7 +58,9 @@ export class AimGuide {
 	/** Name of the folder holding the segments. */
 	public static readonly INSTANCE_NAME = "AimGuide";
 
-	private readonly folder: Folder;
+	/** The folder holding the segments and marker, if you need to exclude them. */
+	public readonly instance: Folder;
+
 	private readonly segments: Part[] = [];
 	private readonly marker: Part | undefined;
 	private readonly markerTransparency: number;
@@ -86,7 +93,7 @@ export class AimGuide {
 
 		folder.Parent = options.parent ?? Workspace;
 
-		this.folder = folder;
+		this.instance = folder;
 	}
 
 	/**
@@ -145,7 +152,7 @@ export class AimGuide {
 
 	/** Removes the line and every segment in it. */
 	public destroy(): void {
-		this.folder.Destroy();
+		this.instance.Destroy();
 		this.segments.clear();
 	}
 

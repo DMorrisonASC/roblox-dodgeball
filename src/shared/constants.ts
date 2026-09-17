@@ -11,14 +11,20 @@ export const BALL_SIZE = 1;
 
 /**
  * How far in front of the thrower's torso the ball starts its flight, in studs,
- * measured along the direction the torso is facing.
+ * measured along the direction the body is facing.
+ *
+ * Read this as a **lever arm**: it is the radius the launch point swings on when
+ * the character moves or turns, so every stud of offset multiplies body motion
+ * into the aim guide at a 1:1 ratio. A large value here makes the guide appear
+ * to wobble as you walk; it does not make the throw safer, because
+ * `CollisionIgnore` already guarantees the ball cannot hit its thrower.
  *
  * This is the one number to change to move the launch point. It is read in
  * exactly one place — `shared/throw.ts` → `getThrowMuzzle` — which both the
  * server (real throw) and the client (aim guide) call, so tuning it moves both
  * together and the guide keeps telling the truth.
  */
-export const THROW_MUZZLE_DISTANCE = 5;
+export const THROW_MUZZLE_DISTANCE = 2;
 
 /**
  * Speed the ball leaves the hand at, in studs per second, for any target within
@@ -30,10 +36,25 @@ export const THROW_MUZZLE_DISTANCE = 5;
 export const THROW_SPEED = 100;
 
 /**
- * Ceiling on that automatic wind-up, in studs per second. Maximum range at this
- * speed is about 204 studs.
+ * Headroom over the bare minimum speed needed to reach a target, as a
+ * multiplier.
  *
- * Past that a throw can't reach, and the ball falls short — which the aim
- * guide's landing marker shows you before you commit to it.
+ * Solving at exactly the minimum is a numerical knife edge: the solver's
+ * discriminant is zero there and the target sits precisely at the arc's limit,
+ * so the whole result swings on floating-point noise in the launch point. A
+ * little extra speed moves the solve onto a well-conditioned arc that crosses
+ * surfaces at a real angle instead of grazing along them.
+ *
+ * This sets the effective ceiling too: the furthest reachable target is
+ * `(THROW_MAX_SPEED / THROW_REACH_HEADROOM)² / gravity`.
  */
-export const THROW_MAX_SPEED = 200;
+export const THROW_REACH_HEADROOM = 1.1;
+
+/**
+ * Ceiling on the automatic wind-up, in studs per second.
+ *
+ * Note this is the *pre-headroom* figure. After the multiplier above, the
+ * furthest reachable target is about 204 studs — past that a throw falls short
+ * and the aim guide's landing marker shows you exactly where.
+ */
+export const THROW_MAX_SPEED = 220;
