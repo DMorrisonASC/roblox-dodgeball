@@ -69,6 +69,34 @@ export const THROW_ARC_SPREAD = 1.4;
 export const THROW_MAX_SPEED = 280;
 
 /**
+ * Extra upward velocity added to every throw, in studs per second.
+ *
+ * A correction for the engine, not a design choice. Measured on the server: the
+ * ball flies as though it left the hand ~2.5 studs/s slower vertically than the
+ * velocity that was written to it, and stays that much behind for the whole
+ * flight — so the shortfall in position is `boost·t`, half a stud at 0.2 s and a
+ * couple of studs on a one-second lob. The drawn arc is the solved one, so what
+ * that looks like from the player's seat is a trajectory running *above* the
+ * ball.
+ *
+ * **Tune it against the ball, not with arithmetic.** The loss comes from how the
+ * engine integrates (roughly `½·g·dt` per step: 1.6 studs/s at 60 Hz, 3.3 at
+ * 30), so this figure is frame-rate dependent. `BallService`'s DEBUG print shows
+ * the commanded velocity, and `ThrowProbe` reports how far the ball drifts from
+ * the plan's own curve — that drift is the number to drive to zero.
+ *
+ * **The correction belongs on the ball, not on the drawing.** Subtracting the
+ * same figure from the guide's launch was tried (`PREDICTION_VERTICAL_BIAS`) and
+ * removed: it moves the landing *marker* by `2·v_h·boost/g`, and `v_h` differs by
+ * mode (148 flat against ~110 lofted at the same range), so it dragged the three
+ * modes' marks apart by ~0.7 studs. Correcting the throw instead leaves every
+ * marker where it was and simply makes the ball fly the line they came from.
+ *
+ * 0 restores pure ballistics and the shortfall with it.
+ */
+export const THROW_VERTICAL_BOOST = 2.5;
+
+/**
  * Launch angle of the curveball, in degrees.
  *
  * A flat launch at a fixed angle has exactly one speed that lands on a given

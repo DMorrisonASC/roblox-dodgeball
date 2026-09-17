@@ -179,9 +179,25 @@ function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve")
  * work with in that case either, so it arrives unfurled: the plan's
  * `acceleration` is left at zero rather than bending a throw that is no longer
  * flat.
+ *
+ * `launchFrom` overrides where the ball leaves the hand, and the thrower's own
+ * client supplies it.
+ *
+ * The launch point is not a detail the solve absorbs. Every arc that reaches the
+ * target is a *different curve*, so a plan solved from a different origin draws
+ * a path the ball will not fly — and it still lands on the mark, which is
+ * exactly why that fault shows up as a trajectory that lies rather than a throw
+ * that misses. The server's copy of the character is up to one replication
+ * interval behind, and while the thrower is walking or turning that is a stud or
+ * two of hand.
  */
-export function planPlayerThrow(character: Model, target: Vector3, arc: ThrowArc): LaunchPlan {
-	const muzzle = getThrowMuzzle(character);
+export function planPlayerThrow(
+	character: Model,
+	target: Vector3,
+	arc: ThrowArc,
+	launchFrom?: Vector3,
+): LaunchPlan {
+	const muzzle = launchFrom ?? getThrowMuzzle(character);
 	const aim = centreAimPoint(character, muzzle, target);
 
 	if (arc === "straight" || arc === "curve") {

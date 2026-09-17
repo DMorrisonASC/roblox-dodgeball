@@ -78,7 +78,11 @@ export class ThrowController implements OnStart {
 
 				const target = this.getSteadyAimTarget(character);
 				if (DEBUG) print(`[Throw] throwing at ${target}`);
-				this.throwRemote?.FireServer(target, this.arc);
+				// The launch point goes with the throw. The server's copy of the
+				// character is a replication interval behind ours, and a plan solved
+				// from a different launch point is a different curve — it still lands
+				// on the mark, but it is not the line this client just drew.
+				this.throwRemote?.FireServer(target, this.arc, getThrowMuzzle(character));
 				return Enum.ContextActionResult.Sink;
 			},
 			false,

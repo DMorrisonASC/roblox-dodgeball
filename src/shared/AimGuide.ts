@@ -51,10 +51,15 @@ const DEFAULT_FADE = 0.4;
 const DEFAULT_THICKNESS = 0.12;
 /**
  * Segments in the pool. Must cover the longest path the simulator can produce:
- * `maxTime / step + 1` points, one segment each. At the current settings that
- * is 4 / 0.03 = 134 points, so 144 leaves headroom.
+ * `maxTime / step + 1` points, one segment each. At the current settings that is
+ * 4 / 0.01 = 401 points, so 432 leaves headroom.
+ *
+ * This is the number that has to move with `Trajectory`'s `step`. The pool is
+ * built once and hidden, so a finer path costs instances rather than allocations
+ * — but it does cost them, all of them live from startup whether the throw is
+ * long or short.
  */
-const DEFAULT_MAX_SEGMENTS = 144;
+const DEFAULT_MAX_SEGMENTS = 432;
 
 const DEFAULT_MARKER_COLOR = Color3.fromRGB(60, 255, 80);
 const DEFAULT_MARKER_TRANSPARENCY = 0.5;

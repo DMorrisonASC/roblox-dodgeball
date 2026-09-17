@@ -386,17 +386,23 @@ export interface TrajectoryOptions {
  * Simulation timestep. This is a real trade-off, not a detail:
  *
  * - Each step adds a corner to the drawn path, so a large step renders the arc
- *   as a visibly angular polygon rather than a curve.
+ *   as a visibly angular polygon rather than a curve. The corners sit *on* the
+ *   true path, but with only a handful of them the eye fills the gaps with
+ *   straight edges — which reads as a line that cannot bend as much as the ball
+ *   does. At the old 0.1s a mid-length throw had about seven corners.
  * - Each step's collision test runs along a straight *chord*, which sags below
  *   the true parabola by `g * step² / 8`. At 0.1s that is nearly a quarter of a
  *   stud, so hits are detected early by a variable margin — and which chord
  *   crosses a surface first can flip from frame to frame, which makes the
  *   reported landing point jump while the arc itself is barely moving.
  *
- * 0.03s keeps the sag under 0.03 studs and the corners small enough to read as
- * a curve, at roughly three times the raycast count of the old 0.1s.
+ * 0.01s puts the sag under 0.003 studs and gives an ordinary throw around forty
+ * corners, which reads as a curve. The cost is real and paid by the client: the
+ * aim guide sweeps a sphere once per step, per frame, so this triples that work
+ * — a few dozen sweeps on a normal throw — and the pool of drawn segments has to
+ * grow with it. See `AimGuide.DEFAULT_MAX_SEGMENTS`.
  */
-const DEFAULT_STEP = 0.03;
+const DEFAULT_STEP = 0.01;
 const DEFAULT_MAX_TIME = 4;
 
 /**

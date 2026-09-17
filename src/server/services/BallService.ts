@@ -1,9 +1,9 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { BALL_NAME, BALL_SIZE } from "shared/constants";
+import { BALL_NAME, BALL_SIZE, THROW_VERTICAL_BOOST } from "shared/constants";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
-import { planPlayerThrow } from "shared/throw";
+import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
 import { LaunchPlan, ThrowArc } from "shared/Trajectory";
 import { TrailEffect } from "shared/TrailEffect";
 import { SphereService } from "./SphereService";
@@ -21,6 +21,17 @@ const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
 const NEW_BALL_DELAY = 0;
 
 const DEBUG = true; // prints the mode, speed and angle of each throw
+
+/**
+ * How far a client's claimed launch point may sit from the thrower's hand as the
+ * server sees it before that claim is thrown away, in studs.
+ *
+ * Normally the claim is good to well under a stud — it is the difference between
+ * two copies of the same character, not a disagreement about the game. This is
+ * the bound for "that is not a stale character, that is a client inventing a
+ * launch point".
+ */
+const MUZZLE_TOLERANCE = 10;
 
 /** Where the ball sits relative to the hand while it is being held. */
 const GRIP_OFFSET = new CFrame();
@@ -40,7 +51,7 @@ export class BallService implements OnStart {
 
 	onStart() {
 		this.throwRemote = this.createThrowRemote();
-		this.throwRemote.OnServerEvent.Connect((player, target, arc) => {
+		this.throwRemote.OnServerEvent.Connect((player, target, arc, claim) => {
 			if (!typeIs(target, "Vector3")) return;
 
 			// Anything unrecognised falls back to the regular throw. All three arcs
@@ -53,7 +64,7 @@ export class BallService implements OnStart {
 				chosen = "curve";
 			}
 
-			this.throwBall(player, target, chosen);
+			this.throwBall(player, target, chosen, typeIs(claim, "Vector3") ? claim : undefined);
 		});
 
 		Players.PlayerRemoving.Connect((player) => this.heldBalls.delete(player));
@@ -146,7 +157,7 @@ export class BallService implements OnStart {
 		return folder;
 	}
 
-	private throwBall(player: Player, target: Vector3, arc: ThrowArc) {
+	private throwBall(player: Player, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3) {
 		const character = player.Character;
 		const held = this.heldBalls.get(player);
 		if (!character || !held || held.ball.Parent !== character) return;
@@ -156,14 +167,25 @@ export class BallService implements OnStart {
 		// Release the ball from the hand before launching it.
 		ball.FindFirstChild("DodgeballGrip")?.Destroy();
 
-		// The client runs this exact same plan to draw its aim guide, so the
-		// throw and the predicted arc can never disagree.
+		// The client runs this exact same plan to draw its aim guide, so the throw
+		// and the predicted arc can never disagree — which only holds while both
+		// sides solve from the same launch point, see `planPlayerThrow`.
 		const releasePosition = ball.Position;
-		const plan = planPlayerThrow(character, target, arc);
+		const ownLaunch = getThrowMuzzle(character);
+		const launch = this.acceptLaunch(ownLaunch, claimedLaunch);
+		const plan = planPlayerThrow(character, target, arc, launch);
+
+		// What actually goes on the ball: the solve, plus the launch boost that
+		// covers the engine's own vertical loss. See THROW_VERTICAL_BOOST — the
+		// guide draws the solve, so this is what makes the ball fly the drawn line
+		// instead of sagging below it.
+		const commanded = plan.velocity.add(new Vector3(0, THROW_VERTICAL_BOOST, 0));
+
 		if (DEBUG) {
 			print(
-				`[Ball] ${player.Name}: ${plan.arc} ${this.describeThrow(plan)}, ` +
-					`release ${releasePosition} -> launch ${plan.origin}`,
+				`[Ball] ${player.Name}: ${plan.arc} ${this.describeThrow(plan, commanded)}, ` +
+					`release ${releasePosition} -> launch ${plan.origin}` +
+					` (${string.format("%.2f", launch.sub(ownLaunch).Magnitude)} studs from our own)`,
 			);
 		}
 
@@ -196,7 +218,7 @@ export class BallService implements OnStart {
 		// back, so the whole flight is simulated in one place.
 		ball.SetNetworkOwner();
 
-		ball.AssemblyLinearVelocity = plan.velocity;
+		ball.AssemblyLinearVelocity = commanded;
 		ball.CanCollide = true;
 		ball.Massless = false;
 		// After `Massless`, never before: the force is sized from the ball's
@@ -222,19 +244,37 @@ export class BallService implements OnStart {
 	}
 
 	/**
+	 * The launch point to plan from.
+	 *
+	 * Normally the thrower's own, because that is the one their aim guide was
+	 * drawn from. Checked rather than trusted: a client can claim any point it
+	 * likes, so a claim that does not look like a stale copy of the hand the
+	 * server can see is discarded and the muzzle we can see is used instead.
+	 */
+	private acceptLaunch(own: Vector3, claimed: Vector3 | undefined): Vector3 {
+		if (!claimed) return own;
+
+		const offset = claimed.sub(own).Magnitude;
+		if (offset <= MUZZLE_TOLERANCE) return claimed;
+
+		warn(`[Ball] ignoring a launch point ${string.format("%.1f", offset)} studs from the thrower's hand`);
+		return own;
+	}
+
+	/**
 	 * Formats a plan's launch for the debug print: the in-plane flight, plus the
 	 * sideways part of it when there is one.
 	 *
-	 * The in-plane figure is the honest one. A curve's sideways launch is not part
-	 * of how fast the throw travels — it is what bends it — and printing the raw
-	 * vector made a curveball read as the fastest throw in the game at 265 studs/s
-	 * when the throw itself was only doing 95.
+	 * Reports the **commanded** velocity — the one actually written to the ball,
+	 * boost included — because that is the input whose effect is worth watching.
+	 * The in-plane figure is still the honest one for speed: a curve's sideways
+	 * launch is not part of how fast the throw travels, it is what bends it, and
+	 * printing the raw vector made a curveball read as the fastest throw in the
+	 * game at 265 studs/s when the throw itself was only doing 95.
 	 */
-	private describeThrow(plan: LaunchPlan): string {
+	private describeThrow(plan: LaunchPlan, commanded: Vector3): string {
 		const sideways = plan.acceleration.Magnitude > 0.001 ? plan.acceleration.Unit : undefined;
-		const inPlane = sideways
-			? plan.velocity.sub(sideways.mul(plan.velocity.Dot(sideways)))
-			: plan.velocity;
+		const inPlane = sideways ? commanded.sub(sideways.mul(commanded.Dot(sideways))) : commanded;
 
 		const horizontal = new Vector3(inPlane.X, 0, inPlane.Z);
 		const angle = math.deg(math.atan2(inPlane.Y, horizontal.Magnitude));
@@ -243,7 +283,7 @@ export class BallService implements OnStart {
 
 		if (!sideways) return travel;
 
-		return `${travel} + ${string.format("%.1f", math.abs(plan.velocity.Dot(sideways)))} sideways`;
+		return `${travel} + ${string.format("%.1f", math.abs(commanded.Dot(sideways)))} sideways`;
 	}
 
 	/**
