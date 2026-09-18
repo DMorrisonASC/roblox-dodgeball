@@ -108,6 +108,7 @@ export class BallService implements OnStart {
 		ball.Massless = true;
 		ball.CFrame = hand.CFrame.mul(GRIP_OFFSET);
 		ball.Parent = character;
+        ball.AddTag("Sphere");
 
 		const grip = new Instance("WeldConstraint");
 		grip.Name = "DodgeballGrip";
