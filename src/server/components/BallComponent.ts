@@ -14,8 +14,8 @@ interface BallAttributes {
 export class BallComponent extends BaseComponent<BallAttributes, BasePart> implements OnStart {
 	onStart(): void {
         this.instance.Touched.Connect((otherPart) => {
-            this.handleTouch(otherPart);
             this.logTouch(otherPart);
+            this.handleTouch(otherPart);
 		}); 
 
 	}
@@ -41,6 +41,10 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
         const character = otherPart.FindFirstAncestorWhichIsA("Model");
 
         const player = character ? Players.GetPlayerFromCharacter(character) : undefined;
+
+        if (this.instance.GetAttribute("Armed") === false) {
+            return
+        }
 
         if (this.isPlayer(otherPart)) {
             print(`${this.instance.Name} touched ${otherPart.Name} of ${player?.Name}`);

@@ -170,6 +170,8 @@ export class BallService implements OnStart {
 		// Release the ball from the hand before launching it.
 		ball.FindFirstChild("DodgeballGrip")?.Destroy();
 		ball.SetAttribute("Armed", true);
+		// Airborne now, so the trail can start drawing behind it.
+		held.trail.setEnabled(true);
 
 		// The client runs this exact same plan to draw its aim guide, so the throw
 		// and the predicted arc can never disagree — which only holds while both
@@ -232,8 +234,7 @@ export class BallService implements OnStart {
 		// How far the engine's flight actually is from the plan's, per throw.
 		if (DEBUG) watchThrow(ball, plan, character);
 
-		// Airborne now, so the trail can start drawing behind it.
-		held.trail.setEnabled(true);
+
 
 		this.heldBalls.delete(player);
 

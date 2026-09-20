@@ -131,7 +131,7 @@ function centreAimPoint(character: Model, muzzle: Vector3, target: Vector3): Vec
  * landing that moves, never the honesty.
  */
 function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve"): LaunchPlan | undefined {
-	if (arc === "straight") {
+	if (arc === "straight" ) {
 		const wanted = flatLaunchSpeed(muzzle, aim);
 		if (wanted === undefined) return undefined;
 

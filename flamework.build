@@ -10,7 +10,8 @@
 		"roblox-dodgeball:out/shared/TrailEffect@TrailEffect": "shared/TrailEffect@TrailEffect",
 		"roblox-dodgeball:out/server/services/SphereService@SphereService": "server/services/SphereService@SphereService",
 		"roblox-dodgeball:out/server/services/BallService@BallService": "server/services/BallService@BallService",
-		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService"
+		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService",
+		"roblox-dodgeball:out/server/services/RoundService@RoundService": "server/services/RoundService@RoundService"
 	},
 	"metadata": {}
 }
