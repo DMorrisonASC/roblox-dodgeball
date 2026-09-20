@@ -10,12 +10,14 @@ enum RoundState {
 export class RoundService implements OnStart {
     private state = RoundState.Intermission;
     private timeRemaining = 0;
+    private readonly activePlayers = new Set<Player>();
 
     private readonly INTERMISSION_TIME = 10;
     private readonly ROUND_TIME = 30;
 
     onStart() {
         Players.PlayerAdded.Connect((player) => this.handlePlayerJoined(player));
+        Players.PlayerRemoving.Connect((player) => this.activePlayers.delete(player));
 
         // Handle players already in game (Studio playtest)
         for (const player of Players.GetPlayers()) {
@@ -37,22 +39,25 @@ export class RoundService implements OnStart {
     // ---- Internals ----
     private handlePlayerJoined(player: Player) {
         player.CharacterAdded.Connect((character) => {
-            // Character needs a moment to fully assemble
+            const humanoid = character.WaitForChild("Humanoid") as Humanoid;
+            humanoid.Died.Connect(() => {
+                this.activePlayers.delete(player);
+            });
+
             const root = character.WaitForChild("HumanoidRootPart") as BasePart;
 
-            // Send to the right place based on current round state
-            const spawn = this.state === RoundState.Playing
-                ? this.getSpawn("ArenaSpawn")
-                : this.getSpawn("LobbySpawn");
+            // Route based on whether they're still in the round
+            const inRound = this.state === RoundState.Playing && this.activePlayers.has(player);
+            const spawnName = inRound ? "ArenaSpawn" : "LobbySpawn";
 
-            character.PivotTo(spawn);
+            character.PivotTo(this.getSpawn(spawnName));
         });
     }
 
     private getSpawn(name: string): CFrame {
         const spawn = Workspace.FindFirstChild(name) as BasePart | undefined;
         if (!spawn) error(`Missing spawn part: ${name}`);
-        return spawn.CFrame.add(new Vector3(0, 3, 0)); // lift slightly so players don't clip
+        return spawn.CFrame.add(new Vector3(0, 3, 0));
     }
 
     private teleportAll(spawnName: string) {
@@ -67,6 +72,7 @@ export class RoundService implements OnStart {
         while (true) {
             // --- Intermission ---
             this.state = RoundState.Intermission;
+            this.activePlayers.clear();
             print("Intermission started");
             this.teleportAll("LobbySpawn");
 
@@ -78,6 +84,9 @@ export class RoundService implements OnStart {
 
             // --- Playing ---
             this.state = RoundState.Playing;
+            for (const player of Players.GetPlayers()) {
+                this.activePlayers.add(player);
+            }
             print("Round started");
             this.teleportAll("ArenaSpawn");
 
