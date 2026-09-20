@@ -142,8 +142,24 @@ export class DodgeService implements OnStart {
 		const root = entity.root;
 		const humanoid = entity.humanoid;
 
-		// Where the constraint is anchored. A world-relative constraint does not
-		// care where that is, only that it exists.
+		// Spin left over from a jump, a turn, or the shove that prompted the dodge
+		// would carry straight into the dash and tip it over. It starts from rest,
+		// rotationally.
+		root.AssemblyAngularVelocity = Vector3.zero;
+
+		// Flattened and guarded here as well as at the request: a dash is a ground
+		// move, and a direction with no horizontal part has no heading to normalize.
+		const flat = new Vector3(heading.X, 0, heading.Z);
+		if (flat.Magnitude < 0.01) {
+			if (DEBUG) print(`[Dodge] ${model.Name}: no heading to dash along`);
+			return;
+		}
+
+		const direction = flat.Unit;
+
+		// The two constraints share this attachment. The velocity does not care where
+		// it sits; the orientation wants it at the point the body turns about, which
+		// is the root's own centre.
 		const attachment = new Instance("Attachment");
 		attachment.Name = "DodgeAttachment";
 		attachment.Parent = root;
@@ -152,17 +168,35 @@ export class DodgeService implements OnStart {
 		velocity.Name = "DodgeVelocity";
 		velocity.Attachment0 = attachment;
 		velocity.RelativeTo = Enum.ActuatorRelativeTo.World;
-		// Unopposed, so the dash wins its half second outright instead of racing
+		// Unopposed, so the dash wins its whole duration outright instead of racing
 		// gravity and the humanoid's own push for it.
 		velocity.MaxForce = math.huge;
-		velocity.VectorVelocity = heading.mul(DODGE_SPEED);
+		velocity.VectorVelocity = direction.mul(DODGE_SPEED);
 		velocity.Parent = root;
 
-		// The walk controller keeps steering toward whatever is held on WASD, which
-		// bends the dash into a curve. Platform stand switches it off for the
-		// duration — and is put back to whatever it was, not just to `false`.
+		// Platform stand takes the humanoid's own balance away — which is the point,
+		// because that balance is the walk controller steering toward whatever is
+		// held on WASD — so something has to hold the character up in its place. Both
+		// points of the `lookAt` sit at the same height, so this is a yaw and nothing
+		// else: upright, and never pitched into the ground.
+		const balance = new Instance("AlignOrientation");
+		balance.Name = "DodgeBalance";
+		balance.Attachment0 = attachment;
+		balance.Mode = Enum.OrientationAlignmentMode.OneAttachment;
+		balance.CFrame = CFrame.lookAt(root.Position, root.Position.add(direction));
+		balance.MaxTorque = 1e6;
+		balance.Responsiveness = 50;
+		balance.RigidityEnabled = false;
+		balance.Parent = root;
+
+		// The fall states are what the humanoid answers a shove with, and with no
+		// balance of its own it would flop, get up, and flop again for as long as the
+		// dash lasts. Switched off for the duration, and back on in the cleanup
+		// — platform stand is put back to whatever it was, not just to `false`.
 		const wasPlatformStanding = humanoid?.PlatformStand ?? false;
 		if (humanoid) {
+			humanoid.SetStateEnabled(Enum.HumanoidStateType.FallingDown, false);
+			humanoid.SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false);
 			humanoid.PlatformStand = true;
 		}
 
@@ -175,11 +209,14 @@ export class DodgeService implements OnStart {
 				diedConnection = undefined;
 
 				velocity.Destroy();
+				balance.Destroy();
 				attachment.Destroy();
 
 				// The humanoid may be gone by now: a character can be removed mid-dash.
 				if (humanoid && humanoid.Parent !== undefined) {
 					humanoid.PlatformStand = wasPlatformStanding;
+					humanoid.SetStateEnabled(Enum.HumanoidStateType.FallingDown, true);
+					humanoid.SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true);
 				}
 
 				if (DEBUG) {
@@ -206,8 +243,8 @@ export class DodgeService implements OnStart {
 			print(
 				`[Dodge] ${model.Name}: ${string.format("%.1f", DODGE_DISTANCE)} studs over ` +
 					`${string.format("%.2f", DODGE_DURATION)}s at ${string.format("%.1f", DODGE_SPEED)} studs/s ` +
-					`toward (${string.format("%.2f", heading.X)}, ${string.format("%.2f", heading.Y)}, ` +
-					`${string.format("%.2f", heading.Z)})`,
+					`toward (${string.format("%.2f", direction.X)}, ${string.format("%.2f", direction.Y)}, ` +
+					`${string.format("%.2f", direction.Z)})`,
 			);
 		}
 
