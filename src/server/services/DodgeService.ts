@@ -34,10 +34,11 @@ interface ActiveDash {
  * Dodging, decided by the server.
  *
  * `requestDodge` is the entry point for everything: the remote handler below and
- * an NPC's AI call the same method, and neither has to be a player or have a
- * humanoid to work. The dash itself is a velocity applied to the model's root
- * for a fixed time, which is what makes it behave the same on a character the
- * player's client is simulating and on a rig the server owns.
+ * an NPC's AI call the same method, so neither has to be a player — a humanoid,
+ * though, is required, which is what keeps this to things that can actually
+ * dodge. The dash itself is a velocity applied to the model's root for a fixed
+ * time, which is what makes it behave the same on a character the player's
+ * client is simulating and on a rig the server owns.
  */
 @Service()
 export class DodgeService implements OnStart {
@@ -77,17 +78,21 @@ export class DodgeService implements OnStart {
 	 * Asks for `model` to dodge `direction`.
 	 *
 	 * Returns whether the model moved. Everything that decides that — the model
-	 * being dodgeable, being alive, being off cooldown and having been given a
-	 * usable direction — is checked here, so a caller cannot half-ask, and the
+	 * having a living humanoid, being off cooldown and having been given a usable
+	 * direction — is checked here, so a caller cannot half-ask, and the
 	 * direction is normalized rather than trusted: a client can send anything, and
 	 * the only thing its direction is allowed to decide is which way the dash goes.
 	 */
 	public requestDodge(model: Model, direction: Vector3): boolean {
 		const entity = resolveDodgeable(model);
 		if (!entity || !canDodge(entity)) {
-			if (DEBUG) print(`[Dodge] ${model.Name}: nothing to move, or it is dead`);
+			if (DEBUG) print(`[Dodge] ${model.Name}: no living humanoid to dodge with`);
 			return false;
 		}
+
+		// The cooldown goes when the humanoid does, so a dead model does not leave an
+		// entry behind. `Once` because dying happens once.
+		entity.humanoid!.Died.Once(() => this.lastDodgeAt.delete(model));
 
 		const now = os.clock();
 		const last = this.lastDodgeAt.get(model);

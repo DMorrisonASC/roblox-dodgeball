@@ -208,12 +208,8 @@ export const DODGE_DISTANCE = 20;
 /**
  * How long a dodge takes, in seconds.
  *
- * Half a second is long enough to read as a committed step and short enough that
- * nothing can steer through it. Changing it changes the dash's *speed* against
- * the distance rather than the distance itself, since {@link DODGE_DISTANCE} is
- * what the move is measured by.
  */
-export const DODGE_DURATION = 0.5;
+export const DODGE_DURATION = 0.2;
 
 /**
  * Speed the dash is driven at, in studs per second.

@@ -1,11 +1,10 @@
 /**
  * The vocabulary of dodging, shared by both sides.
  *
- * Nothing here knows about `Player` or `Humanoid` being present — a dodge is a
- * *model* moving, and a player's character is just the most common model that
- * happens to have a humanoid. Keeping the resolution and the liveness check here
- * means the server can dodge an NPC rig or a bare model through the same entry
- * point it uses for a character.
+ * Nothing here knows about `Player` — a dodge is a *model* moving, and a player's
+ * character is just the most common model that happens to have a humanoid.
+ * Keeping the resolution and the liveness check here means the server can dodge
+ * an NPC through the same entry point it uses for a character.
  */
 
 /** A model that can be dodged, with the part that does the moving. */
@@ -34,11 +33,12 @@ export function resolveDodgeable(model: Model): Dodgeable | undefined {
 }
 
 /**
- * Whether this entity is in a state to dodge: no humanoid means nothing to kill,
- * so it always can; a humanoid has to still be alive.
+ * Whether this entity is in a state to dodge: a dodge is a humanoid's move, so a
+ * model without one cannot dodge, and one whose humanoid has died cannot either.
  */
 export function canDodge(entity: Dodgeable): boolean {
-	return entity.humanoid === undefined || entity.humanoid.Health > 0;
+	if (!entity.humanoid) return false;
+	return entity.humanoid.Health > 0;
 }
 
 /** Below this, a direction has no horizontal part worth normalizing. */
