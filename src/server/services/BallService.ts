@@ -108,7 +108,9 @@ export class BallService implements OnStart {
 		ball.Massless = true;
 		ball.CFrame = hand.CFrame.mul(GRIP_OFFSET);
 		ball.Parent = character;
-        ball.AddTag("Sphere");
+        ball.AddTag("Ball");
+		ball.SetAttribute("Armed", true);
+		ball.SetAttribute("ThrowerId", player.UserId);
 
 		const grip = new Instance("WeldConstraint");
 		grip.Name = "DodgeballGrip";
@@ -167,6 +169,7 @@ export class BallService implements OnStart {
 
 		// Release the ball from the hand before launching it.
 		ball.FindFirstChild("DodgeballGrip")?.Destroy();
+		ball.SetAttribute("Armed", true);
 
 		// The client runs this exact same plan to draw its aim guide, so the throw
 		// and the predicted arc can never disagree — which only holds while both

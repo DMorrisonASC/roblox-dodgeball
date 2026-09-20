@@ -5,16 +5,12 @@
 		"roblox-dodgeball:out/shared/AimGuide@AimGuide": "shared/AimGuide@AimGuide",
 		"roblox-dodgeball:out/shared/Trajectory@Trajectory": "shared/Trajectory@Trajectory",
 		"roblox-dodgeball:out/client/controllers/ThrowController@ThrowController": "client/controllers/ThrowController@ThrowController",
+		"roblox-dodgeball:out/server/components/BallComponent@BallComponent": "server/components/BallComponent@BallComponent",
 		"roblox-dodgeball:out/shared/CollisionIgnore@CollisionIgnore": "shared/CollisionIgnore@CollisionIgnore",
-		"roblox-dodgeball:out/shared/collision/TouchedWatcher@TouchedWatcher": "shared/collision/TouchedWatcher@TouchedWatcher",
 		"roblox-dodgeball:out/shared/TrailEffect@TrailEffect": "shared/TrailEffect@TrailEffect",
 		"roblox-dodgeball:out/server/services/SphereService@SphereService": "server/services/SphereService@SphereService",
 		"roblox-dodgeball:out/server/services/BallService@BallService": "server/services/BallService@BallService",
-		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService",
-		"roblox-dodgeball:out/server/components/SphereComponent@SphereComponent": "server/components/SphereComponent@SphereComponent",
-		"roblox-dodgeball:out/shared/collision/BallContactFilter@BallContactFilter": "shared/collision/BallContactFilter@BallContactFilter",
-		"roblox-dodgeball:out/shared/collision/PrintingContactReporter@PrintingContactReporter": "shared/collision/PrintingContactReporter@PrintingContactReporter",
-		"roblox-dodgeball:out/server/services/ContactService@ContactService": "server/services/ContactService@ContactService"
+		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService"
 	},
 	"metadata": {}
 }
