@@ -190,3 +190,53 @@ export const THROW_CURVE_ACCELERATION = 300;
  * that constant's comment for where the factor comes from.
  */
 export const THROW_CURVE_COMPENSATED = true;
+
+/**
+ * How far a dodge moves the model, in studs.
+ *
+ * Applied by the server, which is the only machine that can move a model; the
+ * client only says *which way*, because it is the only machine that can see the
+ * keys. So this is the one place the size of a dodge is decided.
+ *
+ * Read together with {@link DODGE_DURATION}: a dodge is specified as a distance
+ * covered in a time because "20 studs" is the thing you can see on the field,
+ * and "40 studs per second" is not. The speed the physics is actually handed is
+ * derived from the pair — see {@link DODGE_SPEED}.
+ */
+export const DODGE_DISTANCE = 20;
+
+/**
+ * How long a dodge takes, in seconds.
+ *
+ * Half a second is long enough to read as a committed step and short enough that
+ * nothing can steer through it. Changing it changes the dash's *speed* against
+ * the distance rather than the distance itself, since {@link DODGE_DISTANCE} is
+ * what the move is measured by.
+ */
+export const DODGE_DURATION = 0.5;
+
+/**
+ * Speed the dash is driven at, in studs per second.
+ *
+ * Derived, not tuned: {@link DODGE_DISTANCE} over {@link DODGE_DURATION}, which
+ * is 40 studs/s for 20 studs in half a second.
+ *
+ * It is a velocity because it is applied as one — a `LinearVelocity` constraint
+ * on the root part, held for the duration and then destroyed — rather than a
+ * `PivotTo` that puts the model somewhere new in a single step. A model that has
+ * been *moved* is still trying to walk wherever the humanoid was taking it and
+ * walks back; a model that is *moving* has nothing to walk back from.
+ */
+export const DODGE_SPEED = DODGE_DISTANCE / DODGE_DURATION;
+
+/** How long a model must wait before it can dodge again, in seconds. */
+export const DODGE_COOLDOWN = 1.5;
+
+/**
+ * How long the client gives you to double-tap a movement key, in seconds.
+ *
+ * Client-side only, and a *timing* rather than a rule: the server never sees a
+ * key press and does not care how the direction was chosen. Two taps of the same
+ * key inside this window are one dodge request, sent once.
+ */
+export const DODGE_DOUBLE_TAP_WINDOW = 0.5;
