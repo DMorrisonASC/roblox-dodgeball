@@ -36,16 +36,32 @@ const MUZZLE_TOLERANCE = 10;
 /** Where the ball sits relative to the hand while it is being held. */
 const GRIP_OFFSET = new CFrame();
 
-/** A ball currently welded to a player's hand, plus its (disabled) trail. */
+/** Name of the weld that holds a ball in a hand, so it can be found again. */
+const GRIP_NAME = "DodgeballGrip";
+
+/** A ball currently welded into somebody's hand, plus its (disabled) trail. */
 interface HeldBall {
-	ball: Part;
+	/**
+	 * A `BasePart` rather than a `Part`: a caught ball arrives as whatever the
+	 * component's instance is, and it is the same object either way.
+	 */
+	ball: BasePart;
 	trail: TrailEffect;
 }
 
 @Service()
 export class BallService implements OnStart {
 	private throwRemote?: RemoteEvent;
-	private readonly heldBalls = new Map<Player, HeldBall>();
+
+	/**
+	 * What each model is holding, keyed on the **model** rather than the player.
+	 *
+	 * A catcher can be an NPC, and a caught ball has to end up in the same place a
+	 * handed-out one does — otherwise it could not be thrown afterwards. Everything
+	 * that genuinely needs a `Player`, which is the throw remote and the `UserId`
+	 * stamped on a ball at release, stays in the player path.
+	 */
+	private readonly heldBalls = new Map<Model, HeldBall>();
 
 	constructor(private readonly spheres: SphereService) {}
 
@@ -67,7 +83,10 @@ export class BallService implements OnStart {
 			this.throwBall(player, target, chosen, typeIs(claim, "Vector3") ? claim : undefined);
 		});
 
-		Players.PlayerRemoving.Connect((player) => this.heldBalls.delete(player));
+		Players.PlayerRemoving.Connect((player) => {
+			const character = player.Character;
+			if (character) this.heldBalls.delete(character);
+		});
 	}
 
 	/**
@@ -79,47 +98,106 @@ export class BallService implements OnStart {
 	 * the world. Welding the ball to the hand ourselves is deterministic.
 	 */
 	public giveBall(player: Player) {
-		player.CharacterAdded.Connect((character) => this.attachBall(player, character));
+		player.CharacterAdded.Connect((character) => this.attachBall(character, player.UserId));
 
 		const character = player.Character;
 		if (character) {
-			this.attachBall(player, character);
+			this.attachBall(character, player.UserId);
 		}
 	}
 
-	/** Creates a ball and welds it into the hand of the given character. */
-	private attachBall(player: Player, character: Model) {
-		// Respawn safety: never leave an orphaned ball behind.
-		this.heldBalls.get(player)?.ball.Destroy();
-		this.heldBalls.delete(player);
+	/**
+	 * Welds `ball` into `model`'s hand, as if it had been picked up.
+	 *
+	 * The catch's entry point, though nothing in here knows that: a caught ball goes
+	 * through the same path a hand-out does, which is what lets its catcher throw it
+	 * with the same click as anybody else.
+	 *
+	 * Held but **not armed**, and owned by nobody — `throwBall` stamps the thrower
+	 * at release, which is the moment ownership starts to mean anything.
+	 */
+	public catchBall(model: Model, ball: BasePart): boolean {
+		if (!this.holdBall(model, ball, 0, false)) return false;
 
+		print(`[Ball] ${model.Name} caught a dodgeball`);
+
+		return true;
+	}
+
+	/** Creates a ball and welds it into the hand of the given character. */
+	private attachBall(character: Model, throwerId: number) {
+		this.holdBall(character, this.spheres.createBall(BALL_SIZE, { trail: false }), throwerId, true);
+	}
+
+	/**
+	 * The one place a held ball is set up.
+	 *
+	 * Shared by the spawn hand-out, the refill after a throw and a catch, so all
+	 * three produce the same thing in the same state: a ball welded into a hand,
+	 * massless and non-colliding, with its trail switched off until it flies again.
+	 *
+	 * `armed` is passed in rather than assumed, because the two callers disagree and
+	 * always have: a handed-out ball is live the moment it exists, while a caught
+	 * one stays inert until its new owner throws it.
+	 */
+	private holdBall(character: Model, ball: BasePart, throwerId: number, armed: boolean): boolean {
 		const hand = this.getRightHand(character);
 		if (!hand) {
-			warn(`[Ball] ${player.Name}: could not find a right hand to hold the ball`);
-			return;
+			warn(`[Ball] ${character.Name}: could not find a right hand to hold the ball`);
+			ball.Destroy();
+			return false;
 		}
 
-		const ball = this.spheres.createBall(BALL_SIZE, { trail: false });
-		// The trail stays off until the throw — otherwise it streams purple off
-		// the player's hand every time they walk around.
+		// Respawn safety, and catching safety: whatever this character was already
+		// holding goes, so two balls can never end up sharing one hand.
+		this.heldBalls.get(character)?.ball.Destroy();
+		this.heldBalls.delete(character);
+
+		// A caught ball arrives mid-flight, still carrying the weld that held it in
+		// its thrower's hand and the trail it flew with. One weld and one trail per
+		// ball, and both of these are about to be replaced.
+		ball.FindFirstChild(GRIP_NAME)?.Destroy();
+		ball.FindFirstChild(TrailEffect.INSTANCE_NAME)?.Destroy();
+
+		// The trail stays off until the throw — otherwise it streams purple off the
+		// hand every time the holder walks around. The effect reuses the ball's
+		// existing attachments, so replacing the trail leaves nothing behind.
 		const trail = this.spheres.addTrail(ball, { enabled: false });
+
 		ball.Name = BALL_NAME;
-		ball.CanCollide = false; // don't shove the player around while held
+		ball.CanCollide = false; // don't shove the holder around while held
 		ball.Massless = true;
 		ball.CFrame = hand.CFrame.mul(GRIP_OFFSET);
 		ball.Parent = character;
-        ball.AddTag("Ball");
-		ball.SetAttribute("Armed", true);
-		ball.SetAttribute("ThrowerId", player.UserId);
+		ball.AddTag("Ball");
+		// Attributes after the tag, never before: tagging is what creates the
+		// component, and its defaults would write over anything set first.
+		ball.SetAttribute("Armed", armed);
+		ball.SetAttribute("ThrowerId", throwerId);
+		this.setPromptEnabled(ball, false);
 
 		const grip = new Instance("WeldConstraint");
-		grip.Name = "DodgeballGrip";
+		grip.Name = GRIP_NAME;
 		grip.Part0 = hand;
 		grip.Part1 = ball;
 		grip.Parent = ball;
 
-		this.heldBalls.set(player, { ball, trail });
-		print(`[Ball] ${player.Name} is holding a dodgeball`);
+		this.heldBalls.set(character, { ball, trail });
+
+		return true;
+	}
+
+	/**
+	 * Turns the ball's pickup prompt off while it is held, and back on when it is
+	 * thrown.
+	 *
+	 * Nothing creates a prompt today — balls are handed out rather than picked up —
+	 * so this does nothing yet. The hook is here so that a ball which grows one is
+	 * still only offered while it is lying on the ground.
+	 */
+	private setPromptEnabled(ball: BasePart, enabled: boolean): void {
+		const prompt = ball.FindFirstChildWhichIsA("ProximityPrompt");
+		if (prompt) prompt.Enabled = enabled;
 	}
 
 	/** R6 rigs use "Right Arm"; R15 rigs use "RightHand". */
@@ -162,14 +240,20 @@ export class BallService implements OnStart {
 
 	private throwBall(player: Player, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3) {
 		const character = player.Character;
-		const held = this.heldBalls.get(player);
+		const held = character ? this.heldBalls.get(character) : undefined;
 		if (!character || !held || held.ball.Parent !== character) return;
 
 		const ball = held.ball;
 
 		// Release the ball from the hand before launching it.
-		ball.FindFirstChild("DodgeballGrip")?.Destroy();
+		ball.FindFirstChild(GRIP_NAME)?.Destroy();
+		// Armed and attributed at the moment of release rather than when the ball
+		// was made: a caught ball has been through somebody else's hand since, and
+		// this throw is what decides whose ball it is now. The immunity check and
+		// the catch check both read this one number.
 		ball.SetAttribute("Armed", true);
+		ball.SetAttribute("ThrowerId", player.UserId);
+		this.setPromptEnabled(ball, true);
 		// Airborne now, so the trail can start drawing behind it.
 		held.trail.setEnabled(true);
 
@@ -236,16 +320,36 @@ export class BallService implements OnStart {
 
 
 
-		this.heldBalls.delete(player);
+		this.heldBalls.delete(character);
 
-		task.delay(PROJECTILE_LIFETIME, () => ball.Destroy());
+		task.delay(PROJECTILE_LIFETIME, () => {
+			// A ball that has been caught since it was thrown is not a projectile any
+			// more — it belongs to whoever is holding it, and how long it lives is
+			// theirs to decide. Without this, the cleanup would take the ball out of a
+			// catcher's hand a few seconds after they caught it.
+			if (this.isHeld(ball)) return;
+
+			ball.Destroy();
+		});
 		task.delay(NEW_BALL_DELAY, () => {
 			const current = player.Character;
 			const humanoid = current?.FindFirstChildOfClass("Humanoid");
 			if (current && humanoid && humanoid.Health > 0) {
-				this.attachBall(player, current);
+				this.attachBall(current, player.UserId);
 			}
 		});
+	}
+
+	/** Whether `ball` is in somebody's hand right now. */
+	private isHeld(ball: BasePart): boolean {
+		for (const [model, held] of this.heldBalls) {
+			if (held.ball === ball) {
+				if (DEBUG) print(`[Ball] ${ball.Name} is still held by ${model.Name}`);
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**

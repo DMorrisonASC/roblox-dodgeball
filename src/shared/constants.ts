@@ -250,3 +250,13 @@ export const DODGE_COOLDOWN = 1.5;
  * key inside this window are one dodge request, sent once.
  */
 export const DODGE_DOUBLE_TAP_WINDOW = 0.5;
+
+/**
+ * How long a catch attempt stays open, in seconds.
+ *
+ * An attempt is a *window*, not a catch: the press opens it, and the ball that
+ * arrives inside it is the one caught. Long enough to cover a read of the throw,
+ * short enough that it is a read rather than a shield — and one window catches
+ * one ball, so holding the key buys nothing.
+ */
+export const CATCH_WINDOW = 0.4;
