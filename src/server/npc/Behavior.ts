@@ -21,6 +21,9 @@ export const BEHAVIOR_CATCHING = "Behavior_Catching";
 /** Enables the throwing behavior. */
 export const BEHAVIOR_THROWING = "Behavior_Throwing";
 
+/** Enables the pickup behavior. */
+export const BEHAVIOR_PICKUP = "Behavior_Pickup";
+
 /**
  * One thing an NPC can do, asked to do it on a timer.
  *

@@ -3,7 +3,9 @@ import { CollectionService, HttpService, Workspace } from "@rbxts/services";
 import { THROWER_TOKEN } from "shared/constants";
 import { NPC_TAG, NpcBehavior } from "../npc/Behavior";
 import { createCatchBehavior } from "../npc/behaviors/CatchBehavior";
+import { createPickupBehavior } from "../npc/behaviors/PickupBehavior";
 import { createThrowBehavior } from "../npc/behaviors/ThrowBehavior";
+import { BallPickupService } from "./BallPickupService";
 import { BallService } from "./BallService";
 import { CatchService } from "./CatchService";
 
@@ -51,8 +53,16 @@ export class NpcService implements OnStart {
 	/** One live loop per model. Losing the `NPC` tag ends it at the next turn. */
 	private readonly loops = new Map<Model, NpcLoop>();
 
-	constructor(private readonly catches: CatchService, private readonly balls: BallService) {
-		this.behaviors = [createCatchBehavior(catches, balls), createThrowBehavior(balls)];
+	constructor(
+		private readonly catches: CatchService,
+		private readonly balls: BallService,
+		private readonly pickups: BallPickupService,
+	) {
+		this.behaviors = [
+			createCatchBehavior(catches, balls),
+			createThrowBehavior(balls),
+			createPickupBehavior(pickups, balls),
+		];
 	}
 
 	public onStart() {

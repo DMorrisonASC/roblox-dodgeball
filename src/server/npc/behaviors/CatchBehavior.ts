@@ -42,7 +42,7 @@ export function createCatchBehavior(catches: CatchService, balls: BallService): 
 			// armed from the moment it exists, while a caught one is inert until its
 			// catcher throws it.
 			const held = balls.getHeldBall(model);
-			if (held) balls.dropBall(model);
+			if (held && held.GetAttribute("Armed") !== true) balls.dropBall(model);
 		},
 	};
 }

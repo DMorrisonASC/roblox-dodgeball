@@ -3,6 +3,7 @@ import { Players } from "@rbxts/services";
 import { CATCH_WINDOW } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
+import { DevService } from "./DevService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
 const DEBUG = true;
@@ -19,7 +20,9 @@ const DEBUG = true;
  * Everything is keyed on the **model**, never the player. A catcher is any living
  * humanoid — an NPC differs from a player's character in nothing but the player
  * behind it — so the player path is just the remote handler below, which hands us
- * the model, and an NPC's AI makes the very same call directly.
+ * the model, and an NPC's AI makes the very same call directly. The one thing
+ * keyed on a player is the dev flag, because that is where flags live: see
+ * {@link alwaysCatching}.
  */
 interface CatchWindow {
 	/** `os.clock` seconds at which this window stops counting. */
@@ -44,6 +47,19 @@ export class CatchService implements OnStart {
 	 * when it expires, and dropped when its catcher dies or leaves.
 	 */
 	private readonly windows = new Map<Model, CatchWindow>();
+
+	/**
+	 * Devs catching with the window held open, keyed on the player because that is
+	 * where the flag lives.
+	 *
+	 * Kept apart from {@link windows} on purpose: an endless window is not a long
+	 * one. It has no expiry to store and no clock to compare against, so a sentinel
+	 * in the time map would mean every reader of that map having to know about the
+	 * sentinel. Checked first instead, and the map is then never consulted.
+	 */
+	private readonly alwaysCatching = new Set<Player>();
+
+	constructor(private readonly dev: DevService) {}
 
 	public onStart() {
 		events.Server.OnEvent("catch", (player) => {
@@ -82,6 +98,10 @@ export class CatchService implements OnStart {
 			return false;
 		}
 
+		// A dev testing a catch does not need good timing: with the flag on, one press
+		// is a window that stays open until a ball arrives.
+		if (this.holdOpenForDev(model)) return true;
+
 		const open = this.windows.get(model);
 
 		// Already catching: the window is *extended*, not replaced. Nothing else
@@ -105,6 +125,27 @@ export class CatchService implements OnStart {
 	}
 
 	/**
+	 * Opens an endless window for a dev, if this is one and the flag is on.
+	 *
+	 * Player characters only, and not by choice: the flag lives on a `Player`, so an
+	 * NPC never has one. That is the entire difference between a dev's catch and
+	 * anybody else's here.
+	 *
+	 * Reached on every attempt, so the state is re-established each time the key is
+	 * pressed — there is nothing to keep in step.
+	 */
+	private holdOpenForDev(model: Model): boolean {
+		const player = Players.GetPlayerFromCharacter(model);
+		if (!player || !this.dev.getFlag(player, "InfiniteCatch")) return false;
+
+		this.alwaysCatching.add(player);
+
+		if (DEBUG) print(`[Catch] ${model.Name}: endless window open (dev)`);
+
+		return true;
+	}
+
+	/**
 	 * Whether `model` has a catch window open at this instant.
 	 *
 	 * Expiry is decided here rather than on a timer: the only moment a window
@@ -112,6 +153,16 @@ export class CatchService implements OnStart {
 	 * as it is found — so a window nobody ever tests against costs nothing.
 	 */
 	public isCatching(model: Model): boolean {
+		// The endless case first, and the flag asked afresh rather than remembered:
+		// that is what makes `/dev InfiniteCatch off` take effect on the next ball
+		// instead of on the next press.
+		const player = Players.GetPlayerFromCharacter(model);
+		if (player && this.alwaysCatching.has(player)) {
+			if (this.dev.getFlag(player, "InfiniteCatch")) return true;
+
+			this.alwaysCatching.delete(player);
+		}
+
 		const window = this.windows.get(model);
 		if (!window) return false;
 
@@ -139,6 +190,11 @@ export class CatchService implements OnStart {
 	 * watch goes with it, so nothing outlives the window it belonged to.
 	 */
 	public consume(model: Model): void {
+		// An endless window is spent the way any other is spent — one press is still
+		// one catch — so leaving the set is part of spending it.
+		const player = Players.GetPlayerFromCharacter(model);
+		if (player) this.alwaysCatching.delete(player);
+
 		const window = this.windows.get(model);
 		if (!window) return;
 

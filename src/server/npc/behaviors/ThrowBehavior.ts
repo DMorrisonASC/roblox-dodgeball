@@ -41,10 +41,15 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 		},
 
 		tick(model) {
-			// An empty hand has nothing to throw. `throwBall` checks again before it
-			// does anything — a behavior is allowed to be wrong about this, and the
-			// service is where that has to be caught.
-			if (!balls.getHeldBall(model)) return;
+			// Empty hand: take another ball, by the same call `prepare` made the first
+			// time. A throwing rig is one of the only two things in the game that is
+			// never left without one — the other is a dev with `InfiniteBalls` — and this
+			// is where that lives. It is a *behavior* asking, rather than the throw
+			// handing a ball back to everybody who throws one.
+			if (!balls.getHeldBall(model)) {
+				balls.giveBall(model);
+				return;
+			}
 
 			const root = model.FindFirstChild("HumanoidRootPart");
 			if (!root || !root.IsA("BasePart")) return;

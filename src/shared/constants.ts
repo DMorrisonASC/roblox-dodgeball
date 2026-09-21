@@ -22,6 +22,20 @@ export const THROWER_TOKEN = "ThrowerToken";
 export const BALL_SIZE = 1;
 
 /**
+ * How far a model can reach to pick a loose ball up, in studs.
+ *
+ * Measured from the model's own position to the ball's, so this is a *reach and
+ * a half step* rather than a walk: a picker does not travel to the ball, it takes
+ * one that is already within this of it. Widen it and a picker starts collecting
+ * balls it never appeared to touch; narrow it and it has to be walked onto them.
+ *
+ * Read as the default for `BallPickupService.pickupNearest`, which takes its own
+ * radius — so a mechanic that wants a longer arm passes one rather than changing
+ * everyone's reach.
+ */
+export const PICKUP_RADIUS = 8;
+
+/**
  * How far in front of the thrower's torso the ball starts its flight, in studs,
  * measured along the direction the body is facing.
  *
