@@ -1,5 +1,5 @@
 import { OnStart, Service } from "@flamework/core";
-import { Players, RunService } from "@rbxts/services";
+import { Players, RunService, TextChatService } from "@rbxts/services";
 import { DEV_CONFIG } from "../dev.config";
 
 /** Marks a whitelisted player. Read as `=== true`, so an absent attribute means no. */
@@ -43,6 +43,22 @@ export class DevService implements OnStart {
 		for (const player of Players.GetPlayers()) {
 			this.welcome(player);
 		}
+
+		// **`Player.Chatted` belongs to the legacy chat only.** It does not fire under
+		// `TextChatService`, which is the default in a modern place and therefore what
+		// Studio is using — so a command typed into the chat would be read by nobody.
+		// Listen to whichever system is actually running.
+		if (this.legacyChat()) {
+			print("[Dev] reading commands from the legacy chat");
+		} else {
+			print("[Dev] reading commands from TextChatService");
+			TextChatService.MessageReceived.Connect((message) => this.handleMessage(message));
+		}
+	}
+
+	/** Whether this place is still on the legacy chat, the one `Player.Chatted` speaks. */
+	private legacyChat(): boolean {
+		return TextChatService.ChatVersion === Enum.ChatVersion.LegacyChatService;
 	}
 
 	/** Whether this player was whitelisted and marked. */
@@ -77,9 +93,27 @@ export class DevService implements OnStart {
 			this.becomeDev(player);
 		}
 
-		// Connected for everyone on purpose: `isDev` is then the single gate on what
-		// the commands do, rather than a second whitelist that could drift from it.
-		player.Chatted.Connect((message) => this.handleChat(player, message));
+		// The legacy path is per-player, and connected for everyone on purpose: `isDev`
+		// is then the single gate on what the commands do, rather than a second
+		// whitelist that could drift from it. Under TextChatService there is no
+		// per-player signal to connect — see `handleMessage`.
+		if (this.legacyChat()) {
+			player.Chatted.Connect((message) => this.handleChat(player, message));
+		}
+	}
+
+	/**
+	 * The TextChatService bridge, which is the whole difference between the two chats.
+	 *
+	 * A `TextChatMessage` is not addressed to a `Player`: it carries a `TextSource`,
+	 * and a system message carries none at all, which is the case to drop on.
+	 */
+	private handleMessage(message: TextChatMessage): void {
+		const source = message.TextSource;
+		if (!source) return;
+
+		const player = Players.GetPlayerByUserId(source.UserId);
+		if (player) this.handleChat(player, message.Text);
 	}
 
 	private becomeDev(player: Player): void {

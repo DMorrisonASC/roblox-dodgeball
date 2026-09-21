@@ -1,5 +1,5 @@
-import { Service } from "@flamework/core";
-import { CollectionService, Workspace } from "@rbxts/services";
+import { OnStart, Service } from "@flamework/core";
+import { CollectionService, Players, Workspace } from "@rbxts/services";
 import { PICKUP_RADIUS } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { BallService } from "./BallService";
@@ -14,18 +14,57 @@ import { BallService } from "./BallService";
 const BALL_TAG = "Ball";
 
 /**
+ * How often the players are looked over for a loose ball in reach, in seconds.
+ *
+ * A walking character covers about 16 studs a second, so this wants to be short
+ * enough that nobody strides past a ball inside {@link PICKUP_RADIUS} between two
+ * looks — and long enough that the scan is not the most expensive thing the
+ * server does.
+ */
+const PLAYER_PICKUP_PERIOD = 0.3;
+
+/**
  * Picking a ball up off the ground.
  *
- * The same act a player performs through a ball's ProximityPrompt, offered as a
- * call so anything with a humanoid can do it — an NPC behavior today, a prompt or
- * a keybind later. The *search* is all this owns: which ball, and whether it is
- * near enough. The attach is `BallService`'s, so a picked-up ball is
- * indistinguishable from a caught one the moment it is in the hand, and can be
- * thrown by the same call.
+ * Two callers, one search. An NPC asks through its `Behavior_Pickup`, and the
+ * players are collected for from here — a character that comes within reach of a
+ * loose ball takes it, with nothing to press. One rule for both, which is what
+ * stops a player and an NPC disagreeing about what is on the floor.
+ *
+ * The *search* is all this owns: which ball, and whether it is near enough. The
+ * attach is `BallService`'s, so a picked-up ball is indistinguishable from a
+ * caught one the moment it is in the hand, and is thrown by the same call.
  */
 @Service()
-export class BallPickupService {
+export class BallPickupService implements OnStart {
 	constructor(private readonly balls: BallService) {}
+
+	public onStart() {
+		task.spawn(() => this.collectForPlayers());
+	}
+
+	/**
+	 * Collects for every player, in one loop rather than a thread each.
+	 *
+	 * One loop because the work is a few distance checks, and a per-player thread
+	 * would be bookkeeping for no gain — the player list is read fresh each turn, so
+	 * there is nothing to keep in step with joins and leaves. A service lives as long
+	 * as the server does, which is why this loop has no ending.
+	 *
+	 * A hand that is already full makes `pickupNearest` return on its first check, so
+	 * the ordinary case — a player holding the ball they are about to throw — costs
+	 * nothing at all.
+	 */
+	private collectForPlayers(): void {
+		while (true) {
+			for (const player of Players.GetPlayers()) {
+				const character = player.Character;
+				if (character) this.pickupNearest(character);
+			}
+
+			task.wait(PLAYER_PICKUP_PERIOD);
+		}
+	}
 
 	/**
 	 * Picks up the nearest loose ball, if there is one within reach.
