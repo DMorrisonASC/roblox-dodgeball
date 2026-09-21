@@ -15,7 +15,8 @@
 		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/RoundService@RoundService": "server/services/RoundService@RoundService",
 		"roblox-dodgeball:out/client/controllers/CatchController@CatchController": "client/controllers/CatchController@CatchController",
-		"roblox-dodgeball:out/server/services/CatchService@CatchService": "server/services/CatchService@CatchService"
+		"roblox-dodgeball:out/server/services/CatchService@CatchService": "server/services/CatchService@CatchService",
+		"roblox-dodgeball:out/server/services/NpcService@NpcService": "server/services/NpcService@NpcService"
 	},
 	"metadata": {}
 }

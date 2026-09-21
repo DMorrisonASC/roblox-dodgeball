@@ -6,6 +6,18 @@
  */
 export const BALL_NAME = "DodgeballBall";
 
+/**
+ * Attribute naming whoever a ball belongs to, carried on the **thrower's model**.
+ *
+ * The value is a string token rather than a `UserId`, because a thrower is not
+ * always a player: a player's token is their `UserId` as text and an NPC's is a
+ * GUID. The ball's own `ThrowerId` attribute is a copy of whichever one threw
+ * it, so the immunity check can be a single string comparison that never has to
+ * ask what kind of thing the thrower was. See `BallService.tokenOf` and
+ * `BallComponent`.
+ */
+export const THROWER_TOKEN = "ThrowerToken";
+
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 1;
 
@@ -249,7 +261,7 @@ export const DODGE_COOLDOWN = 1.5;
  * key press and does not care how the direction was chosen. Two taps of the same
  * key inside this window are one dodge request, sent once.
  */
-export const DODGE_DOUBLE_TAP_WINDOW = 0.5;
+export const DODGE_DOUBLE_TAP_WINDOW = 11.5;
 
 /**
  * How long a catch attempt stays open, in seconds.

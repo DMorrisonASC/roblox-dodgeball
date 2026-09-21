@@ -1,6 +1,6 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { BALL_NAME, BALL_SIZE, THROW_VERTICAL_BOOST } from "shared/constants";
+import { BALL_NAME, BALL_SIZE, THROWER_TOKEN, THROW_VERTICAL_BOOST } from "shared/constants";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
@@ -12,7 +12,7 @@ import { watchThrow } from "../ThrowProbe";
 const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
 
 /**
- * Seconds after a throw before the player gets another ball.
+ * Seconds after a throw before the thrower gets another ball.
  *
  * Zero means no cooldown — you can throw as fast as you can click. The callback
  * still runs a frame later rather than inline, which keeps the new ball from
@@ -57,9 +57,9 @@ export class BallService implements OnStart {
 	 * What each model is holding, keyed on the **model** rather than the player.
 	 *
 	 * A catcher can be an NPC, and a caught ball has to end up in the same place a
-	 * handed-out one does — otherwise it could not be thrown afterwards. Everything
-	 * that genuinely needs a `Player`, which is the throw remote and the `UserId`
-	 * stamped on a ball at release, stays in the player path.
+	 * handed-out one does — otherwise it could not be thrown afterwards. The only
+	 * thing that genuinely needs a `Player` is the throw remote's handler, which
+	 * recovers the character from it; everything else is model work.
 	 */
 	private readonly heldBalls = new Map<Model, HeldBall>();
 
@@ -80,7 +80,7 @@ export class BallService implements OnStart {
 				chosen = "curve";
 			}
 
-			this.throwBall(player, target, chosen, typeIs(claim, "Vector3") ? claim : undefined);
+			this.throwForPlayer(player, target, chosen, typeIs(claim, "Vector3") ? claim : undefined);
 		});
 
 		Players.PlayerRemoving.Connect((player) => {
@@ -90,20 +90,21 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * Welds a dodgeball into the player's hand whenever their character spawns.
+	 * Puts a ball in `model`'s hand.
+	 *
+	 * Keyed on the **model**, like everything else here, so this is one call for a
+	 * player's character and for an NPC alike. What differs between them is the
+	 * token on the model, which this does not touch, and who arranges for a *new*
+	 * model to be handed a ball when the old one dies — and that is a fact about
+	 * players, so it lives in `JoinService`.
 	 *
 	 * This deliberately does NOT use a Tool. A Tool's handle is gripped by the
 	 * engine, and in this project that grip never actually forms (the character
 	 * ends up with no `RightGrip`), so the unanchored ball falls straight out of
 	 * the world. Welding the ball to the hand ourselves is deterministic.
 	 */
-	public giveBall(player: Player) {
-		player.CharacterAdded.Connect((character) => this.attachBall(character, player.UserId));
-
-		const character = player.Character;
-		if (character) {
-			this.attachBall(character, player.UserId);
-		}
+	public giveBall(model: Model): void {
+		this.attachBall(model);
 	}
 
 	/**
@@ -117,16 +118,71 @@ export class BallService implements OnStart {
 	 * at release, which is the moment ownership starts to mean anything.
 	 */
 	public catchBall(model: Model, ball: BasePart): boolean {
-		if (!this.holdBall(model, ball, 0, false)) return false;
+		if (!this.holdBall(model, ball, false)) return false;
 
 		print(`[Ball] ${model.Name} caught a dodgeball`);
 
 		return true;
 	}
 
-	/** Creates a ball and welds it into the hand of the given character. */
-	private attachBall(character: Model, throwerId: number) {
-		this.holdBall(character, this.spheres.createBall(BALL_SIZE, { trail: false }), throwerId, true);
+	/**
+	 * Lets go of whatever `model` is holding, leaving the ball in the world.
+	 *
+	 * Keyed on the **model**, like every other hand operation here, so any model
+	 * that can hold a ball can drop one. The ball leaves the hand limp — unarmed,
+	 * and non-colliding with the model it came out of — because a dropped ball is
+	 * scenery, not a projectile.
+	 *
+	 * Returns whether there was anything to drop.
+	 */
+	public dropBall(model: Model): boolean {
+		const held = this.heldBalls.get(model);
+		if (!held) return false;
+
+		const ball = held.ball;
+
+		// Out of the hand first, so the weld is not fighting the reparent below.
+		ball.FindFirstChild(GRIP_NAME)?.Destroy();
+
+		// Nobody's ball now: unarmed, because an armed ball is a live projectile and
+		// would hurt whoever walked into it lying there.
+		ball.SetAttribute("Armed", false);
+		ball.Parent = Workspace;
+		ball.Massless = false;
+		ball.CanCollide = true;
+
+		// It becomes solid exactly where the hand was, which is inside the model, and
+		// the engine settles that overlap by shoving whatever is lighter. Without
+		// this, the old thrower-push bug comes back wearing a different hat.
+		CollisionIgnore.between(ball, model);
+
+		this.heldBalls.delete(model);
+
+		// Loose balls are cleaned up on the clock thrown ones are. A catching NPC
+		// drops every ball it takes, so without this the map collects scenery for the
+		// rest of the session; the `isHeld` guard leaves a ball that has since been
+		// caught to its new owner.
+		task.delay(PROJECTILE_LIFETIME, () => {
+			if (this.isHeld(ball)) return;
+
+			ball.Destroy();
+		});
+
+		if (DEBUG) print(`[Ball] ${model.Name} dropped a dodgeball`);
+
+		return true;
+	}
+
+	/**
+	 * Creates a ball and welds it into the hand of the given model.
+	 *
+	 * The model's token is **not** stamped here, because this does not know who it
+	 * is handing a ball to and should not have to: whoever knows stamps it —
+	 * `JoinService` for a joining player, `NpcService` for a rig. The ball reads it
+	 * back off the model when it is held, see `tokenOf`.
+	 */
+	private attachBall(model: Model) {
+		this.holdBall(model, this.spheres.createBall(BALL_SIZE, { trail: false }), true);
 	}
 
 	/**
@@ -140,7 +196,7 @@ export class BallService implements OnStart {
 	 * always have: a handed-out ball is live the moment it exists, while a caught
 	 * one stays inert until its new owner throws it.
 	 */
-	private holdBall(character: Model, ball: BasePart, throwerId: number, armed: boolean): boolean {
+	private holdBall(character: Model, ball: BasePart, armed: boolean): boolean {
 		const hand = this.getRightHand(character);
 		if (!hand) {
 			warn(`[Ball] ${character.Name}: could not find a right hand to hold the ball`);
@@ -173,7 +229,7 @@ export class BallService implements OnStart {
 		// Attributes after the tag, never before: tagging is what creates the
 		// component, and its defaults would write over anything set first.
 		ball.SetAttribute("Armed", armed);
-		ball.SetAttribute("ThrowerId", throwerId);
+		ball.SetAttribute("ThrowerId", this.tokenOf(character));
 		this.setPromptEnabled(ball, false);
 
 		const grip = new Instance("WeldConstraint");
@@ -238,10 +294,22 @@ export class BallService implements OnStart {
 		return folder;
 	}
 
-	private throwBall(player: Player, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3) {
-		const character = player.Character;
-		const held = character ? this.heldBalls.get(character) : undefined;
-		if (!character || !held || held.ball.Parent !== character) return;
+	/**
+	 * Throws whatever `model` is holding, at `target`.
+	 *
+	 * Keyed on the **model**, so an NPC's throw is this function with a different
+	 * model and target in it rather than a second copy of the throw. The only
+	 * player-shaped things left in the game are the remote handler below — the one
+	 * place a `Player` exists to take a character from — and the refill afterwards,
+	 * which is a player's privilege because handing balls out is how a player ever
+	 * gets one.
+	 *
+	 * Returns whether a ball went. An empty hand is not an error: a behavior may
+	 * ask while there is nothing to throw.
+	 */
+	public throwBall(model: Model, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3): boolean {
+		const held = this.heldBalls.get(model);
+		if (!held || held.ball.Parent !== model) return false;
 
 		const ball = held.ball;
 
@@ -250,9 +318,9 @@ export class BallService implements OnStart {
 		// Armed and attributed at the moment of release rather than when the ball
 		// was made: a caught ball has been through somebody else's hand since, and
 		// this throw is what decides whose ball it is now. The immunity check and
-		// the catch check both read this one number.
+		// the catch check both read this one token.
 		ball.SetAttribute("Armed", true);
-		ball.SetAttribute("ThrowerId", player.UserId);
+		ball.SetAttribute("ThrowerId", this.tokenOf(model));
 		this.setPromptEnabled(ball, true);
 		// Airborne now, so the trail can start drawing behind it.
 		held.trail.setEnabled(true);
@@ -261,9 +329,9 @@ export class BallService implements OnStart {
 		// and the predicted arc can never disagree — which only holds while both
 		// sides solve from the same launch point, see `planPlayerThrow`.
 		const releasePosition = ball.Position;
-		const ownLaunch = getThrowMuzzle(character);
+		const ownLaunch = getThrowMuzzle(model);
 		const launch = this.acceptLaunch(ownLaunch, claimedLaunch);
-		const plan = planPlayerThrow(character, target, arc, launch);
+		const plan = planPlayerThrow(model, target, arc, launch);
 
 		// What actually goes on the ball: the solve, plus the launch boost that
 		// covers the engine's own vertical loss. See THROW_VERTICAL_BOOST — the
@@ -273,7 +341,7 @@ export class BallService implements OnStart {
 
 		if (DEBUG) {
 			print(
-				`[Ball] ${player.Name}: ${plan.arc} ${this.describeThrow(plan, commanded)}, ` +
+				`[Ball] ${model.Name}: ${plan.arc} ${this.describeThrow(plan, commanded)}, ` +
 					`release ${releasePosition} -> launch ${plan.origin}` +
 					` (${string.format("%.2f", launch.sub(ownLaunch).Magnitude)} studs from our own)`,
 			);
@@ -283,7 +351,7 @@ export class BallService implements OnStart {
 		// aimed back across the body clips it, and the engine resolves that
 		// overlap the only way it can — by shoving the player. Ball size and
 		// muzzle distance only ever changed how hard that shove was.
-		CollisionIgnore.between(ball, character);
+		CollisionIgnore.between(ball, model);
 
 		// Move the ball, hand it to this machine's solver, and arm it — all inside
 		// the one frame.
@@ -316,11 +384,11 @@ export class BallService implements OnStart {
 		this.applyAcceleration(ball, plan.acceleration, plan.flightTime);
 
 		// How far the engine's flight actually is from the plan's, per throw.
-		if (DEBUG) watchThrow(ball, plan, character);
+		if (DEBUG) watchThrow(ball, plan, model);
 
 
 
-		this.heldBalls.delete(character);
+		this.heldBalls.delete(model);
 
 		task.delay(PROJECTILE_LIFETIME, () => {
 			// A ball that has been caught since it was thrown is not a projectile any
@@ -331,13 +399,56 @@ export class BallService implements OnStart {
 
 			ball.Destroy();
 		});
+
+		// Another ball, by the same path the first one arrived by. Keyed on the model,
+		// so this is the thrower's own refill whether the thrower is a player's
+		// character or an NPC — which is what lets a rig keep throwing.
+		//
+		// A model that was destroyed rather than killed has no humanoid left, so the
+		// refill simply does not happen; a player's *respawn* is covered by the
+		// hand-out `JoinService` wires up, not here.
 		task.delay(NEW_BALL_DELAY, () => {
-			const current = player.Character;
-			const humanoid = current?.FindFirstChildOfClass("Humanoid");
-			if (current && humanoid && humanoid.Health > 0) {
-				this.attachBall(current, player.UserId);
-			}
+			const humanoid = model.FindFirstChildWhichIsA("Humanoid");
+			if (humanoid && humanoid.Health > 0) this.attachBall(model);
 		});
+
+		return true;
+	}
+
+	/**
+	 * The player path: what the throw remote's handler calls.
+	 *
+	 * A player is not a special kind of thrower, just the only one with a `Player`
+	 * behind it — so there is nothing here but recovering the character and handing
+	 * it to {@link throwBall} as the model. The refill belongs to the throw itself,
+	 * which is what makes it the same refill for an NPC.
+	 */
+	private throwForPlayer(player: Player, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3) {
+		const character = player.Character;
+		if (character) this.throwBall(character, target, arc, claimedLaunch);
+	}
+
+	/**
+	 * The thrower token of a model, or `""` when it has none.
+	 *
+	 * A player's is their `UserId` as text and an NPC's is a GUID — both stamped on
+	 * the model itself, so a ball only ever carries a string copy of whichever one
+	 * threw it. That is what makes the immunity check in `BallComponent` the same
+	 * single comparison for a player and for an NPC.
+	 */
+	private tokenOf(model: Model): string {
+		const token = model.GetAttribute(THROWER_TOKEN);
+		return typeIs(token, "string") ? token : "";
+	}
+
+	/**
+	 * The ball `model` is holding, if any.
+	 *
+	 * Public for the NPC behaviors, which have to know whether there is anything to
+	 * throw. The throwing itself stays {@link throwBall}'s — this only reports.
+	 */
+	public getHeldBall(model: Model): BasePart | undefined {
+		return this.heldBalls.get(model)?.ball;
 	}
 
 	/** Whether `ball` is in somebody's hand right now. */

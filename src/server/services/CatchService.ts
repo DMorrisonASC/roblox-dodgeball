@@ -4,7 +4,7 @@ import { CATCH_WINDOW } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 
-/** Prints every attempt, and every window that came up empty. */
+/** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
 const DEBUG = true;
 
 /**
@@ -21,15 +21,29 @@ const DEBUG = true;
  * behind it — so the player path is just the remote handler below, which hands us
  * the model, and an NPC's AI makes the very same call directly.
  */
+interface CatchWindow {
+	/** `os.clock` seconds at which this window stops counting. */
+	expiresAt: number;
+
+	/**
+	 * Fires if the catcher dies before the window is spent.
+	 *
+	 * Kept rather than merely connected so that closing the window closes this too:
+	 * a catching NPC asks for a window every tick, and one listener per request
+	 * would pile up thousands of watches on a humanoid that only dies once.
+	 */
+	death: RBXScriptConnection;
+}
+
 @Service()
 export class CatchService implements OnStart {
 	/**
-	 * When each model's window closes, in `os.clock` seconds.
+	 * Every open window, keyed on the model that is catching.
 	 *
 	 * An entry only exists while a window is open: it is spent by a catch, dropped
 	 * when it expires, and dropped when its catcher dies or leaves.
 	 */
-	private readonly openUntil = new Map<Model, number>();
+	private readonly windows = new Map<Model, CatchWindow>();
 
 	public onStart() {
 		events.Server.OnEvent("catch", (player) => {
@@ -51,7 +65,7 @@ export class CatchService implements OnStart {
 	}
 
 	/**
-	 * Opens a catch window on `model`.
+	 * Opens a catch window on `model`, or extends one already open.
 	 *
 	 * Returns whether one opened, which is the same question as whether `model` can
 	 * catch at all: a catcher is a living humanoid, exactly what a dodge needs — so
@@ -68,10 +82,22 @@ export class CatchService implements OnStart {
 			return false;
 		}
 
-		// The window dies with the catcher. `Once` because a humanoid dies once.
-		humanoid.Died.Once(() => this.consume(model));
+		const open = this.windows.get(model);
 
-		this.openUntil.set(model, os.clock() + CATCH_WINDOW);
+		// Already catching: the window is *extended*, not replaced. Nothing else
+		// changes, and in particular the death watch is not registered again — a
+		// catching NPC asks for this every tick, so one watch per request would leave
+		// it holding thousands of listeners for a death that happens once.
+		if (open) {
+			open.expiresAt = os.clock() + CATCH_WINDOW;
+			return true;
+		}
+
+		// The window dies with the catcher. `Once` because a humanoid dies once.
+		this.windows.set(model, {
+			expiresAt: os.clock() + CATCH_WINDOW,
+			death: humanoid.Died.Once(() => this.consume(model)),
+		});
 
 		if (DEBUG) print(`[Catch] ${model.Name}: window open`);
 
@@ -86,14 +112,19 @@ export class CatchService implements OnStart {
 	 * as it is found — so a window nobody ever tests against costs nothing.
 	 */
 	public isCatching(model: Model): boolean {
+		const window = this.windows.get(model);
+		if (!window) return false;
+
 		// Not `until`: that is a Luau keyword, and roblox-ts rejects it as an
 		// identifier outright ("Invalid Luau identifier!").
-		const expiresAt = this.openUntil.get(model);
-		if (expiresAt === undefined) return false;
+		const expiresAt = window.expiresAt;
 
 		if (os.clock() > expiresAt) {
-            if (DEBUG) print(`[Catch] ${model.Name}: window expired`);
-			this.openUntil.delete(model);
+			if (DEBUG) print(`[Catch] ${model.Name}: window expired`);
+
+			// Closed through `consume` so the death watch goes with the window: an
+			// expired window must not leave a listener behind.
+			this.consume(model);
 			return false;
 		}
 
@@ -103,10 +134,15 @@ export class CatchService implements OnStart {
 	/**
 	 * Spends `model`'s window, so one attempt cannot catch two balls.
 	 *
-	 * Also how a window is dropped without being spent — on death, on leaving —
-	 * because a window that was never spent simply goes away.
+	 * Also how a window is dropped without being spent — on expiry, on death, on
+	 * leaving — because a window that was never spent simply goes away. The death
+	 * watch goes with it, so nothing outlives the window it belonged to.
 	 */
 	public consume(model: Model): void {
-		this.openUntil.delete(model);
+		const window = this.windows.get(model);
+		if (!window) return;
+
+		window.death.Disconnect();
+		this.windows.delete(model);
 	}
 }

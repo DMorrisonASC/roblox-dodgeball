@@ -1,6 +1,7 @@
 import { OnStart } from "@flamework/core";
 import { BaseComponent, Component } from "@flamework/components";
 import { Players, Workspace } from "@rbxts/services";
+import { THROWER_TOKEN } from "shared/constants";
 import { BallService } from "../services/BallService";
 import { CatchService } from "../services/CatchService";
 
@@ -69,11 +70,23 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// Already spent — a hit or a landing has taken it out of play.
 		if (this.instance.GetAttribute("Armed") !== true) return;
 
+		// The root decides nothing. It is engine plumbing sitting *inside* the torso,
+		// not a body part: a ball in contact with it is in contact with the torso as
+		// well, and a contact reported against it alone means nothing happened. Left
+		// in, it was the part that killed a catcher — it is not in
+		// {@link CATCHABLE_PARTS}, so the first event of a torso arrival read as a
+		// hit, and the catch that should have saved them arrived after the damage.
+		if (otherPart.Name === "HumanoidRootPart") return;
+
 		// Nobody is hurt by their own ball, and nobody catches it either. Both come
-		// down to the same number: the id stamped on the ball when it was thrown.
+		// down to the same string: the token stamped on the ball at release, held
+		// against the token on the model it is touching. A player's token is their
+		// `UserId` as text and an NPC's is a GUID, and this comparison cannot tell
+		// them apart — which is the point. Asking "is this a player?" instead would
+		// leave an NPC free to hit itself with its own throw.
 		const throwerId = this.instance.GetAttribute("ThrowerId");
-		const player = Players.GetPlayerFromCharacter(character);
-		if (throwerId !== undefined && player !== undefined && throwerId === player.UserId) return;
+		const token = character.GetAttribute(THROWER_TOKEN);
+		if (typeIs(throwerId, "string") && throwerId !== "" && throwerId === token) return;
 
 		if (this.canCatch(otherPart, character)) {
 			// Spent before the ball is handed over, so one attempt catches one ball
@@ -83,7 +96,34 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			return;
 		}
 
-		humanoid.TakeDamage(HIT_DAMAGE);
+		this.landHit(character, humanoid);
+	}
+
+	/**
+	 * Hurts `character`, once this frame's other contacts have been seen.
+	 *
+	 * One arrival reports **several** parts, because `Touched` fires once per part
+	 * and in no particular order. A ball reaching a torso also reports the
+	 * `HumanoidRootPart` it is sitting inside — which is not a part a catch can be
+	 * made with, and which the engine may well report first. Applied on the spot,
+	 * the hit went in before the catch had been asked about, so a catcher died of a
+	 * contact that is not even a body part.
+	 *
+	 * Deferring to the end of the frame gives every part of that one contact its
+	 * turn, so the outcome is decided by *what the ball touched* rather than by the
+	 * order the engine happened to report it in. A ball that ends the frame welded
+	 * into this character's hand was caught, and nothing lands.
+	 */
+	private landHit(character: Model, humanoid: Humanoid): void {
+		task.defer(() => {
+			// Caught in the same frame: the catch is the answer to this contact.
+			if (this.balls.getHeldBall(character) === this.instance) return;
+
+			// Already dead, from another part of the very same contact.
+			if (humanoid.Health <= 0) return;
+
+			humanoid.TakeDamage(HIT_DAMAGE);
+		});
 	}
 
 	/** Whether this touch is a catch: a catchable part, on a character whose window is open. */
