@@ -1,6 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
-import { CATCH_WINDOW } from "shared/constants";
+import { CATCH_CONFIG } from "shared/config/catch.config";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { DevService } from "../dev/DevService";
@@ -63,6 +63,12 @@ export class CatchService implements OnStart {
 
 	public onStart() {
 		events.Server.OnEvent("catch", (player) => {
+			// The arrival line, printed before anything is decided. A press that produces
+			// no output at all and a press that produces the wrong output look identical
+			// from the player's seat, and this is the one line that says the event got here
+			// — so its absence means the key or the wire, never the catch itself.
+			if (DEBUG) print(`[Catch] ${player.Name} asked to catch`);
+
 			const character = player.Character;
 			if (!character) {
 				if (DEBUG) print(`[Catch] ${player.Name}: no character to catch with`);
@@ -109,13 +115,13 @@ export class CatchService implements OnStart {
 		// catching NPC asks for this every tick, so one watch per request would leave
 		// it holding thousands of listeners for a death that happens once.
 		if (open) {
-			open.expiresAt = os.clock() + CATCH_WINDOW;
+			open.expiresAt = os.clock() + CATCH_CONFIG.WINDOW_SECONDS;
 			return true;
 		}
 
 		// The window dies with the catcher. `Once` because a humanoid dies once.
 		this.windows.set(model, {
-			expiresAt: os.clock() + CATCH_WINDOW,
+			expiresAt: os.clock() + CATCH_CONFIG.WINDOW_SECONDS,
 			death: humanoid.Died.Once(() => this.consume(model)),
 		});
 

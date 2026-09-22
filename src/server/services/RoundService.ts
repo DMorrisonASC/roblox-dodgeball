@@ -1,5 +1,6 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players, Workspace } from "@rbxts/services";
+import { ARENA_CONFIG } from "shared/config/arena.config";
 
 enum RoundState {
     Intermission,
@@ -11,9 +12,6 @@ export class RoundService implements OnStart {
     private state = RoundState.Intermission;
     private timeRemaining = 0;
     private readonly activePlayers = new Set<Player>();
-
-    private readonly INTERMISSION_TIME = 10;
-    private readonly ROUND_TIME = 30;
 
     onStart() {
         Players.PlayerAdded.Connect((player) => this.handlePlayerJoined(player));
@@ -48,7 +46,7 @@ export class RoundService implements OnStart {
 
             // Route based on whether they're still in the round
             const inRound = this.state === RoundState.Playing && this.activePlayers.has(player);
-            const spawnName = inRound ? "ArenaSpawn" : "LobbySpawn";
+            const spawnName = inRound ? ARENA_CONFIG.ARENA_SPAWN_NAME : ARENA_CONFIG.LOBBY_SPAWN_NAME;
 
             character.PivotTo(this.getSpawn(spawnName));
         });
@@ -74,9 +72,9 @@ export class RoundService implements OnStart {
             this.state = RoundState.Intermission;
             this.activePlayers.clear();
             print("Intermission started");
-            this.teleportAll("LobbySpawn");
+            this.teleportAll(ARENA_CONFIG.LOBBY_SPAWN_NAME);
 
-            this.timeRemaining = this.INTERMISSION_TIME;
+            this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
             while (this.timeRemaining > 0) {
                 task.wait(1);
                 this.timeRemaining--;
@@ -88,9 +86,9 @@ export class RoundService implements OnStart {
                 this.activePlayers.add(player);
             }
             print("Round started");
-            this.teleportAll("ArenaSpawn");
+            this.teleportAll(ARENA_CONFIG.ARENA_SPAWN_NAME);
 
-            this.timeRemaining = this.ROUND_TIME;
+            this.timeRemaining = ARENA_CONFIG.ROUND_SECONDS;
             while (this.timeRemaining > 0) {
                 task.wait(1);
                 this.timeRemaining--;

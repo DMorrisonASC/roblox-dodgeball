@@ -60,6 +60,19 @@ export class DevService implements OnStart {
 	 */
 	private readonly lastCommand = new Map<Player, string>();
 
+	/**
+	 * Callbacks to run when a flag is switched, keyed on the flag's own name.
+	 *
+	 * A flag is *state*: a system that reads one learns it changed the next time it
+	 * looks, which is enough for a rule consulted on every action — a catch window
+	 * opened by a press, a cooldown checked before a dash. It is not enough for a rule
+	 * consulted at the *end* of something that has to happen first. `InfiniteBalls` is
+	 * that case: switching it on with an empty hand changes nothing until the next
+	 * throw, and an empty hand has no next throw. This is how a system that has to act
+	 * on the change finds out, without this file knowing what any of them do.
+	 */
+	private readonly flagListeners = new Map<string, ((player: Player, on: boolean) => void)[]>();
+
 	public onStart() {
 		Players.PlayerAdded.Connect((player) => this.welcome(player));
 
@@ -90,16 +103,41 @@ export class DevService implements OnStart {
 	}
 
 	/**
+	 * Registers `listener` to run whenever `flag` is switched, with the player it was
+	 * switched for and the value it was switched to.
+	 *
+	 * Called once per system that cares, at construction — the same shape as the
+	 * `getFlag` call sites, which is the point: a system either *asks*, or asks to be
+	 * told. What the new value means is the listener's business, and so is whether it
+	 * already happens to be in that state; the listener is called on every switch, not
+	 * only on a change.
+	 */
+	public onFlagChanged(flag: string, listener: (player: Player, on: boolean) => void): void {
+		const listeners = this.flagListeners.get(flag);
+		if (listeners) {
+			listeners.push(listener);
+		} else {
+			this.flagListeners.set(flag, [listener]);
+		}
+	}
+
+	/**
 	 * Switches a flag for a dev, now.
 	 *
 	 * Writes the player's attribute, so a system that reads `Dev_<flag>` picks the
 	 * change up on its next read — and one listening on the attribute's changed signal
-	 * picks it up sooner than that.
+	 * picks it up sooner than that. Any listener registered under this flag's name is
+	 * called outright, which is the belt to that pair of braces: see `onFlagChanged`.
 	 */
 	public setFlag(player: Player, flag: string, value: boolean): void {
 		if (!this.isDev(player)) return;
 
 		player.SetAttribute(FLAG_PREFIX + flag, value);
+
+		const listeners = this.flagListeners.get(flag);
+		if (!listeners) return;
+
+		for (const listener of listeners) listener(player, value);
 	}
 
 	private welcome(player: Player): void {
@@ -204,11 +242,17 @@ export class DevService implements OnStart {
 		return undefined;
 	}
 
+	/**
+	 * The syntax, and where every flag currently stands.
+	 *
+	 * The states are in here, not only in the line a dev gets on joining, because the
+	 * question after a typo is "which of these are on?" — and a bare `!dev` lands here
+	 * too, since no flag word fails the same test. That makes `!dev` on its own the way
+	 * to read the current state, which is otherwise only visible in the chat log above
+	 * you.
+	 */
 	private printUsage(player: Player): void {
-		const names: string[] = [];
-		for (const [flag] of pairs(DEV_CONFIG.defaultFlags)) names.push(flag);
-
-		print(`[Dev] ${player.Name}: usage is ${PREFIX} <flag> <on|off> — flags: ${names.join(", ")}`);
+		print(`[Dev] ${player.Name}: usage is ${PREFIX} <flag> <on|off> — ${this.describeFlags(player)}`);
 	}
 
 	/** Every flag and where it stands, for the one print a joining dev costs. */

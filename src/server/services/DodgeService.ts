@@ -1,6 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
-import { DODGE_COOLDOWN, DODGE_DISTANCE, DODGE_DURATION, DODGE_SPEED } from "shared/constants";
+import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
@@ -105,7 +105,7 @@ export class DodgeService implements OnStart {
 
 		const now = os.clock();
 		const last = this.lastDodgeAt.get(model);
-		if (!free && last !== undefined && now - last < DODGE_COOLDOWN) {
+		if (!free && last !== undefined && now - last < DODGE_CONFIG.COOLDOWN) {
 			if (DEBUG) print(`[Dodge] ${model.Name}: still cooling down`);
 			return false;
 		}
@@ -143,12 +143,20 @@ export class DodgeService implements OnStart {
 	 */
 	private dodgesFreely(model: Model): boolean {
 		const player = Players.GetPlayerFromCharacter(model);
-		return player !== undefined && this.dev.getFlag(player, "NoCooldown");
+		const free = player !== undefined && this.dev.getFlag(player, "NoCooldown");
+
+		// Printed only when the flag *is* on, so the line's absence is the diagnosis: a
+		// dash still refused on a cooldown, with the chat log saying `NoCooldown on`,
+		// means this never ran — which points at the flag reaching the service rather
+		// than at the cooldown arithmetic below.
+		if (free && DEBUG) print(`[Dodge] ${model.Name}: NoCooldown on — the cooldown is skipped`);
+
+		return free;
 	}
 
 	/**
 	 * Builds the dash itself: a `LinearVelocity` on the root, held for
-	 * {@link DODGE_DURATION} and then destroyed.
+	 * {@link DODGE_CONFIG.DURATION} and then destroyed.
 	 *
 	 * Velocity rather than a `PivotTo`: a teleport moves the model without moving
 	 * its *motion*, so the humanoid — which is still steering toward wherever it
@@ -249,7 +257,7 @@ export class DodgeService implements OnStart {
 
 					print(
 						`[Dodge] ${model.Name}: dashed ${string.format("%.1f", travelled)} of ` +
-							`${string.format("%.1f", DODGE_DISTANCE)} studs`,
+							`${string.format("%.1f", DODGE_CONFIG.DISTANCE)} studs`,
 					);
 				}
 			},
@@ -263,14 +271,14 @@ export class DodgeService implements OnStart {
 
 		if (DEBUG) {
 			print(
-				`[Dodge] ${model.Name}: ${string.format("%.1f", DODGE_DISTANCE)} studs over ` +
-					`${string.format("%.2f", DODGE_DURATION)}s at ${string.format("%.1f", DODGE_SPEED)} studs/s ` +
+				`[Dodge] ${model.Name}: ${string.format("%.1f", DODGE_CONFIG.DISTANCE)} studs over ` +
+					`${string.format("%.2f", DODGE_CONFIG.DURATION)}s at ${string.format("%.1f", DODGE_SPEED)} studs/s ` +
 					`toward (${string.format("%.2f", direction.X)}, ${string.format("%.2f", direction.Y)}, ` +
 					`${string.format("%.2f", direction.Z)})`,
 			);
 		}
 
-		task.delay(DODGE_DURATION, () => {
+		task.delay(DODGE_CONFIG.DURATION, () => {
 			// Only if this dash is still the one in flight: a newer dodge replaces
 			// this record, and that one's own timer is what should end it.
 			if (this.dashes.get(model) === record) {

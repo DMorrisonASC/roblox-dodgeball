@@ -39,6 +39,20 @@ export class CatchController implements OnStart {
 			false,
 			Enum.KeyCode.E,
 		);
+
+		// Printed once at startup, on purpose. "The key does nothing" has two completely
+		// different causes — the bind never happened, or the key never arrived — and this
+		// is the line that tells them apart: if it is missing from the output, nothing
+		// below it can be trusted and the fault is up here.
+		//
+		// Deliberately **not** paired with a `UserInputService` listener on the same key.
+		// The idea was that `gameProcessed` would say whether something else took the
+		// press, but `ContextActionService` marks the inputs it consumes as processed
+		// too — so a press that works and a press the chat box ate both report `true`,
+		// and the second listener cannot tell them apart. A press that reaches here
+		// prints `asking to catch`; one that does not prints nothing, and that is the
+		// whole answer.
+		if (DEBUG) print(`[Catch] E bound`);
 	}
 
 	/** Asks the server to open a catch window. */

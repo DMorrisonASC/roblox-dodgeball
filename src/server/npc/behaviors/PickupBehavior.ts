@@ -1,3 +1,4 @@
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { BEHAVIOR_PICKUP, NpcBehavior } from "../Behavior";
 import type { BallPickupService } from "../../services/BallPickupService";
 import type { BallService } from "../../services/BallService";
@@ -18,7 +19,11 @@ import type { BallService } from "../../services/BallService";
 export function createPickupBehavior(pickups: BallPickupService, balls: BallService): NpcBehavior {
 	return {
 		tag: BEHAVIOR_PICKUP,
-		tickInterval: 0.3,
+
+		// The same period the automatic player collection runs on. This is one
+		// mechanic — "look around for a loose ball" — asked on a timer, and it should
+		// not run at a different rhythm depending on who is asking.
+		tickInterval: BALL_CONFIG.PICKUP_TICK_INTERVAL,
 
 		tick(model) {
 			// A full hand means nothing to do — and worth asking before the search,

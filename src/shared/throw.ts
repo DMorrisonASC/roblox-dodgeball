@@ -1,14 +1,6 @@
 import { Workspace } from "@rbxts/services";
-import {
-	BALL_SIZE,
-	THROW_ARC_SPREAD,
-	THROW_CURVE_ACCELERATION,
-	THROW_CURVE_ANGLE,
-	THROW_CURVE_COMPENSATED,
-	THROW_MAX_SPEED,
-	THROW_MUZZLE_DISTANCE,
-	THROW_SPEED,
-} from "shared/constants";
+import { BALL_SIZE } from "shared/constants";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { LaunchPlan, flatLaunchSpeed, leftAxis, minimumReachSpeed, planLaunch, ThrowArc } from "shared/Trajectory";
 
 /**
@@ -26,8 +18,8 @@ import { LaunchPlan, flatLaunchSpeed, leftAxis, minimumReachSpeed, planLaunch, T
 const TORSO_PARTS = ["UpperTorso", "Torso", "HumanoidRootPart"];
 
 /**
- * Where a throw starts: {@link THROW_MUZZLE_DISTANCE} studs in front of the
- * thrower's torso.
+ * Where a throw starts: {@link BALL_CONFIG.THROW_MUZZLE_DISTANCE} studs in front of
+ * the thrower's torso.
  *
  * The torso, not the head. The head is animated, so idle turns — looking left
  * and right — visibly swing the launch point around. The torso only moves when
@@ -54,7 +46,7 @@ export function getThrowMuzzle(character: Model): Vector3 {
 	const root = character.FindFirstChild("HumanoidRootPart");
 	const forward = root && root.IsA("BasePart") ? root.CFrame.LookVector : anchor.CFrame.LookVector;
 
-	return anchor.CFrame.Position.add(forward.mul(THROW_MUZZLE_DISTANCE));
+	return anchor.CFrame.Position.add(forward.mul(BALL_CONFIG.THROW_MUZZLE_DISTANCE));
 }
 
 function findTorso(character: Model): BasePart | undefined {
@@ -69,8 +61,8 @@ function findTorso(character: Model): BasePart | undefined {
 /** How far the ball's edge sits from the point its centre is aimed at. */
 const BALL_RADIUS = BALL_SIZE / 2;
 
-/** The curve's launch angle, in radians — see {@link THROW_CURVE_ANGLE}. */
-const CURVE_ANGLE = math.rad(THROW_CURVE_ANGLE);
+/** The curve's launch angle, in radians — see {@link BALL_CONFIG.THROW_CURVE_ANGLE}. */
+const CURVE_ANGLE = math.rad(BALL_CONFIG.THROW_CURVE_ANGLE);
 
 /**
  * The point to aim the ball's *centre* at so that its *surface* arrives at
@@ -124,8 +116,8 @@ function centreAimPoint(character: Model, muzzle: Vector3, target: Vector3): Vec
  * those two out of step and the throw misses the mark, which is why they are
  * read from the same variable here.
  *
- * {@link THROW_CURVE_COMPENSATED} decides which of the two curveballs this is.
- * Compensated, the launch cancels the pull's drift and the ball arrives on the
+ * {@link BALL_CONFIG.THROW_CURVE_COMPENSATED} decides which of the two curveballs
+ * this is. Compensated, the launch cancels the pull's drift and the ball arrives on the
  * mark; uncompensated, the launch goes straight at the target and the ball is
  * carried off it. Either way the aim guide simulates the same pull, so it is the
  * landing that moves, never the honesty.
@@ -135,20 +127,25 @@ function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve")
 		const wanted = flatLaunchSpeed(muzzle, aim);
 		if (wanted === undefined) return undefined;
 
-		return planLaunch(muzzle, aim, math.clamp(wanted, THROW_SPEED, THROW_MAX_SPEED), "straight");
+		return planLaunch(
+			muzzle,
+			aim,
+			math.clamp(wanted, BALL_CONFIG.THROW_SPEED, BALL_CONFIG.THROW_MAX_SPEED),
+			"straight",
+		);
 	}
 
 	const wanted = flatLaunchSpeed(muzzle, aim, CURVE_ANGLE);
 	if (wanted === undefined) return undefined;
 
-	// Deliberately no THROW_SPEED floor here. That floor is what keeps the other
-	// two feeling like throws, but a flat launch faster than its own solve
-	// overshoots the mark — and at the curve's angle the solve sits under the
-	// floor for every target inside ~33 studs, which is most of them.
-	return planLaunch(muzzle, aim, math.min(wanted, THROW_MAX_SPEED), "curve", {
+	// Deliberately no BALL_CONFIG.THROW_SPEED floor here. That floor is what keeps
+	// the other two feeling like throws, but a flat launch faster than its own
+	// solve overshoots the mark — and at the curve's angle the solve sits under
+	// the floor for every target inside ~33 studs, which is most of them.
+	return planLaunch(muzzle, aim, math.min(wanted, BALL_CONFIG.THROW_MAX_SPEED), "curve", {
 		angle: CURVE_ANGLE,
-		acceleration: leftAxis(muzzle, aim).mul(THROW_CURVE_ACCELERATION),
-		compensate: THROW_CURVE_COMPENSATED,
+		acceleration: leftAxis(muzzle, aim).mul(BALL_CONFIG.CURVE_STRENGTH),
+		compensate: BALL_CONFIG.THROW_CURVE_COMPENSATED,
 	});
 }
 
@@ -159,10 +156,10 @@ function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve")
  * different questions:
  *
  * - `overhead` asks how fast it has to leave the hand to reach that far, and
- *   takes {@link THROW_SPEED} as a floor so anything in range is thrown with
- *   the same authority. Only a target genuinely out of reach winds it up, to
- *   {@link THROW_MAX_SPEED}, and the reach figure carries
- *   {@link THROW_ARC_SPREAD}.
+ *   takes {@link BALL_CONFIG.THROW_SPEED} as a floor so anything in range is
+ *   thrown with the same authority. Only a target genuinely out of reach winds it
+ *   up, to {@link BALL_CONFIG.THROW_MAX_SPEED}, and the reach figure carries
+ *   {@link BALL_CONFIG.THROW_ARC_SPREAD}.
  * - `straight` is barely thrown at all. Its speed is whatever makes a nearly
  *   flat launch fall onto the mark, so there is nothing to clamp except sanity
  *   bounds.
@@ -205,8 +202,8 @@ export function planPlayerThrow(
 		if (flat !== undefined) return flat;
 	}
 
-	const needed = minimumReachSpeed(muzzle, aim) * THROW_ARC_SPREAD;
-	const speed = math.clamp(needed, THROW_SPEED, THROW_MAX_SPEED);
+	const needed = minimumReachSpeed(muzzle, aim) * BALL_CONFIG.THROW_ARC_SPREAD;
+	const speed = math.clamp(needed, BALL_CONFIG.THROW_SPEED, BALL_CONFIG.THROW_MAX_SPEED);
 
 	// `overhead` for the fallback too: a straight throw with no solution would
 	// otherwise fire off at the geometry behind the target.

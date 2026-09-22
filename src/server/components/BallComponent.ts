@@ -2,33 +2,13 @@ import { OnStart } from "@flamework/core";
 import { BaseComponent, Component } from "@flamework/components";
 import { Players, Workspace } from "@rbxts/services";
 import { THROWER_TOKEN } from "shared/constants";
+import { CATCH_CONFIG } from "shared/config/catch.config";
 import { BallService } from "../services/BallService";
 import { CatchService } from "../services/CatchService";
 
 interface BallAttributes {
 	Armed: Boolean;
 }
-
-/**
- * The parts a catch can be made with: the torso and the arms, and nothing else.
- *
- * Both rig types are named, because a catch that worked on R15 and not on R6
- * would be a rule that changed with the avatar — R15 splits each limb into upper
- * and lower halves, R6 calls them "Right Arm". Legs and the head are absent on
- * purpose: they are what you throw *at*, so if they could catch, a catch would
- * stop being a read of the throw.
- */
-const CATCHABLE_PARTS = new Set<string>([
-	"Torso",
-	"UpperTorso",
-	"LowerTorso",
-	"LeftUpperArm",
-	"LeftLowerArm",
-	"Left Arm",
-	"RightUpperArm",
-	"RightLowerArm",
-	"Right Arm",
-]);
 
 /** What an uncaught hit does. Lethal on purpose — a hit ends the round. */
 const HIT_DAMAGE = 1000;
@@ -74,8 +54,9 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// not a body part: a ball in contact with it is in contact with the torso as
 		// well, and a contact reported against it alone means nothing happened. Left
 		// in, it was the part that killed a catcher — it is not in
-		// {@link CATCHABLE_PARTS}, so the first event of a torso arrival read as a
-		// hit, and the catch that should have saved them arrived after the damage.
+		// {@link CATCH_CONFIG.CATCHABLE_PARTS}, so the first event of a torso arrival
+		// read as a hit, and the catch that should have saved them arrived after the
+		// damage.
 		if (otherPart.Name === "HumanoidRootPart") return;
 
 		// Nobody is hurt by their own ball, and nobody catches it either. Both come
@@ -128,7 +109,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 	/** Whether this touch is a catch: a catchable part, on a character whose window is open. */
 	private canCatch(otherPart: BasePart, character: Model): boolean {
-		if (!CATCHABLE_PARTS.has(otherPart.Name)) return false;
+		if (!CATCH_CONFIG.CATCHABLE_PARTS.has(otherPart.Name)) return false;
 
 		// Only a ball in flight can be caught. One welded into somebody's hand is
 		// already held, and taking it would leave a ball with two welds on it.

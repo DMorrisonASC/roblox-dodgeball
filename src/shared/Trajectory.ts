@@ -18,7 +18,7 @@ import { Workspace } from "@rbxts/services";
  *
  * The curveball deliberately does not use it: for a flat launch the angle *is*
  * the speed control, so the curve gets its own steeper one — see
- * `THROW_CURVE_ANGLE` in `shared/constants.ts`.
+ * `BALL_CONFIG.THROW_CURVE_ANGLE` in `shared/config/ball.config.ts`.
  */
 const MIN_THROW_ANGLE = math.rad(5);
 const MAX_THROW_ANGLE = math.rad(85);
@@ -198,7 +198,7 @@ export function solveLaunchVelocity(
 		// Lower root = the flatter of the two arcs that reach the target. At the
 		// exact minimum speed the roots coincide and the arcs merge; more speed
 		// separates them, so how hard a throw is pushed decides how flat it sits.
-		// See THROW_ARC_SPREAD.
+		// See BALL_CONFIG.THROW_ARC_SPREAD.
 		const flat = math.atan((speedSq - root) / (gravity * distance));
 		angle = math.clamp(flat, MIN_THROW_ANGLE, MAX_THROW_ANGLE);
 	} else {

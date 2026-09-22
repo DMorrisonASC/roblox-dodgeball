@@ -1,6 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, Players, Workspace } from "@rbxts/services";
-import { PICKUP_RADIUS } from "shared/constants";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { resolveDodgeable } from "shared/dodge";
 import { BallService } from "./BallService";
 
@@ -12,16 +12,6 @@ import { BallService } from "./BallService";
  * agree or this service searches an empty list forever.
  */
 const BALL_TAG = "Ball";
-
-/**
- * How often the players are looked over for a loose ball in reach, in seconds.
- *
- * A walking character covers about 16 studs a second, so this wants to be short
- * enough that nobody strides past a ball inside {@link PICKUP_RADIUS} between two
- * looks — and long enough that the scan is not the most expensive thing the
- * server does.
- */
-const PLAYER_PICKUP_PERIOD = 0.3;
 
 /**
  * Picking a ball up off the ground.
@@ -62,7 +52,7 @@ export class BallPickupService implements OnStart {
 				if (character) this.pickupNearest(character);
 			}
 
-			task.wait(PLAYER_PICKUP_PERIOD);
+			task.wait(BALL_CONFIG.PICKUP_TICK_INTERVAL);
 		}
 	}
 
@@ -73,10 +63,10 @@ export class BallPickupService implements OnStart {
 	 * actually has. Refuses quietly: an empty floor and a full hand are ordinary
 	 * states, not errors.
 	 *
-	 * `radius` defaults to {@link PICKUP_RADIUS} so a caller can reach further, or
-	 * not as far, without changing anybody else's reach.
+	 * `radius` defaults to {@link BALL_CONFIG.PICKUP_RADIUS} so a caller can reach
+	 * further, or not as far, without changing anybody else's reach.
 	 */
-	public pickupNearest(model: Model, radius = PICKUP_RADIUS): boolean {
+	public pickupNearest(model: Model, radius = BALL_CONFIG.PICKUP_RADIUS): boolean {
 		// A picker is a living humanoid — the same rule a dodge and a catch use, asked
 		// through the same helper so the three cannot drift apart.
 		const entity = resolveDodgeable(model);

@@ -22,7 +22,7 @@ export function createCatchBehavior(catches: CatchService, balls: BallService): 
 	return {
 		tag: BEHAVIOR_CATCHING,
 
-		// Well under `CATCH_WINDOW` on purpose. The window is refreshed by asking,
+		// Well under `CATCH_CONFIG.WINDOW_SECONDS` on purpose. The window is refreshed by asking,
 		// so this period is how stale a window can get between refreshes — not how
 		// long a catcher is allowed to catch for, which stays the window's job.
 		tickInterval: 0.1,

@@ -1,6 +1,7 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { BALL_NAME, BALL_SIZE, THROWER_TOKEN, THROW_VERTICAL_BOOST } from "shared/constants";
+import { BALL_NAME, BALL_SIZE, THROWER_TOKEN } from "shared/constants";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
@@ -9,8 +10,6 @@ import { TrailEffect } from "shared/TrailEffect";
 import { DevService } from "../dev/DevService";
 import { SphereService } from "./SphereService";
 import { watchThrow } from "../ThrowProbe";
-
-const PROJECTILE_LIFETIME = 15; // seconds before a thrown ball is cleaned up
 
 const DEBUG = true; // prints the mode, speed and angle of each throw
 
@@ -55,7 +54,29 @@ export class BallService implements OnStart {
 	 */
 	private readonly heldBalls = new Map<Model, HeldBall>();
 
-	constructor(private readonly spheres: SphereService, private readonly dev: DevService) {}
+	constructor(private readonly spheres: SphereService, private readonly dev: DevService) {
+		// **Switching `InfiniteBalls` on hands the dev a ball, if their hand is empty.**
+		//
+		// The refill at the end of a throw is not enough on its own. A dev whose hand is
+		// empty has nothing to throw, so a flag that only applies *at the end of a throw*
+		// can never take effect on one — and an empty hand is exactly the state a dev is
+		// in when they reach for this flag, having thrown the ball they had and wanting
+		// another. So the flag answers on the spot, through the same call the hand-out
+		// uses. Switching it off does nothing: the ball already in the hand is theirs to
+		// throw either way.
+		this.dev.onFlagChanged("InfiniteBalls", (player, on) => {
+			if (DEBUG) print(`[Ball] ${player.Name}: InfiniteBalls ${on ? "on" : "off"}`);
+
+			if (!on) return;
+
+			const character = player.Character;
+			if (!character || this.getHeldBall(character)) return;
+
+			this.attachBall(character);
+
+			if (DEBUG) print(`[Ball] ${character.Name}: handed a ball by InfiniteBalls`);
+		});
+	}
 
 	onStart() {
 		this.throwRemote = this.createThrowRemote();
@@ -169,7 +190,7 @@ export class BallService implements OnStart {
 		// drops every ball it takes, so without this the map collects scenery for the
 		// rest of the session; the `isHeld` guard leaves a ball that has since been
 		// caught to its new owner.
-		task.delay(PROJECTILE_LIFETIME, () => {
+		task.delay(BALL_CONFIG.LIFETIME_SECONDS, () => {
 			if (this.isHeld(ball)) return;
 
 			ball.Destroy();
@@ -358,10 +379,10 @@ export class BallService implements OnStart {
 		const plan = planPlayerThrow(model, target, arc, launch);
 
 		// What actually goes on the ball: the solve, plus the launch boost that
-		// covers the engine's own vertical loss. See THROW_VERTICAL_BOOST — the
-		// guide draws the solve, so this is what makes the ball fly the drawn line
-		// instead of sagging below it.
-		const commanded = plan.velocity.add(new Vector3(0, THROW_VERTICAL_BOOST, 0));
+		// covers the engine's own vertical loss. See BALL_CONFIG.THROW_VERTICAL_BOOST —
+		// the guide draws the solve, so this is what makes the ball fly the drawn
+		// line instead of sagging below it.
+		const commanded = plan.velocity.add(new Vector3(0, BALL_CONFIG.THROW_VERTICAL_BOOST, 0));
 
 		if (DEBUG) {
 			print(
@@ -414,7 +435,7 @@ export class BallService implements OnStart {
 
 		this.heldBalls.delete(model);
 
-		task.delay(PROJECTILE_LIFETIME, () => {
+		task.delay(BALL_CONFIG.LIFETIME_SECONDS, () => {
 			// A ball that has been caught since it was thrown is not a projectile any
 			// more — it belongs to whoever is holding it, and how long it lives is
 			// theirs to decide. Without this, the cleanup would take the ball out of a
@@ -427,8 +448,14 @@ export class BallService implements OnStart {
 		// A dev with `InfiniteBalls` never runs out: the throw they just made is answered
 		// with another ball, by the same call the first one arrived by. This is the one
 		// throw in the game that refills itself — every other thrower fetches its next
-		// ball, which is what the loose balls on the floor are for.
-		if (this.hasInfiniteBalls(model)) this.attachBall(model);
+		// ball, which is what the loose balls on the floor are for. It is not the only way
+		// in: switching the flag on gives an empty hand a ball too, which is what a dev who
+		// has just thrown their last one actually needs. See the constructor.
+		if (this.hasInfiniteBalls(model)) {
+			this.attachBall(model);
+
+			if (DEBUG) print(`[Ball] ${model.Name}: refilled by InfiniteBalls`);
+		}
 
 		return true;
 	}

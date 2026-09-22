@@ -1,7 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 import Net from "@rbxts/net";
 import { Players, UserInputService, Workspace } from "@rbxts/services";
-import { DODGE_DOUBLE_TAP_WINDOW } from "shared/constants";
+import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { flattenToGround } from "shared/dodge";
 import { events } from "shared/networking";
 
@@ -52,6 +52,14 @@ export class DodgeController implements OnStart {
 
 			this.onTap(input.KeyCode);
 		});
+
+		// Printed once at startup, for the same reason as the catch's bind line: it
+		// separates "no double-tap ever arrived" from "a double-tap arrived and did
+		// nothing". A tap is dropped *silently* while the chat box has focus — that is
+		// what `gameProcessed` means — and having just typed a dev command is exactly
+		// how a player ends up in that state, so this line is also how that shows up as
+		// the cause rather than as a broken dodge.
+		if (DEBUG) print(`[Dodge] listening for double-taps`);
 	}
 
 	/**
@@ -74,7 +82,7 @@ export class DodgeController implements OnStart {
 		const now = os.clock();
 		const last = this.lastTapAt.get(key);
 
-		if (last !== undefined && now - last <= DODGE_DOUBLE_TAP_WINDOW) {
+		if (last !== undefined && now - last <= DODGE_CONFIG.DOUBLE_TAP_WINDOW) {
 			// The pair is spent, so a third tap has to start a new one — tapping in a
 			// rhythm cannot chain dodges.
 			this.lastTapAt.delete(key);
