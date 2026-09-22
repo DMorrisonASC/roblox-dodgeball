@@ -1,9 +1,11 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
+import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { DevService } from "../dev/DevService";
+import { DodgeService } from "./DodgeService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
 const DEBUG = true;
@@ -59,7 +61,27 @@ export class CatchService implements OnStart {
 	 */
 	private readonly alwaysCatching = new Set<Player>();
 
-	constructor(private readonly dev: DevService) {}
+	/**
+	 * When each model's last catch window stopped counting, keyed on the model.
+	 *
+	 * Written in **one** place, {@link consume}, which is already the only way a window is
+	 * spent, dropped or found expired — so there is no path that closes a window without
+	 * leaving a time here. Read by {@link getLastCatchWindowCloseTime}, which is what a dodge
+	 * is gated on.
+	 */
+	private readonly lastCatchCloseAt = new Map<Model, number>();
+
+	constructor(private readonly dev: DevService, private readonly dodges: DodgeService) {
+		// The dodge is gated on the catch, and this is where the catch side of that is handed
+		// over: the two services are gated on each other, and Flamework errors on a circular
+		// dependency, so exactly one of them can hold the other. This one holds the dodge
+		// service — which is what lets {@link attemptCatch} ask it directly — and gives itself
+		// back the other way, as the thing the dodge service asks about catch windows.
+		//
+		// In the constructor rather than `onStart` so that there is no frame in which one
+		// service is running and the other has not been told about it.
+		this.dodges.watchCatchState(this);
+	}
 
 	public onStart() {
 		events.Server.OnEvent("catch", (player) => {
@@ -103,6 +125,12 @@ export class CatchService implements OnStart {
 			if (DEBUG) print(`[Catch] ${model.Name}: no living humanoid to catch with`);
 			return false;
 		}
+
+		// Before anything opens, and before the dev's endless window: this gates the *entry*
+		// into catching, so it holds for a dev exactly as it holds for anybody else — the dev
+		// flags move each action's own clock, and this is not one of those. See
+		// {@link ACTION_CONFIG.ACTION_LOCKOUT_SECONDS}.
+		if (this.blocksCatch(model)) return false;
 
 		// A dev testing a catch does not need good timing: with the flag on, one press
 		// is a window that stays open until a ball arrives.
@@ -166,7 +194,9 @@ export class CatchService implements OnStart {
 		if (player && this.alwaysCatching.has(player)) {
 			if (this.dev.getFlag(player, "InfiniteCatch")) return true;
 
-			this.alwaysCatching.delete(player);
+			// The flag has gone off, so the endless window stops counting here — a close like
+			// any other, and it goes through `consume` so that it is recorded like any other.
+			this.consume(model);
 		}
 
 		const window = this.windows.get(model);
@@ -189,6 +219,42 @@ export class CatchService implements OnStart {
 	}
 
 	/**
+	 * `os.clock` seconds at which `model`'s catch window stopped counting, or `undefined` if
+	 * it has never had one open.
+	 *
+	 * Public because the dodge is gated on it; handed over as part of
+	 * {@link DodgeService.watchCatchState} rather than the dodge service reaching in here.
+	 */
+	public getLastCatchWindowCloseTime(model: Model): number | undefined {
+		return this.lastCatchCloseAt.get(model);
+	}
+
+	/**
+	 * Whether `model`'s dodge is in the way of a catch: in flight now, or ended within the
+	 * lockout.
+	 *
+	 * The mirror of the check `DodgeService` makes on this service, and deliberately written
+	 * the same way — ask the owner for its clock, apply the one shared constant — so the two
+	 * rules cannot be read as two different rules.
+	 */
+	private blocksCatch(model: Model): boolean {
+		if (this.dodges.isDodging(model)) {
+			if (DEBUG) print(`[Catch] ${model.Name}: refused — a dodge is in flight`);
+			return true;
+		}
+
+		const endedAt = this.dodges.getLastDodgeEndTime(model);
+		if (endedAt === undefined) return false;
+
+		const since = os.clock() - endedAt;
+		if (since >= ACTION_CONFIG.ACTION_LOCKOUT_SECONDS) return false;
+
+		if (DEBUG) print(`[Catch] ${model.Name}: refused — a dodge ended ${string.format("%.2f", since)}s ago`);
+
+		return true;
+	}
+
+	/**
 	 * Spends `model`'s window, so one attempt cannot catch two balls.
 	 *
 	 * Also how a window is dropped without being spent — on expiry, on death, on
@@ -196,15 +262,30 @@ export class CatchService implements OnStart {
 	 * watch goes with it, so nothing outlives the window it belonged to.
 	 */
 	public consume(model: Model): void {
+		const now = os.clock();
+
 		// An endless window is spent the way any other is spent — one press is still
 		// one catch — so leaving the set is part of spending it.
 		const player = Players.GetPlayerFromCharacter(model);
-		if (player) this.alwaysCatching.delete(player);
+		const endless = player !== undefined && this.alwaysCatching.delete(player);
 
 		const window = this.windows.get(model);
-		if (!window) return;
 
-		window.death.Disconnect();
-		this.windows.delete(model);
+		// Nothing was open: most calls are the catch asking after a ball that never came,
+		// and a close that never happened must not be recorded as one.
+		if (!window && !endless) return;
+
+		if (window) {
+			window.death.Disconnect();
+			this.windows.delete(model);
+		}
+
+		// **When the window stopped counting**, which is not the same thing as this instant:
+		// an expired window is only noticed by whoever next asks, and recording *that* moment
+		// would make a window that ended a minute ago look like it had just closed — and would
+		// shut the dodge for half a second for no reason. So the earlier of the two: its own
+		// expiry, or the moment it was spent or dropped. An endless window has no expiry, so
+		// for that one it is now.
+		this.lastCatchCloseAt.set(model, window ? math.min(now, window.expiresAt) : now);
 	}
 }

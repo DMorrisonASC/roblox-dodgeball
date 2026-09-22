@@ -39,8 +39,24 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
 export class DodgeController implements OnStart {
 	private readonly player = Players.LocalPlayer;
 
-	/** When each key was last tapped, in `os.clock` seconds. */
-	private readonly lastTapAt = new Map<Enum.KeyCode, number>();
+	/**
+	 * The last tap made, while it is still young enough to pair with the next one.
+	 *
+	 * One tap, not one per key: a pair is two taps *in a row*, so a tap that is not the very
+	 * next one to arrive can never pair with anything and there is no reason to remember it.
+	 */
+	private lastTap?: { key: Enum.KeyCode; at: number };
+
+	/**
+	 * The keys currently held down.
+	 *
+	 * `InputBegan` does not mean "the player pressed this key once". The engine re-sends it
+	 * for a key that never came up — while a held key repeats, when the window regains focus,
+	 * when a chat box closes and the key state is handed back to the game. Counted as taps,
+	 * any two of those inside the window are a dodge nobody asked for, which is what holding
+	 * `W` and getting a dash is. A key already in here is not a tap.
+	 */
+	private readonly heldKeys = new Set<Enum.KeyCode>();
 
 	/** Resolved on first use: `Client.Get` waits for the server's remote. */
 	private dodgeRemote?: ClientRemotes["dodge"];
@@ -50,8 +66,18 @@ export class DodgeController implements OnStart {
 			// Typing in chat, or a menu is open: not a movement key, whatever it was.
 			if (gameProcessed) return;
 
-			this.onTap(input.KeyCode);
+			this.onDown(input.KeyCode);
 		});
+
+		// The key-ups are what make a *tap* out of a press, so they are taken however the
+		// engine labels them: a release is unambiguous, and one delivered while a menu has
+		// focus is still a release.
+		UserInputService.InputEnded.Connect((input) => this.heldKeys.delete(input.KeyCode));
+
+		// Losing focus hands the key-ups to whatever took it, so a key held at that moment
+		// would sit in the set for the rest of the session and that direction could never
+		// dodge again. Nothing is more certain than the window not having the key.
+		UserInputService.WindowFocusReleased.Connect(() => this.heldKeys.clear());
 
 		// Printed once at startup, for the same reason as the catch's bind line: it
 		// separates "no double-tap ever arrived" from "a double-tap arrived and did
@@ -63,10 +89,31 @@ export class DodgeController implements OnStart {
 	}
 
 	/**
-	 * Counts one press of `key`, and asks for a dodge if it completes a pair.
+	 * Registers a press of `key`, and counts it as a tap only if the key was not already down.
 	 *
-	 * Taps of different keys are kept apart, so `W` then `A` is two first taps
-	 * rather than a dodge — the direction has to be the key you hit twice.
+	 * The gate that makes a dodge two *presses* rather than one press held: whatever the
+	 * engine's reason for announcing the same held key twice, the second announcement is not
+	 * something the player did, and only a release can clear the way for a new tap.
+	 */
+	private onDown(key: Enum.KeyCode): void {
+		if (directionAxis(key) === undefined) return;
+
+		if (this.heldKeys.has(key)) return;
+
+		this.heldKeys.add(key);
+
+		this.onTap(key);
+	}
+
+	/**
+	 * Counts one tap of `key`, and asks for a dodge if it completes a pair.
+	 *
+	 * Called only for a press that followed a release, so what arrives here is a tap rather
+	 * than a press however many times the engine announced the key.
+	 *
+	 * The pair is the **last two taps in a row**, so the key you hit twice has to be the only
+	 * thing you hit. Strafing `A` `D` `A` puts a tap of the other key between the two `A`s, so
+	 * each of those is a first tap and none of them is a dodge.
 	 */
 	private onTap(key: Enum.KeyCode): void {
 		if (directionAxis(key) === undefined) return;
@@ -75,22 +122,23 @@ export class DodgeController implements OnStart {
 		// what was counted: half a pair held across a respawn should not become a
 		// dodge the moment the player is back on their feet.
 		if (this.findHumanoid() === undefined) {
-			this.lastTapAt.clear();
+			this.lastTap = undefined;
 			return;
 		}
 
 		const now = os.clock();
-		const last = this.lastTapAt.get(key);
+		const last = this.lastTap;
 
-		if (last !== undefined && now - last <= DODGE_CONFIG.DOUBLE_TAP_WINDOW) {
-			// The pair is spent, so a third tap has to start a new one — tapping in a
-			// rhythm cannot chain dodges.
-			this.lastTapAt.delete(key);
+		// Whatever was pending is spent either way: this tap either completes the pair or
+		// replaces the one it interrupted, so there is never a third tap waiting behind it.
+		this.lastTap = undefined;
+
+		if (last !== undefined && last.key === key && now - last.at <= DODGE_CONFIG.DOUBLE_TAP_WINDOW) {
 			this.requestDodge(key);
 			return;
 		}
 
-		this.lastTapAt.set(key, now);
+		this.lastTap = { key, at: now };
 	}
 
 	/**

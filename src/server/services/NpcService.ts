@@ -4,6 +4,7 @@ import { THROWER_TOKEN } from "shared/constants";
 import { NPC_TAG, NpcBehavior } from "../npc/Behavior";
 import { createCatchBehavior } from "../npc/behaviors/CatchBehavior";
 import { createPickupBehavior } from "../npc/behaviors/PickupBehavior";
+import { createRespawnBehavior } from "../npc/behaviors/RespawnBehavior";
 import { createThrowBehavior } from "../npc/behaviors/ThrowBehavior";
 import { BallPickupService } from "./BallPickupService";
 import { BallService } from "./BallService";
@@ -62,6 +63,11 @@ export class NpcService implements OnStart {
 			createCatchBehavior(catches, balls),
 			createThrowBehavior(balls),
 			createPickupBehavior(pickups, balls),
+			// The one behavior that needs something no other one does: the ball the rig was
+			// holding, so it can be taken out of the copy this makes. It re-enters this service
+			// the way any other rig does — by putting `NPC` on a model and letting the
+			// added-signal start its loop — so there is no callback and no hole in the registry.
+			createRespawnBehavior(balls),
 		];
 	}
 
@@ -184,6 +190,34 @@ export class NpcService implements OnStart {
 		}
 
 		this.forget(model, loop);
+
+		// A death is the one event a behavior cannot see for itself: a behavior is only ever run
+		// while its NPC is alive, and the loop ends on exactly the fact a death-reactive behavior
+		// would have to tick on. So it is passed on from here — and deliberately after `forget`,
+		// because a behavior that brings the model back starts a *new* loop, which must not be
+		// mistaken for this one on its way out.
+		if (humanoid.Health <= 0) this.announceDeath(model);
+	}
+
+	/**
+	 * Tells the behaviors the model still wears that its humanoid has died.
+	 *
+	 * The tags are asked about even though the health is already known to have run out: the
+	 * loop can end with both true at once — the tag taken off on the frame the model died —
+	 * and in that case nothing was interrupted, so nothing gets a say.
+	 *
+	 * A model that has left the world is skipped as a whole. There is nothing there to react
+	 * to, and the one behavior that would react would be standing up a rig that no longer
+	 * exists.
+	 */
+	private announceDeath(model: Model): void {
+		if (model.Parent === undefined) return;
+
+		if (DEBUG) print(`[NPC] ${model.Name}: died`);
+
+		for (const behavior of this.behaviors) {
+			if (model.HasTag(behavior.tag)) behavior.onDied?.(model);
+		}
 	}
 
 	/**

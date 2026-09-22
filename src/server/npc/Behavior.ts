@@ -25,6 +25,15 @@ export const BEHAVIOR_THROWING = "Behavior_Throwing";
 export const BEHAVIOR_PICKUP = "Behavior_Pickup";
 
 /**
+ * Enables the respawn behavior: the rig gets up again after it is killed.
+ *
+ * The one behavior here that is not a mechanic of the *game* — a player is
+ * respawned by the engine and an NPC has no such thing, so this is what a test
+ * rig gets instead. See `RespawnBehavior`.
+ */
+export const BEHAVIOR_RESPAWN = "Behavior_Respawn";
+
+/**
  * One thing an NPC can do, asked to do it on a timer.
  *
  * The behavior's own `tag` is the tag that enables it, rather than a separate
@@ -72,4 +81,29 @@ export interface NpcBehavior {
 	 * A method for the same reason `tick` is.
 	 */
 	prepare?(model: Model): void;
+
+	/**
+	 * Optional: this model's humanoid has died.
+	 *
+	 * The one event a behavior cannot see for itself. A behavior is only ever run
+	 * while its NPC is alive — the interval it is asked on stops when the health
+	 * does — so a behavior that has something to do *about* a death has to be told
+	 * about it from outside.
+	 *
+	 * Every behavior the model still wears is told, not only the one that has a use
+	 * for it: a death is a fact about the model, and what to make of it is the
+	 * hook's business.
+	 *
+	 * Called only when the health ran out. An NPC that stopped for any other reason
+	 * — its tag was taken off, or it left the world — is being switched off rather
+	 * than interrupted, and there is nothing for a behavior to react to.
+	 *
+	 * The loop that ran the behaviors has already finished by the time this is
+	 * called, so a behavior that brings the model back has to see that a *new* loop
+	 * starts. See `RespawnBehavior`, which does it by putting the model's tags back
+	 * on a new rig — the same arrival `NpcService` already watches for.
+	 *
+	 * A method for the same reason `tick` is.
+	 */
+	onDied?(model: Model): void;
 }

@@ -1,5 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
+import { ACTION_CONFIG } from "shared/config/action.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
@@ -33,6 +34,25 @@ interface ActiveDash {
 }
 
 /**
+ * What a dodge has to know about catching, answered by whoever owns the catch window.
+ *
+ * Declared as **methods**, which is the opposite of {@link ActiveDash} and right for the
+ * same reason: the only thing that implements this is `CatchService` itself, passed as an
+ * instance, and a class's methods satisfy a method signature. An object literal could
+ * not — it would need function properties.
+ */
+export interface CatchState {
+	/** Whether `model` has a catch window open at this instant. */
+	isCatching(model: Model): boolean;
+
+	/**
+	 * `os.clock` seconds at which `model`'s catch window stopped counting, or `undefined`
+	 * if it has never had one open.
+	 */
+	getLastCatchWindowCloseTime(model: Model): number | undefined;
+}
+
+/**
  * Dodging, decided by the server.
  *
  * `requestDodge` is the entry point for everything: the remote handler below and
@@ -62,7 +82,40 @@ export class DodgeService implements OnStart {
 	 */
 	private readonly dashes = new Map<Model, ActiveDash>();
 
+	/**
+	 * When each model's last dash stopped, keyed on the model.
+	 *
+	 * **Not {@link lastDodgeAt},** which is when a dodge *started* and exists only to time
+	 * the cooldown between two of them. This one is the moment a dash was over, which is
+	 * what a catch is gated on — and the two are written at opposite ends of a dash for
+	 * that reason: the cooldown is charged when the request is accepted, this when the dash
+	 * ends, however it ends.
+	 */
+	private readonly lastDodgeEndAt = new Map<Model, number>();
+
+	/**
+	 * The catch window, as answered by the service that owns it.
+	 *
+	 * Handed over rather than injected: the two services are gated on each other, and
+	 * Flamework **errors on a circular dependency** — so `CatchService` holds this service
+	 * and this is how the other direction is closed. Unset until `CatchService` is
+	 * constructed, which is during ignite and long before anything can dodge; while it is
+	 * unset nothing is refused, because a service that does not exist cannot be holding a
+	 * window open.
+	 */
+	private catchState?: CatchState;
+
 	constructor(private readonly dev: DevService) {}
+
+	/**
+	 * Hands this service the catch window it has to respect. Called by `CatchService` itself.
+	 *
+	 * A handover rather than a subscription: there is one catch window and it has one owner,
+	 * so whatever is passed here is what a dodge is gated on from then on.
+	 */
+	public watchCatchState(state: CatchState): void {
+		this.catchState = state;
+	}
 
 	public onStart() {
 		events.Server.OnEvent("dodge", (player, direction) => {
@@ -98,6 +151,13 @@ export class DodgeService implements OnStart {
 		// entry behind. `Once` because dying happens once.
 		entity.humanoid!.Died.Once(() => this.lastDodgeAt.delete(model));
 
+		// The other action has the first word, and it is asked before the cooldown rather
+		// than after: a dodge refused because a catch is in the way has not happened, so it
+		// must not be charged for one. Deliberately not skipped for a dev with `NoCooldown` —
+		// that flag buys freedom from the *dodge's* own clock, and this is a rule about the two
+		// actions rather than a clock of either one. Turn the flag off to test it.
+		if (this.blocksDodge(model)) return false;
+
 		// A dev with `NoCooldown` drops the clock entirely — the read here *and* the
 		// write below, because keeping only one of them would mean charging a cooldown
 		// nobody checks, or checking one that was never charged.
@@ -130,6 +190,63 @@ export class DodgeService implements OnStart {
 		if (!free) this.lastDodgeAt.set(model, now);
 
 		this.startDash(model, entity, heading);
+
+		return true;
+	}
+
+	/**
+	 * Whether a dash is in flight for `model`.
+	 *
+	 * The dashes table *is* the answer: an entry exists only while a dash does, and every
+	 * way a dash ends goes through {@link endDash}, which drops the entry. A second set of
+	 * active dashers would be a second copy of that fact to keep in step.
+	 */
+	public isDodging(model: Model): boolean {
+		return this.dashes.has(model);
+	}
+
+	/**
+	 * `os.clock` seconds at which `model`'s last dash ended, or `undefined` if it has never
+	 * dashed.
+	 *
+	 * The fact a catch is gated on: a dodge that has *finished* still keeps a catch shut for
+	 * {@link ACTION_CONFIG.ACTION_LOCKOUT_SECONDS}, and that is measured from here rather than
+	 * from `lastDodgeAt` so it means the same thing whatever the dodge's duration is.
+	 */
+	public getLastDodgeEndTime(model: Model): number | undefined {
+		return this.lastDodgeEndAt.get(model);
+	}
+
+	/**
+	 * Whether `model`'s catch is in the way of a dodge: open now, or closed within the
+	 * lockout.
+	 *
+	 * Both halves are one comparison over the catch's own timing, which is why the catch
+	 * state is asked for its clock rather than told what the rule is — the window is the
+	 * catch's to know about, the lockout is the reader's to apply, and
+	 * {@link ACTION_CONFIG.ACTION_LOCKOUT_SECONDS} is the one value either of them reads.
+	 */
+	private blocksDodge(model: Model): boolean {
+		const state = this.catchState;
+		if (!state) return false;
+
+		if (state.isCatching(model)) {
+			if (DEBUG) print(`[Dodge] ${model.Name}: refused — a catch window is open`);
+			return true;
+		}
+
+		const closedAt = state.getLastCatchWindowCloseTime(model);
+		if (closedAt === undefined) return false;
+
+		const since = os.clock() - closedAt;
+		if (since >= ACTION_CONFIG.ACTION_LOCKOUT_SECONDS) return false;
+
+		if (DEBUG) {
+			print(
+				`[Dodge] ${model.Name}: refused — the catch window closed ` +
+					`${string.format("%.2f", since)}s ago`,
+			);
+		}
 
 		return true;
 	}
@@ -298,6 +415,12 @@ export class DodgeService implements OnStart {
 		if (!record) return;
 
 		this.dashes.delete(model);
+
+		// When the dash stopped counting, which is *this* instant for every way one can end:
+		// its own timer, a newer dodge replacing it, or its dasher dying. Stamped before the
+		// cleanup so that anything the cleanup wakes sees the dash as already over.
+		this.lastDodgeEndAt.set(model, os.clock());
+
 		record.finish();
 	}
 }
