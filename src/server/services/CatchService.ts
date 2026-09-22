@@ -3,7 +3,7 @@ import { Players } from "@rbxts/services";
 import { CATCH_WINDOW } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
-import { DevService } from "./DevService";
+import { DevService } from "../dev/DevService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
 const DEBUG = true;
@@ -154,7 +154,7 @@ export class CatchService implements OnStart {
 	 */
 	public isCatching(model: Model): boolean {
 		// The endless case first, and the flag asked afresh rather than remembered:
-		// that is what makes `/dev InfiniteCatch off` take effect on the next ball
+		// that is what makes `!dev InfiniteCatch off` take effect on the next ball
 		// instead of on the next press.
 		const player = Players.GetPlayerFromCharacter(model);
 		if (player && this.alwaysCatching.has(player)) {

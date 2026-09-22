@@ -17,8 +17,8 @@
 		"roblox-dodgeball:out/client/controllers/CatchController@CatchController": "client/controllers/CatchController@CatchController",
 		"roblox-dodgeball:out/server/services/CatchService@CatchService": "server/services/CatchService@CatchService",
 		"roblox-dodgeball:out/server/services/NpcService@NpcService": "server/services/NpcService@NpcService",
-		"roblox-dodgeball:out/server/services/DevService@DevService": "server/services/DevService@DevService",
-		"roblox-dodgeball:out/server/services/BallPickupService@BallPickupService": "server/services/BallPickupService@BallPickupService"
+		"roblox-dodgeball:out/server/services/BallPickupService@BallPickupService": "server/services/BallPickupService@BallPickupService",
+		"roblox-dodgeball:out/server/dev/DevService@DevService": "server/dev/DevService@DevService"
 	},
 	"metadata": {}
 }

@@ -1,8 +1,10 @@
 import { OnStart, Service } from "@flamework/core";
+import { Players } from "@rbxts/services";
 import { DODGE_COOLDOWN, DODGE_DISTANCE, DODGE_DURATION, DODGE_SPEED } from "shared/constants";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
+import { DevService } from "../dev/DevService";
 
 /** Prints what every dodge request did, and why it did nothing. */
 const DEBUG = true;
@@ -60,6 +62,8 @@ export class DodgeService implements OnStart {
 	 */
 	private readonly dashes = new Map<Model, ActiveDash>();
 
+	constructor(private readonly dev: DevService) {}
+
 	public onStart() {
 		events.Server.OnEvent("dodge", (player, direction) => {
 			if (DEBUG) print(`[Dodge] ${player.Name} asked to dodge ${direction}`);
@@ -94,9 +98,14 @@ export class DodgeService implements OnStart {
 		// entry behind. `Once` because dying happens once.
 		entity.humanoid!.Died.Once(() => this.lastDodgeAt.delete(model));
 
+		// A dev with `NoCooldown` drops the clock entirely — the read here *and* the
+		// write below, because keeping only one of them would mean charging a cooldown
+		// nobody checks, or checking one that was never charged.
+		const free = this.dodgesFreely(model);
+
 		const now = os.clock();
 		const last = this.lastDodgeAt.get(model);
-		if (last !== undefined && now - last < DODGE_COOLDOWN) {
+		if (!free && last !== undefined && now - last < DODGE_COOLDOWN) {
 			if (DEBUG) print(`[Dodge] ${model.Name}: still cooling down`);
 			return false;
 		}
@@ -116,12 +125,25 @@ export class DodgeService implements OnStart {
 
 		// Charged now, before the dash exists: the request has been accepted at this
 		// point, and charging it after the fact would leave a window in which two
-		// requests can both pass the check.
-		this.lastDodgeAt.set(model, now);
+		// requests can both pass the check. Nothing is charged for a dev who is not
+		// gated by it in the first place.
+		if (!free) this.lastDodgeAt.set(model, now);
 
 		this.startDash(model, entity, heading);
 
 		return true;
+	}
+
+	/**
+	 * Whether `model` is a dev who has switched `NoCooldown` on.
+	 *
+	 * Asked of the model rather than of the remote's player, so the same question
+	 * could be asked of an NPC's AI — an NPC has no player, so it simply never dodges
+	 * for free.
+	 */
+	private dodgesFreely(model: Model): boolean {
+		const player = Players.GetPlayerFromCharacter(model);
+		return player !== undefined && this.dev.getFlag(player, "NoCooldown");
 	}
 
 	/**

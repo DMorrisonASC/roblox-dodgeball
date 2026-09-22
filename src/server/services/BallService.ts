@@ -6,7 +6,7 @@ import { REMOTES } from "shared/remotes";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
 import { LaunchPlan, ThrowArc } from "shared/Trajectory";
 import { TrailEffect } from "shared/TrailEffect";
-import { DevService } from "./DevService";
+import { DevService } from "../dev/DevService";
 import { SphereService } from "./SphereService";
 import { watchThrow } from "../ThrowProbe";
 
@@ -323,18 +323,17 @@ export class BallService implements OnStart {
 	 * `Player` exists to take a character from — plus the dev check that lets a
 	 * flagged dev throw with an empty hand.
 	 *
-	 * **Throwing empties the hand, and nothing in here fills it again.** A ball comes
-	 * from the hand-out on join, from a pickup, from a catch, or from that dev flag —
-	 * so a ball thrown is a ball that has to be fetched back, and the only two endless
-	 * supplies in the game are a flagged dev's and a throwing NPC's (`ThrowBehavior`
-	 * asks for its own).
+	 * **Throwing empties the hand.** A ball comes from the hand-out on join, from a
+	 * pickup, from a catch — or, for a dev with `InfiniteBalls`, from the throw they
+	 * just made, which is the one throw in the game that answers itself. Everyone else
+	 * fetches the next one, which is what the loose balls on the floor are for.
 	 *
 	 * Returns whether a ball went. An empty hand is not an error: a behavior may
 	 * ask while there is nothing to throw.
 	 */
 	public throwBall(model: Model, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3): boolean {
-		const held = this.heldBallFor(model);
-		if (!held) return false;
+		const held = this.heldBalls.get(model);
+		if (!held || held.ball.Parent !== model) return false;
 
 		const ball = held.ball;
 
@@ -425,6 +424,12 @@ export class BallService implements OnStart {
 			ball.Destroy();
 		});
 
+		// A dev with `InfiniteBalls` never runs out: the throw they just made is answered
+		// with another ball, by the same call the first one arrived by. This is the one
+		// throw in the game that refills itself — every other thrower fetches its next
+		// ball, which is what the loose balls on the floor are for.
+		if (this.hasInfiniteBalls(model)) this.attachBall(model);
+
 		return true;
 	}
 
@@ -465,33 +470,15 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * What `model` is holding — issuing a ball first if a dev's `InfiniteBalls` says
-	 * they should have one anyway.
+	 * Whether `model` is a dev who has switched `InfiniteBalls` on.
 	 *
-	 * One of only two endless supplies of balls in the game, and the only one that is
-	 * a *flag*: the other is a throwing NPC asking for its own in `ThrowBehavior`. A
-	 * plain player throws what they were handed and has to fetch the next one, which
-	 * is what the loose balls on the floor and `BallPickupService` are for.
-	 *
-	 * The flag is read here rather than back at the remote, so the bypass sits on the
-	 * one path every throw already goes down: an NPC behaves exactly as before, and a
-	 * dev gets the same result whether or not there was a ball in hand when they
-	 * clicked.
-	 *
-	 * Asking about a dev is the only reason a `Player` appears in here at all — the
-	 * flags live on players, and an NPC never has one, so an NPC simply never takes
-	 * this branch.
+	 * Asking about a dev is the only reason a `Player` appears in this file at all —
+	 * the flags live on players, and an NPC never has one, so an NPC simply never
+	 * takes this branch.
 	 */
-	private heldBallFor(model: Model): HeldBall | undefined {
-		const held = this.heldBalls.get(model);
-		if (held && held.ball.Parent === model) return held;
-
+	private hasInfiniteBalls(model: Model): boolean {
 		const player = Players.GetPlayerFromCharacter(model);
-		if (!player || !this.dev.getFlag(player, "InfiniteBalls")) return undefined;
-
-		this.attachBall(model);
-
-		return this.heldBalls.get(model);
+		return player !== undefined && this.dev.getFlag(player, "InfiniteBalls");
 	}
 
 	/** Whether `ball` is in somebody's hand right now. */
