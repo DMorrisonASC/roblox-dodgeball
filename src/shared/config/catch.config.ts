@@ -16,6 +16,13 @@
  * purpose: they are what you throw *at*, so if they could catch, a catch would
  * stop being a read of the throw.
  *
+ * **Absent from this list means "cannot catch", not "a contact with it is ignored".**
+ * A hit on the head or on a leg is still lethal and is still how somebody gets taken
+ * out. The one thing that overrides it is a catch, because a catch is decided by the
+ * *whole contact* rather than by whichever part the engine happened to report first:
+ * a ball that also touches a part in this list, while its target's window is open, is
+ * caught and nothing lands. See `BallComponent.handleTouch`.
+ *
  * `HumanoidRootPart` is deliberately absent too, and for a sharper reason than the
  * rest: it sits *inside* the torso, so a ball in contact with it is in contact with
  * the torso as well and a report against it alone means nothing happened.

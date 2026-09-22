@@ -111,6 +111,9 @@ export class DevService implements OnStart {
 	 * told. What the new value means is the listener's business, and so is whether it
 	 * already happens to be in that state; the listener is called on every switch, not
 	 * only on a change.
+	 *
+	 * Each listener is called in **protected mode**, so one that throws is warned about
+	 * and the others still run. See `setFlag`.
 	 */
 	public onFlagChanged(flag: string, listener: (player: Player, on: boolean) => void): void {
 		const listeners = this.flagListeners.get(flag);
@@ -137,7 +140,18 @@ export class DevService implements OnStart {
 		const listeners = this.flagListeners.get(flag);
 		if (!listeners) return;
 
-		for (const listener of listeners) listener(player, value);
+		for (const listener of listeners) {
+			// Each one protected, and on its own. This is the harness everything else is
+			// debugged through, so a listener that throws must not take the command — or its
+			// siblings — down with it. The attribute is already written by the time this
+			// runs, so a failure costs that one system's reaction and nothing else: the flag
+			// is still on, and every reader of `Dev_<flag>` still sees it.
+			//
+			// `pcall` returns the error rather than printing it, so it is put in the warning
+			// by hand — an error swallowed without a word is worse than no protection.
+			const [ok, err] = pcall(() => listener(player, value));
+			if (!ok) warn(`[Dev] a listener for ${flag} failed: ${tostring(err)}`);
+		}
 	}
 
 	private welcome(player: Player): void {

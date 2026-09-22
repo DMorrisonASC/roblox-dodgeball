@@ -17,27 +17,96 @@
 export const BALL_CONFIG = {
 	// ---------------------------------------------------------------- physics
 
-	/**
-	 * **Placeholder.** Fraction of its speed a flying ball keeps per 1/60 s tick,
-	 * if air drag is ever applied. Nothing reads it: a thrown ball flies under
-	 * gravity alone today, which is what makes every arc land on its mark.
+	/*
+	 * **Air drag is deliberately absent, and must stay absent.**
+	 *
+	 * There is no velocity decay, no drag force and no other mid-flight velocity change
+	 * anywhere in this file or in the code that reads it. That is a rule rather than an
+	 * oversight: the throw solver (`shared/Trajectory.ts`) and the client's aim guide both
+	 * assume pure ballistics, so a ball that slowed down in the air would fly a different
+	 * curve from the one the guide drew — and the guide would then be lying rather than
+	 * merely approximate.
+	 *
+	 * Everything below acts on the ball once it has *landed*.
 	 */
-	VELOCITY_DECAY: 0.985,
 
 	/**
-	 * **Placeholder.** Speed below which a ball is treated as stopped, in studs
-	 * per second, rather than as still moving imperceptibly.
+	 * How much speed a grounded ball loses per second, in studs per second squared.
+	 * **This is the knob that stops a ball, and the first one to tune.**
+	 *
+	 * It has to be here because the engine does not model rolling resistance. A ball
+	 * rolling without slipping has no relative motion at the point of contact, so friction
+	 * has nothing to push against and almost none of the ball's energy leaves it — which is
+	 * why raising {@link BALL_CONFIG.GROUND_FRICTION} barely changed how long a ball rolled.
+	 * Nothing in the engine stops a roll; this does.
+	 *
+	 * Applied by `BallService`'s settle loop to any loose ball that is on the floor, as a
+	 * **constant deceleration** rather than a proportional one, because that is what rolling
+	 * resistance physically is (about `μ·g`). Two consequences worth knowing:
+	 *
+	 * - A ball stops in `landing speed / this` seconds, so the distance it covers first is
+	 *   `v² / 2 · this` — doubling this quarters every roll.
+	 * - A gently rolled ball stops almost at once and a hard one takes its time, which is
+	 *   what a real ball does, rather than every roll taking the same distance.
+	 *
+	 * Tune it by throwing a ball along a flat floor and timing the roll. Still the wrong side
+	 * of a few seconds, raise it; a ball that looks like it hit a wall of treacle the moment
+	 * it lands, lower it.
 	 */
-	MIN_SPEED: 2,
+	ROLL_RESISTANCE: 40,
 
-	/** **Placeholder.** Friction between a resting ball and the ground. */
-	GROUND_FRICTION: 0.3,
+	/**
+	 * How slowly a grounded ball may be moving before it is stopped outright, in studs per
+	 * second. Read by `BallService`'s settle loop.
+	 *
+	 * The last resort rather than the mechanism. {@link BALL_CONFIG.ROLL_RESISTANCE} takes a
+	 * rolling ball's speed to zero on its own, so this is for the leftovers: a ball walked
+	 * along by a slope, one nudged by another ball, or the residue a bounce leaves behind.
+	 * Higher snaps those to a dead stop sooner; too high and a genuinely slow ball — a nudge,
+	 * a ball rolled gently off a kerb — reads as caught on something.
+	 */
+	MIN_SPEED: 1.5,
 
-	/** **Placeholder.** Bounciness, as the fraction of approach speed returned. */
-	ELASTICITY: 0.5,
+	/**
+	 * How hard a ball grips the floor it lands on — **which is not how long it rolls.**
+	 *
+	 * It decides whether a landing ball grips and rolls or slides and skids, and that
+	 * difference is visible. It is *not* what stops a roll: with no slip at the contact point
+	 * a rolling ball has nothing for friction to act on, and a ball that grips immediately
+	 * loses *less* of its speed than one that skids, so more friction can even lengthen a
+	 * roll. Measured here rather than reasoned about — see
+	 * {@link BALL_CONFIG.ROLL_RESISTANCE} for the number that does the work.
+	 *
+	 * Read by `BallService` as the ball's `CustomPhysicalProperties.friction`, whose engine
+	 * maximum this is.
+	 */
+	GROUND_FRICTION: 2,
 
-	/** **Placeholder.** Mass per unit volume. The ball's mass is the engine's. */
-	DENSITY: 0.7,
+	/**
+	 * How much of its approach speed a ball keeps when it bounces, as a fraction. Read
+	 * by `BallService` as the ball's `CustomPhysicalProperties.elasticity`.
+	 *
+	 * A dodgeball thuds: it arrives, and nearly all of that energy goes into the floor and
+	 * into the ball's own deformation instead of back up into the ball. A high value here is
+	 * what turns dodgeball into chasing a superball.
+	 *
+	 * **This only affects bounces.** A ball that lands and rolls never bounces, so this
+	 * changes nothing about how far that ball travels — which is why taking it down to almost
+	 * no bounce left the roll exactly as it was. See {@link BALL_CONFIG.ROLL_RESISTANCE}.
+	 */
+	ELASTICITY: 0.01,
+
+	/**
+	 * The ball's mass per unit volume, in the engine's own units — roughly the density
+	 * of the material the ball is pretending to be made of. Rubber is about this.
+	 * Read by `BallService` as the ball's `CustomPhysicalProperties.density`.
+	 *
+	 * Worth knowing how little it changes: the curve's force is sized from the ball's
+	 * mass when it is applied (`applyAcceleration`), so a denser ball is not a faster
+	 * one — it is a heavier one, and it hits what it lands on harder. Its visible effect
+	 * is on collisions, not on the flight and not on how it rolls.
+	 */
+	DENSITY: 1,
 
 	// --------------------------------------------------------------- lifetime
 
@@ -296,4 +365,33 @@ export const BALL_CONFIG = {
 	 * that entry's comment for where the factor comes from.
 	 */
 	THROW_CURVE_COMPENSATED: true,
+
+	// ------------------------------------------------------------------ chain
+
+	/**
+	 * How much of its speed a ball keeps when it comes off a body it has just hit, as a
+	 * fraction. Read by `BallComponent`. **The one number that sets bounce energy.**
+	 *
+	 * A body is not a wall, and the engine's own elasticity cannot tell them apart: it
+	 * bounces a ball off everything at a strength set by the two materials, and there is no
+	 * way to ask it for "springs off people, thuds off walls". So the bounce off a body is
+	 * applied by hand — the ball's velocity reflected about the line from the part it
+	 * touched to its own centre — and this scales the result. Higher carries a chain
+	 * further; at 1 no energy is lost at all and one throw crosses the arena, and low
+	 * enough and the ball dies in the player it hit and there is no chain to speak of.
+	 */
+	BOUNCE_FACTOR: 0.7,
+
+	/**
+	 * How many bodies one throw can take out before the ball goes dead, counted per throw.
+	 * Read by `BallComponent`.
+	 *
+	 * The cap is what keeps a chain a *good throw* rather than a won round — without it the
+	 * only limit is how many players are standing in the way. It counts per throw, because
+	 * the ball forgets who it has hit the moment it is armed again.
+	 *
+	 * The ball is disarmed *after* the bounce that brings the count up, so the last player a
+	 * throw takes out still throws the ball off them instead of catching it on the chest.
+	 */
+	MAX_CHAIN_HITS: 3,
 } as const;

@@ -1,5 +1,5 @@
 import { Service, OnStart } from "@flamework/core";
-import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
+import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { BALL_NAME, BALL_SIZE, THROWER_TOKEN } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CollisionIgnore } from "shared/CollisionIgnore";
@@ -29,6 +29,44 @@ const GRIP_OFFSET = new CFrame();
 
 /** Name of the weld that holds a ball in a hand, so it can be found again. */
 const GRIP_NAME = "DodgeballGrip";
+
+/**
+ * The tag every ball carries.
+ *
+ * Must match the `tag` in `BallComponent`'s decorator, which is what turns a ball into
+ * a component — and it is also how the settle check finds the balls in the world
+ * without keeping a list of them. A list would have to be added to on every throw and
+ * subtracted from on every catch, pickup and destroy, and one missed subtraction would
+ * leave a destroyed ball in it for the session. The engine maintains this one.
+ */
+const BALL_TAG = "Ball";
+
+/**
+ * How often a loose ball is checked for having stopped, in seconds.
+ *
+ * Short enough that the creep below {@link BALL_CONFIG.MIN_SPEED} is not something
+ * anyone sees: at that speed a ball covers a fraction of a stud between two checks, and
+ * a check is a length comparison plus, at most, one short ray.
+ */
+const SETTLE_PERIOD = 0.1;
+
+/**
+ * How long the settle loop waits when nothing is loose, in seconds.
+ *
+ * The idle turn is the common one — most of a session has no ball lying on the floor —
+ * so it is taken far less often than the busy one. It is one tagged-instance query and
+ * a walk out again.
+ */
+const SETTLE_IDLE_PERIOD = 0.5;
+
+/**
+ * How far below its centre a ball is probed for ground, in studs.
+ *
+ * The ball's own radius reaches whatever it is resting on; the slack covers the
+ * fraction of a stud an engine contact lets a settled part sit inside its surface by, so
+ * a ball at rest cannot read as airborne and slip past the freeze.
+ */
+const GROUND_PROBE = BALL_SIZE / 2 + 0.1;
 
 /** A ball currently welded into somebody's hand, plus its (disabled) trail. */
 interface HeldBall {
@@ -100,6 +138,12 @@ export class BallService implements OnStart {
 			const character = player.Character;
 			if (character) this.heldBalls.delete(character);
 		});
+
+		// The settle check — the only thing in the game that watches a ball *after* it has
+		// landed. Started here rather than on the first throw because it has no starting
+		// condition: it looks at the world rather than at this service's lists, so a ball
+		// left on the floor in Studio is covered by the same loop as a thrown one.
+		task.spawn(() => this.settleLooseBalls());
 	}
 
 	/**
@@ -215,6 +259,8 @@ export class BallService implements OnStart {
 	 */
 	private attachBall(model: Model) {
 		const ball = this.spheres.createBall(BALL_SIZE, { trail: false });
+		this.applyBallPhysics(ball);
+
 		if (!this.attachToHand(model, ball)) return;
 
 		ball.SetAttribute("Armed", true);
@@ -261,7 +307,7 @@ export class BallService implements OnStart {
 		ball.Massless = true;
 		ball.CFrame = hand.CFrame.mul(GRIP_OFFSET);
 		ball.Parent = model;
-		ball.AddTag("Ball");
+		ball.AddTag(BALL_TAG);
 		// Attributes after the tag, never before: tagging is what creates the
 		// component, and its defaults would write over anything set first.
 		//
@@ -597,5 +643,137 @@ export class BallService implements OnStart {
 		// it would keep shoving it sideways along the ground, at a constant
 		// acceleration, for the rest of its lifetime.
 		task.delay(flightTime + 0.1, () => force.Destroy());
+	}
+
+	/**
+	 * Gives a ball the material it is made of.
+	 *
+	 * Set once, when the ball is made, and it lasts the whole of the ball's life: while
+	 * it is held it is welded into the character and `Massless`, so the physics the
+	 * engine reads are the *assembly's* — the character's root part's — and the ball's
+	 * own are neither used nor lost. The moment a throw reparents it out of the body and
+	 * clears `Massless`, the ball is its own assembly and these are what it is made of.
+	 *
+	 * **None of this touches the flight.** The engine applies no drag to a part in
+	 * motion, so a ball in the air is pure ballistics whatever its material says; friction
+	 * and elasticity act at the instant of contact and density only decides how hard the
+	 * ball hits. The aim guide draws the same arc it drew before this existed.
+	 *
+	 * The two weights are left at 1: they are relative weights for when two materials
+	 * meet, and the floor is not ours to weight.
+	 */
+	private applyBallPhysics(ball: BasePart): void {
+		ball.CustomPhysicalProperties = new PhysicalProperties(
+			BALL_CONFIG.DENSITY,
+			BALL_CONFIG.GROUND_FRICTION,
+			BALL_CONFIG.ELASTICITY,
+			1,
+			1,
+		);
+	}
+
+	/**
+	 * Settles the balls lying on the floor: slows the ones that are rolling, and stops the
+	 * ones that have stopped.
+	 *
+	 * **The engine does not slow a rolling ball down.** A ball rolling without slipping has
+	 * no relative motion at the point of contact, so friction has nothing to act on and
+	 * almost none of the ball's energy leaves it — measured here, and the reason raising
+	 * `GROUND_FRICTION` barely changed how long a ball rolled. So the resistance is applied
+	 * from outside: `ROLL_RESISTANCE` comes off every grounded ball's speed each pass, and
+	 * the last studs a second are finished off with a freeze.
+	 *
+	 * **A ball in the air is not touched, at any speed.** The guide's arc is a promise about
+	 * where the ball goes, and changing its velocity in flight would break it — see
+	 * {@link isOnGround} for how the two cases are told apart.
+	 *
+	 * A loop rather than a `Heartbeat` connection, like the other long-lived loops in this
+	 * project, and it takes the cheap turn while the floor is empty.
+	 */
+	private settleLooseBalls(): void {
+		let last = os.clock();
+
+		while (true) {
+			const now = os.clock();
+			const dT = now - last;
+			last = now;
+
+			let loose = 0;
+
+			for (const instance of CollectionService.GetTagged(BALL_TAG)) {
+				if (!instance.IsA("BasePart")) continue;
+
+				// Held, being carried, or out of the world: all still somebody's, none of them
+				// the floor's business. The parent is the same test a catch and a pickup both
+				// use, for the same reason.
+				if (instance.Parent !== Workspace) continue;
+
+				loose++;
+				this.settleBall(instance, dT);
+			}
+
+			task.wait(loose === 0 ? SETTLE_IDLE_PERIOD : SETTLE_PERIOD);
+		}
+	}
+
+	/**
+	 * Settles one loose ball over `dT` seconds: the resistance while it rolls, the freeze
+	 * once it has stopped.
+	 *
+	 * The vertical part of the velocity is left alone throughout. What a grounded ball is
+	 * doing downwards is the floor's business, and what it is doing upwards is a bounce —
+	 * `ELASTICITY`'s, not this function's.
+	 */
+	private settleBall(ball: BasePart, dT: number): void {
+		if (!this.isOnGround(ball)) return;
+
+		const velocity = ball.AssemblyLinearVelocity;
+		const speed = new Vector3(velocity.X, 0, velocity.Z).Magnitude;
+
+		// Stopped, or as good as stopped: take what is left of it, spin included. A ball that
+		// is travelling nowhere can still be turning, and the contact solver walks a spinning
+		// ball along the floor a frame at a time — the same twitch seen from the other end.
+		if (speed < BALL_CONFIG.MIN_SPEED) {
+			ball.AssemblyLinearVelocity = Vector3.zero;
+			ball.AssemblyAngularVelocity = Vector3.zero;
+			return;
+		}
+
+		// Rolling: the resistance is a deceleration, so this is the speed to take off it. The
+		// `math.max` is what makes a slow roll stop dead instead of creeping up on the
+		// threshold — the deceleration reaches zero exactly, so nothing is snapped.
+		const retained = math.max(0, speed - BALL_CONFIG.ROLL_RESISTANCE * dT) / speed;
+
+		ball.AssemblyLinearVelocity = new Vector3(velocity.X * retained, velocity.Y, velocity.Z * retained);
+
+		// The spin comes down by the same fraction, and it has to. A ball whose rotation no
+		// longer matches its travel is a ball slipping on the floor, and friction would spend
+		// the next frame turning that slip back into travel — the ball would speed up again.
+		ball.AssemblyAngularVelocity = ball.AssemblyAngularVelocity.mul(retained);
+	}
+
+	/**
+	 * Whether `ball` is resting on something.
+	 *
+	 * Asked as a short ray straight down, **not** as "its vertical velocity is small".
+	 * That test reads correctly on a ball sitting on a floor and is wrong everywhere the
+	 * vertical velocity is only *momentarily* zero — the top of every bounce, and the
+	 * apex of a throw aimed upward, where a slow-rising lob has no vertical speed either.
+	 * The same test that frees a rolling ball would therefore freeze that lob in mid-air
+	 * and hold it there. A ray cannot be fooled that way: at the apex there is nothing
+	 * under the ball to find.
+	 *
+	 * Only the ball itself is excluded from the ray. The floor it is standing on is
+	 * exactly what is being looked for.
+	 */
+	private isOnGround(ball: BasePart): boolean {
+		const params = new RaycastParams();
+		params.FilterType = Enum.RaycastFilterType.Exclude;
+		params.FilterDescendantsInstances = [ball];
+		params.IgnoreWater = true;
+
+		const probe = new Vector3(0, -GROUND_PROBE, 0);
+
+		return Workspace.Raycast(ball.Position, probe, params) !== undefined;
 	}
 }
