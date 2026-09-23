@@ -22,5 +22,6 @@ export const DEV_CONFIG = {
 		InfiniteBalls: false,
 		InfiniteCatch: false,
 		NoCooldown: false,
+		RoundsDisabled: false,
 	},
 };

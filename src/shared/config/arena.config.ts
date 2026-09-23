@@ -29,8 +29,29 @@ export const ARENA_CONFIG = {
 	 */
 	LOBBY_SPAWN_NAME: "LobbySpawn",
 
-	/** The part a player is put on when a round begins. Same rules as the lobby spawn. */
+	/**
+	 * The one arena spawn, from before the two teams had a side each.
+	 *
+	 * **No longer read by the round**: a round sends each team to its own part, below. It is
+	 * kept as the name a place file with a single arena spawn already has, and as the part the
+	 * two of those would fall back to if that were ever the right thing to do — it is not, for
+	 * the reason spelled out on the team spawns: both teams on one side is a round that begins
+	 * wrong, and a round that refuses to begin is the better failure.
+	 */
 	ARENA_SPAWN_NAME: "ArenaSpawn",
+
+	/**
+	 * Where team A is put when a round begins.
+	 *
+	 * Looked up by name in `Workspace`, like the lobby spawn, and deliberately with **no
+	 * fallback** to {@link ARENA_CONFIG.ARENA_SPAWN_NAME} or to each other: a missing team
+	 * spawn is a setup mistake, and `getSpawn` raises it by name rather than starting a round
+	 * with both sides stacked on one spot.
+	 */
+	ARENA_SPAWN_NAME_A: "ArenaSpawnA",
+
+	/** Where team B is put when a round begins. Same rules as {@link ARENA_CONFIG.ARENA_SPAWN_NAME_A}. */
+	ARENA_SPAWN_NAME_B: "ArenaSpawnB",
 
 	/**
 	 * How long the gap between rounds lasts, in seconds.
@@ -39,7 +60,7 @@ export const ARENA_CONFIG = {
 	 * construction and a fractional one would be rounded in the HUD rather than in
 	 * the clock. Read by `RoundService`.
 	 */
-	INTERMISSION_SECONDS: 100,
+	INTERMISSION_SECONDS: 15,
 
 	/**
 	 * How long a round lasts, in seconds.
@@ -47,5 +68,5 @@ export const ARENA_CONFIG = {
 	 * The same shape as {@link ARENA_CONFIG.INTERMISSION_SECONDS}: a whole number
 	 * of seconds, counted down one at a time.
 	 */
-	ROUND_SECONDS: 300,
+	ROUND_SECONDS: 15,
 } as const;

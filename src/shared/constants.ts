@@ -49,6 +49,20 @@ export const THROWER_TOKEN = "ThrowerToken";
 export const THROW_ENABLED = "ThrowEnabled";
 
 /**
+ * Attribute on a **`Player`** naming the team they are on for the round in progress.
+ *
+ * Written by `RoundService` at the start of every playing phase, and read by anything that
+ * needs to know who is on which side — a HUD, a per-team spawn. An attribute rather than a
+ * service field for that reason: the answer is visible to the client without a remote, and it
+ * survives the player's character being replaced, which a character attribute would not.
+ *
+ * The value is a team label, and the two are `"A"` and `"B"`. A player between rounds — or
+ * one who joined while a round was already under way — has no attribute at all, which is how
+ * a reader tells "not playing" from "playing for somebody".
+ */
+export const TEAM_ATTRIBUTE = "Team";
+
+/**
  * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
  *
  * Written by `BallService.dropBall`, read by `BallPickupService`. On the ball rather than

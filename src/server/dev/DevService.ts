@@ -23,6 +23,22 @@ const FLAG_PREFIX = "Dev_";
 const PREFIX = "!dev";
 
 /**
+ * Short names a dev can type in place of a flag's own name.
+ *
+ * A `Record` rather than a chain of special cases, so adding one is a line here and nothing
+ * else changes: the parser resolves whatever it was given through this table and then looks
+ * the result up among the configured flags, which is also why an alias for a flag nobody
+ * configured is harmlessly ignored rather than being an error.
+ *
+ * Written in lower case, because the lookup lowers what was typed before it compares. The
+ * value is the flag's real name, and is matched case-insensitively too, so an alias does not
+ * have to keep up with the config's capitalisation.
+ */
+const FLAG_ALIASES: Record<string, string> = {
+	r: "RoundsDisabled",
+};
+
+/**
  * Prints which chat is being read, and every command that arrives through it.
  *
  * A command that does nothing is ambiguous — the message may never have reached
@@ -252,15 +268,37 @@ export class DevService implements OnStart {
 		print(`[Dev] ${player.Name}: ${requested} ${this.getFlag(player, requested) ? "on" : "off"}`);
 	}
 
-	/** The configured flag whose name matches `lowered`, in its own casing. */
+	/**
+	 * The configured flag whose name matches `lowered`, in its own casing.
+	 *
+	 * `lowered` is first resolved through {@link FLAG_ALIASES}, so a short name and a long one
+	 * reach the same flag — and a word that is neither prints the list, rather than writing an
+	 * attribute nothing will ever read.
+	 */
 	private findFlag(lowered: string | undefined): string | undefined {
 		if (!lowered) return undefined;
 
+		const wanted = this.resolveAlias(lowered);
+
 		for (const [flag] of pairs(DEV_CONFIG.defaultFlags)) {
-			if (flag.lower() === lowered) return flag;
+			if (flag.lower() === wanted) return flag;
 		}
 
 		return undefined;
+	}
+
+	/**
+	 * The flag name a typed word refers to, following {@link FLAG_ALIASES}.
+	 *
+	 * A word that is not an alias comes back unchanged, so this reads as "translate if there is
+	 * anything to translate" and the caller does not have to know which of the two it got.
+	 */
+	private resolveAlias(lowered: string): string {
+		for (const [alias, flag] of pairs(FLAG_ALIASES)) {
+			if (alias.lower() === lowered) return flag.lower();
+		}
+
+		return lowered;
 	}
 
 	/**
