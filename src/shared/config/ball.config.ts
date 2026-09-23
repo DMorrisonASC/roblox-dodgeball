@@ -160,6 +160,12 @@ export const BALL_CONFIG = {
 	 * Read as the default for `BallPickupService.pickupNearest`, which takes its own
 	 * radius — so a mechanic that wants a longer arm passes one rather than changing
 	 * everyone's reach.
+	 *
+	 * **Widening this past {@link BALL_CONFIG.DROP_DISTANCE} breaks the drop.** A ball put
+	 * down in front of a character would then land inside that character's own reach and be
+	 * collected again the moment its per-ball lockout ran out — so `1` would stop meaning
+	 * "get rid of it". The two are separate numbers, tuned for separate reasons, and the
+	 * inequality is the only thing that binds them.
 	 */
 	PICKUP_RADIUS: 8,
 
@@ -394,4 +400,57 @@ export const BALL_CONFIG = {
 	 * throw takes out still throws the ball off them instead of catching it on the chest.
 	 */
 	MAX_CHAIN_HITS: 3,
+
+	// -------------------------------------------------------------------- drop
+
+	/**
+	 * How far in front of the character a dropped ball is placed, in studs, measured along
+	 * the direction the body is facing. Read by `BallService.dropBall`.
+	 *
+	 * **Must stay greater than {@link BALL_CONFIG.PICKUP_RADIUS}, and that inequality is
+	 * the whole reason this is not zero.** A ball put down inside auto-pickup reach is a
+	 * ball handed straight back the moment its lockout expires, so the key would do
+	 * nothing for a standing player — exactly the case it exists for. It is a separate
+	 * number from the reach rather than derived from it because the two are tuned for
+	 * different things, how far a drop goes and how far an arm is, and neither should have
+	 * to move because the other did.
+	 *
+	 * **A maximum, not a promise.** The drop is cast forward first and the ball is placed
+	 * short of whatever that finds, so a character facing a wall puts the ball down in front
+	 * of the wall rather than inside it — or, if the wall is thin, on the far side. Nothing
+	 * here needs retuning for that: the ray can only shorten the drop. See
+	 * `BallService.dropReach`.
+	 *
+	 * Forward is *the character's* facing, never the camera's: a drop is not aimed, and a
+	 * key that put the ball somewhere different depending on where you happened to be
+	 * looking would be worse than one that always puts it in the same place relative to
+	 * the body.
+	 */
+	DROP_DISTANCE: 10,
+
+	/**
+	 * How far above the character's `HumanoidRootPart` a dropped ball starts, in studs.
+	 *
+	 * In the air on purpose, so the ball falls onto a clear patch of floor rather than
+	 * being placed into the ground it is standing on: a ball put down at foot height begins
+	 * its life intersecting the floor, and the only thing the engine can do with an overlap
+	 * is shove it out. The fall is therefore the drop's own settling — and the reason
+	 * {@link BALL_CONFIG.DROP_PICKUP_LOCKOUT} exists, since a ball in the air is not a ball
+	 * anybody should be able to take yet.
+	 */
+	DROP_HEIGHT: 2,
+
+	/**
+	 * How long a just-dropped ball cannot be picked up by anyone, in seconds. Read by
+	 * `BallPickupService`, stamped on the ball as `PICKUP_LOCKED_UNTIL`.
+	 *
+	 * **Per ball, not per dropper.** What needs the beat is the ball — it is still falling,
+	 * and then still rolling — so the window has nothing to do with whose hand it came out
+	 * of, and a different player walking over it inside the window is blocked by it as well.
+	 * That is what the window is for, and it is why the time is kept on the ball.
+	 *
+	 * Long enough to cover the fall and the roll to a stop; short enough that a ball put
+	 * down deliberately does not look like a ball nobody can ever have.
+	 */
+	DROP_PICKUP_LOCKOUT: 1.0,
 } as const;

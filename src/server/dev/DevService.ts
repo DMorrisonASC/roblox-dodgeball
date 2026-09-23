@@ -1,5 +1,5 @@
 import { OnStart, Service } from "@flamework/core";
-import { Players, TextChatService } from "@rbxts/services";
+import { Players, TextChatService, RunService } from "@rbxts/services";
 import { DEV_CONFIG } from "./dev.config";
 
 /** Marks a whitelisted player. Read as `=== true`, so an absent attribute means no. */
@@ -134,6 +134,13 @@ export class DevService implements OnStart {
 	 */
 	public setFlag(player: Player, flag: string, value: boolean): void {
 		if (!this.isDev(player)) return;
+
+		// Guard against accidentally importing this into a client module. Nothing in
+		// `src/server/dev` is reachable from a client — the folder compiles into
+		// ServerScriptService, so a client require fails before any of this runs — which
+		// makes this a cheap second line of defence rather than the thing that protects
+		// it. If it ever *does* fire, that import is the bug to fix.
+		if (!RunService.IsServer()) return;
 
 		player.SetAttribute(FLAG_PREFIX + flag, value);
 

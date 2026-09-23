@@ -1,6 +1,6 @@
 import { Service, OnStart } from "@flamework/core";
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { BALL_NAME, BALL_SIZE, THROWER_TOKEN } from "shared/constants";
+import { BALL_NAME, BALL_SIZE, THROWER_TOKEN, THROW_ENABLED, PICKUP_LOCKED_UNTIL } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
@@ -68,6 +68,18 @@ const SETTLE_IDLE_PERIOD = 0.5;
  */
 const GROUND_PROBE = BALL_SIZE / 2 + 0.1;
 
+/**
+ * How much room a dropped ball leaves, in studs: how far in front of whatever the drop ray
+ * finds it is placed, and how far in front of the dropper it is placed when something is
+ * closer than that.
+ *
+ * One number doing both jobs because it is one requirement seen twice — the ball has a
+ * radius, so it must not be placed touching a wall *or* inside the body it came out of —
+ * and it is that radius with half a stud of slack, the same shape as {@link GROUND_PROBE}
+ * above. `BallService.dropReach` is the only reader.
+ */
+const DROP_CLEARANCE = BALL_SIZE / 2 + 0.5;
+
 /** A ball currently welded into somebody's hand, plus its (disabled) trail. */
 interface HeldBall {
 	/**
@@ -119,6 +131,15 @@ export class BallService implements OnStart {
 	onStart() {
 		this.throwRemote = this.createThrowRemote();
 		this.throwRemote.OnServerEvent.Connect((player, target, arc, claim) => {
+			// Whether this player throws at all, asked before anything else in here: a click that
+			// is not meant to throw should not reach the part of this that reads a direction and
+			// solves an arc. Only an explicit `false` blocks — a player who has never pressed the
+			// key has no attribute and throws as before. See `THROW_ENABLED`.
+			if (player.GetAttribute(THROW_ENABLED) === false) {
+				if (DEBUG) print(`[Ball] ${player.Name}: throw refused — throwing is switched off`);
+				return;
+			}
+
 			if (!typeIs(target, "Vector3")) return;
 
 			// Anything unrecognised falls back to the regular throw. All three arcs
@@ -205,6 +226,16 @@ export class BallService implements OnStart {
 	 * and non-colliding with the model it came out of — because a dropped ball is
 	 * scenery, not a projectile.
 	 *
+	 * It lands *in front of* the model rather than at its feet, and cannot be picked up
+	 * again for a moment — see `BALL_CONFIG.DROP_DISTANCE`, `DROP_HEIGHT` and
+	 * `DROP_PICKUP_LOCKOUT`. Both of those are the same requirement seen twice: a ball put
+	 * down inside the dropper's own reach would be collected again as soon as its lockout
+	 * expired, which is the same as the key doing nothing.
+	 *
+	 * In front, and **short of whatever is in front**: the drop is cast first, so facing a
+	 * wall puts the ball down in front of the wall instead of inside it, or through it. See
+	 * {@link dropReach}.
+	 *
 	 * Returns whether there was anything to drop.
 	 */
 	public dropBall(model: Model): boolean {
@@ -223,10 +254,34 @@ export class BallService implements OnStart {
 		ball.Massless = false;
 		ball.CanCollide = true;
 
-		// It becomes solid exactly where the hand was, which is inside the model, and
-		// the engine settles that overlap by shoving whatever is lighter. Without
-		// this, the old thrower-push bug comes back wearing a different hat.
+		// In front of the model and above it, so the ball falls onto a clear patch of floor
+		// rather than being placed into the character or the ground — see
+		// `BALL_CONFIG.DROP_DISTANCE` and `DROP_HEIGHT`. Placed from the root part, which is
+		// what every rig has, rather than from the hand it came out of: where a *hand* is
+		// depends on the rig type and on whatever it is doing with its arms.
+		const root = model.FindFirstChild("HumanoidRootPart");
+		if (root && root.IsA("BasePart")) {
+			const direction = root.CFrame.LookVector;
+			const reach = this.dropReach(model, ball, root.Position, direction);
+
+			ball.Position = root.Position.add(direction.mul(reach)).add(new Vector3(0, BALL_CONFIG.DROP_HEIGHT, 0));
+		}
+
+		// And nobody may have it back for a moment: it is still in the air, and then still
+		// rolling. On the ball rather than remembered here, because what needs the beat is the
+		// ball and not the hand it left — see `PICKUP_LOCKED_UNTIL`.
+		ball.SetAttribute(PICKUP_LOCKED_UNTIL, os.clock() + BALL_CONFIG.DROP_PICKUP_LOCKOUT);
+
+		// It becomes solid close to the model, and the engine settles whatever overlap is left
+		// by shoving whichever body is lighter. Without this, the old thrower-push bug comes
+		// back wearing a different hat.
 		CollisionIgnore.between(ball, model);
+
+		// The server takes the ball back. It was welded into a hand, so it belonged to that
+		// character's client's physics, and a ball lying on the ground is one everybody can walk
+		// up to — the machine that happened to drop it should not be the one simulating it. The
+		// same call, for the same reason, as the one at release.
+		ball.SetNetworkOwner();
 
 		this.heldBalls.delete(model);
 
@@ -328,6 +383,36 @@ export class BallService implements OnStart {
 		this.heldBalls.set(model, { ball, trail });
 
 		return true;
+	}
+
+	/**
+	 * How far in front of `model` a dropped ball can be placed, in studs.
+	 *
+	 * {@link BALL_CONFIG.DROP_DISTANCE} is a **maximum**, not a promise. A character facing a
+	 * wall would otherwise put its ball down inside the wall — or, through a thin one, on the
+	 * far side of it — and the only thing the engine can do with a part left inside geometry
+	 * is shove it somewhere nobody chose. So the same length is cast first and the ball goes
+	 * short of whatever that finds. Nothing else about the drop changes: the ray can only
+	 * shorten it.
+	 *
+	 * Two things are excluded, and they are the two the ray must not find: the dropper, whose
+	 * own body is between the origin and everything else, and the ball itself — which is
+	 * already out of the model and lying where the hand was, so it is a thing in front of the
+	 * character like any other. Everything else in the way is the answer being looked for.
+	 */
+	private dropReach(model: Model, ball: BasePart, origin: Vector3, direction: Vector3): number {
+		const params = new RaycastParams();
+		params.FilterType = Enum.RaycastFilterType.Exclude;
+		params.FilterDescendantsInstances = [model, ball];
+		params.IgnoreWater = true;
+
+		const hit = Workspace.Raycast(origin, direction.mul(BALL_CONFIG.DROP_DISTANCE), params);
+		if (!hit) return BALL_CONFIG.DROP_DISTANCE;
+
+		// Just short of what was found, and never inside the dropper: a wall closer than the
+		// clearance would otherwise put the ball back inside the body it came out of, which is
+		// the one place it must not be.
+		return math.max(DROP_CLEARANCE, hit.Distance - DROP_CLEARANCE);
 	}
 
 	/**

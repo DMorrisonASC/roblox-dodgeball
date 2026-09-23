@@ -1,8 +1,12 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, Players, Workspace } from "@rbxts/services";
 import { BALL_CONFIG } from "shared/config/ball.config";
+import { PICKUP_LOCKED_UNTIL } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
+import { lockoutElapsed } from "../actionLock";
 import { BallService } from "./BallService";
+import { CatchService } from "./CatchService";
+import { DodgeService } from "./DodgeService";
 
 /**
  * The tag every ball carries.
@@ -27,7 +31,11 @@ const BALL_TAG = "Ball";
  */
 @Service()
 export class BallPickupService implements OnStart {
-	constructor(private readonly balls: BallService) {}
+	constructor(
+		private readonly balls: BallService,
+		private readonly dodges: DodgeService,
+		private readonly catches: CatchService,
+	) {}
 
 	public onStart() {
 		task.spawn(() => this.collectForPlayers());
@@ -60,8 +68,8 @@ export class BallPickupService implements OnStart {
 	 * Picks up the nearest loose ball, if there is one within reach.
 	 *
 	 * Returns whether a ball changed hands, which is the question every caller
-	 * actually has. Refuses quietly: an empty floor and a full hand are ordinary
-	 * states, not errors.
+	 * actually has. Refuses quietly: an empty floor, a full hand and an owner in the middle
+	 * of an action are ordinary states, not errors.
 	 *
 	 * `radius` defaults to {@link BALL_CONFIG.PICKUP_RADIUS} so a caller can reach
 	 * further, or not as far, without changing anybody else's reach.
@@ -77,10 +85,37 @@ export class BallPickupService implements OnStart {
 		// would eat the ball the model was about to throw.
 		if (this.balls.getHeldBall(model)) return false;
 
+		// **An action in progress outranks a ball on the floor.** Holding a ball is what
+		// blocks a catch, so a pickup during a catch attempt would take the ball out of the
+		// catcher's own hands mid-air — and the same for a dash. Asked on the model rather
+		// than on the ball, because it is the *picker* who is busy; and asked after the hand
+		// check, so the ordinary case of a player carrying a ball still costs one lookup.
+		//
+		// Nothing else suppresses pickup. A player walking around empty-handed collects
+		// whatever they pass, and only an action says otherwise.
+		if (this.isBusy(model)) return false;
+
 		const ball = this.nearestLooseBall(entity.root.Position, radius);
 		if (!ball) return false;
 
 		return this.balls.pickupBall(model, ball);
+	}
+
+	/**
+	 * Whether `model` is in the middle of one of the actions a pickup would interfere with.
+	 *
+	 * Two states and their two tails, asked in the same shape the actions use to gate each
+	 * other: **in flight or open, or ended within the shared lockout.** That is not a
+	 * coincidence — it is the same rule. An action that has just finished is still committing
+	 * its owner, and a dodge that ended half a second ago is as good a reason not to be
+	 * grabbing balls as a dodge still running.
+	 */
+	private isBusy(model: Model): boolean {
+		if (this.dodges.isDodging(model)) return true;
+		if (lockoutElapsed(this.dodges.getLastDodgeEndTime(model)) !== undefined) return true;
+		if (this.catches.isCatching(model)) return true;
+
+		return lockoutElapsed(this.catches.getLastCatchWindowCloseTime(model)) !== undefined;
 	}
 
 	/**
@@ -91,6 +126,10 @@ export class BallPickupService implements OnStart {
 	 * is scenery somebody placed), and **parented to the world** — anything else is
 	 * inside the hand holding it, which is the same test a catch makes before it
 	 * takes a ball out of the air.
+	 *
+	 * And a fourth: **not still settling from a drop.** That one is the ball's own fact
+	 * rather than the picker's, so it is stamped on the ball and applies to everybody
+	 * equally — see `PICKUP_LOCKED_UNTIL`.
 	 */
 	private nearestLooseBall(origin: Vector3, radius: number): BasePart | undefined {
 		let best: BasePart | undefined;
@@ -101,6 +140,12 @@ export class BallPickupService implements OnStart {
 			if (instance.GetAttribute("Armed") === true) continue;
 			if (instance.Anchored) continue;
 			if (instance.Parent !== Workspace) continue;
+
+			// Just dropped, and still falling. Read as a number rather than trusted: the
+			// attribute is only there on a ball that was dropped at least once, and an
+			// attribute of another type would mean something else wrote it.
+			const lockedUntil = instance.GetAttribute(PICKUP_LOCKED_UNTIL);
+			if (typeIs(lockedUntil, "number") && os.clock() < lockedUntil) continue;
 
 			const distance = instance.Position.sub(origin).Magnitude;
 			if (distance > bestDistance) continue;

@@ -34,6 +34,31 @@ export const BALL_NAME = "DodgeballBall";
  */
 export const THROWER_TOKEN = "ThrowerToken";
 
+/**
+ * Attribute on a **`Player`** saying whether their clicks may throw.
+ *
+ * Read by the throw handler in `BallService` and written by the `2` key. On the player
+ * rather than the character because it is a *preference*: a character is replaced on every
+ * death, and a setting that switched itself back on when you respawned would be worse than
+ * not having one — you would die, click, and throw while still looking for the ball.
+ *
+ * **Only an explicit `false` blocks.** A player who has never pressed the key has no
+ * attribute and throws as before, so there is no default to write anywhere and no state
+ * that can get stuck in a value nobody chose.
+ */
+export const THROW_ENABLED = "ThrowEnabled";
+
+/**
+ * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
+ *
+ * Written by `BallService.dropBall`, read by `BallPickupService`. On the ball rather than
+ * on the player who dropped it, because it is the *ball* that needs the beat — it is in
+ * the air and has not settled — so somebody else walking over it inside the window is
+ * blocked by it too. A per-player table would have said the opposite of what the window
+ * is for.
+ */
+export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
+
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 1;
 

@@ -1,9 +1,9 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
-import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
+import { lockoutElapsed } from "../actionLock";
 import { DevService } from "../dev/DevService";
 import { DodgeService } from "./DodgeService";
 
@@ -129,7 +129,7 @@ export class CatchService implements OnStart {
 		// Before anything opens, and before the dev's endless window: this gates the *entry*
 		// into catching, so it holds for a dev exactly as it holds for anybody else — the dev
 		// flags move each action's own clock, and this is not one of those. See
-		// {@link ACTION_CONFIG.ACTION_LOCKOUT_SECONDS}.
+		// {@link lockoutElapsed}.
 		if (this.blocksCatch(model)) return false;
 
 		// A dev testing a catch does not need good timing: with the flag on, one press
@@ -234,8 +234,8 @@ export class CatchService implements OnStart {
 	 * lockout.
 	 *
 	 * The mirror of the check `DodgeService` makes on this service, and deliberately written
-	 * the same way — ask the owner for its clock, apply the one shared constant — so the two
-	 * rules cannot be read as two different rules.
+	 * the same way — ask the owner for its clock, apply the shared lockout — so the two rules
+	 * cannot be read as two different rules. {@link lockoutElapsed} is that shared lockout.
 	 */
 	private blocksCatch(model: Model): boolean {
 		if (this.dodges.isDodging(model)) {
@@ -243,11 +243,8 @@ export class CatchService implements OnStart {
 			return true;
 		}
 
-		const endedAt = this.dodges.getLastDodgeEndTime(model);
-		if (endedAt === undefined) return false;
-
-		const since = os.clock() - endedAt;
-		if (since >= ACTION_CONFIG.ACTION_LOCKOUT_SECONDS) return false;
+		const since = lockoutElapsed(this.dodges.getLastDodgeEndTime(model));
+		if (since === undefined) return false;
 
 		if (DEBUG) print(`[Catch] ${model.Name}: refused — a dodge ended ${string.format("%.2f", since)}s ago`);
 

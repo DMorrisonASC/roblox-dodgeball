@@ -1,10 +1,10 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
-import { ACTION_CONFIG } from "shared/config/action.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
+import { lockoutElapsed } from "../actionLock";
 import { DevService } from "../dev/DevService";
 
 /** Prints what every dodge request did, and why it did nothing. */
@@ -210,8 +210,8 @@ export class DodgeService implements OnStart {
 	 * dashed.
 	 *
 	 * The fact a catch is gated on: a dodge that has *finished* still keeps a catch shut for
-	 * {@link ACTION_CONFIG.ACTION_LOCKOUT_SECONDS}, and that is measured from here rather than
-	 * from `lastDodgeAt` so it means the same thing whatever the dodge's duration is.
+	 * the lockout, and that is measured from here rather than from `lastDodgeAt` so it means
+	 * the same thing whatever the dodge's duration is. See {@link lockoutElapsed}.
 	 */
 	public getLastDodgeEndTime(model: Model): number | undefined {
 		return this.lastDodgeEndAt.get(model);
@@ -223,8 +223,8 @@ export class DodgeService implements OnStart {
 	 *
 	 * Both halves are one comparison over the catch's own timing, which is why the catch
 	 * state is asked for its clock rather than told what the rule is — the window is the
-	 * catch's to know about, the lockout is the reader's to apply, and
-	 * {@link ACTION_CONFIG.ACTION_LOCKOUT_SECONDS} is the one value either of them reads.
+	 * catch's to know about, the lockout is the reader's to apply, and the lockout itself is
+	 * {@link lockoutElapsed}, so this gate and the two others cannot disagree about it.
 	 */
 	private blocksDodge(model: Model): boolean {
 		const state = this.catchState;
@@ -235,11 +235,8 @@ export class DodgeService implements OnStart {
 			return true;
 		}
 
-		const closedAt = state.getLastCatchWindowCloseTime(model);
-		if (closedAt === undefined) return false;
-
-		const since = os.clock() - closedAt;
-		if (since >= ACTION_CONFIG.ACTION_LOCKOUT_SECONDS) return false;
+		const since = lockoutElapsed(state.getLastCatchWindowCloseTime(model));
+		if (since === undefined) return false;
 
 		if (DEBUG) {
 			print(
