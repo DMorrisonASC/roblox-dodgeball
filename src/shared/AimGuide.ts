@@ -1,25 +1,25 @@
-import { Workspace } from "@rbxts/services";
+import { Players, Workspace } from "@rbxts/services";
 
 /**
- * A reusable, semi-transparent line that traces a path through the world.
+ * The throw preview: a dashed beam along the predicted arc, ending in a marker on the ground where
+ * the ball is going to land.
  *
- * Roblox has no curved line primitive (`Beam` only spans two points), so this
- * draws the path as a short chain of thin neon bricks, pooling them up front so
- * a per-frame update costs nothing but CFrame writes.
+ * **It is a prediction of this moment, not a promise.** The target has not moved yet, so all this
+ * can honestly say is where the ball *would* land as things stand — which is why the hit indicator
+ * is a hue shift at the same brightness and never a change in how loud the marker is. Bright reads
+ * as "you win", and that is a claim a preview can never make.
  *
- * Nothing here knows about balls or throwing — hand it any list of points.
+ * Everything here is a `workspace` instance, so a wall between you and the landing hides the
+ * preview the way it would hide the ball. A `Frame` pasted over the screen draws through the wall,
+ * which is exactly what this used to look like.
+ *
+ * **Nothing is kept between aims.** The folder is made once and named; everything else is built the
+ * first time {@link AimGuide.update} is called and destroyed by {@link AimGuide.hide}, so a session
+ * that never throws leaves one empty folder behind and nothing else.
+ *
+ * Nothing here knows about balls or throwers — hand it a list of points and somewhere to put the
+ * marker.
  */
-/** Look of the disc drawn where the path ends. */
-export interface MarkerOptions {
-	/** Defaults to a bright green. */
-	color?: Color3;
-	/** Defaults to 0.5 — solid enough to see, sheer enough to see through. */
-	transparency?: number;
-	/** Diameter in studs. Defaults to 3, which reads as a landing zone rather than a point. */
-	size?: number;
-	/** Thickness of the disc, in studs. */
-	thickness?: number;
-}
 
 /** Where to place the marker, and which way its face points. */
 export interface MarkerPlacement {
@@ -28,170 +28,264 @@ export interface MarkerPlacement {
 	normal?: Vector3;
 }
 
-export interface AimGuideOptions {
-	/** Colour of the line. Defaults to a bright violet. */
-	color?: Color3;
-	/** Transparency at the near end. Defaults to 0.55 (semi-transparent). */
-	transparency?: number;
-	/** Extra transparency added by the far end, so the line fades out. */
-	fade?: number;
-	/** Thickness of the line, in studs. */
-	thickness?: number;
-	/** How many segments to pre-build. Paths longer than this are cut short. */
-	maxSegments?: number;
-	/** Sphere marking the end of the path. On by default; `false` to omit it. */
-	marker?: MarkerOptions | false;
-	/** Where to keep the segments. Defaults to `Workspace`. */
-	parent?: Instance;
+/** Name of the folder the preview lives in. Also the instance the aim ray must ignore. */
+const FOLDER_NAME = "AimGuide";
+
+/**
+ * The beam's width at the muzzle end and at the landing end, in studs.
+ *
+ * The taper is the whole difference between a trajectory and a ruler. A constant width reads as
+ * something drawn *over* the world; a line that narrows toward where it is going reads as something
+ * travelling through it.
+ */
+const WIDTH_MUZZLE = 0.55;
+const WIDTH_LANDING = 0.12;
+
+/**
+ * How see-through the path is.
+ *
+ * High on purpose: the path is the quiet part of the preview and the landing is the loud part, so
+ * the thing that tells you *where* to look is the dimmer of the two.
+ */
+const BEAM_TRANSPARENCY = 0.7;
+
+/**
+ * How many dashes the path is broken into, how much of each dash's slot is drawn, and how fast the
+ * dashes march along it.
+ *
+ * A solid bar reads as a wall; dashes read as a path. The movement is what says which end is the
+ * muzzle without drawing an arrow, and a preview that never moves reads as dead — but it has to stay
+ * slow, or the path becomes the loudest thing on the screen.
+ */
+const DASH_COUNT = 12;
+const DASH_DUTY = 0.55;
+const DASH_SPEED = 0.5;
+
+/** Points the path is resampled to, evenly by distance, before the dashes are laid along it. */
+const PATH_SAMPLES = 48;
+
+/**
+ * Radius of the marker in studs, and its thickness.
+ *
+ * The radius is also the size of the "is somebody standing there" test, so the answer always matches
+ * the size of the thing the player is looking at rather than a number they cannot see.
+ */
+const MARKER_RADIUS = 1.5;
+const MARKER_THICKNESS = 0.1;
+
+/** The marker's see-through-ness at rest, and how far either side of it the pulse swings. */
+const MARKER_TRANSPARENCY = 0.3;
+const MARKER_PULSE_DEPTH = 0.12;
+
+/** Radians per second of the marker's pulse: a breath, not a blink. */
+const MARKER_PULSE_SPEED = 2.2;
+
+/**
+ * The two marker colours: the same value, a different hue.
+ *
+ * Neutral is a desaturated blue-grey and the hit colour is a warmer grey at the same brightness, so a
+ * hit changes the marker's *temperature* and nothing else. That is the whole signal, and it is
+ * meant to be felt rather than seen: put side by side they are obviously different, and alone
+ * neither reads as good or bad.
+ */
+const COLOR_NEUTRAL = Color3.fromRGB(120, 120, 130);
+const COLOR_WOULD_HIT = Color3.fromRGB(140, 118, 108);
+
+/** One dash of the path: the beam, and the two points it is stretched between. */
+interface Dash {
+	beam: Beam;
+	from: Attachment;
+	to: Attachment;
 }
 
-const DEFAULT_COLOR = Color3.fromRGB(160, 100, 255);
-const DEFAULT_TRANSPARENCY = 0.55;
-const DEFAULT_FADE = 0.4;
-const DEFAULT_THICKNESS = 0.12;
-/**
- * Segments in the pool. Must cover the longest path the simulator can produce:
- * `maxTime / step + 1` points, one segment each. At the current settings that is
- * 4 / 0.01 = 401 points, so 432 leaves headroom.
- *
- * This is the number that has to move with `Trajectory`'s `step`. The pool is
- * built once and hidden, so a finer path costs instances rather than allocations
- * — but it does cost them, all of them live from startup whether the throw is
- * long or short.
- */
-const DEFAULT_MAX_SEGMENTS = 432;
-
-const DEFAULT_MARKER_COLOR = Color3.fromRGB(60, 255, 80);
-const DEFAULT_MARKER_TRANSPARENCY = 0.5;
-const DEFAULT_MARKER_SIZE = 3;
-const DEFAULT_MARKER_THICKNESS = 0.1;
-
-/** Segments are run slightly long so the joins don't show as gaps. */
-const SEGMENT_OVERLAP = 0.05;
+/** What one aim is drawn with. Absent whenever nothing is drawn. */
+interface Preview {
+	carriage: Part;
+	marker: Part;
+}
 
 export class AimGuide {
-	/** Name of the folder holding the segments. */
-	public static readonly INSTANCE_NAME = "AimGuide";
-
-	/** The folder holding the segments and marker, if you need to exclude them. */
+	/**
+	 * The folder everything lives in.
+	 *
+	 * Kept for the whole session even while nothing is drawn, because it is also what the aim ray
+	 * excludes — a named, stable instance the controller can hand to every raycast it makes.
+	 */
 	public readonly instance: Folder;
 
-	private readonly segments: Part[] = [];
-	private readonly marker: Part | undefined;
-	private readonly markerTransparency: number;
-	private readonly color: Color3;
-	private readonly transparency: number;
-	private readonly fade: number;
-	private readonly thickness: number;
+	/** The dashes of the current aim. Empty while nothing is drawn. */
+	private dashes: Dash[] = [];
 
-	constructor(options: AimGuideOptions = {}) {
-		this.color = options.color ?? DEFAULT_COLOR;
-		this.transparency = options.transparency ?? DEFAULT_TRANSPARENCY;
-		this.fade = options.fade ?? DEFAULT_FADE;
-		this.thickness = options.thickness ?? DEFAULT_THICKNESS;
+	/** What the current aim is drawn with. Absent while nothing is drawn. */
+	private preview?: Preview;
 
-		const count = options.maxSegments ?? DEFAULT_MAX_SEGMENTS;
+	/**
+	 * Reused by every "is somebody standing there" query.
+	 *
+	 * Held rather than made per call because this asks once a frame while aiming, and the only thing
+	 * that changes between calls is which body to leave out. See {@link AimGuide.wouldHit}.
+	 */
+	private readonly overlap = new OverlapParams();
+
+	constructor() {
 		const folder = new Instance("Folder");
-		folder.Name = AimGuide.INSTANCE_NAME;
-		for (let i = 0; i < count; i++) {
-			this.segments.push(this.createSegment(folder, i));
-		}
-
-		if (options.marker !== false) {
-			const markerOptions = options.marker ?? {};
-			this.markerTransparency = markerOptions.transparency ?? DEFAULT_MARKER_TRANSPARENCY;
-			this.marker = this.createMarker(folder, markerOptions);
-		} else {
-			this.markerTransparency = 1;
-			this.marker = undefined;
-		}
-
-		folder.Parent = options.parent ?? Workspace;
+		folder.Name = FOLDER_NAME;
+		folder.Parent = Workspace;
 
 		this.instance = folder;
 	}
 
 	/**
-	 * Draws the line along `points`. Any pooled segment the path doesn't reach
-	 * is hidden, so this doubles as a clear for shorter paths.
+	 * Draws the preview along `points`, with the marker at `placement`.
 	 *
-	 * `placement` positions the disc separately from the end of the line, which
-	 * is what you want for a projectile with size: the path ends where its
-	 * *centre* stopped, while the mark belongs flat against the surface its edge
-	 * touched.
+	 * Called every frame while aiming, so the instances are built on the first call and moved in
+	 * place from then on. `placement` puts the marker somewhere other than the end of the path, which
+	 * is what a projectile with size needs: the path ends where the ball's *centre* stopped, while
+	 * the marker belongs flat against the surface its edge touched.
 	 */
 	public update(points: ReadonlyArray<Vector3>, placement?: MarkerPlacement): this {
-		const available = this.segments.size();
-		const wanted = math.min(points.size() - 1, available);
-
-		for (let i = 0; i < available; i++) {
-			const segment = this.segments[i];
-			if (i >= wanted) {
-				segment.Transparency = 1;
-				continue;
-			}
-
-			const from = points[i];
-			const to = points[i + 1];
-			const delta = to.sub(from);
-			const length = delta.Magnitude;
-			if (length < 0.01) {
-				segment.Transparency = 1;
-				continue;
-			}
-
-			segment.Size = new Vector3(this.thickness, this.thickness, length + SEGMENT_OVERLAP);
-			segment.CFrame = CFrame.lookAt(from.add(delta.mul(0.5)), to);
-			segment.Transparency = math.clamp(this.transparency + (i / wanted) * this.fade, 0, 1);
+		const path = resample(points);
+		if (path.size() < 2) {
+			this.hide();
+			return this;
 		}
 
-		if (this.marker) {
-			if (wanted > 0) {
-				const at = placement ? placement.position : points[points.size() - 1];
-				const normal = placement && placement.normal ? placement.normal : new Vector3(0, 1, 0);
-				this.marker.CFrame = AimGuide.discCFrame(at, normal);
-				this.marker.Transparency = this.markerTransparency;
-			} else {
-				this.marker.Transparency = 1;
-			}
+		if (this.preview === undefined) this.preview = this.build();
+		const preview = this.preview;
+
+		const now = os.clock();
+
+		// The dashes march by a whole slot per cycle and wrap at the muzzle end, so the path stays a
+		// single line the eye follows toward the landing rather than a set of separate marks.
+		const phase = (now * DASH_SPEED) % 1;
+		const slot = 1 / this.dashes.size();
+
+		for (let index = 0; index < this.dashes.size(); index++) {
+			const dash = this.dashes[index];
+			const start = ((index + phase) * slot) % 1;
+			const finish = math.min(start + slot * DASH_DUTY, 1);
+
+			const from = pointAt(path, start);
+			const to = pointAt(path, finish);
+
+			dash.from.WorldPosition = from;
+			dash.to.WorldPosition = to;
+			dash.beam.Width0 = widthAt(start);
+			dash.beam.Width1 = widthAt(finish);
+
+			// A dash squeezed to nothing — the tail of a wrap, or a path with a kink in it — draws as
+			// a flicker rather than a mark, so it is switched off instead.
+			dash.beam.Enabled = to.sub(from).Magnitude > 0.02;
 		}
+
+		const at = placement ? placement.position : path[path.size() - 1];
+		const normal = placement && placement.normal ? placement.normal : new Vector3(0, 1, 0);
+
+		preview.marker.CFrame = AimGuide.discCFrame(at, normal);
+		// The pulse is a sine on the clock rather than a tween: it never ends, needs no callback, and
+		// cannot be left half-applied by the aim moving underneath it.
+		preview.marker.Transparency =
+			MARKER_TRANSPARENCY + math.sin(now * MARKER_PULSE_SPEED) * MARKER_PULSE_DEPTH;
+		preview.marker.Color = this.wouldHit(at) ? COLOR_WOULD_HIT : COLOR_NEUTRAL;
 
 		return this;
 	}
 
-	/** Hides the line without destroying it. */
+	/** Hides the preview, destroying what it was drawn with. The folder stays. */
 	public hide(): this {
-		for (const segment of this.segments) {
-			segment.Transparency = 1;
+		if (this.preview) {
+			// One destroy: the carriage holds the attachments and the beams.
+			this.preview.carriage.Destroy();
+			this.preview.marker.Destroy();
+			this.preview = undefined;
+			this.dashes = [];
 		}
-		if (this.marker) {
-			this.marker.Transparency = 1;
-		}
+
 		return this;
 	}
 
-	/** Removes the line and every segment in it. */
+	/** Removes the preview and its folder. The instance is not usable afterwards. */
 	public destroy(): void {
+		this.hide();
 		this.instance.Destroy();
-		this.segments.clear();
 	}
 
-	private createSegment(parent: Folder, index: number): Part {
-		const segment = new Instance("Part");
-		segment.Name = `Segment${index}`;
-		segment.Anchored = true;
-		segment.CanCollide = false;
-		// Critical: the guide must never be the thing your aim ray hits, or the
-		// predicted path would feed back into the aim point and spiral.
-		segment.CanQuery = false;
-		segment.CanTouch = false;
-		segment.CastShadow = false;
-		segment.Material = Enum.Material.Neon;
-		segment.Color = this.color;
-		segment.Transparency = 1;
-		segment.Size = new Vector3(this.thickness, this.thickness, this.thickness);
-		segment.Parent = parent;
-		return segment;
+	/**
+	 * Whether anybody is standing where the ball is going to land.
+	 *
+	 * **Current position only.** The target has not moved yet, and extrapolating its velocity would
+	 * turn a prediction of the shot into a guess about the player — a different claim, which the
+	 * marker would then be lying about.
+	 */
+	private wouldHit(at: Vector3): boolean {
+		const filter: Instance[] = [this.instance];
+
+		// Your own body is not a target: aiming at your feet would otherwise light the marker up
+		// every time, and nobody is threatening themselves.
+		const character = Players.LocalPlayer.Character;
+		if (character) filter.push(character);
+
+		this.overlap.FilterType = Enum.RaycastFilterType.Exclude;
+		this.overlap.FilterDescendantsInstances = filter;
+
+		for (const part of Workspace.GetPartBoundsInRadius(at, MARKER_RADIUS, this.overlap)) {
+			const humanoid = part.FindFirstAncestorWhichIsA("Model")?.FindFirstChildWhichIsA("Humanoid");
+
+			// A body on the floor is not something a throw is threatening.
+			if (humanoid && humanoid.Health > 0) return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Builds one aim's worth of instances: the carriage, the dash beams, and the marker.
+	 *
+	 * The attachments live in a part of their own rather than in the marker, because an attachment
+	 * is positioned *relative* to its parent part — and the marker moves every frame, which would
+	 * drag both ends of every dash along with it.
+	 */
+	private build(): Preview {
+		const carriage = new Instance("Part");
+		carriage.Name = "Carriage";
+		carriage.Anchored = true;
+		carriage.CanCollide = false;
+		// Never drawn, and never in the way of the aim ray that produced the path.
+		carriage.Transparency = 1;
+		carriage.CanQuery = false;
+		carriage.CanTouch = false;
+		carriage.CastShadow = false;
+		carriage.Size = new Vector3(1, 1, 1);
+		carriage.Parent = this.instance;
+
+		this.dashes = [];
+		for (let index = 0; index < DASH_COUNT; index++) {
+			const from = new Instance("Attachment");
+			from.Name = `From${index}`;
+			from.Parent = carriage;
+
+			const to = new Instance("Attachment");
+			to.Name = `To${index}`;
+			to.Parent = carriage;
+
+			const beam = new Instance("Beam");
+			beam.Name = `Dash${index}`;
+			beam.Attachment0 = from;
+			beam.Attachment1 = to;
+			// Nothing glows. A beam that emits its own light reads as a line drawn over the world
+			// instead of one in it, and the marker is supposed to be the bright end of the preview.
+			beam.LightEmission = 0;
+			beam.LightInfluence = 1;
+			// A flat quad turns into a hairline seen edge-on; this keeps it readable from anywhere.
+			beam.FaceCamera = true;
+			beam.Transparency = new NumberSequence(BEAM_TRANSPARENCY);
+			beam.Enabled = false;
+			beam.Parent = carriage;
+
+			this.dashes.push({ beam, from, to });
+		}
+
+		return { carriage, marker: this.createMarker(this.instance) };
 	}
 
 	/**
@@ -208,7 +302,7 @@ export class AimGuide {
 		return CFrame.fromMatrix(position, normal, perpendicular);
 	}
 
-	private createMarker(parent: Folder, options: MarkerOptions): Part {
+	private createMarker(parent: Folder): Part {
 		const marker = new Instance("Part");
 		marker.Name = "LandingMarker";
 		// A cylinder with a thin axis reads as a flat disc, which suits a landing
@@ -216,18 +310,78 @@ export class AimGuide {
 		marker.Shape = Enum.PartType.Cylinder;
 		marker.Anchored = true;
 		marker.CanCollide = false;
-		// Same reason as the segments: it sits at the aim point, so it must not
-		// be able to intercept the ray that produced it.
+		// Critical: the marker must never be the thing your aim ray hits, or the mark
+		// would feed back into the aim point that produced it.
 		marker.CanQuery = false;
 		marker.CanTouch = false;
 		marker.CastShadow = false;
-		marker.Material = Enum.Material.Neon;
-		marker.Color = options.color ?? DEFAULT_MARKER_COLOR;
-		marker.Transparency = 1;
-		const size = options.size ?? DEFAULT_MARKER_SIZE;
-		const thickness = options.thickness ?? DEFAULT_MARKER_THICKNESS;
-		marker.Size = new Vector3(thickness, size, size);
+		// Smooth plastic, not Neon: the marker is the bright end of the preview by being the most
+		// solid thing in it, not by glowing at the world. A glow would read as "you win" on its own,
+		// before the colour had said anything.
+		marker.Material = Enum.Material.SmoothPlastic;
+		marker.Color = COLOR_NEUTRAL;
+		marker.Transparency = MARKER_TRANSPARENCY;
+		marker.Size = new Vector3(MARKER_THICKNESS, MARKER_RADIUS * 2, MARKER_RADIUS * 2);
 		marker.Parent = parent;
 		return marker;
 	}
+}
+
+/**
+ * The same path, resampled to a fixed number of points spaced evenly *by distance*.
+ *
+ * The simulator's points are one per step of a fixed interval, so they bunch up wherever the ball is
+ * moving slowly and spread out where it is moving fast. Laying dashes along those directly would
+ * give short dashes at the top of an arc and long ones at its ends; equal distance is what makes a
+ * dashed line look drawn rather than computed.
+ *
+ * The *shape* is untouched — this only moves where the points are along it — so the curve the
+ * preview draws is still the curve the ball will fly. It also caps what the preview costs: however
+ * fine the simulation gets, the number of dashes on screen is the same.
+ */
+function resample(points: ReadonlyArray<Vector3>): Vector3[] {
+	if (points.size() < 2) return [];
+
+	const lengths: number[] = [0];
+	let total = 0;
+
+	for (let index = 1; index < points.size(); index++) {
+		total += points[index].sub(points[index - 1]).Magnitude;
+		lengths.push(total);
+	}
+
+	if (total < 0.01) return [];
+
+	const sampled: Vector3[] = [];
+	for (let step = 0; step < PATH_SAMPLES; step++) {
+		sampled.push(atDistance(points, lengths, (step / (PATH_SAMPLES - 1)) * total));
+	}
+
+	return sampled;
+}
+
+/** The point `t` of the way along a resampled path: `0` at the muzzle, `1` at the landing. */
+function pointAt(path: ReadonlyArray<Vector3>, t: number): Vector3 {
+	const scaled = math.clamp(t, 0, 1) * (path.size() - 1);
+	const index = math.min(math.floor(scaled), path.size() - 2);
+	const part = scaled - index;
+
+	return path[index].add(path[index + 1].sub(path[index]).mul(part));
+}
+
+/** The point `distance` along a path, interpolating across the step it falls inside. */
+function atDistance(points: ReadonlyArray<Vector3>, lengths: number[], distance: number): Vector3 {
+	let index = 1;
+	while (index < lengths.size() - 1 && lengths[index] < distance) index++;
+
+	const previous = lengths[index - 1];
+	const span = lengths[index] - previous;
+	const part = span > 0 ? (distance - previous) / span : 0;
+
+	return points[index - 1].add(points[index].sub(points[index - 1]).mul(part));
+}
+
+/** The beam's width at `t` along the path: the taper, from the muzzle down to the landing. */
+function widthAt(t: number): number {
+	return WIDTH_MUZZLE + (WIDTH_LANDING - WIDTH_MUZZLE) * math.clamp(t, 0, 1);
 }

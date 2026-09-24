@@ -399,8 +399,9 @@ export interface TrajectoryOptions {
  * 0.01s puts the sag under 0.003 studs and gives an ordinary throw around forty
  * corners, which reads as a curve. The cost is real and paid by the client: the
  * aim guide sweeps a sphere once per step, per frame, so this triples that work
- * — a few dozen sweeps on a normal throw — and the pool of drawn segments has to
- * grow with it. See `AimGuide.DEFAULT_MAX_SEGMENTS`.
+ * — a few dozen sweeps on a normal throw. What the *guide draws* does not grow
+ * with it: it resamples whatever it is handed down to a fixed number of dashes,
+ * so a finer path buys a better curve without buying more instances.
  */
 const DEFAULT_STEP = 0.01;
 const DEFAULT_MAX_TIME = 4;
