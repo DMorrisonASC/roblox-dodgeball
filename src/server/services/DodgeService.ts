@@ -1,11 +1,14 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
+import { ACTION_CONFIG } from "shared/config/action.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
+import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { lockoutElapsed } from "../actionLock";
 import { DevService } from "../dev/DevService";
+import { extendReadyAt, publishReadyAt } from "../readyAt";
 
 /** Prints what every dodge request did, and why it did nothing. */
 const DEBUG = true;
@@ -186,8 +189,22 @@ export class DodgeService implements OnStart {
 		// Charged now, before the dash exists: the request has been accepted at this
 		// point, and charging it after the fact would leave a window in which two
 		// requests can both pass the check. Nothing is charged for a dev who is not
-		// gated by it in the first place.
-		if (!free) this.lastDodgeAt.set(model, now);
+		// gated by it in the first place — and nothing is published either, so the
+		// readout agrees with the rule rather than with what was asked for.
+		if (!free) {
+			this.lastDodgeAt.set(model, now);
+			publishReadyAt(model, DODGE_READY_AT, DODGE_CONFIG.COOLDOWN);
+		}
+
+		// The dodge shuts catching for its whole length plus the tail that follows it, told to the
+		// client in the same currency as every other cooldown. Deliberately outside the `free`
+		// branch: `NoCooldown` skips the dodge's *own* clock, and this is the rule about the two
+		// actions, which holds for a dev exactly as it holds for anybody else.
+		//
+		// "At least" rather than outright, because a catch cycle already running may end after this
+		// does — and the readout has to show the longer of the two waits, or it would go light
+		// while the pair was still shut.
+		extendReadyAt(model, CATCH_READY_AT, DODGE_CONFIG.DURATION + ACTION_CONFIG.ACTION_LOCKOUT_SECONDS);
 
 		this.startDash(model, entity, heading);
 

@@ -60,7 +60,7 @@ export const ARENA_CONFIG = {
 	 * construction and a fractional one would be rounded in the HUD rather than in
 	 * the clock. Read by `RoundService`.
 	 */
-	INTERMISSION_SECONDS: 15,
+	INTERMISSION_SECONDS: 60,
 
 	/**
 	 * How long a round lasts, in seconds.
@@ -68,5 +68,5 @@ export const ARENA_CONFIG = {
 	 * The same shape as {@link ARENA_CONFIG.INTERMISSION_SECONDS}: a whole number
 	 * of seconds, counted down one at a time.
 	 */
-	ROUND_SECONDS: 15,
+	ROUND_SECONDS: 150,
 } as const;

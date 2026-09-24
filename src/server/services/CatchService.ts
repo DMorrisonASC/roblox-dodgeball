@@ -1,14 +1,28 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
+import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
+import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { lockoutElapsed } from "../actionLock";
 import { DevService } from "../dev/DevService";
+import { extendReadyAt, publishReadyAt } from "../readyAt";
 import { DodgeService } from "./DodgeService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
 const DEBUG = true;
+
+/**
+ * How long a catch keeps the pair busy: the window, plus the lockout a dodge is refused for after
+ * it closes.
+ *
+ * A sum rather than a value of its own, derived here rather than written into a config, because
+ * both halves are already shared — the window is this service's own clock and the tail is the
+ * pair's rule — so there is nothing left to choose and nothing to keep in step. The client adds up
+ * the same two config values, which is what keeps the readout and the rule moving together.
+ */
+const CATCH_BUSY_SECONDS = CATCH_CONFIG.WINDOW_SECONDS + ACTION_CONFIG.ACTION_LOCKOUT_SECONDS;
 
 /**
  * Catch windows, decided by the server.
@@ -71,6 +85,20 @@ export class CatchService implements OnStart {
 	 */
 	private readonly lastCatchCloseAt = new Map<Model, number>();
 
+	/**
+	 * When each model's catch *cycle* ends, keyed on the model.
+	 *
+	 * **Not the window's expiry.** A window is how long a catch is possible; a cycle is the window
+	 * plus the lockout that follows it, and it is what a second press is refused by — so holding
+	 * the key is one attempt rather than a permanently open window, which is what "press E to
+	 * catch" has to mean for a catch to be a read of the throw.
+	 *
+	 * A press inside the cycle changes nothing: no window opens, no window is extended, and this
+	 * stamp does not move. A catch that lands still ends only the window — the cycle is what the
+	 * player owes between attempts, not what the ball pays off.
+	 */
+	private readonly catchReadyAt = new Map<Model, number>();
+
 	constructor(private readonly dev: DevService, private readonly dodges: DodgeService) {
 		// The dodge is gated on the catch, and this is where the catch side of that is handed
 		// over: the two services are gated on each other, and Flamework errors on a circular
@@ -104,7 +132,7 @@ export class CatchService implements OnStart {
 		// model nobody owns any more.
 		Players.PlayerRemoving.Connect((player) => {
 			const character = player.Character;
-			if (character) this.consume(character);
+			if (character) this.forget(character);
 		});
 	}
 
@@ -136,6 +164,42 @@ export class CatchService implements OnStart {
 		// is a window that stays open until a ball arrives.
 		if (this.holdOpenForDev(model)) return true;
 
+		const now = os.clock();
+		const player = Players.GetPlayerFromCharacter(model);
+
+		// **The cycle gates a key press, and only a key press.** It exists to make a second press
+		// inside the window a press that does nothing, so it belongs to the model somebody is
+		// holding the key for. An NPC has no key: its AI asks on a timer of its own
+		// (`CatchBehavior`), and asking that often is *how* it keeps a window open — each attempt
+		// re-stamps the window, so the rig is a catcher continuously rather than a catcher only
+		// while a cycle happens to be open. Gated here, an NPC would spend most of its time in the
+		// gap between cycles, and whether it caught the ball would come down to when the ball
+		// arrived.
+		if (player !== undefined) {
+			const readyAt = this.catchReadyAt.get(model);
+			if (readyAt !== undefined && now < readyAt) {
+				if (DEBUG) print(`[Catch] ${model.Name}: still in the catch cycle`);
+				return false;
+			}
+
+			// The cycle starts here, where the attempt has been accepted and nothing below can
+			// refuse it, and it is published from the same value — so the client's bar and this
+			// guard cannot be talking about two different waits.
+			this.catchReadyAt.set(model, now + CATCH_BUSY_SECONDS);
+			publishReadyAt(model, CATCH_READY_AT, CATCH_BUSY_SECONDS);
+
+			// The mirror of the dodge's own write. A catch cycle shuts *dodging* for as long as it
+			// runs, so the dodge bar is told the same wait the catch bar is, and the two readouts
+			// cannot disagree about whether the pair is busy.
+			//
+			// "At least" rather than outright, because the wait behind that bar can be longer than
+			// this one — a catch must never bring a longer cooldown forward.
+			//
+			// Reached only where the cycle really opened: a press refused by a dodge returns above,
+			// and so does a dev's endless window, which is not a cycle at all.
+			extendReadyAt(model, DODGE_READY_AT, CATCH_BUSY_SECONDS);
+		}
+
 		const open = this.windows.get(model);
 
 		// Already catching: the window is *extended*, not replaced. Nothing else
@@ -143,14 +207,14 @@ export class CatchService implements OnStart {
 		// catching NPC asks for this every tick, so one watch per request would leave
 		// it holding thousands of listeners for a death that happens once.
 		if (open) {
-			open.expiresAt = os.clock() + CATCH_CONFIG.WINDOW_SECONDS;
+			open.expiresAt = now + CATCH_CONFIG.WINDOW_SECONDS;
 			return true;
 		}
 
 		// The window dies with the catcher. `Once` because a humanoid dies once.
 		this.windows.set(model, {
-			expiresAt: os.clock() + CATCH_CONFIG.WINDOW_SECONDS,
-			death: humanoid.Died.Once(() => this.consume(model)),
+			expiresAt: now + CATCH_CONFIG.WINDOW_SECONDS,
+			death: humanoid.Died.Once(() => this.forget(model)),
 		});
 
 		if (DEBUG) print(`[Catch] ${model.Name}: window open`);
@@ -173,6 +237,10 @@ export class CatchService implements OnStart {
 		if (!player || !this.dev.getFlag(player, "InfiniteCatch")) return false;
 
 		this.alwaysCatching.add(player);
+
+		// An endless window is not a length, so there is nothing to count down: the readout is told
+		// the wait is over rather than left showing the remains of whatever window came before it.
+		publishReadyAt(model, CATCH_READY_AT, 0);
 
 		if (DEBUG) print(`[Catch] ${model.Name}: endless window open (dev)`);
 
@@ -249,6 +317,23 @@ export class CatchService implements OnStart {
 		if (DEBUG) print(`[Catch] ${model.Name}: refused — a dodge ended ${string.format("%.2f", since)}s ago`);
 
 		return true;
+	}
+
+	/**
+	 * Drops everything this service holds about `model`: its window and its catch cycle.
+	 *
+	 * For the two moments a model stops being a catcher for good — its humanoid dying and its
+	 * player leaving. Both maps are keyed on the model, so an entry that outlives it is never read
+	 * again and never cleared; these are the two are dropped together because they are the whole
+	 * of what this service remembers about one.
+	 *
+	 * **A spent window does not come through here.** A ball caught inside the window ends the
+	 * window and nothing else, because the cycle is what the player owes between attempts and a
+	 * good catch does not pay it off. See {@link consume}.
+	 */
+	private forget(model: Model): void {
+		this.consume(model);
+		this.catchReadyAt.delete(model);
 	}
 
 	/**

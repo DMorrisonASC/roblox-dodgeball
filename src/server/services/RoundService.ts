@@ -1,7 +1,12 @@
 import { Service, OnStart } from "@flamework/core";
-import { Players, Workspace } from "@rbxts/services";
+import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
-import { TEAM_ATTRIBUTE } from "shared/constants";
+import {
+    ROUND_STATE_ATTRIBUTE,
+    ROUND_STATUS_FOLDER,
+    ROUND_TIME_ATTRIBUTE,
+    TEAM_ATTRIBUTE,
+} from "shared/constants";
 import { DevService } from "../dev/DevService";
 
 enum RoundState {
@@ -44,6 +49,15 @@ export class RoundService implements OnStart {
      */
     private readonly teams = new Map<Player, TeamLabel>();
 
+    /**
+     * The folder the HUD reads: the round's phase and clock, as attributes.
+     *
+     * A folder in `ReplicatedStorage` rather than anything sent, because attributes replicate
+     * by themselves — the client gets the HUD's two facts without a remote, and without this
+     * service having to know a HUD exists. Made in `onStart`; the client waits for it.
+     */
+    private statusFolder!: Folder;
+
     constructor(private readonly dev: DevService) {}
 
     onStart() {
@@ -58,6 +72,12 @@ export class RoundService implements OnStart {
             this.handlePlayerJoined(player);
         }
 
+        // The HUD's channel, opened before the loop starts so the client has something to find:
+        // the phase, and a clock at zero because no phase is running yet.
+        this.statusFolder = this.findOrCreateStatusFolder();
+        this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Intermission");
+        this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, 0);
+
         task.spawn(() => this.gameLoop());
     }
 
@@ -71,6 +91,25 @@ export class RoundService implements OnStart {
     }
 
     // ---- Internals ----
+
+    /**
+     * The round-status folder, created if it is not already there.
+     *
+     * Found rather than made outright so that a second run of this service — a script reload, or
+     * a folder somebody put there by hand — cannot leave two of them for a client to choose
+     * between. The attributes are set by the caller either way, so a folder that already exists
+     * is brought up to date rather than trusted.
+     */
+    private findOrCreateStatusFolder(): Folder {
+        const existing = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
+        if (existing?.IsA("Folder")) return existing;
+
+        const folder = new Instance("Folder");
+        folder.Name = ROUND_STATUS_FOLDER;
+        folder.Parent = ReplicatedStorage;
+
+        return folder;
+    }
 
     /**
      * Splits the server into two sides, as evenly as they go, and puts the labels on them.
@@ -246,6 +285,14 @@ export class RoundService implements OnStart {
             this.teleportAll(ARENA_CONFIG.LOBBY_SPAWN_NAME);
 
             this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
+            // The phase goes out as its own name, which is the HUD's entire vocabulary. Those two
+            // words are `RoundState`'s members by convention rather than by construction, so
+            // renaming a member means renaming the string here.
+            this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Intermission");
+            // Published with the clock rather than only after the first second comes off it, so
+            // the HUD never shows the *previous* phase's final number under the new phase's name.
+            this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
+
             while (this.timeRemaining > 0) {
                 // A paused tick does nothing at all: no second off the clock, no change of
                 // state, no teleport. The phase resumes from whatever the clock said when it
@@ -257,6 +304,7 @@ export class RoundService implements OnStart {
 
                 task.wait(1);
                 this.timeRemaining--;
+                this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
             }
 
             await this.waitWhilePaused();
@@ -272,6 +320,9 @@ export class RoundService implements OnStart {
             this.teleportTeamsToArena();
 
             this.timeRemaining = ARENA_CONFIG.ROUND_SECONDS;
+            this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Playing");
+            this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
+
             while (this.timeRemaining > 0) {
                 if (this.isRoundsPaused()) {
                     task.wait(1);
@@ -280,6 +331,7 @@ export class RoundService implements OnStart {
 
                 task.wait(1);
                 this.timeRemaining--;
+                this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
                 // Checked after the clock moves, so a round ends on the tick its last second
                 // runs out rather than a tick later. A side being wiped out is checked on

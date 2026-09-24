@@ -1,6 +1,7 @@
 /**
- * The ball's identity: the name the part carries, the attribute a thrower is
- * stamped with, and the size it is made at.
+ * The names and keys that more than one file has to agree on: what the ball is called, the
+ * attributes a ball, a player and the round carry, and the folder the round's state is
+ * published on.
  *
  * Everything a person would change to alter how the game *feels* lives in
  * `shared/config/` instead — the ball and its throws in `ball.config.ts`, the
@@ -9,7 +10,7 @@
  *
  * What is left here is what code has to *agree* on rather than choose: a part name
  * several files match against, and an attribute key. Those are not tuning
- * choices. `BALL_SIZE` is the one number of the three, and it is here because it
+ * choices. `BALL_SIZE` is the one number in here, and it is here because it
  * is what the ball *is* rather than how it behaves — the aim guide's spherecast
  * radius and the solve's aim offset are both derived from it.
  */
@@ -61,6 +62,62 @@ export const THROW_ENABLED = "ThrowEnabled";
  * a reader tells "not playing" from "playing for somebody".
  */
 export const TEAM_ATTRIBUTE = "Team";
+
+/**
+ * Attribute on a **`Player`** holding the server-time instant at which their next dodge is allowed.
+ *
+ * `Workspace:GetServerTimeNow()` seconds, written by `DodgeService` at the moment a dodge is
+ * *accepted*. A refused dodge writes nothing — it was not charged for — so a reader watching this
+ * attribute sees the bar restart only when the clock really did.
+ *
+ * An *instant* on the shared clock rather than a remaining time, because the reader can subtract it
+ * from its own reading of that same clock. A duration would be as stale as the moment it was sent,
+ * and an attribute carries no send time to correct it by.
+ */
+export const DODGE_READY_AT = "DodgeReadyAt";
+
+/**
+ * Attribute on a **`Player`** holding the server-time instant at which their catch counts as ready
+ * again.
+ *
+ * Written by `CatchService` when a catch window opens or is extended, and it covers the window
+ * **plus** `ACTION_CONFIG.ACTION_LOCKOUT_SECONDS` — the tail after a catch in which a dodge is
+ * refused. So the bar this feeds is the span the two actions share rather than a lock on catching:
+ * a catch is possible again before the instant passes, because the tail shuts the *dodge*.
+ *
+ * On the player for the same reason as {@link DODGE_READY_AT}: a character is replaced on every
+ * death and these clocks are not.
+ */
+export const CATCH_READY_AT = "CatchReadyAt";
+
+/**
+ * The `ReplicatedStorage` folder the round's state is published on.
+ *
+ * **The HUD's whole channel.** `RoundService` writes the two attributes below on it and the
+ * client reads them; nothing is ever sent, because attributes replicate on their own — so the
+ * HUD needs no remote and no reference to the service that owns the round, and the round needs
+ * no reference to the HUD. A folder by this name in `ReplicatedStorage` is the agreement.
+ */
+export const ROUND_STATUS_FOLDER = "RoundStatus";
+
+/**
+ * Attribute on {@link ROUND_STATUS_FOLDER}: which phase the round is in.
+ *
+ * The value is the phase's *name* as text — the one vocabulary the HUD has — so a reader can
+ * print it without knowing what any of the phases mean. The names are the members of
+ * `RoundState` by convention rather than by construction; they are written by hand in
+ * `RoundService`.
+ */
+export const ROUND_STATE_ATTRIBUTE = "State";
+
+/**
+ * Attribute on {@link ROUND_STATUS_FOLDER}: whole seconds left in the phase.
+ *
+ * Written when the phase's clock is set and again after every second comes off it, so a reader
+ * is never more than a tick behind. It does **not** move while rounds are paused — a stopped
+ * countdown is the honest reading of a paused round, and nothing has to tell the client that.
+ */
+export const ROUND_TIME_ATTRIBUTE = "TimeRemaining";
 
 /**
  * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
