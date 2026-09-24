@@ -35,7 +35,9 @@ import { LaunchPlan, Trajectory } from "shared/Trajectory";
  *   This is the one to compare across throws: same click, same landing numbers
  *   => the maths is right and what you are seeing move is the engine's contact.
  *
- * Printed from `BallService` when its `DEBUG` constant is on.
+ * Printed from `BallService`, behind `DEBUG_CONFIG.VERBOSE_LOGS` — see
+ * `shared/config/debug.config.ts`. Everything this file prints is behind that gate; the probe is
+ * not even started when it is off.
  */
 
 /** When to take the path and velocity sample, in seconds of engine time. */

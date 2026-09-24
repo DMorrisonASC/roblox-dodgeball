@@ -5,6 +5,8 @@ import {
     ROUND_STATE_ATTRIBUTE,
     ROUND_STATUS_FOLDER,
     ROUND_TIME_ATTRIBUTE,
+    ROUND_WINNER_ATTRIBUTE,
+    SPECTATING_ATTRIBUTE,
     TEAM_ATTRIBUTE,
 } from "shared/constants";
 import { DevService } from "../dev/DevService";
@@ -77,6 +79,9 @@ export class RoundService implements OnStart {
         this.statusFolder = this.findOrCreateStatusFolder();
         this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Intermission");
         this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, 0);
+        // Seeded empty rather than left unset: the first intermission follows no round at all, and
+        // a reader should be told "nobody has won" rather than handed the absence of an answer.
+        this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, "");
 
         task.spawn(() => this.gameLoop());
     }
@@ -217,6 +222,10 @@ export class RoundService implements OnStart {
             const humanoid = character.WaitForChild("Humanoid") as Humanoid;
             humanoid.Died.Connect(() => {
                 this.activePlayers.delete(player);
+
+                // Out of the round — and, if a round is on, watching the rest of it. A death in
+                // the lobby is not an elimination, so nothing is written outside a round.
+                if (this.state === RoundState.Playing) player.SetAttribute(SPECTATING_ATTRIBUTE, true);
             });
 
             const root = character.WaitForChild("HumanoidRootPart") as BasePart;
@@ -229,6 +238,14 @@ export class RoundService implements OnStart {
 
             character.PivotTo(inRound ? this.arenaSpawnFor(player) : this.getSpawn(ARENA_CONFIG.LOBBY_SPAWN_NAME));
         });
+
+        // **A player arriving during a round is watching it, not in it.** They are not in
+        // `activePlayers` and the round does not wait for them, so the HUD is told what the round
+        // already believes. A joiner during an intermission gets nothing: they will be in the next
+        // round's teams, and until then there is no round to be out of.
+        if (this.state === RoundState.Playing && !this.activePlayers.has(player)) {
+            player.SetAttribute(SPECTATING_ATTRIBUTE, true);
+        }
     }
 
     private getSpawn(name: string): CFrame {
@@ -315,6 +332,12 @@ export class RoundService implements OnStart {
 
             for (const player of Players.GetPlayers()) {
                 this.activePlayers.add(player);
+
+                // In the round, therefore not spectating. This is where last round's eliminated
+                // players come back, which is the whole of "the indicator goes when a round
+                // starts" — written for everybody in the round rather than only for those who
+                // were marked, because a mid-round joiner is marked too and is now playing.
+                player.SetAttribute(SPECTATING_ATTRIBUTE, false);
             }
             print("Round started");
             this.teleportTeamsToArena();
@@ -322,6 +345,11 @@ export class RoundService implements OnStart {
             this.timeRemaining = ARENA_CONFIG.ROUND_SECONDS;
             this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Playing");
             this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
+            // Cleared where the *playing* phase opens, not where an intermission does. The
+            // intermission that follows a round is precisely the one that should still be showing
+            // what that round decided, so clearing at the intermission's own start would wipe
+            // every winner a frame after it was set.
+            this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, "");
 
             while (this.timeRemaining > 0) {
                 if (this.isRoundsPaused()) {
@@ -343,6 +371,11 @@ export class RoundService implements OnStart {
                     // string is one more thing for a reader to unpick, and the message is the
                     // part worth reading.
                     const result = outcome === DRAW ? "a draw" : `Team ${outcome} won`;
+
+                    // The same word the message uses, and the vocabulary the HUD expects: a
+                    // team's label, or `"draw"`. Written before the round is left, because the
+                    // intermission that follows is where it is read.
+                    this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, outcome);
 
                     print(`[Round] ${result}`);
                     break;

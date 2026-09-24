@@ -4,6 +4,7 @@ import { Players, Workspace } from "@rbxts/services";
 import { THROWER_TOKEN } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BallService } from "../services/BallService";
 import { CatchService } from "../services/CatchService";
 
@@ -225,7 +226,9 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * arrival is silent — which would otherwise read the same as an arrival that was ignored.
 	 */
 	private landHit(character: Model, humanoid: Humanoid, part: BasePart): void {
-		print(`[Ball] ${character.Name}: hit on ${part.Name}`);
+		// Gated where the rest of this file's output is not: this is one line per hit, and it is
+		// worth reading only while tuning what a contact is worth.
+		if (DEBUG_CONFIG.VERBOSE_LOGS) print(`[Ball] ${character.Name}: hit on ${part.Name}`);
 
 		humanoid.TakeDamage(HIT_DAMAGE);
 	}

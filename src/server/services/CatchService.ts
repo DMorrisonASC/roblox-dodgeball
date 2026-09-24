@@ -2,6 +2,7 @@ import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
@@ -217,7 +218,7 @@ export class CatchService implements OnStart {
 			death: humanoid.Died.Once(() => this.forget(model)),
 		});
 
-		if (DEBUG) print(`[Catch] ${model.Name}: window open`);
+		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Catch] ${model.Name}: window open`);
 
 		return true;
 	}
@@ -275,7 +276,7 @@ export class CatchService implements OnStart {
 		const expiresAt = window.expiresAt;
 
 		if (os.clock() > expiresAt) {
-			if (DEBUG) print(`[Catch] ${model.Name}: window expired`);
+			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Catch] ${model.Name}: window expired`);
 
 			// Closed through `consume` so the death watch goes with the window: an
 			// expired window must not leave a listener behind.

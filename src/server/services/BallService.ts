@@ -2,6 +2,7 @@ import { Service, OnStart } from "@flamework/core";
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { BALL_NAME, BALL_SIZE, THROWER_TOKEN, THROW_ENABLED, PICKUP_LOCKED_UNTIL } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
@@ -560,7 +561,9 @@ export class BallService implements OnStart {
 		this.applyAcceleration(ball, plan.acceleration, plan.flightTime);
 
 		// How far the engine's flight actually is from the plan's, per throw.
-		if (DEBUG) watchThrow(ball, plan, model);
+		// Behind the verbosity gate as well: the probe watches every throw per frame, and it costs
+		// the very frame time it is reporting on. See `shared/config/debug.config.ts`.
+		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) watchThrow(ball, plan, model);
 
 
 

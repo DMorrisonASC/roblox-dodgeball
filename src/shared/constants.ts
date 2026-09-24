@@ -120,6 +120,29 @@ export const ROUND_STATE_ATTRIBUTE = "State";
 export const ROUND_TIME_ATTRIBUTE = "TimeRemaining";
 
 /**
+ * Attribute on {@link ROUND_STATUS_FOLDER}: who won the round that has just ended.
+ *
+ * A team's label, or `"draw"` — the same two words `RoundService` prints, because the round's
+ * vocabulary is its own business and this is only a channel for it. Written when a round is
+ * decided and left standing through the intermission that follows, which is where it is read; a
+ * reader must not assume it means anything *during* a round, and the HUD does not.
+ */
+export const ROUND_WINNER_ATTRIBUTE = "Winner";
+
+/**
+ * Attribute on a **`Player`** saying they are out of the round in progress and watching it.
+ *
+ * Written by `RoundService`: set for a player whose character dies during a round, and for one
+ * who joins while a round is already under way — both are spectators of a round they are not in.
+ * Cleared for everybody when the next round opens and they are in it, which is what makes the
+ * indicator disappear at the start of a round rather than at any moment of its own.
+ *
+ * On the player rather than the character for the reason every other player attribute is: a
+ * character is replaced on respawn, and being out of a round outlives the body it happened to.
+ */
+export const SPECTATING_ATTRIBUTE = "Spectating";
+
+/**
  * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
  *
  * Written by `BallService.dropBall`, read by `BallPickupService`. On the ball rather than

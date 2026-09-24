@@ -8,6 +8,7 @@ import {
 	Workspace,
 } from "@rbxts/services";
 import { AimGuide } from "shared/AimGuide";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
@@ -154,7 +155,10 @@ export class ThrowController implements OnStart {
 			acceleration: plan.acceleration,
 		});
 
-		if (DEBUG) this.reportJitter(target, getThrowMuzzle(character), arc);
+		// The jitter report is the noisiest thing in the game: it is built to fire whenever the drawn
+		// path moves, and while somebody is aiming that is every frame. See
+		// `shared/config/debug.config.ts`.
+		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) this.reportJitter(target, getThrowMuzzle(character), arc);
 
 		this.guide.update(arc.points, { position: arc.contact ?? arc.landing, normal: arc.normal });
 	}

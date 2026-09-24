@@ -2,6 +2,7 @@ import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
@@ -380,7 +381,7 @@ export class DodgeService implements OnStart {
 					humanoid.SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true);
 				}
 
-				if (DEBUG) {
+				if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
 					// What actually moved, against what was asked for. The two match
 					// unless something else got a hold of the character mid-dash.
 					const travelled =
@@ -400,7 +401,7 @@ export class DodgeService implements OnStart {
 		// `PlatformStand` left on is a player who cannot walk after respawning.
 		diedConnection = humanoid?.Died.Connect(() => this.endDash(model));
 
-		if (DEBUG) {
+		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
 			print(
 				`[Dodge] ${model.Name}: ${string.format("%.1f", DODGE_CONFIG.DISTANCE)} studs over ` +
 					`${string.format("%.2f", DODGE_CONFIG.DURATION)}s at ${string.format("%.1f", DODGE_SPEED)} studs/s ` +
