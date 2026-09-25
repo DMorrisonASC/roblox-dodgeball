@@ -453,4 +453,104 @@ export const BALL_CONFIG = {
 	 * down deliberately does not look like a ball nobody can ever have.
 	 */
 	DROP_PICKUP_LOCKOUT: 1.0,
+
+	// ------------------------------------------------------------------ trail
+
+	/**
+	 * Whether a thrown ball leaves a trail at all.
+	 *
+	 * The kill switch for the whole effect, and a **creation** switch rather than a
+	 * visibility one: while this is false no ribbon is built, so "off" means the instances
+	 * are not there rather than that they are there and idle. One edit here turns the trail
+	 * off everywhere, because a player's throw and an NPC's are the same ball and the same
+	 * code.
+	 */
+	TRAIL_ENABLED: true,
+
+	/**
+	 * How many ribbons the trail is made of, arranged evenly around the ball's own axis.
+	 *
+	 * **This is the whole trick behind the trail looking round.** A single `Trail` is a flat
+	 * strip that always turns to face the camera, so one of them reads as a sticker on the
+	 * screen however good its taper is. Several at a spread of angles give the eye a
+	 * cross-section instead: whatever the camera angle, at least two are near face-on and
+	 * the composite is read as a tube. This is the standard Roblox answer to "3D trail",
+	 * because a `Trail` is the only thing that *records a path* and a path is what makes the
+	 * trail bend with a curving throw instead of snapping to the ball's current heading.
+	 *
+	 * `4` gives a full star at `0°`, `45°`, `90°` and `135°`, and is the default to judge
+	 * everything else by. `2` — a plain cross, `0°` and `90°` — is the cheap version and is
+	 * what to drop to if a busy server starts to notice: at four ribbons a ball in flight
+	 * costs eight attachments and four trails, so ten balls is forty trails.
+	 *
+	 * Three at `60°` also works and sits between the two. Any count divides the circle
+	 * evenly, so this is the only number to change.
+	 */
+	TRAIL_COUNT: 4,
+
+	/**
+	 * How long each trail segment lives, in seconds — **which is what sets the trail's
+	 * length.**
+	 *
+	 * A trail is a record of where the ball has been, so its length is how far the ball
+	 * travelled while the oldest segment was still alive: `speed × this`. That is the whole
+	 * reason a thrown ball draws a long streak and a rolled one draws almost none, and it is
+	 * the number to reach for when a hard throw draws further than it should. It is a time,
+	 * not a distance, so it is not the length itself — at
+	 * {@link BALL_CONFIG.THROW_SPEED} this is around forty studs, and at
+	 * {@link BALL_CONFIG.THROW_MAX_SPEED} about a hundred and twelve.
+	 */
+	TRAIL_LIFETIME: 0.4,
+
+	/**
+	 * How wide each ribbon is where it leaves the ball, as a fraction of the gap between its
+	 * two attachment points.
+	 *
+	 * A scale rather than a stud measurement because the gap is what a ribbon's width
+	 * *is* — see {@link BALL_CONFIG.TRAIL_SPREAD}, which sets it. `1` is the full gap.
+	 */
+	TRAIL_WIDTH_LEADING: 1.0,
+
+	/**
+	 * How wide each ribbon is at its oldest end, on the same scale as
+	 * {@link BALL_CONFIG.TRAIL_WIDTH_LEADING}.
+	 *
+	 * Near-zero rather than zero, because a segment of no width at all is simply not drawn:
+	 * this is a *point*, and that point is what makes the shape read as motion in a
+	 * direction rather than as a ribbon the ball happens to be dragging.
+	 */
+	TRAIL_WIDTH_TRAILING: 0.05,
+
+	/**
+	 * The trail's colour where it leaves the ball.
+	 *
+	 * Warm white rather than pure white, so the head reads as the hot end of something
+	 * rather than as a plain painted line. Paired with
+	 * {@link BALL_CONFIG.TRAIL_COLOR_TRAILING} for the fade behind it — a `Trail` takes its
+	 * colour as a sequence, so unlike a single part it can carry the whole gradient on its
+	 * own and needs no second instance to do it.
+	 */
+	TRAIL_COLOR_LEADING: Color3.fromRGB(255, 255, 240),
+
+	/**
+	 * The trail's colour at its oldest end, on the same scale as
+	 * {@link BALL_CONFIG.TRAIL_COLOR_LEADING}.
+	 *
+	 * A dull red, so the trail cools as it recedes: white-hot at the ball, embers behind it,
+	 * and gone. This runs alongside the transparency fade rather than instead of it, which is
+	 * what stops the tail reading as a solid red rod — it is dark *and* see-through by the
+	 * time the lifetime is up.
+	 */
+	TRAIL_COLOR_TRAILING: Color3.fromRGB(140, 41, 20),
+
+	/**
+	 * How far each ribbon's two attachment points sit from the ball's centre, as a fraction
+	 * of the ball's own diameter — **which is the trail's thickness.**
+	 *
+	 * The distance between a ribbon's two attachments is the ribbon's width, and both of
+	 * them sit on a line through the ball, so this is half of the trail's diameter. A
+	 * fraction rather than a stud count so the trail stays in proportion if `BALL_SIZE` is
+	 * ever changed; the exact value is not delicate, it only sets how fat the tube looks.
+	 */
+	TRAIL_SPREAD: 0.4,
 } as const;

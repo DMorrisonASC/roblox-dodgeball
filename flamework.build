@@ -11,9 +11,10 @@
 		"roblox-dodgeball:out/shared/AimGuide@AimGuide": "shared/AimGuide@AimGuide",
 		"roblox-dodgeball:out/shared/Trajectory@Trajectory": "shared/Trajectory@Trajectory",
 		"roblox-dodgeball:out/client/controllers/ThrowController@ThrowController": "client/controllers/ThrowController@ThrowController",
+		"roblox-dodgeball:out/server/BallTrail@BallTrail": "server/BallTrail@BallTrail",
 		"roblox-dodgeball:out/shared/CollisionIgnore@CollisionIgnore": "shared/CollisionIgnore@CollisionIgnore",
-		"roblox-dodgeball:out/shared/TrailEffect@TrailEffect": "shared/TrailEffect@TrailEffect",
 		"roblox-dodgeball:out/server/dev/DevService@DevService": "server/dev/DevService@DevService",
+		"roblox-dodgeball:out/shared/TrailEffect@TrailEffect": "shared/TrailEffect@TrailEffect",
 		"roblox-dodgeball:out/server/services/SphereService@SphereService": "server/services/SphereService@SphereService",
 		"roblox-dodgeball:out/server/services/BallService@BallService": "server/services/BallService@BallService",
 		"roblox-dodgeball:out/server/services/DodgeService@DodgeService": "server/services/DodgeService@DodgeService",
@@ -23,6 +24,7 @@
 		"roblox-dodgeball:out/server/services/ActionService@ActionService": "server/services/ActionService@ActionService",
 		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/NpcService@NpcService": "server/services/NpcService@NpcService",
+		"roblox-dodgeball:out/server/services/OutlineService@OutlineService": "server/services/OutlineService@OutlineService",
 		"roblox-dodgeball:out/server/services/RoundService@RoundService": "server/services/RoundService@RoundService"
 	},
 	"metadata": {}

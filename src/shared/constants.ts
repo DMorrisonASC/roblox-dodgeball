@@ -154,5 +154,5 @@ export const SPECTATING_ATTRIBUTE = "Spectating";
 export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
 
 /** Diameter of the ball, in studs. */
-export const BALL_SIZE = 1;
+export const BALL_SIZE = 1.5;
 

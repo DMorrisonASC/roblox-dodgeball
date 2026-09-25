@@ -7,7 +7,7 @@ import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
 import { LaunchPlan, ThrowArc } from "shared/Trajectory";
-import { TrailEffect } from "shared/TrailEffect";
+import { BallTrail } from "../BallTrail";
 import { DevService } from "../dev/DevService";
 import { SphereService } from "./SphereService";
 import { watchThrow } from "../ThrowProbe";
@@ -81,14 +81,20 @@ const GROUND_PROBE = BALL_SIZE / 2 + 0.1;
  */
 const DROP_CLEARANCE = BALL_SIZE / 2 + 0.5;
 
-/** A ball currently welded into somebody's hand, plus its (disabled) trail. */
+/** A ball currently welded into somebody's hand, plus its (disarmed) trail. */
 interface HeldBall {
 	/**
 	 * A `BasePart` rather than a `Part`: a caught ball arrives as whatever the
 	 * component's instance is, and it is the same object either way.
 	 */
 	ball: BasePart;
-	trail: TrailEffect;
+	/**
+	 * Absent when the trail is switched off in config, because
+	 * {@link BALL_CONFIG.TRAIL_ENABLED} is a *creation* switch — nothing is built rather
+	 * than built and hidden. It is the same set of ribbons the ball flew with last time it
+	 * was thrown: the trail belongs to the ball, not to the hold.
+	 */
+	trail?: BallTrail;
 }
 
 @Service()
@@ -348,15 +354,16 @@ export class BallService implements OnStart {
 		this.heldBalls.delete(model);
 
 		// A caught ball arrives mid-flight, still carrying the weld that held it in
-		// its thrower's hand and the trail it flew with. One weld and one trail per
-		// ball, and both of these are about to be replaced.
+		// its thrower's hand. One weld per ball, and this is about to be replaced.
 		ball.FindFirstChild(GRIP_NAME)?.Destroy();
-		ball.FindFirstChild(TrailEffect.INSTANCE_NAME)?.Destroy();
 
-		// The trail stays off until the throw — otherwise it streams purple off the
-		// hand every time the holder walks around. The effect reuses the ball's
-		// existing attachments, so replacing the trail leaves nothing behind.
-		const trail = this.spheres.addTrail(ball, { enabled: false });
+		// The trail stays off until the throw — otherwise it hangs off the hand every time
+		// the holder walks around. A ball that is caught keeps the ribbons it flew with,
+		// disarmed and hidden by the same call, rather than being given a second set: two
+		// sets on one ball would be twice the density at twice the cost, and would throw off
+		// the angles the cross-section is built from. Nothing is built at all when the trail
+		// is switched off — see `BallTrail.attach`.
+		const trail = BallTrail.attach(ball);
 
 		ball.Name = BALL_NAME;
 		ball.CanCollide = false; // don't shove the holder around while held
@@ -499,8 +506,9 @@ export class BallService implements OnStart {
 		ball.SetAttribute("Armed", true);
 		ball.SetAttribute("ThrowerId", this.tokenOf(model));
 		this.setPromptEnabled(ball, true);
-		// Airborne now, so the trail can start drawing behind it.
-		held.trail.setEnabled(true);
+		// Airborne now, so the rod can start drawing behind it. Absent when the trail is
+		// switched off in config, which is the whole of what that flag does at runtime.
+		held.trail?.setArmed(true);
 
 		// The client runs this exact same plan to draw its aim guide, so the throw
 		// and the predicted arc can never disagree — which only holds while both
