@@ -25,7 +25,9 @@
 		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/NpcService@NpcService": "server/services/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/OutlineService@OutlineService": "server/services/OutlineService@OutlineService",
-		"roblox-dodgeball:out/server/services/RoundService@RoundService": "server/services/RoundService@RoundService"
+		"roblox-dodgeball:out/server/services/RoundService@RoundService": "server/services/RoundService@RoundService",
+		"roblox-dodgeball:out/client/controllers/ControlsLegendController@ControlsLegendController": "client/controllers/ControlsLegendController@ControlsLegendController",
+		"roblox-dodgeball:out/client/controllers/ThemeController@ThemeController": "client/controllers/ThemeController@ThemeController"
 	},
 	"metadata": {}
 }
