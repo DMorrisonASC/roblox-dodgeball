@@ -4,8 +4,10 @@
 	"identifiers": {
 		"roblox-dodgeball:out/client/controllers/ActionController@ActionController": "client/controllers/ActionController@ActionController",
 		"roblox-dodgeball:out/client/controllers/CatchController@CatchController": "client/controllers/CatchController@CatchController",
+		"roblox-dodgeball:out/client/controllers/CooldownHudController@CooldownHudController": "client/controllers/CooldownHudController@CooldownHudController",
 		"roblox-dodgeball:out/client/controllers/DodgeController@DodgeController": "client/controllers/DodgeController@DodgeController",
 		"roblox-dodgeball:out/client/controllers/RoundStatusController@RoundStatusController": "client/controllers/RoundStatusController@RoundStatusController",
+		"roblox-dodgeball:out/client/controllers/SpectatorController@SpectatorController": "client/controllers/SpectatorController@SpectatorController",
 		"roblox-dodgeball:out/shared/AimGuide@AimGuide": "shared/AimGuide@AimGuide",
 		"roblox-dodgeball:out/shared/Trajectory@Trajectory": "shared/Trajectory@Trajectory",
 		"roblox-dodgeball:out/client/controllers/ThrowController@ThrowController": "client/controllers/ThrowController@ThrowController",
@@ -21,9 +23,7 @@
 		"roblox-dodgeball:out/server/services/ActionService@ActionService": "server/services/ActionService@ActionService",
 		"roblox-dodgeball:out/server/services/JoinService@JoinService": "server/services/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/NpcService@NpcService": "server/services/NpcService@NpcService",
-		"roblox-dodgeball:out/server/services/RoundService@RoundService": "server/services/RoundService@RoundService",
-		"roblox-dodgeball:out/client/controllers/CooldownHudController@CooldownHudController": "client/controllers/CooldownHudController@CooldownHudController",
-		"roblox-dodgeball:out/client/controllers/SpectatorController@SpectatorController": "client/controllers/SpectatorController@SpectatorController"
+		"roblox-dodgeball:out/server/services/RoundService@RoundService": "server/services/RoundService@RoundService"
 	},
 	"metadata": {}
 }

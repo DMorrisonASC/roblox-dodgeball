@@ -42,6 +42,23 @@ export const DODGE_CONFIG = {
 	 * key inside this window are one dodge request, sent once.
 	 */
 	DOUBLE_TAP_WINDOW: 0.5,
+
+	/**
+	 * The dodge flourish for an R6 rig, as an asset id.
+	 *
+	 * A placeholder standing in until a real clip is bought, which is why it lives
+	 * here rather than in the rig: swapping in the finished animation is an edit to
+	 * this string and nothing else. The `rbxassetid://` prefix is required — the
+	 * loader treats a bare number as a name and finds nothing.
+	 *
+	 * Paired with {@link DODGE_CONFIG.DODGE_ANIMATION_R15}: a rig can wear only one
+	 * of the two, and an R6 clip on an R15 rig does not load at all, so the server
+	 * picks by `Humanoid.RigType` rather than playing both and hoping.
+	 */
+	DODGE_ANIMATION_R6: "",
+
+	/** The dodge flourish for an R15 rig, as an asset id. See {@link DODGE_CONFIG.DODGE_ANIMATION_R6}. */
+	DODGE_ANIMATION_R15: "",
 } as const;
 
 /**
