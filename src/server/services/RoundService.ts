@@ -10,6 +10,7 @@ import {
     TEAM_ATTRIBUTE,
 } from "shared/constants";
 import { DevService } from "../dev/DevService";
+import { BallService } from "./BallService";
 
 enum RoundState {
     Intermission,
@@ -60,7 +61,7 @@ export class RoundService implements OnStart {
      */
     private statusFolder!: Folder;
 
-    constructor(private readonly dev: DevService) {}
+    constructor(private readonly dev: DevService, private readonly balls: BallService) {}
 
     onStart() {
         Players.PlayerAdded.Connect((player) => this.handlePlayerJoined(player));
@@ -293,6 +294,37 @@ export class RoundService implements OnStart {
         }
     }
 
+    /**
+     * Takes the ball out of every hand, at the end of the intermission.
+     *
+     * **Destroyed, not dropped — and that is what lets this sit here rather than after the
+     * teleport.** A dropped ball lands where its dropper is standing, so a drop has to be sequenced
+     * against the move to the arena: done before it, every ball is left behind in the lobby. A ball
+     * that is destroyed has no position to get wrong, so this can sit on the boundary itself and
+     * needs to know nothing about where the arena is or which side anybody is on.
+     *
+     * **At the end of the intermission, not the start of the round.** The hands are empty a moment
+     * before the round is on, which is what "a round starts empty" has to mean: by the time
+     * `Playing` is published there is nothing left that could be thrown in the same frame the phase
+     * changes. Placed after {@link waitWhilePaused} for the same reason — a paused harness must not
+     * strip balls off players while the round is being held up, because nothing is about to start.
+     *
+     * **The arena stocks itself.** What is destroyed here is what players were carrying, and the
+     * count that matters is the one `BallSpawnerService` keeps beside each spawner, which it puts
+     * out as the round runs. The other way a ball leaves a hand is `BallService.dropBall`, which is
+     * the one to reach for when a ball should stay in play rather than stop existing.
+     *
+     * Asked of every player on the server rather than of `activePlayers`, which is empty at this
+     * point: it is filled from `GetPlayers`, below this, and a player who joined mid-round was in
+     * neither.
+     */
+    private clearHeldBalls() {
+        for (const player of Players.GetPlayers()) {
+            const character = player.Character;
+            if (character) this.balls.removeBall(character);
+        }
+    }
+
     private async gameLoop() {
         while (true) {
             // --- Intermission ---
@@ -325,6 +357,10 @@ export class RoundService implements OnStart {
             }
 
             await this.waitWhilePaused();
+
+            // The intermission's last act: nobody carries a ball into a round. See
+            // `clearHeldBalls` for why it is destroyed here rather than dropped after the teleport.
+            this.clearHeldBalls();
 
             // --- Playing ---
             this.state = RoundState.Playing;

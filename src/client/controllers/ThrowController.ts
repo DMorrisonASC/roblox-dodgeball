@@ -60,8 +60,14 @@ export class ThrowController implements OnStart {
 	 * down onto the same mark. V is the curveball: a straight throw with a
 	 * sideways force on it, so it bows out to the left and swings back onto the
 	 * same mark again. Different shapes, different flight times, same landing.
+	 *
+	 * **Starts on `straight`, and the server's fallback starts on the same word.** The guide is drawn
+	 * from this on the first frame a ball is in the hand, before any arc key has been pressed, so a
+	 * default that disagreed with the shape the throw would actually take would be a guide drawing a
+	 * line the ball does not fly. The two are one decision in two places, and are kept in step by hand
+	 * because they are on opposite sides of the wire.
 	 */
-	private arc: ThrowArc = "overhead";
+	private arc: ThrowArc = "straight";
 
 	onStart() {
 		this.throwRemote = this.getThrowRemote();
@@ -71,7 +77,11 @@ export class ThrowController implements OnStart {
 			(_actionName, inputState) => {
 				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
 
-				// Holding a ball is the only thing that makes a click meaningful.
+				// **A ball in the hand is what makes a click a throw**, and the absence of one is what makes
+				// it the catch's: `CatchController` asks this same question and lets go of the opposite
+				// case. Two actions, one bound button, and neither has to know where the other's bind
+				// sits — which matters because `ContextActionService` decides that by bind order, and bind
+				// order here is controller load order.
 				const character = this.player.Character;
 				if (!character?.FindFirstChild(BALL_NAME)) {
 					return Enum.ContextActionResult.Pass;

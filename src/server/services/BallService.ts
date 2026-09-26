@@ -159,7 +159,13 @@ export class BallService implements OnStart {
 			// Anything unrecognised falls back to the regular throw. All three arcs
 			// reach the same point, so a bad value costs the player the shape they
 			// asked for and nothing else.
-			let chosen: ThrowArc = "overhead";
+			//
+			// The fallback is `straight`, which is what a fresh client starts on — see
+			// `ThrowController.arc`. A client that has not sent a valid arc yet (a race, a
+			// malformed value) then gets the shape its own aim guide is drawing rather than a
+			// different one, and a client whose guide and throw disagreed would be showing the
+			// player a line the ball was never going to take.
+			let chosen: ThrowArc = "straight";
 			if (arc === "straight") {
 				chosen = "straight";
 			} else if (arc === "curve") {
@@ -322,6 +328,41 @@ export class BallService implements OnStart {
 		scheduleBallExpiry(ball, BALL_CONFIG.LIFETIME_SECONDS, (expiring) => this.isHeld(expiring));
 
 		if (DEBUG) print(`[Ball] ${model.Name} dropped a dodgeball`);
+
+		return true;
+	}
+
+	/**
+	 * Destroys whatever `model` is holding.
+	 *
+	 * The other way a ball leaves a hand, and the difference is where it goes afterwards:
+	 * {@link dropBall} puts it on the ground and this takes it out of the world. Named for what the
+	 * caller means — a ball that should *stop existing* rather than a ball that should be somewhere —
+	 * because the two are one word apart at every call site and a reader has to be able to tell them
+	 * apart there.
+	 *
+	 * **Nothing has to be undone, which is the whole reason this is short.** The grip weld, the trail's
+	 * ribbons and their attachments, the pickup prompt and any `CollisionIgnore` constraints are all
+	 * children of the ball — see `BallTrail` and `CollisionIgnore`, both built on exactly that — so they
+	 * go with the instance. The one piece of state that is *not* on the ball is the entry in
+	 * {@link heldBalls}, and that is the one line here.
+	 *
+	 * Returns whether there was anything to destroy.
+	 */
+	public removeBall(model: Model): boolean {
+		const held = this.heldBalls.get(model);
+		if (!held) return false;
+
+		// **The entry goes first.** `isHeld` answers from this map, and two things ask it about a ball
+		// that is on its way out: `BallSpawnerService.cleanupRoundBalls` asks whether it may take a
+		// round's ball away, and `scheduleBallExpiry` asks whether a ball it was told to destroy has
+		// been claimed since. A destroyed ball still answering `true` would be a ball those two can
+		// still see, so it stops being one before it stops being an instance.
+		this.heldBalls.delete(model);
+
+		held.ball.Destroy();
+
+		if (DEBUG) print(`[Ball] ${model.Name}'s ball was destroyed`);
 
 		return true;
 	}
