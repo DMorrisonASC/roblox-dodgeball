@@ -1,7 +1,7 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, Players } from "@rbxts/services";
-import { OUTLINE_CONFIG } from "../config/outline.config";
-import { NPC_TAG } from "../npc/Behavior";
+import { OUTLINE_CONFIG } from "../../config/outline.config";
+import { NPC_TAG } from "../../npc/Behavior";
 
 /** Prints a line as an outline is put on. Silent about the ones that were already there. */
 const DEBUG = true;

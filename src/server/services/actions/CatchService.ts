@@ -6,10 +6,10 @@ import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
-import { lockoutElapsed } from "../actionLock";
-import { DevService } from "../dev/DevService";
-import { extendReadyAt, publishReadyAt } from "../readyAt";
-import { BallService } from "./BallService";
+import { lockoutElapsed } from "./actionLock";
+import { DevService } from "../../dev/DevService";
+import { extendReadyAt, publishReadyAt } from "./readyAt";
+import { BallService } from "../ball/BallService";
 import { DodgeService } from "./DodgeService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */

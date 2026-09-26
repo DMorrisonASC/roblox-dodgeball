@@ -5,8 +5,8 @@ import { THROWER_TOKEN } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
-import { BallService } from "../services/BallService";
-import { CatchService } from "../services/CatchService";
+import { BallService } from "../services/ball/BallService";
+import { CatchService } from "../services/actions/CatchService";
 
 interface BallAttributes {
 	Armed: Boolean;

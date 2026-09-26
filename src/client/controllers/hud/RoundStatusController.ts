@@ -3,7 +3,7 @@ import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { ReplicatedStorage } from "@rbxts/services";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE, ROUND_WINNER_ATTRIBUTE } from "shared/constants";
-import { getHudScreenGui } from "../ui/screenGui";
+import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints once, when the HUD is up — the line that says the controller ran at all. */
 const DEBUG = true;

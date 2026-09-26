@@ -3,7 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { SPECTATING_ATTRIBUTE } from "shared/constants";
-import { getHudScreenGui } from "../ui/screenGui";
+import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints once, when the label is up — the line that says the controller ran at all. */
 const DEBUG = true;

@@ -1,6 +1,6 @@
 import { ThrowArc } from "shared/Trajectory";
 import { BEHAVIOR_THROWING, NpcBehavior } from "../Behavior";
-import type { BallService } from "../../services/BallService";
+import type { BallService } from "../../services/ball/BallService";
 
 /**
  * How far in front of itself an NPC aims, in studs.

@@ -9,8 +9,8 @@ import {
     SPECTATING_ATTRIBUTE,
     TEAM_ATTRIBUTE,
 } from "shared/constants";
-import { DevService } from "../dev/DevService";
-import { BallService } from "./BallService";
+import { DevService } from "../../dev/DevService";
+import { BallService } from "../ball/BallService";
 
 enum RoundState {
     Intermission,

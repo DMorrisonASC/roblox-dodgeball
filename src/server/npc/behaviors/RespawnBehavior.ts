@@ -2,7 +2,7 @@ import { CollectionService, Workspace } from "@rbxts/services";
 import { BALL_NAME } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
-import type { BallService } from "../../services/BallService";
+import type { BallService } from "../../services/ball/BallService";
 
 const DEBUG = true; // prints each rig that goes down and each that comes back
 

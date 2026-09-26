@@ -3,10 +3,10 @@ import { CollectionService, Players, Workspace } from "@rbxts/services";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { PICKUP_LOCKED_UNTIL } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
-import { lockoutElapsed } from "../actionLock";
+import { lockoutElapsed } from "../actions/actionLock";
 import { BallService } from "./BallService";
-import { CatchService } from "./CatchService";
-import { DodgeService } from "./DodgeService";
+import { CatchService } from "../actions/CatchService";
+import { DodgeService } from "../actions/DodgeService";
 
 /**
  * The tag every ball carries.

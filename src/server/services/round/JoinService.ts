@@ -1,7 +1,7 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players } from "@rbxts/services";
 import { THROWER_TOKEN } from "shared/constants";
-import { BallService } from "./BallService";
+import { BallService } from "../ball/BallService";
 
 @Service()
 export class JoinService implements OnStart {

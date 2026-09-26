@@ -2,7 +2,7 @@ import { OnStart, Service } from "@flamework/core";
 import { CollectionService, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
-import { scheduleBallExpiry } from "../ballExpiry";
+import { scheduleBallExpiry } from "./ballExpiry";
 import { BallFactory } from "./BallFactory";
 import { BallService } from "./BallService";
 

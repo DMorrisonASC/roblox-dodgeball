@@ -1,14 +1,14 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, HttpService, Workspace } from "@rbxts/services";
 import { THROWER_TOKEN } from "shared/constants";
-import { NPC_TAG, NpcBehavior } from "../npc/Behavior";
-import { createCatchBehavior } from "../npc/behaviors/CatchBehavior";
-import { createPickupBehavior } from "../npc/behaviors/PickupBehavior";
-import { createRespawnBehavior } from "../npc/behaviors/RespawnBehavior";
-import { createThrowBehavior } from "../npc/behaviors/ThrowBehavior";
-import { BallPickupService } from "./BallPickupService";
-import { BallService } from "./BallService";
-import { CatchService } from "./CatchService";
+import { NPC_TAG, NpcBehavior } from "../../npc/Behavior";
+import { createCatchBehavior } from "../../npc/behaviors/CatchBehavior";
+import { createPickupBehavior } from "../../npc/behaviors/PickupBehavior";
+import { createRespawnBehavior } from "../../npc/behaviors/RespawnBehavior";
+import { createThrowBehavior } from "../../npc/behaviors/ThrowBehavior";
+import { BallPickupService } from "../ball/BallPickupService";
+import { BallService } from "../ball/BallService";
+import { CatchService } from "../actions/CatchService";
 
 /** Prints each model as it is picked up. A print per tick would flood the output. */
 const DEBUG = true;

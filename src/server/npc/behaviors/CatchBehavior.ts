@@ -1,6 +1,6 @@
 import { BEHAVIOR_CATCHING, NpcBehavior } from "../Behavior";
-import type { BallService } from "../../services/BallService";
-import type { CatchService } from "../../services/CatchService";
+import type { BallService } from "../../services/ball/BallService";
+import type { CatchService } from "../../services/actions/CatchService";
 
 /**
  * Catching, for an NPC.

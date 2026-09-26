@@ -6,8 +6,8 @@ import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
-import { HudTheme, hudTheme } from "../ui/hudTheme";
-import { getHudScreenGui } from "../ui/screenGui";
+import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints once, when the bars are up — the line that says the controller ran at all. */
 const DEBUG = true;

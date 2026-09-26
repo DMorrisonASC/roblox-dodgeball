@@ -1,7 +1,7 @@
 import { OnStart, Service } from "@flamework/core";
 import { THROW_ENABLED } from "shared/constants";
 import { events } from "shared/networking";
-import { BallService } from "./BallService";
+import { BallService } from "../ball/BallService";
 import { CatchService } from "./CatchService";
 import { DodgeService } from "./DodgeService";
 

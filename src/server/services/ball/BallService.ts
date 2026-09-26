@@ -7,11 +7,11 @@ import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
 import { LaunchPlan, ThrowArc } from "shared/Trajectory";
-import { scheduleBallExpiry } from "../ballExpiry";
-import { BallTrail } from "../BallTrail";
-import { DevService } from "../dev/DevService";
+import { scheduleBallExpiry } from "./ballExpiry";
+import { BallTrail } from "./BallTrail";
+import { DevService } from "../../dev/DevService";
 import { BallFactory } from "./BallFactory";
-import { watchThrow } from "../ThrowProbe";
+import { watchThrow } from "./ThrowProbe";
 
 const DEBUG = true; // prints the mode, speed and angle of each throw
 

@@ -3,8 +3,8 @@ import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { THROW_ENABLED } from "shared/constants";
-import { HudTheme, hudTheme } from "../ui/hudTheme";
-import { getHudScreenGui } from "../ui/screenGui";
+import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints once, when the legend is up — the line that says the controller ran at all. */
 const DEBUG = true;

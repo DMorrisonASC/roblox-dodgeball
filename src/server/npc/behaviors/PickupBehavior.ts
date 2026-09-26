@@ -1,7 +1,7 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { BEHAVIOR_PICKUP, NpcBehavior } from "../Behavior";
-import type { BallPickupService } from "../../services/BallPickupService";
-import type { BallService } from "../../services/BallService";
+import type { BallPickupService } from "../../services/ball/BallPickupService";
+import type { BallService } from "../../services/ball/BallService";
 
 /**
  * Picking loose balls up, for an NPC.

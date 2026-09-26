@@ -7,9 +7,9 @@ import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
-import { lockoutElapsed } from "../actionLock";
-import { DevService } from "../dev/DevService";
-import { extendReadyAt, publishReadyAt } from "../readyAt";
+import { lockoutElapsed } from "./actionLock";
+import { DevService } from "../../dev/DevService";
+import { extendReadyAt, publishReadyAt } from "./readyAt";
 
 /** Prints what every dodge request did, and why it did nothing. */
 const DEBUG = true;
