@@ -13,6 +13,7 @@ import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
 import { Trajectory, ThrowArc } from "shared/Trajectory";
+import { aiming } from "../../aiming";
 
 const ACTION_NAME = "ThrowDodgeball";
 const ARC_ACTION_NAME = "SelectThrowArc";
@@ -136,6 +137,16 @@ export class ThrowController implements OnStart {
 	private updateGuide() {
 		const character = this.player.Character;
 		const ball = character?.FindFirstChild(BALL_NAME);
+		const isAiming = character !== undefined && ball !== undefined && ball.IsA("BasePart");
+
+		// **The glow's flag is the guide's own visibility, published rather than worked out twice.**
+		// It is set from the same expression that decides whether to draw, so the guide and the aim
+		// glow cannot come to different answers about whether the player is aiming — which is the
+		// whole reason it is published from here instead of `AimTargetController` deriving it for
+		// itself. See `client/aiming.ts`. Set unconditionally, because a Fusion `Value` given the
+		// value it already holds does nothing.
+		aiming.set(isAiming);
+
 		if (!character || !ball || !ball.IsA("BasePart")) {
 			this.guide.hide();
 			this.steadyTarget = undefined; // next ball starts aiming fresh

@@ -237,14 +237,24 @@ export const BALL_CONFIG = {
 	THROW_MUZZLE_DISTANCE: 2,
 
 	/**
-	 * Speed the ball leaves the hand at, in studs per second, for any target within
-	 * reach. Maximum range at this speed is `v² / g`, so reach grows with the square
-	 * of it.
+	 * Floor on the launch speed, in studs per second.
 	 *
-	 * This is the *base* speed, not the final one — a throw that needs to reach
-	 * further is wound up automatically, up to {@link BALL_CONFIG.THROW_MAX_SPEED}.
+	 * **A floor, not the speed a ball is thrown at.** Every arc solves its own speed from the
+	 * distance and its launch angle — see `flatLaunchSpeed` and
+	 * {@link BALL_CONFIG.THROW_ARC_SPREAD} — and this only raises that solve when it comes out
+	 * lower. So it is invisible on any throw that solves above it, and it is the whole answer on a
+	 * short one.
+	 *
+	 * **It is 0, which is to say there is no floor, and that is deliberate.** It used to be 100, on
+	 * the reasoning that a throw should always leave the hand with authority. But 100 studs per
+	 * second already carries a ball nearly nine studs at the flat angle, so the floor quietly
+	 * replaced the solve on every close throw: aiming two studs in front of you put the ball nine
+	 * studs away, and nothing could be thrown closer than about nine studs flat, or twenty-six
+	 * arcing. The solve is the honest answer at every distance — and it is what the aim guide
+	 * draws, so a floor above it is what makes the drawn line a different line from the one the
+	 * ball flies. Raise it again if a close throw ever wants more authority than accuracy.
 	 */
-	THROW_SPEED: 100,
+	THROW_SPEED: 0,
 
 	/**
 	 * How much faster than the bare minimum the arcing throw is launched, as a
@@ -278,6 +288,17 @@ export const BALL_CONFIG = {
 	 * the furthest reachable target is `(THROW_MAX_SPEED / THROW_ARC_SPREAD)² / gravity`
 	 * — past that a throw falls short and the aim guide's landing marker shows you
 	 * exactly where.
+	 *
+	 * **This is the only speed figure that slows a `straight` throw down.** The flat arcs solve
+	 * their own speed from the distance and their launch angle, so they routinely land well
+	 * above {@link BALL_CONFIG.THROW_SPEED} — which is a *floor*, and does nothing here. At the
+	 * flat angle a 60-stud throw wants about 250, so a cap below that is what decides the throw
+	 * instead of the solve.
+	 *
+	 * The price is reach, and it is steep: at that same flat angle range goes as `v²·sin(10°)/g`,
+	 * so this figure at 200 reaches roughly 35 studs where 280 reached about 70. Lowering the
+	 * angle instead would slow the ball without costing range, but it would stop the throw being
+	 * flat — see `MIN_THROW_ANGLE` in `shared/Trajectory.ts`.
 	 */
 	THROW_MAX_SPEED: 280,
 

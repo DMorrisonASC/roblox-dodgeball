@@ -85,7 +85,7 @@ interface LegendRow {
  * card, and nothing else would have to change.
  */
 const ROWS: LegendRow[] = [
-	{ label: "Throw", keys: "LMB" },
+	{ label: "Throw", keys: "X, C, V" },
 	{ label: "Dodge", keys: `WASD ×2 ${LIGHTNING}` },
 	{ label: "Catch", keys: "E" },
 	{ label: "Drop", keys: "1" },

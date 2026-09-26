@@ -10,7 +10,7 @@ const DEBUG = true;
 
 /** How wide the HUD is, and how far below the top of the screen it sits. Its height is its content's. */
 const HUD_WIDTH = 360;
-const HUD_TOP_INSET = 0.5;
+const HUD_TOP_INSET = 0;
 
 /**
  * What the server calls a round nobody won.
@@ -128,7 +128,7 @@ export class RoundStatusController implements OnStart {
 			children: [
 				Text(scope, {
 					text,
-					variant: "h6",
+					variant: "body1",
 					align: Enum.TextXAlignment.Center,
 				}),
 			],

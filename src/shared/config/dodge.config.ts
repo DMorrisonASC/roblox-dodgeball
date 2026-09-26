@@ -19,7 +19,7 @@ export const DODGE_CONFIG = {
 	 * the field and a speed is not. The speed the physics is actually handed is
 	 * derived from the pair — see {@link DODGE_SPEED}.
 	 */
-	DISTANCE: 20,
+	DISTANCE: 15,
 
 	/**
 	 * How long a dodge takes, in seconds.
@@ -42,6 +42,20 @@ export const DODGE_CONFIG = {
 	 * key inside this window are one dodge request, sent once.
 	 */
 	DOUBLE_TAP_WINDOW: 0.5,
+
+	/**
+	 * How long a second movement key may follow the first and still count as part of the same press,
+	 * in milliseconds.
+	 *
+	 * **The difference between a diagonal and a change of direction.** Pressing `W` and `A` together
+	 * means one input pointing between them; pressing `W`, walking, and *then* adding `A` means the
+	 * player has turned, and a turn is not a fresh tap — it is the same movement still going. This
+	 * window is what separates the two, and it is deliberately short: it only has to cover the
+	 * stagger between two fingers landing, and anything longer would swallow a genuine turn.
+	 *
+	 * Client-side only, like {@link DODGE_CONFIG.DOUBLE_TAP_WINDOW} — the server never sees a key.
+	 */
+	GESTURE_WINDOW_MS: 100,
 
 	/**
 	 * The dodge flourish for an R6 rig, as an asset id.

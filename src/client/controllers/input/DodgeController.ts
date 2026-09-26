@@ -9,18 +9,52 @@ import { events } from "shared/networking";
 const DEBUG = true;
 
 /**
- * The movement keys, and the direction each one means.
+ * Every input that can dodge, and the direction each one points.
  *
- * Read in *camera space*: `Z` is the camera's heading and `X` is across it to the
- * right, so `W` is one step of heading and `A` is one step of -right. Adding a
- * key — a diagonal on two keys, say — is one more row here and nothing else.
+ * Read in *camera space*: `Z` is the camera's heading and `X` is across it to the right, so `W` is
+ * one step of heading and `A` is one step of -right.
+ *
+ * **The table is the rule as well as the geometry.** An input dodges exactly when it has a row here,
+ * which is what lets a diagonal be added without a second list to keep in step — and what makes
+ * `W+S`, `A+D` and anything holding three keys invalid *by being absent* rather than by being
+ * checked for. Each diagonal is written as the sum of the two keys it is made of, so there is
+ * nothing here that can drift from the singles.
+ *
+ * A key is named by `Enum.KeyCode.Name` and a gesture by its keys sorted and joined — see
+ * {@link comboOf} — so `W` then `A` and `A` then `W` are both the row `"AW"` and pair with each
+ * other as they should.
  */
-const KEY_AXES: ReadonlyArray<[Enum.KeyCode, Vector3]> = [
-	[Enum.KeyCode.W, new Vector3(0, 0, 1)],
-	[Enum.KeyCode.S, new Vector3(0, 0, -1)],
-	[Enum.KeyCode.D, new Vector3(1, 0, 0)],
-	[Enum.KeyCode.A, new Vector3(-1, 0, 0)],
-];
+const COMBO_AXES: Record<string, Vector3 | undefined> = {
+	W: new Vector3(0, 0, 1),
+	S: new Vector3(0, 0, -1),
+	D: new Vector3(1, 0, 0),
+	A: new Vector3(-1, 0, 0),
+	AW: new Vector3(-1, 0, 1),
+	DW: new Vector3(1, 0, 1),
+	AS: new Vector3(-1, 0, -1),
+	DS: new Vector3(1, 0, -1),
+};
+
+/**
+ * How long a second key may follow the first and still count as part of the same press, in seconds.
+ *
+ * See {@link DODGE_CONFIG.GESTURE_WINDOW_MS}. Seconds, because every clock in this class is.
+ */
+const GESTURE_WINDOW = DODGE_CONFIG.GESTURE_WINDOW_MS / 1000;
+
+/**
+ * `keys` as the canonical name of the gesture they make.
+ *
+ * Sorted, so the order the player pressed them in cannot matter: `W` then `A` and `A` then `W` are
+ * one input and have to produce one string, or two presses of the same diagonal could never pair.
+ */
+function comboOf(keys: Set<Enum.KeyCode>): string {
+	const names: string[] = [];
+	for (const key of keys) names.push(key.Name);
+	names.sort();
+
+	return names.join("");
+}
 
 /** The client half of the dodge remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -44,8 +78,43 @@ export class DodgeController implements OnStart {
 	 *
 	 * One tap, not one per key: a pair is two taps *in a row*, so a tap that is not the very
 	 * next one to arrive can never pair with anything and there is no reason to remember it.
+	 *
+	 * The combo is the gesture's name — its keys sorted and joined, see {@link comboOf} — so two
+	 * presses of `W+A` pair with each other whichever order the keys went down in.
 	 */
-	private lastTap?: { key: Enum.KeyCode; at: number };
+	private lastTap?: { combo: string; at: number };
+
+	/**
+	 * What was pending before the current gesture touched it.
+	 *
+	 * **A gesture is evaluated more than once**, because every key that joins it inside
+	 * {@link GESTURE_WINDOW} re-evaluates it, and each evaluation commits a tap. Without this
+	 * snapshot the second evaluation would be judged against the tap *of the same gesture*, which
+	 * breaks a gesture in two opposite ways:
+	 *
+	 * - Re-pressing one key of a held diagonal would read as a double-tap of the whole diagonal —
+	 *   the same combo, twice, milliseconds apart. Releasing and re-pressing a key is a gesture that
+	 *   carries on, and it must not fire.
+	 * - The second tap of `W A` / `W A` would be compared against the `W` the new gesture committed
+	 *   instead of against the `A W` the first gesture actually left behind, so the diagonal could
+	 *   never pair with itself.
+	 *
+	 * So every re-evaluation first puts the pending tap back exactly as this gesture found it, and
+	 * decides afresh against that.
+	 */
+	private tapBeforeGesture?: { combo: string; at: number };
+
+	/**
+	 * The keys this gesture is made of, which is not the same as the keys held.
+	 *
+	 * Held keys come and go; a gesture is the set that arrived together, and it stops growing
+	 * {@link GESTURE_WINDOW} after it started. Adding a key later is a change of direction, not a
+	 * bigger gesture — see {@link onDown}.
+	 */
+	private gestureKeys = new Set<Enum.KeyCode>();
+
+	/** When the current gesture began, as `os.clock` seconds. Only meaningful while one is running. */
+	private gestureStart = 0;
 
 	/**
 	 * The keys currently held down.
@@ -89,35 +158,63 @@ export class DodgeController implements OnStart {
 	}
 
 	/**
-	 * Registers a press of `key`, and counts it as a tap only if the key was not already down.
+	 * Registers a press of `key`, and decides whether it is a tap or part of one.
 	 *
-	 * The gate that makes a dodge two *presses* rather than one press held: whatever the
-	 * engine's reason for announcing the same held key twice, the second announcement is not
-	 * something the player did, and only a release can clear the way for a new tap.
+	 * The gate that makes a dodge two *presses* rather than one press held: whatever the engine's
+	 * reason for announcing the same held key twice, the second announcement is not something the
+	 * player did, and only a release can clear the way for a new press.
+	 *
+	 * What the press *means* depends on what was already held, and there are three cases:
+	 *
+	 * - **Nothing was.** This press opens a gesture, and the gesture is evaluated straight away.
+	 * - **Something was, and it is younger than {@link GESTURE_WINDOW}.** The press is the second
+	 *   half of the same gesture — `W` and `A` landing together as one diagonal rather than two
+	 *   directions — so the gesture grows by this key and is evaluated again.
+	 * - **Something was, and it is older.** The player was already moving and has turned. That is
+	 *   not a tap of anything, so nothing is counted and `lastTap` is deliberately left alone:
+	 *   a turn neither starts nor interrupts a double-tap.
 	 */
 	private onDown(key: Enum.KeyCode): void {
-		if (directionAxis(key) === undefined) return;
+		if (!isMovementKey(key)) return;
 
 		if (this.heldKeys.has(key)) return;
 
 		this.heldKeys.add(key);
 
-		this.onTap(key);
+		const now = os.clock();
+
+		if (this.heldKeys.size() === 1) {
+			this.gestureStart = now;
+			this.gestureKeys = new Set([key]);
+			this.tapBeforeGesture = this.lastTap;
+
+			this.evaluateGesture(now);
+			return;
+		}
+
+		if (now - this.gestureStart <= GESTURE_WINDOW) {
+			this.gestureKeys.add(key);
+
+			// Back to how this gesture found it, so the gesture is judged against the tap *before*
+			// it rather than against its own earlier evaluation. See `tapBeforeGesture`.
+			this.lastTap = this.tapBeforeGesture;
+
+			this.evaluateGesture(now);
+		}
 	}
 
 	/**
-	 * Counts one tap of `key`, and asks for a dodge if it completes a pair.
+	 * Counts the current gesture as one tap, and asks for a dodge if it completes a pair.
 	 *
-	 * Called only for a press that followed a release, so what arrives here is a tap rather
-	 * than a press however many times the engine announced the key.
+	 * Called on every press that opens or grows a gesture, so it runs more than once for a diagonal.
+	 * That is what {@link tapBeforeGesture} is for: each call starts from the state the gesture
+	 * began in, so one gesture is one tap however many times it was looked at.
 	 *
-	 * The pair is the **last two taps in a row**, so the key you hit twice has to be the only
-	 * thing you hit. Strafing `A` `D` `A` puts a tap of the other key between the two `A`s, so
-	 * each of those is a first tap and none of them is a dodge.
+	 * The pair is the **last two taps in a row**, so the input you hit twice has to be the only thing
+	 * you hit. Strafing `A` `D` `A` puts a tap of another input between the two `A`s, so each of
+	 * those is a first tap and none of them is a dodge. The same holds for `A` `D` `A` `D`.
 	 */
-	private onTap(key: Enum.KeyCode): void {
-		if (directionAxis(key) === undefined) return;
-
+	private evaluateGesture(now: number): void {
 		// Taps are only counted while there is something to move, and a death clears
 		// what was counted: half a pair held across a respawn should not become a
 		// dodge the moment the player is back on their feet.
@@ -126,30 +223,39 @@ export class DodgeController implements OnStart {
 			return;
 		}
 
-		const now = os.clock();
-		const last = this.lastTap;
+		const combo = comboOf(this.gestureKeys);
 
-		// Whatever was pending is spent either way: this tap either completes the pair or
-		// replaces the one it interrupted, so there is never a third tap waiting behind it.
-		this.lastTap = undefined;
-
-		if (last !== undefined && last.key === key && now - last.at <= DODGE_CONFIG.DOUBLE_TAP_WINDOW) {
-			this.requestDodge(key);
+		// Not a dodge input — `W+S`, `A+D`, three keys at once. Whatever was pending is dropped
+		// rather than kept: a pair has to be two of the *same* input in a row, and an input that
+		// cannot dodge at all is the strongest possible interruption of one.
+		if (!isDodgeCombo(combo)) {
+			this.lastTap = undefined;
 			return;
 		}
 
-		this.lastTap = { key, at: now };
+		const last = this.lastTap;
+
+		// Whatever was pending is spent either way: this tap either completes the pair or replaces
+		// the one it interrupted, so there is never a third tap waiting behind it.
+		this.lastTap = undefined;
+
+		if (last !== undefined && last.combo === combo && now - last.at <= DODGE_CONFIG.DOUBLE_TAP_WINDOW) {
+			this.requestDodge(combo);
+			return;
+		}
+
+		this.lastTap = { combo, at: now };
 	}
 
 	/**
-	 * Sends one dodge request, for the direction `key` means to the camera.
+	 * Sends one dodge request, for the direction `combo` means to the camera.
 	 *
 	 * Only the direction is decided here, and only because this is the one machine
 	 * that can see a key: distance, duration and cooldown all belong to the server.
 	 */
-	private requestDodge(key: Enum.KeyCode): void {
+	private requestDodge(combo: string): void {
 		if (this.findHumanoid() === undefined) {
-			if (DEBUG) print(`[Dodge] ${key.Name} double-tapped with nothing to move`);
+			if (DEBUG) print(`[Dodge] ${combo} double-tapped with nothing to move`);
 			return;
 		}
 
@@ -170,12 +276,12 @@ export class DodgeController implements OnStart {
 			return;
 		}
 
-		const direction = dodgeDirection(key, forward, right);
+		const direction = dodgeDirection(combo, forward, right);
 		if (!direction) return;
 
 		if (DEBUG) {
 			print(
-				`[Dodge] ${key.Name} double-tapped → (${string.format("%.2f", direction.X)}, ` +
+				`[Dodge] ${combo} double-tapped → (${string.format("%.2f", direction.X)}, ` +
 					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)})`,
 			);
 		}
@@ -200,18 +306,19 @@ export class DodgeController implements OnStart {
 	}
 }
 
-/** The camera-space axis `key` means, or `undefined` if it is not a dodge key. */
-function directionAxis(key: Enum.KeyCode): Vector3 | undefined {
-	for (const [dodgeKey, axis] of KEY_AXES) {
-		if (dodgeKey === key) return axis;
-	}
-
-	return undefined;
+/** Whether `key` is one of the movement keys, and so may open or grow a gesture. */
+function isMovementKey(key: Enum.KeyCode): boolean {
+	return COMBO_AXES[key.Name] !== undefined;
 }
 
-/** Where a dodge on `key` points, given the camera's heading and its right. */
-function dodgeDirection(key: Enum.KeyCode, forward: Vector3, right: Vector3): Vector3 | undefined {
-	const axis = directionAxis(key);
+/** Whether `combo` is an input that dodges at all — one movement key, or one perpendicular pair. */
+function isDodgeCombo(combo: string): boolean {
+	return COMBO_AXES[combo] !== undefined;
+}
+
+/** Where `combo` points, given the camera's heading and its right. */
+function dodgeDirection(combo: string, forward: Vector3, right: Vector3): Vector3 | undefined {
+	const axis = COMBO_AXES[combo];
 	if (!axis) return undefined;
 
 	return forward.mul(axis.Z).add(right.mul(axis.X)).Unit;

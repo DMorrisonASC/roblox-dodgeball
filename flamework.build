@@ -29,7 +29,8 @@
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/round/RoundService@RoundService": "server/services/round/RoundService@RoundService",
-		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService"
+		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService",
+		"roblox-dodgeball:out/client/controllers/input/AimTargetController@AimTargetController": "client/controllers/input/AimTargetController@AimTargetController"
 	},
 	"metadata": {}
 }

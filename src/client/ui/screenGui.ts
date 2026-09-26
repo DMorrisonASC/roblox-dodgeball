@@ -35,7 +35,7 @@ export function getHudScreenGui(): ScreenGui {
 	const gui = new Instance("ScreenGui");
 	gui.Name = GUI_NAME;
 	gui.ResetOnSpawn = false;
-	gui.ScreenInsets = Enum.ScreenInsets.None;
+	gui.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets;
 	gui.Parent = playerGui;
 
 	return gui;

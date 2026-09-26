@@ -52,7 +52,7 @@ export const CATCH_CONFIG = {
 	 * short enough that it is a read rather than a shield — and one window catches
 	 * one ball, so holding the key buys nothing.
 	 */
-	WINDOW_SECONDS: 0.4,
+	WINDOW_SECONDS: 1,
 
 	/** {@link CATCHABLE_PARTS} — the body parts a catch can be made with. */
 	CATCHABLE_PARTS,
