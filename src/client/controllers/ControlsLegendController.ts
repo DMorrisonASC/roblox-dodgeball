@@ -1,32 +1,21 @@
 import { Controller, OnStart } from "@flamework/core";
-import { Text } from "@rbxts/big-ui";
+import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { THROW_ENABLED } from "shared/constants";
+import { HudTheme, hudTheme } from "../ui/hudTheme";
 import { getHudScreenGui } from "../ui/screenGui";
 
 /** Prints once, when the legend is up — the line that says the controller ran at all. */
 const DEBUG = true;
 
-/** How far the legend sits from the right screen edge, and how much padding inside its panel. */
+/** How far the legend sits from the right screen edge, and how far apart its rows are. */
 const SCREEN_EDGE_GAP = 12;
-const PANEL_PADDING_RL = 8;
-const PANEL_PADDING_UB = 4;
 const ROW_SPACING = 2;
 const LABEL_GAP = 8;
 
 /** What a switched-off row is drawn at, against the `0` of a live one. */
 const DIMMED_TRANSPARENCY = 0.5;
-
-/**
- * The two colours a row is drawn in: dimmer for what the ability is, brighter for how to use it.
- *
- * The keys are the brighter of the two on purpose. This is a card to *find a key* on, and a
- * player reads it by scanning the right-hand column for the shape they are looking for, so the
- * column the eye is hunting along is the one worth the contrast.
- */
-const LABEL_COLOR = Color3.fromHSV(0, 0, 0);
-const KEY_COLOR = Color3.fromHSV(0, 1, 0.75);
 
 /**
  * U+26A1, the bolt beside the dodge's double-tap.
@@ -145,49 +134,56 @@ export class ControlsLegendController implements OnStart {
 		const scope = Fusion.scoped();
 		const player = Players.LocalPlayer;
 
-		const container = Fusion.New(scope, "Frame")({
-			Name: "ControlsLegend",
-			// Pinned by its right edge, halfway down, and sized to its contents: a card that
-			// floats against the edge rather than a panel.
-			AnchorPoint: new Vector2(1, 0.5),
-			Position: new UDim2(1, -SCREEN_EDGE_GAP, 0.8, 0),
-			AutomaticSize: Enum.AutomaticSize.XY,
-			BackgroundTransparency: 1,
-		});
+		// The HUD's colours, read now rather than at module load: `configureTheme` has run by the
+		// time anything mounts, and a value captured earlier would be Material's default.
+		const theme = hudTheme();
 
-		// The container's layout owns the *rows*. Right-aligning them is what makes the keys
-		// column flush without any width being written down: a row is exactly as wide as its own
-		// text, and packing every row to the right edge means they all *end* in the same place.
+		// Rows first, then the card that holds them: `Card` takes its children at construction and
+		// parents them itself, so there is nothing to hand a `Parent` afterwards.
 		//
-		// Nothing above the container has a layout, and that is load-bearing — the container's
-		// own `Position` is how it is pinned to the middle of the screen, and a layout over an
-		// object's ancestor decides where that object goes instead.
-    
-		const layout = new Instance("UIListLayout");
-		layout.FillDirection = Enum.FillDirection.Vertical;
-		layout.SortOrder = Enum.SortOrder.LayoutOrder;
-		layout.Padding = new UDim(0, ROW_SPACING);
-		layout.HorizontalAlignment = Enum.HorizontalAlignment.Right;
-		layout.Parent = container;
-
-        const padding = new Instance("UIPadding");
-        padding.PaddingLeft = new UDim(0, PANEL_PADDING_RL);
-        padding.PaddingRight = new UDim(0, PANEL_PADDING_RL);
-        padding.PaddingTop = new UDim(0, PANEL_PADDING_UB);
-        padding.PaddingBottom = new UDim(0, PANEL_PADDING_UB);
-        padding.Parent = container;
-
+		// Numbered rather than left to the defaults, because the sort is by `LayoutOrder` and the
+		// fallback is by name — and these rows are named after the abilities they show, so an
+		// unnumbered list would come out alphabetical and the card would read nothing like the order
+		// above it.
+		const rows: Frame[] = [];
 		let order = 0;
 		for (const row of ROWS) {
-			const drawn = this.buildRow(scope, player, row);
-
-			// Numbered rather than left to the defaults, because the default sort is by name and
-			// these rows are named after the abilities they show — so the list would come out
-			// alphabetical and the card would read nothing like the order above.
+			const drawn = this.buildRow(scope, theme, player, row);
 			drawn.LayoutOrder = order;
 			order++;
-			drawn.Parent = container;
+			rows.push(drawn);
 		}
+
+		const container = Card(scope, {
+			children: rows,
+			// The card's own padding, rather than a `UIPadding` beside it. One value covers all four
+			// sides, so the edge is even: `sm` is the eight pixels the sides had before, and the top
+			// and bottom were half that and are now the same — which is the price of a single knob,
+			// and cheaper than a second padding instance fighting the card's own.
+			padding: theme.spacing.sm,
+			childGap: ROW_SPACING,
+		});
+
+		// `Card` lays its children out from the left. This card wants them flush right, which is
+		// what lines the keys column up without any width being written down: a row is exactly as
+		// wide as its own text, so packing every row against the right edge means they all *end* in
+		// the same place. The property goes on the layout `Card` made rather than a second one of
+		// our own, because a frame will not accept two.
+		const layout = container.FindFirstChildOfClass("UIListLayout");
+		if (layout) layout.HorizontalAlignment = Enum.HorizontalAlignment.Right;
+
+		// `Card` has no opinion about where it sits — it is a `Frame` with a background, a corner
+		// and a layout, and that is all. So the pin to the right edge, halfway down, and the sizing
+		// to its contents go on what it returns, the same way a `Text`'s default size is corrected
+		// where big-ui's answer is not the wanted one. Nothing above it has a layout, which is what
+		// lets a `Position` here mean something at all.
+		container.AnchorPoint = new Vector2(1, 0.5);
+		container.Position = new UDim2(1, -SCREEN_EDGE_GAP, 0.8, 0);
+		container.Size = UDim2.fromOffset(0, 0);
+		container.AutomaticSize = Enum.AutomaticSize.XY;
+		// `Card` calls everything it makes "Card", which is no help in the Explorer once two HUDs are
+		// up — so the container keeps the name it had.
+		container.Name = "ControlsLegend";
 
 		container.Parent = getHudScreenGui();
 
@@ -202,8 +198,11 @@ export class ControlsLegendController implements OnStart {
 	 * needs is made here from the attribute the descriptor names, and the value and its
 	 * subscription are both handed to the scope, so they are cleaned up with the text they feed
 	 * rather than outliving it.
+	 *
+	 * The theme comes in as a parameter rather than being read here, so that a HUD reads its
+	 * colours exactly once and this method cannot disagree with the rest of the file about them.
 	 */
-	private buildRow(scope: Fusion.Scope<unknown>, player: Player, row: LegendRow): Frame {
+	private buildRow(scope: Fusion.Scope<unknown>, theme: HudTheme, player: Player, row: LegendRow): Frame {
 		const frame = Fusion.New(scope, "Frame")({
 			Name: `${row.label}Row`,
 			AutomaticSize: Enum.AutomaticSize.XY,
@@ -235,11 +234,14 @@ export class ControlsLegendController implements OnStart {
 			);
 		}
 
-		const label = this.buildText(scope, row.label, LABEL_COLOR, off);
+		// The keys are the brighter of the two, and deliberately: this is a card to *find a key* on,
+		// and a player reads it by scanning the right-hand column, so the column the eye is hunting
+		// along is the one worth the accent.
+		const label = this.buildText(scope, row.label, theme.colors.textPrimary, off);
 		label.LayoutOrder = 1;
 		label.Parent = frame;
 
-		const keys = this.buildText(scope, row.keys, KEY_COLOR, off);
+		const keys = this.buildText(scope, row.keys, theme.colors.accent, off);
 		keys.LayoutOrder = 2;
 		keys.Parent = frame;
 
@@ -266,7 +268,7 @@ export class ControlsLegendController implements OnStart {
 		// and big-ui's default is a label the full width of its parent sized to wrap inside it.
 		// A parent sized to the label and a label sized to the parent is a circle, and Roblox
 		// resolves it by guessing.
-		const label = Text(scope, { text, variant: "caption", wrap: false });
+		const label = Text(scope, { text, variant: "body1", wrap: false });
 
 		label.Size = UDim2.fromOffset(0, 0);
 		label.AutomaticSize = Enum.AutomaticSize.XY;

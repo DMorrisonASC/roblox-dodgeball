@@ -126,26 +126,62 @@ export const BALL_CONFIG = {
 	// ---------------------------------------------------------------- spawner
 
 	/**
-	 * **Placeholder.** Balls wanted in the world per player. Fractional on
-	 * purpose: the count is rounded, so this reads as a rate rather than a
-	 * headcount and a full server gets proportionally more.
+	 * How many loose balls one spawner part keeps around it.
 	 *
-	 * No spawner exists yet — balls arrive from the join hand-out, a pickup, a
-	 * catch, or an NPC that throws.
+	 * **Per part, not per player**, which is the opposite of what the placeholders below assumed:
+	 * a spawner is a piece of the arena, and the arena decides how many balls the fight over it
+	 * should have. Two spawners either side of the map are two independent counts, so a ball
+	 * carried off from one is replaced there and not at the other.
+	 */
+	BALLS_PER_SPAWNER: 3,
+
+	/**
+	 * How far from a spawner part a ball still counts as "its", in studs.
+	 *
+	 * This is what makes the count mean *loose balls near the spawner* rather than *balls in the
+	 * game*, and it is doing two jobs at once: it stops a spawner refilling itself with balls that
+	 * have been thrown across the arena and are lying somewhere else entirely, and it stops one
+	 * spawner counting another's. A ball being carried past still counts while it is inside the
+	 * radius, which is close enough — it is a count of what is available here, not a ledger.
+	 */
+	SPAWN_RADIUS: 8,
+
+	/**
+	 * How far apart a spawner's balls land, in studs, as a maximum either side of the part.
+	 *
+	 * Purely to stop the balls stacking on one another at the spawner's own position, where they
+	 * would settle into a single pile and read as one ball. Drawn per ball, so a spawner that
+	 * refills its whole count at once spreads them out rather than dropping them in a heap.
+	 */
+	SPAWN_OFFSET_RANGE: 2,
+
+	/**
+	 * How often each spawner's count is compared against the world, in seconds.
+	 *
+	 * The loop that reads this is a plain `while` with a `task.wait`, so this is the period it
+	 * turns at. Loose, because nothing here is a response to the player: a ball that has been
+	 * thrown is noticed missing a second late and replaced a second late, which is invisible.
+	 */
+	SPAWN_TICK_INTERVAL: 1,
+
+	/**
+	 * **Placeholder.** Balls wanted in the world per player, as a rate rather than a headcount.
+	 *
+	 * No reader, and no longer a design this project is following: the spawner that now exists
+	 * counts per part — see {@link BALL_CONFIG.BALLS_PER_SPAWNER} — because a ball's *place* is
+	 * what matters when deciding whether the arena has enough of them. Kept only so the shape of
+	 * the alternative is still visible; nothing reads it, and nothing should.
 	 */
 	BALLS_PER_PLAYER: 1.2,
 
-	/** **Placeholder.** Floor on the wanted count, so an empty server still has balls. */
+	/** **Placeholder.** Floor on the per-player wanted count. See {@link BALL_CONFIG.BALLS_PER_PLAYER}. */
 	MIN_BALLS: 4,
 
-	/** **Placeholder.** Ceiling on the wanted count, so a full one does not litter. */
+	/** **Placeholder.** Ceiling on the per-player wanted count. See {@link BALL_CONFIG.BALLS_PER_PLAYER}. */
 	MAX_BALLS: 40,
 
-	/** **Placeholder.** Seconds to wait after a ball goes before replacing it. */
+	/** **Placeholder.** Seconds to wait after a ball goes before replacing it. See {@link BALL_CONFIG.SPAWN_TICK_INTERVAL}. */
 	RESPAWN_DELAY: 2,
-
-	/** **Placeholder.** How often the wanted count is compared against the world, in seconds. */
-	SPAWN_TICK_INTERVAL: 1,
 
 	// ----------------------------------------------------------------- pickup
 

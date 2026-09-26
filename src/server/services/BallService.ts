@@ -1,15 +1,16 @@
 import { Service, OnStart } from "@flamework/core";
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { BALL_NAME, BALL_SIZE, THROWER_TOKEN, THROW_ENABLED, PICKUP_LOCKED_UNTIL } from "shared/constants";
+import { BALL_SIZE, THROWER_TOKEN, THROW_ENABLED, PICKUP_LOCKED_UNTIL } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
 import { LaunchPlan, ThrowArc } from "shared/Trajectory";
+import { scheduleBallExpiry } from "../ballExpiry";
 import { BallTrail } from "../BallTrail";
 import { DevService } from "../dev/DevService";
-import { SphereService } from "./SphereService";
+import { BallFactory } from "./BallFactory";
 import { watchThrow } from "../ThrowProbe";
 
 const DEBUG = true; // prints the mode, speed and angle of each throw
@@ -25,7 +26,13 @@ const DEBUG = true; // prints the mode, speed and angle of each throw
  */
 const MUZZLE_TOLERANCE = 10;
 
-/** Where the ball sits relative to the hand while it is being held. */
+/**
+ * Where a held ball sits relative to the hand.
+ *
+ * Lived in `BallFactory` for one revision, and came back with the line that uses it: putting a ball
+ * at the grip is part of *holding* a ball, and holding is this file's — see `attachToHand` for why
+ * that is not merely a matter of taste.
+ */
 const GRIP_OFFSET = new CFrame();
 
 /** Name of the weld that holds a ball in a hand, so it can be found again. */
@@ -111,7 +118,7 @@ export class BallService implements OnStart {
 	 */
 	private readonly heldBalls = new Map<Model, HeldBall>();
 
-	constructor(private readonly spheres: SphereService, private readonly dev: DevService) {
+	constructor(private readonly factory: BallFactory, private readonly dev: DevService) {
 		// **Switching `InfiniteBalls` on hands the dev a ball, if their hand is empty.**
 		//
 		// The refill at the end of a throw is not enough on its own. A dev whose hand is
@@ -129,7 +136,7 @@ export class BallService implements OnStart {
 			const character = player.Character;
 			if (!character || this.getHeldBall(character)) return;
 
-			this.attachBall(character);
+			this.giveBall(character);
 
 			if (DEBUG) print(`[Ball] ${character.Name}: handed a ball by InfiniteBalls`);
 		});
@@ -177,19 +184,35 @@ export class BallService implements OnStart {
 	/**
 	 * Puts a ball in `model`'s hand.
 	 *
-	 * Keyed on the **model**, like everything else here, so this is one call for a
-	 * player's character and for an NPC alike. What differs between them is the
-	 * token on the model, which this does not touch, and who arranges for a *new*
-	 * model to be handed a ball when the old one dies — and that is a fact about
-	 * players, so it lives in `JoinService`.
+	 * The public door for a hand-out, and the only one of the three that *makes* a ball: a catch and
+	 * a pickup take one that already exists — see {@link catchBall} and {@link pickupBall} — while
+	 * this is the game handing one out. `JoinService` calls it for a joining player and an NPC's
+	 * throwing behavior calls it for a rig, which is what makes a hand-out the same act for both.
 	 *
-	 * This deliberately does NOT use a Tool. A Tool's handle is gripped by the
-	 * engine, and in this project that grip never actually forms (the character
-	 * ends up with no `RightGrip`), so the unanchored ball falls straight out of
-	 * the world. Welding the ball to the hand ourselves is deterministic.
+	 * Keyed on the **model**, like everything else here. What differs between a player and an NPC is
+	 * only the token on the model, which this does not touch and should not have to: whoever knows who
+	 * is being handed a ball stamps it, and the ball reads it back at release.
+	 *
+	 * This deliberately does NOT use a Tool. A Tool's handle is gripped by the engine, and in this
+	 * project that grip never actually forms (the character ends up with no `RightGrip`), so the
+	 * unanchored ball falls straight out of the world. Welding the ball to the hand ourselves is
+	 * deterministic.
 	 */
 	public giveBall(model: Model): void {
-		this.attachBall(model);
+		// A model with no hand simply gets nothing, and gets it without a ball being built and thrown
+		// away again. `BallFactory` is the only place a ball is made, so the making is its business and
+		// none of it is repeated here.
+		const ball = this.factory.createInHand(model);
+		if (!ball) return;
+
+		// The weld, the grip, the entry in `heldBalls` — everything "in a hand" means, for this ball
+		// and for the two that arrive from the world.
+		if (!this.attachToHand(model, ball)) return;
+
+		// Armed *after* the attach, not by the factory: a hand-out is the one case where the ball is
+		// live from the moment it exists, and attaching is what creates the component whose defaults
+		// would write over anything set before it.
+		ball.SetAttribute("Armed", true);
 	}
 
 	/**
@@ -294,38 +317,13 @@ export class BallService implements OnStart {
 
 		// Loose balls are cleaned up on the clock thrown ones are. A catching NPC
 		// drops every ball it takes, so without this the map collects scenery for the
-		// rest of the session; the `isHeld` guard leaves a ball that has since been
+		// rest of the session; the `isHeld` guard inside leaves a ball that has since been
 		// caught to its new owner.
-		task.delay(BALL_CONFIG.LIFETIME_SECONDS, () => {
-			if (this.isHeld(ball)) return;
-
-			ball.Destroy();
-		});
+		scheduleBallExpiry(ball, BALL_CONFIG.LIFETIME_SECONDS, (expiring) => this.isHeld(expiring));
 
 		if (DEBUG) print(`[Ball] ${model.Name} dropped a dodgeball`);
 
 		return true;
-	}
-
-	/**
-	 * Creates a ball and welds it into the hand of the given model.
-	 *
-	 * A hand-out is the one case where the ball is live from the moment it exists,
-	 * so it is armed *after* the attach: attaching is what creates the component,
-	 * and the component's defaults would write over anything set before it.
-	 *
-	 * The model's token is not stamped either, because this does not know who it is
-	 * handing a ball to and should not have to: whoever knows stamps it —
-	 * `JoinService` for a joining player, `NpcService` for a rig. The ball reads it
-	 * back off the model at release, see `tokenOf`.
-	 */
-	private attachBall(model: Model) {
-		const ball = this.spheres.createBall(BALL_SIZE, { trail: false });
-		this.applyBallPhysics(ball);
-
-		if (!this.attachToHand(model, ball)) return;
-
-		ball.SetAttribute("Armed", true);
 	}
 
 	/**
@@ -339,9 +337,15 @@ export class BallService implements OnStart {
 	 * Reached through {@link catchBall} or {@link pickupBall} rather than directly,
 	 * so a caller says which it meant — the hand itself does not care, which is what
 	 * keeps one weld in the game instead of four.
+	 *
+	 * **It does not make the ball**, and it no longer configures one: `BallFactory` did all of
+	 * that, including finding the hand to place it at. What is left is what only this service can
+	 * do — the *holding*.
 	 */
 	private attachToHand(model: Model, ball: BasePart): boolean {
-		const hand = this.getRightHand(model);
+		// The same hand the ball was placed at, asked of the factory rather than looked up again
+		// here: one rig-type rule, in one file, for both the placing and the welding.
+		const hand = this.factory.getRightHand(model);
 		if (!hand) {
 			warn(`[Ball] ${model.Name}: could not find a right hand to hold the ball`);
 			ball.Destroy();
@@ -357,6 +361,27 @@ export class BallService implements OnStart {
 		// its thrower's hand. One weld per ball, and this is about to be replaced.
 		ball.FindFirstChild(GRIP_NAME)?.Destroy();
 
+		// **What it means for a ball to be in a hand, applied to whatever arrived.** Every way a ball
+		// can come into one passes through here — the hand-out, the refill after a throw, a catch, a
+		// pickup — while only some of them come from `BallFactory`. So everything a *held* ball needs
+		// is done here rather than where the ball was made, or the balls that arrive from the world
+		// would miss it, and a caught ball would sit in the hand still configured as a projectile.
+		//
+		// Each of the four is load-bearing, and the first was a bug when it was not here: `Parent` is
+		// what `throwBall` reads to decide whether there is anything in the hand at all, so a ball
+		// parented anywhere else cannot be thrown; the frame is what puts it *at* the grip, because a
+		// weld holds the offset the parts already had and a ball caught across the body would stay
+		// across it; and the other two are what stop a solid, full-weight ball being dragged around
+		// inside the holder, which was the old thrower-push bug wearing a different hat.
+		ball.CFrame = hand.CFrame.mul(GRIP_OFFSET);
+		ball.CanCollide = false; // don't shove the holder around while held
+		ball.Massless = true;
+		ball.Parent = model;
+
+		// And nobody's and nothing's — a caught ball is still armed and still named to the thrower it
+		// left, which is what this clears.
+		this.factory.makeInert(ball);
+
 		// The trail stays off until the throw — otherwise it hangs off the hand every time
 		// the holder walks around. A ball that is caught keeps the ribbons it flew with,
 		// disarmed and hidden by the same call, rather than being given a second set: two
@@ -365,23 +390,10 @@ export class BallService implements OnStart {
 		// is switched off — see `BallTrail.attach`.
 		const trail = BallTrail.attach(ball);
 
-		ball.Name = BALL_NAME;
-		ball.CanCollide = false; // don't shove the holder around while held
-		ball.Massless = true;
-		ball.CFrame = hand.CFrame.mul(GRIP_OFFSET);
-		ball.Parent = model;
-		ball.AddTag(BALL_TAG);
-		// Attributes after the tag, never before: tagging is what creates the
-		// component, and its defaults would write over anything set first.
-		//
-		// Armed false and the thrower blank, because a ball in a hand is nobody's and
-		// nothing's: that is what a hand-out, a catch and a pickup have in common.
-		// `throwBall` arms it and names its thrower at release, and `attachBall` arms
-		// it early because a hand-out is live from the moment it exists.
-		ball.SetAttribute("Armed", false);
-		ball.SetAttribute("ThrowerId", "");
 		this.setPromptEnabled(ball, false);
 
+		// The weld, and the one thing about a held ball the factory deliberately left alone: it is
+		// configured for the hand, but being *in* it is this service's business.
 		const grip = new Instance("WeldConstraint");
 		grip.Name = GRIP_NAME;
 		grip.Part0 = hand;
@@ -434,19 +446,6 @@ export class BallService implements OnStart {
 	private setPromptEnabled(ball: BasePart, enabled: boolean): void {
 		const prompt = ball.FindFirstChildWhichIsA("ProximityPrompt");
 		if (prompt) prompt.Enabled = enabled;
-	}
-
-	/** R6 rigs use "Right Arm"; R15 rigs use "RightHand". */
-	private getRightHand(character: Model): BasePart | undefined {
-		const humanoid = character.WaitForChild("Humanoid", 10);
-		if (!humanoid) return undefined;
-		if (!humanoid.IsA("Humanoid")) return undefined;
-
-		const name = humanoid.RigType === Enum.HumanoidRigType.R15 ? "RightHand" : "Right Arm";
-		const hand = character.WaitForChild(name, 10);
-		if (!hand) return undefined;
-
-		return hand.IsA("BasePart") ? hand : undefined;
 	}
 
 	private createThrowRemote(): RemoteEvent {
@@ -577,15 +576,10 @@ export class BallService implements OnStart {
 
 		this.heldBalls.delete(model);
 
-		task.delay(BALL_CONFIG.LIFETIME_SECONDS, () => {
-			// A ball that has been caught since it was thrown is not a projectile any
-			// more — it belongs to whoever is holding it, and how long it lives is
-			// theirs to decide. Without this, the cleanup would take the ball out of a
-			// catcher's hand a few seconds after they caught it.
-			if (this.isHeld(ball)) return;
-
-			ball.Destroy();
-		});
+		// A thrown ball is on the ordinary clock: it goes when nobody has picked it up in time, and
+		// the guard inside is what leaves a ball that has been caught since to its new owner. See
+		// `scheduleBallExpiry`, which is the one place a ball's lifetime is decided.
+		scheduleBallExpiry(ball, BALL_CONFIG.LIFETIME_SECONDS, (expiring) => this.isHeld(expiring));
 
 		// A dev with `InfiniteBalls` never runs out: the throw they just made is answered
 		// with another ball, by the same call the first one arrived by. This is the one
@@ -594,7 +588,7 @@ export class BallService implements OnStart {
 		// in: switching the flag on gives an empty hand a ball too, which is what a dev who
 		// has just thrown their last one actually needs. See the constructor.
 		if (this.hasInfiniteBalls(model)) {
-			this.attachBall(model);
+			this.giveBall(model);
 
 			if (DEBUG) print(`[Ball] ${model.Name}: refilled by InfiniteBalls`);
 		}
@@ -650,8 +644,14 @@ export class BallService implements OnStart {
 		return player !== undefined && this.dev.getFlag(player, "InfiniteBalls");
 	}
 
-	/** Whether `ball` is in somebody's hand right now. */
-	private isHeld(ball: BasePart): boolean {
+	/**
+	 * Whether `ball` is in somebody's hand right now.
+	 *
+	 * Public because the round's cleanup needs it: a ball the round owns that a player has picked
+	 * up is no longer the arena's to take away, and that judgement lives here rather than being
+	 * guessed at from the ball's parent — see `BallSpawnerService.cleanupRoundBalls`.
+	 */
+	public isHeld(ball: BasePart): boolean {
 		for (const [model, held] of this.heldBalls) {
 			if (held.ball === ball) {
 				if (DEBUG) print(`[Ball] ${ball.Name} is still held by ${model.Name}`);
@@ -739,33 +739,6 @@ export class BallService implements OnStart {
 		// it would keep shoving it sideways along the ground, at a constant
 		// acceleration, for the rest of its lifetime.
 		task.delay(flightTime + 0.1, () => force.Destroy());
-	}
-
-	/**
-	 * Gives a ball the material it is made of.
-	 *
-	 * Set once, when the ball is made, and it lasts the whole of the ball's life: while
-	 * it is held it is welded into the character and `Massless`, so the physics the
-	 * engine reads are the *assembly's* — the character's root part's — and the ball's
-	 * own are neither used nor lost. The moment a throw reparents it out of the body and
-	 * clears `Massless`, the ball is its own assembly and these are what it is made of.
-	 *
-	 * **None of this touches the flight.** The engine applies no drag to a part in
-	 * motion, so a ball in the air is pure ballistics whatever its material says; friction
-	 * and elasticity act at the instant of contact and density only decides how hard the
-	 * ball hits. The aim guide draws the same arc it drew before this existed.
-	 *
-	 * The two weights are left at 1: they are relative weights for when two materials
-	 * meet, and the floor is not ours to weight.
-	 */
-	private applyBallPhysics(ball: BasePart): void {
-		ball.CustomPhysicalProperties = new PhysicalProperties(
-			BALL_CONFIG.DENSITY,
-			BALL_CONFIG.GROUND_FRICTION,
-			BALL_CONFIG.ELASTICITY,
-			1,
-			1,
-		);
 	}
 
 	/**

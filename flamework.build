@@ -27,7 +27,9 @@
 		"roblox-dodgeball:out/server/services/OutlineService@OutlineService": "server/services/OutlineService@OutlineService",
 		"roblox-dodgeball:out/server/services/RoundService@RoundService": "server/services/RoundService@RoundService",
 		"roblox-dodgeball:out/client/controllers/ControlsLegendController@ControlsLegendController": "client/controllers/ControlsLegendController@ControlsLegendController",
-		"roblox-dodgeball:out/client/controllers/ThemeController@ThemeController": "client/controllers/ThemeController@ThemeController"
+		"roblox-dodgeball:out/client/controllers/ThemeController@ThemeController": "client/controllers/ThemeController@ThemeController",
+		"roblox-dodgeball:out/server/services/BallFactory@BallFactory": "server/services/BallFactory@BallFactory",
+		"roblox-dodgeball:out/server/services/BallSpawnerService@BallSpawnerService": "server/services/BallSpawnerService@BallSpawnerService"
 	},
 	"metadata": {}
 }

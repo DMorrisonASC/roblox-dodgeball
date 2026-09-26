@@ -1,11 +1,12 @@
 import { Controller, OnStart } from "@flamework/core";
-import { Text } from "@rbxts/big-ui";
+import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
+import { HudTheme, hudTheme } from "../ui/hudTheme";
 import { getHudScreenGui } from "../ui/screenGui";
 
 /** Prints once, when the bars are up — the line that says the controller ran at all. */
@@ -22,11 +23,6 @@ const LABEL_GAP = 2;
 const BAR_WIDTH = 120;
 const BAR_HEIGHT = 8;
 const BAR_CORNER_RADIUS = 4;
-
-/** The trough a fill sits in, and the only two colours the fill itself can be. */
-const BAR_BACKGROUND = Color3.fromRGB(25, 25, 25);
-const FILL_DEPLETED = Color3.fromRGB(70, 70, 70);
-const FILL_READY = Color3.fromRGB(200, 200, 200);
 
 /**
  * How long each bar takes to fill, read from the same configs the server runs on.
@@ -94,36 +90,45 @@ export class CooldownHudController implements OnStart {
 		const scope = Fusion.scoped();
 		const player = Players.LocalPlayer;
 
+		// The HUD's colours, read now rather than at module load: `configureTheme` has run by the
+		// time anything mounts, and a value captured earlier would be Material's default.
+		const theme = hudTheme();
+
 		// `1` is full, and full is the state a player joins in — before either action has been
 		// used there is nothing to count down, so there is no attribute to read yet.
 		const dodgeProgress = Fusion.Value(scope, 1);
 		const catchProgress = Fusion.Value(scope, 1);
 
-		const container = Fusion.New(scope, "Frame")({
-			Name: "CooldownHud",
-			AnchorPoint: new Vector2(0, 1),
-			Position: new UDim2(0, EDGE_PADDING, 1, -EDGE_PADDING),
-			AutomaticSize: Enum.AutomaticSize.XY,
-			BackgroundTransparency: 1,
+		// The rows are built first, because `Card` takes its children at construction and parents
+		// them itself — there is nothing to hand a `Parent` afterwards, and nothing above them to
+		// own their placement.
+		const dodgeRow = this.addRow(scope, theme, "Dodge", dodgeProgress);
+		dodgeRow.LayoutOrder = 1;
+
+		const catchRow = this.addRow(scope, theme, "Catch", catchProgress);
+		catchRow.LayoutOrder = 2;
+
+		const container = Card(scope, {
+			children: [dodgeRow, catchRow],
+			// The card's padding, and its own rather than a `UIPadding` beside it. The readout had
+			// none before, so this is what pushes the bars in off the card's edge — the cost of the
+			// panel, and cheaper than a second padding instance fighting the card's own.
+			padding: theme.spacing.sm,
+			childGap: ROW_SPACING,
 		});
 
-		// The container's layout owns the *rows*, which is what a layout is for. Nothing above the
-		// container has one, and that matters: a layout over an object's ancestor decides where
-		// that object goes and makes its own `Position` a lie, which is the one thing that would
-		// stop this readout being pinned to the corner.
-		const layout = new Instance("UIListLayout");
-		layout.FillDirection = Enum.FillDirection.Vertical;
-		layout.SortOrder = Enum.SortOrder.LayoutOrder;
-		layout.Padding = new UDim(0, ROW_SPACING);
-		layout.Parent = container;
-
-		const dodgeRow = this.addRow(scope, "Dodge", dodgeProgress);
-		dodgeRow.LayoutOrder = 1;
-		dodgeRow.Parent = container;
-
-		const catchRow = this.addRow(scope, "Catch", catchProgress);
-		catchRow.LayoutOrder = 2;
-		catchRow.Parent = container;
+		// `Card` has no opinion about where it sits — it is a `Frame` with a background, a corner and
+		// a layout, and that is all. So the pin to the bottom-left corner and the sizing to its
+		// contents go on what it returns, the same way a `Text`'s default size is corrected where
+		// big-ui's answer is not the wanted one. Nothing above it has a layout, which is what lets a
+		// `Position` here mean something at all.
+		container.AnchorPoint = new Vector2(0, 1);
+		container.Position = new UDim2(0, EDGE_PADDING, 1, -EDGE_PADDING);
+		container.Size = UDim2.fromOffset(0, 0);
+		container.AutomaticSize = Enum.AutomaticSize.XY;
+		// `Card` calls everything it makes "Card", which is no help in the Explorer once two HUDs are
+		// up — so the container keeps the name it had.
+		container.Name = "CooldownHud";
 
 		// One connection for both bars, and the only thing here that runs per frame. The
 		// alternatives are worse for the same reason: a subscription per attribute would leave the
@@ -150,11 +155,19 @@ export class CooldownHudController implements OnStart {
 	 * One labelled bar: the ability's name, and a trough with a fill that follows `progress`.
 	 *
 	 * Hand-rolled from two frames rather than taken from big-ui's progress component, because the
-	 * readout is not only a length: the colour is part of the answer — dark gray while the clock
-	 * runs, light gray when it is ready — and a bar that changes colour is plainer to write than to
-	 * configure.
+	 * readout is not only a length: the colour is part of the answer — the warning tone while the
+	 * clock runs, the success tone when it is ready — and a bar that changes colour is plainer to
+	 * write than to configure.
+	 *
+	 * The theme comes in as a parameter rather than being read here, so that a HUD reads its
+	 * colours exactly once and this method cannot disagree with the rest of the file about them.
 	 */
-	private addRow(scope: Fusion.Scope<unknown>, name: string, progress: Fusion.Value<number>): Frame {
+	private addRow(
+		scope: Fusion.Scope<unknown>,
+		theme: HudTheme,
+		name: string,
+		progress: Fusion.Value<number>,
+	): Frame {
 		const row = Fusion.New(scope, "Frame")({
 			Name: `${name}Row`,
 			Size: new UDim2(0, BAR_WIDTH, 0, 0),
@@ -171,14 +184,14 @@ export class CooldownHudController implements OnStart {
 		layout.Padding = new UDim(0, LABEL_GAP);
 		layout.Parent = row;
 
-		const label = Text(scope, { text: name, variant: "caption" });
+		const label = Text(scope, { text: name, variant: "body1" });
 		label.LayoutOrder = 1;
 		label.Parent = row;
 
 		const bar = Fusion.New(scope, "Frame")({
 			Name: "Bar",
 			Size: new UDim2(0, BAR_WIDTH, 0, BAR_HEIGHT),
-			BackgroundColor3: BAR_BACKGROUND,
+			BackgroundColor3: theme.colors.trough,
 			LayoutOrder: 2,
 		});
 
@@ -188,10 +201,12 @@ export class CooldownHudController implements OnStart {
 			// and the scale on its own is not one — so the computed value is the size, one full unit
 			// wide when the action is ready.
 			Size: Fusion.Computed(scope, (use) => new UDim2(use(progress), 0, 1, 0)),
-			// The colour is the second half of the same answer: still filling is dark, ready is
-			// light, and the switch happens on the fraction rather than on the instant so the two
-			// can never disagree about which side of ready we are on.
-			BackgroundColor3: Fusion.Computed(scope, (use) => (use(progress) >= 1 ? FILL_READY : FILL_DEPLETED)),
+			// The colour is the second half of the same answer: still filling is the busy tone,
+			// ready is the success tone, and the switch happens on the fraction rather than on the
+			// instant so the two can never disagree about which side of ready we are on.
+			BackgroundColor3: Fusion.Computed(scope, (use) =>
+				use(progress) >= 1 ? theme.colors.success : theme.colors.warning,
+			),
 		});
 
 		addCorner(bar);
