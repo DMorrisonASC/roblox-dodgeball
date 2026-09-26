@@ -9,6 +9,7 @@ import { events } from "shared/networking";
 import { lockoutElapsed } from "../actionLock";
 import { DevService } from "../dev/DevService";
 import { extendReadyAt, publishReadyAt } from "../readyAt";
+import { BallService } from "./BallService";
 import { DodgeService } from "./DodgeService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
@@ -100,7 +101,11 @@ export class CatchService implements OnStart {
 	 */
 	private readonly catchReadyAt = new Map<Model, number>();
 
-	constructor(private readonly dev: DevService, private readonly dodges: DodgeService) {
+	constructor(
+		private readonly dev: DevService,
+		private readonly dodges: DodgeService,
+		private readonly balls: BallService,
+	) {
 		// The dodge is gated on the catch, and this is where the catch side of that is handed
 		// over: the two services are gated on each other, and Flamework errors on a circular
 		// dependency, so exactly one of them can hold the other. This one holds the dodge
@@ -109,6 +114,11 @@ export class CatchService implements OnStart {
 		//
 		// In the constructor rather than `onStart` so that there is no frame in which one
 		// service is running and the other has not been told about it.
+		//
+		// **`BallService` is held for one question, and it is not the same problem.** The dodge
+		// pairing needed breaking by hand because it is mutual; the ball is an ordinary one-way
+		// ask — see {@link attemptCatch} — and `BallService` knows nothing about catching, so
+		// there is nothing here to untangle.
 		this.dodges.watchCatchState(this);
 	}
 
@@ -152,6 +162,47 @@ export class CatchService implements OnStart {
 		const humanoid = resolveDodgeable(model)?.humanoid;
 		if (!humanoid || humanoid.Health <= 0) {
 			if (DEBUG) print(`[Catch] ${model.Name}: no living humanoid to catch with`);
+			return false;
+		}
+
+		// **A free hand is what catches, and this is where that is decided.** The client refuses
+		// the same press for the same reason and never fires — see `CatchController` — which is the
+		// responsive half and saves the round trip. But a prediction is not a rule: a remote can be
+		// fired by hand, and this is the half that a crafted call meets.
+		//
+		// Keyed on the **model**, like every other hand rule in the game, so an NPC is held to it
+		// without a line of its own — `CatchBehavior` asks through this same call, and a rig holding
+		// a ball is refused here exactly as a character is. That is a decision and not an accident: a
+		// catch does not join the ball already in the hand, it *replaces* it — see
+		// `BallService.attachToHand` — so a rig allowed to catch while armed would be trading the ball
+		// it was issued for the one it caught.
+		//
+		// **`InfiniteCatch` does not lift this, and it is checked above the dev's window for exactly
+		// that reason.** That flag moves the window's *clock* — one press, an endless window instead of
+		// `CATCH_CONFIG.WINDOW_SECONDS` — and a free hand is not a clock: it is a state the dev can be
+		// in or not, the same way a player can. A dev testing a catch empties their hand with `1` first,
+		// which keeps the test honest rather than exempting the tester from the rule under test.
+		// The lockouts below hold for a dev too, for the same reason.
+		//
+		// Ahead of {@link blocksCatch} rather than behind it because this is the refusal most presses
+		// now want — everybody is handed a ball on join, so an armed hand is the common case — and
+		// because it is the one that cannot be waited out: a lockout expires on its own, and a ball in
+		// the hand does not.
+		const held = this.balls.getHeldBall(model);
+		if (held) {
+			// Named, and with its `Armed` flag, because those two facts are the whole diagnosis when a
+			// rig will not catch. **Only `giveBall` arms a ball**, and for a rig the only thing that
+			// calls it is `ThrowBehavior` — so an armed ball stuck in a catcher's hand means something
+			// issued it a ball, whether or not that rig was meant to have a throwing tag. An inert ball
+			// is the other case entirely: a catch or a pickup that has not been dropped yet, and which
+			// `CatchBehavior` takes out of the hand on its next tick.
+			if (DEBUG) {
+				print(
+					`[Catch] ${model.Name}: refused — ${held.Name} is already in hand` +
+						` (Armed ${held.GetAttribute("Armed")})`,
+				);
+			}
+
 			return false;
 		}
 

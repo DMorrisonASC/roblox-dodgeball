@@ -32,15 +32,18 @@ export function createCatchBehavior(catches: CatchService, balls: BallService): 
 
 			// Whatever it has just taken out of the air goes straight back down.
 			//
-			// Two reasons, and both come from the hand being one slot: a catcher that
-			// keeps its catches can never catch twice, because the next catch destroys
-			// the ball already sitting in that hand; and a ball nobody is going to throw
-			// is better left in play than carried around.
+			// Two reasons, and both come from the hand being one slot. A catcher that keeps its
+			// catches cannot catch again, because a catch needs a free hand — `attemptCatch` refuses
+			// an occupied one, and a caught ball counts as much as an armed one — so this drop is what
+			// makes the next tick's attempt count for anything. And a ball nobody is going to throw is
+			// better left in play than carried around.
 			//
-			// What it leaves alone is the ball it was *issued* — a throwing rig's own.
-			// `Armed` is what tells the two apart in the same hand: a handed-out ball is
-			// armed from the moment it exists, while a caught one is inert until its
-			// catcher throws it.
+			// What it leaves alone is the ball it was *issued* — a throwing rig's own. `Armed` is what
+			// tells the two apart in the same hand: a handed-out ball is armed from the moment it
+			// exists, while a caught one is inert until its catcher throws it. An issued ball is kept,
+			// because a throwing rig's own behavior is what decides when that one goes, and it is kept
+			// knowing the price: while it is held, `attemptCatch` will not open a window at all —
+			// the same rule, and the same price, as a player's.
 			const held = balls.getHeldBall(model);
 			if (held && held.GetAttribute("Armed") !== true) balls.dropBall(model);
 		},

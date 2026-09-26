@@ -229,7 +229,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// Gated where the rest of this file's output is not: this is one line per hit, and it is
 		// worth reading only while tuning what a contact is worth.
 		if (DEBUG_CONFIG.VERBOSE_LOGS) print(`[Ball] ${character.Name}: hit on ${part.Name}`);
-
+		print(humanoid.Name + " was hit by " + this.instance.Name + " on " + part.Name);
 		humanoid.TakeDamage(HIT_DAMAGE);
 	}
 
