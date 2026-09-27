@@ -141,8 +141,26 @@ export class ShopController implements OnStart {
             ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
         });
 
-        // No `UIPadding` on the panel, deliberately. The bands run edge to edge so the panel reads
-        // as alternating strips. Each band applies its own inner margin.
+        // `min-width` / `max-width`. `Size` stays proportional; this clamps it in pixels at both
+        // ends, so the panel neither collapses to unusable on a phone nor stretches across an
+        // ultrawide.
+        Fusion.New(this.scope, "UISizeConstraint")({
+            Parent: panel,
+            MinSize: SHOP_CONFIG.PANEL_MIN_SIZE,
+            MaxSize: SHOP_CONFIG.PANEL_MAX_SIZE,
+        });
+
+        // The bands stack themselves and the content takes the remainder — this is what replaces
+        // `CONTENT_TOP` / `CONTENT_HEIGHT_OFFSET`. `Padding` is zero because the bands run edge to
+        // edge; each one insets its own contents instead. `Center` is the cross-axis equivalent of
+        // `align-items: stretch` for fixed-width children.
+        Fusion.New(this.scope, "UIListLayout")({
+            Parent: panel,
+            FillDirection: Enum.FillDirection.Vertical,
+            SortOrder: Enum.SortOrder.LayoutOrder,
+            HorizontalAlignment: Enum.HorizontalAlignment.Center,
+            Padding: new UDim(0, 0),
+        });
 
         this.addHeader(panel);
         this.addTabs(panel);
@@ -162,8 +180,11 @@ export class ShopController implements OnStart {
             Parent: band,
             PaddingTop: new UDim(0, top),
             PaddingBottom: new UDim(0, bottom),
-            PaddingLeft: new UDim(0, SHOP_CONFIG.BAND_PADDING),
-            PaddingRight: new UDim(0, SHOP_CONFIG.BAND_PADDING),
+            // Scale horizontally, so the side margins track the panel's width. Vertically they have
+            // to be pixels: a scale inset on a band that is sizing itself to its contents would be a
+            // fraction of the height it is helping to determine, which is a cycle.
+            PaddingLeft: new UDim(SHOP_CONFIG.PAD_X, 0),
+            PaddingRight: new UDim(SHOP_CONFIG.PAD_X, 0),
         });
     }
 
@@ -173,12 +194,15 @@ export class ShopController implements OnStart {
         const header = Fusion.New(this.scope, "Frame")({
             Name: "Header",
             Parent: parent,
-            Size: new UDim2(1, 0, 0, SHOP_CONFIG.HEADER_HEIGHT),
-            Position: UDim2.fromOffset(0, 0),
+            // Width from the panel, height from its own contents — the title's line box, the close
+            // button and the counter pills decide it. There is no band height constant left.
+            Size: new UDim2(1, 0, 0, 0),
+            AutomaticSize: Enum.AutomaticSize.Y,
+            LayoutOrder: 1,
             BackgroundColor3: COLORS.STRIP,
             BorderSizePixel: 0,
         });
-        this.padBand(header, 0, 0);
+        this.padBand(header, SHOP_CONFIG.PAD_Y, SHOP_CONFIG.PAD_Y);
 
         const left = Fusion.New(this.scope, "Frame")({
             Name: "Left",
@@ -192,7 +216,7 @@ export class ShopController implements OnStart {
             FillDirection: Enum.FillDirection.Horizontal,
             VerticalAlignment: Enum.VerticalAlignment.Center,
             SortOrder: Enum.SortOrder.LayoutOrder,
-            Padding: new UDim(0, 10),
+            Padding: new UDim(0, SHOP_CONFIG.HEADER_GAP),
         });
 
         const closeButton = Button(this.scope, {
@@ -286,18 +310,21 @@ export class ShopController implements OnStart {
         const tabRow = Fusion.New(this.scope, "Frame")({
             Name: "TabRow",
             Parent: parent,
-            Size: new UDim2(1, 0, 0, SHOP_CONFIG.TAB_HEIGHT),
-            Position: new UDim2(0, 0, 0, SHOP_CONFIG.HEADER_HEIGHT),
+            // Sized by the tabs it holds — each is a fixed touch height — so there is no band height
+            // constant, and `LayoutOrder` is what puts it after the header.
+            Size: new UDim2(1, 0, 0, 0),
+            AutomaticSize: Enum.AutomaticSize.Y,
+            LayoutOrder: 2,
             BackgroundColor3: COLORS.STRIP,
             BorderSizePixel: 0,
         });
-        this.padBand(tabRow, 6, 6);
+        this.padBand(tabRow, SHOP_CONFIG.PAD_Y, SHOP_CONFIG.PAD_Y);
         Fusion.New(this.scope, "UIListLayout")({
             Parent: tabRow,
             FillDirection: Enum.FillDirection.Horizontal,
             VerticalAlignment: Enum.VerticalAlignment.Center,
             SortOrder: Enum.SortOrder.LayoutOrder,
-            Padding: new UDim(0, 8),
+            Padding: new UDim(0, SHOP_CONFIG.TAB_GAP),
         });
 
         TABS.forEach((tab, index) => this.addTab(tabRow, tab, index + 1));
@@ -309,7 +336,9 @@ export class ShopController implements OnStart {
         const button = Fusion.New(this.scope, "TextButton")({
             Name: `${tab.name}Tab`,
             Parent: parent,
-            Size: new UDim2(0, SHOP_CONFIG.TAB_WIDTH, 1, 0),
+            // Width is a fraction of the row so five tabs track the panel; height is a touch target
+            // and stays in pixels on purpose — see `TAB_HEIGHT`.
+            Size: new UDim2(SHOP_CONFIG.TAB_WIDTH_SCALE, 0, 0, SHOP_CONFIG.TAB_HEIGHT),
             BackgroundColor3: tab.color,
             BackgroundTransparency: Fusion.Computed(this.scope, (use) =>
                 use(this.currentTab) === tab.name ? 0 : 0.35,
@@ -357,11 +386,23 @@ export class ShopController implements OnStart {
         const content = Fusion.New(this.scope, "Frame")({
             Name: "Content",
             Parent: parent,
-            Size: new UDim2(1, 0, 1, SHOP_CONFIG.CONTENT_HEIGHT_OFFSET),
-            Position: new UDim2(0, 0, 0, SHOP_CONFIG.CONTENT_TOP),
+            // No height and no position of its own: the panel's list layout stacks it after the
+            // bands, and the flex item below hands it whatever is left. That is the
+            // `calc(100% - header - tabs - footer)` which used to be `CONTENT_HEIGHT_OFFSET`.
+            Size: new UDim2(1, 0, 0, 0),
+            LayoutOrder: 3,
             BackgroundTransparency: 1,
+            // A backstop, and it should be redundant given the flex shrink on the box picture. The
+            // bands are opaque strips stacked above one another, so anything that escapes this band
+            // does not just look wrong — the next band is drawn over it.
+            ClipsDescendants: true,
         });
-        this.padBand(content, 10, 10);
+        Fusion.New(this.scope, "UIFlexItem")({
+            Parent: content,
+            // `flex: 1`: grow into the remaining space, and nothing else on the panel flexes.
+            FlexMode: Enum.UIFlexMode.Fill,
+        });
+        this.padBand(content, SHOP_CONFIG.PAD_Y, SHOP_CONFIG.PAD_Y);
 
         this.addEffects(content);
 
@@ -417,20 +458,29 @@ export class ShopController implements OnStart {
         const grid = Fusion.New(this.scope, "Frame")({
             Name: "BoxGrid",
             Parent: list,
-            AnchorPoint: new Vector2(0.5, 0),
-            Position: new UDim2(0.5, 0, 0, 0),
-            // Fixed width pins 4 columns; the height is a share of the band so the rows always fit.
-            Size: new UDim2(0, SHOP_CONFIG.BOX_GRID_WIDTH, 1, 0),
+            // Centred, which only becomes visible once the size constraint below clamps it on a wide
+            // screen — otherwise a `Size` of 1,0 already fills the band.
+            AnchorPoint: new Vector2(0.5, 0.5),
+            Position: UDim2.fromScale(0.5, 0.5),
+            Size: new UDim2(1, 0, 1, 0),
             BackgroundTransparency: 1,
+        });
+        Fusion.New(this.scope, "UISizeConstraint")({
+            Parent: grid,
+            MinSize: SHOP_CONFIG.GRID_MIN_SIZE,
+            MaxSize: SHOP_CONFIG.GRID_MAX_SIZE,
         });
 
         const rows = math.max(1, math.ceil(BOXES.size() / SHOP_CONFIG.BOX_GRID_COLUMNS));
         Fusion.New(this.scope, "UIGridLayout")({
             Parent: grid,
-            CellSize: new UDim2(0, SHOP_CONFIG.BOX_CELL_WIDTH, 1 / rows, 0),
-            // Zero, deliberately: any padding pushes the cell total past 1.0 and costs a column, so
-            // the gap between cards is drawn as an inset inside each cell instead.
-            CellPadding: UDim2.fromOffset(0, 0),
+            // Scale on both axes, both derived so columns + gaps come to exactly 1.0 — a pixel of
+            // overshoot makes the layout wrap and costs a whole column. See `BOX_CELL_SCALE`.
+            CellSize: UDim2.fromScale(
+                SHOP_CONFIG.BOX_CELL_SCALE,
+                (1 - (rows - 1) * SHOP_CONFIG.GRID_GAP_SCALE) / rows,
+            ),
+            CellPadding: UDim2.fromScale(SHOP_CONFIG.GRID_GAP_SCALE, SHOP_CONFIG.GRID_GAP_SCALE),
             SortOrder: Enum.SortOrder.LayoutOrder,
         });
 
@@ -438,18 +488,11 @@ export class ShopController implements OnStart {
     }
 
     private addBoxCard(parent: Frame, box: BoxDef, layoutOrder: number): void {
-        const cell = Fusion.New(this.scope, "Frame")({
+        // One frame per card now, not two: the grid's own `CellPadding` draws the gap, so the
+        // wrapper that used to inset a nested card is gone.
+        const card = Fusion.New(this.scope, "TextButton")({
             Name: box.name,
             Parent: parent,
-            BackgroundTransparency: 1,
-            LayoutOrder: layoutOrder,
-        });
-
-        const card = Fusion.New(this.scope, "TextButton")({
-            Name: "Card",
-            Parent: cell,
-            Position: UDim2.fromOffset(SHOP_CONFIG.BOX_CELL_GAP / 2, SHOP_CONFIG.BOX_CELL_GAP / 2),
-            Size: new UDim2(1, -SHOP_CONFIG.BOX_CELL_GAP, 1, -SHOP_CONFIG.BOX_CELL_GAP),
             BackgroundColor3: COLORS.SURFACE,
             BorderSizePixel: 0,
             AutoButtonColor: true,
@@ -574,15 +617,32 @@ export class ShopController implements OnStart {
             AspectRatio: 1,
             AspectType: Enum.AspectType.FitWithinMaxSize,
         });
+        Fusion.New(this.scope, "UIFlexItem")({
+            Parent: boxImage,
+            // `flex-shrink`: the picture is the one thing in this column that gives way when the
+            // panel is too short for the odds rows underneath it. Without this the column overflows
+            // the content band, and the footer — drawn later, at the same ZIndex — paints over the
+            // bottom of it.
+            FlexMode: Enum.UIFlexMode.Shrink,
+        });
 
         const boxName = Fusion.New(this.scope, "Frame")({
             Name: "BoxName",
             Parent: left,
-            Size: new UDim2(1, 0, 0, SHOP_CONFIG.BOX_NAME_HEIGHT),
+            // Hugs its label instead of a fixed bar height — so the label below keeps its intrinsic
+            // line box and the bar grows around it. Giving the label a scale-1 height here instead
+            // would be a cycle: the bar would be sizing itself to a fraction of itself.
+            Size: new UDim2(1, 0, 0, 0),
+            AutomaticSize: Enum.AutomaticSize.Y,
             BackgroundColor3: COLORS.SURFACE,
             LayoutOrder: 2,
         });
         Fusion.New(this.scope, "UICorner")({ Parent: boxName, CornerRadius: new UDim(0, 4) });
+        Fusion.New(this.scope, "UIPadding")({
+            Parent: boxName,
+            PaddingTop: new UDim(0, 4),
+            PaddingBottom: new UDim(0, 4),
+        });
 
         // The one reactive label in the detail: whichever box of this kind is open.
         const boxNameLabel = Text(this.scope, {
@@ -594,10 +654,9 @@ export class ShopController implements OnStart {
             wrap: false,
         });
         boxNameLabel.TextColor3 = COLORS.TEXT;
-        boxNameLabel.Size = new UDim2(1, 0, 1, 0);
-        boxNameLabel.AutomaticSize = Enum.AutomaticSize.None;
+        // Deliberately left at big-ui's default `Size` and `AutomaticSize.Y`: the label needs an
+        // intrinsic line box for the bar behind it to hug.
         boxNameLabel.TextXAlignment = Enum.TextXAlignment.Center;
-        boxNameLabel.TextYAlignment = Enum.TextYAlignment.Center;
         boxNameLabel.Parent = boxName;
 
         // The odds, as the reference draws them: a shaded sub-header, then a name and a percentage
@@ -662,9 +721,17 @@ export class ShopController implements OnStart {
         const column = Fusion.New(this.scope, "Frame")({
             Name: "ItemColumn",
             Parent: parent,
-            Position: new UDim2(0.3, 12, 0, 0),
-            Size: new UDim2(0.7, -12, 1, 0),
+            // Split from the left column by fractions, not by a pixel gap.
+            Position: new UDim2(SHOP_CONFIG.COLUMN_SCALE + SHOP_CONFIG.COLUMN_GAP_SCALE, 0, 0, 0),
+            Size: new UDim2(1 - SHOP_CONFIG.COLUMN_SCALE - SHOP_CONFIG.COLUMN_GAP_SCALE, 0, 1, 0),
             BackgroundTransparency: 1,
+        });
+        Fusion.New(this.scope, "UIListLayout")({
+            Parent: column,
+            FillDirection: Enum.FillDirection.Vertical,
+            SortOrder: Enum.SortOrder.LayoutOrder,
+            HorizontalAlignment: Enum.HorizontalAlignment.Center,
+            Padding: new UDim(0, SHOP_CONFIG.COLUMN_GAP),
         });
 
         const heading = Text(this.scope, {
@@ -673,9 +740,10 @@ export class ShopController implements OnStart {
             wrap: false,
         });
         heading.TextColor3 = COLORS.TEXT;
-        heading.Size = new UDim2(1, 0, 0, SHOP_CONFIG.HEADING_HEIGHT);
-        heading.AutomaticSize = Enum.AutomaticSize.None;
+        // Hugs its own line box — no heading height constant. `AutomaticSize.Y` is big-ui's default
+        // when no `size` is passed, so this just leaves it alone.
         heading.TextXAlignment = Enum.TextXAlignment.Center;
+        heading.LayoutOrder = 1;
         heading.Parent = column;
 
         const rows = math.max(1, math.ceil(contents.items.size() / SHOP_CONFIG.GRID_COLUMNS));
@@ -683,22 +751,30 @@ export class ShopController implements OnStart {
         const grid = Fusion.New(this.scope, "Frame")({
             Name: "ItemGrid",
             Parent: column,
-            AnchorPoint: new Vector2(0.5, 0),
-            Position: new UDim2(0.5, 0, 0, SHOP_CONFIG.GRID_TOP),
-            // Width pinned in pixels — that is what fixes the column count at 5 — and height taken
-            // from the column, so it shrinks on a short screen instead of overflowing the panel.
-            Size: new UDim2(0, SHOP_CONFIG.GRID_WIDTH, 1, -SHOP_CONFIG.GRID_TOP),
+            // Fills whatever the heading leaves rather than being told a pixel height. The cell size
+            // below is a fraction of *this* frame, so the columns land right whatever the panel is.
+            Size: new UDim2(1, 0, 0, 0),
+            LayoutOrder: 2,
             BackgroundTransparency: 1,
+        });
+        Fusion.New(this.scope, "UIFlexItem")({
+            Parent: grid,
+            // `flex: 1` again — the heading is its own size and the grid takes the rest.
+            FlexMode: Enum.UIFlexMode.Fill,
         });
         Fusion.New(this.scope, "UISizeConstraint")({
             Parent: grid,
-            MaxSize: new Vector2(math.huge, SHOP_CONFIG.GRID_MAX_HEIGHT),
+            MinSize: SHOP_CONFIG.GRID_MIN_SIZE,
+            MaxSize: SHOP_CONFIG.GRID_MAX_SIZE,
         });
         Fusion.New(this.scope, "UIGridLayout")({
             Parent: grid,
-            // `1 / rows` of the grid, so `rows` cells stacked fill it exactly and nothing wraps.
-            CellSize: new UDim2(0, SHOP_CONFIG.CELL_WIDTH, 1 / rows, 0),
-            CellPadding: UDim2.fromOffset(0, 0),
+            // Derived so columns + gaps come to exactly 1.0 — see `ITEM_CELL_SCALE`.
+            CellSize: UDim2.fromScale(
+                SHOP_CONFIG.ITEM_CELL_SCALE,
+                (1 - (rows - 1) * SHOP_CONFIG.GRID_GAP_SCALE) / rows,
+            ),
+            CellPadding: UDim2.fromScale(SHOP_CONFIG.GRID_GAP_SCALE, SHOP_CONFIG.GRID_GAP_SCALE),
             SortOrder: Enum.SortOrder.LayoutOrder,
         });
 
@@ -708,22 +784,13 @@ export class ShopController implements OnStart {
     private addCell(parent: Frame, item: (typeof CONTENTS)["mystery"]["items"][number], layoutOrder: number): void {
         const rarityColor = rarityColorOf(item.rarity);
 
-        // Two frames per card: the grid cell, which the layout sizes and which stays transparent,
-        // and the card inside it, inset by half the gap. That inset is the only reason the gap
-        // exists — the layout's own `CellPadding` is zero.
-        const cell = Fusion.New(this.scope, "Frame")({
+        // One frame per card: the grid's `CellPadding` draws the gap, so the wrapper that used to
+        // inset a nested card is gone.
+        const card = Fusion.New(this.scope, "Frame")({
             Name: item.name,
             Parent: parent,
-            BackgroundTransparency: 1,
-            LayoutOrder: layoutOrder,
-        });
-
-        const card = Fusion.New(this.scope, "Frame")({
-            Name: "Card",
-            Parent: cell,
-            Position: UDim2.fromOffset(SHOP_CONFIG.CELL_GAP / 2, SHOP_CONFIG.CELL_GAP / 2),
-            Size: new UDim2(1, -SHOP_CONFIG.CELL_GAP, 1, -SHOP_CONFIG.CELL_GAP),
             BackgroundColor3: COLORS.SURFACE,
+            LayoutOrder: layoutOrder,
         });
         Fusion.New(this.scope, "UICorner")({ Parent: card, CornerRadius: new UDim(0, 4) });
 
@@ -771,12 +838,15 @@ export class ShopController implements OnStart {
         const footer = Fusion.New(this.scope, "Frame")({
             Name: "Footer",
             Parent: parent,
-            Size: new UDim2(1, 0, 0, SHOP_CONFIG.FOOTER_HEIGHT),
-            Position: new UDim2(0, 0, 1, -SHOP_CONFIG.FOOTER_HEIGHT),
+            // Hugs the button it holds rather than a footer height constant; the button sets the
+            // height and `LayoutOrder` puts the band last.
+            Size: new UDim2(1, 0, 0, 0),
+            AutomaticSize: Enum.AutomaticSize.Y,
+            LayoutOrder: 4,
             BackgroundColor3: COLORS.STRIP,
             BorderSizePixel: 0,
         });
-        this.padBand(footer, 6, 6);
+        this.padBand(footer, SHOP_CONFIG.PAD_Y, SHOP_CONFIG.PAD_Y);
 
         // The action belongs to the box that is open, so the footer button is hidden on the shelf.
         // `Hydrate`, because big-ui's `Button` has no reactive prop this could ride on.

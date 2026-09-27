@@ -180,52 +180,80 @@ export const SHOP_CONFIG = {
     PANEL_SIZE: UDim2.fromScale(0.62, 0.72),
     PANEL_Z_INDEX: 10,
 
-    // --- the bands, stacked edge to edge ---
-    HEADER_HEIGHT: 42,
-    TAB_HEIGHT: 62,
-    TAB_WIDTH: 116,
-    FOOTER_HEIGHT: 42,
+    /** `min-width` / `max-width`: a floor so it stays usable on a phone, a ceiling so it stops
+     * stretching on an ultrawide. */
+    PANEL_MIN_SIZE: new Vector2(520, 360),
+    PANEL_MAX_SIZE: new Vector2(1440, 880),
 
-    CONTENT_TOP: 42 + 62, // HEADER + TAB
-    CONTENT_HEIGHT_OFFSET: -(42 + 62 + 42), // -(HEADER + TAB + FOOTER)
+    // --- the bands ---
+    //
+    // **No band heights and no top offsets, and nothing adds up.** The bands are stacked by a
+    // `UIListLayout` on the panel and each is sized by its own contents; the content band carries a
+    // `UIFlexItem` set to `Fill`, so it takes whatever is left over. That replaces the old
+    // `CONTENT_TOP` / `CONTENT_HEIGHT_OFFSET` pair, which had to be recomputed by hand by anyone who
+    // changed a band.
+    /** Horizontal padding, as a fraction of the band's width, so it tracks the panel. */
+    PAD_X: 0.015,
+    /**
+     * Vertical padding, in pixels — and it has to be pixels.
+     *
+     * A scale inset on a band that is sizing itself to its contents is a layout cycle: the padding
+     * would be a fraction of a height that depends on the padding. Horizontal is safe because a
+     * band's *width* comes from the panel, not from its contents.
+     */
+    PAD_Y: 8,
 
-    /** The inner margin each band applies to its own contents. */
-    BAND_PADDING: 12,
+    /**
+     * A tab's height in pixels, which is the one size here that should not scale.
+     *
+     * It is a touch target. A tab that shrank with the window would be unclickable on a phone, so
+     * this is a floor by intent — the CSS equivalent of `min-height: 44px`.
+     */
+    TAB_HEIGHT: 48,
+    /** Tab width as a fraction of the row, so five of them track the panel. */
+    TAB_WIDTH_SCALE: 0.185,
+    TAB_GAP: 8,
+    HEADER_GAP: 10,
+
     /** The light frame around the whole panel. */
     BORDER_THICKNESS: 5,
 
-    // --- the box grid on the Effects landing page ---
+    // --- the grids ---
     BOX_GRID_COLUMNS: 4,
-    BOX_CELL_WIDTH: 170,
-    BOX_CELL_GAP: 10,
-    // 4*170 + 3*10 = 710
-    BOX_GRID_WIDTH: 4 * 170 + 3 * 10,
-
-    // --- the item grid inside a box ---
     GRID_COLUMNS: 5,
-    /** Cell width stays fixed in pixels, so a card keeps its shape however wide the screen is. */
-    CELL_WIDTH: 136,
-    /** The gap between cards, drawn as an inset on the card inside its grid cell. */
-    CELL_GAP: 8,
-    GRID_WIDTH: 5 * 136 + 4 * 8,
-    GRID_TOP: 32,
-    HEADING_HEIGHT: 28,
-    GRID_MAX_HEIGHT: 360,
+    /**
+     * The gap between cells, as a fraction of the grid.
+     *
+     * Cells must add up to exactly 1.0 along each axis. A single pixel over that total costs a whole
+     * column, because the layout wraps rather than overflowing — so the gap is a scale value and the
+     * cell size is derived from it below.
+     */
+    GRID_GAP_SCALE: 0.012,
+    /** cellScale = (1 - (columns - 1) * gap) / columns, so columns + gaps = exactly 1.0. */
+    BOX_CELL_SCALE: (1 - (4 - 1) * 0.012) / 4,
+    ITEM_CELL_SCALE: (1 - (5 - 1) * 0.012) / 5,
+    GRID_MIN_SIZE: new Vector2(240, 130),
+    GRID_MAX_SIZE: new Vector2(1120, 620),
 
     // --- the detail view's left column ---
-    //
-    // This column is the binding constraint on the panel height, not the item grid: it is image +
-    // name + chances header + five odds rows + seven gaps. With the topbar inset eating 77px, a
-    // 0.72 panel leaves 272px for it, so these four numbers have to add up to less than that with
-    // the picture taking the remainder. At 0.36 the picture is ~98px there and ~118px without
-    // the inset, and the rows always fit.
-    BOX_IMAGE_HEIGHT_SCALE: 0.36,
-    BOX_NAME_HEIGHT: 26,
-    /** The `Item Chances` sub-header and the height of one odds row. */
-    CHANCES_HEIGHT: 20,
+    /**
+     * The box picture's height as a fraction of the column. It also carries a `UIFlexItem` set to
+     * `Shrink`, so it is the one thing there that gives way when the panel is short — the name, the
+     * odds header and the rows below it keep their size.
+     */
+    BOX_IMAGE_HEIGHT_SCALE: 0.34,
+    COLUMN_SCALE: 0.32,
+    COLUMN_GAP_SCALE: 0.012,
+    COLUMN_GAP: 6,
+    /**
+     * One odds row, in pixels.
+     *
+     * Not an oversight: this is a `line-height`. A row of text needs a definite height for its two
+     * labels to be split 70/30 across it, and letting the row size itself to those labels is a
+     * cycle, because each label's height would then be a fraction of the row's.
+     */
     ODDS_ROW_HEIGHT: 18,
-    /** The gap between the rows of the left column. */
-    COLUMN_GAP: 5,
+    CHANCES_HEIGHT: 22,
 
     /** The back control's size on the detail view. */
     BACK_SIZE: UDim2.fromOffset(34, 26),
