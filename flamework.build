@@ -31,6 +31,7 @@
 		"roblox-dodgeball:out/server/services/ball/BallPickupService@BallPickupService": "server/services/ball/BallPickupService@BallPickupService",
 		"roblox-dodgeball:out/server/services/actions/ActionService@ActionService": "server/services/actions/ActionService@ActionService",
 		"roblox-dodgeball:out/server/services/ball/BallSpawnerService@BallSpawnerService": "server/services/ball/BallSpawnerService@BallSpawnerService",
+		"roblox-dodgeball:out/server/services/character/WalkSpeedService@WalkSpeedService": "server/services/character/WalkSpeedService@WalkSpeedService",
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/round/RoundService@RoundService": "server/services/round/RoundService@RoundService",
