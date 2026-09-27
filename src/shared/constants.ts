@@ -130,6 +130,47 @@ export const ROUND_TIME_ATTRIBUTE = "TimeRemaining";
 export const ROUND_WINNER_ATTRIBUTE = "Winner";
 
 /**
+ * Attribute on {@link ROUND_STATUS_FOLDER}: what the round is being played as.
+ *
+ * The mode's *display name* — `GAME_MODE_NAMES[id]` — rather than its id, for the reason the phase
+ * is its own name: it is the one vocabulary the HUD has, so a reader can put it on screen without
+ * holding a table of ids to look it up in.
+ *
+ * Written when a vote **closes**, not when the round starts, and that is the useful moment: the
+ * intermission following the vote is exactly when a player wants to know what they are about to
+ * play, and a value written at the opening whistle would tell them a second too late. A reader
+ * must therefore not assume it describes the round in progress — between the vote closing and the
+ * round beginning it describes the round to come.
+ */
+export const ROUND_MODE_ATTRIBUTE = "Mode";
+
+/**
+ * Attribute on {@link ROUND_STATUS_FOLDER}: whether the vote is open right now.
+ *
+ * A boolean rather than a deadline on the shared clock, because the vote does not run on the
+ * shared clock — it runs on the *intermission*'s, and that clock stops when a dev pauses rounds.
+ * A reader given an instant it could subtract would draw a countdown that kept running while the
+ * round it belongs to was held up.
+ *
+ * The HUD's whole reason for showing the buttons, and the only thing it needs: the options come
+ * from {@link ROUND_VOTE_OPTIONS_ATTRIBUTE}.
+ */
+export const ROUND_VOTE_OPEN_ATTRIBUTE = "VoteOpen";
+
+/**
+ * Attribute on {@link ROUND_STATUS_FOLDER}: the modes the open vote is offering.
+ *
+ * The ids, comma-joined — see `encodeModeIds` in `shared/gameMode.ts` for why a string rather than
+ * a list, and for the pair of helpers that keep the two sides of the encoding together.
+ *
+ * Published by the server from its own registry, which is what makes the client a renderer of
+ * whatever the server can actually run: a mode that has been designed but not written is simply
+ * absent from this string, so the button for it does not exist rather than existing and doing
+ * nothing.
+ */
+export const ROUND_VOTE_OPTIONS_ATTRIBUTE = "VoteOptions";
+
+/**
  * Attribute on a **`Player`** saying they are out of the round in progress and watching it.
  *
  * Written by `RoundService`: set for a player whose character dies during a round, and for one

@@ -4,6 +4,7 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { SPECTATING_ATTRIBUTE } from "shared/constants";
 import { getHudScreenGui } from "../../ui/screenGui";
+import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, when the label is up — the line that says the controller ran at all. */
 const DEBUG = true;
@@ -67,6 +68,12 @@ export class SpectatorController implements OnStart {
 			BackgroundTransparency: 1,
 			Visible: spectating,
 		});
+
+		// `LABEL_WIDTH` is 240px and the label is centred, so a viewport narrower than that clips it
+		// on both sides at once. No shipping phone is that narrow, and the bound costs nothing on one
+		// that is wide enough — the same rule as the other HUDs, applied for the same reason: the
+		// element carries its own limit rather than trusting that the screen will be big enough.
+		addViewportConstraint(scope, wrapper);
 
 		const label = Text(scope, {
 			text: TEXT,

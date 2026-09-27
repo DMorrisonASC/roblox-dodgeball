@@ -7,6 +7,7 @@ import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BallService } from "../services/ball/BallService";
 import { CatchService } from "../services/actions/CatchService";
+import { RoundService } from "../services/round/RoundService";
 import { StatsService } from "../services/stats/StatsService";
 
 interface BallAttributes {
@@ -62,6 +63,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		private readonly catches: CatchService,
 		private readonly balls: BallService,
 		private readonly stats: StatsService,
+		private readonly rounds: RoundService,
 	) {
 		super();
 	}
@@ -191,12 +193,35 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			return;
 		}
 
+		// **Friendly fire is off, and this is the one place that decides it.**
+		//
+		// A same-side contact is vetoed *entirely* — no bounce, no damage, no death, no record, no
+		// points. It is one rule for every mode rather than a mode's own decision, because it is not
+		// a rule about how a round is won; it is a rule about what a throw may do to a body at all,
+		// and a mode that wanted friendly fire back would be changing the game rather than its own
+		// rules. That is why this is here and not in `GameMode`.
+		//
+		// **Before `landHit`, and therefore before `TakeDamage` — that order is the contract.** The
+		// veto has to be able to refuse the contact outright, and a check placed after the damage
+		// would be describing a hit that has already happened: a `Died` already fired, the round's
+		// hit record already written, and nothing left to take either back. So it sits ahead of the
+		// bounce and the damage alike, and a teammate is simply not a body this ball interacts with.
+		//
+		// A catch is deliberately *not* covered: the catch branch above has already returned, so a
+		// teammate may still catch a throw. Catching is a different mechanic from hurting somebody,
+		// and this rule is only about hurting them.
+		if (typeIs(throwerId, "string") && this.rounds.isFriendlyFire(throwerId, character)) return;
+
 		// A hit. Recorded before the ball is thrown off, so that every other part of this
 		// same arrival — and every later contact with this body — is a body the ball has
 		// already been through.
 		this.hitModels.add(character);
 
 		this.bounceOff(otherPart);
+
+		// The round is told before the body is damaged, because a mode reads the record this writes
+		// when the death arrives — and `TakeDamage` below may fire `Died` before this method returns.
+		if (typeIs(throwerId, "string")) this.rounds.registerHit(throwerId, character);
 
 		this.landHit(character, humanoid, otherPart);
 

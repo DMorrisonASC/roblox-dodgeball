@@ -2,8 +2,9 @@ import { Controller, OnStart } from "@flamework/core";
 import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { ReplicatedStorage } from "@rbxts/services";
-import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE, ROUND_WINNER_ATTRIBUTE } from "shared/constants";
+import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE, ROUND_WINNER_ATTRIBUTE } from "shared/constants";
 import { getHudScreenGui } from "../../ui/screenGui";
+import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, when the HUD is up — the line that says the controller ran at all. */
 const DEBUG = true;
@@ -50,6 +51,7 @@ export class RoundStatusController implements OnStart {
 		const state = Fusion.Value(scope, "Intermission");
 		const time = Fusion.Value(scope, 0);
 		const winner = Fusion.Value(scope, "");
+		const mode = Fusion.Value(scope, "");
 
 		// Subscribed *before* seeding, so a change landing between the two is not lost — the seed
 		// then reads the newer value and wins, which is the order that cannot go wrong either way.
@@ -77,6 +79,13 @@ export class RoundStatusController implements OnStart {
 			}),
 		);
 
+		scope.push(
+			status.GetAttributeChangedSignal(ROUND_MODE_ATTRIBUTE).Connect(() => {
+				const value = status.GetAttribute(ROUND_MODE_ATTRIBUTE);
+				if (typeIs(value, "string")) mode.set(value);
+			}),
+		);
+
 		// Seeded from what the server has already said, because the folder exists before this
 		// runs: without it the HUD would sit on its defaults until the next change, and on a
 		// countdown that is a whole second of a number nobody set.
@@ -89,14 +98,26 @@ export class RoundStatusController implements OnStart {
 		const initialWinner = status.GetAttribute(ROUND_WINNER_ATTRIBUTE);
 		if (typeIs(initialWinner, "string")) winner.set(initialWinner);
 
-		// The HUD's entire content, derived rather than assembled: it re-reads all three values
+		// Seeded like the others, and here it matters most: the mode is written once — when a vote
+		// closes — rather than every second, so a client that mounted after that write would never
+		// see it if this only listened for changes.
+		const initialMode = status.GetAttribute(ROUND_MODE_ATTRIBUTE);
+		if (typeIs(initialMode, "string")) mode.set(initialMode);
+
+		// The HUD's entire content, derived rather than assembled: it re-reads all four values
 		// whenever any of them changes, and never has to be told that it should.
 		//
 		// The phase is checked as well as the winner, so a result can only ever appear against the
 		// intermission it belongs to: whatever the folder happens to be holding, a playing phase
 		// reads as a playing phase.
 		const text = Fusion.Computed(scope, (use) => {
-			const line = `${use(state)} — ${use(time)}s`;
+			let line = `${use(state)} — ${use(time)}s`;
+
+			// The mode, once a vote has named one. Between the vote closing and the round beginning
+			// this names the round *to come*, which is exactly when a player wants to read it.
+			const modeName = use(mode);
+			if (modeName !== "") line = `${line} | ${modeName}`;
+
 			const result = use(winner);
 
 			if (use(state) !== "Intermission" || result === "") return line;
@@ -118,6 +139,12 @@ export class RoundStatusController implements OnStart {
 			AnchorPoint: new Vector2(0.5, 0),
 			BackgroundTransparency: 1,
 		});
+
+		// `HUD_WIDTH` is a fixed 360px, which is right for a desktop and wider than the whole screen
+		// on a narrow phone — and because this HUD is centred, an overflow costs it *both* edges at
+		// once rather than one. The cap is what makes the fixed width safe: above the fraction the
+		// card behaves exactly as it did, and below it the card gives way instead of leaving.
+		addViewportConstraint(scope, wrapper);
 
 		// **No `size` on the card, and that is the whole trick.** big-ui's `Card` auto-sizes its
 		// height only when it is given no size at all — pass one and it pins the box and turns that

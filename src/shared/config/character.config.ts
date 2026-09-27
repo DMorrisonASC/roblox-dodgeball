@@ -12,5 +12,5 @@ export const CHARACTER_CONFIG = {
      * the point is that it is now named and in one place, instead of being an implicit 16 that a
      * future `Humanoid.WalkSpeed = x` would silently replace.
      */
-    BASE_WALK_SPEED: 100,
+    BASE_WALK_SPEED: 20,
 } as const;

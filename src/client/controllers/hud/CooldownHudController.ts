@@ -8,6 +8,7 @@ import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
+import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, when the bars are up — the line that says the controller ran at all. */
 const DEBUG = true;
@@ -129,6 +130,12 @@ export class CooldownHudController implements OnStart {
 		// `Card` calls everything it makes "Card", which is no help in the Explorer once two HUDs are
 		// up — so the container keeps the name it had.
 		container.Name = "CooldownHud";
+
+		// The readout's width is its content's — `BAR_WIDTH` and the labels — and it is pinned to the
+		// bottom-*left*, so a viewport narrower than the bars would push it off the right edge. That
+		// needs a screen under about 140px to happen, which is the point of applying the rule here
+		// anyway: every HUD carries its own bound rather than each one having to justify one.
+		addViewportConstraint(scope, container);
 
 		// One connection for both bars, and the only thing here that runs per frame. The
 		// alternatives are worse for the same reason: a subscription per attribute would leave the

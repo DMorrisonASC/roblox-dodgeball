@@ -1,9 +1,10 @@
 import { Service, OnStart } from "@flamework/core";
-import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
+import { Players, Workspace } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
+import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
+import { GAME_MODE_NAMES } from "shared/gameMode";
 import {
     ROUND_STATE_ATTRIBUTE,
-    ROUND_STATUS_FOLDER,
     ROUND_TIME_ATTRIBUTE,
     ROUND_WINNER_ATTRIBUTE,
     SPECTATING_ATTRIBUTE,
@@ -11,36 +12,66 @@ import {
 } from "shared/constants";
 import { DevService } from "../../dev/DevService";
 import { BallService } from "../ball/BallService";
+import { GameMode, RoundView } from "./modes/GameMode";
+import { DEFAULT_MODE, modeFor } from "./modes/registry";
+import { roundStatusFolder } from "./roundStatus";
+import { DRAW, RoundOutcome, TEAM_A, TEAM_B, TeamLabel } from "./team";
+import { VoteService } from "./VoteService";
 
 enum RoundState {
     Intermission,
     Playing,
 }
 
-/** The two sides. The labels are what `TEAM_ATTRIBUTE` holds and what `teams` maps to. */
-const TEAM_A = "A";
-const TEAM_B = "B";
-
-/** What a round reports when neither side has won it. */
-const DRAW = "draw";
-
 /**
- * A side's label — what `TEAM_ATTRIBUTE` holds, and what `teams` maps a player to.
+ * The round: a clock, a roster, and the rules a mode supplies.
  *
- * Named a *label* and not a `Team`, which is a Roblox class: this file may well want team
- * objects later (per-team spawns are the obvious next thing), and a type alias shadowing that
- * name would have to be undone first.
+ * **It does not declare `implements RoundView`, deliberately.** It satisfies that interface, but
+ * saying so in the heritage clause makes Flamework's transformer register `RoundView` as an
+ * injectable identifier — an *interface*, which has no runtime presence at all — and that entry
+ * lands in the git-tracked `flamework.build` for good. The check is not lost by leaving it out:
+ * every mode call below passes `this` where a `RoundView` is expected (`this.mode.outcome(this)`),
+ * so the compiler enforces the same contract at each call site rather than once at the top.
  */
-type TeamLabel = typeof TEAM_A | typeof TEAM_B;
-
-/** Who won a round — a side, or nobody. `undefined` means the round is still on. */
-type RoundOutcome = TeamLabel | typeof DRAW;
-
 @Service()
 export class RoundService implements OnStart {
     private state = RoundState.Intermission;
     private timeRemaining = 0;
     private readonly activePlayers = new Set<Player>();
+
+    /**
+     * The rules this round is being played by.
+     *
+     * Replaced at the opening of every playing phase from whatever the vote chose, so a mode is
+     * fixed for the length of a round and cannot change under one that is already running. It
+     * starts at the game's original mode, which is what makes the very first round — before any
+     * vote has been held — behave exactly as it did before modes existed.
+     */
+    private mode: GameMode = DEFAULT_MODE;
+
+    /**
+     * Points per side, for a mode that keeps score. See {@link RoundView.scores}.
+     *
+     * Public because it *is* part of the view a mode is handed: modes read this service through
+     * the `RoundView` interface, so a private field would have to be copied out per call. Cleared
+     * at the opening of every round, so no score survives into the one after it.
+     */
+    public readonly scores = new Map<TeamLabel, number>();
+
+    /**
+     * Who a throw has landed on since they last spawned.
+     *
+     * **The answer to a question `Humanoid.Died` cannot answer.** A death says nothing about its
+     * cause — a ball, a fall out of the world and the reset button are one event — and Dodge and
+     * Seek's rules turn on exactly that difference, because a player who is *hit* becomes a seeker
+     * and counts as one, while a player who *resets* becomes a seeker and explicitly does not.
+     *
+     * So a hit is written here when it lands, read once when the death arrives, and dropped either
+     * way — and cleared again on respawn, which is what makes it "hit this life" rather than "hit
+     * at some point in this round". The second distinction only starts to matter the moment a mode
+     * sends somebody back in, which is why it is already right here.
+     */
+    private readonly hitThisRound = new Set<Player>();
 
     /**
      * Who is on which team this round.
@@ -61,7 +92,11 @@ export class RoundService implements OnStart {
      */
     private statusFolder!: Folder;
 
-    constructor(private readonly dev: DevService, private readonly balls: BallService) {}
+    constructor(
+        private readonly dev: DevService,
+        private readonly balls: BallService,
+        private readonly votes: VoteService,
+    ) {}
 
     onStart() {
         Players.PlayerAdded.Connect((player) => this.handlePlayerJoined(player));
@@ -76,8 +111,10 @@ export class RoundService implements OnStart {
         }
 
         // The HUD's channel, opened before the loop starts so the client has something to find:
-        // the phase, and a clock at zero because no phase is running yet.
-        this.statusFolder = this.findOrCreateStatusFolder();
+        // the phase, and a clock at zero because no phase is running yet. Made by `roundStatus.ts`
+        // rather than in here, because `VoteService` writes on the same folder and both services
+        // have to open it from their own `onStart` without either waiting for the other.
+        this.statusFolder = roundStatusFolder();
         this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Intermission");
         this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, 0);
         // Seeded empty rather than left unset: the first intermission follows no round at all, and
@@ -98,58 +135,56 @@ export class RoundService implements OnStart {
 
     // ---- Internals ----
 
+    // ---- The round, as a mode is allowed to see it (`RoundView`) ----
+
     /**
-     * The round-status folder, created if it is not already there.
+     * Everyone still in the round.
      *
-     * Found rather than made outright so that a second run of this service — a script reload, or
-     * a folder somebody put there by hand — cannot leave two of them for a client to choose
-     * between. The attributes are set by the caller either way, so a folder that already exists
-     * is brought up to date rather than trusted.
+     * The one place that knows who is playing is `activePlayers`, and a mode reads it through
+     * this rather than being handed the set itself — a mode able to `delete` from it would be a
+     * mode able to eliminate somebody, and that is a decision for the round.
+     *
+     * Built fresh on each read rather than kept in step beside the set: the only reader is the
+     * outcome check, once a second, and a second collection maintained in parallel would be a
+     * second answer to the same question.
+     *
+     * A method and not a getter because **roblox-ts does not support getters** — see `RoundView`.
      */
-    private findOrCreateStatusFolder(): Folder {
-        const existing = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
-        if (existing?.IsA("Folder")) return existing;
+    public playersInRound(): ReadonlyArray<Player> {
+        const players: Player[] = [];
 
-        const folder = new Instance("Folder");
-        folder.Name = ROUND_STATUS_FOLDER;
-        folder.Parent = ReplicatedStorage;
+        for (const player of this.activePlayers) {
+            players.push(player);
+        }
 
-        return folder;
+        return players;
+    }
+
+    /** Which side a player is on, or nothing if they are not in this round. */
+    public teamOf(player: Player): TeamLabel | undefined {
+        return this.teams.get(player);
     }
 
     /**
-     * Splits the server into two sides, as evenly as they go, and puts the labels on them.
+     * Puts the server's players on sides, the way the mode wants them.
      *
      * **Assigned at the start of every round, never on join.** A player arriving mid-round
-     * cannot shift the balance of a round already under way, and nobody carries a team into
+     * cannot shift the balance of a round already under way, and nobody carries a side into
      * the next one — which is both fairer and the reason this clears the table rather than
      * topping it up.
      *
-     * The split is by *position* in a shuffled list, because there is nothing to balance on
-     * yet and a shuffle is the honest form of "evenly": anything else would be a claim about
-     * who should be together. `ceil` rather than `floor` is what puts the odd player on A, so
-     * the two sides are the ceiling and the floor of half the server.
+     * The split itself is the mode's — see `GameMode.assign`. Both symmetric modes want the even
+     * shuffle in `splitEvenly`, and Dodge and Seek wants one seeker against everybody else. What
+     * is *not* the mode's is the two things below: the table the round counts from, and the
+     * attribute that publishes a side to everything outside this service. A mode says who is on
+     * which side; the round is what makes that true.
      */
     private assignTeams(): void {
-        const players = Players.GetPlayers();
-
-        // Fisher-Yates, in place, over the array `GetPlayers` just handed back.
-        for (let index = players.size() - 1; index > 0; index--) {
-            const other = math.random(0, index);
-            const swap = players[index];
-
-            players[index] = players[other];
-            players[other] = swap;
-        }
-
-        const split = math.ceil(players.size() / 2);
-
         this.teams.clear();
 
-        for (let index = 0; index < players.size(); index++) {
-            const player = players[index];
-            const team: TeamLabel = index < split ? TEAM_A : TEAM_B;
+        const assigned = this.mode.assign(Players.GetPlayers());
 
+        for (const [player, team] of assigned) {
             this.teams.set(player, team);
             player.SetAttribute(TEAM_ATTRIBUTE, team);
         }
@@ -158,34 +193,14 @@ export class RoundService implements OnStart {
     /**
      * Who has won, if anybody has, or `undefined` if the round is still on.
      *
-     * Two ways to win, and the first outranks the clock: **eliminating the other side**, and
-     * otherwise **having more players left when the time runs out**. Nobody left on either
-     * side is a draw however much time remains — there is nothing left to win with, and that
-     * same case is what stops an empty server from sitting inside a round forever.
-     *
-     * Counted by walking the living, not by keeping a tally: `activePlayers` is the one place
-     * that knows who is still in the round, and a per-team count kept beside it would be a
-     * second answer to the same question, free to disagree with the first.
+     * **The rules are the mode's; the question is the round's.** All this does is hand the mode
+     * the round to look at — see `RoundView` — and pass the answer back, which is what keeps "how
+     * do you win" in one file per mode rather than in a pile of branches growing here. Team
+     * Elimination's answer is last-side-standing, Score Rush's is the target score or the clock,
+     * and Dodge and Seek's will be whether any dodger is still un-hit.
      */
     private roundOutcome(): RoundOutcome | undefined {
-        let standingA = 0;
-        let standingB = 0;
-
-        for (const player of this.activePlayers) {
-            const team = this.teams.get(player);
-            if (team === TEAM_A) standingA++;
-            else if (team === TEAM_B) standingB++;
-        }
-
-        if (standingA === 0 && standingB === 0) return DRAW;
-        if (standingA === 0) return TEAM_B;
-        if (standingB === 0) return TEAM_A;
-
-        if (this.timeRemaining > 0) return undefined;
-        if (standingA > standingB) return TEAM_A;
-        if (standingB > standingA) return TEAM_B;
-
-        return DRAW;
+        return this.mode.outcome(this);
     }
 
     /**
@@ -220,14 +235,13 @@ export class RoundService implements OnStart {
 
     private handlePlayerJoined(player: Player) {
         player.CharacterAdded.Connect((character) => {
-            const humanoid = character.WaitForChild("Humanoid") as Humanoid;
-            humanoid.Died.Connect(() => {
-                this.activePlayers.delete(player);
+            // A new life starts un-hit. Per *life* rather than per round, because the question a
+            // mode asks of this record — "was this death a throw, or a reset?" — is only
+            // answerable that way once a mode sends people back in. See `hitThisRound`.
+            this.hitThisRound.delete(player);
 
-                // Out of the round — and, if a round is on, watching the rest of it. A death in
-                // the lobby is not an elimination, so nothing is written outside a round.
-                if (this.state === RoundState.Playing) player.SetAttribute(SPECTATING_ATTRIBUTE, true);
-            });
+            const humanoid = character.WaitForChild("Humanoid") as Humanoid;
+            humanoid.Died.Connect(() => this.handleDeath(player));
 
             const root = character.WaitForChild("HumanoidRootPart") as BasePart;
 
@@ -247,6 +261,139 @@ export class RoundService implements OnStart {
         if (this.state === RoundState.Playing && !this.activePlayers.has(player)) {
             player.SetAttribute(SPECTATING_ATTRIBUTE, true);
         }
+    }
+
+    /**
+     * A character died. What that means is the mode's to say.
+     *
+     * The three cases below are ordered by what the round already knows, and only the last one is
+     * a question: outside a round there is nothing to decide, somebody already out is still out,
+     * and everyone else is a decision the mode makes.
+     */
+    private handleDeath(player: Player): void {
+        // Read and dropped in one go: a hit is worth at most one death, and the answer is about
+        // *this* life rather than the round so far.
+        const byHit = this.hitThisRound.has(player);
+        this.hitThisRound.delete(player);
+
+        // A death in the lobby is not an elimination, so nothing is written outside a round.
+        if (this.state !== RoundState.Playing) return;
+
+        // Already out — a spectator who dies again is still a spectator. This is the case the
+        // old code covered by clearing `activePlayers` unconditionally and then re-marking them.
+        if (!this.activePlayers.has(player)) {
+            player.SetAttribute(SPECTATING_ATTRIBUTE, true);
+            return;
+        }
+
+        const decision = this.mode.onDeath({ player, byHit }, this);
+
+        if (decision.kind === "eliminate") {
+            this.eliminate(player);
+            return;
+        }
+
+        // Back in — on a new side if the mode asked for one, and then a body to go with it.
+        //
+        // The respawn is `LoadCharacter`, which fires the `CharacterAdded` handler above. Because
+        // they were never taken out of `activePlayers`, that handler puts them back on their own
+        // side's spawn rather than in the lobby — so *where* they come back needs no code here,
+        // and the answer cannot drift from the one the round's opening teleport uses.
+        if (decision.team !== undefined) this.setTeam(player, decision.team);
+
+        player.LoadCharacter();
+    }
+
+    /** Out of the round, watching the rest of it. */
+    private eliminate(player: Player): void {
+        this.activePlayers.delete(player);
+        player.SetAttribute(SPECTATING_ATTRIBUTE, true);
+    }
+
+    /** Put `player` on `team` — in the table the round counts from, and on the player. */
+    private setTeam(player: Player, team: TeamLabel): void {
+        this.teams.set(player, team);
+        player.SetAttribute(TEAM_ATTRIBUTE, team);
+    }
+
+    /**
+     * Whether this throw landed on the thrower's own side.
+     *
+     * **The one rule that turns friendly fire off, and deliberately not a mode's.** Which side
+     * anybody is on is not a rule about how a round is won — it is a fact the round holds — and
+     * "may a throw hurt this body at all" is a question about the game rather than about a mode.
+     * Every mode answers it the same way, so it is answered once, here, rather than three times in
+     * three mode files with two of them free to drift.
+     *
+     * Called from `BallComponent` **before the damage**, which is the contract: the caller treats a
+     * `true` as "this whole contact did not happen", so nothing may be done to the body first.
+     *
+     * **Only during a round.** `teams` is filled at the opening whistle and is not emptied when the
+     * round ends, so between rounds it still holds the sides of the round that has just finished —
+     * and reading it then would make a lobby throw pass through whoever happened to be a former
+     * teammate. A side only means something while a round is being played, so that is the only time
+     * this says yes.
+     *
+     * **A throw nobody can be credited with is not friendly fire.** A rig throws with a GUID token,
+     * which names no player and therefore no side; and a victim who is not a player, or not in the
+     * round, has no side either. In both cases there is no side to be friendly *with*, and the
+     * honest answer is to let the hit happen rather than to invent a rule for it.
+     */
+    public isFriendlyFire(throwerToken: string, victim: Model): boolean {
+        if (this.state !== RoundState.Playing) return false;
+
+        const thrower = playerFromToken(throwerToken);
+        if (thrower === undefined) return false;
+
+        const shooterTeam = this.teams.get(thrower);
+        if (shooterTeam === undefined) return false;
+
+        const victimPlayer = Players.GetPlayerFromCharacter(victim);
+        if (victimPlayer === undefined) return false;
+
+        return this.teams.get(victimPlayer) === shooterTeam;
+    }
+
+    /**
+     * A thrown ball has landed on somebody. **The one door `BallComponent` opens into the round.**
+     *
+     * A token rather than a thrower, because that is the whole of what an arriving ball knows
+     * about who threw it — the same reason `StatsService.recordHit` takes one. Resolving it here
+     * keeps the question "was this a person?" in one place instead of in the component that
+     * detects the touch.
+     *
+     * **Only a cross-team hit ever arrives.** `BallComponent` refuses a same-side contact outright,
+     * through `isFriendlyFire`, before it damages anything — so nothing below has to ask whose side
+     * anybody is on, and a mode's `hitAward` is never asked what a hit on one's own side is worth.
+     * A guard here for that case would be unreachable, which is why there is not one.
+     *
+     * Recorded even when it scores nothing: a mode that awards no points still has to know that a
+     * throw landed, because the death arriving a moment later is read against it.
+     */
+    public registerHit(throwerToken: string, victim: Model): void {
+        if (this.state !== RoundState.Playing) return;
+
+        const victimPlayer = Players.GetPlayerFromCharacter(victim);
+        if (victimPlayer === undefined || !this.activePlayers.has(victimPlayer)) return;
+
+        this.hitThisRound.add(victimPlayer);
+
+        // **A mode that keeps no score is not asked what a hit is worth.** See `GameMode.scores`:
+        // a scoreless mode has no hit rule to state, so asking anyway would make every mode carry a
+        // method whose only correct answer is "nothing" — and would call it on every landed hit of
+        // every round for no reason. The hit itself is still recorded above, because *that* is not
+        // a scoring question: a mode with no points may still need to know a throw landed.
+        if (!this.mode.scores) return;
+
+        const thrower = playerFromToken(throwerToken);
+
+        const award = this.mode.hitAward({ thrower, victim: victimPlayer }, this);
+        if (award === undefined || thrower === undefined) return;
+
+        const scoring = this.teams.get(thrower);
+        if (scoring === undefined) return;
+
+        this.scores.set(scoring, (this.scores.get(scoring) ?? 0) + award);
     }
 
     private getSpawn(name: string): CFrame {
@@ -342,6 +489,16 @@ export class RoundService implements OnStart {
             // the HUD never shows the *previous* phase's final number under the new phase's name.
             this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
+            // The vote opens with the intermission, so the window is exactly as long as it says
+            // it is rather than as long as the remainder of the phase happens to allow.
+            this.votes.openVote();
+
+            // Counted beside the clock rather than derived from it, because the two stop for the
+            // same reason and at the same moment: a paused tick `continue`s below without touching
+            // either, so this measures *running* seconds. A window timed off the wall clock would
+            // close while a paused round was still being held up.
+            let elapsed = 0;
+
             while (this.timeRemaining > 0) {
                 // A paused tick does nothing at all: no second off the clock, no change of
                 // state, no teleport. The phase resumes from whatever the clock said when it
@@ -353,10 +510,19 @@ export class RoundService implements OnStart {
 
                 task.wait(1);
                 this.timeRemaining--;
+                elapsed++;
                 this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
+
+                if (elapsed === GAME_MODE_CONFIG.VOTE_SECONDS) this.votes.closeVote();
             }
 
             await this.waitWhilePaused();
+
+            // Closed again on the boundary, which is the call that matters when the window never
+            // elapsed — a harness paused through the intermission, or a round cut short. It is a
+            // no-op if the first close already ran, so this cannot re-roll a tie that has been
+            // broken already.
+            this.votes.closeVote();
 
             // The intermission's last act: nobody carries a ball into a round. See
             // `clearHeldBalls` for why it is destroyed here rather than dropped after the teleport.
@@ -364,6 +530,17 @@ export class RoundService implements OnStart {
 
             // --- Playing ---
             this.state = RoundState.Playing;
+
+            // The mode for this round, from whatever the vote decided. Resolved once, here, rather
+            // than read live: the vote may be opened again during the *next* intermission, and a
+            // round must not be able to change its own rules underneath itself.
+            this.mode = modeFor(this.votes.selection()) ?? DEFAULT_MODE;
+
+            // A fresh scoreboard and no memory of who was hit — both are round state, and a round
+            // that inherited either would be starting in the middle of somebody else's story.
+            this.scores.clear();
+            this.hitThisRound.clear();
+
             this.assignTeams();
 
             for (const player of Players.GetPlayers()) {
@@ -375,7 +552,7 @@ export class RoundService implements OnStart {
                 // were marked, because a mid-round joiner is marked too and is now playing.
                 player.SetAttribute(SPECTATING_ATTRIBUTE, false);
             }
-            print("Round started");
+            print(`Round started — ${GAME_MODE_NAMES[this.mode.id]}`);
             this.teleportTeamsToArena();
 
             this.timeRemaining = ARENA_CONFIG.ROUND_SECONDS;
@@ -405,8 +582,19 @@ export class RoundService implements OnStart {
                 if (outcome !== undefined) {
                     // Built before it is printed: a nested template inside an interpolated
                     // string is one more thing for a reader to unpick, and the message is the
-                    // part worth reading.
-                    const result = outcome === DRAW ? "a draw" : `Team ${outcome} won`;
+                    // part worth reading. `sideName` rather than a hard-coded "Team", because a
+                    // mode is allowed to call its two sides something else — see `sideName`.
+                    const result = outcome === DRAW ? "a draw" : `${this.mode.sideName(outcome)} won`;
+
+                    // The score, for a mode that keeps one. Printed here rather than at every
+                    // point that changes it: a line per hit would bury the round's own output,
+                    // and the number only means anything next to who won.
+                    if (this.mode.scores) {
+                        const pointsA = this.scores.get(TEAM_A) ?? 0;
+                        const pointsB = this.scores.get(TEAM_B) ?? 0;
+
+                        print(`[Round] score — A ${pointsA}, B ${pointsB}`);
+                    }
 
                     // The same word the message uses, and the vocabulary the HUD expects: a
                     // team's label, or `"draw"`. Written before the round is left, because the
@@ -421,4 +609,25 @@ export class RoundService implements OnStart {
             await this.waitWhilePaused();
         }
     }
+}
+
+/**
+ * The player a thrower token belongs to, or nothing.
+ *
+ * **The token is all a ball carries.** `BallService.throwBall` stamps the ball's `ThrowerId` with
+ * the thrower model's `THROWER_TOKEN` and then lets go of the model entirely, so there is nothing
+ * left to ask for it. A player's token is their `UserId` as text and a rig's is a GUID, so
+ * `tonumber` is the entire rule for "was this a person": a GUID does not read as a number. That is
+ * what makes NPCs fall out rather than be special-cased.
+ *
+ * A deliberate copy of the same four lines in `StatsService`, which keeps its own because it is
+ * the only thing that file needs from a token and importing across would tie lifetime statistics
+ * to the round for one function. If the rule ever changes, it changes in both — and the comment
+ * here is the reminder that there are two.
+ */
+function playerFromToken(throwerToken: string): Player | undefined {
+    const userId = tonumber(throwerToken);
+    if (userId === undefined) return undefined;
+
+    return Players.GetPlayerByUserId(userId);
 }

@@ -48,4 +48,19 @@ export const events = Net.Definitions.Create({
 	 * the server holds cannot disagree with the server, whatever the client believes.
 	 */
 	toggleThrow: Net.Definitions.ClientToServerEvent<[]>(),
+
+	/**
+	 * Client → server: this player is voting for this mode for the next round.
+	 *
+	 * Carries the mode's **id as a string**, not a `GameModeId`: the wire is not typed, so the
+	 * server has to treat what arrives as an arbitrary string and check it — which is what
+	 * `isGameModeId` and the registry lookup are for. Typing it here would describe an intention
+	 * rather than a guarantee.
+	 *
+	 * A string rather than a number, deliberately. An index into the server's list would be a
+	 * number whose meaning lived on the other machine, so a client a version behind would vote for
+	 * whichever mode happened to have moved into that slot — silently, and for the wrong thing. An
+	 * id that is not recognised is refused instead.
+	 */
+	castVote: Net.Definitions.ClientToServerEvent<[mode: string]>(),
 });

@@ -5,6 +5,7 @@ import { Players } from "@rbxts/services";
 import { THROW_ENABLED } from "shared/constants";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
+import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, when the legend is up — the line that says the controller ran at all. */
 const DEBUG = true;
@@ -86,7 +87,7 @@ interface LegendRow {
  */
 const ROWS: LegendRow[] = [
 	{ label: "Throw", keys: "X, C, V" },
-	{ label: "Dodge", keys: `WASD ×2 ${LIGHTNING}` },
+	{ label: "Dodge", keys: `Double tap W A S D ${LIGHTNING}` },
 	{ label: "Catch", keys: "E" },
 	{ label: "Drop", keys: "1" },
 	{ label: "Throw Toggle", keys: "2", toggleAttribute: THROW_ENABLED, invert: true },
@@ -184,6 +185,13 @@ export class ControlsLegendController implements OnStart {
 		// `Card` calls everything it makes "Card", which is no help in the Explorer once two HUDs are
 		// up — so the container keeps the name it had.
 		container.Name = "ControlsLegend";
+
+		// The bound this card was missing. It is as wide as its widest row, and its rows cannot wrap
+		// (see `buildText` for why wrapping is off), so on a narrow screen it would simply keep going
+		// — and being right-anchored, it would run off the *left* edge rather than the right one.
+		// At the current type the card is about 280px, so the cap only engages below roughly 305px of
+		// viewport, which is a real phone width and a silent failure when it happens.
+		addViewportConstraint(scope, container);
 
 		container.Parent = getHudScreenGui();
 

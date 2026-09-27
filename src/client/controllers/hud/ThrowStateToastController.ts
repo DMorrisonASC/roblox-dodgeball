@@ -5,6 +5,7 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { THROW_ENABLED } from "shared/constants";
 import { getHudScreenGui } from "../../ui/screenGui";
+import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints on mount — the line that says the controller ran at all. */
 const DEBUG = true;
@@ -187,6 +188,13 @@ export class ThrowStateToastController implements OnStart {
 			BackgroundTransparency: 1,
 			Visible: visible,
 		});
+
+		// The wrapper is already the toast's fixed width; this is the bound that stops that width
+		// from exceeding the screen. It matters most here, because `TOAST_WIDTH` is the one number in
+		// the HUD that has to be fixed: the `Alert` inside is built at scale-1 width and needs a
+		// parent that knows how wide it is (see above), so the width cannot be made proportional and
+		// a cap is the only way to let it adapt.
+		addViewportConstraint(scope, wrapper);
 
 		const alert = Alert(scope, { severity, title, message });
 		// `Alert` names its root "Alert", and two of those in the Explorer say nothing about which
