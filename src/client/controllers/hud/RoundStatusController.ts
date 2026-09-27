@@ -128,13 +128,14 @@ export class RoundStatusController implements OnStart {
 			children: [
 				Text(scope, {
 					text,
-					variant: "body1",
+					variant: "button",
 					align: Enum.TextXAlignment.Center,
 				}),
 			],
 		});
 
 		card.Parent = wrapper;
+		card.BackgroundTransparency = 0.3;
 		// Shared with any other HUD, so `PlayerGui` does not collect a `ScreenGui` per feature — and
 		// so the settings that are about the screen rather than about this HUD are decided once.
 		// See `ui/screenGui.ts`.
