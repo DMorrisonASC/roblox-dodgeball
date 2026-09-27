@@ -63,6 +63,35 @@ function raiseZIndex(root: Instance, z: number): void {
     }
 }
 
+/** The one label that must not wrap. Named so `wrapLabels` can find it. */
+const TITLE_NAME = "Title";
+
+/**
+ * Let every label in the shop wrap, with one exception.
+ *
+ * **This replaces `wrap: false` on all fourteen `Text` calls, because that was a sledgehammer.** The
+ * rule is narrower, and it is about the label's *parent*, not the label:
+ *
+ *   A wrapped label needs a definite width to wrap against. If its parent sizes itself to its
+ *   contents, the two are each waiting on the other — a measurement cycle that Roblox resolves by
+ *   collapsing the label to zero width. That is exactly how the `Shop` title once rendered as
+ *   nothing at all, sitting as it does in the header's `AutomaticSize.X` group.
+ *
+ * Every other label in this file sits in a container with a definite width — a pill, a name bar, a
+ * grid cell, a column — so wrapping is not only safe there, it is what should have been happening:
+ * a long box name should fold onto a second line rather than be cut off at the card's edge.
+ *
+ * Applied here, once, rather than at every call site — so a label added later wraps by default and
+ * the one label that must not is the one that says so.
+ */
+function wrapLabels(root: Instance): void {
+    for (const descendant of root.GetDescendants()) {
+        if (descendant.IsA("TextLabel") && descendant.Name !== TITLE_NAME) {
+            descendant.TextWrapped = true;
+        }
+    }
+}
+
 /**
  * The shop, in two levels.
  *
@@ -171,6 +200,10 @@ export class ShopController implements OnStart {
         // everything inside it — see `raiseZIndex`.
         raiseZIndex(panel, SHOP_CONFIG.PANEL_Z_INDEX);
 
+        // ...and every label left free to wrap, apart from the title — see `wrapLabels`. Done last
+        // so it catches labels built by every band, including the ones inside the three detail panes.
+        wrapLabels(panel);
+
         panel.Parent = getHudScreenGui(); // must stay the LAST statement in this method
     }
 
@@ -228,10 +261,13 @@ export class ShopController implements OnStart {
         });
         closeButton.Parent = left;
 
-        // `wrap: false` is mandatory on every label in this file. big-ui defaults `TextWrapped` to
-        // true, and a wrapped label inside an `AutomaticSize.X` parent is a measurement cycle that
-        // Roblox breaks by collapsing the label to zero width — the title renders as nothing.
+        // `wrap: false` here only, and it is the exception rather than the rule — `wrapLabels` turns
+        // wrapping on for the rest of the shop at the end of `addPanel`. A wrapped label needs a
+        // definite width, and this one's parent sizes itself to its contents.
         const title = Text(this.scope, { text: "Shop", variant: "h4", wrap: false });
+        // The one label excluded from wrapping, and named so `wrapLabels` can find it: its parent
+        // sizes itself to its contents, which is the cycle a wrapped label cannot survive.
+        title.Name = TITLE_NAME;
         title.TextColor3 = COLORS.TEXT;
         title.Size = UDim2.fromOffset(0, 0);
         title.AutomaticSize = Enum.AutomaticSize.XY;
