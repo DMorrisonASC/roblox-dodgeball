@@ -153,6 +153,31 @@ export const SPECTATING_ATTRIBUTE = "Spectating";
  */
 export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
 
+/**
+ * Attribute on a **`Player`** holding how many of their throws have landed on a body.
+ *
+ * Written by `StatsService` when a record is loaded and again after every hit, and read by the
+ * client's stats billboard — which is why it is on the **player** and not the character: the record
+ * outlives every body it was earned in.
+ *
+ * An attribute rather than a remote, for the reason the round's state is one: it replicates on its
+ * own, so the HUD needs no remote, no reply to wait for, and no reference to the service that owns
+ * the numbers.
+ */
+export const STAT_HITS = "StatHits";
+
+/** How many of a player's throws have landed on something that was not a body. See {@link STAT_HITS}. */
+export const STAT_MISSES = "StatMisses";
+
+/**
+ * Hits over throws, from `0` to `1`, published beside the two counts by `StatsService`.
+ *
+ * **Derived here and sent, rather than worked out by each reader.** Two readers dividing the same
+ * two numbers is two chances to disagree about a player's own record, and a player who has thrown
+ * nothing has to read as `0` rather than as a division by zero — one rule, stated once.
+ */
+export const STAT_RATIO = "StatRatio";
+
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 1.5;
 

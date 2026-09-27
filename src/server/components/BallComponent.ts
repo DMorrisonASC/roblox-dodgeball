@@ -7,9 +7,18 @@ import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BallService } from "../services/ball/BallService";
 import { CatchService } from "../services/actions/CatchService";
+import { StatsService } from "../services/stats/StatsService";
 
 interface BallAttributes {
 	Armed: Boolean;
+
+	/**
+	 * Whether this throw has already been scored. See {@link BallComponent.score}.
+	 *
+	 * On the ball rather than in here, because it is cleared by the same `Armed` transition that
+	 * clears {@link BallComponent.hitModels} — the ball's own state, kept with the ball's own state.
+	 */
+	StatsRecorded: Boolean;
 }
 
 /** What an uncaught hit does. Lethal on purpose — a hit ends the round. */
@@ -34,7 +43,7 @@ const BOUNCE_MIN_SEPARATION = 0.01;
 
 @Component({
 	tag: "Ball",
-	defaults: { Armed: false },
+	defaults: { Armed: false, StatsRecorded: false },
 })
 export class BallComponent extends BaseComponent<BallAttributes, BasePart> implements OnStart {
 	/**
@@ -49,7 +58,11 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 */
 	private readonly hitModels = new Set<Model>();
 
-	constructor(private readonly catches: CatchService, private readonly balls: BallService) {
+	constructor(
+		private readonly catches: CatchService,
+		private readonly balls: BallService,
+		private readonly stats: StatsService,
+	) {
 		super();
 	}
 
@@ -77,6 +90,10 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			if (this.instance.GetAttribute("Armed") !== true) return;
 
 			this.hitModels.clear();
+
+			// And the throw is unscored again, for the same reason and at the same moment: `Armed`
+			// going on *is* a new throw, and a new throw gets its own one contact. See {@link score}.
+			this.instance.SetAttribute("StatsRecorded", false);
 		});
 	}
 
@@ -103,6 +120,11 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		// Not a character. The ball has hit the world, and is live no longer.
 		if (!character || !humanoid) {
+			// **A throw that landed on the world is a miss**, and this is the only branch that decides
+			// one: everything below it has found a body. Scored before the ball is disarmed, so the
+			// order reads as what happened rather than as a consequence of the disarm.
+			this.score(false);
+
 			this.instance.SetAttribute("Armed", false);
 			return;
 		}
@@ -178,9 +200,46 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		this.landHit(character, humanoid, otherPart);
 
+		// **A throw that took a body is a hit**, scored after the damage because the damage is what
+		// makes it one — a ball that arrives on a catchable part is caught, above, and a catch is
+		// neither a hit nor a miss. See {@link score}.
+		this.score(true);
+
 		// The chain's length. Checked *after* the bounce, so the last player a throw takes
 		// out still throws the ball off them rather than catching it on the chest.
 		if (this.hitModels.size() >= BALL_CONFIG.MAX_CHAIN_HITS) this.instance.SetAttribute("Armed", false);
+	}
+
+	/**
+	 * Counts this throw as a hit or a miss, once.
+	 *
+	 * **One throw, one entry — the first contact decides, and nothing later may change its mind.**
+	 * That is not a tidiness rule, it is what makes the numbers mean what they say:
+	 *
+	 * - A single landing reports *every* part the ball overlaps, so without this a ball rolling to a
+	 *   stop would be a dozen misses.
+	 * - A ball that takes out three players and then hits the floor is one hit, not three hits and a
+	 *   miss. The throw landed on somebody; where it came to rest afterwards is not a second throw.
+	 * - A ball that hits a wall after clipping a shoulder has already been decided, in the player's
+	 *   favour, by the contact that came first.
+	 *
+	 * `StatsRecorded` is cleared by the same `Armed` transition that clears the hit list, so a ball
+	 * picked up and thrown again is scored all over again.
+	 *
+	 * The token is the ball's own `ThrowerId`, which is the only thing it knows about who threw it.
+	 * Whether that names a person at all is `StatsService`'s question — a rig's token is a GUID and
+	 * falls out there, which is what keeps NPCs out of the record.
+	 */
+	private score(hit: boolean): void {
+		if (this.instance.GetAttribute("StatsRecorded") === true) return;
+
+		this.instance.SetAttribute("StatsRecorded", true);
+
+		const throwerToken = this.instance.GetAttribute("ThrowerId");
+		if (!typeIs(throwerToken, "string") || throwerToken === "") return;
+
+		if (hit) this.stats.recordHit(throwerToken);
+		else this.stats.recordMiss(throwerToken);
 	}
 
 	/**

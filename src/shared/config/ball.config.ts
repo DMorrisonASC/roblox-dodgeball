@@ -121,7 +121,7 @@ export const BALL_CONFIG = {
 	 * Long enough that a ball is still there when you go back for it, short enough
 	 * that a field nobody is collecting does not become a carpet.
 	 */
-	LIFETIME_SECONDS: 15,
+	LIFETIME_SECONDS: 60,
 
 	// ---------------------------------------------------------------- spawner
 

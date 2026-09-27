@@ -9,26 +9,41 @@ const GUI_NAME = "HudGui";
  * One GUI for every HUD rather than one each, because `PlayerGui` collecting a `ScreenGui` per
  * feature is how a game ends up with six of them and no way to tell which is which.
  *
- * It is also the only way the two settings below stay true. Both are about the *screen* rather
- * than about any one HUD, so a HUD added later inherits them by sharing, and neither of the two
- * has to remember settings that are not its business:
+ * **Found by name, not by class.** `PlayerGui` is not an empty box: the engine creates its own
+ * `ScreenGui`s in there — the chat's, and the touch controls' on a mobile device — so "the first
+ * `ScreenGui` child" and "our GUI" are two different things. Taking the first one is how this
+ * function used to return the chat's GUI: every HUD mounted into a GUI Roblox owns and may rebuild
+ * at will, the settings below were applied to somebody else's tree, and `GUI_NAME` was never
+ * actually used to find anything despite being documented as the thing that makes every HUD share
+ * one GUI. Asking for `"HudGui"` can only ever match the one this function makes.
+ *
+ * Both settings below are about the *screen* rather than about any one HUD, so they are decided
+ * once, here, and a HUD added later inherits them by sharing:
  *
  * - `ResetOnSpawn = false`, set even on a GUI this did not create. A `ScreenGui`'s default is to
  *   be destroyed with the character it spawned for, and a HUD that vanished on every death would
  *   be the one thing a HUD must not do.
- * - `ScreenInsets = None`, which puts the GUI's origin at the actual top-left of the screen
- *   rather than at the corner of the safe area — the safe area is where the topbar lives, and a
- *   HUD meant to sit *at* the top cannot reach it through an inset. Skipped on a GUI somebody else
- *   made, since the insets are part of their layout.
+ * - `ScreenInsets = CoreUISafeInsets`, which keeps the GUI's origin inside the safe area —
+ *   the region not covered by the topbar. `y = 0` is the first pixel below Roblox's chrome,
+ *   not the true top of the viewport. This is deliberate: a HUD element pinned at `y = 0`
+ *   should sit *under* the topbar, not behind it, so nothing the player needs to read is
+ *   occluded by Roblox's own UI. The cost is that negative `y` values land in chrome the GUI
+ *   does not draw into, and `Scale` fractions are measured against the safe region rather than
+ *   the full viewport. Account for both when positioning: use `y = 0` as the top, and treat
+ *   `YScale` as a fraction of `viewportHeight - topbarHeight`.
  */
 export function getHudScreenGui(): ScreenGui {
 	// `PlayerGui` is not a typed member of `Player` in these typings (nor is `Backpack`), so it is
 	// found like any other child and the cast names the class rather than guessing it.
 	const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
 
-	const existing = playerGui.FindFirstChildWhichIsA("ScreenGui");
-	if (existing) {
+	// By name first, then checked for class: a `Folder` somebody happened to call `HudGui` is not
+	// this GUI, and falling through to create the real one is the right answer. The same two-step
+	// the round folder and the throw remotes already use.
+	const existing = playerGui.FindFirstChild(GUI_NAME);
+	if (existing?.IsA("ScreenGui")) {
 		existing.ResetOnSpawn = false;
+		existing.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets;
 		return existing;
 	}
 

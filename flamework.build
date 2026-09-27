@@ -5,9 +5,13 @@
 		"roblox-dodgeball:out/client/controllers/hud/ControlsLegendController@ControlsLegendController": "client/controllers/hud/ControlsLegendController@ControlsLegendController",
 		"roblox-dodgeball:out/client/controllers/hud/CooldownHudController@CooldownHudController": "client/controllers/hud/CooldownHudController@CooldownHudController",
 		"roblox-dodgeball:out/client/controllers/hud/RoundStatusController@RoundStatusController": "client/controllers/hud/RoundStatusController@RoundStatusController",
+		"roblox-dodgeball:out/client/controllers/hud/ShopController@ShopController": "client/controllers/hud/ShopController@ShopController",
 		"roblox-dodgeball:out/client/controllers/hud/SpectatorController@SpectatorController": "client/controllers/hud/SpectatorController@SpectatorController",
+		"roblox-dodgeball:out/client/controllers/hud/StatsBillboardController@StatsBillboardController": "client/controllers/hud/StatsBillboardController@StatsBillboardController",
 		"roblox-dodgeball:out/client/controllers/hud/ThemeController@ThemeController": "client/controllers/hud/ThemeController@ThemeController",
+		"roblox-dodgeball:out/client/controllers/hud/ThrowStateToastController@ThrowStateToastController": "client/controllers/hud/ThrowStateToastController@ThrowStateToastController",
 		"roblox-dodgeball:out/client/controllers/input/ActionController@ActionController": "client/controllers/input/ActionController@ActionController",
+		"roblox-dodgeball:out/client/controllers/input/AimTargetController@AimTargetController": "client/controllers/input/AimTargetController@AimTargetController",
 		"roblox-dodgeball:out/client/controllers/input/CatchController@CatchController": "client/controllers/input/CatchController@CatchController",
 		"roblox-dodgeball:out/client/controllers/input/DodgeController@DodgeController": "client/controllers/input/DodgeController@DodgeController",
 		"roblox-dodgeball:out/shared/AimGuide@AimGuide": "shared/AimGuide@AimGuide",
@@ -22,6 +26,7 @@
 		"roblox-dodgeball:out/server/services/ball/BallService@BallService": "server/services/ball/BallService@BallService",
 		"roblox-dodgeball:out/server/services/actions/DodgeService@DodgeService": "server/services/actions/DodgeService@DodgeService",
 		"roblox-dodgeball:out/server/services/actions/CatchService@CatchService": "server/services/actions/CatchService@CatchService",
+		"roblox-dodgeball:out/server/services/stats/StatsService@StatsService": "server/services/stats/StatsService@StatsService",
 		"roblox-dodgeball:out/server/components/BallComponent@BallComponent": "server/components/BallComponent@BallComponent",
 		"roblox-dodgeball:out/server/services/ball/BallPickupService@BallPickupService": "server/services/ball/BallPickupService@BallPickupService",
 		"roblox-dodgeball:out/server/services/actions/ActionService@ActionService": "server/services/actions/ActionService@ActionService",
@@ -29,8 +34,7 @@
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/round/RoundService@RoundService": "server/services/round/RoundService@RoundService",
-		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService",
-		"roblox-dodgeball:out/client/controllers/input/AimTargetController@AimTargetController": "client/controllers/input/AimTargetController@AimTargetController"
+		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService"
 	},
 	"metadata": {}
 }
