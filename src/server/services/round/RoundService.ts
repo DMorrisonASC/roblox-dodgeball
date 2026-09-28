@@ -1,5 +1,5 @@
 import { Service, OnStart } from "@flamework/core";
-import { Players, Workspace } from "@rbxts/services";
+import { CollectionService, Players, Workspace } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
 import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
@@ -11,6 +11,7 @@ import {
     TEAM_ATTRIBUTE,
 } from "shared/constants";
 import { DevService } from "../../dev/DevService";
+import { NPC_TAG } from "../../npc/Behavior";
 import { MapService } from "../MapService";
 import { BallService } from "../ball/BallService";
 import { GameMode, RoundView } from "./modes/GameMode";
@@ -637,6 +638,54 @@ export class RoundService implements OnStart {
         }
     }
 
+    /**
+     * Takes the ball out of every hand the round that has just ended could have filled.
+     *
+     * **The round-end companion to {@link clearHeldBalls}, and the two are not the same job.** That
+     * one empties hands *before* a round so nobody carries a ball into it; this one empties them
+     * *after* one, and the difference is who it is about — a ball that was part of the round just
+     * finished, in the hand of somebody being moved out of the arena that is about to be destroyed.
+     *
+     * **Destroyed rather than dropped.** The hand it is in is on its way to the lobby, and a drop
+     * would put the ball on the arena floor a moment before that floor stops existing. A ball that is
+     * destroyed has no position to be wrong about, which is the same argument {@link clearHeldBalls}
+     * makes for the same call.
+     *
+     * **The roster is taken as it stands, and that is forced rather than chosen.** `activePlayers` is
+     * cleared on the line above this in the loop — that clear is part of entering an intermission — so
+     * there is no round roster left to read here. Every player in the server is the honest answer:
+     * whoever was in the round is still in the server, since the only way out of a round mid-flight is
+     * out of the server, and the ones who joined during it are the spectators the round-start clear
+     * already treats the same way. See {@link roundParticipants} for the rigs.
+     *
+     * **Every player, not every character — the ball belongs to the hand.** A player with no character
+     * (mid-respawn, or on their way out) is holding nothing, because a ball in a hand is welded to a
+     * part of that character and dies with it. There is deliberately no `PlayerRemoving` counterpart:
+     * a leaver's character is destroyed with them, so their ball is already gone by the time anybody
+     * could ask, and a second attempt to remove it would just be a lookup that finds nothing.
+     *
+     * **Held balls are a round concern, so they are cleaned up here rather than by the map.** A ball in
+     * a hand is welded to a *character*, and a character is not a descendant of the arena — so
+     * `MapService`'s cleanup, which walks the map, cannot see one however hard it looks. Two cleanups,
+     * two owners: this one for what the round is carrying, the map's for what the map contains.
+     */
+    private clearEndedRoundHeldBalls() {
+        let cleared = 0;
+
+        for (const participant of roundParticipants()) {
+            // The return value is the count, which is why this does not have to ask first: `removeBall`
+            // answers `false` for a model with an empty hand, which is the ordinary case for a player
+            // who had already dropped their ball or lost it in a catch.
+            if (this.balls.removeBall(participant)) cleared++;
+        }
+
+        // **One line for the whole round, and only when there was something to say.** A ball left in
+        // a hand when the round ends is worth a line, so this is not hidden behind `DEBUG`; an
+        // intermission that cleared nothing prints nothing, so the line appearing at all is the
+        // evidence that the cleanup had work to do.
+        if (cleared > 0) print(`[Round] cleared ${cleared} held balls`);
+    }
+
     private async gameLoop() {
         while (true) {
             // --- Intermission ---
@@ -644,6 +693,14 @@ export class RoundService implements OnStart {
             this.activePlayers.clear();
             print("Intermission started");
             this.teleportAll(ARENA_CONFIG.LOBBY_SPAWN_NAME);
+
+            // **Two cleanups, and this is the order they belong in.** The held balls go first: a ball
+            // in a hand is welded to a character, so it is not a descendant of the map and the map's
+            // own cleanup can never see one. Then the map, which takes the loose balls, the corpses
+            // and everything else that belongs to the arena. The other way round would leave the held
+            // balls to be dealt with *after* the arena they were carried on had been destroyed — and
+            // the point of doing this at all is that nothing the round owned outlives it.
+            this.clearEndedRoundHeldBalls();
 
             // **The map swap, and this is the only moment it is safe.** Everybody has just been put
             // in the lobby, which lives at `Workspace` root and belongs to no map — so there is
@@ -895,4 +952,37 @@ function mapProblem(map: Model | undefined): string | undefined {
     }
 
     return undefined;
+}
+
+/**
+ * Every model that could be holding a ball when a round ends: the players in the server, and the
+ * NPC rigs still standing in the world.
+ *
+ * **Rigs are found by tag rather than by searching `Workspace`.** `RespawnBehavior` tags every rig it
+ * builds with `NPC_TAG`, so asking the collection answers "is this an NPC?" without this file having
+ * to know how a rig is shaped, what it is named, or where `NpcService` decided to put it.
+ *
+ * **`IsDescendantOf(Workspace)` is the filter that makes it safe**, and it is the same guard
+ * `BallSpawnerService` uses before it reparents a loose ball back into the map. A tagged rig that is
+ * not in the world is one in the middle of being rebuilt — a respawn kills the old model before it
+ * builds the new one — and a model outside the world is holding nothing that a round should reach for.
+ * The `IsA("Model")` test is there for the tag's sake rather than the code's: a tag is a string that
+ * anybody can put on anything, and this walks what it finds.
+ *
+ * A player's character can be missing outright — between a death and a respawn, or as somebody is
+ * leaving — which is why it is read rather than assumed.
+ */
+function roundParticipants(): Model[] {
+    const participants: Model[] = [];
+
+    for (const player of Players.GetPlayers()) {
+        const character = player.Character;
+        if (character) participants.push(character);
+    }
+
+    for (const npc of CollectionService.GetTagged(NPC_TAG)) {
+        if (npc.IsA("Model") && npc.IsDescendantOf(Workspace)) participants.push(npc);
+    }
+
+    return participants;
 }
