@@ -27,14 +27,60 @@ const AIM_DISTANCE = 500; // how far to project the aim ray when nothing is hit
 const DEBUG = true;
 
 /**
- * Aim changes smaller than this, in studs, are ignored.
+ * How long the aim point takes to close most of the distance to the live mouse
+ * position — an exponential time constant in seconds, not a threshold and not a
+ * duration.
  *
- * Measured in world space rather than mouse pixels on purpose: pixel-level
- * noise is what we want to reject, but a player walking past a wall produces
- * large legitimate changes in where the ray lands, and those must still come
- * through. Gating on distance keeps both behaviours.
+ * Each frame takes `1 - e^(-dt / tau)` of what is left, so the aim point
+ * converges on the cursor rather than stopping near it. That is the whole of the
+ * difference between this and the ratchet that used to sit here. The old
+ * constant (`AIM_DEADZONE`, 0.50 studs) held a target until the live one drifted
+ * that far away and then jumped to it, and it never converged: after any aim
+ * movement the point sat wherever the last jump had left it, up to half a stud
+ * from where the mouse actually pointed, *in whichever direction the mouse had
+ * last moved* — near on the way out, far on the way in. Because the guide and
+ * the throw both read that same held point they agreed with each other while
+ * both being wrong, so a ratchet fault could only ever be seen as a landing
+ * problem and never as a preview disagreeing with a ball.
+ *
+ * **Why frame-rate independent.** `dt` comes from the clock, so `alpha` shrinks
+ * as frames shorten and the per-second rate stays put at 30, 60 or 240 Hz. A
+ * fixed fraction *per frame* would smooth four times as much on a 240 Hz client
+ * as on a 60 Hz one — the class of bug that only one machine can reproduce.
+ *
+ * **Why 0.08 s.** At 60 Hz that is `alpha ≈ 0.19`: about a fifth of the
+ * remaining gap per frame, which is a trailing flick rather than a rubber band.
+ * A step is 63% closed in one time constant, 95% in three (0.24 s) and 99% in
+ * five (0.4 s), so the point is visually settled well inside the time it takes
+ * to aim and click. The failure on the other side is worse: a time constant
+ * anywhere near human reaction time would reintroduce the ratchet's symptom by a
+ * different route, with the throw reading a point the player had already moved
+ * off. 0.06 passes noticeably more jitter through, 0.10 trails more; 0.08 sits
+ * between them. The jitter figure is checkable arithmetic rather than a
+ * measurement — a first-order filter scales a noisy input's *variance* by
+ * `alpha / (2 - alpha)`, which at 60 Hz is about 0.10, so roughly a third of the
+ * amplitude survives.
+ *
+ * **Why world space, and what that costs.** The throw consumes a world point, so
+ * that is the quantity worth smoothing; and the pixel-to-world mapping is not
+ * linear, so smoothing screen pixels would move the world target by a different
+ * amount depending on where on the screen the mouse was — worst near the horizon,
+ * where one pixel is the most studs and where the jitter this exists to suppress
+ * is at its largest.
+ *
+ * The cost is that the residual is a world-space *distance*, about `tau ×` how
+ * fast the aim point is travelling. For a given rate of pointing that speed rises
+ * with the distance to the aim point, so a given time constant costs a bigger lag
+ * in studs — and therefore a bigger landing error — the further away the aim is.
+ * The offset the *player sees* between cursor and marker does not grow the same
+ * way: the pixels-per-stud scale falls at roughly the rate the lag rises, so on a
+ * surface facing the camera the two cancel and the visible lag is set by `tau`
+ * alone. Where they stop cancelling is near the horizon, where the surface turns
+ * tangent and the mapping stops being linear. That is the trade this file makes:
+ * smooth the quantity the throw actually uses, and let the lag be largest where
+ * the points are furthest apart.
  */
-const AIM_DEADZONE = 0.50;
+const AIM_SMOOTHING_SECONDS = 0.08;
 
 @Controller()
 export class ThrowController implements OnStart {
@@ -50,8 +96,16 @@ export class ThrowController implements OnStart {
 	private lastMid: Vector3 | undefined;
 	private nextReport = 0;
 
-	/** Last accepted aim point — see {@link AIM_DEADZONE}. */
+	/**
+	 * The smoothed aim point, and the clock reading it was last advanced from.
+	 *
+	 * The pair is the whole state of the smoothing: an exponential moving average
+	 * needs the time since its previous sample in order to pick the step it takes
+	 * now, and an absent {@link steadyTarget} is what says "there is nothing to
+	 * average yet, snap". See {@link AIM_SMOOTHING_SECONDS}.
+	 */
 	private steadyTarget: Vector3 | undefined;
+	private lastAimSample = 0;
 
 	/**
 	 * Which of the three throws the next click uses.
@@ -191,7 +245,9 @@ export class ThrowController implements OnStart {
 	 * Read it as a bisection.
 	 *
 	 * - `target` moving means the aim raycast is landing somewhere different each
-	 *   frame. That is mouse-side and the deadzone's business.
+	 *   frame. That is mouse-side, and it is what `AIM_SMOOTHING_SECONDS` exists to
+	 *   absorb — note this reports the *smoothed* point, so whatever still moves
+	 *   here is exactly what a throw at this instant would be aimed at.
 	 * - A steady `target` with a moving `muzzle` means the launch point is
 	 *   drifting underneath it. The solve absorbs that, so the landing stays put
 	 *   while the arc swings — which is exactly the whole-line wobble, and why
@@ -286,22 +342,48 @@ export class ThrowController implements OnStart {
 	}
 
 	/**
-	 * The aim point, ignoring changes too small to be intentional.
+	 * The aim point, smoothed toward the live one on a clock rather than held
+	 * near it on a threshold.
 	 *
 	 * Used by both the guide and the throw itself, so what you see is what you
-	 * get — if the click read a fresh raycast while the guide showed a held one,
-	 * the ball would land somewhere other than the marker.
+	 * get — if the click read a fresh raycast while the guide showed a smoothed
+	 * one, the ball would land somewhere other than the marker.
+	 *
+	 * **The throw reads this, so its residual is a landing error.** The value kept
+	 * here is the one the solve is run against, which is why
+	 * {@link AIM_SMOOTHING_SECONDS} is short: whatever the point has not caught up
+	 * with by the time the click arrives is thrown at, not merely drawn at.
+	 *
+	 * The first sample after there is nothing to average from snaps rather than
+	 * easing in. `updateGuide` clears {@link steadyTarget} whenever there is no
+	 * ball in hand, so this includes picking a new ball up, and starting from a
+	 * guessed origin instead would show as the marker flying in from wherever the
+	 * previous ball was thrown.
 	 */
 	private getSteadyAimTarget(character: Model | undefined): Vector3 {
 		const fresh = this.getAimTarget(character);
 		const held = this.steadyTarget;
 
-		if (held && fresh.sub(held).Magnitude < AIM_DEADZONE) {
-			return held;
+		if (held === undefined) {
+			this.steadyTarget = fresh;
+			this.lastAimSample = os.clock();
+			return fresh;
 		}
 
-		this.steadyTarget = fresh;
-		return fresh;
+		const now = os.clock();
+		// The interval has to be read *before* the clock is moved on, or `dt` is
+		// always zero and the filter never advances. A zero-length interval is two
+		// calls inside one frame — the guide's and the click's — and gives `alpha`
+		// 0, returning the point unchanged, which is the right answer: no time
+		// passed, so nothing moved.
+		const dt = now - this.lastAimSample;
+		this.lastAimSample = now;
+
+		const alpha = 1 - math.exp(-dt / AIM_SMOOTHING_SECONDS);
+		const smoothed = held.Lerp(fresh, alpha);
+
+		this.steadyTarget = smoothed;
+		return smoothed;
 	}
 
 	private getAimTarget(character: Model | undefined): Vector3 {

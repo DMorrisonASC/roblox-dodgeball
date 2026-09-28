@@ -42,6 +42,18 @@ const BOUNCE_MIN_SPEED = 1;
  */
 const BOUNCE_MIN_SEPARATION = 0.01;
 
+/**
+ * The next number {@link BallComponent.identity} will take.
+ *
+ * **A counter, because nothing else on a ball distinguishes it.** Every ball in the game is named
+ * `DodgeballBall`, so the name identifies nothing, and a clock is the wrong shape for this: `os.clock`
+ * counts CPU time, which this codebase has already been caught by once — see the note in
+ * `ThrowProbe.ts` about a stopwatch error that read as a physics fault — and `os.time` is whole
+ * seconds, so two balls handed out inside the same second would share a number and the log would be
+ * ambiguous again. A counter cannot collide, and an ordinal reads better in a log than a timestamp.
+ */
+let ballSequence = 0;
+
 @Component({
 	tag: "Ball",
 	defaults: { Armed: false, StatsRecorded: false },
@@ -58,6 +70,25 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * primitives and this holds models.
 	 */
 	private readonly hitModels = new Set<Model>();
+
+	/**
+	 * Which ball this is, for the log — assigned the moment the ball is armed.
+	 *
+	 * **Every ball is named `DodgeballBall`, so a `logTouch` line without this cannot say which of
+	 * them it came from** — and that is the entire question when a touch turns up that the ball could
+	 * not physically have made. Attribution is the only thing this number is for; nothing decides
+	 * anything with it, and it is never cleaned up, because the ball it describes goes away with it.
+	 *
+	 * **In practice it is an id per ball, not per throw.** `BallService` arms a ball on a hand-out and
+	 * `throwBall` arms it again, but an attribute set to the value it already holds fires no signal —
+	 * so {@link BallComponent.onStart}'s handler runs once, on the hand-out, and the id from that
+	 * hand-out is the one the throw and the whole flight are reported under. It only moves on after a
+	 * real disarm (a drop, or a pickup that makes the ball inert again), which is a genuinely
+	 * different handing and worth a different number.
+	 *
+	 * 0 means the ball was never seen armed, which should not happen while anything prints.
+	 */
+	private identity = 0;
 
 	constructor(
 		private readonly catches: CatchService,
@@ -90,6 +121,12 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// component to reset one.
 		this.instance.GetAttributeChangedSignal("Armed").Connect(() => {
 			if (this.instance.GetAttribute("Armed") !== true) return;
+
+			// A new number to be reported under, taken at the same moment as everything else here
+			// and for the same reason: `Armed` going on is a new throw. See {@link identity} for why
+			// this usually happens once per ball rather than once per throw.
+			ballSequence += 1;
+			this.identity = ballSequence;
 
 			this.hitModels.clear();
 
@@ -144,16 +181,30 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// would be two hits on the same player — two bounces, in the same frame.
 		if (otherPart.Name === "HumanoidRootPart") return;
 
-		// **A body contact has to be a part of a body.** Anything else inside a character —
-		// a hat, a tool, the ball in its hand — belongs to somebody without being part of
-		// them, and a ball that has touched one of those has touched nothing: not a hit, not
-		// a catch, and no reason to disarm.
+		// **A worn accessory is not a shield: the contact belongs to the body underneath it.**
 		//
-		// Not hypothetical. An accessory's `Handle` sits inside the accessory, and a ball
-		// passing a head clips a beanie often enough to matter. Left in, every such glance
-		// read as a body hit — lethal, and enough to record the character as hit, which then
-		// skipped the torso contact that was about to catch the ball.
-		if (!this.isBodyPart(humanoid, otherPart)) return;
+		// A hat's `Handle` sits inside the accessory, welded to the part it is worn on, and it is a
+		// `BasePart` the ball reaches before it reaches anything that counts. Left as its own
+		// thing — which is what this did until now — a player can wear something wide enough to
+		// spend throws on: the ball is thrown off the accessory, no hit is ever recorded, and
+		// whether that works is an asset property nobody in this codebase sets. So a worn part is
+		// resolved to the body part it is attached to and handled as a contact with that part,
+		// which makes an accessory invisible to the ball instead of armour for it. See
+		// {@link struckBodyPart}.
+		//
+		// **This reverses the rule that used to be here, and the reason it existed is worth
+		// keeping.** An earlier version treated an accessory *as itself*: a `Handle` is not in
+		// {@link CATCH_CONFIG.CATCHABLE_PARTS}, so a scarf's tassel lying across the chest read as
+		// a lethal hit, and the torso contact behind it — the one that would have caught the ball —
+		// was then skipped by {@link hitModels}. The reply was to ignore accessory contacts
+		// entirely, which fixed the scarf by making the accessory inert and turned it into a shield
+		// in the same move. Resolving to the host part is the option neither of those took: the
+		// scarf contact becomes an `UpperTorso` contact, which *is* catchable, so that case comes
+		// out right for the right reason. What remains is a hat whose mesh reaches further from the
+		// head than the head is wide — a glance off a beanie is a head contact, and lethal. That is
+		// the price of a hitbox a player cannot shrink by what they choose to wear.
+		const struck = this.struckBodyPart(humanoid, otherPart);
+		if (!struck) return;
 
 		// Nobody is hurt by their own ball, and nobody catches it either — including off
 		// the rebound, which is the case that matters now that balls come off people. Both
@@ -185,7 +236,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		//
 		// The alternative — letting any catchable part anywhere in the set win — takes the head
 		// out of the game: a ball aimed at one would be caught by the torso it also touches.
-		if (this.canCatch(otherPart, character)) {
+		if (this.canCatch(struck, character)) {
 			// Spent before the ball is handed over, so one attempt catches one ball
 			// even if two arrive together.
 			this.catches.consume(character);
@@ -217,7 +268,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// already been through.
 		this.hitModels.add(character);
 
-		this.bounceOff(otherPart);
+		this.bounceOff(struck);
 
 		// **Hits are recorded for scoring and stats only — no mode consults hit cause.** The round is
 		// told about this one so a mode that keeps score can award the point; nothing anywhere asks
@@ -230,7 +281,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// score nothing, silently, only in the modes where it matters.
 		if (typeIs(throwerId, "string")) this.rounds.registerHit(throwerId, character);
 
-		this.landHit(character, humanoid, otherPart);
+		this.landHit(character, humanoid, struck);
 
 		// **A throw that took a body is a hit**, scored after the damage because the damage is what
 		// makes it one — a ball that arrives on a catchable part is caught, above, and a catch is
@@ -359,22 +410,107 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		return humanoid.GetLimb(part) !== Enum.Limb.Unknown;
 	}
 
-	private logTouch(otherPart: BasePart): void {
-		const character = otherPart.FindFirstAncestorWhichIsA("Model");
+	/**
+	 * The body part a contact should be treated as, or `undefined` when it is not a contact with a
+	 * body at all.
+	 *
+	 * Three answers, and the middle one is the whole point of the method:
+	 *
+	 * - **A part of the rig itself** → itself, which is the ordinary case.
+	 * - **A part of something worn on the rig** → the body part it is attached to. See
+	 *   {@link wornOn} for why the weld is the right thing to follow rather than a name, a
+	 *   distance, or the accessory's own idea of where it is.
+	 * - **Anything else inside a character** → `undefined`: a tool, the dodgeball in somebody's hand,
+	 *   a `HumanoidRootPart`, or a worn part that cannot be traced back to a body. A ball that has
+	 *   touched one of those has touched nothing — not a hit, not a catch, and no reason to disarm.
+	 */
+	private struckBodyPart(humanoid: Humanoid, otherPart: BasePart): BasePart | undefined {
+		if (this.isBodyPart(humanoid, otherPart)) return otherPart;
 
+		const accessory = otherPart.FindFirstAncestorWhichIsA("Accoutrement");
+		if (!accessory) return undefined;
+
+		return this.wornOn(humanoid, accessory);
+	}
+
+	/**
+	 * The body part a worn accessory is attached to.
+	 *
+	 * **Follows the link, because the link is what "worn" means.** An accessory on a character is
+	 * held there by something — that is the whole of the difference between wearing a hat and having
+	 * dropped one — so the link already records the answer rather than leaving it to be guessed
+	 * at. A distance test would return whichever body part happened to be nearest, which for a
+	 * shoulder accessory is the head and for a long scarf is the floor; and an accessory's own
+	 * `AttachmentPoint` is a `CFrame` for placing the model, not a reference to the part it landed
+	 * on.
+	 *
+	 * Only links *inside the accessory* are searched, which is where the engine keeps the one that
+	 * holds it on. **Both of Roblox's shapes for that link are handled rather than one being
+	 * assumed** — see {@link connectionParts} — because a lookup written against welds alone finds
+	 * nothing on a rig whose accessories are held by a `RigidConstraint`, and it fails by declining
+	 * rather than by answering wrongly, which is precisely the kind of failure that survives review.
+	 *
+	 * The end that matters is the end that is not a descendant of the accessory, and it has to be a
+	 * part of **this** rig: an accessory attached to anything else is not a body contact, so this
+	 * answers `undefined` and the touch is ignored exactly as it was before this existed. That is the
+	 * safe direction to fail in — a behaviour that does not change, rather than a hit on the wrong
+	 * body.
+	 *
+	 * **Deliberately not widened past accessories.** A tool is welded to a hand in the same way, and
+	 * so is the dodgeball a player is holding; routing every welded thing to its host would make a
+	 * ball that clipped somebody's held ball into a hit on their hand.
+	 */
+	private wornOn(humanoid: Humanoid, accessory: Accoutrement): BasePart | undefined {
+		for (const descendant of accessory.GetDescendants()) {
+			// `side`, not `end`: `end` is a Luau keyword and roblox-ts refuses to emit it.
+			for (const side of connectionParts(descendant)) {
+				if (side === undefined) continue;
+				if (side.IsDescendantOf(accessory)) continue;
+				if (this.isBodyPart(humanoid, side)) return side;
+			}
+		}
+
+		return undefined;
+	}
+
+	/**
+	 * Records one raw `Touched` report, under the number of the ball that reported it.
+	 *
+	 * **Gated, and ungated was the wrong default for this one specifically.** Every other print in
+	 * this file reports a *decision* — one line per landing, which is the whole story of a throw.
+	 * This reports the engine's input instead: every part of every overlap set, in the engine's own
+	 * order, on every contact an armed ball makes, including the ones that decide nothing. On a
+	 * normal arrival that is a dozen lines that mean no more than the one line `handleTouch` ends it
+	 * with, and it drowns the log it was meant to be read in. It earns its place only when a contact
+	 * is *missing* or *impossible*, which is a question somebody has to be asking, so it lives with
+	 * the other diagnostics behind {@link DEBUG_CONFIG.VERBOSE_LOGS}.
+	 *
+	 * **The identity is the point of the line, not decoration.** Several balls are in play — the
+	 * arena's, the thrower's, one in a rig's hand — and they are all called `DodgeballBall`, so a
+	 * bare `touched` line cannot be attributed to a throw and cannot be checked against where that
+	 * throw's ball actually was. See {@link identity}.
+	 *
+	 * The `Armed` test is here as well as in `handleTouch` so the log and the decision agree about
+	 * which reports were live: a contact on a ball that is already spent is not part of any story.
+	 */
+	private logTouch(otherPart: BasePart): void {
+		if (!DEBUG_CONFIG.VERBOSE_LOGS) return;
+
+		if (this.instance.GetAttribute("Armed") === false) return;
+
+		const character = otherPart.FindFirstAncestorWhichIsA("Model");
 		const player = character ? Players.GetPlayerFromCharacter(character) : undefined;
 
-		if (this.instance.GetAttribute("Armed") === false) {
-			return;
-		}
+		// Built here rather than written inside the `print`, because a template literal nested
+		// inside another one compiles to backticks inside backticks and renders empty — it parses,
+		// it runs, and the log it produces has a hole in it.
+		const subject = this.isPlayer(otherPart)
+			? `${otherPart.Name} of ${player?.Name}`
+			: this.isNpc(otherPart)
+				? `${otherPart.Name} of ${character?.Name}`
+				: otherPart.Name;
 
-		if (this.isPlayer(otherPart)) {
-			print(`${this.instance.Name} touched ${otherPart.Name} of ${player?.Name}`);
-		} else if (this.isNpc(otherPart)) {
-			print(`${this.instance.Name} touched ${otherPart.Name} of ${character?.Name}`);
-		} else {
-			print(`${this.instance.Name} touched ${otherPart.Name}`);
-		}
+		print(`${this.instance.Name} #${this.identity} touched ${subject}`);
 	}
 
 	private isPlayer(otherPart: BasePart): boolean {
@@ -400,4 +536,36 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		return false;
 	}
+}
+
+/**
+ * The two parts a connective instance holds together, or an empty list if it holds none.
+ *
+ * **Two shapes, because Roblox has two and which one a rig's accessories use is not ours to
+ * choose.** A `Weld` or a `WeldConstraint` names the parts directly, in `Part0` and `Part1` — that
+ * is the older way an accessory was held on. A `Constraint`, which is what a rigid accessory is
+ * attached with (`RigidConstraint`), names an `Attachment` at each end instead, and the part is
+ * whichever `BasePart` that attachment is parented to; there is no `Part0` to read at all. A lookup
+ * that only understands the first shape finds nothing on a modern rig, and because
+ * {@link BallComponent.wornOn} treats "found nothing" as "not a body contact", the whole thing fails
+ * quietly rather than loudly.
+ *
+ * An end with no part behind it is reported as `undefined` rather than left out, so the two
+ * positions keep meaning "first end" and "second end".
+ */
+function connectionParts(link: Instance): Array<BasePart | undefined> {
+	if (link.IsA("JointInstance") || link.IsA("WeldConstraint")) return [link.Part0, link.Part1];
+
+	if (!link.IsA("Constraint")) return [];
+
+	// The part an attachment sits in, or nothing when it sits in something that is not a part.
+	// A local rather than a second exported helper: it exists only to be applied to the same two
+	// fields, and roblox-ts types `Array.push` against `defined[]`, so the two ends are built as one
+	// literal instead of pushed onto an accumulator.
+	const partOf = (attachment: Attachment | undefined): BasePart | undefined => {
+		const parent = attachment?.Parent;
+		return parent !== undefined && parent.IsA("BasePart") ? parent : undefined;
+	};
+
+	return [partOf(link.Attachment0), partOf(link.Attachment1)];
 }
