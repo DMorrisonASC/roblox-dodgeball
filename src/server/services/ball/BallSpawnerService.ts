@@ -102,6 +102,14 @@ export class BallSpawnerService implements OnStart {
 			// put out for the next round.
 			if (this.previousState === PLAYING && state === INTERMISSION) this.cleanupRoundBalls();
 
+			// **And the arena is stocked on the way in, not a tick later.** The loop below would get
+			// to this within a second anyway, but that second is a second of a round with an empty
+			// floor — and since the tick's ancestry guard means nothing is put out during an
+			// intermission any more, the whistle is the first moment these spawners are in the world at
+			// all. Safe to call here because the map is placed *before* the round is published, so the
+			// spawners are already in `Workspace` by the time this runs.
+			if (state === PLAYING) this.tick();
+
 			this.previousState = state;
 		});
 
@@ -130,6 +138,14 @@ export class BallSpawnerService implements OnStart {
 
 		for (const instance of CollectionService.GetTagged(SPAWNER_TAG)) {
 			if (!instance.IsA("BasePart")) continue;
+
+			// **A spawner outside the world is not stocking anything.** `MapService` clones the next
+			// arena while an intermission runs and holds it out of `Workspace` until the round is about
+			// to start, and a `Clone` carries the tags with it — so without this the loop would find the
+			// spawners of an arena nobody can see and top them up, which means balls parented to
+			// `Workspace` falling through empty space where the arena is not. The tag answers "is this a
+			// spawner"; where it is answers "is its arena somewhere right now".
+			if (!instance.IsDescendantOf(Workspace)) continue;
 
 			const nearby = this.countLoose(instance.Position);
 			const missing = BALL_CONFIG.BALLS_PER_SPAWNER - nearby;

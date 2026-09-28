@@ -24,21 +24,39 @@ const DEBUG = true;
  * it loads, so no call can leave two arenas in `Workspace` and no caller has to remember to unload
  * first. That is the whole reason the pair is one method: the failure it prevents is two arenas
  * interpenetrating, which looks like broken geometry rather than like a mistake anybody could read.
+ *
+ * **Cloning and placing are two steps, because an intermission is not a round.** A map is cloned
+ * when an intermission begins — the expensive half of a swap, paid while nothing is happening — and
+ * is parented into `Workspace` only when the round is about to start. An arena sitting in
+ * `Workspace` for the whole of an intermission is an arena every client can see, and that every
+ * client is streamed, for a round that has not begun. {@link placeCurrent} is the second step.
  */
 @Service()
 export class MapService {
-	/** The clone currently in `Workspace`, if any. The one and only map. */
+	/**
+	 * The clone this service is holding, if any. The one and only map.
+	 *
+	 * **It is a child of `Workspace` only between {@link placeCurrent} and {@link unloadCurrent}**,
+	 * and the gap is deliberate rather than incidental: the arena is cloned while the intermission is
+	 * idle, and stays out of the world — so it is drawn by nobody and replicated to nobody — until
+	 * the round it belongs to is about to begin. See {@link loadMap}.
+	 */
 	private current: Model | undefined;
 
 	/** How far the rotation has got. See {@link pickNext}. */
 	private nextIndex = 0;
 
 	/**
-	 * Puts `name`'s map into `Workspace`, replacing whatever is there.
+	 * Clones `name`'s map and takes charge of it, replacing whatever this service was holding.
 	 *
-	 * **Unload first, then load.** The two are one operation because they have to be — see the note
-	 * on the class. A caller cannot get this wrong, because there is no way to load without the
-	 * unload happening.
+	 * **It clones and holds; it does not place.** The clone is left unparented, and
+	 * {@link placeCurrent} is what puts it in `Workspace` — the round does that at its own boundary,
+	 * so an intermission is not spent with an arena in the world in front of every client. See the
+	 * note on the class for why the two halves are separate.
+	 *
+	 * **Unload first, then clone.** The two halves of the first step are one operation because they
+	 * have to be: a caller cannot get it wrong, because there is no way to load without the unload
+	 * happening.
 	 *
 	 * **A missing map is a warning, not an error.** This runs at the top of an intermission, inside
 	 * the round's own loop, and throwing here would kill that loop — the cycle would stop for the
@@ -64,8 +82,12 @@ export class MapService {
 		}
 
 		const loaded = template.Clone() as Model;
-		loaded.Parent = Workspace;
 
+		// **Not parented, and that is the whole reason this is two methods.** The clone stays out of
+		// the world until `placeCurrent`, so an arena nobody is playing in is drawn by nobody and
+		// streamed to nobody — see the note on the class. Nothing here needs it in a DataModel:
+		// a part's `CFrame` is world-space whether or not its model has a parent, so the spawn
+		// lookups that read this model work exactly the same while it is still in hand.
 		this.current = loaded;
 
 		if (DEBUG) print(`[Map] loaded "${name}"`);
@@ -74,7 +96,37 @@ export class MapService {
 	}
 
 	/**
-	 * Destroys the map in `Workspace`, if there is one.
+	 * Puts the map this service is holding into `Workspace`.
+	 *
+	 * **The second half of a swap, and the half only the round can decide.** {@link loadMap} builds
+	 * the arena where nobody can see it; this is what makes it the world the round happens in, so it
+	 * belongs at the round boundary — after the map has been checked over, and before the first
+	 * teleport — rather than at the intermission that cloned it. Between the two calls the map is
+	 * real, valid and findable through {@link getCurrent}; it is just not in the world.
+	 *
+	 * **Idempotent, so the caller does not have to keep track.** Called twice, the second call finds
+	 * the map already parented and does nothing. Called with nothing loaded — a map whose name nobody
+	 * has built yet — it does nothing either. That is the same bargain {@link unloadCurrent} offers,
+	 * and for the same reason: the boundary calls both unconditionally, and a rule every caller has
+	 * to remember is a rule somebody forgets once.
+	 */
+	public placeCurrent(): void {
+		const current = this.current;
+		if (current === undefined) return;
+		if (current.Parent === Workspace) return;
+
+		current.Parent = Workspace;
+
+		if (DEBUG) print(`[Map] placed "${current.Name}"`);
+	}
+
+	/**
+	 * Destroys the map this service is holding, in the world or still in hand.
+	 *
+	 * **Destroyed rather than un-parented and kept.** The clone is disposable by construction: the
+	 * template it came from is untouched and is what the next round will be built from, so there is
+	 * nothing worth carrying over between rounds — and a map kept alive between them would be the map
+	 * that just finished rather than the map that is next.
 	 *
 	 * Safe with nothing loaded, which is what lets {@link loadMap} call it unconditionally — a guard
 	 * at the call site would be a rule somebody has to remember, and this is exactly the rule that
@@ -94,7 +146,15 @@ export class MapService {
 		if (DEBUG) print(`[Map] unloaded "${name}"`);
 	}
 
-	/** The map in `Workspace`, or nothing if none is loaded. */
+	/**
+	 * The map this service is holding, or nothing if none is loaded.
+	 *
+	 * **Answers while the map is still out of the world, deliberately.** The round boundary asks this
+	 * to check a map over *before* {@link placeCurrent} puts it in `Workspace`, and the spawn lookups
+	 * ask it during a round, after — so both of them want "the map this service is looking after"
+	 * rather than "the child of `Workspace`", and one of the two callers is asking about a model no
+	 * player can see yet.
+	 */
 	public getCurrent(): Model | undefined {
 		return this.current;
 	}

@@ -709,9 +709,12 @@ export class RoundService implements OnStart {
             // once; `loadMap` does it again internally, so the order is true by construction rather
             // than by this comment.
             //
-            // Loading *here* rather than at the round's opening whistle is deliberate: the cost is
-            // paid while nothing is happening, and the arena the next round will be played in is
-            // then visible from the lobby — which is a feature rather than a spoiler.
+            // Loading *here* rather than at the round's opening whistle is deliberate, and it is
+            // about the `Clone`: that is the expensive half of a swap, and this pays for it while
+            // nothing is happening. What is deliberately *not* here is putting it in the world — the
+            // clone stays out of `Workspace` until `placeCurrent` runs at the round boundary, so the
+            // intermission is not thirty seconds of every client looking at an arena that no round is
+            // being played in, which is exactly what a map loaded here and left parented would be.
             this.maps.unloadCurrent();
             this.maps.loadMap(this.maps.pickNext());
 
@@ -798,6 +801,14 @@ export class RoundService implements OnStart {
 
                 continue;
             }
+
+            // **Now the arena goes into the world.** It was cloned at the top of the intermission so
+            // that the cost was paid while nothing was happening, and it has been held out of
+            // `Workspace` until here so that nobody spends the intermission looking at it. This is
+            // the only ordering that works: after the check above, so a map that cannot host a round
+            // is never put into the world only to be taken out again, and before the teleport below,
+            // so nobody is ever moved onto an arena that is not there yet.
+            this.maps.placeCurrent();
 
             this.state = RoundState.Playing;
 
