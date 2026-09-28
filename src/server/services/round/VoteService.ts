@@ -119,8 +119,9 @@ export class VoteService implements OnStart {
 
 		// Written here rather than at the round's opening whistle, because the intermission that
 		// follows is exactly when somebody wants to know what they are about to play. See
-		// `ROUND_MODE_ATTRIBUTE`.
-		this.statusFolder.SetAttribute(ROUND_MODE_ATTRIBUTE, GAME_MODE_NAMES[this.selected]);
+		// `ROUND_MODE_ATTRIBUTE` — the **id**, not the display name: it is the key every table about
+		// a mode is looked up by, on both sides of the wire.
+		this.statusFolder.SetAttribute(ROUND_MODE_ATTRIBUTE, this.selected);
 	}
 
 	/** The mode the next round should run. */

@@ -26,32 +26,66 @@ export const ARENA_CONFIG = {
 	 * Looked up by name in `Workspace`, so this and the part have to agree; a
 	 * missing one is an error rather than a silent fallback, because a round that
 	 * starts with everyone in the wrong place is worse than one that does not start.
+	 *
+	 * **At `Workspace` root, not inside a map.** The lobby outlives every map swap — it is where
+	 * players wait while one arena is destroyed and the next is cloned in, so it would be the one
+	 * thing a swap could not afford to take with it. It is therefore the only part the round reads
+	 * that no map owns, which is why `getSpawn` reads `Workspace` while team spawns read the map.
 	 */
 	LOBBY_SPAWN_NAME: "LobbySpawn",
 
 	/**
-	 * The one arena spawn, from before the two teams had a side each.
+	 * The folder inside a map holding one folder of spawn parts per side.
 	 *
-	 * **No longer read by the round**: a round sends each team to its own part, below. It is
-	 * kept as the name a place file with a single arena spawn already has, and as the part the
-	 * two of those would fall back to if that were ever the right thing to do — it is not, for
-	 * the reason spelled out on the team spawns: both teams on one side is a round that begins
-	 * wrong, and a round that refuses to begin is the better failure.
+	 * `Maps/<map>/ArenaSpawns/A` and `.../B`, each a folder of `BasePart`s — one part per place a
+	 * player on that side may start, put there by hand. Which of them a player gets is picked at
+	 * random, which is what stops a side arriving in a single pile; see
+	 * `RoundService.getRandomTeamSpawn`.
+	 *
+	 * **Inside the map rather than at `Workspace` root**, so a map carries its own spawns: a new arena
+	 * is a `Model` in `ServerStorage.Maps` with everything it needs, and nothing about spawning has to
+	 * be duplicated outside it or kept in step with which map happens to be loaded. The lobby is the
+	 * exception, and it is the one part the round reads that no map owns — see
+	 * {@link ARENA_CONFIG.LOBBY_SPAWN_NAME}.
+	 *
+	 * **A folder of folders rather than a naming convention**, because the parts inside need no names
+	 * at all: they are picked by position, so `Spawn1`…`Spawn9` would be nine names to keep right for
+	 * no benefit, and adding a tenth spawn is dropping in a part rather than naming it.
+	 *
+	 * Missing, or holding no parts, is an **error** rather than a fallback — the same rule the lobby
+	 * spawn follows and for the same reason: a round that cannot place its players should not start.
+	 * `RoundService.getRandomTeamSpawn` names the map it looked in, so the fix is obvious.
 	 */
-	ARENA_SPAWN_NAME: "ArenaSpawn",
+	ARENA_SPAWNS_FOLDER: "ArenaSpawns",
 
 	/**
-	 * Where team A is put when a round begins.
+	 * The sub-folder of {@link ARENA_CONFIG.ARENA_SPAWNS_FOLDER} holding team A's spawn parts.
 	 *
-	 * Looked up by name in `Workspace`, like the lobby spawn, and deliberately with **no
-	 * fallback** to {@link ARENA_CONFIG.ARENA_SPAWN_NAME} or to each other: a missing team
-	 * spawn is a setup mistake, and `getSpawn` raises it by name rather than starting a round
-	 * with both sides stacked on one spot.
+	 * A plain `"A"` / `"B"`, because those labels are already the round's own vocabulary — they are
+	 * what `TEAM_ATTRIBUTE` carries — so the folder is named after the side itself rather than after
+	 * a second word for it that would then have to be kept in step.
 	 */
-	ARENA_SPAWN_NAME_A: "ArenaSpawnA",
+	ARENA_TEAM_FOLDER_A: "A",
 
-	/** Where team B is put when a round begins. Same rules as {@link ARENA_CONFIG.ARENA_SPAWN_NAME_A}. */
-	ARENA_SPAWN_NAME_B: "ArenaSpawnB",
+	/** Team B's. Same rules as {@link ARENA_CONFIG.ARENA_TEAM_FOLDER_A}. */
+	ARENA_TEAM_FOLDER_B: "B",
+
+	/**
+	 * How many players have to be present for an intermission to run out and a round to begin.
+	 *
+	 * **The intermission freezes below this rather than skipping.** A server with one player in it
+	 * would otherwise cycle intermission → round → intermission for ever, each round starting with
+	 * nobody to play it and ending a moment later — a churn of teleports and messages that says
+	 * nothing. Holding the clock where it stands means the round that does start is the round that
+	 * was already counting down, not a fresh one, and a server that fills up thirty seconds later
+	 * still gets that intermission's vote.
+	 *
+	 * A *round* is not gated by this, only its start: two players dropping to one mid-round play the
+	 * round out, because a round that stopped when somebody disconnected would be a round whose
+	 * result depended on somebody else's connection. Two is the number because a game needs an
+	 * opponent — it is not a balance setting, and there is nothing here to tune.
+	 */
+	MIN_PLAYERS: 2,
 
 	/**
 	 * How long the gap between rounds lasts, in seconds.

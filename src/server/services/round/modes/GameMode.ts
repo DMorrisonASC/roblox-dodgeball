@@ -24,26 +24,23 @@ export interface HitEvent {
 /**
  * What a death tells a mode.
  *
- * **`byHit` is the reason this is an object and not just a `Player`.** `Humanoid.Died` says that
- * somebody died and gives no cause at all — a ball, a fall out of the world and the reset button
- * are one event. Dodge and Seek's rules turn on that difference: a player who is hit becomes a
- * seeker *and counts as one*, while a player who resets becomes a seeker and explicitly does not.
- * A mode cannot answer that question from a death alone, so the round answers it instead, by
- * remembering which players a throw has landed on since they last spawned.
- */
+	 * **It says who, and deliberately not why.** `Humanoid.Died` reports no cause at all — a ball, a
+	 * fall out of the world and the reset button are one event — and for a while this carried a
+	 * `byHit` flag so that a mode could tell them apart. Nothing ever asked: Dodge and Seek's rules
+	 * move a dodger to the seekers whether they were hit or reset, because both leave the dodger
+	 * side, and its win condition counts that side rather than the reason anybody left it. The flag
+	 * went, along with the round's bookkeeping behind it, once all three modes were written and none
+	 * of them consulted it.
+	 *
+	 * A mode that does need the difference will have to ask for it back, and the place it would be
+	 * recorded is the throw-hit path — the only moment it is observable.
+	 *
+	 * An object rather than a bare `Player` so that adding a field back is a change here rather than
+	 * at every call site.
+	 */
 export interface DeathEvent {
 	/** Who died. */
 	readonly player: Player;
-
-	/**
-	 * Whether a thrown ball had landed on them since they last spawned.
-	 *
-	 * `false` covers everything else that kills: falling out of the arena, the reset button, a
-	 * script, a dev tool. The round clears the record when they spawn, so this is "hit *this
-	 * life*" rather than "hit at some point in the round" — the distinction matters the moment a
-	 * mode sends somebody back in.
-	 */
-	readonly byHit: boolean;
 }
 
 /**
@@ -134,17 +131,6 @@ export interface GameMode {
 	 * and there is nowhere else it could.
 	 */
 	assign(players: ReadonlyArray<Player>): Map<Player, TeamLabel>;
-
-	/**
-	 * What this mode calls a side, for the round's own output.
-	 *
-	 * The two sides are always labelled `A` and `B` on the player, because that is what
-	 * `TEAM_ATTRIBUTE` carries and what anything reading a side has to match against. This is only
-	 * what to *call* them where a person reads it: "Team A won" is right for the two symmetric
-	 * modes, and wrong for one where the sides are "seekers" and "dodgers" — a mode played
-	 * asymmetrically should not announce its result as though it were a draw between equals.
-	 */
-	sideName(team: TeamLabel): string;
 
 	/**
 	 * What a landed hit is worth to the side that threw it, or `undefined` for nothing.

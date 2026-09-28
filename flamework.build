@@ -40,7 +40,8 @@
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService",
-		"roblox-dodgeball:out/server/services/round/modes/DodgeAndSeekMode@DodgeAndSeekMode": "server/services/round/modes/DodgeAndSeekMode@DodgeAndSeekMode"
+		"roblox-dodgeball:out/server/services/round/modes/DodgeAndSeekMode@DodgeAndSeekMode": "server/services/round/modes/DodgeAndSeekMode@DodgeAndSeekMode",
+		"roblox-dodgeball:out/server/services/MapService@MapService": "server/services/MapService@MapService"
 	},
 	"metadata": {}
 }

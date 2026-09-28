@@ -130,17 +130,21 @@ export const ROUND_TIME_ATTRIBUTE = "TimeRemaining";
 export const ROUND_WINNER_ATTRIBUTE = "Winner";
 
 /**
- * Attribute on {@link ROUND_STATUS_FOLDER}: what the round is being played as.
+ * Attribute on {@link ROUND_STATUS_FOLDER}: which mode the round is being played as.
  *
- * The mode's *display name* — `GAME_MODE_NAMES[id]` — rather than its id, for the reason the phase
- * is its own name: it is the one vocabulary the HUD has, so a reader can put it on screen without
- * holding a table of ids to look it up in.
+ * The mode's **id** — a `GameModeId`, such as `"DodgeAndSeek"` — and not its display name, which
+ * is what this used to carry. The id is the stable key: it is what a reader looks a mode *up* by,
+ * and both the name shown on screen and the names of its two sides come from tables keyed by it
+ * (`GAME_MODE_NAMES` and `MODE_SIDE_NAMES`, both in `shared/gameMode.ts`). Publishing the display
+ * name instead would put the presentation on the wire and leave a client unable to look up
+ * anything else about the mode it is being told about.
  *
  * Written when a vote **closes**, not when the round starts, and that is the useful moment: the
  * intermission following the vote is exactly when a player wants to know what they are about to
  * play, and a value written at the opening whistle would tell them a second too late. A reader
  * must therefore not assume it describes the round in progress — between the vote closing and the
- * round beginning it describes the round to come.
+ * round beginning it describes the round to come. It is also what a client uses to know which
+ * mode's side names to ink a result with, so a stale value would mislabel a winner.
  */
 export const ROUND_MODE_ATTRIBUTE = "Mode";
 

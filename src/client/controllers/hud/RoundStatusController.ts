@@ -1,8 +1,10 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { ReplicatedStorage } from "@rbxts/services";
+import { Players, ReplicatedStorage } from "@rbxts/services";
+import { ARENA_CONFIG } from "shared/config/arena.config";
 import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE, ROUND_WINNER_ATTRIBUTE } from "shared/constants";
+import { GAME_MODE_NAMES, isGameModeId, sideNameOf } from "shared/gameMode";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -52,6 +54,27 @@ export class RoundStatusController implements OnStart {
 		const time = Fusion.Value(scope, 0);
 		const winner = Fusion.Value(scope, "");
 		const mode = Fusion.Value(scope, "");
+
+		/**
+		 * How many players are in the server, for the "waiting for players" line.
+		 *
+		 * **Counted here rather than published by the server.** The client already has the whole
+		 * `Players` list, so a copy of that number on an attribute would be a second answer to a
+		 * question the engine is already answering — and the client's copy is the one that matches
+		 * what the player can actually see on the scoreboard. This is display only: whether a round
+		 * may *start* is the server's decision, and this reads the count to explain a clock that has
+		 * stopped moving.
+		 */
+		const playerCount = Fusion.Value(scope, Players.GetPlayers().size());
+
+		const recount = () => playerCount.set(Players.GetPlayers().size());
+
+		scope.push(Players.PlayerAdded.Connect(recount));
+
+		// **Deferred, because `PlayerRemoving` fires *before* the player leaves `GetPlayers`.** A
+		// direct count in the handler reads one too many, and the label would sit at `2/2` — or keep
+		// counting a round as viable — after the second player had already gone.
+		scope.push(Players.PlayerRemoving.Connect(() => task.defer(recount)));
 
 		// Subscribed *before* seeding, so a change landing between the two is not lost — the seed
 		// then reads the newer value and wins, which is the order that cannot go wrong either way.
@@ -104,31 +127,59 @@ export class RoundStatusController implements OnStart {
 		const initialMode = status.GetAttribute(ROUND_MODE_ATTRIBUTE);
 		if (typeIs(initialMode, "string")) mode.set(initialMode);
 
-		// The HUD's entire content, derived rather than assembled: it re-reads all four values
+		// The HUD's entire content, derived rather than assembled: it re-reads all five values
 		// whenever any of them changes, and never has to be told that it should.
 		//
-		// The phase is checked as well as the winner, so a result can only ever appear against the
-		// intermission it belongs to: whatever the folder happens to be holding, a playing phase
-		// reads as a playing phase.
+		// **The wording is built here, on the client.** The server publishes a phase, a clock, a
+		// mode and a bare winner label; turning those into a sentence is presentation, and
+		// presentation that only ever has one consumer — a label — belongs on the machine drawing
+		// the label. See `MODE_SIDE_NAMES`, which is what makes "who won" say the right thing for a
+		// mode whose sides are not "Team A" and "Team B".
 		const text = Fusion.Computed(scope, (use) => {
-			let line = `${use(state)} — ${use(time)}s`;
+			const phase = use(state);
+			const players = use(playerCount);
+
+			// **Below the minimum, the countdown is not the interesting number.** The intermission is
+			// frozen and will not move until somebody else arrives, so `Intermission — 30s` would be a
+			// clock that has stopped for a reason the reader cannot see. The count is the reason.
+			if (phase === "Intermission" && players < ARENA_CONFIG.MIN_PLAYERS) {
+				return `Waiting for players — ${players}/${ARENA_CONFIG.MIN_PLAYERS}`;
+			}
+
+			let line = `${phase} — ${use(time)}s`;
 
 			// The mode, once a vote has named one. Between the vote closing and the round beginning
-			// this names the round *to come*, which is exactly when a player wants to read it.
-			const modeName = use(mode);
-			if (modeName !== "") line = `${line} | ${modeName}`;
+			// this names the round *to come*, which is exactly when a player wants to read it. The
+			// attribute carries an **id**, so the name on screen is looked up from it here — see
+			// `ROUND_MODE_ATTRIBUTE` for why the id is what travels rather than the sentence.
+			const modeId = use(mode);
+			const known = isGameModeId(modeId);
+
+			if (known) line = `${line} | ${GAME_MODE_NAMES[modeId]}`;
 
 			const result = use(winner);
 
-			if (use(state) !== "Intermission" || result === "") return line;
+			if (phase !== "Intermission" || result === "") return line;
 
-			// Built before it is used, and **never nested inside the line's own template**:
-			// roblox-ts compiles each template literal to a Luau interpolated string, so nesting
-			// one puts backticks inside backticks — which parses, and quietly renders as nothing.
-			// The line above shows the failure exactly: `Intermission — 47s |` and no result.
-			const outcome = result === DRAW ? "Draw" : `Team ${result} won`;
+			// The draw case first, and it needs no side name at all — which is the whole reason the
+			// server can keep publishing a bare label and nothing else.
+			if (result === DRAW) return `${line} | Draw`;
 
-			return `${line} | ${outcome}`;
+			// A server whose modes this client does not know: the attribute is a plain string, so a
+			// build a version behind can be handed an id it has no entry for. The fallback is the
+			// label itself rather than nothing, because "Team A won" is still true.
+			if (!known) {
+				const fallback = `Team ${result}`;
+
+				return `${line} | ${fallback} won`;
+			}
+
+			// Built before it is used, and **never nested inside the line's own template**: roblox-ts
+			// compiles each template literal to a Luau interpolated string, so nesting one puts
+			// backticks inside backticks — which parses, and quietly renders as nothing.
+			const outcome = sideNameOf(modeId, result);
+
+			return `${line} | ${outcome} won`;
 		});
 
 		const wrapper = Fusion.New(scope, "Frame")({

@@ -26,10 +26,6 @@ class TeamEliminationMode implements GameMode {
 		return splitEvenly(players);
 	}
 
-	public sideName(team: TeamLabel): string {
-		return `Team ${team}`;
-	}
-
 	/**
 	 * Nothing. A hit here kills, and killing people *is* this mode's score — writing points down
 	 * as well would be two ways of counting one side's progress, free to disagree.

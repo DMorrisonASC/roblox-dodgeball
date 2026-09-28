@@ -33,7 +33,7 @@ export const DRAW = "draw";
  *
  * The same two-part vocabulary whether or not the two sides are symmetric: Dodge and Seek's
  * "seekers" and "dodgers" are still two sides, still labelled `A` and `B` on the player, and a
- * mode that wants to name them differently does it through `GameMode.sideName` rather than by
- * inventing a third kind of outcome.
+ * mode that wants to name them differently does it through `MODE_SIDE_NAMES` — a shared table,
+ * read by whoever is writing the sentence — rather than by inventing a third kind of outcome.
  */
 export type RoundOutcome = TeamLabel | typeof DRAW;

@@ -37,6 +37,89 @@ export const GAME_MODE_NAMES: Record<GameModeId, string> = {
 };
 
 /**
+ * What each mode calls its two sides, for anything that has to write a sentence about one.
+ *
+ * **On the client's side of the line, deliberately.** The server publishes a winner as the raw
+ * label — `"A"`, `"B"` or `"draw"` — and nothing more, because that is the whole of what anything
+ * server-side needs in order to match a side against a player. How a side reads to a person is a
+ * *label's* business, and labels are the client's, so this table lives here where the HUD can
+ * reach it rather than as a method on a mode object the client cannot see.
+ *
+ * **A `Record` rather than a method, because the answer depends only on which mode it is.** A
+ * mode's two sides are fixed the moment the mode is written; asking a mode instance at runtime
+ * would be a table lookup with an object in front of it — and an answer only the server could
+ * give, which is precisely the problem this solves.
+ *
+ * The keys are `A` and `B` because those are literally the values `TEAM_ATTRIBUTE` holds and what
+ * `ROUND_WINNER_ATTRIBUTE` publishes. A mode whose sides are not symmetric still uses them; the
+ * labels are positional, and this is what makes them mean something to a reader.
+ */
+export const MODE_SIDE_NAMES: Record<GameModeId, { readonly A: string; readonly B: string }> = {
+	TeamElimination: { A: "Team A", B: "Team B" },
+	ScoreRush: { A: "Team A", B: "Team B" },
+	DodgeAndSeek: { A: "Seekers", B: "Dodgers" },
+};
+
+/**
+ * What `mode` calls the side that `label` refers to — the sentence form of {@link MODE_SIDE_NAMES}.
+ *
+ * Takes the label as a plain `string` rather than as a `TeamLabel`, because that is how it arrives:
+ * read off an attribute, published by a server that may be a version away from this client. A label
+ * this build does not recognise falls back to `"Team X"` rather than erroring — a HUD halfway
+ * through drawing itself is the wrong place to find out that two builds disagree.
+ */
+export function sideNameOf(mode: GameModeId, label: string): string {
+	const names = MODE_SIDE_NAMES[mode];
+
+	if (label === "A") return names.A;
+	if (label === "B") return names.B;
+
+	return `Team ${label}`;
+}
+
+/**
+ * The colour each mode draws its two sides in.
+ *
+ * **Per mode, and fixed — not randomised per round.** A side's colour is part of how a mode reads:
+ * red against blue is the shape of a symmetric two-team game, and a round of Dodge and Seek that
+ * happened to come out red and blue would look like a different mode. Randomising the pairs is a
+ * follow-up; what matters first is that the same mode always looks the same.
+ *
+ * **Dark and desaturated, deliberately.** These are *edges* — see `OUTLINE_CONFIG` — not fills, so
+ * each one is drawn as a line around a silhouette rather than over it, and a saturated colour at
+ * that weight reads as neon rather than as a team. These are values chosen to survive being an
+ * outline.
+ *
+ * The keys are `A` and `B` for the same reason {@link MODE_SIDE_NAMES} uses them: those are
+ * literally the values `TEAM_ATTRIBUTE` holds. Which side gets which colour is a convention of this
+ * table and nothing else depends on it — but note that a mode being *asymmetric* does not change
+ * the shape, so Dodge and Seek's seekers are `A` and its dodgers are `B`, in colour as on the
+ * player.
+ */
+export const MODE_TEAM_COLORS: Record<GameModeId, { readonly A: Color3; readonly B: Color3 }> = {
+	TeamElimination: { A: Color3.fromRGB(158, 58, 52), B: Color3.fromRGB(56, 92, 152) },
+	ScoreRush: { A: Color3.fromRGB(74, 124, 70), B: Color3.fromRGB(112, 74, 148) },
+	DodgeAndSeek: { A: Color3.fromRGB(178, 104, 46), B: Color3.fromRGB(52, 122, 120) },
+};
+
+/**
+ * The colour `mode` draws the side `label` in, or `undefined` if there is no such side.
+ *
+ * The counterpart to {@link sideNameOf}, and loose in the same way for the same reason: `label`
+ * arrives as a plain string off an attribute, so an unrecognised one answers `undefined` rather
+ * than throwing. The caller decides what "no side" should look like — for the outline it is the
+ * default colour, which is also what the lobby is drawn in.
+ */
+export function teamColourOf(mode: GameModeId, label: string): Color3 | undefined {
+	const colors = MODE_TEAM_COLORS[mode];
+
+	if (label === "A") return colors.A;
+	if (label === "B") return colors.B;
+
+	return undefined;
+}
+
+/**
  * The separator between ids in the wire form. See {@link encodeModeIds}.
  *
  * A comma, and it is safe for the same reason the encoding exists at all: the ids are a closed set

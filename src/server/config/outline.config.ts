@@ -18,10 +18,15 @@ export const OUTLINE_CONFIG = {
 	ENABLED: true,
 
 	/**
-	 * The colour the edge is drawn in.
+	 * The **default** colour the edge is drawn in — the one that means "not on a side".
 	 *
-	 * Black, so a rig reads as its own silhouette against the arena floor. Read as the
-	 * *edge* only — the fill is transparent, so this never tints the character itself.
+	 * Black, so a rig reads as its own silhouette against the arena floor. Read as the *edge* only
+	 * — the fill is transparent, so this never tints the character itself.
+	 *
+	 * **A player in a round does not wear this.** `OutlineService` overpaints their outline with
+	 * their side's colour from `MODE_TEAM_COLORS`, and this is what they fall back to between
+	 * rounds. It is also what every NPC rig and every ball wears, which is what tells them apart
+	 * from somebody who is playing.
 	 */
 	COLOR: Color3.fromRGB(0, 0, 0),
 } as const;

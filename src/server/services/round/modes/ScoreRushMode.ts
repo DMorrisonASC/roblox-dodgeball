@@ -27,10 +27,6 @@ class ScoreRushMode implements GameMode {
 		return splitEvenly(players);
 	}
 
-	public sideName(team: TeamLabel): string {
-		return `Team ${team}`;
-	}
-
 	/**
 	 * A landed hit is a point for the side that landed it.
 	 *

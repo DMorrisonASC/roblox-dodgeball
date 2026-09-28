@@ -219,8 +219,15 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		this.bounceOff(otherPart);
 
-		// The round is told before the body is damaged, because a mode reads the record this writes
-		// when the death arrives — and `TakeDamage` below may fire `Died` before this method returns.
+		// **Hits are recorded for scoring and stats only — no mode consults hit cause.** The round is
+		// told about this one so a mode that keeps score can award the point; nothing anywhere asks
+		// whether a death was a throw or a reset.
+		//
+		// **Told before the body is damaged, and that order is load-bearing.** `registerHit` refuses
+		// a victim who is no longer in the round, and `TakeDamage` below can fire `Died`
+		// synchronously — which in an eliminating mode takes the victim straight out of it. A
+		// notification sent after the damage would therefore land on nobody and the throw would
+		// score nothing, silently, only in the modes where it matters.
 		if (typeIs(throwerId, "string")) this.rounds.registerHit(throwerId, character);
 
 		this.landHit(character, humanoid, otherPart);

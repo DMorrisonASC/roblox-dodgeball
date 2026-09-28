@@ -2,7 +2,7 @@ import { Service, OnStart } from "@flamework/core";
 import { Players, Workspace } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
-import { GAME_MODE_NAMES } from "shared/gameMode";
+import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import {
     ROUND_STATE_ATTRIBUTE,
     ROUND_TIME_ATTRIBUTE,
@@ -11,6 +11,7 @@ import {
     TEAM_ATTRIBUTE,
 } from "shared/constants";
 import { DevService } from "../../dev/DevService";
+import { MapService } from "../MapService";
 import { BallService } from "../ball/BallService";
 import { GameMode, RoundView } from "./modes/GameMode";
 import { DEFAULT_MODE, modeFor } from "./modes/registry";
@@ -22,6 +23,9 @@ enum RoundState {
     Intermission,
     Playing,
 }
+
+/** The two sides, in the order a round has them. For anything that has to ask about both. */
+const TEAM_LABELS: ReadonlyArray<TeamLabel> = [TEAM_A, TEAM_B];
 
 /**
  * The round: a clock, a roster, and the rules a mode supplies.
@@ -59,21 +63,6 @@ export class RoundService implements OnStart {
     public readonly scores = new Map<TeamLabel, number>();
 
     /**
-     * Who a throw has landed on since they last spawned.
-     *
-     * **The answer to a question `Humanoid.Died` cannot answer.** A death says nothing about its
-     * cause — a ball, a fall out of the world and the reset button are one event — and Dodge and
-     * Seek's rules turn on exactly that difference, because a player who is *hit* becomes a seeker
-     * and counts as one, while a player who *resets* becomes a seeker and explicitly does not.
-     *
-     * So a hit is written here when it lands, read once when the death arrives, and dropped either
-     * way — and cleared again on respawn, which is what makes it "hit this life" rather than "hit
-     * at some point in this round". The second distinction only starts to matter the moment a mode
-     * sends somebody back in, which is why it is already right here.
-     */
-    private readonly hitThisRound = new Set<Player>();
-
-    /**
      * Who is on which team this round.
      *
      * A table *beside* the attribute rather than instead of it, and both written in the one
@@ -96,6 +85,7 @@ export class RoundService implements OnStart {
         private readonly dev: DevService,
         private readonly balls: BallService,
         private readonly votes: VoteService,
+        private readonly maps: MapService,
     ) {}
 
     onStart() {
@@ -221,6 +211,23 @@ export class RoundService implements OnStart {
     }
 
     /**
+     * Whether there are too few players for a round to be worth starting.
+     *
+     * **Asked of `Players`, and not of `activePlayers` — that is not a style choice.**
+     * `activePlayers` is who is *in the round*, and it is empty for the whole of an intermission:
+     * it is cleared as the intermission opens and filled again when the round does. A check against
+     * it would read zero every single time and freeze the intermission for ever, which is the trap
+     * this comment exists to stop anybody walking back into.
+     *
+     * **Only the start of a round is gated by this.** A round that drops below the minimum mid-play
+     * runs to its finish — a result that changed because somebody's connection did is not a result,
+     * and the round already has its own rules for a side that empties out.
+     */
+    private belowMinimum(): boolean {
+        return Players.GetPlayers().size() < ARENA_CONFIG.MIN_PLAYERS;
+    }
+
+    /**
      * Waits, a second at a time, until rounds are switched back on.
      *
      * The boundary between two phases is a pause point like any other tick: a phase that has
@@ -235,11 +242,6 @@ export class RoundService implements OnStart {
 
     private handlePlayerJoined(player: Player) {
         player.CharacterAdded.Connect((character) => {
-            // A new life starts un-hit. Per *life* rather than per round, because the question a
-            // mode asks of this record — "was this death a throw, or a reset?" — is only
-            // answerable that way once a mode sends people back in. See `hitThisRound`.
-            this.hitThisRound.delete(player);
-
             const humanoid = character.WaitForChild("Humanoid") as Humanoid;
             humanoid.Died.Connect(() => this.handleDeath(player));
 
@@ -269,13 +271,12 @@ export class RoundService implements OnStart {
      * The three cases below are ordered by what the round already knows, and only the last one is
      * a question: outside a round there is nothing to decide, somebody already out is still out,
      * and everyone else is a decision the mode makes.
+     *
+     * **Nothing here asks how they died.** A death is reported as a death, because no mode tells a
+     * hit apart from a reset — see `DeathEvent` for why that distinction was removed rather than
+     * merely left unused.
      */
     private handleDeath(player: Player): void {
-        // Read and dropped in one go: a hit is worth at most one death, and the answer is about
-        // *this* life rather than the round so far.
-        const byHit = this.hitThisRound.has(player);
-        this.hitThisRound.delete(player);
-
         // A death in the lobby is not an elimination, so nothing is written outside a round.
         if (this.state !== RoundState.Playing) return;
 
@@ -286,7 +287,7 @@ export class RoundService implements OnStart {
             return;
         }
 
-        const decision = this.mode.onDeath({ player, byHit }, this);
+        const decision = this.mode.onDeath({ player }, this);
 
         if (decision.kind === "eliminate") {
             this.eliminate(player);
@@ -367,16 +368,18 @@ export class RoundService implements OnStart {
      * anybody is on, and a mode's `hitAward` is never asked what a hit on one's own side is worth.
      * A guard here for that case would be unreachable, which is why there is not one.
      *
-     * Recorded even when it scores nothing: a mode that awards no points still has to know that a
-     * throw landed, because the death arriving a moment later is read against it.
+     * **Recorded for scoring and stats only — no mode consults hit cause.** The round is told about
+     * a hit so that a mode which keeps score can award the point, and so the throw reaches
+     * `StatsService`; nothing anywhere asks whether a death was a throw or a reset, which is why
+     * the round keeps no record of which players a throw has landed on. A mode that needed that
+     * distinction would have to ask for it back here, because this is the only moment it is
+     * observable.
      */
     public registerHit(throwerToken: string, victim: Model): void {
         if (this.state !== RoundState.Playing) return;
 
         const victimPlayer = Players.GetPlayerFromCharacter(victim);
         if (victimPlayer === undefined || !this.activePlayers.has(victimPlayer)) return;
-
-        this.hitThisRound.add(victimPlayer);
 
         // **A mode that keeps no score is not asked what a hit is worth.** See `GameMode.scores`:
         // a scoreless mode has no hit rule to state, so asking anyway would make every mode carry a
@@ -403,19 +406,61 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * The arena spawn for `player`'s side.
+     * The arena spawn for `player`'s side — one of that side's spawn parts, picked at random.
      *
      * **The one place the side-to-spawn mapping lives**, so a round's opening teleport and a
      * respawn mid-round cannot send the same player to different ends of the arena. A player
      * with no team — somebody who joined while a round was already under way — is treated as
      * A's, here and at the round start alike; they are not in `activePlayers`, so this is the
      * only moment it ever matters for them.
+     *
+     * **The pick is made here rather than at either call site**, which is what makes a respawn land
+     * as spread out as the opening whistle: both go through this method, so there is no second place
+     * for the two to disagree — the same reason the side mapping is here. It follows that the draw
+     * is per *call*, so a returning player is not sent back to the spot they died on.
      */
     private arenaSpawnFor(player: Player): CFrame {
-        const name =
-            this.teams.get(player) === TEAM_B ? ARENA_CONFIG.ARENA_SPAWN_NAME_B : ARENA_CONFIG.ARENA_SPAWN_NAME_A;
+        return this.getRandomTeamSpawn(this.teams.get(player) === TEAM_B ? TEAM_B : TEAM_A);
+    }
 
-        return this.getSpawn(name);
+    /**
+     * One of `team`'s spawn parts, picked uniformly at random.
+     *
+     * **A folder of parts inside the loaded map**, one per place a player may stand, rather than a
+     * spread around a point. A spread could not know how big the platform underneath it was, so it
+     * could walk people off the edge — and the answer to that would have been a radius small enough
+     * to defeat the point. A part is a spot somebody has looked at and decided is a fine place to
+     * begin; the randomness is then only *which* of those spots, a choice with no geometry in it.
+     *
+     * **The map is asked for its spawns, by path, at the moment they are needed.** Nothing caches
+     * the parts or the folder across a round: the map they belong to is destroyed at the next
+     * intermission, so anything held here would be a reference into a torn-down model — the kind of
+     * stale handle that works until a swap happens and then places somebody in the void.
+     *
+     * **Every failure here is an error, and that is the enforcement.** These are only reachable if
+     * the load sequence failed earlier — no map was loaded, or the map is missing its spawns — and
+     * both mean a round cannot start. A round that began with everybody in the lobby would look like
+     * a hang; an error names what is wrong.
+     *
+     * Only **direct** `BasePart` children count. A `Model` full of parts is not a spawn and is
+     * skipped rather than searched, so there is one rule about what a spawn is and the errors above
+     * describe it exactly.
+     */
+    private getRandomTeamSpawn(team: TeamLabel): CFrame {
+        const map = this.maps.getCurrent();
+        if (map === undefined) error(`[Round] no map loaded — cannot resolve team ${team} spawns`);
+
+        const parts = teamSpawnParts(map, team);
+
+        // Still an error, even though the round boundary refuses a map like this before it gets
+        // here. This is the enforcement the round leans on: a caller that skipped the boundary, or
+        // a map that lost its spawns mid-round, finds out here rather than placing somebody in the
+        // void. `mapProblem` is what turns the same emptiness into the sentence a person reads.
+        if (parts.size() === 0) {
+            error(`[Round] no spawn parts at ${map.Name}.${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}.${teamFolderName(team)}`);
+        }
+
+        return parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
     }
 
     /** Everyone to one place. The lobby's business: no side is on the lobby's side. */
@@ -480,6 +525,19 @@ export class RoundService implements OnStart {
             print("Intermission started");
             this.teleportAll(ARENA_CONFIG.LOBBY_SPAWN_NAME);
 
+            // **The map swap, and this is the only moment it is safe.** Everybody has just been put
+            // in the lobby, which lives at `Workspace` root and belongs to no map — so there is
+            // nobody standing on the arena that is about to be destroyed, and nothing left behind in
+            // it. Unloading before loading is what guarantees two arenas are never in `Workspace` at
+            // once; `loadMap` does it again internally, so the order is true by construction rather
+            // than by this comment.
+            //
+            // Loading *here* rather than at the round's opening whistle is deliberate: the cost is
+            // paid while nothing is happening, and the arena the next round will be played in is
+            // then visible from the lobby — which is a feature rather than a spoiler.
+            this.maps.unloadCurrent();
+            this.maps.loadMap(this.maps.pickNext());
+
             this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
             // The phase goes out as its own name, which is the HUD's entire vocabulary. Those two
             // words are `RoundState`'s members by convention rather than by construction, so
@@ -489,24 +547,32 @@ export class RoundService implements OnStart {
             // the HUD never shows the *previous* phase's final number under the new phase's name.
             this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
-            // The vote opens with the intermission, so the window is exactly as long as it says
-            // it is rather than as long as the remainder of the phase happens to allow.
-            this.votes.openVote();
-
             // Counted beside the clock rather than derived from it, because the two stop for the
-            // same reason and at the same moment: a paused tick `continue`s below without touching
+            // same reason and at the same moment: a frozen tick `continue`s below without touching
             // either, so this measures *running* seconds. A window timed off the wall clock would
-            // close while a paused round was still being held up.
+            // close while a round was still being held up.
             let elapsed = 0;
 
             while (this.timeRemaining > 0) {
                 // A paused tick does nothing at all: no second off the clock, no change of
                 // state, no teleport. The phase resumes from whatever the clock said when it
                 // was switched off, which is the whole difference between pausing and ending.
-                if (this.isRoundsPaused()) {
+                //
+                // **A server below the minimum freezes in exactly the same way**, and for the same
+                // reason: there is no round to be counting down to. This single line is where
+                // "freeze, don't skip" lives — the clock is not reset, so a server that fills up
+                // later resumes the intermission it was already in, vote window included.
+                if (this.isRoundsPaused() || this.belowMinimum()) {
                     task.wait(1);
                     continue;
                 }
+
+                // The vote opens on the intermission's **first running second**, which is not the
+                // same moment as the intermission *starting*: a server below the minimum is frozen
+                // above, so its intermission has not really begun and the window should not be open
+                // while nobody is there to vote. Opening it here rather than once before the loop
+                // is also what lets a server that fills up thirty seconds later still get this vote.
+                if (elapsed === 0) this.votes.openVote();
 
                 task.wait(1);
                 this.timeRemaining--;
@@ -529,6 +595,33 @@ export class RoundService implements OnStart {
             this.clearHeldBalls();
 
             // --- Playing ---
+
+            // **A round whose map cannot host it does not start.**
+            //
+            // This check exists because of what happens without it, which is worth spelling out
+            // because it is not obvious from the code below: `getRandomTeamSpawn` raises when there
+            // is no map, which is the right thing for *it* to do — but it is called from inside
+            // this loop, and `gameLoop` is an `async` function. roblox-ts turns that into a promise,
+            // and a throw inside it rejects the promise instead of unwinding a coroutine. Nothing
+            // handles the rejection, so the loop simply stops — for the rest of the server's life.
+            //
+            // What the player sees is not an error message but a *frozen HUD*: the throw happens
+            // before `ROUND_STATE_ATTRIBUTE` is set to `"Playing"`, so the folder still says
+            // "Intermission" and the clock still says whatever the last intermission tick left it at.
+            // `Intermission — 0s`, for ever, with nothing in the output after the one rejection.
+            //
+            // Checking here instead costs one intermission rather than the session, and it is
+            // checked **before anything is half-started**: no sides are assigned, nobody is marked
+            // as playing, no clock is set. The loop goes round, the map is retried, and building the
+            // map while the server is running works on the next cycle with no restart.
+            const problem = mapProblem(this.maps.getCurrent());
+
+            if (problem !== undefined) {
+                print(`[Round] cannot start — ${problem}. Retrying next intermission.`);
+
+                continue;
+            }
+
             this.state = RoundState.Playing;
 
             // The mode for this round, from whatever the vote decided. Resolved once, here, rather
@@ -536,10 +629,9 @@ export class RoundService implements OnStart {
             // round must not be able to change its own rules underneath itself.
             this.mode = modeFor(this.votes.selection()) ?? DEFAULT_MODE;
 
-            // A fresh scoreboard and no memory of who was hit — both are round state, and a round
-            // that inherited either would be starting in the middle of somebody else's story.
+            // A fresh scoreboard for a fresh round: a round that inherited one would be starting
+            // in the middle of somebody else's game.
             this.scores.clear();
-            this.hitThisRound.clear();
 
             this.assignTeams();
 
@@ -582,9 +674,10 @@ export class RoundService implements OnStart {
                 if (outcome !== undefined) {
                     // Built before it is printed: a nested template inside an interpolated
                     // string is one more thing for a reader to unpick, and the message is the
-                    // part worth reading. `sideName` rather than a hard-coded "Team", because a
-                    // mode is allowed to call its two sides something else — see `sideName`.
-                    const result = outcome === DRAW ? "a draw" : `${this.mode.sideName(outcome)} won`;
+                    // part worth reading. The side's *name* comes from the shared table rather
+                    // than from a hard-coded "Team", because a mode is allowed to call its two
+                    // sides something else — see `MODE_SIDE_NAMES`.
+                    const result = outcome === DRAW ? "a draw" : `${sideNameOf(this.mode.id, outcome)} won`;
 
                     // The score, for a mode that keeps one. Printed here rather than at every
                     // point that changes it: a line per hit would bury the round's own output,
@@ -630,4 +723,64 @@ function playerFromToken(throwerToken: string): Player | undefined {
     if (userId === undefined) return undefined;
 
     return Players.GetPlayerByUserId(userId);
+}
+
+/** The name of `team`'s spawn folder inside a map. The labels are the folder names. */
+function teamFolderName(team: TeamLabel): string {
+    return team === TEAM_B ? ARENA_CONFIG.ARENA_TEAM_FOLDER_B : ARENA_CONFIG.ARENA_TEAM_FOLDER_A;
+}
+
+/**
+ * The `BasePart` children of `map`'s spawn folder for `team`.
+ *
+ * **One traversal, two callers that disagree about what emptiness means** — the round boundary
+ * skips the round, the spawn picker throws — so "what counts as a spawn" is decided once and the
+ * argument is about policy rather than about the place file. It answers with a list rather than a
+ * reason for exactly that reason; {@link mapProblem} is what turns the list back into words.
+ *
+ * Only **direct** `BasePart` children count. A `Model` full of parts is not a spawn and is skipped
+ * rather than searched, which keeps "is this a spawn?" a question about one folder's children.
+ */
+function teamSpawnParts(map: Model, team: TeamLabel): BasePart[] {
+    const spawns = map.FindFirstChild(ARENA_CONFIG.ARENA_SPAWNS_FOLDER);
+    if (spawns === undefined) return [];
+
+    const folder = spawns.FindFirstChild(teamFolderName(team));
+    if (folder === undefined) return [];
+
+    const parts: BasePart[] = [];
+
+    for (const child of folder.GetChildren()) {
+        if (child.IsA("BasePart")) parts.push(child);
+    }
+
+    return parts;
+}
+
+/**
+ * Why `map` cannot host a round, or `undefined` if it can.
+ *
+ * **A sentence rather than a boolean**, because this is read by somebody looking at a place file
+ * rather than by code: the string names the full path that is missing or empty, which is the one
+ * thing they need to know, and the same string serves the output line and the error.
+ *
+ * Takes `Model | undefined` rather than a `Model`, so that "nothing is loaded" — the case that
+ * actually happens when `MAP_CONFIG.MAP_NAMES` names a map nobody has built yet — is one of the
+ * ordinary answers rather than something every caller has to check first.
+ *
+ * **Both sides are checked, not just a named one.** A round needs both, so a map missing either
+ * cannot host a round whatever the caller was about to do with the other, and a map that is half
+ * built should be reported as such the first time it is tried rather than at the second team's
+ * teleport.
+ */
+function mapProblem(map: Model | undefined): string | undefined {
+    if (map === undefined) return "no map is loaded";
+
+    for (const team of TEAM_LABELS) {
+        if (teamSpawnParts(map, team).size() > 0) continue;
+
+        return `${map.Name}.${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}.${teamFolderName(team)} is missing or has no BasePart children`;
+    }
+
+    return undefined;
 }

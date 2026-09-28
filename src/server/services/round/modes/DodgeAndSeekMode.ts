@@ -84,21 +84,6 @@ class DodgeAndSeekMode implements GameMode {
 	}
 
 	/**
-	 * `"Seekers"` and `"Dodgers"` — what this mode's two sides are called.
-	 *
-	 * The labels *on the player* are still `A` and `B`, because that is what `TEAM_ATTRIBUTE`
-	 * carries and what anything matching a side has to compare against. This is only what to call
-	 * them where a person reads it.
-	 *
-	 * **What it cannot do is fix the HUD.** The winner goes out as the raw label, and the HUD builds
-	 * its own sentence from it — `Team ${result} won` — with no way to reach a mode. So a seeker win
-	 * currently reads "Team A won" on screen. See the note in the report.
-	 */
-	public sideName(team: TeamLabel): string {
-		return team === SEEKERS ? "Seekers" : "Dodgers";
-	}
-
-	/**
 	 * Never called, and loud if it ever is.
 	 *
 	 * `RoundService` only asks a mode what a hit is worth when that mode keeps score — see
