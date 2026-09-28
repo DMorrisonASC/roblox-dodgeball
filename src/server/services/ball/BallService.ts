@@ -3,12 +3,14 @@ import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts
 import { BALL_SIZE, THROWER_TOKEN, THROW_ENABLED, PICKUP_LOCKED_UNTIL } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
+import { SOUND_CONFIG } from "shared/config/sound.config";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
 import { LaunchPlan, ThrowArc } from "shared/Trajectory";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallTrail } from "./BallTrail";
+import { emitSound } from "./SoundEmitter";
 import { DevService } from "../../dev/DevService";
 import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
@@ -48,6 +50,17 @@ const GRIP_NAME = "DodgeballGrip";
  * leave a destroyed ball in it for the session. The engine maintains this one.
  */
 const BALL_TAG = "Ball";
+
+/**
+ * What a catch sound's emitter is called.
+ *
+ * The counterpart to `BallComponent`'s `IMPACT_EMITTER_NAME`, and separate for the reason given
+ * there: the emitter is an anonymous part in `Workspace`, so its name is the only handle a leftover
+ * check has, and one name per event is what makes "no catch emitters remain" a statement about
+ * catches rather than about sounds in general. `SoundEmitter.emitSound` takes the name as an argument
+ * precisely so that this can be the caller's decision.
+ */
+const CATCH_EMITTER_NAME = "CatchEmitter";
 
 /**
  * How often a loose ball is checked for having stopped, in seconds.
@@ -229,11 +242,30 @@ export class BallService implements OnStart {
 	 * on purpose: the moment a catch grows something a pickup does not — an
 	 * animation, a grace frame, its own telemetry — the seam is already there, and
 	 * until then it costs nothing.
+	 *
+	 * **This is where a catch is confirmed, and it is worth being exact about why, because both
+	 * neighbouring candidates are wrong.** `attachToHand` is the wider door: the hand-out on join and
+	 * the pickup off the floor come through it too, and it has no idea which of the four it was called
+	 * for, so a sound there would play on every spawn and every ball collected. And a catch is not
+	 * confirmed anywhere in `CatchService` — `attemptCatch` opens a window that most attempts never
+	 * spend, and `consume`, the other plausible hook, is *also* how a window is dropped on expiry, on
+	 * death and on a dev's flag going off. Neither of those is a catch.
+	 *
+	 * What makes this the site is the return below: everything after it is reached only when the weld
+	 * succeeded, so it runs exactly once per ball that really did end up in a hand. A catch refused for
+	 * a missing right hand returns before the sound, which is the behaviour worth having — the sound is
+	 * a report, and there is nothing to report.
 	 */
 	public catchBall(model: Model, ball: BasePart): boolean {
 		if (!this.attachToHand(model, ball)) return false;
 
 		print(`[Ball] ${model.Name} caught a dodgeball`);
+
+		// The ball's own position, which is the catcher's hand by now: `attachToHand` has just placed
+		// it at the grip and welded it there. Asked of the ball rather than looked up from the hand,
+		// because the ball is the instance this method already holds — no second lookup, and no way
+		// for the two to be talking about different places.
+		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.CATCH, CATCH_EMITTER_NAME);
 
 		return true;
 	}

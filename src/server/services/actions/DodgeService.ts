@@ -3,6 +3,7 @@ import { Players } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
+import { SOUND_CONFIG } from "shared/config/sound.config";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
@@ -10,6 +11,7 @@ import { events } from "shared/networking";
 import { lockoutElapsed } from "./actionLock";
 import { DevService } from "../../dev/DevService";
 import { extendReadyAt, publishReadyAt } from "./readyAt";
+import { emitSound } from "../ball/SoundEmitter";
 
 /** Prints what every dodge request did, and why it did nothing. */
 const DEBUG = true;
@@ -24,6 +26,15 @@ const DEBUG = true;
  * having no heading rather than accepted for having length.
  */
 const MIN_DIRECTION_MAGNITUDE = 0.9;
+
+/**
+ * What a dodge sound's emitter is called.
+ *
+ * The third of these, and separate from the other two for the reason given in `SoundEmitter`: the
+ * emitter is an anonymous part in `Workspace`, so its name is the only handle a leftover check has,
+ * and one name per event is what makes "no dodge emitters remain" a statement about dodges.
+ */
+const DODGE_EMITTER_NAME = "DodgeEmitter";
 
 /**
  * A dash in flight, and the one way to end it early.
@@ -317,6 +328,31 @@ export class DodgeService implements OnStart {
 		extendReadyAt(model, CATCH_READY_AT, DODGE_CONFIG.DURATION + ACTION_CONFIG.ACTION_LOCKOUT_SECONDS);
 
 		this.startDash(model, entity, heading);
+
+		// **Heard here, which is after every reason this dodge might not have happened.** No living
+		// humanoid, a catch in the way, a cooldown not yet elapsed, a direction that is not a
+		// direction, a heading with no horizontal part — each of those returned above. So arriving at
+		// this line *is* the dodge, and a refused attempt is silent by construction rather than by a
+		// condition written here. That matters more for this sound than for the other two: a dodge
+		// refused for cooldown is the common case, and it is the one a stray sound would give away.
+		//
+		// **At the root part, which is where the model *is*.** `Dodgeable.root` is the part whose
+		// position the model's position is — see `resolveDodgeable` for how one is chosen — so this is
+		// the dodger rather than whatever the humanoid's own centre happens to be. It is also the part
+		// the dash's own constraints are hung from, so the sound and the move are in the same place by
+		// construction rather than by two lookups agreeing.
+		//
+		// **On the server, which costs a round trip and buys every nearby player the sound.** The
+		// rejected alternative is worth naming because it is not a bad idea: this client already knows
+		// it dodged — it pressed the key — so a sound played locally would be immediate, and the one
+		// the dodger heard would not arrive a round trip after their own input. It is rejected because
+		// the sound is not *for* the dodger. A dodge is something other people need to notice, which is
+		// exactly why `playDodgeAnimation` starts its flourish from the server and not from the client
+		// that asked, and a locally-played sound would be a private flourish for the one person who
+		// already knows what they just did. Consistency with the hit and catch sounds is the deciding
+		// factor, not a tie-break: all three are the same kind of event, so all three are told the same
+		// way.
+		emitSound(entity.root.CFrame, model.Name, SOUND_CONFIG.DODGE, DODGE_EMITTER_NAME);
 
 		return true;
 	}

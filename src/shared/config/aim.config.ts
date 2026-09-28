@@ -1,9 +1,15 @@
 /**
- * The aim-target glow: what it looks like, how far it looks, and how often.
+ * The aim-target glow: what it fills a target with.
  *
- * Read by `AimTargetController` alone today. Shared rather than client-only because nothing in it
- * is a *client's* business to decide — the colour and the reach are the game's look, and a second
- * client that ever wanted them would want the same numbers.
+ * Read by `AimTargetController` alone today. Shared rather than client-only because nothing in it is
+ * a *client's* business to decide — the colour is the game's look, and a second client that ever
+ * wanted it would want the same value.
+ *
+ * **The other two entries here are no longer read, and that is worth spelling out.** They configured
+ * a ray the glow cast for itself. The glow no longer casts anything: it reads the arc the throw
+ * guide already draws, so it has no reach of its own and nothing to throttle. Both are kept and
+ * marked rather than deleted, because the numbers are the ones to start from if the glow ever has to
+ * ask its own question again, and because the shape of the older design is worth being able to see.
  */
 export const AIM_CONFIG = {
 	/**
@@ -33,24 +39,25 @@ export const AIM_CONFIG = {
 	TARGET_FILL_TRANSPARENCY: 0.35,
 
 	/**
-	 * How far the crosshair ray reaches, in studs.
+	 * **Placeholder, and no longer read.** How far the crosshair ray reached, in studs.
 	 *
-	 * Long enough that the arena is covered end to end — see `ARENA_CONFIG` for how big it is —
-	 * and short enough that a rig on the far side of the map is not a target through a wall of
-	 * geometry. Nothing beyond this is ever lit.
+	 * The glow casts no ray — it reads the arc `ThrowController` has already drawn, whose reach is
+	 * the trajectory's own time limit rather than a distance. So there is nothing left for this to
+	 * bound. It was always a *ceiling* rather than a preference: long enough that the arena is
+	 * covered end to end, short enough that a rig on the far side of the map is not a target through
+	 * a wall of geometry. Kept as the number to start from if the glow ever casts again.
 	 */
 	TARGET_MAX_DISTANCE: 500,
 
 	/**
-	 * How many times a second the crosshair ray may be cast.
+	 * **Placeholder, and no longer read.** How many times a second the crosshair ray was cast.
 	 *
-	 * **A raycast per frame is not worth a cosmetic.** At this rate the glow appears up to 66ms
-	 * after the crosshair arrives, which is less than the eye reads as a delay on something this
-	 * soft, and it is the difference between one ray every four frames and one every frame.
-	 *
-	 * It throttles the *ray* and not the whole controller: whether the player is aiming is still
-	 * checked every frame — that is a table read — so releasing the aim puts the glow out on the
-	 * frame it happens rather than on this clock. See `AimTargetController.update`.
+	 * The ray is gone and its replacement is free: the arc is rebuilt every frame whether or not
+	 * anything reads it, so the glow is now exactly as fresh as the guide that drew it, and there is
+	 * no cost to throttle. The reasoning this carried is worth keeping anyway, because it is the
+	 * reason the glow was ever allowed to be stale: a raycast a frame is not worth a cosmetic, and
+	 * 15 Hz put the glow up to 66 ms behind the crosshair, which is less than the eye reads as a
+	 * delay on something this soft.
 	 */
 	TARGET_UPDATE_HZ: 15,
 } as const;

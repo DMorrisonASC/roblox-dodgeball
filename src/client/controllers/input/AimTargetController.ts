@@ -1,8 +1,8 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, RunService, UserInputService, Workspace } from "@rbxts/services";
+import { Players, RunService } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
-import { aiming } from "../../aiming";
+import { aiming, predictedTarget } from "../../aiming";
 
 /** Prints a line as a target is lit and as it goes out. Silent while a target stays the same. */
 const DEBUG = true;
@@ -32,16 +32,13 @@ const RESTORE_FILL_COLOR = Color3.fromRGB(255, 255, 255);
 /** The transparency a fill is at when it is not being used. See {@link RESTORE_FILL_COLOR}. */
 const RESTORE_FILL_TRANSPARENCY = 1;
 
-/** How long between crosshair rays, in seconds. See {@link AIM_CONFIG.TARGET_UPDATE_HZ}. */
-const CAST_INTERVAL = 1 / AIM_CONFIG.TARGET_UPDATE_HZ;
-
 /**
- * Fills the model under the crosshair with colour, for as long as the local player is aiming.
+ * Fills the model this throw would land on with colour, for as long as the local player is aiming.
  *
  * **Client-side, and entirely an opinion.** Nothing here is sent anywhere and nothing is asked of
- * the server: it reads the camera, finds what the crosshair is on, and changes one property on a
- * highlight the server already put there. Every client does the same thing with its own camera, so
- * each player sees their own aim and nobody else's — which is what makes it free.
+ * the server: it reads what the drawn arc would hit and changes one property on a highlight the
+ * server already put there. Every client does the same thing with its own throw, so each player
+ * sees their own aim and nobody else's — which is what makes it free.
  *
  * **It does not create a `Highlight`, and that is the load-bearing decision.** Roblox draws one
  * highlight per model; a second one is not two effects but an undefined choice between them, so a
@@ -50,12 +47,31 @@ const CAST_INTERVAL = 1 / AIM_CONFIG.TARGET_UPDATE_HZ;
  * the outline is an empty shape waiting to be filled, and filling it is the whole of the glow. The
  * black edge is untouched and stays exactly what it was.
  *
- * **What it is aimed at is asked of the world, not of the game.** A model with a humanoid is a
- * target, whatever it is: no team, no health, no tag, nothing about whether hitting it means
- * anything. The glow answers "what is the crosshair on", and the moment it started answering
- * "what may I throw at" it would be a second, quieter copy of the throw's rules.
+ * **What lights up is what the arc would hit, and that is a reversal.** This used to cast its own
+ * ray from the camera through the mouse and light whatever the crosshair was on. That is a straight
+ * line from the eye; a throw is a ballistic arc from the muzzle. The two agree about the aim point
+ * and disagree about everything between it and the hand, so **a tree standing on the arc but not on
+ * the ray left a model glowing while the ball was certain to hit the tree** — the preview promising
+ * a throw that could not happen. Worse, it was the only part of the preview that was doing that: the
+ * landing marker has always been drawn from the arc, so a blocked throw put the *marker* on the
+ * trunk and the *glow* on the body behind it, and the two disagreed in plain sight.
  *
- * See `client/aiming.ts` for how it knows whether the player is aiming.
+ * The question is therefore "where does this throw land", and the answer was already being computed
+ * one file away — `ThrowController`'s arc, rebuilt every frame from the same plan the server will
+ * run, whose `hit` is the first thing the ball's own swept sphere meets. That answer arrives as
+ * `predictedTarget` rather than being recomputed here, because recomputing it would mean rebuilding
+ * the plan: the arc mode, the ignore list, the sweep radius and the ceiling. Four things that all
+ * have to match or the glow would be describing a different throw from the one being drawn — and
+ * this controller has no business knowing any of them.
+ *
+ * **What it is aimed at is still asked of the world, not of the game.** A model with a humanoid is a
+ * target, whatever it is: no team, no health, no tag, nothing about whether hitting it means
+ * anything. The glow answers "where is this throw going", and the moment it started answering "what
+ * may I throw at" it would be a second, quieter copy of the throw's rules. The *arc* is the throw's
+ * geometry, which is exactly why it is the right input and the wrong place for any judgement to sit.
+ *
+ * See `client/aiming.ts` for both halves of what it reads, and `ThrowController.updateGuide` for
+ * where they are written.
  */
 @Controller()
 export class AimTargetController implements OnStart {
@@ -70,20 +86,15 @@ export class AimTargetController implements OnStart {
 	 */
 	private currentTarget: Model | undefined;
 
-	/** The next `os.clock` second at which the crosshair ray may be cast again. */
-	private nextCastAt = 0;
-
 	/** The flag as last reported, so only its transitions are printed. Diagnostic scaffolding. */
 	private lastAiming = false;
 
-	/** The last ray-and-target report, so only a change at either end of it is printed. */
-	private lastRayReport = "";
-
 	public onStart(): void {
-		// Per frame, and the ray inside it is what gets throttled. The order matters: whether the
-		// player is aiming is a table read, so it is asked *before* the throttle — which is what
-		// makes releasing the aim put the glow out on the frame it happens, rather than up to
-		// `CAST_INTERVAL` later. See `AIM_CONFIG.TARGET_UPDATE_HZ`.
+		// Per frame, and nothing is throttled any more. The arc this reads is rebuilt every frame
+		// whether or not anybody is looking at it, so reading the answer is a table lookup and the
+		// glow is exactly as fresh as the guide that drew it. It used to cast its own ray on an
+		// `AIM_CONFIG.TARGET_UPDATE_HZ` clock, because a raycast a frame was not worth a cosmetic —
+		// that clock, and the ray, are gone with the ray's last reader.
 		RunService.Heartbeat.Connect(() => this.update());
 
 		// **A death is the one case the aiming flag cannot cover on its own.** A character that has
@@ -103,7 +114,7 @@ export class AimTargetController implements OnStart {
 		if (DEBUG) print(`[Aim] up — watching the aiming flag`);
 	}
 
-	/** One turn of the loop: keep the glow on what the crosshair is on, or put it out. */
+	/** One turn of the loop: keep the glow on what the throw would hit, or put it out. */
 	private update(): void {
 		const isAiming = Fusion.peek(aiming);
 
@@ -116,20 +127,21 @@ export class AimTargetController implements OnStart {
 			if (DEBUG) print(`[Aim] flag: ${isAiming}`);
 		}
 
+		// This is still asked first, and no longer for the throttle's sake: the flag is this
+		// controller's own question, and asking it before the answer is what puts the glow out on the
+		// frame the aim is released.
 		if (!isAiming) {
 			this.clear();
 			return;
 		}
 
-		const now = os.clock();
-		if (now < this.nextCastAt) return;
-
-		this.nextCastAt = now + CAST_INTERVAL;
-
-		const target = this.targetUnderCrosshair();
+		// **The whole of the input.** `undefined` here is the ordinary answer rather than a failure:
+		// it means the arc reaches no body, which is what a throw at a wall, a floor or the sky is.
+		const target = Fusion.peek(predictedTarget);
 
 		// The common case, and the reason the glow does not flicker: a target that has not changed
-		// is left exactly as it is, so nothing is written to it and nothing is re-lit.
+		// is left exactly as it is, so nothing is written to it and nothing is re-lit. It covers
+		// `undefined === undefined` too, so a stretch of aiming at scenery writes nothing at all.
 		if (target === this.currentTarget) return;
 
 		// Out with the old before the new goes on, so the two can never both be lit.
@@ -161,7 +173,7 @@ export class AimTargetController implements OnStart {
 	 * the write below is skipped rather than faked. Nothing is created here, on purpose: this
 	 * controller owns no instances at all, so there is nothing of its own to leak and nothing to
 	 * clean up beyond the one property it writes. It is *reported*, though, and that is the one thing
-	 * worth saying loudly: a skipped write and a ray that hit nothing look identical from outside
+	 * worth saying loudly: a skipped write and an arc that hit nothing look identical from outside
 	 * this file, and they have completely different causes.
 	 *
 	 * Both properties are written together in each direction, which is what keeps the glow a single
@@ -172,9 +184,9 @@ export class AimTargetController implements OnStart {
 		const highlight = target.FindFirstChild(OUTLINE_NAME);
 		if (!highlight || !highlight.IsA("Highlight")) {
 			// **The case that used to be silent, and so the case that used to be indistinguishable
-			// from "the ray never hit anything".** The write is skipped and there is nothing to see,
-			// so this line is the whole of the diagnosis for a glow that does nothing on a model
-			// sitting under the crosshair.
+			// from "the arc never hit anything".** The write is skipped and there is nothing to see,
+			// so this line is the whole of the diagnosis for a glow that does nothing on a model the
+			// throw is heading straight for.
 			if (DEBUG) print(`[Aim] ${target.Name}: ${on ? "lit" : "out"}=false — no ${OUTLINE_NAME} to write`);
 			return;
 		}
@@ -191,77 +203,6 @@ export class AimTargetController implements OnStart {
 		// here with nothing on screen is therefore a *rendering* question and not a logic one, and
 		// that is the fork this whole line exists to expose.
 		if (DEBUG) print(`[Aim] ${target.Name}: ${on ? "lit" : "out"}=true`);
-	}
-
-	/**
-	 * The model the crosshair is on, or nothing.
-	 *
-	 * **The same ray the aim guide casts, through the same point — and that is the whole of this
-	 * method's honesty.** The guide aims from the **mouse**, not from the middle of the screen: see
-	 * `ThrowController.getAimTarget`, which is `ViewportPointToRay` at
-	 * `UserInputService.GetMouseLocation()`. A ray down the camera's `LookVector` is therefore a
-	 * completely different line, and one that lights whatever happens to be in the centre of the
-	 * screen rather than what the player is pointing at. The glow exists to answer "what is my aim
-	 * on", so it has to be cast along the line the throw actually uses.
-	 *
-	 * **The guide's own parts are not filtered out, and do not need to be.** They sit along the arc
-	 * and would otherwise be exactly what a ray down the aim line hits first — but `AimGuide` sets
-	 * `CanQuery = false` on them, which takes them out of every raycast in the game rather than out
-	 * of this one. See `AimGuide`.
-	 *
-	 * A hit that is not part of a humanoid model is not a target, and that is the whole rule: a ball
-	 * on the floor, a tree, a wall, the sky. A ball *held* by somebody resolves to their model and
-	 * lights them, which is right — it is their model, hanging where their body is.
-	 */
-	private targetUnderCrosshair(): Model | undefined {
-		const camera = Workspace.CurrentCamera;
-		if (!camera) return undefined;
-
-		// From the pointer, not from the screen's centre. See the note above: these are two
-		// different lines and only one of them is where the throw is aimed.
-		const mouse = UserInputService.GetMouseLocation();
-		const ray = camera.ViewportPointToRay(mouse.X, mouse.Y);
-
-		const params = new RaycastParams();
-		params.FilterType = Enum.RaycastFilterType.Exclude;
-		// The local player's own body, so the crosshair can never land on the thrower: a ray that
-		// starts inside a character and is not told to ignore it hits that character every time.
-		params.FilterDescendantsInstances = this.player.Character ? [this.player.Character] : [];
-		params.IgnoreWater = true;
-
-		const result = Workspace.Raycast(ray.Origin, ray.Direction.mul(AIM_CONFIG.TARGET_MAX_DISTANCE), params);
-
-		// The nearest *model* the hit is inside, then a humanoid in it. Both halves are needed: the
-		// first is what says "this is a body rather than scenery", and the second is what says the
-		// body is a character rather than a prop that happens to be assembled as a model.
-		const model = result?.Instance.FindFirstAncestorWhichIsA("Model");
-		if (!model || !model.FindFirstChildWhichIsA("Humanoid")) {
-			this.reportRay(result, undefined);
-			return undefined;
-		}
-
-		this.reportRay(result, model);
-
-		return model;
-	}
-
-	/**
-	 * Prints what the ray hit and what that came to, when either end of it changes.
-	 *
-	 * **Both halves in one line, because they fail differently.** A ray that hit nothing and a ray
-	 * that hit a wall report the same target — none — and mean completely different things: the first
-	 * is an aim or a filter problem, the second is geometry in the way. Printed on change rather than
-	 * per cast only because a cast is fifteen a second and a steady aim is not.
-	 *
-	 * Diagnostic scaffolding. Delete once the glow is trusted.
-	 */
-	private reportRay(result: RaycastResult | undefined, target: Model | undefined): void {
-		const hit = result ? `${result.Instance.GetFullName()} at ${math.floor(result.Distance)} studs` : "nil";
-		const report = `${hit} -> ${target ? target.Name : "nil"}`;
-		if (report === this.lastRayReport) return;
-
-		this.lastRayReport = report;
-		if (DEBUG) print(`[Aim] ray: ${report}`);
 	}
 
 	/** Puts the glow out when `character` dies — see {@link onStart} for why this is hooked. */

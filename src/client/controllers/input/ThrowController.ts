@@ -13,7 +13,7 @@ import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
 import { Trajectory, ThrowArc } from "shared/Trajectory";
-import { aiming } from "../../aiming";
+import { aiming, predictedTarget } from "../../aiming";
 
 const ACTION_NAME = "ThrowDodgeball";
 const ARC_ACTION_NAME = "SelectThrowArc";
@@ -80,7 +80,7 @@ const DEBUG = true;
  * smooth the quantity the throw actually uses, and let the lag be largest where
  * the points are furthest apart.
  */
-const AIM_SMOOTHING_SECONDS = 0.08;
+const AIM_SMOOTHING_SECONDS = 0.03;
 
 @Controller()
 export class ThrowController implements OnStart {
@@ -95,6 +95,9 @@ export class ThrowController implements OnStart {
 	private lastLanding: Vector3 | undefined;
 	private lastMid: Vector3 | undefined;
 	private nextReport = 0;
+
+	/** The last arc report, so only a change at either end of it is printed. See {@link reportArc}. */
+	private lastArcReport = "";
 
 	/**
 	 * The smoothed aim point, and the clock reading it was last advanced from.
@@ -203,6 +206,11 @@ export class ThrowController implements OnStart {
 		if (!character || !ball || !ball.IsA("BasePart")) {
 			this.guide.hide();
 			this.steadyTarget = undefined; // next ball starts aiming fresh
+
+			// Nothing is being aimed, so nothing is predicted. Cleared rather than left alone for the
+			// same reason the guide is hidden: the glow is driven by the flag those two share, and a
+			// publish that stopped would leave the last answer standing for whoever read it next.
+			predictedTarget.set(undefined);
 			return;
 		}
 
@@ -234,7 +242,76 @@ export class ThrowController implements OnStart {
 		// `shared/config/debug.config.ts`.
 		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) this.reportJitter(target, getThrowMuzzle(character), arc);
 
+		// **What the arc would hit, published for the glow.** The glow answers "what is my aim on",
+		// and the honest answer is where this throw lands rather than what is under the crosshair —
+		// those are two different lines and only one of them is the throw. See `AimTargetController`
+		// for what the difference looked like from the player's seat.
+		//
+		// `arc.hit` is that answer, already computed here every frame: the first thing the ball's own
+		// swept sphere meets, with the thrower, the guide and the loose balls excluded exactly as they
+		// are for the drawn path. Computed once and used twice rather than worked out twice, which is
+		// the same reason this file publishes the aiming flag.
+		const arcTarget = this.hitModel(arc);
+		predictedTarget.set(arcTarget);
+		this.reportArc(arc, arcTarget);
+
 		this.guide.update(arc.points, { position: arc.contact ?? arc.landing, normal: arc.normal });
+	}
+
+	/**
+	 * The model a planned arc would hit, or nothing.
+	 *
+	 * **The rule for what counts as a target is unchanged, and only the line that finds it has.** The
+	 * nearest `Model` above the hit part, with a `Humanoid` inside it: the first half says "this is a
+	 * body rather than scenery", the second says the body is a character rather than a prop that
+	 * happens to be assembled as a model. Both halves were the rule when the glow cast its own
+	 * crosshair ray, and neither of them was why that was wrong.
+	 *
+	 * `FindFirstAncestorWhichIsA` starts at the *parent*, so a ball welded into somebody's hand still
+	 * resolves to that model and lights them — it is their model, hanging where their body is. The
+	 * arc sweeps through held balls rather than ignoring them, so a ball in front of a body is a hit
+	 * on the body, which is also what the throw would do.
+	 *
+	 * A hit that is not a body is not a target, and that is the whole rule: a tree, a wall, the
+	 * floor, the sky. This is the case that used to light a model through a trunk.
+	 */
+	private hitModel(arc: Trajectory): Model | undefined {
+		const hit = arc.hit;
+		if (!hit) return undefined;
+
+		const model = hit.FindFirstAncestorWhichIsA("Model");
+		if (!model || !model.FindFirstChildWhichIsA("Humanoid")) return undefined;
+
+		return model;
+	}
+
+	/**
+	 * Prints what the arc hit and what that came to, when either end of the report changes.
+	 *
+	 * **Both halves in one line, because they fail differently.** An arc that hit nothing and an arc
+	 * that hit a wall report the same target — none — and mean completely different things: the first
+	 * is an aim or a filter problem, the second is geometry in the way. Printed on change rather than
+	 * per frame, because the arc is rebuilt every frame and a steady aim does not change it.
+	 *
+	 * **This line moved here from `AimTargetController` when the glow stopped casting**, and the move
+	 * is the point rather than tidying: the arc is this file's, so this is now the only place that can
+	 * report on it. Read it against the drawn path — if the marker is on a tree and this says the tree,
+	 * the whole preview agrees and only the throw is in question.
+	 *
+	 * Diagnostic scaffolding, in the same spirit as the `[Aim] ray:` line it replaces. Delete once the
+	 * glow is trusted.
+	 */
+	private reportArc(arc: Trajectory, target: Model | undefined): void {
+		const contact = arc.contact;
+		const hit =
+			arc.hit && contact
+				? `${arc.hit.GetFullName()} at ${math.floor(contact.sub(arc.origin).Magnitude)} studs`
+				: "nil";
+		const report = `${hit} -> ${target ? target.Name : "nil"}`;
+		if (report === this.lastArcReport) return;
+
+		this.lastArcReport = report;
+		if (DEBUG) print(`[Aim] arc: ${report}`);
 	}
 
 	/**

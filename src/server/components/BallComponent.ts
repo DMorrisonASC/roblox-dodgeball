@@ -5,7 +5,9 @@ import { THROWER_TOKEN } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
+import { SOUND_CONFIG } from "shared/config/sound.config";
 import { BallService } from "../services/ball/BallService";
+import { emitSound } from "../services/ball/SoundEmitter";
 import { CatchService } from "../services/actions/CatchService";
 import { RoundService } from "../services/round/RoundService";
 import { StatsService } from "../services/stats/StatsService";
@@ -41,6 +43,23 @@ const BOUNCE_MIN_SPEED = 1;
  * Below this the direction is float noise and the bounce is a coin toss.
  */
 const BOUNCE_MIN_SEPARATION = 0.01;
+
+/**
+ * What an impact sound's emitter is called.
+ *
+ * Named because the emitter is a bare part in `Workspace` with nothing else to distinguish it:
+ * invisible, tiny, and parented to the world at large rather than to anything that says what it is.
+ * The way to check that none has been left behind is to search for one name, and that check is the
+ * acceptance test for this whole arrangement — which is why the name lives per *event* rather than a
+ * single name shared by every sound in the game. A catch names its emitter something else
+ * (`CATCH_EMITTER_NAME`, in `BallService`), so that "no impact emitters remain" is a statement about
+ * impacts. One per impact, each gone when its clip ends, so this is a name to grep for rather than a
+ * taxonomy.
+ *
+ * The emitter itself is built by {@link emitSound}, which is shared with the catch sound and takes
+ * this name as an argument.
+ */
+const IMPACT_EMITTER_NAME = "ImpactEmitter";
 
 /**
  * The next number {@link BallComponent.identity} will take.
@@ -162,6 +181,15 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// **A throw that landed on the world is a miss**, and this is the only branch that decides
 			// one: everything below it has found a body. Scored before the ball is disarmed, so the
 			// order reads as what happened rather than as a consequence of the disarm.
+			//
+			// **The sound goes first, by that same rule.** Everything in this branch is an account of
+			// one event — the ball arrived somewhere — so it runs in the order it happened: heard,
+			// then scored, then taken out of play. It plays for every world contact rather than only
+			// for throws that wound up missing on purpose, because this *is* the miss: a ball that
+			// lands on the floor is the only evidence a player gets that a throw is over, short of
+			// watching it all the way down.
+			this.playImpactSound(otherPart, SOUND_CONFIG.WORLD_HIT);
+
 			this.score(false);
 
 			this.instance.SetAttribute("Armed", false);
@@ -262,6 +290,23 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// teammate may still catch a throw. Catching is a different mechanic from hurting somebody,
 		// and this rule is only about hurting them.
 		if (typeIs(throwerId, "string") && this.rounds.isFriendlyFire(throwerId, character)) return;
+
+		// **Heard here, which is after every reason this contact might not be a hit.** A catch returned
+		// above, a friendly hit has just returned, and the ball's own thrower and a body it has already
+		// been through were refused earlier still — so arriving at this line *is* the hit, and the
+		// refusals above stay silent by construction rather than by a second check here.
+		//
+		// **The head is a limb, so the engine names it rather than this code matching on `"Head"`.**
+		// `GetLimb` is what {@link isBodyPart} already asks, and for the reason it gives there: it
+		// answers for R6 and R15 alike, and a hand-written name list would have to know both. It is
+		// asked of `struck` rather than of `otherPart`, which is what makes the accessories change
+		// carry through — a ball that struck a beanie was turned into a head contact by
+		// {@link struckBodyPart}, so it is a head hit and sounds like one.
+		//
+		// `GetLimb` raises for a part that is not a direct child of the rig. Nothing can reach this
+		// line without having passed `isBodyPart`, which is the test that established exactly that.
+		const isHead = humanoid.GetLimb(struck) === Enum.Limb.Head;
+		this.playImpactSound(struck, isHead ? SOUND_CONFIG.HEAD_HIT : SOUND_CONFIG.BODY_HIT);
 
 		// A hit. Recorded before the ball is thrown off, so that every other part of this
 		// same arrival — and every later contact with this body — is a body the ball has
@@ -471,6 +516,37 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		}
 
 		return undefined;
+	}
+
+	/**
+	 * Plays one impact sound from a throwaway emitter at the point it happened.
+	 *
+	 * **Not parented to the thing that was struck, and that is the reversal of what this used to
+	 * do.** The comment here argued that the sound should live and die with the part it was heard at,
+	 * which is true of a wall and wrong of a body: a hit's head stops existing almost immediately and
+	 * the clip went with it. An impact is a fact about a *moment*, and the one part of the scene with
+	 * a reason to stop existing right then is the thing that was hit — so the emitter is deliberately
+	 * something with no such reason.
+	 *
+	 * **Where the sharp case is, because it is not every death, and the difference is what to look
+	 * for.** An NPC rig keeps its corpse: `RespawnBehavior` sets `BreakJointsOnDeath = false` and
+	 * builds the replacement from a clone seconds later, long after any impact clip has finished. A
+	 * player in Team Elimination is eliminated and left dead until the engine's own respawn timer,
+	 * which is the same story. **A player converted in Dodge and Seek is not**: that mode answers
+	 * `respawn`, and `RoundService.handleDeath` carries that out with `player.LoadCharacter()`, which
+	 * destroys the old character on the spot. That is the hit whose sound was being cut short.
+	 *
+	 * Everything about the emitter itself — the flags, the parenting order, the two cleanup paths and
+	 * the `PlayOnRemove` that is deliberately not used — now lives in {@link emitSound}, which is
+	 * shared with the catch sound. What is left here is the part that is about *impacts*: which part
+	 * the sound is heard from, and which id is chosen.
+	 *
+	 * The struck part's own name goes to the log, because at an impact that is the interesting fact —
+	 * there are two ids for a body and a reader of the output should be able to tell which one this
+	 * was without listening.
+	 */
+	private playImpactSound(at: BasePart, soundId: string): void {
+		emitSound(at.CFrame, at.Name, soundId, IMPACT_EMITTER_NAME);
 	}
 
 	/**

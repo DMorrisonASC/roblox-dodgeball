@@ -94,7 +94,7 @@ export const BALL_CONFIG = {
 	 * changes nothing about how far that ball travels — which is why taking it down to almost
 	 * no bounce left the roll exactly as it was. See {@link BALL_CONFIG.ROLL_RESISTANCE}.
 	 */
-	ELASTICITY: 0.01,
+	ELASTICITY: 0.3,
 
 	/**
 	 * The ball's mass per unit volume, in the engine's own units — roughly the density
@@ -175,7 +175,7 @@ export const BALL_CONFIG = {
 	BALLS_PER_PLAYER: 1.2,
 
 	/** **Placeholder.** Floor on the per-player wanted count. See {@link BALL_CONFIG.BALLS_PER_PLAYER}. */
-	MIN_BALLS: 4,
+	MIN_BALLS: 2,
 
 	/** **Placeholder.** Ceiling on the per-player wanted count. See {@link BALL_CONFIG.BALLS_PER_PLAYER}. */
 	MAX_BALLS: 40,
@@ -443,7 +443,7 @@ export const BALL_CONFIG = {
 	 * further; at 1 no energy is lost at all and one throw crosses the arena, and low
 	 * enough and the ball dies in the player it hit and there is no chain to speak of.
 	 */
-	BOUNCE_FACTOR: 0.7,
+	BOUNCE_FACTOR: 0.5,
 
 	/**
 	 * How many bodies one throw can take out before the ball goes dead, counted per throw.
@@ -456,7 +456,7 @@ export const BALL_CONFIG = {
 	 * The ball is disarmed *after* the bounce that brings the count up, so the last player a
 	 * throw takes out still throws the ball off them instead of catching it on the chest.
 	 */
-	MAX_CHAIN_HITS: 3,
+	MAX_CHAIN_HITS: 10,
 
 	// -------------------------------------------------------------------- drop
 
