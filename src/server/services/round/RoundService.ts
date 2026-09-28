@@ -63,6 +63,16 @@ export class RoundService implements OnStart {
     public readonly scores = new Map<TeamLabel, number>();
 
     /**
+     * Whether the round in progress has been decided.
+     *
+     * **The guard that lets a round be ended from two places.** A round can finish on a tick of the
+     * countdown, or from `PlayerRemoving` when somebody leaves and empties a side; both go through
+     * {@link finishRound}, and this is what makes the first of them the only one that counts. Reset
+     * where a round opens, so a finished round cannot make the next one unplayable.
+     */
+    private finished = false;
+
+    /**
      * Who is on which team this round.
      *
      * A table *beside* the attribute rather than instead of it, and both written in the one
@@ -93,6 +103,23 @@ export class RoundService implements OnStart {
         Players.PlayerRemoving.Connect((player) => {
             this.activePlayers.delete(player);
             this.teams.delete(player);
+
+            // **A leaver can end the round, and does it here rather than a tick later.** Taking
+            // somebody out of a side can empty it, and an empty side is a decided round in every
+            // mode that counts heads — so the outcome is asked for the moment the roster changes
+            // rather than on the loop's next tick. That difference is up to a second of a round
+            // that is already over, with the clock still running and no winner written yet.
+            //
+            // **This is not "a player leaving ends the round".** `roundOutcome` is the *mode's*
+            // answer, so the question asked here is the same one the loop asks, asked sooner: a
+            // mode that does not end on an empty side — Score Rush, which ends on its target or the
+            // clock, and Dodge and Seek, which ends on dodgers — answers `undefined` here exactly as
+            // it does on a tick, and nothing happens.
+            if (this.state === RoundState.Playing) {
+                const outcome = this.roundOutcome();
+
+                if (outcome !== undefined) this.finishRound(outcome);
+            }
         });
 
         // Handle players already in game (Studio playtest)
@@ -183,14 +210,107 @@ export class RoundService implements OnStart {
     /**
      * Who has won, if anybody has, or `undefined` if the round is still on.
      *
-     * **The rules are the mode's; the question is the round's.** All this does is hand the mode
-     * the round to look at — see `RoundView` — and pass the answer back, which is what keeps "how
-     * do you win" in one file per mode rather than in a pile of branches growing here. Team
-     * Elimination's answer is last-side-standing, Score Rush's is the target score or the clock,
-     * and Dodge and Seek's will be whether any dodger is still un-hit.
+     * **Asked in two parts, and the roster goes first.** Before the mode is consulted at all, the
+     * *server roster* is counted: if one side has nobody left connected, the other side has won, and
+     * that is the answer whatever the mode was about to say. A side that has left the game is not a
+     * round state a mode has an opinion about — it is the end of there being anybody to play
+     * against — so it outranks a score, a clock, or a count of who is still standing.
+     *
+     * `rosterOutcome` lives here rather than in each `GameMode.outcome` because it is not about a
+     * mode at all: it is about the server. One place to get it right when a fourth mode is written,
+     * instead of four.
+     *
+     * **Everything below the roster check is the mode's; the question is the round's.** All the
+     * second half does is hand the mode the round to look at — see `RoundView` — and pass the answer
+     * back, which is what keeps "how do you win" in one file per mode rather than in a pile of
+     * branches growing here. Team Elimination's answer is last-side-standing, Score Rush's is the
+     * target score or the clock, and Dodge and Seek's is whether any dodger is still un-hit.
      */
     private roundOutcome(): RoundOutcome | undefined {
-        return this.mode.outcome(this);
+        return this.rosterOutcome() ?? this.mode.outcome(this);
+    }
+
+    /**
+     * Who has won, judged only by who is still **connected to the server**.
+     *
+     * **Counted from `Players`, not from `activePlayers`, and that distinction is the entire point.**
+     * A mode counts who is still *in the round*: somebody eliminated in Team Elimination is out of the
+     * round while being very much still in the game, and somebody who died in Score Rush is out of it
+     * for a moment and then back. Neither of those should end anything, and neither does — they are
+     * still in `Players`, so they still count for their side here.
+     *
+     * A player who has **left** is a different fact, and one only the server knows. They are gone from
+     * `teams` the moment `PlayerRemoving` fires, so this counts them out on that same tick — which is
+     * what makes a departure end a round immediately rather than at the next countdown tick, and what
+     * makes it end even while a dev has rounds frozen. Leaving is not pausable.
+     *
+     * **Both sides empty is a draw.** The case where everybody left: it is the honest answer, and it
+     * is also what stops an empty server sitting inside a round for ever — the same reason every mode
+     * answers that case the same way.
+     *
+     * **A mid-round joiner counts for neither side.** Team assignment happens at the opening whistle,
+     * so they are not in `teams` at all and are watching rather than playing — deliberate, and the
+     * reason `handlePlayerJoined` marks them a spectator. One consequence worth knowing: a spectator
+     * arriving cannot rescue a side that has just emptied, because they are not on a side.
+     */
+    private rosterOutcome(): RoundOutcome | undefined {
+        let connectedA = 0;
+        let connectedB = 0;
+
+        for (const player of Players.GetPlayers()) {
+            const team = this.teams.get(player);
+
+            if (team === TEAM_A) connectedA++;
+            else if (team === TEAM_B) connectedB++;
+        }
+
+        if (connectedA === 0 && connectedB === 0) return DRAW;
+        if (connectedA === 0) return TEAM_B;
+        if (connectedB === 0) return TEAM_A;
+
+        return undefined;
+    }
+
+    /**
+     * Records that the round is over. **Idempotent, and that is load-bearing.**
+     *
+     * A round can be decided from two places — the tick that notices a side has emptied, and a
+     * `PlayerRemoving` that empties one — and both can reach here for the same round. The first call
+     * wins and every later one is a no-op, so the winner cannot be written twice and a re-derivation
+     * cannot overwrite the decision that was actually made first. Without that, a leaver ending a
+     * round would have the loop write the same answer again a moment later, and a round ended by a
+     * leaver on the clock's last second could be overwritten by the time-based result.
+     *
+     * Everything the end of a round writes lives here rather than at either call site, which is the
+     * whole reason it is a method: two places that each recorded a winner would be two places to
+     * keep the attribute name, the print and the score line in step.
+     */
+    private finishRound(outcome: RoundOutcome): void {
+        if (this.finished) return;
+        this.finished = true;
+
+        // Built before it is printed: a nested template inside an interpolated string is one more
+        // thing for a reader to unpick, and the message is the part worth reading. The side's *name*
+        // comes from the shared table rather than from a hard-coded "Team", because a mode is
+        // allowed to call its two sides something else — see `MODE_SIDE_NAMES`.
+        const result = outcome === DRAW ? "a draw" : `${sideNameOf(this.mode.id, outcome)} won`;
+
+        // The score, for a mode that keeps one. Printed here rather than at every point that
+        // changes it: a line per hit would bury the round's own output, and the number only means
+        // anything next to who won.
+        if (this.mode.scores) {
+            const pointsA = this.scores.get(TEAM_A) ?? 0;
+            const pointsB = this.scores.get(TEAM_B) ?? 0;
+
+            print(`[Round] score — A ${pointsA}, B ${pointsB}`);
+        }
+
+        // The same word the message uses, and the vocabulary the HUD expects: a team's label, or
+        // `"draw"`. Written before the round is left, because the intermission that follows is where
+        // it is read.
+        this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, outcome);
+
+        print(`[Round] ${result}`);
     }
 
     /**
@@ -630,8 +750,11 @@ export class RoundService implements OnStart {
             this.mode = modeFor(this.votes.selection()) ?? DEFAULT_MODE;
 
             // A fresh scoreboard for a fresh round: a round that inherited one would be starting
-            // in the middle of somebody else's game.
+            // in the middle of somebody else's game. The round is also un-finished here — it is
+            // exactly the flag's lifetime — so a round ended early by a leaver cannot leave the next
+            // one unable to finish at all.
             this.scores.clear();
+            this.finished = false;
 
             this.assignTeams();
 
@@ -657,6 +780,16 @@ export class RoundService implements OnStart {
             this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, "");
 
             while (this.timeRemaining > 0) {
+                // **The round may already be over**, decided from outside this loop: a player leaving
+                // can empty a side, and `PlayerRemoving` records that the moment it happens rather
+                // than waiting for a tick — see the note there. There is nothing left to count down
+                // to, so the round is left here.
+                //
+                // Checked *before* the pause below on purpose: a round whose side has emptied is
+                // over, and a dev holding rounds up should not be holding up a result that is
+                // already decided. The pause is for rounds that are still being played.
+                if (this.finished) break;
+
                 if (this.isRoundsPaused()) {
                     task.wait(1);
                     continue;
@@ -667,34 +800,13 @@ export class RoundService implements OnStart {
                 this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
                 // Checked after the clock moves, so a round ends on the tick its last second
-                // runs out rather than a tick later. A side being wiped out is checked on
-                // every tick, which is what makes a round end the moment the last player on a
-                // team goes down — with whatever time was left unspent.
+                // runs out rather than a tick later. Both questions are asked on every tick — the
+                // roster (has a side left the server?) and then the mode's own rules — which is what
+                // makes a round end the moment the last player on a team goes down, and the moment a
+                // team's last player disconnects, with whatever time was left unspent.
                 const outcome = this.roundOutcome();
                 if (outcome !== undefined) {
-                    // Built before it is printed: a nested template inside an interpolated
-                    // string is one more thing for a reader to unpick, and the message is the
-                    // part worth reading. The side's *name* comes from the shared table rather
-                    // than from a hard-coded "Team", because a mode is allowed to call its two
-                    // sides something else — see `MODE_SIDE_NAMES`.
-                    const result = outcome === DRAW ? "a draw" : `${sideNameOf(this.mode.id, outcome)} won`;
-
-                    // The score, for a mode that keeps one. Printed here rather than at every
-                    // point that changes it: a line per hit would bury the round's own output,
-                    // and the number only means anything next to who won.
-                    if (this.mode.scores) {
-                        const pointsA = this.scores.get(TEAM_A) ?? 0;
-                        const pointsB = this.scores.get(TEAM_B) ?? 0;
-
-                        print(`[Round] score — A ${pointsA}, B ${pointsB}`);
-                    }
-
-                    // The same word the message uses, and the vocabulary the HUD expects: a
-                    // team's label, or `"draw"`. Written before the round is left, because the
-                    // intermission that follows is where it is read.
-                    this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, outcome);
-
-                    print(`[Round] ${result}`);
+                    this.finishRound(outcome);
                     break;
                 }
             }

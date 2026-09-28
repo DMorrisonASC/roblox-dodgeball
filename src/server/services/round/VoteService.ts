@@ -1,5 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
+import { ARENA_CONFIG } from "shared/config/arena.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
 import { encodeModeIds, GAME_MODE_NAMES, GameModeId, isGameModeId } from "shared/gameMode";
 import {
@@ -54,6 +55,20 @@ export class VoteService implements OnStart {
 
 	public onStart(): void {
 		this.statusFolder = roundStatusFolder();
+
+		// The window is arithmetic on the intermission, so a short enough intermission asks for a
+		// window it cannot have. Said **once, here**, rather than checked wherever the number is read:
+		// this is the one moment that knows the server is starting, and a warning printed per round
+		// would be one nobody reads. The window still opens — see `VOTE_MIN_SECONDS` for why a token
+		// window beats no vote at all.
+		const wanted = ARENA_CONFIG.INTERMISSION_SECONDS - GAME_MODE_CONFIG.VOTE_CLOSING_BUFFER;
+
+		if (wanted < GAME_MODE_CONFIG.VOTE_MIN_SECONDS) {
+			warn(
+				`[Vote] an intermission of ${ARENA_CONFIG.INTERMISSION_SECONDS}s leaves ${wanted}s for the vote — ` +
+					`clamped to ${GAME_MODE_CONFIG.VOTE_SECONDS}s`,
+			);
+		}
 
 		events.Server.OnEvent("castVote", (player, mode) => this.cast(player, mode));
 

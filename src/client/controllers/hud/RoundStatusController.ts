@@ -136,29 +136,47 @@ export class RoundStatusController implements OnStart {
 		// the label. See `MODE_SIDE_NAMES`, which is what makes "who won" say the right thing for a
 		// mode whose sides are not "Team A" and "Team B".
 		const text = Fusion.Computed(scope, (use) => {
+			// **Every value is read before any branching, and that is not tidiness.** Fusion decides
+			// what a `Computed` depends on from the `use` calls that actually *run*, so a read placed
+			// inside an `if` is a subscription that only exists while that branch is taken. Reading
+			// the clock inside the non-waiting branch — as this used to — meant the label stopped
+			// watching it for as long as it was saying "waiting for players", and was only rescued
+			// because the player count changing re-runs the whole thing. All five up front makes the
+			// subscription set fixed, whatever the line ends up saying.
 			const phase = use(state);
 			const players = use(playerCount);
+			const seconds = use(time);
+			const modeId = use(mode);
+			const result = use(winner);
 
 			// **Below the minimum, the countdown is not the interesting number.** The intermission is
 			// frozen and will not move until somebody else arrives, so `Intermission — 30s` would be a
 			// clock that has stopped for a reason the reader cannot see. The count is the reason.
-			if (phase === "Intermission" && players < ARENA_CONFIG.MIN_PLAYERS) {
-				return `Waiting for players — ${players}/${ARENA_CONFIG.MIN_PLAYERS}`;
-			}
+			//
+			// **It replaces the clock and nothing else.** This used to `return` early, which silently
+			// dropped both the mode and the winner — and the way a team most often ends up alone is a
+			// leaver deciding the round, so the one moment the server drops below the minimum is
+			// exactly the moment there is a result to read. It showed "Waiting for players — 1/2" and
+			// nothing about who had just won, which is the one thing on this line worth reading then.
+			const waiting = phase === "Intermission" && players < ARENA_CONFIG.MIN_PLAYERS;
 
-			let line = `${phase} — ${use(time)}s`;
+			const face = waiting
+				? `Waiting for players — ${players}/${ARENA_CONFIG.MIN_PLAYERS}`
+				: `${phase} — ${seconds}s`;
+
+			let line = face;
 
 			// The mode, once a vote has named one. Between the vote closing and the round beginning
 			// this names the round *to come*, which is exactly when a player wants to read it. The
 			// attribute carries an **id**, so the name on screen is looked up from it here — see
 			// `ROUND_MODE_ATTRIBUTE` for why the id is what travels rather than the sentence.
-			const modeId = use(mode);
 			const known = isGameModeId(modeId);
 
 			if (known) line = `${line} | ${GAME_MODE_NAMES[modeId]}`;
 
-			const result = use(winner);
-
+			// **The winner does not care that the server is waiting for players.** It is read during
+			// the intermission and stays up for as long as one is running — which is precisely the
+			// intermission that follows the round it describes.
 			if (phase !== "Intermission" || result === "") return line;
 
 			// The draw case first, and it needs no side name at all — which is the whole reason the
