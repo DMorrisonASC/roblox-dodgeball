@@ -132,11 +132,10 @@ export class ThrowController implements OnStart {
 			(_actionName, inputState) => {
 				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
 
-				// **A ball in the hand is what makes a click a throw**, and the absence of one is what makes
-				// it the catch's: `CatchController` asks this same question and lets go of the opposite
-				// case. Two actions, one bound button, and neither has to know where the other's bind
-				// sits — which matters because `ContextActionService` decides that by bind order, and bind
-				// order here is controller load order.
+				// **A ball in the hand is what makes a click a throw.** The click is not shared with
+				// anything any more — `CatchController` is `E` only — so this is no longer one half of a
+				// contest over a button, just the plain test for whether there is anything to throw.
+				// `Pass` rather than `Sink`, because a click that threw nothing has not been used up.
 				const character = this.player.Character;
 				if (!character?.FindFirstChild(BALL_NAME)) {
 					return Enum.ContextActionResult.Pass;

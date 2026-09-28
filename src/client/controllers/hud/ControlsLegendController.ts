@@ -77,17 +77,27 @@ interface LegendRow {
 /**
  * The legend, in the order it is drawn.
  *
- * Five abilities and the one of them that can be switched off. The lines here are the *only*
+ * Six abilities and the one of them that can be switched off. The lines here are the *only*
  * place these strings appear — no other file names a key or an ability — so this array is the
  * legend, and everything below it is layout.
  *
  * **Not listed:** the three throw shapes on `X`, `C` and `V`. They are real controls, and they
  * are absent because this list is what was asked for: one more entry here each puts them on the
  * card, and nothing else would have to change.
+ *
+ * **Sprint carries no `toggleAttribute`, and that is a fact about sprint rather than an omission.**
+ * A row mirrors an attribute only when its control is *switched*; sprint is *held*, and what it has
+ * is a pool that runs down rather than a setting that is on or off. There is nothing here with two
+ * states to dim between — the pool's level is drawn by the cooldown HUD, which is where a value
+ * that moves belongs.
+ *
+ * Sprint sits between the dodge and the catch because it is the other way of moving: the two
+ * movement controls read together, and the three that are about the ball follow.
  */
 const ROWS: LegendRow[] = [
 	{ label: "Throw", keys: "X, C, V" },
 	{ label: "Dodge", keys: `Double tap W A S D ${LIGHTNING}` },
+	{ label: "Sprint", keys: "Left Alt" },
 	{ label: "Catch", keys: "E" },
 	{ label: "Drop", keys: "1" },
 	{ label: "Throw Toggle", keys: "2", toggleAttribute: THROW_ENABLED, invert: true },

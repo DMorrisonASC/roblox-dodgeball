@@ -21,13 +21,15 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
  * arriving is one this character is allowed to catch — is entirely the server's
  * business. The ball appearing in the hand is replication.
  *
- * The one thing it does decide is **which action a shared left click was**, because the click is
- * also the throw's and something has to say which of the two it meant. See {@link requestCatch}.
+ * **`E` is the only input now. The left click belongs to the throw, and only to the throw.**
  *
- * **`E` and a left click are one action, not two.** Both are bound to the same handler below and
- * send the same remote, because they are the same request: the server sees one `catch` per press and
- * cannot tell which input fired it, which is the point — two paths into one rule are two things that
- * can drift, so there is one path.
+ * The click used to open this window as well, split from the throw by what was in the hand: this took
+ * the presses with an empty hand and `ThrowController` took the ones with a ball. It worked, and the
+ * two gates were written to be complementary precisely so that `ContextActionService`'s bind order
+ * could not decide the outcome — but it cost a rule about *catching* a permanent home inside the code
+ * that decides a *throw*, and it left two handlers obliged to agree about one button forever. A key
+ * press and a click are now two inputs for two actions, and these two controllers no longer have to
+ * know that each other exists.
  */
 @Controller()
 export class CatchController implements OnStart {
@@ -42,17 +44,14 @@ export class CatchController implements OnStart {
 			(_actionName, inputState) => {
 				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
 
-				// **`Pass` when this press is not a catch, `Sink` when it is.** The left click is shared
-				// with the throw, so a press this refuses has to be handed on rather than swallowed —
-				// `Sink` here would make the throw do nothing on any press that reached this action
-				// first, and which action that is depends on `ContextActionService`'s bind order rather
-				// than on anything either controller asked for.
+				// **`Sink` when the ask went out, `Pass` when it did not.** A refusal is not a claim on the
+				// key: nothing here acted on the press, and `E` is bound to nothing else in this game, so
+				// handing it on costs nothing and stops this action swallowing input it did not use.
 				return this.requestCatch() ? Enum.ContextActionResult.Sink : Enum.ContextActionResult.Pass;
 			},
 			false,
-			// One handler and one remote for both inputs: a key and a click are the same request.
+			// One input, one handler, one remote.
 			Enum.KeyCode.E,
-			Enum.UserInputType.MouseButton1,
 		);
 
 		// Printed once at startup, on purpose. "The key does nothing" has two completely
@@ -67,14 +66,14 @@ export class CatchController implements OnStart {
 		// and the second listener cannot tell them apart. A press that reaches here
 		// prints `asking to catch`; one that does not prints nothing, and that is the
 		// whole answer.
-		if (DEBUG) print(`[Catch] E and left click bound`);
+		if (DEBUG) print(`[Catch] E bound`);
 	}
 
 	/**
 	 * Asks the server to open a catch window.
 	 *
 	 * Returns whether the ask went out, which is the same question as whether this press was a catch at
-	 * all — the handler above hands a press this refuses back to the throw.
+	 * all — the handler above sinks a press only when it was.
 	 */
 	private requestCatch(): boolean {
 		const character = this.player.Character;
@@ -84,16 +83,14 @@ export class CatchController implements OnStart {
 			return false;
 		}
 
-		// **A catch needs a free hand, and this holds for both inputs alike.** A hand holds one ball
-		// and a ball arriving into an occupied hand destroys what was in it — see `attachToHand` — so
-		// a catch while armed is a trade the press did not ask for. Applying it here, on the path both
-		// inputs share, is what keeps `E` and the click identical: the alternative is one of them
-		// catching while armed and the other not, which is the same rule stated two ways.
+		// **A catch needs a free hand.** A hand holds one ball and a ball arriving into an occupied
+		// hand destroys what was in it — see `attachToHand` — so a catch while armed is a trade the
+		// press did not ask for. Refused here as a courtesy, so the common refusal prints without a
+		// round trip; `CatchService` refuses it again on the server, and that is the refusal that
+		// counts, because this one is a client and can be bypassed.
 		//
 		// Asked of the character rather than of any list, because a held ball *is* a child of the
-		// character. That is the same question `ThrowController` asks to decide whether a click is a
-		// throw, so the two halves of the shared click cannot disagree about which one it is: this
-		// takes the presses with no ball, the throw takes the ones with.
+		// character.
 		if (character.FindFirstChild(BALL_NAME)) {
 			if (DEBUG) print(`[Catch] refused — a ball is already in hand`);
 			return false;

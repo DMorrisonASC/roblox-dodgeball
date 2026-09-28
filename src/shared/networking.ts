@@ -63,4 +63,22 @@ export const events = Net.Definitions.Create({
 	 * id that is not recognised is refused instead.
 	 */
 	castVote: Net.Definitions.ClientToServerEvent<[mode: string]>(),
+
+	/**
+	 * Client → server: whether this player is now holding the sprint key.
+	 *
+	 * **A level, and the only event here that sends a value the server could not work out for
+	 * itself.** `toggleThrow` above argues the opposite case at length — a request to flip rather
+	 * than a value to set, because the server owns the setting and a client that had lost track of
+	 * it could otherwise switch throwing *on* for somebody who had it off. The reasoning there is
+	 * about *authority*, not about values on the wire, and it does not reach this event: the server
+	 * holds no opinion about whether a key is down, and no way to discover it. That is a fact only
+	 * the client has, so the client is the only thing that can report it, and the honest shape of a
+	 * held key is a boolean that stays true until it is false.
+	 *
+	 * Nothing is validated on the far side and nothing needs to be: an untrue `true` buys a player
+	 * fifteen studs per second for as long as their stamina lasts, which is what the same player
+	 * gets by holding the key, and running out stops it either way. See `WalkSpeedService`.
+	 */
+	setSprinting: Net.Definitions.ClientToServerEvent<[active: boolean]>(),
 });

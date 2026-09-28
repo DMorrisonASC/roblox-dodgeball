@@ -15,6 +15,7 @@
 		"roblox-dodgeball:out/client/controllers/input/AimTargetController@AimTargetController": "client/controllers/input/AimTargetController@AimTargetController",
 		"roblox-dodgeball:out/client/controllers/input/CatchController@CatchController": "client/controllers/input/CatchController@CatchController",
 		"roblox-dodgeball:out/client/controllers/input/DodgeController@DodgeController": "client/controllers/input/DodgeController@DodgeController",
+		"roblox-dodgeball:out/client/controllers/input/SprintController@SprintController": "client/controllers/input/SprintController@SprintController",
 		"roblox-dodgeball:out/shared/AimGuide@AimGuide": "shared/AimGuide@AimGuide",
 		"roblox-dodgeball:out/shared/Trajectory@Trajectory": "shared/Trajectory@Trajectory",
 		"roblox-dodgeball:out/client/controllers/input/ThrowController@ThrowController": "client/controllers/input/ThrowController@ThrowController",
@@ -27,6 +28,8 @@
 		"roblox-dodgeball:out/server/services/ball/BallService@BallService": "server/services/ball/BallService@BallService",
 		"roblox-dodgeball:out/server/services/actions/DodgeService@DodgeService": "server/services/actions/DodgeService@DodgeService",
 		"roblox-dodgeball:out/server/services/actions/CatchService@CatchService": "server/services/actions/CatchService@CatchService",
+		"roblox-dodgeball:out/server/services/MapService@MapService": "server/services/MapService@MapService",
+		"roblox-dodgeball:out/server/services/round/modes/DodgeAndSeekMode@DodgeAndSeekMode": "server/services/round/modes/DodgeAndSeekMode@DodgeAndSeekMode",
 		"roblox-dodgeball:out/server/services/round/modes/ScoreRushMode@ScoreRushMode": "server/services/round/modes/ScoreRushMode@ScoreRushMode",
 		"roblox-dodgeball:out/server/services/round/modes/TeamEliminationMode@TeamEliminationMode": "server/services/round/modes/TeamEliminationMode@TeamEliminationMode",
 		"roblox-dodgeball:out/server/services/round/VoteService@VoteService": "server/services/round/VoteService@VoteService",
@@ -39,9 +42,7 @@
 		"roblox-dodgeball:out/server/services/character/WalkSpeedService@WalkSpeedService": "server/services/character/WalkSpeedService@WalkSpeedService",
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
-		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService",
-		"roblox-dodgeball:out/server/services/round/modes/DodgeAndSeekMode@DodgeAndSeekMode": "server/services/round/modes/DodgeAndSeekMode@DodgeAndSeekMode",
-		"roblox-dodgeball:out/server/services/MapService@MapService": "server/services/MapService@MapService"
+		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService"
 	},
 	"metadata": {}
 }

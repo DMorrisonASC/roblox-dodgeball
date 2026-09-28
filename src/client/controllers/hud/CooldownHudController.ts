@@ -4,8 +4,9 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
+import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { DODGE_CONFIG } from "shared/config/dodge.config";
-import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
+import { CATCH_READY_AT, DODGE_READY_AT, STAMINA_ATTRIBUTE } from "shared/constants";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
@@ -59,6 +60,33 @@ function progressOf(now: number, readyAt: unknown, duration: number): number {
 	return math.clamp(1 - remaining / duration, 0, 1);
 }
 
+/**
+ * How much of the stamina pool is left, `1` for full and `0` for empty, from the attribute.
+ *
+ * **A level, so this is a division and not a clock subtraction.** The two cooldowns publish
+ * *instants* and have to be compared against the server's clock, which is what {@link progressOf}
+ * does and why it takes `now`. `STAMINA_ATTRIBUTE` publishes the pool itself, so the only arithmetic
+ * is seconds into a fraction of the pool — and nothing here reads a clock, so nothing here can drift
+ * from one.
+ *
+ * **Frozen is displayed as frozen, for free.** During the recovery pause the server writes the same
+ * value, so this returns the same fraction and the bar does not move — which is what the mechanic
+ * does and what the readout is supposed to show. Animating it ahead of the pool would be the readout
+ * lying about the one moment the pause exists for.
+ *
+ * `1` for anything that is not a number, matching {@link progressOf}: a player has no attribute for
+ * the frame before `WalkSpeedService` writes one, and a full pool is the honest reading of "nothing has
+ * been spent yet".
+ *
+ * Clamped for the same reason {@link progressOf} clamps: the value was computed on another machine
+ * from a delta this one did not measure, and the config that bounds it could change between them.
+ */
+function staminaOf(value: unknown): number {
+	if (!typeIs(value, "number")) return 1;
+
+	return math.clamp(value / CHARACTER_CONFIG.STAMINA_MAX_SECONDS, 0, 1);
+}
+
 /** Gives a frame the bars' rounding. `UICorner` has no other job in this readout. */
 function addCorner(frame: Frame): void {
 	const corner = new Instance("UICorner");
@@ -67,17 +95,24 @@ function addCorner(frame: Frame): void {
 }
 
 /**
- * The two cooldowns, bottom-left: a bar each for the dodge and the catch.
+ * The dodge and catch cooldowns and the stamina pool, bottom-left: a bar each.
  *
- * **It reads nothing but the local player's attributes.** The server writes the instant each
- * action is next ready as `DodgeReadyAt` / `CatchReadyAt` on the *player* — not the character,
- * because a bar that reset on every death would be reading a cooldown that no longer exists — and
- * a per-frame subtraction turns each instant into a fraction. Nothing is sent and nothing is asked
- * for, so the readout cannot be more than a frame out of step with the rule it is showing.
+ * **It reads nothing but the local player's attributes.** The server writes the instant each action
+ * is next ready as `DodgeReadyAt` / `CatchReadyAt` on the *player* — not the character, because a bar
+ * that reset on every death would be reading a cooldown that no longer exists — and a per-frame
+ * subtraction turns each instant into a fraction. Nothing is sent and nothing is asked for, so the
+ * readout cannot be more than a frame out of step with the rule it is showing.
  *
- * Both bars are one `Value` each and one connection. The fill's width and its colour are the only
- * things derived from those values, so a change to either config moves the bars without any of
- * this being touched.
+ * **The stamina bar is the odd one out in what it represents, and identical in how it is drawn.**
+ * It reads `STAMINA_ATTRIBUTE` on the same player, and the value behind it is a *pool* rather than a
+ * *deadline*: it starts full and is spent, where the other two start empty and fill, so its fraction
+ * runs the other way. Everything else is shared — the same trough, the same two tones, the same rule
+ * about which tone means what. That is the point of sharing it: three bars that behave alike read as
+ * one readout, and the row's label is what says which ability each of them is.
+ *
+ * Each bar is one `Value` and one connection. The fill's width and its colour are the only things
+ * derived from those values, so a change to any of the configs moves the bars without any of this
+ * being touched.
  */
 @Controller()
 export class CooldownHudController implements OnStart {
@@ -96,9 +131,12 @@ export class CooldownHudController implements OnStart {
 		const theme = hudTheme();
 
 		// `1` is full, and full is the state a player joins in — before either action has been
-		// used there is nothing to count down, so there is no attribute to read yet.
+		// used there is nothing to count down, so there is no attribute to read yet. Stamina is the
+		// same shape of answer for the opposite reason: `WalkSpeedService` publishes it full the moment
+		// it starts tracking a player, so 1 is both the seed and the truth.
 		const dodgeProgress = Fusion.Value(scope, 1);
 		const catchProgress = Fusion.Value(scope, 1);
+		const staminaFraction = Fusion.Value(scope, 1);
 
 		// The rows are built first, because `Card` takes its children at construction and parents
 		// them itself — there is nothing to hand a `Parent` afterwards, and nothing above them to
@@ -109,8 +147,14 @@ export class CooldownHudController implements OnStart {
 		const catchRow = this.addRow(scope, theme, "Catch", catchProgress);
 		catchRow.LayoutOrder = 2;
 
+		// The pool, and the one row here that is not a cooldown — the same bar in the same colours,
+		// reading a value that runs the other way. It sits last because the two things a player
+		// waits on belong together above it.
+		const staminaRow = this.addRow(scope, theme, "Stamina", staminaFraction);
+		staminaRow.LayoutOrder = 3;
+
 		const container = Card(scope, {
-			children: [dodgeRow, catchRow],
+			children: [dodgeRow, catchRow, staminaRow],
 			// The card's padding, and its own rather than a `UIPadding` beside it. The readout had
 			// none before, so this is what pushes the bars in off the card's edge — the cost of the
 			// panel, and cheaper than a second padding instance fighting the card's own.
@@ -137,25 +181,33 @@ export class CooldownHudController implements OnStart {
 		// anyway: every HUD carries its own bound rather than each one having to justify one.
 		addViewportConstraint(scope, container);
 
-		// One connection for both bars, and the only thing here that runs per frame. The
+		// One connection for all three bars, and the only thing here that runs per frame. The
 		// alternatives are worse for the same reason: a subscription per attribute would leave the
 		// fraction still until the server spoke again, so something would *still* have to tick to
 		// move it in between, and then there would be two mechanisms for one movement.
 		//
 		// `RenderStepped` rather than a heartbeat, because the fill is a *reading* of a clock
-		// rather than a state of the world: its only cost is how smoothly it is sampled.
+		// rather than a state of the world: its only cost is how smoothly it is sampled. That
+		// argument is weaker for stamina than for the two cooldowns — a pool is sampled at ten a
+		// second by the server, so this reads the same value six frames in a row — and it is still
+		// the right shape: one loop for the readout beats a second mechanism that only one bar has.
 		scope.push(
 			RunService.RenderStepped.Connect(() => {
 				const now = Workspace.GetServerTimeNow();
 
 				dodgeProgress.set(progressOf(now, player.GetAttribute(DODGE_READY_AT), DODGE_BUSY_SECONDS));
 				catchProgress.set(progressOf(now, player.GetAttribute(CATCH_READY_AT), CATCH_BUSY_SECONDS));
+				staminaFraction.set(staminaOf(player.GetAttribute(STAMINA_ATTRIBUTE)));
 			}),
 		);
 
 		container.Parent = getHudScreenGui();
 
-		if (DEBUG) print(`[HUD] cooldowns up — ${DODGE_READY_AT} / ${CATCH_READY_AT} on the player`);
+		if (DEBUG) {
+			print(
+				`[HUD] cooldowns up — ${DODGE_READY_AT} / ${CATCH_READY_AT} / ${STAMINA_ATTRIBUTE} on the player`,
+			);
+		}
 	}
 
 	/**
@@ -165,6 +217,10 @@ export class CooldownHudController implements OnStart {
 	 * readout is not only a length: the colour is part of the answer — the warning tone while the
 	 * clock runs, the success tone when it is ready — and a bar that changes colour is plainer to
 	 * write than to configure.
+	 *
+	 * **Three bars, one colour rule.** This took a `fillColor` override for a while, for a stamina
+	 * bar drawn in the theme's `accent`; it is gone, and the reason is in the fill below — a row
+	 * that names its own colour is a row that has stopped being able to say how it is doing.
 	 *
 	 * The theme comes in as a parameter rather than being read here, so that a HUD reads its
 	 * colours exactly once and this method cannot disagree with the rest of the file about them.
@@ -211,6 +267,15 @@ export class CooldownHudController implements OnStart {
 			// The colour is the second half of the same answer: still filling is the busy tone,
 			// ready is the success tone, and the switch happens on the fraction rather than on the
 			// instant so the two can never disagree about which side of ready we are on.
+			//
+			// **The stamina bar carries this rule too, and it used to not.** It was briefly drawn in
+			// the theme's `accent` so that a pool could be told from a cooldown at rest — and
+			// `accent` is `Palette.primary.main`, the vivid blue at the top of the palette, against
+			// the pale blue-green `success` resolves to. That bought tellable-at-rest and paid for
+			// it with the readout's coherence: the stamina bar became the only bright blue thing on
+			// screen, so it read as belonging to a different HUD rather than as a different kind of
+			// bar. The row's label already says which ability it is; the colour's job is to say how
+			// that ability is doing, and that job is the same for a pool as for a cooldown.
 			BackgroundColor3: Fusion.Computed(scope, (use) =>
 				use(progress) >= 1 ? theme.colors.success : theme.colors.warning,
 			),

@@ -91,6 +91,29 @@ export const DODGE_READY_AT = "DodgeReadyAt";
 export const CATCH_READY_AT = "CatchReadyAt";
 
 /**
+ * Attribute on a **`Player`** holding how much sprint stamina they have left, in seconds.
+ *
+ * On the player for the same reason as {@link DODGE_READY_AT}: the pool outlives the character, so
+ * dying does not hand out a fresh one. Written by `WalkSpeedService` at a throttled rate rather than
+ * on every change — see the note below — and read by `CooldownHudController`, which draws it as a
+ * third bar beside the two cooldowns.
+ *
+ * **A level, where the two instants above are deadlines, and the difference is deliberate.** A
+ * deadline has to be converted into a fraction against a clock the reader does not share exactly,
+ * which is why {@link DODGE_READY_AT} is an instant and why its comment argues against sending a
+ * duration. A stamina pool has no clock in it at all: the reader draws the value it is given, so
+ * there is nothing to convert and nothing to go stale. The price is that this is a sample rather
+ * than a prediction — up to one write interval behind — which on a three-second pool at ten writes
+ * a second is a few per cent of a bar, and is the same order as the bar's own pixel width.
+ *
+ * The alternative, an instant like the two above, cannot describe the recovery pause: "refilling,
+ * reaching full at T" is one value, and "stopped for another 0.3s and then refilling" is not — so
+ * encoding that as a deadline needs a second attribute to say which of the two states the pool is
+ * in. A level says both with one number, and the pause is simply the value not moving.
+ */
+export const STAMINA_ATTRIBUTE = "Stamina";
+
+/**
  * The `ReplicatedStorage` folder the round's state is published on.
  *
  * **The HUD's whole channel.** `RoundService` writes the two attributes below on it and the
