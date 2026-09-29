@@ -169,20 +169,35 @@ export class BallService implements OnStart {
 
 			if (!typeIs(target, "Vector3")) return;
 
-			// Anything unrecognised falls back to the regular throw. All three arcs
-			// reach the same point, so a bad value costs the player the shape they
-			// asked for and nothing else.
+			// **The client's arc, whitelisted — and all three shapes have to be in this list.**
 			//
-			// The fallback is `straight`, which is what a fresh client starts on — see
-			// `ThrowController.arc`. A client that has not sent a valid arc yet (a race, a
-			// malformed value) then gets the shape its own aim guide is drawing rather than a
-			// different one, and a client whose guide and throw disagreed would be showing the
-			// player a line the ball was never going to take.
+			// This is where the arcing throw was being lost. `overhead` was missing, so the one arc
+			// the player has a key for — X — arrived as a word this did not recognise and was quietly
+			// replaced with `straight`. The reasoning this list was originally written on was that a
+			// fallback costs nothing, because all three arcs reach the same point — and that half
+			// holds: the ball still landed on the mark. It flew a flat line to get there instead of
+			// the arc the guide was drawing, which is the single failure this whole arrangement exists
+			// to prevent — `planPlayerThrow` is called by both sides so their plans cannot differ, and
+			// this branch defeated it upstream of the solve. The tell was a log with `overhead` on the
+			// client's line and `straight` on the server's, describing one throw.
+			//
+			// Anything genuinely unrecognised still falls back to `straight`, which is what a fresh
+			// client starts on — see `ThrowController.arc` — so a race or a malformed value gets the
+			// shape the player's own guide is already drawing, rather than one it is not.
+			//
+			// That case now says so instead of passing silently. A shape replaced without a word is
+			// exactly how the missing branch above stayed hidden, and this is a line only this side
+			// of the wire can report on: the client's own report of its arc is correct and always
+			// will be, because the fault is here.
 			let chosen: ThrowArc = "straight";
 			if (arc === "straight") {
 				chosen = "straight";
+			} else if (arc === "overhead") {
+				chosen = "overhead";
 			} else if (arc === "curve") {
 				chosen = "curve";
+			} else {
+				warn(`[Ball] ${player.Name}: threw with an unknown arc (${tostring(arc)}) — used ${chosen}`);
 			}
 
 			this.throwForPlayer(player, target, chosen, typeIs(claim, "Vector3") ? claim : undefined);

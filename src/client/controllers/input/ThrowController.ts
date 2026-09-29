@@ -12,7 +12,7 @@ import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
-import { Trajectory, ThrowArc } from "shared/Trajectory";
+import { LaunchPlan, Trajectory, ThrowArc } from "shared/Trajectory";
 import { aiming, predictedTarget } from "../../aiming";
 
 const ACTION_NAME = "ThrowDodgeball";
@@ -98,6 +98,12 @@ export class ThrowController implements OnStart {
 
 	/** The last arc report, so only a change at either end of it is printed. See {@link reportArc}. */
 	private lastArcReport = "";
+
+	/**
+	 * The last `selected -> effective` arc pair. See {@link reportArcChoice} — this is the one
+	 * diagnostic that distinguishes "the player changed throw" from "the game changed throw".
+	 */
+	private lastPlanArc = "";
 
 	/**
 	 * The smoothed aim point, and the clock reading it was last advanced from.
@@ -218,6 +224,12 @@ export class ThrowController implements OnStart {
 		// server will run when the click arrives, from the same origin.
 		const target = this.getSteadyAimTarget(character);
 		const plan = planPlayerThrow(character, target, this.arc);
+
+		// Printed here rather than beside the landing report, because this is a fact about the plan
+		// and nothing below it can change it. See `reportArcChoice` — a fallback is the whole of the
+		// "the curve changed shape while I was aiming" fault.
+		this.reportArcChoice(plan);
+
 		// The guide itself is ignored as well as the thrower. Its own parts sit
 		// right along this arc, and an arc that can hit the line drawn to
 		// represent it will chase itself around the world.
@@ -312,6 +324,35 @@ export class ThrowController implements OnStart {
 
 		this.lastArcReport = report;
 		if (DEBUG) print(`[Aim] arc: ${report}`);
+	}
+
+	/**
+	 * Reports when the plan's arc is not the arc the player selected.
+	 *
+	 * **The one fault in the preview that nothing on screen can show you, and the one nothing else
+	 * here prints.** `straight` and `curve` both quietly become an `overhead` throw when the aim
+	 * point sits above the flat launch line: `flatLaunchSpeed` has no fall to solve with, so
+	 * `planPlayerThrow` swaps the entire throw rather than miss. Nothing in the guide's drawing
+	 * knows — it draws whatever plan came back — so from the player's seat the curve changes shape
+	 * mid-aim as though the throwing style had changed underneath them. It has, and this line is
+	 * where that is visible.
+	 *
+	 * **Both halves of the pair, because the two fallbacks are different faults.** `straight ->
+	 * overhead` is a flat throw replaced by a lob. `curve -> overhead` is worse: the curve carries
+	 * its bow as an *acceleration*, and a throw that is no longer flat arrives with that left at
+	 * zero, so the bend disappears as well as the shape. Printing the pair rather than the effective
+	 * arc alone is what keeps those two apart in the log.
+	 *
+	 * On change rather than per frame: the plan is rebuilt every frame and its mode is steady across
+	 * a whole sweep of the aim. Diagnostic scaffolding — delete once the fallback is fixed or
+	 * trusted.
+	 */
+	private reportArcChoice(plan: LaunchPlan): void {
+		const report = `${this.arc} -> ${plan.arc}`;
+		if (report === this.lastPlanArc) return;
+
+		this.lastPlanArc = report;
+		if (DEBUG) print(`[Throw] plan: ${report}${plan.arc === this.arc ? "" : " — FELL BACK"}`);
 	}
 
 	/**
