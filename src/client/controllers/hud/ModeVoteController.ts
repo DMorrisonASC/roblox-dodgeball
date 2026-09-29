@@ -1,5 +1,5 @@
 import { Controller, OnStart } from "@flamework/core";
-import { Button } from "@rbxts/big-ui";
+import { Button, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import Net from "@rbxts/net";
 import { ReplicatedStorage } from "@rbxts/services";
@@ -7,6 +7,7 @@ import {
 	ROUND_STATUS_FOLDER,
 	ROUND_VOTE_OPEN_ATTRIBUTE,
 	ROUND_VOTE_OPTIONS_ATTRIBUTE,
+	voteCountAttribute,
 } from "shared/constants";
 import { decodeModeIds, GAME_MODE_NAMES, GameModeId } from "shared/gameMode";
 import { events } from "shared/networking";
@@ -49,14 +50,28 @@ const ROW_MAX_WIDTH = 720;
 /** The gap between two buttons, in pixels. */
 const BUTTON_GAP = 8;
 
+/** The gap between a button and the count beside it, in pixels. */
+const COUNT_GAP = 8;
+
+/**
+ * The width of the count column, in pixels.
+ *
+ * **A definite width, so that the button does not move every time a count gains a digit.** The count
+ * sits to the right of the label, so a column that hugged its own text would narrow the button the
+ * moment somebody voted a second time — a row that shuffles under the cursor that is clicking it.
+ * Wide enough for the counts a vote can reach on a server that exists, and no wider.
+ */
+const COUNT_WIDTH = 28;
+
 /**
  * The vote: a row of buttons, one per mode, up only while the window is open.
  *
- * **It decides nothing.** Which modes are on offer, when the window opens, who won and which mode
- * the next round plays are all the server's — the client's whole job is to put the options on
- * screen and send back the one that was pressed. That is why there is no tally here and no
- * majority: a client-side count would be a second answer to a question the server has already
- * answered, and the one a player could edit.
+ * **It decides nothing, and it counts nothing either.** Which modes are on offer, when the window
+ * opens, who won, which mode the next round plays and how many votes each option has are all the
+ * server's — the client's whole job is to put the options on screen, put the count it was handed
+ * beside each one, and send back the one that was pressed. The figure next to a label is read off
+ * the folder like everything else here, which is the point: a count worked out on this machine would
+ * be a second tally, and the one a player could edit.
  *
  * The options arrive as an attribute rather than being a list in this file, so a mode that has
  * been designed but not written simply is not offered. Building Dodge and Seek will put a third
@@ -159,9 +174,38 @@ export class ModeVoteController implements OnStart {
 		for (let index = 0; index < options.size(); index++) {
 			const id = options[index];
 
+			// **A slot per option, because the count has to sit beside the label and a big-ui button
+			// cannot be taught to change one.** `Button.label` is a plain string taken at
+			// construction — unlike `Text.text`, which takes a `UsedAs<string>` — so a live count
+			// cannot go into the button's own label without rebuilding the button on every vote.
+			// It goes next to it instead: the slot is the row's flex item, and the button and the
+			// count are laid out inside it.
+			const slot = Fusion.New(scope, "Frame")({
+				Name: `VoteSlot${id}`,
+				Size: new UDim2(0, 0, 0, 0),
+				AutomaticSize: Enum.AutomaticSize.Y,
+				BackgroundTransparency: 1,
+			});
+
+			// `Fill` is `flex: 1` — every slot takes an equal share of the row, which is what makes the
+			// widths a consequence of the count of options rather than a number anyone chose.
+			Fusion.New(scope, "UIFlexItem")({
+				Parent: slot,
+				FlexMode: Enum.UIFlexMode.Fill,
+			});
+
+			Fusion.New(scope, "UIListLayout")({
+				Parent: slot,
+				FillDirection: Enum.FillDirection.Horizontal,
+				SortOrder: Enum.SortOrder.LayoutOrder,
+				VerticalAlignment: Enum.VerticalAlignment.Center,
+				Padding: new UDim(0, COUNT_GAP),
+			});
+
 			const button = Button(scope, {
 				label: GAME_MODE_NAMES[id],
 				variant: "contained",
+				layoutOrder: 1,
 				onActivate: () => this.cast(id),
 			});
 
@@ -171,15 +215,39 @@ export class ModeVoteController implements OnStart {
 			// own text and `Fill` would have nothing to divide.
 			button.AutomaticSize = Enum.AutomaticSize.None;
 
-			// `Fill` is `flex: 1` — every button takes an equal share of the row, which is what
-			// makes the widths a consequence of the count rather than a number anyone chose.
+			// `Fill` inside the slot: the button takes what is left once the count has taken its
+			// column, so the two never fight over the same pixels.
 			Fusion.New(scope, "UIFlexItem")({
 				Parent: button,
 				FlexMode: Enum.UIFlexMode.Fill,
 			});
 
-			button.LayoutOrder = index;
-			button.Parent = row;
+			button.Parent = slot;
+
+			// The count, read off the folder rather than counted here — see the class comment.
+			const votes = watchCount(scope, status, id);
+
+			// **A bare number, and the label beside it is what names it.** The stat billboard spells
+			// its figures out because it is read from across an arena at somebody else's head; this
+			// is a number on a button the player is already looking at, on a row whose whole subject
+			// is the vote — `Dodge and Seek   3` needs no `votes:` to be read.
+			const count = Text(scope, {
+				text: Fusion.Computed(scope, (use) => tostring(use(votes))),
+				variant: "button",
+				align: Enum.TextXAlignment.Center,
+				size: UDim2.fromOffset(COUNT_WIDTH, 0),
+				layoutOrder: 2,
+			});
+
+			// **The automatic axis, put back on the height.** big-ui takes `AutomaticSize` off
+			// entirely when a `Text` is given a size, so a label given a width and no height would be
+			// zero pixels tall — a count that is there and cannot be read. Releasing the height is
+			// what lets the definite width above stand without costing the label its line.
+			count.AutomaticSize = Enum.AutomaticSize.Y;
+			count.Parent = slot;
+
+			slot.LayoutOrder = index;
+			slot.Parent = row;
 		}
 
 		if (DEBUG) print(`[Vote] ${options.size()} option(s) offered`);
@@ -206,4 +274,32 @@ export class ModeVoteController implements OnStart {
 
 		return this.voteRemote;
 	}
+}
+
+/**
+ * How many votes `id` has, as a `Value` a label can observe.
+ *
+ * **The same bridge the stat billboard uses**, and for the same reason: an attribute is how the
+ * server publishes this and a Fusion state is the only thing a `Computed` can depend on —
+ * `GetAttribute` read inside one is a reading taken once, not a dependency, so a label built
+ * straight on it would be a label that never changed after its first frame. Seeded from the
+ * attribute and kept live by its changed signal, the count follows the vote.
+ *
+ * The connection is handed to the scope, so it is cleaned up with the button it feeds rather than
+ * outliving the row.
+ */
+function watchCount(scope: Fusion.Scope<unknown>, status: Instance, id: GameModeId): Fusion.Value<number> {
+	const name = voteCountAttribute(id);
+	const votes = Fusion.Value(scope, countOf(status, name));
+
+	scope.push(status.GetAttributeChangedSignal(name).Connect(() => votes.set(countOf(status, name))));
+
+	return votes;
+}
+
+/** A numeric attribute, or `0` — the count an option nobody has voted for has. */
+function countOf(status: Instance, name: string): number {
+	const raw = status.GetAttribute(name);
+
+	return typeIs(raw, "number") ? raw : 0;
 }

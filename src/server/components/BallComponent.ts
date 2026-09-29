@@ -385,19 +385,25 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	}
 
 	/**
-	 * Counts this throw as a hit or a miss, once, at the ball's death.
+	 * Counts this throw as a hit, once, at the ball's death — if it landed on anybody.
 	 *
-	 * **One throw, one entry — whether any body was tagged when the ball died decides it, and
-	 * nothing later may change its mind.** That is not a tidiness rule, it is what makes the numbers
-	 * mean what they say:
+	 * **One throw, at most one entry — whether any body was tagged when the ball died decides it,
+	 * and nothing later may change its mind.** That is not a tidiness rule, it is what makes the
+	 * number mean what it says:
 	 *
 	 * - A single landing reports *every* part the ball overlaps, so without this a ball rolling to a
-	 *   stop would be a dozen misses.
-	 * - A ball that tagged three players and then hit the floor is one hit, not three hits and a
-	 *   miss. The throw landed on somebody; where it came to rest afterwards is not a second throw.
-	 * - A ball that is caught is neither: the catch returns before the ball dies, so nothing reaches
-	 *   here and the throw is not counted either way — exactly as it was when a catch was decided at
-	 *   the first contact.
+	 *   stop would be a dozen hits.
+	 * - A ball that tagged three players and then hit the floor is one hit, not three. The throw
+	 *   landed on somebody; where it came to rest afterwards is not a second throw.
+	 * - A ball that is caught is counted nowhere: the catch returns before the ball dies, so nothing
+	 *   reaches here. The caught thrower's death is not this figure either — that is an out, and it
+	 *   is counted by the round, which is the only thing that knows an elimination happened.
+	 *
+	 * **Nothing is counted when nothing was tagged, and that is the rule rather than an omission.**
+	 * The record is hits against outs — outcomes, not throws — so a throw that lands on the floor is
+	 * a throw with no entry, and there is no such figure as a miss to add one to. The flag below is
+	 * still written either way: it means "this throw's accounting is done", which is worth being able
+	 * to say whether or not the answer was a hit.
 	 *
 	 * **Taken at the death, not at the hit**, because a hit is no longer final — a catch can still
 	 * take it back. `StatsRecorded` is cleared by the same `Armed` transition that clears the tag
@@ -407,16 +413,18 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * Whether that names a person at all is `StatsService`'s question — a rig's token is a GUID and
 	 * falls out there, which is what keeps NPCs out of the record.
 	 */
-	private score(hit: boolean): void {
+	private score(taggedAny: boolean): void {
 		if (this.instance.GetAttribute("StatsRecorded") === true) return;
 
 		this.instance.SetAttribute("StatsRecorded", true);
 
+		// Nobody was tagged, so this throw has no entry to add — see the comment above.
+		if (!taggedAny) return;
+
 		const throwerToken = this.instance.GetAttribute("ThrowerId");
 		if (!typeIs(throwerToken, "string") || throwerToken === "") return;
 
-		if (hit) this.stats.recordHit(throwerToken);
-		else this.stats.recordMiss(throwerToken);
+		this.stats.recordHit(throwerToken);
 	}
 
 	/**

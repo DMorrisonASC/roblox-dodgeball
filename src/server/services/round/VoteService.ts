@@ -7,6 +7,7 @@ import {
 	ROUND_MODE_ATTRIBUTE,
 	ROUND_VOTE_OPEN_ATTRIBUTE,
 	ROUND_VOTE_OPTIONS_ATTRIBUTE,
+	voteCountAttribute,
 } from "shared/constants";
 import { events } from "shared/networking";
 import { DEFAULT_MODE, isPlayable, playableModes } from "./modes/registry";
@@ -98,6 +99,14 @@ export class VoteService implements OnStart {
 		this.statusFolder.SetAttribute(ROUND_VOTE_OPTIONS_ATTRIBUTE, encodeModeIds(this.options()));
 		this.statusFolder.SetAttribute(ROUND_VOTE_OPEN_ATTRIBUTE, true);
 
+		// **Seeded at zero rather than left absent, and seeded *with* the window rather than on the
+		// first vote.** The row of buttons appears the moment the flag above goes true, so a client
+		// that arrived one replication before the first count would draw nothing where a number
+		// belongs. Writing an entry for every option — including the ones nobody has reached for —
+		// is also what makes "no votes" a number the client reads rather than a missing attribute it
+		// has to have an opinion about.
+		this.publishCounts();
+
 		print(`[Vote] open for ${GAME_MODE_CONFIG.VOTE_SECONDS}s — ${this.optionNames()}`);
 	}
 
@@ -171,6 +180,8 @@ export class VoteService implements OnStart {
 
 		this.ballots.set(player, mode);
 
+		this.publishCounts();
+
 		print(`[Vote] ${player.Name} → ${GAME_MODE_NAMES[mode]}`);
 	}
 
@@ -183,6 +194,28 @@ export class VoteService implements OnStart {
 		}
 
 		return counts;
+	}
+
+	/**
+	 * Puts every option's current count on the folder, zeros included.
+	 *
+	 * **The whole row is written, not the option that changed.** Writing only the mode that just
+	 * received a vote would have to be right about *when* the others became zero, and it is not: a
+	 * ballot moved from one mode to another changes two counts, and a window opening resets all of
+	 * them. One sweep over the registry is a handful of attribute writes on a keypress, and there is
+	 * no state left to get wrong.
+	 *
+	 * **A view of `ballots`, not a tally kept beside it.** `ballots` is the state — one entry per
+	 * voter, which is what makes re-voting a replacement rather than a second vote — and this
+	 * re-counts it. A running total kept in step alongside would be a second answer to "how many
+	 * voted for this", and the one that could quietly disagree with the server's own decision.
+	 */
+	private publishCounts(): void {
+		const counts = this.tally();
+
+		for (const mode of playableModes()) {
+			this.statusFolder.SetAttribute(voteCountAttribute(mode.id), counts.get(mode.id) ?? 0);
+		}
 	}
 
 	/**

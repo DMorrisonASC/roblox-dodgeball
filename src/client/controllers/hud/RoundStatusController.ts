@@ -3,8 +3,8 @@ import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
-import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE, ROUND_WINNER_ATTRIBUTE } from "shared/constants";
-import { GAME_MODE_NAMES, isGameModeId, sideNameOf } from "shared/gameMode";
+import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
+import { GAME_MODE_NAMES, isGameModeId } from "shared/gameMode";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -14,14 +14,6 @@ const DEBUG = true;
 /** How wide the HUD is, and how far below the top of the screen it sits. Its height is its content's. */
 const HUD_WIDTH = 360;
 const HUD_TOP_INSET = 0;
-
-/**
- * What the server calls a round nobody won.
- *
- * A convention between this file and `RoundService` rather than a shared constant, like the phase
- * names: it is the HUD's half of two files agreeing on a word, and the word is not a setting.
- */
-const DRAW = "draw";
 
 /**
  * The round HUD: which phase the round is in, and how long is left of it.
@@ -52,7 +44,6 @@ export class RoundStatusController implements OnStart {
 
 		const state = Fusion.Value(scope, "Intermission");
 		const time = Fusion.Value(scope, 0);
-		const winner = Fusion.Value(scope, "");
 		const mode = Fusion.Value(scope, "");
 
 		/**
@@ -96,13 +87,6 @@ export class RoundStatusController implements OnStart {
 		);
 
 		scope.push(
-			status.GetAttributeChangedSignal(ROUND_WINNER_ATTRIBUTE).Connect(() => {
-				const value = status.GetAttribute(ROUND_WINNER_ATTRIBUTE);
-				if (typeIs(value, "string")) winner.set(value);
-			}),
-		);
-
-		scope.push(
 			status.GetAttributeChangedSignal(ROUND_MODE_ATTRIBUTE).Connect(() => {
 				const value = status.GetAttribute(ROUND_MODE_ATTRIBUTE);
 				if (typeIs(value, "string")) mode.set(value);
@@ -118,46 +102,44 @@ export class RoundStatusController implements OnStart {
 		const initialTime = status.GetAttribute(ROUND_TIME_ATTRIBUTE);
 		if (typeIs(initialTime, "number")) time.set(initialTime);
 
-		const initialWinner = status.GetAttribute(ROUND_WINNER_ATTRIBUTE);
-		if (typeIs(initialWinner, "string")) winner.set(initialWinner);
-
 		// Seeded like the others, and here it matters most: the mode is written once — when a vote
 		// closes — rather than every second, so a client that mounted after that write would never
 		// see it if this only listened for changes.
 		const initialMode = status.GetAttribute(ROUND_MODE_ATTRIBUTE);
 		if (typeIs(initialMode, "string")) mode.set(initialMode);
 
-		// The HUD's entire content, derived rather than assembled: it re-reads all five values
+		// The HUD's entire content, derived rather than assembled: it re-reads all four values
 		// whenever any of them changes, and never has to be told that it should.
 		//
-		// **The wording is built here, on the client.** The server publishes a phase, a clock, a
-		// mode and a bare winner label; turning those into a sentence is presentation, and
-		// presentation that only ever has one consumer — a label — belongs on the machine drawing
-		// the label. See `MODE_SIDE_NAMES`, which is what makes "who won" say the right thing for a
-		// mode whose sides are not "Team A" and "Team B".
+		// **The wording is built here, on the client.** The server publishes a phase, a clock and a
+		// mode id; turning those into a sentence is presentation, and presentation that only ever has
+		// one consumer — a label — belongs on the machine drawing the label. See `GAME_MODE_NAMES`,
+		// which is the one place a mode is named.
 		const text = Fusion.Computed(scope, (use) => {
 			// **Every value is read before any branching, and that is not tidiness.** Fusion decides
 			// what a `Computed` depends on from the `use` calls that actually *run*, so a read placed
 			// inside an `if` is a subscription that only exists while that branch is taken. Reading
 			// the clock inside the non-waiting branch — as this used to — meant the label stopped
 			// watching it for as long as it was saying "waiting for players", and was only rescued
-			// because the player count changing re-runs the whole thing. All five up front makes the
+			// because the player count changing re-runs the whole thing. All four up front makes the
 			// subscription set fixed, whatever the line ends up saying.
 			const phase = use(state);
 			const players = use(playerCount);
 			const seconds = use(time);
 			const modeId = use(mode);
-			const result = use(winner);
 
 			// **Below the minimum, the countdown is not the interesting number.** The intermission is
 			// frozen and will not move until somebody else arrives, so `Intermission — 30s` would be a
 			// clock that has stopped for a reason the reader cannot see. The count is the reason.
 			//
-			// **It replaces the clock and nothing else.** This used to `return` early, which silently
-			// dropped both the mode and the winner — and the way a team most often ends up alone is a
-			// leaver deciding the round, so the one moment the server drops below the minimum is
-			// exactly the moment there is a result to read. It showed "Waiting for players — 1/2" and
-			// nothing about who had just won, which is the one thing on this line worth reading then.
+			// **It replaces the clock and nothing else, and the winner is no longer one of the things
+			// it has to leave room for.** This used to `return` early, which silently dropped both
+			// the mode and the winner: the commonest way a server drops below the minimum is a
+			// leaver deciding the round, so the line was at its least informative exactly when there
+			// was most to say. The winner has since moved off this line altogether — see
+			// `RoundResultController` — which leaves the mode as the only segment the shape below now
+			// protects. The shape stays anyway: a face with segments appended is what makes the next
+			// one of them a line rather than a rewrite.
 			const waiting = phase === "Intermission" && players < ARENA_CONFIG.MIN_PLAYERS;
 
 			const face = waiting
@@ -174,30 +156,13 @@ export class RoundStatusController implements OnStart {
 
 			if (known) line = `${line} | ${GAME_MODE_NAMES[modeId]}`;
 
-			// **The winner does not care that the server is waiting for players.** It is read during
-			// the intermission and stays up for as long as one is running — which is precisely the
-			// intermission that follows the round it describes.
-			if (phase !== "Intermission" || result === "") return line;
-
-			// The draw case first, and it needs no side name at all — which is the whole reason the
-			// server can keep publishing a bare label and nothing else.
-			if (result === DRAW) return `${line} | Draw`;
-
-			// A server whose modes this client does not know: the attribute is a plain string, so a
-			// build a version behind can be handed an id it has no entry for. The fallback is the
-			// label itself rather than nothing, because "Team A won" is still true.
-			if (!known) {
-				const fallback = `Team ${result}`;
-
-				return `${line} | ${fallback} won`;
-			}
-
-			// Built before it is used, and **never nested inside the line's own template**: roblox-ts
-			// compiles each template literal to a Luau interpolated string, so nesting one puts
-			// backticks inside backticks — which parses, and quietly renders as nothing.
-			const outcome = sideNameOf(modeId, result);
-
-			return `${line} | ${outcome} won`;
+			// **The winner used to be appended right here, and the rule it was appended under is the
+			// part worth keeping.** What belongs on this line is the round's *state*: the phase, the
+			// clock, and the mode it is being played by. A result is not a state — it is a thing to
+			// be read, with a board of the round's hits under it, which is a shape no single line has
+			// room for. It has a panel of its own now, and this line went back to being about the
+			// round that has not started yet.
+			return line;
 		});
 
 		const wrapper = Fusion.New(scope, "Frame")({

@@ -4,6 +4,7 @@ import { ARENA_CONFIG } from "shared/config/arena.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
 import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
+import { events, RoundResultRow } from "shared/networking";
 import {
     ROUND_STATE_ATTRIBUTE,
     ROUND_TIME_ATTRIBUTE,
@@ -15,6 +16,7 @@ import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
 import { MapService } from "../MapService";
 import { BallService } from "../ball/BallService";
+import { StatsService } from "../stats/StatsService";
 import { GameMode, RoundView } from "./modes/GameMode";
 import { DEFAULT_MODE, modeFor } from "./modes/registry";
 import { roundStatusFolder } from "./roundStatus";
@@ -76,6 +78,47 @@ export class RoundService implements OnStart {
     public readonly scores = new Map<TeamLabel, number>();
 
     /**
+     * How many times each player's throws landed on somebody **in the round that is running**.
+     *
+     * **The round's number, which is deliberately not the one `StatsService` keeps.** That service
+     * holds a lifetime count, persisted across sessions, because a player's record is theirs; this
+     * one is the round's, thrown away when the next round opens, because the result panel asks a
+     * question a career total cannot answer — "who landed the hits in *that* round" is a question
+     * about the last few minutes, and a lifetime figure would let a player who joined yesterday
+     * outrank one who just won the round.
+     *
+     * **Its lifetime is `scores`' lifetime exactly**: both are written during a round, both are
+     * still readable for the whole intermission that follows it, and both are cleared at the
+     * opening of the next one. That is why the intermission's `activePlayers.clear()` cannot take
+     * this with it — this is not the roster, and the board is read *after* the roster is gone.
+     *
+     * **Only a player in the round can be counted into it.** The thrower is resolved from the
+     * token its ball carries, and a rig's token is a GUID, which names nobody; the victim has to be
+     * a player the round knows. So a rig is on neither side of an entry, and the board is a list of
+     * people by construction rather than by a filter applied when it is drawn. See `registerHit`.
+     */
+    private readonly roundHits = new Map<Player, number>();
+
+    /**
+     * How many times each player was **eliminated during the round that is running**.
+     *
+     * **The other half of the board, and a table of its own rather than a pair per player.** A hit
+     * and an out are counted in two different places — a hit where a throw lands on somebody, an out
+     * where the round decides a death takes a player out of it — and one map of two-field records
+     * would have both places reaching into a value to increment half of it.
+     *
+     * **It keeps `roundHits`' lifetime exactly, and by the same means**: both are cleared where
+     * `scores` is cleared, so both are readable for the whole intermission that follows the round and
+     * neither survives into the next one. Nothing here needs a snapshot at the end of the round for
+     * that reason — see the clearing at the round's opening.
+     *
+     * **Dodge and Seek never puts anything in it.** Every death in that mode converts instead of
+     * eliminating, so `eliminate` is never reached and the board shows nought outs for a whole round
+     * — which is the mode's answer rather than a gap in the counting. See `DodgeAndSeekMode.onDeath`.
+     */
+    private readonly roundOuts = new Map<Player, number>();
+
+    /**
      * Whether the round in progress has been decided.
      *
      * **The guard that lets a round be ended from two places.** A round can finish on a tick of the
@@ -109,6 +152,7 @@ export class RoundService implements OnStart {
         private readonly balls: BallService,
         private readonly votes: VoteService,
         private readonly maps: MapService,
+        private readonly stats: StatsService,
     ) {}
 
     onStart() {
@@ -371,9 +415,68 @@ export class RoundService implements OnStart {
         // The same word the message uses, and the vocabulary the HUD expects: a team's label, or
         // `"draw"`. Written before the round is left, because the intermission that follows is where
         // it is read.
+        //
+        // **Still published now that the top bar no longer reads it.** This is the round's vocabulary
+        // rather than one HUD's — anything that ever wants to ask "who won" between rounds asks here
+        // — and the panel that replaced that segment is told by a message instead, for the reasons
+        // `events.roundResult` sets out.
         this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, outcome);
 
+        this.sendResult(outcome);
+
         print(`[Round] ${result}`);
+    }
+
+    /**
+     * Hands the finished round's board to the clients that watched it.
+     *
+     * **Sent from here because here is where the result is decided, once.** `finishRound` is
+     * idempotent and is reached by two paths — the tick that notices a side has emptied, and a
+     * `PlayerRemoving` that empties one — so a send at either of those call sites would be two sends
+     * for one round. This line is inside the guard, which is what makes it one.
+     *
+     * **A draw sends nothing, and that is the panel's empty state.** A board belongs to a side, and a
+     * round nobody won has no side to list — so the absence of a message *is* "no panel", rather
+     * than a message carrying an empty list that every reader would have to interpret the same way.
+     * It also keeps a word off the wire: `"draw"` is the round's own vocabulary, between this file
+     * and the HUD that no longer needs it, and the client never has to know it.
+     *
+     * **Built from `Players.GetPlayers()` rather than from `teams`.** A player who left during the
+     * round is still in `teams`, as a reference to somebody who is not here — and a board is a thing
+     * to print names from, so it is built from the players who are actually here to be named. A
+     * leaver is simply absent, which under the roster rule is most often the losing side anyway.
+     *
+     * **Ordered here rather than on the client.** The ranking is a fact about the round, and the
+     * counter it reads lives on this machine: sending the rows in order is what keeps "sorted by
+     * hits" from being decided once per client, each in its own way. Ties break on name, so two
+     * players on the same count cannot change places between two draws of the same board.
+     */
+    private sendResult(outcome: RoundOutcome): void {
+        if (outcome === DRAW) return;
+
+        const rows: RoundResultRow[] = [];
+
+        for (const player of Players.GetPlayers()) {
+            if (this.teams.get(player) !== outcome) continue;
+
+            // Four facts: what the row prints, and what it draws. The id is the one that is not
+            // printed — a thumbnail is looked up by user id, and the row that needs one may name
+            // somebody who has since left this server. See `RoundResultRow`.
+            rows.push({
+                userId: player.UserId,
+                name: player.Name,
+                hits: this.roundHits.get(player) ?? 0,
+                outs: this.roundOuts.get(player) ?? 0,
+            });
+        }
+
+        // **A `boolean` comparator, and not the number one JavaScript habits reach for.**
+        // roblox-ts's `Array.sort` is an alias for Lua's `table.sort`, which is told whether the
+        // first argument comes first rather than how the two compare — a `b.hits - a.hits` here
+        // would be a number where a truth value was wanted, and would not compile.
+        rows.sort((a, b) => (a.hits === b.hits ? a.name < b.name : a.hits > b.hits));
+
+        events.Server.Get("roundResult").SendToAllPlayers(this.mode.id, outcome, rows);
     }
 
     /**
@@ -511,10 +614,26 @@ export class RoundService implements OnStart {
         player.LoadCharacter();
     }
 
-    /** Out of the round, watching the rest of it. */
+    /**
+     * Out of the round, watching the rest of it.
+     *
+     * **The record is written here because this is what "eliminated" means to the round.** Both of
+     * the guards that make a death an elimination sit in {@link handleDeath} — a round is being
+     * played, and the player was still in it — so a death in the lobby, a spectator dying again, and
+     * a mode that respawns instead of eliminating all pass this method by. Nothing here decides
+     * anything; it reports a decision the mode has already made.
+     *
+     * **Two records are written, and they are one fact seen over two spans of time**: the player's
+     * lifetime outs, which belong to `StatsService` and outlive the session they were earned in, and
+     * this round's count for the result board, which is thrown away when the next round opens. This
+     * is the only place either of them is written, which is why they are written together.
+     */
     private eliminate(player: Player): void {
         this.activePlayers.delete(player);
         player.SetAttribute(SPECTATING_ATTRIBUTE, true);
+
+        this.stats.recordOut(player);
+        this.roundOuts.set(player, (this.roundOuts.get(player) ?? 0) + 1);
     }
 
     /** Put `player` on `team` — in the table the round counts from, and on the player. */
@@ -574,12 +693,12 @@ export class RoundService implements OnStart {
      * anybody is on, and a mode's `hitAward` is never asked what a hit on one's own side is worth.
      * A guard here for that case would be unreachable, which is why there is not one.
      *
-     * **Recorded for scoring and stats only — no mode consults hit cause.** The round is told about
-     * a hit so that a mode which keeps score can award the point, and so the throw reaches
-     * `StatsService`; nothing anywhere asks whether a death was a throw or a reset, which is why
-     * the round keeps no record of which players a throw has landed on. A mode that needed that
-     * distinction would have to ask for it back here, because this is the only moment it is
-     * observable.
+     * **Recorded for scoring, for the board, and for stats — and no mode is asked about hit
+     * cause.** The round is told about a hit so that a mode which keeps score can award the point,
+     * so that the throw reaches `StatsService`, and so that the player who landed it goes up the
+     * round's own count for the result panel — three readers of one event, which is why it all
+     * happens in one method. Nothing anywhere asks whether a death was a throw or a reset, which is
+     * why the round keeps no *cause*: a hit arrives as a hit or it does not arrive.
      */
     public registerHit(throwerToken: string, victim: Model): void {
         if (this.state !== RoundState.Playing) return;
@@ -587,14 +706,21 @@ export class RoundService implements OnStart {
         const victimPlayer = Players.GetPlayerFromCharacter(victim);
         if (victimPlayer === undefined || !this.activePlayers.has(victimPlayer)) return;
 
+        // **Resolved once, here, above the scoring gate below.** Two things below need the thrower
+        // and one of them is above the gate, so the lookup cannot live inside the scoring block: the
+        // board is a fact about who landed a hit, not about what a hit is worth, and it is therefore
+        // kept for every mode — including the scoreless ones, which have a result panel like anybody
+        // else. Under the gate, Team Elimination's board would be empty for ever.
+        const thrower = playerFromToken(throwerToken);
+
+        if (thrower !== undefined) this.roundHits.set(thrower, (this.roundHits.get(thrower) ?? 0) + 1);
+
         // **A mode that keeps no score is not asked what a hit is worth.** See `GameMode.scores`:
         // a scoreless mode has no hit rule to state, so asking anyway would make every mode carry a
         // method whose only correct answer is "nothing" — and would call it on every landed hit of
         // every round for no reason. The hit itself is still recorded above, because *that* is not
         // a scoring question: a mode with no points may still need to know a throw landed.
         if (!this.mode.scores) return;
-
-        const thrower = playerFromToken(throwerToken);
 
         const award = this.mode.hitAward({ thrower, victim: victimPlayer }, this);
         if (award === undefined || thrower === undefined) return;
@@ -1103,6 +1229,15 @@ export class RoundService implements OnStart {
             // exactly the flag's lifetime — so a round ended early by a leaver cannot leave the next
             // one unable to finish at all.
             this.scores.clear();
+
+            // **Both boards go with the scoreboard, and here rather than where the round ends.**
+            // Cleared at `finishRound` they would empty the panel that reads them one frame before
+            // the intermission they are meant to fill: a board is the round's *record*, so it has to
+            // outlive the round by exactly as long as the intermission does, and clearing it at the
+            // next round's opening is what gives it that lifetime. See `roundHits` and `roundOuts`.
+            this.roundHits.clear();
+            this.roundOuts.clear();
+
             this.finished = false;
 
             this.assignTeams();

@@ -5,11 +5,11 @@ import {
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
 	STAT_HITS,
-	STAT_MISSES,
+	STAT_OUTS,
 	STAT_RATIO,
 } from "shared/constants";
 
-/** Prints each load, each write, and each counted throw. Silent about the ordinary refusals. */
+/** Prints each load, each write, and each counted figure. Silent about the ordinary refusals. */
 const DEBUG = true;
 
 /** The phase name that counts as competitive play. A word between two files, not a setting. */
@@ -24,18 +24,24 @@ const PLAYING = "Playing";
  */
 const ATTEMPTS = 2;
 
-/** A player's lifetime throw record. The shape of what the store holds, and of what is in memory. */
+/** A player's lifetime record. The shape of what the store holds, and of what is in memory. */
 export interface PlayerStats {
 	/** Throws that landed on a body. */
 	hits: number;
 
-	/** Throws that landed on anything else — a floor, a wall, a ball. */
-	misses: number;
+	/** Times a round took them out of it. */
+	outs: number;
 }
 
 /**
- * Every player's lifetime throw record: how many of their throws have landed on somebody, and how
- * many have landed on everything else.
+ * Every player's lifetime record: how many times they have hit somebody, and how many times they
+ * have been eliminated.
+ *
+ * **Two figures about the two directions of one exchange**, which is what makes their ratio worth
+ * reading: a throw that lands on a body is a hit, and being taken out of a round is an out. Neither
+ * is a count of throws — a throw that lands on the floor is counted nowhere — so this is a record of
+ * outcomes rather than of activity, and a player who throws all round and hits nobody has a record no
+ * fuller than one who never threw at all.
  *
  * **The store is the record; this is its cache.** A player's numbers are read once when they join
  * and written back when they leave, so a hit during a round costs a table lookup rather than a round
@@ -45,12 +51,15 @@ export interface PlayerStats {
  * **It does not know the round exists.** Which phase is running is read off the same status folder
  * the HUD and `BallSpawnerService` read, so this is a sibling of `RoundService` rather than a
  * dependent of it — and "only competitive play counts" becomes a line in here instead of an
- * injection. See {@link isRoundActive}.
+ * injection. See {@link isRoundActive}. `RoundService` calls {@link recordOut} the other way, and
+ * that direction is not the same thing: what the round hands over is a decision it has already made,
+ * not a question it is asking about itself.
  *
- * **Only players are scored, and no rig is ever asked about.** A thrower reaches this as the token
- * its ball was stamped with at release — a `UserId` as text for a player, a GUID for a rig — and a
- * GUID is not a number, so a rig's throws fall out of {@link playerOf} without this file having an
- * opinion about what a rig is.
+ * **Only players are scored, and no rig is ever asked about.** A hit arrives as the token the ball
+ * was stamped with at release — a `UserId` as text for a player, a GUID for a rig — and a GUID is not
+ * a number, so a rig's hits fall out of {@link playerOf} without this file having an opinion about
+ * what a rig is. An out arrives as a `Player`, because a rig is never in a round to be taken out of
+ * one.
  */
 @Service()
 export class StatsService implements OnStart {
@@ -100,11 +109,12 @@ export class StatsService implements OnStart {
 	}
 
 	/**
-	 * Hits over throws, from `0` to `1` — or nothing when there is no record to divide.
+	 * Hits over hits and outs together, from `0` to `1` — or nothing when there is no record to
+	 * divide.
 	 *
-	 * **A player who has thrown nothing reads as `0`, not as nothing.** "No throws yet" and "every
-	 * throw missed" are the same answer to the question this is asked, and a caller handed `nil`
-	 * would have to invent that same rule for itself.
+	 * **A player with neither figure reads as `0`, not as nothing.** "Nothing has happened yet" and
+	 * "everything that has happened went against them" are the same answer to the question this is
+	 * asked, and a caller handed `nil` would have to invent that same rule for itself.
 	 */
 	public getRatio(player: Player): number | undefined {
 		const stats = this.stats.get(player);
@@ -129,7 +139,7 @@ export class StatsService implements OnStart {
 		if (DEBUG) print(`[Stats] ${player.Name}: record reset`);
 	}
 
-	// ---- Recording a throw ----
+	// ---- Recording a figure ----
 
 	/**
 	 * Counts a throw as having landed on a body.
@@ -139,37 +149,54 @@ export class StatsService implements OnStart {
 	 * question about who counts out of `BallComponent`.
 	 */
 	public recordHit(throwerToken: string): void {
-		this.record(throwerToken, true);
-	}
-
-	/** Counts a throw as having landed on anything else. See {@link recordHit}. */
-	public recordMiss(throwerToken: string): void {
-		this.record(throwerToken, false);
-	}
-
-	private record(throwerToken: string, hit: boolean): void {
-		// **Only competitive play counts.** A throw in the lobby or between rounds is practice, and a
-		// record that included it would be a record of how much somebody has played rather than of how
-		// well they throw. Asked here rather than by the caller, so no future caller can forget it.
-		if (!this.isRoundActive()) return;
-
 		const player = playerOf(throwerToken);
 		if (player === undefined) return;
+
+		this.count(player, "hit");
+	}
+
+	/**
+	 * Counts `player` as having been eliminated.
+	 *
+	 * **A player and not a token, and that is the difference between the two figures.** A hit arrives
+	 * from a ball that knows only who threw it; an elimination is a fact about somebody the round has
+	 * just taken out, and by the time it reaches here the round has already decided it — see
+	 * `RoundService.eliminate` for the guards that make that decision the round's rather than this
+	 * method's.
+	 */
+	public recordOut(player: Player): void {
+		this.count(player, "out");
+	}
+
+	/**
+	 * Adds one to `what` for `player` — or does nothing, which is most of what this method is.
+	 *
+	 * **Both figures are counted through here so that neither can be counted without the round being
+	 * checked first.** "Only competitive play counts" is the rule for both of them, and two public
+	 * methods each carrying their own copy of that guard would be two places for a future caller to
+	 * get it wrong.
+	 */
+	private count(player: Player, what: "hit" | "out"): void {
+		// **Only competitive play counts.** A hit in the lobby or an elimination between rounds is
+		// practice, and a record that included it would be a record of how much somebody has played
+		// rather than of how they played. Asked here rather than by the caller, so no future caller can
+		// forget it.
+		if (!this.isRoundActive()) return;
 
 		const stats = this.stats.get(player);
 
 		// No record yet: the load has not come back. Counted into the table that is about to be
-		// replaced would be counted and then thrown away, so the honest thing is to lose the hit
+		// replaced would be counted and then thrown away, so the honest thing is to lose the count
 		// rather than to lose the player's history with it.
 		if (stats === undefined) return;
 
-		if (hit) stats.hits++;
-		else stats.misses++;
+		if (what === "hit") stats.hits++;
+		else stats.outs++;
 
 		this.publish(player);
 
 		if (DEBUG) {
-			print(`[Stats] ${player.Name}: ${hit ? "hit" : "miss"} → ${stats.hits}H/${stats.misses}M`);
+			print(`[Stats] ${player.Name}: ${what} → ${stats.hits}H/${stats.outs}O`);
 		}
 	}
 
@@ -202,7 +229,7 @@ export class StatsService implements OnStart {
 		if (stats === undefined) return;
 
 		player.SetAttribute(STAT_HITS, stats.hits);
-		player.SetAttribute(STAT_MISSES, stats.misses);
+		player.SetAttribute(STAT_OUTS, stats.outs);
 		player.SetAttribute(STAT_RATIO, ratioOf(stats));
 	}
 
@@ -268,7 +295,7 @@ export class StatsService implements OnStart {
 		for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
 			// A copy, and a fresh one per attempt: the live record can be added to while a write is
 			// in flight, and a retry should send what is true now rather than what was true then.
-			const payload = { hits: stats.hits, misses: stats.misses };
+			const payload = { hits: stats.hits, outs: stats.outs };
 			const [success, err] = pcall(() => store.SetAsync(key, payload));
 			if (success) return true;
 
@@ -295,10 +322,10 @@ export class StatsService implements OnStart {
 			if (!player.IsDescendantOf(Players)) return;
 
 			this.stats.set(player, stats);
-			this.saved.set(player, { hits: stats.hits, misses: stats.misses });
+			this.saved.set(player, { hits: stats.hits, outs: stats.outs });
 			this.publish(player);
 
-			if (DEBUG) print(`[Stats] ${player.Name}: loaded ${stats.hits}H/${stats.misses}M`);
+			if (DEBUG) print(`[Stats] ${player.Name}: loaded ${stats.hits}H/${stats.outs}O`);
 		});
 	}
 
@@ -331,14 +358,14 @@ export class StatsService implements OnStart {
 
 			for (const [player, stats] of this.stats) {
 				const last = this.saved.get(player);
-				if (last !== undefined && last.hits === stats.hits && last.misses === stats.misses) continue;
+				if (last !== undefined && last.hits === stats.hits && last.outs === stats.outs) continue;
 
 				// Spawned so one slow write does not hold up the rest of the sweep, and so this loop is
 				// never the thing a DataStore stalls.
 				task.spawn(() => {
 					if (!this.write(tostring(player.UserId), stats)) return;
 
-					this.saved.set(player, { hits: stats.hits, misses: stats.misses });
+					this.saved.set(player, { hits: stats.hits, outs: stats.outs });
 				});
 			}
 		}
@@ -360,14 +387,14 @@ export class StatsService implements OnStart {
 
 /** A record with nothing in it. */
 function blankStats(): PlayerStats {
-	return { hits: 0, misses: 0 };
+	return { hits: 0, outs: 0 };
 }
 
-/** Hits over throws — `0` when there are none, which is the honest reading of "nothing yet". */
+/** Hits over hits and outs — `0` when there are neither, the honest reading of "nothing yet". */
 function ratioOf(stats: PlayerStats): number {
-	const throws = stats.hits + stats.misses;
+	const counted = stats.hits + stats.outs;
 
-	return throws === 0 ? 0 : stats.hits / throws;
+	return counted === 0 ? 0 : stats.hits / counted;
 }
 
 /**
@@ -394,15 +421,20 @@ function playerOf(throwerToken: string): Player | undefined {
  *
  * A store hands back whatever was written plus whatever somebody else wrote by hand, so the shape is
  * checked rather than trusted: a record that has been corrupted into something else starts somebody
- * from nothing, which is recoverable, rather than reading as an error on every throw.
+ * from nothing, which is recoverable, rather than reading as an error on every count.
+ *
+ * **This is also what retires the old record.** A store written before `misses` became `outs` holds
+ * `{hits, misses}` and fails the check below, so every player's figures start from nothing on the new
+ * shape — rather than a `hits` count surviving next to an `outs` count that was never kept, which
+ * would read as a record of somebody who has never been eliminated.
  */
 function toStats(value: unknown): PlayerStats {
 	if (typeIs(value, "table")) {
 		const record = value as Record<string, unknown>;
 		const hits = record["hits"];
-		const misses = record["misses"];
+		const outs = record["outs"];
 
-		if (typeIs(hits, "number") && typeIs(misses, "number")) return { hits, misses };
+		if (typeIs(hits, "number") && typeIs(outs, "number")) return { hits, outs };
 	}
 
 	return blankStats();

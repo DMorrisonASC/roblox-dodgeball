@@ -3,7 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { STATS_CONFIG } from "shared/config/stats.config";
-import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, STAT_HITS, STAT_MISSES } from "shared/constants";
+import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, STAT_HITS, STAT_OUTS } from "shared/constants";
 
 /** Prints once, when the billboards are up — the line that says the controller ran at all. */
 const DEBUG = true;
@@ -20,12 +20,15 @@ const BILLBOARD_NAME = "StatsBillboard";
  * **Wide enough for the longest line the label can hold, not for a typical one.** Nothing but the
  * text is drawn — the label has no background — so a billboard wider than its own line costs a clip
  * rectangle and nothing else, while one narrower cuts the ratio off the end of it. At caption size
- * `Hits: 999 | Misses: 999 | Ratio: 1.00` runs to a little over three hundred pixels.
+ * `Hits: 999 | Outs: 999 | Ratio: 1.00` runs to a little over three hundred pixels.
+ *
+ * **That measurement was taken against a longer line, so it still holds.** `Outs:` is three
+ * characters narrower than the `Misses:` it replaced, and nothing else about the line changed.
  */
 const BILLBOARD_SIZE = UDim2.fromOffset(320, 40);
 
 /**
- * Each player's throw record, floating above their head between rounds.
+ * Each player's hit-and-out record, floating above their head between rounds.
  *
  * **A record is something you read while nothing is happening.** During a round it would be a label
  * in the way of the thing it describes — and a ratio that moved mid-round would be a number to watch
@@ -118,10 +121,10 @@ export class StatsBillboardController implements OnStart {
 		// The two counts as watchable states, so the line below follows them rather than sampling them
 		// once. Per body, and in the body's own scope — the connections they hold belong to this head.
 		const hits = watchCount(scope, player, STAT_HITS);
-		const misses = watchCount(scope, player, STAT_MISSES);
+		const outs = watchCount(scope, player, STAT_OUTS);
 
 		const label = Text(scope, {
-			text: Fusion.Computed(scope, (use) => describe(use(hits), use(misses))),
+			text: Fusion.Computed(scope, (use) => describe(use(hits), use(outs))),
 			variant: "caption",
 			align: Enum.TextXAlignment.Center,
 		});
@@ -134,17 +137,17 @@ export class StatsBillboardController implements OnStart {
  *
  * **Every figure is named, and the names are what make it readable from across an arena.** A row of
  * bare numbers above somebody else's head is a small puzzle to be solved while looking at it;
- * `Hits:`, `Misses:` and `Ratio:` are read without being worked out, which is the whole job of a
+ * `Hits:`, `Outs:` and `Ratio:` are read without being worked out, which is the whole job of a
  * label drawn above every player in the game.
  *
  * Nothing is abbreviated and nothing is implied. The line is long for a reason, and it is the reason
  * the billboard it sits in is as wide as it is — see {@link BILLBOARD_SIZE}.
  */
-function describe(hits: number, misses: number): string {
-	const throws = hits + misses;
-	const ratio = throws === 0 ? 0 : hits / throws;
+function describe(hits: number, outs: number): string {
+	const counted = hits + outs;
+	const ratio = counted === 0 ? 0 : hits / counted;
 
-	return `Hits: ${hits} | Misses: ${misses} | Ratio: ${string.format("%.2f", ratio)}`;
+	return `Hits: ${hits} | Outs: ${outs} | Ratio: ${string.format("%.2f", ratio)}`;
 }
 
 /** The phase `folder` is publishing, or `""` while it has not said. */
@@ -170,7 +173,7 @@ function watchCount(scope: Fusion.Scope<unknown>, player: Player, name: string):
 	return state;
 }
 
-/** A numeric attribute, or `0` — the count a player who has never thrown anything has. */
+/** A numeric attribute, or `0` — the count a player with nothing recorded has. */
 function countOf(player: Player, name: string): number {
 	const value = player.GetAttribute(name);
 

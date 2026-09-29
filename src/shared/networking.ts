@@ -10,6 +10,30 @@ import Net from "@rbxts/net";
  * (The throw's remote is still the older hand-rolled `ReplicatedStorage.Remotes`
  * event — see `shared/remotes.ts`. Left alone deliberately; it works.)
  */
+/**
+ * One line of the round-result board: whose row it is, and the two figures the round counted for them.
+ *
+ * **A name rather than a `Player`.** The board is drawn between rounds, and the round's roster is
+ * emptied before the intermission begins — so the thing the label needs is something to *print*,
+ * and that is what travels. A `Player` on the wire would be a reference the client would then have
+ * to resolve against a list it may no longer contain.
+ *
+ * **The id is for the face, and it is a number because a face is looked up by one.** Every client
+ * has to draw a picture for a name it cannot otherwise resolve — a player who has since left is not
+ * in `Players` on this machine — so the id travels with the name rather than being looked up here.
+ *
+ * **Both figures are the round's, not lifetime ones.** `StatsService` keeps career counts and they
+ * are deliberately not these: a board about the round that just ended is not the place for a total,
+ * and the two sets of numbers have different lifetimes for that reason. See `RoundService.roundHits`
+ * and `RoundService.roundOuts`.
+ */
+export interface RoundResultRow {
+	readonly userId: number;
+	readonly name: string;
+	readonly hits: number;
+	readonly outs: number;
+}
+
 export const events = Net.Definitions.Create({
 	/**
 	 * Client → server: this character wants to dodge in this direction.
@@ -81,4 +105,30 @@ export const events = Net.Definitions.Create({
 	 * gets by holding the key, and running out stops it either way. See `WalkSpeedService`.
 	 */
 	setSprinting: Net.Definitions.ClientToServerEvent<[active: boolean]>(),
+
+	/**
+	 * Server → client: the round that has just finished, as the result panel reads it.
+	 *
+	 * **The only entry in this file that travels the other way.** Every other declaration here is a
+	 * client asking the server to do something; this is the server telling the clients what happened.
+	 * There is nothing to send back, and nothing to validate on arrival beyond the shape: a client
+	 * cannot fire it.
+	 *
+	 * **A list, therefore not an attribute.** The folder the rest of the HUD reads carries scalars —
+	 * one phase, one clock, one flag, one packed option string. A board is a side's worth of rows,
+	 * and the alternative that was considered — an attribute per player, read off `Players` and
+	 * filtered by side on the client — puts the ranking rule on the machine that is drawing it,
+	 * where the order a board is in would be decided by whoever wrote the label.
+	 *
+	 * **It carries the mode as well as the side label, and that is not redundancy.** The client names
+	 * a side through `sideNameOf(mode, label)`, and the mode it would otherwise read off
+	 * `ROUND_MODE_ATTRIBUTE` is rewritten twenty seconds into the intermission — when the vote closes
+	 * and names the *next* round. A panel still on screen would have watched the winning side change
+	 * its name underneath it.
+	 *
+	 * **Fired once, so it is the one HUD fact a late joiner does not get.** A client that connects
+	 * during the intermission has no result to draw and shows no panel; it did not watch the round,
+	 * and there is nothing on the folder for it to catch up from.
+	 */
+	roundResult: Net.Definitions.ServerToClientEvent<[mode: string, winner: string, rows: RoundResultRow[]]>(),
 });

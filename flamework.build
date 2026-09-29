@@ -42,7 +42,8 @@
 		"roblox-dodgeball:out/server/services/character/WalkSpeedService@WalkSpeedService": "server/services/character/WalkSpeedService@WalkSpeedService",
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
-		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService"
+		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService",
+		"roblox-dodgeball:out/client/controllers/hud/RoundResultController@RoundResultController": "client/controllers/hud/RoundResultController@RoundResultController"
 	},
 	"metadata": {}
 }

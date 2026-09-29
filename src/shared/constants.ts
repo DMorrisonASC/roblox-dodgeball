@@ -198,6 +198,38 @@ export const ROUND_VOTE_OPEN_ATTRIBUTE = "VoteOpen";
 export const ROUND_VOTE_OPTIONS_ATTRIBUTE = "VoteOptions";
 
 /**
+ * The stem of the attribute holding **how many votes one mode has** — the whole name is this plus
+ * the mode's id; see {@link voteCountAttribute}.
+ *
+ * **One attribute per option rather than one holding them all**, which is the opposite of what
+ * {@link ROUND_VOTE_OPTIONS_ATTRIBUTE} does with the same modes. The option list is one fact that
+ * changes once a window, so it travels as one string; a count is one number per option and changes
+ * on every vote, so each is its own key. What that buys is that the client can watch the option it
+ * is drawing and nothing else — a vote for one mode repaints one label rather than all three — and
+ * that a count stays a number instead of a digit inside a string somebody has to split.
+ *
+ * **Written for every option, zeros included.** "Nobody has voted for this yet" is then a number the
+ * client reads rather than the absence of an attribute it has to learn to interpret — the same
+ * reason {@link ROUND_VOTE_OPEN_ATTRIBUTE} is seeded shut rather than published late.
+ */
+export const ROUND_VOTE_COUNT_PREFIX = "VoteCount";
+
+/**
+ * The attribute name holding `id`'s vote count. See {@link ROUND_VOTE_COUNT_PREFIX}.
+ *
+ * **A function so that the name is built in one place.** The server writes these and the client
+ * asks for them, and two concatenations of the same prefix are two places for a typo to sit and
+ * still compile: a publisher writing `VoteCountDodgeAndSeek` against a reader asking for
+ * `VoteCountsDodgeAndSeek` is a count that stays at zero for ever, silently.
+ *
+ * Takes a plain `string` rather than a `GameModeId`: this builds a *key*, and the id handed to it
+ * has already been through `isGameModeId` or `decodeModeIds` by the time anyone does.
+ */
+export function voteCountAttribute(id: string): string {
+	return `${ROUND_VOTE_COUNT_PREFIX}${id}`;
+}
+
+/**
  * Attribute on a **`Player`** saying they are out of the round in progress and watching it.
  *
  * Written by `RoundService`: set for a player whose character dies during a round, and for one
@@ -222,11 +254,15 @@ export const SPECTATING_ATTRIBUTE = "Spectating";
 export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
 
 /**
- * Attribute on a **`Player`** holding how many of their throws have landed on a body.
+ * Attribute on a **`Player`** holding how many times they have hit somebody with a throw.
  *
  * Written by `StatsService` when a record is loaded and again after every hit, and read by the
  * client's stats billboard — which is why it is on the **player** and not the character: the record
  * outlives every body it was earned in.
+ *
+ * **A round's count, not a session's.** Only a hit thrown while a round is being played reaches the
+ * record — see `StatsService.isRoundActive` — so this figure and {@link STAT_OUTS} are counted under
+ * one rule and can be read against each other.
  *
  * An attribute rather than a remote, for the reason the round's state is one: it replicates on its
  * own, so the HUD needs no remote, no reply to wait for, and no reference to the service that owns
@@ -234,15 +270,16 @@ export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
  */
 export const STAT_HITS = "StatHits";
 
-/** How many of a player's throws have landed on something that was not a body. See {@link STAT_HITS}. */
-export const STAT_MISSES = "StatMisses";
+/** How many times a player has been eliminated. See {@link STAT_HITS}. */
+export const STAT_OUTS = "StatOuts";
 
 /**
- * Hits over throws, from `0` to `1`, published beside the two counts by `StatsService`.
+ * Hits over hits and outs together, from `0` to `1`, published beside the two counts by
+ * `StatsService`.
  *
  * **Derived here and sent, rather than worked out by each reader.** Two readers dividing the same
- * two numbers is two chances to disagree about a player's own record, and a player who has thrown
- * nothing has to read as `0` rather than as a division by zero — one rule, stated once.
+ * two numbers is two chances to disagree about a player's own record, and a player with neither
+ * figure has to read as `0` rather than as a division by zero — one rule, stated once.
  */
 export const STAT_RATIO = "StatRatio";
 
