@@ -95,12 +95,12 @@ interface LegendRow {
  * movement controls read together, and the three that are about the ball follow.
  */
 const ROWS: LegendRow[] = [
-	{ label: "Throw", keys: "X, C, V" },
-	{ label: "Dodge", keys: `Double tap W A S D ${LIGHTNING}` },
-	{ label: "Sprint", keys: "Left Alt" },
-	{ label: "Catch", keys: "E" },
-	{ label: "Drop", keys: "1" },
-	{ label: "Throw Toggle", keys: "2", toggleAttribute: THROW_ENABLED, invert: true },
+	{ label: "Throw |", keys: "X, C, V" },
+	{ label: "Dodge |", keys: `Double tap W A S D ${LIGHTNING}` },
+	{ label: "Sprint |", keys: "Left Alt" },
+	{ label: "Catch |", keys: "E" },
+	{ label: "Drop |", keys: "1" },
+	{ label: "Throw Toggle |", keys: "2", toggleAttribute: THROW_ENABLED, invert: true },
 ];
 
 /**
@@ -259,7 +259,7 @@ export class ControlsLegendController implements OnStart {
 		label.LayoutOrder = 1;
 		label.Parent = frame;
 
-		const keys = this.buildText(scope, row.keys, theme.colors.accent, off);
+		const keys = this.buildText(scope, row.keys, theme.colors.textSecondary, off);
 		keys.LayoutOrder = 2;
 		keys.Parent = frame;
 

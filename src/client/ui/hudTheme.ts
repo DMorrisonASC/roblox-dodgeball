@@ -69,7 +69,7 @@ export function hudTheme(): HudTheme {
 	return {
 		colors: {
 			textPrimary: Palette.text.primary,
-			textSecondary: Palette.text.secondary,
+			textSecondary: Palette.error.dark,
 			textDisabled: Palette.text.disabled,
 			accent: Palette.primary.main,
 			success: Palette.success.main,
