@@ -13,6 +13,17 @@ import { RoundService } from "../services/round/RoundService";
 import { StatsService } from "../services/stats/StatsService";
 
 interface BallAttributes {
+	/**
+	 * Whether this ball is a live throw: in flight, or carrying bodies it has hit but not yet
+	 * resolved.
+	 *
+	 * **True through a body, and false the moment the ball touches the world.** That is the rule a
+	 * catch exists to serve: a hit's fate is not decided at the hit but at the ball's death, so the
+	 * ball has to *stay* armed — still carrying the throw, still carrying its tags — until it hits
+	 * something that is not a body. A body does not end a throw; the floor, a wall, a prop, does.
+	 * Disarming on a body would abandon the tags before they resolved, and a ball nobody had been
+	 * told was dead would sit in the world with deaths still owed.
+	 */
 	Armed: Boolean;
 
 	/**
@@ -79,16 +90,22 @@ let ballSequence = 0;
 })
 export class BallComponent extends BaseComponent<BallAttributes, BasePart> implements OnStart {
 	/**
-	 * Every body this ball has already hit on this throw.
+	 * Every body this ball has tagged on this throw, keyed on the model and holding the body part
+	 * that decided the contact.
 	 *
-	 * What it buys is a ball that survives a hit: the same player cannot be taken out twice
-	 * by one throw, and — the point of the whole thing — a ball that comes off one player is
-	 * still looking for the next one.
+	 * **A tag list, not a hit list — that is the whole of this change.** Nothing in it is a death.
+	 * The models in it have been struck, and their fate is still in the air: it resolves when the
+	 * ball dies (on a world contact) and is released when the ball is caught. What the map buys is
+	 * both halves of that future in one place — the model to resolve, and the part that was struck,
+	 * kept so a deferred death can still say *where* the ball landed rather than only that it did.
+	 *
+	 * The key is what stops one throw taking the same body twice: the first part to arrive wins, and
+	 * every part the engine reports after it is refused here.
 	 *
 	 * On the instance rather than on the ball as an attribute, because an attribute holds
 	 * primitives and this holds models.
 	 */
-	private readonly hitModels = new Set<Model>();
+	private readonly hitModels = new Map<Model, BasePart>();
 
 	/**
 	 * Which ball this is, for the log — assigned the moment the ball is armed.
@@ -124,19 +141,45 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			this.handleTouch(otherPart);
 		});
 
+		// **The one case this file is otherwise silent about: a ball destroyed while it still owes a
+		// death.** A ball that tags a body and never touches the world — wedged on something, or
+		// simply never coming down — is destroyed with its tags unresolved, and until this line there
+		// was nothing anywhere in the output to say so. From a player's seat that produces exactly
+		// "the enemy didn't die and the round didn't end", which is the failure this hook exists to
+		// tell apart from an intermission that is stuck.
+		//
+		// **On the component rather than in the expiry, and that is forced rather than chosen.** The
+		// tag count lives here; the expiry is a free function in `ballExpiry.ts` that has never heard
+		// of a component and cannot see one. So the destruction is hooked where the count is, which
+		// also makes this the *superset*: every way a ball can be destroyed comes through here, not
+		// only the timer — and for a diagnostic that is the right side to err on. The line names what
+		// it knows and does not claim which of them it was.
+		//
+		// Ungated, unlike almost everything else here: it fires at most once per ball, and it firing
+		// at all is the finding.
+		this.instance.Destroying.Connect(() => {
+			if (this.instance.GetAttribute("Armed") !== true) return;
+			if (this.hitModels.size() === 0) return;
+
+			print(
+				`[Ball] ${this.instance.Name} #${this.identity}: destroyed still armed with ` +
+					`${this.hitModels.size()} unresolved tag(s) — nobody was resolved`,
+			);
+		});
+
 		// **The start of a throw, and the only moment this ball's memory is emptied.**
 		//
 		// `Armed` going *on* is the ball being released: `BallService` arms it in `throwBall`,
-		// and again on a hand-out. That is precisely "a new throw", so the set is empty for
-		// it by construction — which is what makes the cap count per throw, and what lets a
-		// ball taken off the floor hit the same players all over again.
+		// and again on a hand-out. That is precisely "a new throw", so the tag list is empty for
+		// it by construction — which is what keeps one throw's tags from leaking into the next,
+		// and what lets a ball taken off the floor tag the same players all over again.
 		//
 		// Nothing has to empty it while the ball is merely *held*, and that is why this is
 		// not hooked to the hand instead: a ball in somebody's hand cannot damage anybody, so
-		// a set sitting in it is unreadable, and the throw that follows clears it anyway.
+		// a list sitting in it is unreadable, and the throw that follows clears it anyway.
 		//
 		// Keeping it here rather than having `BallService` call in also keeps the ball's own
-		// state in the ball: no service has to know a hit list exists, or reach into a
+		// state in the ball: no service has to know a tag list exists, or reach into a
 		// component to reset one.
 		this.instance.GetAttributeChangedSignal("Armed").Connect(() => {
 			if (this.instance.GetAttribute("Armed") !== true) return;
@@ -156,41 +199,52 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	}
 
 	/**
-	 * What a touch means: a catch, a hit, or nothing at all.
+	 * What a touch means: a catch, a tag, or the death of the whole throw.
 	 *
 	 * The catcher is taken from the part's ancestry rather than from the players
 	 * list. An NPC is a humanoid model like any other and has no `Player` behind
 	 * it, so anything that asks "is this a player?" leaves NPCs unable to do what a
 	 * player can.
 	 *
-	 * **A body does not stop the ball — the world does.** A body is damaged, and the ball
-	 * is thrown off it and carries on armed, looking for the next one, which is what makes
-	 * a single well-placed throw capable of a chain. Only a contact that is not a body
-	 * (floor, wall, prop) ends the throw, exactly as it always has.
+	 * **A body does not decide anything — it is tagged, and the world ends the throw.** A hit's
+	 * fate is not settled at the hit: real dodgeball lets a catch save the hit player, so a body
+	 * the ball touches is *tagged* and nothing happens to it yet. The ball bounces off and keeps
+	 * flying, still armed, still carrying every tag; it is the next contact that is not a body —
+	 * the floor, a wall, a prop — that ends the throw and resolves every tag into a death. See
+	 * {@link resolveTags}. And a catch before that moment releases every tag and never resolves a
+	 * one: see {@link resolveCatch}.
 	 */
 	private handleTouch(otherPart: BasePart): void {
-		// Spent already: a landing, a wall, or a chain that has run its length has taken
-		// this ball out of play, and nothing below can put it back.
+		// Spent already: a landing or a wall has taken this ball out of play — its tags were
+		// resolved there, or there were none — and nothing below can put it back.
 		if (this.instance.GetAttribute("Armed") !== true) return;
 
 		const character = otherPart.FindFirstAncestorWhichIsA("Model");
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 
-		// Not a character. The ball has hit the world, and is live no longer.
+		// Not a character. The ball has hit the world, and the throw resolves here.
 		if (!character || !humanoid) {
-			// **A throw that landed on the world is a miss**, and this is the only branch that decides
-			// one: everything below it has found a body. Scored before the ball is disarmed, so the
-			// order reads as what happened rather than as a consequence of the disarm.
+			// **This is where every tagged body meets its fate, and it is the only place it could.**
+			// The ball has stayed armed through every body it hit — see {@link BallAttributes.Armed}
+			// for why — so "the ball stopped being armed" and "the tagged bodies are resolved" are the
+			// same event, and this branch is it. A catch would have released them earlier and returned
+			// above; reaching this line means nobody saved them.
 			//
-			// **The sound goes first, by that same rule.** Everything in this branch is an account of
-			// one event — the ball arrived somewhere — so it runs in the order it happened: heard,
-			// then scored, then taken out of play. It plays for every world contact rather than only
-			// for throws that wound up missing on purpose, because this *is* the miss: a ball that
-			// lands on the floor is the only evidence a player gets that a throw is over, short of
-			// watching it all the way down.
+			// **The sound goes first, by the same rule as before.** Everything in this branch is an
+			// account of one event — the ball arrived somewhere — so it runs in the order it
+			// happened: heard, then resolved, then taken out of play. It plays for every world
+			// contact rather than only for throws that wound up missing on purpose, because this *is*
+			// the end of the throw: a ball that lands on the floor is the only evidence a player gets
+			// that a throw is over, short of watching it all the way down.
 			this.playImpactSound(otherPart, SOUND_CONFIG.WORLD_HIT);
 
-			this.score(false);
+			// The thrower is still readable here: the world branch never made the ball inert, so
+			// `ThrowerId` is whatever `throwBall` stamped on it. Read once, before the tags resolve,
+			// because a resolution turns tags into deaths and a death is credited to this.
+			const throwerId = this.instance.GetAttribute("ThrowerId");
+			const taggedAny = this.hitModels.size() > 0;
+			this.resolveTags(throwerId);
+			this.score(taggedAny);
 
 			this.instance.SetAttribute("Armed", false);
 			return;
@@ -268,7 +322,18 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// Spent before the ball is handed over, so one attempt catches one ball
 			// even if two arrive together.
 			this.catches.consume(character);
-			this.balls.catchBall(character, this.instance);
+
+			// Read before the ball changes hands: `catchBall` makes the ball inert, which clears
+			// `ThrowerId`, and the catch resolution below is about the thrower the ball *arrived*
+			// with rather than whoever is holding it next.
+			const throwerId = this.instance.GetAttribute("ThrowerId");
+
+			// A catch that cannot attach (no right hand) is not a catch: `attachToHand` destroys the
+			// ball in that case, and nothing below should resolve a throw that is no longer in the
+			// air.
+			if (this.balls.catchBall(character, this.instance)) {
+				this.resolveCatch(character, throwerId);
+			}
 			return;
 		}
 
@@ -308,51 +373,35 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		const isHead = humanoid.GetLimb(struck) === Enum.Limb.Head;
 		this.playImpactSound(struck, isHead ? SOUND_CONFIG.HEAD_HIT : SOUND_CONFIG.BODY_HIT);
 
-		// A hit. Recorded before the ball is thrown off, so that every other part of this
-		// same arrival — and every later contact with this body — is a body the ball has
-		// already been through.
-		this.hitModels.add(character);
+		// **Tagged, not killed.** The ball has hit this body, and that is the whole of what happens
+		// now: the body goes onto the tag list, the ball bounces off it, and it keeps flying. No
+		// death, no point, no score — all of those wait for the ball to die, which is the moment a
+		// catch can no longer save them. Tagged before the bounce, so that every other part of this
+		// same arrival — and every later contact with this body — is a body the ball has already
+		// tagged.
+		this.hitModels.set(character, struck);
 
 		this.bounceOff(struck);
-
-		// **Hits are recorded for scoring and stats only — no mode consults hit cause.** The round is
-		// told about this one so a mode that keeps score can award the point; nothing anywhere asks
-		// whether a death was a throw or a reset.
-		//
-		// **Told before the body is damaged, and that order is load-bearing.** `registerHit` refuses
-		// a victim who is no longer in the round, and `TakeDamage` below can fire `Died`
-		// synchronously — which in an eliminating mode takes the victim straight out of it. A
-		// notification sent after the damage would therefore land on nobody and the throw would
-		// score nothing, silently, only in the modes where it matters.
-		if (typeIs(throwerId, "string")) this.rounds.registerHit(throwerId, character);
-
-		this.landHit(character, humanoid, struck);
-
-		// **A throw that took a body is a hit**, scored after the damage because the damage is what
-		// makes it one — a ball that arrives on a catchable part is caught, above, and a catch is
-		// neither a hit nor a miss. See {@link score}.
-		this.score(true);
-
-		// The chain's length. Checked *after* the bounce, so the last player a throw takes
-		// out still throws the ball off them rather than catching it on the chest.
-		if (this.hitModels.size() >= BALL_CONFIG.MAX_CHAIN_HITS) this.instance.SetAttribute("Armed", false);
 	}
 
 	/**
-	 * Counts this throw as a hit or a miss, once.
+	 * Counts this throw as a hit or a miss, once, at the ball's death.
 	 *
-	 * **One throw, one entry — the first contact decides, and nothing later may change its mind.**
-	 * That is not a tidiness rule, it is what makes the numbers mean what they say:
+	 * **One throw, one entry — whether any body was tagged when the ball died decides it, and
+	 * nothing later may change its mind.** That is not a tidiness rule, it is what makes the numbers
+	 * mean what they say:
 	 *
 	 * - A single landing reports *every* part the ball overlaps, so without this a ball rolling to a
 	 *   stop would be a dozen misses.
-	 * - A ball that takes out three players and then hits the floor is one hit, not three hits and a
+	 * - A ball that tagged three players and then hit the floor is one hit, not three hits and a
 	 *   miss. The throw landed on somebody; where it came to rest afterwards is not a second throw.
-	 * - A ball that hits a wall after clipping a shoulder has already been decided, in the player's
-	 *   favour, by the contact that came first.
+	 * - A ball that is caught is neither: the catch returns before the ball dies, so nothing reaches
+	 *   here and the throw is not counted either way — exactly as it was when a catch was decided at
+	 *   the first contact.
 	 *
-	 * `StatsRecorded` is cleared by the same `Armed` transition that clears the hit list, so a ball
-	 * picked up and thrown again is scored all over again.
+	 * **Taken at the death, not at the hit**, because a hit is no longer final — a catch can still
+	 * take it back. `StatsRecorded` is cleared by the same `Armed` transition that clears the tag
+	 * list, so a ball picked up and thrown again is scored all over again.
 	 *
 	 * The token is the ball's own `ThrowerId`, which is the only thing it knows about who threw it.
 	 * Whether that names a person at all is `StatsService`'s question — a rig's token is a GUID and
@@ -400,17 +449,17 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	}
 
 	/**
-	 * Takes the character out, and prints which part decided that.
+	 * Takes a tagged character out, and prints which part decided that.
 	 *
-	 * Applied straight away rather than at the end of the frame. It used to be deferred so that
-	 * a catchable part *later* in the same arrival could still win the contact — which is the
-	 * exact behaviour the rule above reverses: the first part decides, so there is nothing left
-	 * for a deferral to wait for, and waiting would only make the decision that was already
-	 * made at the first touch look like it depended on the last one.
+	 * **Called at the ball's death, not at the hit.** A hit only tags; the death happens when the
+	 * ball lands on the world and every tag resolves — see {@link resolveTags} — so this runs then,
+	 * once per tagged body, in the order the ball tagged them. Nothing about the *method* changed
+	 * with the deferral: it is still "take this humanoid out now", and the damage below still fires
+	 * the `Died` that reaches `RoundService.handleDeath`.
 	 *
-	 * The print is the rule made visible. Everything above it in the output is the engine's
-	 * list of contacts; this line says which of them counted, and after it the rest of that
-	 * arrival is silent — which would otherwise read the same as an arrival that was ignored.
+	 * The print is the rule made visible: it says which tagged body is being resolved, on which
+	 * part, at the moment it happens. The tag itself was silent, and this line is where the throw's
+	 * outcome becomes a fact instead of a possibility.
 	 */
 	private landHit(character: Model, humanoid: Humanoid, part: BasePart): void {
 		// Gated where the rest of this file's output is not: this is one line per hit, and it is
@@ -418,6 +467,84 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		if (DEBUG_CONFIG.VERBOSE_LOGS) print(`[Ball] ${character.Name}: hit on ${part.Name}`);
 		print(humanoid.Name + " was hit by " + this.instance.Name + " on " + part.Name);
 		humanoid.TakeDamage(HIT_DAMAGE);
+	}
+
+	/**
+	 * Resolves every tagged body into a death, credited to the thrower.
+	 *
+	 * Called from the world branch, which is the ball's death: this is the moment the tags stop
+	 * being possibilities and become the throw's outcome. One death per tagged body, in the order
+	 * the ball tagged them, and each death is the same pair a live hit used to run — the round told
+	 * about the hit, then the body damaged — in the same order, for the same reason: the damage can
+	 * fire `Died` synchronously and take the victim out of the round, so the notification goes
+	 * first.
+	 *
+	 * **A tag whose body is already gone is skipped, not resolved.** A tagged model may have died of
+	 * something else while this ball was still in the air — another throw, a reset — and a death
+	 * that has already happened cannot be caused a second time. `registerHit` carries the same guard
+	 * inside it for the scoring half; the humanoid check here is the damage half of the same rule.
+	 *
+	 * The list is emptied after the loop rather than during it, so nothing reads a half-resolved
+	 * throw.
+	 */
+	private resolveTags(throwerId: unknown): void {
+		// **What question this answers:** whether the ball died on the world at all, and with how
+		// many tags owed. `landHit` below already prints one line per body it resolves, so this adds
+		// only the count — and, more importantly, the case of *zero*, where the method ran and had
+		// nothing to do. A throw that resolves nothing prints this and then no `was hit by` lines,
+		// which is a different story from a throw that never reached here.
+		if (DEBUG_CONFIG.VERBOSE_LOGS) {
+			print(
+				`[Ball] ${this.instance.Name} #${this.identity}: died on the world — ` +
+					`resolving ${this.hitModels.size()} tag(s)`,
+			);
+		}
+
+		const token = typeIs(throwerId, "string") ? throwerId : "";
+
+		for (const [model, part] of this.hitModels) {
+			const humanoid = model.FindFirstChildWhichIsA("Humanoid");
+			if (!humanoid || humanoid.Health <= 0) continue;
+
+			if (token !== "") this.rounds.registerHit(token, model);
+			this.landHit(model, humanoid, part);
+		}
+
+		this.hitModels.clear();
+	}
+
+	/**
+	 * Resolves a catch: every tag released, and the thrower punished if the catcher is their enemy.
+	 *
+	 * **Three jobs, in this order, and the first is the absence of a death.** A catch saves every
+	 * body the ball tagged — so the tag list is emptied here rather than resolved, and that
+	 * emptying is the whole of the save; nothing fires, and a log of the throw would otherwise show
+	 * no trace of it. Then the thrower is out if the catcher is on the other side, and the catcher's
+	 * side scores if the mode keeps score — both decided by the round, which owns sides and score,
+	 * in one call: see `RoundService.resolveCaughtThrower`. A friendly catch does neither, and a
+	 * catch of a rig's throw does neither, for the reasons that method gives.
+	 *
+	 * **A catch that cannot be made never reaches here.** `handleTouch` only calls this after
+	 * `catchBall` has taken the ball into the catcher's hand, so the save below is a fact and not a
+	 * hope.
+	 */
+	private resolveCatch(catcher: Model, throwerId: unknown): void {
+		// **What question this answers:** whether the ball was caught rather than landing — the third
+		// way a throw can end, and the one that resolves nobody *on purpose*. The release below is
+		// silent in normal play because silence is the feature: a catch is a save, and the bodies it
+		// saves are the ones nothing happens to. Printed before the clear, so the count is the number
+		// of tags actually released rather than the zero it leaves behind.
+		if (DEBUG_CONFIG.VERBOSE_LOGS) {
+			print(
+				`[Ball] ${this.instance.Name} #${this.identity}: caught by ${catcher.Name} — ` +
+					`releasing ${this.hitModels.size()} tag(s)`,
+			);
+		}
+
+		this.hitModels.clear();
+
+		const token = typeIs(throwerId, "string") ? throwerId : "";
+		if (token !== "") this.rounds.resolveCaughtThrower(token, catcher);
 	}
 
 	/** Whether this touch is a catch: a catchable part, on a character whose window is open. */

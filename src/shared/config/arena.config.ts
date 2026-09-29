@@ -23,14 +23,23 @@ export const ARENA_CONFIG = {
 	/**
 	 * The part a player is put on between rounds.
 	 *
-	 * Looked up by name in `Workspace`, so this and the part have to agree; a
-	 * missing one is an error rather than a silent fallback, because a round that
-	 * starts with everyone in the wrong place is worse than one that does not start.
+	 * Looked up by name **anywhere in `Workspace`**, so this and the part have to agree — a loose
+	 * part at the root works, and so does one nested inside a lobby model, which is how lobbies tend
+	 * to be built. The one place it is *not* looked is inside a map: the lobby outlives every map
+	 * swap — it is where players wait while one arena is destroyed and the next is cloned in, so it
+	 * would be the one thing a swap could not afford to take with it. It is therefore the only part
+	 * the round reads that no map owns, which is why `RoundService.lobbySpawn` searches `Workspace`
+	 * while team spawns read the map.
 	 *
-	 * **At `Workspace` root, not inside a map.** The lobby outlives every map swap — it is where
-	 * players wait while one arena is destroyed and the next is cloned in, so it would be the one
-	 * thing a swap could not afford to take with it. It is therefore the only part the round reads
-	 * that no map owns, which is why `getSpawn` reads `Workspace` while team spawns read the map.
+	 * **A missing one stops the intermission, not the session — and this used to say the opposite.**
+	 * The entry here argued that a missing spawn was an error rather than a silent fallback, because a
+	 * round that starts with everyone in the wrong place is worse than one that does not start. The
+	 * *rule* is still that, and it is still enforced: nobody is ever put somewhere else instead, and
+	 * no round begins. What was wrong was the mechanism. The error was thrown from inside the round's
+	 * own loop, so one absent part took the loop down for the rest of the server's life and left the
+	 * HUD reading `Intermission — 0s` for ever — a much worse outcome than the one the rule existed
+	 * to prevent. `RoundService.waitForLobby` holds the intermission instead, names the missing part,
+	 * and resumes the moment it turns up.
 	 */
 	LOBBY_SPAWN_NAME: "LobbySpawn",
 

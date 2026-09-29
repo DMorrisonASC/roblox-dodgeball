@@ -65,4 +65,15 @@ export const GAME_MODE_CONFIG = {
 	 * the other side, which is what `ScoreRushMode.hitAward` returns.
 	 */
 	SCORE_RUSH_TARGET: 30,
+
+	/**
+	 * What a caught throw is worth to the catching team, in a mode that keeps score.
+	 *
+	 * **Placeholder — untuned.** The rule it serves is fixed — a caught throw puts the thrower out
+	 * and scores — but the size has not been played. One point makes a catch worth exactly a hit,
+	 * which is the natural starting assumption and not necessarily where it lands. Read by
+	 * `RoundService` when an enemy's throw is caught; a friendly catch and a scoreless mode never
+	 * reach it, so this number only ever matters in Score Rush.
+	 */
+	CATCH_POINTS: 1,
 } as const;

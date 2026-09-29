@@ -1,6 +1,7 @@
 import { Service, OnStart } from "@flamework/core";
 import { CollectionService, Players, Workspace } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
 import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import {
@@ -27,6 +28,17 @@ enum RoundState {
 
 /** The two sides, in the order a round has them. For anything that has to ask about both. */
 const TEAM_LABELS: ReadonlyArray<TeamLabel> = [TEAM_A, TEAM_B];
+
+/**
+ * Lethal damage for a thrower whose ball has been caught.
+ *
+ * **Mirrors `BallComponent`'s `HIT_DAMAGE`, on purpose.** A catch is not a hit, but the death it
+ * causes is the same death: `TakeDamage` is what fires `Died`, and `Died` is what reaches
+ * `handleDeath`, so the thrower goes out through the round's own door rather than through a second
+ * mechanism invented for a catch. A humanoid's health is at most a hundred; this is a number nobody
+ * survives.
+ */
+const CATCH_DEATH_DAMAGE = 1000;
 
 /**
  * The round: a clock, a roster, and the rules a mode supplies.
@@ -121,6 +133,56 @@ export class RoundService implements OnStart {
 
                 if (outcome !== undefined) this.finishRound(outcome);
             }
+        });
+
+        // **A watcher on the one part this file depends on and cannot account for.**
+        //
+        // The lobby spawn has gone missing between two intermissions inside one running session, and
+        // nothing in this project can remove it — see `lobbySpawn` for what was checked, and
+        // `waitForLobby` for what the consequence looks like from the player's seat. Inferring the
+        // moment afterwards, from the gap between two intermissions, is guesswork; this catches it
+        // instead. What it answers is *when*, and that is the half that names a suspect: the line
+        // lands beside whichever `[Map]`, `[Round]` or `[NPC]` line was doing something at that
+        // instant, so whatever reconstructs this later has a timestamp instead of a theory.
+        //
+        // **The name test is what makes it a watcher rather than a log.** `DescendantRemoving` fires
+        // for every removal anywhere in `Workspace` — every ball destroyed, every emitter cleaned up,
+        // every rebuilt rig — and this compares one string and returns. The connection is permanent
+        // and cheap, and it is scaffolding rather than a rule: worth deleting once the part is traced.
+        Workspace.DescendantRemoving.Connect((descendant) => {
+            if (descendant.Name !== ARENA_CONFIG.LOBBY_SPAWN_NAME) return;
+
+            const parent = descendant.Parent;
+            const tags = descendant.GetTags();
+
+            // Where it was, and whether it was free to fall, for the case this turned out to be: an
+            // unanchored part walks off the bottom of the world, and the *engine* destroys it at
+            // `Workspace.FallenPartsDestroyHeight`. That removal has no Lua on the stack at all —
+            // which is exactly what the traceback below showed, and the reason this line exists —
+            // so position and `Anchored` are what tell it apart from a removal somebody made. Both
+            // are still readable here: the instance exists until the handler returns.
+            const where = descendant.IsA("BasePart")
+                ? ` — last seen at y ${math.floor(descendant.Position.Y)}, Anchored ${descendant.Anchored}`
+                : "";
+
+            // The tags are named rather than counted because they were the leading suspect: this
+            // project destroys exactly two things it did not create, both by tag — `RespawnBehavior`
+            // takes the model it manages, and `BallSpawnerService` takes anything wearing the round's
+            // ball tag. `carrying no tags` rules both out in the same line.
+            print(
+                `[Round] ${ARENA_CONFIG.LOBBY_SPAWN_NAME} (${descendant.ClassName}) was removed from ` +
+                    `${parent !== undefined ? parent.GetFullName() : "a parent that was already detached"}` +
+                    `${tags.size() > 0 ? `, carrying the tag(s) ${tags.join(", ")}` : ", carrying no tags"}` +
+                    where,
+            );
+
+            // **The half that names a culprit rather than a moment.** A signal fires synchronously
+            // from inside whatever removed the instance, so a removal made by this project's own code
+            // leaves that code's frames on the stack — a `Destroy()` in `RespawnBehavior`, the
+            // spawner's round cleanup, or `MapService.unloadCurrent` all appear here by file and line.
+            // A stack that is nothing but the signal dispatch is its own answer, and the interesting
+            // one: the remover is not project code, and the place is where to look.
+            print(`[Round] ${ARENA_CONFIG.LOBBY_SPAWN_NAME} removal traceback:\n${debug.traceback()}`);
         });
 
         // Handle players already in game (Studio playtest)
@@ -374,7 +436,17 @@ export class RoundService implements OnStart {
             // behaviour and not a team's side.
             const inRound = this.state === RoundState.Playing && this.activePlayers.has(player);
 
-            character.PivotTo(inRound ? this.arenaSpawnFor(player) : this.getSpawn(ARENA_CONFIG.LOBBY_SPAWN_NAME));
+            // **A missing lobby is not reported here, deliberately.** The intermission loop owns that
+            // fault and says so once — see {@link waitForLobby} — and repeating the same sentence on
+            // every join would be two lines in one log saying one thing. This path has an honest
+            // fallback anyway: the character keeps the spawn the engine gave it rather than being
+            // thrown by a lookup.
+            if (inRound) {
+                character.PivotTo(this.arenaSpawnFor(player));
+            } else {
+                const lobby = this.lobbySpawn();
+                if (lobby !== undefined) character.PivotTo(lobby);
+            }
         });
 
         // **A player arriving during a round is watching it, not in it.** They are not in
@@ -398,6 +470,19 @@ export class RoundService implements OnStart {
      * merely left unused.
      */
     private handleDeath(player: Player): void {
+        // **What question this answers:** whether the death reached the round at all, and if it did,
+        // which of the two early returns below it is about to take. Both are invisible from outside:
+        // a death during an intermission writes nothing, and a death for somebody already out writes
+        // nothing, and the two are the same absence of output. Printed with `active` as well as the
+        // state because those are the two conditions guarding those two returns, so one line
+        // separates "never got here" from "got here and stopped" — and which stop it was.
+        if (DEBUG_CONFIG.VERBOSE_LOGS) {
+            print(
+                `[Round] ${player.Name} died — state ${RoundState[this.state]}, ` +
+                    `in the round ${this.activePlayers.has(player)}`,
+            );
+        }
+
         // A death in the lobby is not an elimination, so nothing is written outside a round.
         if (this.state !== RoundState.Playing) return;
 
@@ -520,10 +605,169 @@ export class RoundService implements OnStart {
         this.scores.set(scoring, (this.scores.get(scoring) ?? 0) + award);
     }
 
-    private getSpawn(name: string): CFrame {
-        const spawn = Workspace.FindFirstChild(name) as BasePart | undefined;
-        if (!spawn) error(`Missing spawn part: ${name}`);
-        return spawn.CFrame.add(new Vector3(0, 3, 0));
+    /**
+     * The thrower of a caught ball is out, and — where the mode keeps score — the catcher's side
+     * scores a point.
+     *
+     * **One door for the whole catch resolution, and it is the round's rather than the ball's.** The
+     * ball's own resolution lives in `BallComponent` — it is the thing that knows a throw is over and
+     * which bodies were tagged. But punishing a thrower is a question about *sides*, and sides are the
+     * round's: who the thrower is, whether the catcher is their enemy, and whether a round is even
+     * being played are all facts the round already holds, so the ball would have to be handed them one
+     * at a time to do this itself.
+     *
+     * **Only an enemy catch arrives, by contract.** `BallComponent` refuses a friendly catch through
+     * `isFriendlyFire` before it calls here, exactly as the hit path refuses a friendly hit — one
+     * rule, applied in the ball, for "may this contact do anything". So there is deliberately no
+     * same-side branch here; a guard for it would be unreachable, and `isFriendlyFire` is the method
+     * that owns the rule.
+     *
+     * **The kill comes before the point, and only the point is gated on score.** Team Elimination has
+     * no points, but the thrower's death *is* its reward — so the kill happens in every mode and the
+     * award only where `mode.scores` is true. `registerHit` carries the same gate, for the same
+     * reason, and the two read the same flag.
+     *
+     * **An NPC's throw, caught, punishes nobody and scores nothing.** `playerFromToken` answers
+     * `undefined` for a GUID, which is the entire rule: a thrower with no player has no side, and a
+     * point nobody can be credited with is not awarded — the same fall-out a rig's hit has in
+     * `registerHit`.
+     */
+    public resolveCaughtThrower(throwerToken: string, catcher: Model): void {
+        // No round, no sides, nothing to resolve: between rounds a catch is just a catch.
+        if (this.state !== RoundState.Playing) return;
+
+        if (this.isFriendlyFire(throwerToken, catcher)) return;
+
+        const thrower = playerFromToken(throwerToken);
+        if (thrower === undefined) return;
+
+        // The death goes through `Died → handleDeath`, the same chain a landed hit takes: the mode
+        // decides what the death means, and this file does not decide it here twice.
+        const humanoid = thrower.Character?.FindFirstChildWhichIsA("Humanoid");
+        if (humanoid && humanoid.Health > 0) humanoid.TakeDamage(CATCH_DEATH_DAMAGE);
+
+        if (!this.mode.scores) return;
+
+        const catcherPlayer = Players.GetPlayerFromCharacter(catcher);
+        if (catcherPlayer === undefined) return;
+
+        const team = this.teams.get(catcherPlayer);
+        if (team === undefined) return;
+
+        this.scores.set(team, (this.scores.get(team) ?? 0) + GAME_MODE_CONFIG.CATCH_POINTS);
+    }
+
+    /**
+     * The place's lobby spawn, or nothing if the place has none.
+     *
+     * **A lookup rather than a rule, and that is the whole of what changed.** This used to be
+     * `getSpawn(name)`, which `error()`ed — the right *answer* to "this place has no lobby", thrown
+     * from the wrong place: it is called from inside {@link gameLoop}, and a throw from there rejects
+     * the loop's promise and stops the round system for the rest of the session. See
+     * {@link waitForLobby} for the rule that replaced it, and the round boundary further down for the
+     * same lesson already learned about the map.
+     *
+     * **It walks `Workspace` rather than taking the first thing of that name, and that is the second
+     * bug this lookup had.** `FindFirstChild(name, true)` answers with the first instance *of that
+     * name*, whatever it is — so a single Folder or Model called `LobbySpawn` anywhere in the world
+     * shadows the real part and the whole lookup reads as "no lobby", with the part it wanted sitting
+     * a few studs away. That is exactly what a lookup that works at start-up and stops working once a
+     * map is placed looks like: the arena arrives, it holds something of that name, and the answer
+     * flips. **The type has to be part of the question, not a check applied to an answer that has
+     * already been chosen.**
+     *
+     * **Looked up anywhere in `Workspace`, not only at its root.** The lobby was once a loose part at
+     * the root and a plain `FindFirstChild(name)` was written to that shape, which broke the moment
+     * the part was tidied into a model — and broke *silently*, because a part present in the place
+     * and missed by a too-shallow lookup is a part the loop simply sits waiting for. Anywhere in
+     * `Workspace` means a lobby can be restructured as freely as a map can.
+     *
+     * **A map's own copy is skipped.** A map is placed in `Workspace` for the length of a round and
+     * this runs at the boundary, when the outgoing map is still standing there — so a `LobbySpawn`
+     * inside an arena is the one copy that must never win. The lobby is the part of the world no map
+     * owns; this is where that is enforced rather than assumed.
+     *
+     * The walk is the whole of `Workspace`, once an intermission — or once a second while waiting for
+     * one, which is a few hundred instances next to the map clone it sits beside.
+     */
+    private lobbySpawn(): CFrame | undefined {
+        const map = this.maps.getCurrent();
+
+        for (const descendant of Workspace.GetDescendants()) {
+            if (descendant.Name !== ARENA_CONFIG.LOBBY_SPAWN_NAME) continue;
+            if (!descendant.IsA("BasePart")) continue;
+            if (map !== undefined && descendant.IsDescendantOf(map)) continue;
+
+            return descendant.CFrame.add(new Vector3(0, 3, 0));
+        }
+
+        return undefined;
+    }
+
+    /**
+     * What the world has to say about the lobby it is missing, as one sentence.
+     *
+     * **The distinction this exists to draw is between "absent" and "present but unusable"**, because
+     * those two read identically from the warning alone and have completely different fixes: one is a
+     * part to add, the other is a part to correct. It is worth a second walk for that, and it is only
+     * taken when the lookup has already failed — once per hold, not per frame.
+     *
+     * Anything found is reported with its full path and its class, which is the pair somebody needs:
+     * the path says where it is, and the class says why it was not good enough.
+     */
+    private describeLobbyCandidates(): string {
+        const named: string[] = [];
+
+        for (const descendant of Workspace.GetDescendants()) {
+            if (descendant.Name !== ARENA_CONFIG.LOBBY_SPAWN_NAME) continue;
+
+            named.push(`${descendant.GetFullName()} (${descendant.ClassName})`);
+        }
+
+        if (named.size() === 0) return `Nothing in Workspace is named "${ARENA_CONFIG.LOBBY_SPAWN_NAME}".`;
+
+        return `Workspace has ${named.join(", ")} — and none of those is a BasePart outside a map.`;
+    }
+
+    /**
+     * The lobby spawn, waiting for the place to have one.
+     *
+     * **Prints once when it starts waiting and once when it stops, rather than per turn of the loop.**
+     * The fault is a static one — either the part is in the place or it is not — so one sentence
+     * describes it, and a line a second would bury that sentence in its own repetition. The recovery
+     * line matters as much as the warning: somebody adding the part in Studio mid-session needs to
+     * see the round system notice, or the silence afterwards is indistinguishable from a session that
+     * was broken from the start.
+     *
+     * **Deliberately uncapped.** The fix is in Studio and takes as long as it takes; a loop that gave
+     * up after a minute would be a round system that stayed dead for the rest of the session, which is
+     * the outcome this whole arrangement exists to remove. A lookup a second costs nothing next to
+     * that.
+     */
+    private async waitForLobby(): Promise<CFrame> {
+        let waiting = false;
+
+        while (true) {
+            const lobby = this.lobbySpawn();
+
+            if (lobby !== undefined) {
+                if (waiting) print(`[Round] ${ARENA_CONFIG.LOBBY_SPAWN_NAME} found — the intermission can run`);
+                return lobby;
+            }
+
+            if (!waiting) {
+                waiting = true;
+
+                warn(
+                    `[Round] no "${ARENA_CONFIG.LOBBY_SPAWN_NAME}" in Workspace — holding the intermission ` +
+                        `until there is one. Everyone is standing in the arena, which is destroyed at the ` +
+                        `end of an intermission, so there is nowhere to put them until it exists. ` +
+                        this.describeLobbyCandidates(),
+                );
+            }
+
+            task.wait(1);
+        }
     }
 
     /**
@@ -585,11 +829,10 @@ export class RoundService implements OnStart {
     }
 
     /** Everyone to one place. The lobby's business: no side is on the lobby's side. */
-    private teleportAll(spawnName: string) {
-        const cframe = this.getSpawn(spawnName);
+    private teleportAll(to: CFrame) {
         for (const player of Players.GetPlayers()) {
             const character = player.Character;
-            if (character) character.PivotTo(cframe);
+            if (character) character.PivotTo(to);
         }
     }
 
@@ -692,7 +935,50 @@ export class RoundService implements OnStart {
             this.state = RoundState.Intermission;
             this.activePlayers.clear();
             print("Intermission started");
-            this.teleportAll(ARENA_CONFIG.LOBBY_SPAWN_NAME);
+
+            // **The phase goes out here, before anything that can hold, and that is a reversal.**
+            //
+            // These three lines used to sit below the map swap, on the reasoning that an intermission
+            // had not really started until the arena was on its way in. What that cost is the whole of
+            // the next paragraph: `waitForLobby` can hold indefinitely, and while it held, the folder
+            // still said whatever the *previous* phase had published — `Playing`, with the finished
+            // round's last clock value. A held intermission therefore read as a round that had frozen
+            // mid-count, which is a confident lie about the state of the game, and it is exactly the
+            // report this was fixed from.
+            //
+            // The number published with it is the honest one: a full `INTERMISSION_SECONDS`, not
+            // counting. A held intermission is not running, so a clock that had been left to tick
+            // would be the second lie.
+            this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
+
+            // The phase goes out as its own name, which is the HUD's entire vocabulary. Those two
+            // words are `RoundState`'s members by convention rather than by construction, so
+            // renaming a member means renaming the string here.
+            this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Intermission");
+            // Published with the clock rather than only after the first second comes off it, so
+            // the HUD never shows the *previous* phase's final number under the new phase's name.
+            this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
+
+            // **The lobby next, and it is the one fault this loop answers by waiting.**
+            //
+            // The comment at the round boundary below explains at length why a throw from inside this
+            // loop ends the *session* rather than the round. This was the same hazard one step
+            // earlier, and it was the one still open: `teleportAll` reached `getSpawn`, which
+            // `error()`ed, so a place file with no `LobbySpawn` took the loop down on its very first
+            // turn — with one rejection line and nothing after it.
+            //
+            // **Waiting is the only safe answer here, not a fallback position.** Everybody is
+            // standing in the arena, and the next lines destroy it — so going on without somewhere to
+            // put them would drop the whole server into the void, which is precisely the "everyone in
+            // the wrong place" that `LOBBY_SPAWN_NAME`'s note says a missing lobby must never cause.
+            // Nothing below this point has run yet, so there is nothing to undo: the loop simply comes
+            // back when the part exists.
+            //
+            // **The phase is already published above, which is what makes a hold visible.** With the
+            // publish below this line, a held intermission was indistinguishable from a frozen round
+            // — see the note above for what that looked like. See `waitForLobby` for the two lines it
+            // prints around one, which is the other half of the same answer.
+            this.teleportAll(await this.waitForLobby());
 
             // **Two cleanups, and this is the order they belong in.** The held balls go first: a ball
             // in a hand is welded to a character, so it is not a descendant of the map and the map's
@@ -703,7 +989,7 @@ export class RoundService implements OnStart {
             this.clearEndedRoundHeldBalls();
 
             // **The map swap, and this is the only moment it is safe.** Everybody has just been put
-            // in the lobby, which lives at `Workspace` root and belongs to no map — so there is
+            // in the lobby, which lives in `Workspace` and belongs to no map — so there is
             // nobody standing on the arena that is about to be destroyed, and nothing left behind in
             // it. Unloading before loading is what guarantees two arenas are never in `Workspace` at
             // once; `loadMap` does it again internally, so the order is true by construction rather
@@ -718,14 +1004,9 @@ export class RoundService implements OnStart {
             this.maps.unloadCurrent();
             this.maps.loadMap(this.maps.pickNext());
 
-            this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
-            // The phase goes out as its own name, which is the HUD's entire vocabulary. Those two
-            // words are `RoundState`'s members by convention rather than by construction, so
-            // renaming a member means renaming the string here.
-            this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Intermission");
-            // Published with the clock rather than only after the first second comes off it, so
-            // the HUD never shows the *previous* phase's final number under the new phase's name.
-            this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
+            // The clock is published above the lobby wait now — see the note there for why the phase
+            // goes out before anything that can hold. Counting starts here, which is what leaves a
+            // held intermission sitting at its full length rather than ticking against nothing.
 
             // Counted beside the clock rather than derived from it, because the two stop for the
             // same reason and at the same moment: a frozen tick `continue`s below without touching

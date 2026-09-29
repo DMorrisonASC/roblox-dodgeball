@@ -445,18 +445,6 @@ export const BALL_CONFIG = {
 	 */
 	BOUNCE_FACTOR: 0.5,
 
-	/**
-	 * How many bodies one throw can take out before the ball goes dead, counted per throw.
-	 * Read by `BallComponent`.
-	 *
-	 * The cap is what keeps a chain a *good throw* rather than a won round — without it the
-	 * only limit is how many players are standing in the way. It counts per throw, because
-	 * the ball forgets who it has hit the moment it is armed again.
-	 *
-	 * The ball is disarmed *after* the bounce that brings the count up, so the last player a
-	 * throw takes out still throws the ball off them instead of catching it on the chest.
-	 */
-	MAX_CHAIN_HITS: 10,
 
 	// -------------------------------------------------------------------- drop
 
