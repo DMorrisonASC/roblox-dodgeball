@@ -186,6 +186,7 @@ export class RoundStatusController implements OnStart {
 		// line, and the wrapper follows it, and no amount of text can be clipped by a box that was
 		// sized before the text existed.
 		const card = Card(scope, {
+			padding: 4,
 			children: [
 				Text(scope, {
 					text,

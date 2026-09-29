@@ -1,7 +1,7 @@
 import { OnStart } from "@flamework/core";
 import { BaseComponent, Component } from "@flamework/components";
 import { Players, Workspace } from "@rbxts/services";
-import { THROWER_TOKEN } from "shared/constants";
+import { BALL_NAME, THROWER_TOKEN } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
@@ -12,6 +12,35 @@ import { CatchService } from "../services/actions/CatchService";
 import { RoundService } from "../services/round/RoundService";
 import { StatsService } from "../services/stats/StatsService";
 
+/**
+ * The tag every dodgeball carries — **the same string as this component's own `tag: "Ball"`, which
+ * is what puts this component on a ball at all.**
+ *
+ * Copied rather than shared for the reason the name is copied in `BallFactory`, `BallService` and
+ * `BallPickupService`: the decorator's argument has to be a literal where Flamework's transformer
+ * can read it, so the one place this cannot live is a shared constant. Written down here because
+ * {@link isBall} has to recognise a ball *without* asking for its component — a part reported to
+ * `Touched` may have no component on it at all, or one that has not started yet.
+ */
+const BALL_TAG = "Ball";
+
+/**
+ * Whether `instance` is a dodgeball.
+ *
+ * **Both the tag and the name, because each answers a question the other cannot.** The tag is what
+ * carries {@link BallComponent}, and `BallFactory.finish` puts it on every ball the game makes; the
+ * name is what a ball is called in the log. A part with one and not the other is something assembled
+ * by hand, and calling that a ball is the safe direction to be wrong in — it costs a throw, where
+ * the other direction costs a body.
+ *
+ * **A ball inside a character is not this function's business**, and is not caught by it in practice:
+ * it has a `Model` above it and is answered by the body branch of {@link BallComponent.handleTouch},
+ * which is what stops an NPC holding a ball from being immune to throws from the front.
+ */
+function isBall(instance: Instance): boolean {
+	return instance.HasTag(BALL_TAG) || instance.Name === BALL_NAME;
+}
+
 interface BallAttributes {
 	/**
 	 * Whether this ball is a live throw: in flight, or carrying bodies it has hit but not yet
@@ -20,9 +49,9 @@ interface BallAttributes {
 	 * **True through a body, and false the moment the ball touches the world.** That is the rule a
 	 * catch exists to serve: a hit's fate is not decided at the hit but at the ball's death, so the
 	 * ball has to *stay* armed — still carrying the throw, still carrying its tags — until it hits
-	 * something that is not a body. A body does not end a throw; the floor, a wall, a prop, does.
-	 * Disarming on a body would abandon the tags before they resolved, and a ball nobody had been
-	 * told was dead would sit in the world with deaths still owed.
+	 * something that is not a body. A body does not end a throw; the floor, a wall, a prop, or
+	 * another ball, does. Disarming on a body would abandon the tags before they resolved, and a ball
+	 * nobody had been told was dead would sit in the world with deaths still owed.
 	 */
 	Armed: Boolean;
 
@@ -210,9 +239,14 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * fate is not settled at the hit: real dodgeball lets a catch save the hit player, so a body
 	 * the ball touches is *tagged* and nothing happens to it yet. The ball bounces off and keeps
 	 * flying, still armed, still carrying every tag; it is the next contact that is not a body —
-	 * the floor, a wall, a prop — that ends the throw and resolves every tag into a death. See
-	 * {@link resolveTags}. And a catch before that moment releases every tag and never resolves a
-	 * one: see {@link resolveCatch}.
+	 * the floor, a wall, a prop, another ball — that ends the throw and resolves every tag into a
+	 * death. See {@link resolveTags}. And a catch before that moment releases every tag and never
+	 * resolves a one: see {@link resolveCatch}.
+	 *
+	 * **A ball counts as the world, and that is a rule rather than a side effect of the ancestry
+	 * test.** Any ball ends the throw — whichever ball it was, and whoever threw it — because the
+	 * question this method answers is whether the flight is over, and a ball ends it. The world branch
+	 * states it and says why; see there for the two consequences that follow.
 	 */
 	private handleTouch(otherPart: BasePart): void {
 		// Spent already: a landing or a wall has taken this ball out of play — its tags were
@@ -223,7 +257,39 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 
 		// Not a character. The ball has hit the world, and the throw resolves here.
+		//
+		// **Another dodgeball belongs in this branch, and that is a rule rather than a consequence of
+		// the test above.** A thrown ball is a thing in the world the way a wall is, and a throw that
+		// meets one has been spent on it: whatever that throw was carrying stops there. It costs the
+		// thrower the ball they aimed with, which is the price a wall extracts too, and **it is paid
+		// for any ball and whoever threw it** — an arena ball nobody owns, an opponent's throw still in
+		// the air, or the thrower's own from earlier. Nothing here asks, because the question this
+		// branch answers is "has this flight ended", and a ball ends it.
+		//
+		// Two consequences worth being plain about. **A body this ball then travels through is no
+		// longer a body it can hurt** — that is what being spent means, and the `Armed` guard at the
+		// top of this method is what enforces it, so a survival after a ball-to-ball contact is this
+		// rule working rather than a hit that was missed. And the sound below is the world-impact one,
+		// so a landing noise heard while the ball is still in the air is a truthful signal that the
+		// throw just ended and a misleading one about where: read a mid-air thud as "spent on
+		// something".
+		//
+		// **A ball in somebody's hand is deliberately not this case.** It has a `Model` above it and is
+		// answered by the body branch, where `struckBodyPart` drops the contact — otherwise an NPC
+		// holding a ball would be immune to everything thrown at its front, which is the opposite of
+		// what a ball in the hand should mean.
 		if (!character || !humanoid) {
+			// Said out loud, and only for a ball. An unowned ball ending a throw is invisible in the
+			// world and, at default verbosity, invisible in the log too — and it is the one way a
+			// throw can be spent somewhere the thrower never saw a target. The raw `Touched` report
+			// behind `VERBOSE_LOGS` shows the contact; this shows what it cost.
+			if (isBall(otherPart)) {
+				print(
+					`[Ball] ${this.instance.Name} #${this.identity}: spent on ${otherPart.GetFullName()}` +
+						` — the throw is over`,
+				);
+			}
+
 			// **This is where every tagged body meets its fate, and it is the only place it could.**
 			// The ball has stayed armed through every body it hit — see {@link BallAttributes.Armed}
 			// for why — so "the ball stopped being armed" and "the tagged bodies are resolved" are the
