@@ -21,18 +21,6 @@ const DEBUG = true;
 const OUTLINE_NAME = "ObjectOutline";
 
 /**
- * What a target's fill goes back to when the glow comes off — and it does not matter what this is.
- *
- * The fill is set back to invisible in the same breath, so this colour is never seen. It is a
- * definite value rather than a remembered one because nothing here should have to hold a second
- * piece of state to restore a property whose only visible value is transparency `1`.
- */
-const RESTORE_FILL_COLOR = Color3.fromRGB(255, 255, 255);
-
-/** The transparency a fill is at when it is not being used. See {@link RESTORE_FILL_COLOR}. */
-const RESTORE_FILL_TRANSPARENCY = 1;
-
-/**
  * Fills the model this throw would land on with colour, for as long as the local player is aiming.
  *
  * **Client-side, and entirely an opinion.** Nothing here is sent anywhere and nothing is asked of
@@ -43,9 +31,22 @@ const RESTORE_FILL_TRANSPARENCY = 1;
  * **It does not create a `Highlight`, and that is the load-bearing decision.** Roblox draws one
  * highlight per model; a second one is not two effects but an undefined choice between them, so a
  * glow of its own would fight the outline for the slot rather than sit inside it. Instead this
- * fills the outline's own highlight in — `OutlineService` leaves the fill at transparency `1`, so
- * the outline is an empty shape waiting to be filled, and filling it is the whole of the glow. The
- * black edge is untouched and stays exactly what it was.
+ * recolours the highlight the outline already gave it — the instance is already on every rig and
+ * every ball, and all this does is change the colour its edge is drawn in.
+ *
+ * **The signal is the edge and not the fill, and that is a reversal.** The glow used to lay a white
+ * fill over the whole body. The landing marker is drawn *on* that body, and it is the quiet, precise
+ * end of the preview — so washing the body toward white left a grey disc sitting on near-white, and
+ * the one thing the preview exists to tell you was the one thing it made hard to read. An edge is a
+ * contour rather than a surface: it says "this one" while leaving every pixel the marker is read
+ * against exactly as it was. Nothing here writes a fill at all any more, so a lit target's *surface*
+ * is identical to an unlit one's.
+ *
+ * **The edge colour is the one piece of state this controller has to remember**, and it is worth
+ * knowing why the fill did not need to. A fill restored to any value at all was invisible, so a
+ * constant cost nothing — the old code said so in as many words. An edge colour *means* something:
+ * it is how a body says whose side it is on, so putting back a constant would repaint somebody in the
+ * wrong colour. See {@link setGlow} for the rule that keeps the restore honest.
  *
  * **What lights up is what the arc would hit, and that is a reversal.** This used to cast its own
  * ray from the camera through the mouse and light whatever the crosshair was on. That is a straight
@@ -85,6 +86,19 @@ export class AimTargetController implements OnStart {
 	 * because the aim moved off it. `undefined` means nothing is glowing.
 	 */
 	private currentTarget: Model | undefined;
+
+	/**
+	 * The edge colour the glow replaced on the target currently lit, or nothing.
+	 *
+	 * **One slot, not a table, because only one body is ever lit** — see {@link currentTarget} — and a
+	 * body that stops being the target has its colour put back in the same breath it is dropped.
+	 *
+	 * Held across frames rather than read at the moment of the restore, which is the whole point:
+	 * by then the value on the instance is the glow's own, and what has to be put back is what was
+	 * there before it. See {@link setGlow} for the case where something else has written the property
+	 * in the meantime and this must *not* be put back.
+	 */
+	private replacedOutline: Color3 | undefined;
 
 	/** The flag as last reported, so only its transitions are printed. Diagnostic scaffolding. */
 	private lastAiming = false;
@@ -166,7 +180,7 @@ export class AimTargetController implements OnStart {
 	}
 
 	/**
-	 * Turns `target`'s fill on or off, in the highlight the outline already gave it.
+	 * Lights `target`, or puts it out, by recolouring the edge of the highlight it already wears.
 	 *
 	 * **A missing highlight is a state, not an error.** A rig that has not been outlined yet, a ball
 	 * that has just been made, a character in the middle of respawning — all of them are unlit, and
@@ -176,9 +190,20 @@ export class AimTargetController implements OnStart {
 	 * worth saying loudly: a skipped write and an arc that hit nothing look identical from outside
 	 * this file, and they have completely different causes.
 	 *
-	 * Both properties are written together in each direction, which is what keeps the glow a single
-	 * state rather than two that can disagree: a fill that was invisible but the wrong colour is a
-	 * glow waiting to appear the next time something set one of them.
+	 * **The old colour goes back only if it is still ours to put back.** That condition is the whole
+	 * of the care this needs, and it is not hypothetical: `OutlineService` writes this same property
+	 * from the server whenever somebody's side changes — a round starting, a Dodge and Seek conversion
+	 * — so an aim that is being held while that happens is a lit target whose edge the server has
+	 * already taken back. If the edge is still the glow colour then nothing else has written it and
+	 * the remembered value is the truth; if it is not, somebody with better information has already
+	 * decided what that player is, and this leaves their answer alone. An unconditional restore would
+	 * put a stale side colour onto a player who had been converted mid-aim, and would keep it there
+	 * until the next phase change — a quietly wrong state of exactly the kind that a client writing
+	 * and then un-writing a replicated property can produce.
+	 *
+	 * **The fill is not touched at all**, which is the point of the change rather than an omission:
+	 * `OutlineService` leaves it at transparency `1` and nothing here paints it, so the surface the
+	 * landing marker is read against is the body's own.
 	 */
 	private setGlow(target: Model, on: boolean): void {
 		const highlight = target.FindFirstChild(OUTLINE_NAME);
@@ -192,11 +217,17 @@ export class AimTargetController implements OnStart {
 		}
 
 		if (on) {
-			highlight.FillColor = AIM_CONFIG.TARGET_GLOW_COLOR;
-			highlight.FillTransparency = AIM_CONFIG.TARGET_FILL_TRANSPARENCY;
+			this.replacedOutline = highlight.OutlineColor;
+			highlight.OutlineColor = AIM_CONFIG.TARGET_GLOW_COLOR;
 		} else {
-			highlight.FillColor = RESTORE_FILL_COLOR;
-			highlight.FillTransparency = RESTORE_FILL_TRANSPARENCY;
+			// Still ours, so nothing has repainted it while the aim was held — see the note above.
+			// `replacedOutline` absent would mean this was never lit, in which case there is nothing
+			// to put back and the colour already on the instance is the one that belongs there.
+			if (highlight.OutlineColor === AIM_CONFIG.TARGET_GLOW_COLOR) {
+				highlight.OutlineColor = this.replacedOutline ?? highlight.OutlineColor;
+			}
+
+			this.replacedOutline = undefined;
 		}
 
 		// `=true` is the load-bearing half: it says the write reached a real `Highlight`. A `true`

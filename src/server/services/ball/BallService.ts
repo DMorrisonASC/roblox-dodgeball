@@ -117,6 +117,64 @@ interface HeldBall {
 	trail?: BallTrail;
 }
 
+/**
+ * The band a physics rate is trusted inside, in steps per second.
+ *
+ * `Workspace:GetRealPhysicsFPS()` is a *measurement* rather than a setting, and a measurement can be
+ * wrong in ways that turn this sum into nonsense:
+ *
+ * - **Zero.** Before the server's first physics step, and on a server with nothing to simulate, it
+ *   reports 0. That divides into an unbounded upward velocity and would launch the ball into orbit.
+ * - **Throttled.** Under load the engine slows its stepping rather than losing time, so a low value
+ *   is sometimes the truth about what physics is doing. That belongs in the sum — but past a point
+ *   it stops meaning "stepping slowly" and starts meaning "this server is in trouble", and a throw
+ *   made then wants the ordinary boost rather than a share of the panic.
+ * - **Absurd.** Nothing in the engine should report above a few hundred, and a value that did would
+ *   divide the boost down to nothing.
+ *
+ * 20 is below any rate the engine steps at in practice and above the only value that is genuinely
+ * meaningless — the one that does not exist yet. 240 is the top of the range the engine's own
+ * stepping methods work in.
+ */
+const MIN_PHYSICS_FPS = 20;
+const MAX_PHYSICS_FPS = 240;
+
+/**
+ * The server's physics rate, in steps per second, inside {@link MIN_PHYSICS_FPS}–{@link
+ * MAX_PHYSICS_FPS}.
+ *
+ * Clamped here rather than at the arithmetic so that everything asking about the rate — the boost,
+ * and the log line printed beside it — reports the same number the boost was derived from. A log
+ * that quoted the raw reading next to a boost computed from the clamped one would disagree with
+ * itself exactly when the clamp mattered.
+ */
+function physicsRate(): number {
+	return math.clamp(Workspace.GetRealPhysicsFPS(), MIN_PHYSICS_FPS, MAX_PHYSICS_FPS);
+}
+
+/**
+ * The upward velocity a throw needs so the ball flies the arc it was solved for, in studs per second.
+ *
+ * **Derived, not tuned.** The engine integrates a body by its current velocity and only then bends
+ * it, so the vertical velocity a step acts on is short of the one written to the ball by roughly
+ * `½·g·dt` — a *velocity*, which is why it is added to the launch rather than scaled from it. See
+ * `BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE` for the derivation, for the fixed value it replaces and
+ * what frame rate that value implied, and for why the scale should stay at 1.
+ *
+ * **Server-only, and deliberately not in `shared/throw.ts`.** That file exists so the client's aim
+ * guide and the server's throw compute one answer; this reads the *local* machine's physics rate, so
+ * a client calling it would derive its own number and the two would disagree — the one failure that
+ * file is arranged to prevent. Nothing is published to the client and the guide does not change: it
+ * draws the solve, and this is the server correcting the engine's own loss on top of it.
+ *
+ * **Read at every throw rather than cached**, because the rate is a measurement that moves — a
+ * server can change how it steps while the game runs — and a boost derived once at boot would be
+ * wrong for exactly the throws this exists to fix.
+ */
+function verticalBoost(): number {
+	return (BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE * Workspace.Gravity) / (2 * physicsRate());
+}
+
 @Service()
 export class BallService implements OnStart {
 	private throwRemote?: RemoteEvent;
@@ -606,16 +664,21 @@ export class BallService implements OnStart {
 		const plan = planPlayerThrow(model, target, arc, launch);
 
 		// What actually goes on the ball: the solve, plus the launch boost that
-		// covers the engine's own vertical loss. See BALL_CONFIG.THROW_VERTICAL_BOOST —
-		// the guide draws the solve, so this is what makes the ball fly the drawn
-		// line instead of sagging below it.
-		const commanded = plan.velocity.add(new Vector3(0, BALL_CONFIG.THROW_VERTICAL_BOOST, 0));
+		// covers the engine's own vertical loss. The boost is derived from this
+		// machine's gravity and physics rate rather than fixed — see
+		// `BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE` for the derivation, and
+		// `verticalBoost` for why it is read on every throw. The guide draws the
+		// solve, so this is what makes the ball fly the drawn line instead of sagging
+		// below it.
+		const boost = verticalBoost();
+		const commanded = plan.velocity.add(new Vector3(0, boost, 0));
 
 		if (DEBUG) {
 			print(
 				`[Ball] ${model.Name}: ${plan.arc} ${this.describeThrow(plan, commanded)}, ` +
 					`release ${releasePosition} -> launch ${plan.origin}` +
-					` (${string.format("%.2f", launch.sub(ownLaunch).Magnitude)} studs from our own)`,
+					` (${string.format("%.2f", launch.sub(ownLaunch).Magnitude)} studs from our own)` +
+					` | boost ${string.format("%.3f", boost)} at ${string.format("%.0f", physicsRate())} fps`,
 			);
 		}
 

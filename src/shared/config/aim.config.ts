@@ -1,40 +1,54 @@
 /**
- * The aim-target glow: what it fills a target with.
+ * The aim-target glow: what colour a lit target is drawn in, and what it used to be drawn as.
  *
  * Read by `AimTargetController` alone today. Shared rather than client-only because nothing in it is
  * a *client's* business to decide — the colour is the game's look, and a second client that ever
  * wanted it would want the same value.
  *
- * **The other two entries here are no longer read, and that is worth spelling out.** They configured
- * a ray the glow cast for itself. The glow no longer casts anything: it reads the arc the throw
- * guide already draws, so it has no reach of its own and nothing to throttle. Both are kept and
- * marked rather than deleted, because the numbers are the ones to start from if the glow ever has to
- * ask its own question again, and because the shape of the older design is worth being able to see.
+ * **Three entries here are no longer read, and that is worth spelling out.**
+ * {@link AIM_CONFIG.TARGET_MAX_DISTANCE} and {@link AIM_CONFIG.TARGET_UPDATE_HZ} configured a ray the
+ * glow cast for itself. The glow no longer casts anything: it reads the arc the throw guide already
+ * draws, so it has no reach of its own and nothing to throttle.
+ * {@link AIM_CONFIG.TARGET_FILL_TRANSPARENCY} configured a fill painted over the whole body, and is
+ * gone for a different reason again — the landing marker is read against that body. All three are
+ * kept and marked rather than deleted, because the numbers are the ones to start from if either design
+ * comes back, and because the shape of what was there is worth being able to see.
  */
 export const AIM_CONFIG = {
 	/**
-	 * What the glow fills a target with.
+	 * What a lit target's **edge** is drawn in — the whole of the signal that this body is the one the
+	 * throw would land on.
 	 *
-	 * **White, and that is the loud choice rather than the neutral one.** The fill reads as light
-	 * falling on the body rather than paint over it, so it stands out against every colour a map, a
-	 * rig or the palette can offer — which a tint of any particular hue does not. Chosen once and
+	 * **On the outline rather than in the fill, and that is a reversal.** The glow used to be a white
+	 * fill laid over the whole body at {@link AIM_CONFIG.TARGET_FILL_TRANSPARENCY}, and the fill is
+	 * what made the landing marker hard to read: the marker is drawn *on* the body, so washing that
+	 * body toward white left a grey disc sitting on near-white. An edge is a contour rather than a
+	 * surface, so it says "this one" without touching anything the marker is read against.
+	 *
+	 * **White, and that is the loud choice rather than the neutral one.** A body on nobody's side
+	 * wears a black edge — see `OUTLINE_CONFIG.COLOR` — and a player in a round wears their side's
+	 * colour, so white is unlike either and unlike every material a map can offer. Chosen once and
 	 * never made dynamic: a colour that changed with the situation would have to be read twice to be
 	 * understood, and the whole point of this is to be understood at no glance at all.
 	 *
-	 * A cool cyan at 0.6 transparency was tried first and read as "slightly different" rather than
-	 * "lit": the fill has to compete with whatever the model was already wearing, so anything short
-	 * of a hard white is a suggestion instead of a signal.
+	 * A cool cyan was tried as the fill colour first and read as "slightly different" rather than
+	 * "lit": the signal has to compete with whatever the model was already wearing, so anything short
+	 * of a hard white is a suggestion instead of a signal. That argument was about a wash over the
+	 * body and now applies to a line around it, where it is if anything stronger.
 	 */
 	TARGET_GLOW_COLOR: Color3.fromRGB(255, 255, 255),
 
 	/**
-	 * How opaque that fill is, from `0` (a solid body) to `1` (invisible).
+	 * **No longer read, and the number to come back to.** How opaque the target's fill was made while
+	 * it was lit, from `0` (a solid body) to `1` (invisible).
 	 *
-	 * Most of the way to solid, so the target is unmistakable rather than merely tinted. The black
-	 * outline sits on top of the fill and is what keeps the silhouette readable underneath it — see
-	 * `OutlineService`, which is what drew it. The transparency left in is only so the body does not
-	 * vanish into one white shape: at `0` the thing being aimed at is hidden by its own highlight,
-	 * which is the opposite of what an aim reference is for.
+	 * The glow no longer paints a fill at all — see {@link AIM_CONFIG.TARGET_GLOW_COLOR} — so a lit
+	 * body keeps `OutlineService`'s own `FillTransparency = 1` and its surface is never written. This
+	 * was `0.35`, and what it used to say is worth keeping as the argument for the other side: that a
+	 * fill most of the way to solid is what makes a target unmistakable rather than merely tinted, and
+	 * that the transparency left in is only so the body does not vanish into one white shape. Both
+	 * halves are true, and both were outweighed by the marker: the aim reference the glow exists to
+	 * serve was the thing the fill was hiding.
 	 */
 	TARGET_FILL_TRANSPARENCY: 0.35,
 

@@ -1,8 +1,10 @@
 /**
- * How a character moves.
+ * How a character moves, and how long a fresh one cannot be hurt.
  *
  * A config of its own rather than a constant buried in the service, because a walk speed is the
- * kind of number that gets tuned — and because `WalkSpeedService` reads it but does not own it.
+ * kind of number that gets tuned — and because `WalkSpeedService` reads it but does not own it. The
+ * spawn shield at the bottom is there for the same reason: it is a number somebody will want to
+ * move, and it belongs to the rule rather than to the thing that applies it.
  */
 export const CHARACTER_CONFIG = {
     /**
@@ -79,4 +81,20 @@ export const CHARACTER_CONFIG = {
      * pool behave the way it does.
      */
     STAMINA_RECOVERY_DELAY_SECONDS: 0.5,
+
+    /**
+     * How long a freshly spawned player cannot be hurt, in seconds.
+     *
+     * **One second, on every player, in every phase.** Short enough to read as a spawn grace rather
+     * than a tactic, long enough to cover a body arriving before its owner can see where they are.
+     * Applied by `SpawnShield`, whose comments carry the two facts that make it work: that
+     * `Humanoid:TakeDamage` is refused outright while a `ForceField` is present, and that the engine
+     * may put one of its own on the body that has to be taken away first.
+     *
+     * **The same number in the lobby and in a round, deliberately.** A player who died mid-round and
+     * one who has just joined are given the same body by the same engine call, and a shield whose
+     * length depended on which phase that happened in would make the two feel different for no
+     * reason a player could ever learn.
+     */
+    SPAWN_SHIELD_SECONDS: 1,
 } as const;

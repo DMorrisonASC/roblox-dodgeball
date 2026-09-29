@@ -33,9 +33,10 @@ const BALL_TAG = "Ball";
  * by hand, and calling that a ball is the safe direction to be wrong in — it costs a throw, where
  * the other direction costs a body.
  *
- * **A ball inside a character is not this function's business**, and is not caught by it in practice:
- * it has a `Model` above it and is answered by the body branch of {@link BallComponent.handleTouch},
- * which is what stops an NPC holding a ball from being immune to throws from the front.
+ * **A ball inside a character is answered by this too, and that is the point.** A ball welded into
+ * somebody's hand sits at the centre of the silhouette a throw is aimed at, so it is decided by the
+ * same guard as any other ball rather than being left to the body branch — where `struckBodyPart`
+ * would drop the contact and let the throw carry on. See {@link BallComponent.handleTouch}.
  */
 function isBall(instance: Instance): boolean {
 	return instance.HasTag(BALL_TAG) || instance.Name === BALL_NAME;
@@ -49,9 +50,11 @@ interface BallAttributes {
 	 * **True through a body, and false the moment the ball touches the world.** That is the rule a
 	 * catch exists to serve: a hit's fate is not decided at the hit but at the ball's death, so the
 	 * ball has to *stay* armed — still carrying the throw, still carrying its tags — until it hits
-	 * something that is not a body. A body does not end a throw; the floor, a wall, a prop, or
-	 * another ball, does. Disarming on a body would abandon the tags before they resolved, and a ball
-	 * nobody had been told was dead would sit in the world with deaths still owed.
+	 * something that is not a body. A body does not end a throw; the floor, a wall, or a prop, does.
+	 * So does another ball, but only once this throw has somebody on it — see
+	 * {@link BallComponent.handleTouch}, which is where that condition is decided. Disarming on a
+	 * body would abandon the tags before they resolved, and a ball nobody had been told was dead
+	 * would sit in the world with deaths still owed.
 	 */
 	Armed: Boolean;
 
@@ -213,6 +216,21 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		this.instance.GetAttributeChangedSignal("Armed").Connect(() => {
 			if (this.instance.GetAttribute("Armed") !== true) return;
 
+			// **A tag thrown away, said out loud, because this is the one way it can happen in
+			// silence.** The clear below is right — a new throw owes nothing — but reaching it with a
+			// non-empty list means a body was tagged on an earlier throw and never resolved, and that
+			// body is now safe for good. Nothing else in the file can report it: the ball was not
+			// destroyed (so `Destroying` stays silent), it did not die on the world (so `resolveTags`
+			// never ran), and it was not caught (so `resolveCatch` never ran). Ungated on the
+			// `Destroying` hook's terms — it fires only when there is something to report, and it
+			// firing at all is the finding.
+			if (this.hitModels.size() > 0) {
+				print(
+					`[Ball] ${this.instance.Name} #${this.identity}: re-armed holding ` +
+						`${this.hitModels.size()} unresolved tag(s) — nobody will be resolved`,
+				);
+			}
+
 			// A new number to be reported under, taken at the same moment as everything else here
 			// and for the same reason: `Armed` going on is a new throw. See {@link identity} for why
 			// this usually happens once per ball rather than once per throw.
@@ -239,57 +257,61 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * fate is not settled at the hit: real dodgeball lets a catch save the hit player, so a body
 	 * the ball touches is *tagged* and nothing happens to it yet. The ball bounces off and keeps
 	 * flying, still armed, still carrying every tag; it is the next contact that is not a body —
-	 * the floor, a wall, a prop, another ball — that ends the throw and resolves every tag into a
-	 * death. See {@link resolveTags}. And a catch before that moment releases every tag and never
-	 * resolves a one: see {@link resolveCatch}.
+	 * the floor, a wall, a prop — that ends the throw and resolves every tag into a death. See
+	 * {@link resolveTags}. And a catch before that moment releases every tag and never resolves a
+	 * one: see {@link resolveCatch}.
 	 *
-	 * **A ball counts as the world, and that is a rule rather than a side effect of the ancestry
-	 * test.** Any ball ends the throw — whichever ball it was, and whoever threw it — because the
-	 * question this method answers is whether the flight is over, and a ball ends it. The world branch
-	 * states it and says why; see there for the two consequences that follow.
+	 * **Another ball is the third kind of contact, and which of the two it is depends on what the
+	 * throw already owes.** A throw that has landed on nobody treats a ball as scenery and carries
+	 * on, so it still reaches the body standing behind it. A throw that has already tagged somebody
+	 * is ended by the next ball it touches, exactly as the floor would end it. See the guard at the
+	 * top of this method, which is where both halves of that live.
 	 */
 	private handleTouch(otherPart: BasePart): void {
 		// Spent already: a landing or a wall has taken this ball out of play — its tags were
 		// resolved there, or there were none — and nothing below can put it back.
 		if (this.instance.GetAttribute("Armed") !== true) return;
 
+		// **Another dodgeball is the world only when this throw already owes somebody a death — and
+		// that condition is the third version of this rule, reached by finding out what the first two
+		// got wrong.**
+		//
+		// A ball in the world is a `BasePart` parented to `Workspace`, so nothing above it is a
+		// `Model`. The first version treated that as a world contact outright, which ends the throw on
+		// the first ball it meets. The second ignored ball contacts altogether, so a ball could never
+		// spend a throw. **Both are right in one arrival and wrong in the other**, because the engine
+		// reports an arrival as an unordered overlap set rather than a sequence — and a hand-held ball
+		// sits in front of the chest, so a throw into a torso meets both:
+		//
+		// - **Body first, then a ball** — the body is tagged, and under the second version that tag sat
+		//   waiting for the ball to come down. Whether it ever did is wherever the ball happened to
+		//   roll, so a hit that visibly landed left the body standing.
+		// - **Ball first, then the body** — and under the first version the throw was over before it
+		//   touched anybody. Nothing was tagged, so nothing died, and aiming at the torso of anybody
+		//   carrying a ball did nothing at all.
+		//
+		// **So the rule is conditional, and the condition is what the throw already owes.** A throw
+		// that has landed on nobody treats a ball as scenery and carries on: the ball is an obstacle
+		// the thrower never chose, and spending a throw on one before it reaches anybody spends it on
+		// nothing. A throw that has landed on somebody is *finished* by the next ball it touches, which
+		// resolves the tag there and then instead of leaving it hostage to where the ball finally comes
+		// to rest. **Both orders then end the same way, and both end in a death.**
+		//
+		// The guard sits above the ancestry lookup rather than in the world branch below, and that is
+		// load-bearing: a ball in somebody's hand has a `Model` above it, so it would otherwise be
+		// answered as a body contact, dropped by `struckBodyPart`, and leave the throw carrying on
+		// exactly as the second version did.
+		if (isBall(otherPart) && this.hitModels.size() === 0) {
+			this.noteDecidedNothing(otherPart, "a ball, and this throw owes nobody — carried on past it");
+			return;
+		}
+
 		const character = otherPart.FindFirstAncestorWhichIsA("Model");
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 
-		// Not a character. The ball has hit the world, and the throw resolves here.
-		//
-		// **Another dodgeball belongs in this branch, and that is a rule rather than a consequence of
-		// the test above.** A thrown ball is a thing in the world the way a wall is, and a throw that
-		// meets one has been spent on it: whatever that throw was carrying stops there. It costs the
-		// thrower the ball they aimed with, which is the price a wall extracts too, and **it is paid
-		// for any ball and whoever threw it** — an arena ball nobody owns, an opponent's throw still in
-		// the air, or the thrower's own from earlier. Nothing here asks, because the question this
-		// branch answers is "has this flight ended", and a ball ends it.
-		//
-		// Two consequences worth being plain about. **A body this ball then travels through is no
-		// longer a body it can hurt** — that is what being spent means, and the `Armed` guard at the
-		// top of this method is what enforces it, so a survival after a ball-to-ball contact is this
-		// rule working rather than a hit that was missed. And the sound below is the world-impact one,
-		// so a landing noise heard while the ball is still in the air is a truthful signal that the
-		// throw just ended and a misleading one about where: read a mid-air thud as "spent on
-		// something".
-		//
-		// **A ball in somebody's hand is deliberately not this case.** It has a `Model` above it and is
-		// answered by the body branch, where `struckBodyPart` drops the contact — otherwise an NPC
-		// holding a ball would be immune to everything thrown at its front, which is the opposite of
-		// what a ball in the hand should mean.
-		if (!character || !humanoid) {
-			// Said out loud, and only for a ball. An unowned ball ending a throw is invisible in the
-			// world and, at default verbosity, invisible in the log too — and it is the one way a
-			// throw can be spent somewhere the thrower never saw a target. The raw `Touched` report
-			// behind `VERBOSE_LOGS` shows the contact; this shows what it cost.
-			if (isBall(otherPart)) {
-				print(
-					`[Ball] ${this.instance.Name} #${this.identity}: spent on ${otherPart.GetFullName()}` +
-						` — the throw is over`,
-				);
-			}
-
+		// Not a character — or a ball, which reaches here only when this throw already has somebody on
+		// it, and is then the throw's death like any wall. See the guard above for the whole rule.
+		if (!character || !humanoid || isBall(otherPart)) {
 			// **This is where every tagged body meets its fate, and it is the only place it could.**
 			// The ball has stayed armed through every body it hit — see {@link BallAttributes.Armed}
 			// for why — so "the ball stopped being armed" and "the tagged bodies are resolved" are the
@@ -304,6 +326,29 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// that a throw is over, short of watching it all the way down.
 			this.playImpactSound(otherPart, SOUND_CONFIG.WORLD_HIT);
 
+			// **The end of a throw, and it was invisible until now.** This branch is the death of
+			// every throw that does not end in a catch, and it used to leave no trace at all: the
+			// sound is the only thing it announces, and the one line `emitSound` prints is behind
+			// {@link DEBUG_CONFIG.VERBOSE_LOGS}, which is off by default and turns on a per-frame aim
+			// report with it. So a throw that landed on the floor and a throw that was never fired
+			// produced the same log — nothing — and that is the *first* question anybody asks of a hit
+			// that did not register: did the ball arrive at all, and where.
+			//
+			// Named by part and counted, because the two facts are the answer: a landing short of the
+			// body is an aim or a range problem, and one that arrived with nobody tagged is a contact
+			// problem. The tag lines and this one are read against each other, which is why this is
+			// ungated on `landHit`'s terms — a diagnostic that has to be switched on cannot explain a
+			// log captured without it.
+			//
+			// **Exactly one line per throw, and the disarm below is what guarantees that.** `Armed`
+			// goes off on the line after this, so the second contact of an arrival is refused at the
+			// top of `handleTouch` like any other spent ball. A ball that is destroyed while still
+			// armed is the one case that ends without this line, and it has its own.
+			print(
+				`[Ball] ${this.instance.Name} #${this.identity}: ended on ${otherPart.Name} — ` +
+					`${this.hitModels.size()} tag(s)`,
+			);
+
 			// The thrower is still readable here: the world branch never made the ball inert, so
 			// `ThrowerId` is whatever `throwBall` stamped on it. Read once, before the tags resolve,
 			// because a resolution turns tags into deaths and a death is credited to this.
@@ -315,19 +360,6 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			this.instance.SetAttribute("Armed", false);
 			return;
 		}
-
-		// The root decides nothing. It is engine plumbing sitting *inside* the torso,
-		// not a body part: a ball in contact with it is in contact with the torso as
-		// well, and a contact reported against it alone means nothing happened. Left
-		// in, it was the part that killed a catcher — it is not in
-		// {@link CATCH_CONFIG.CATCHABLE_PARTS}, so the first event of a torso arrival
-		// read as a hit, and the catch that should have saved them arrived after the
-		// damage.
-		//
-		// It matters at least as much now that a body no longer stops the ball: one
-		// arrival reports every part it overlaps, so without this the torso and the root
-		// would be two hits on the same player — two bounces, in the same frame.
-		if (otherPart.Name === "HumanoidRootPart") return;
 
 		// **A worn accessory is not a shield: the contact belongs to the body underneath it.**
 		//
@@ -352,7 +384,13 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// head than the head is wide — a glance off a beanie is a head contact, and lethal. That is
 		// the price of a hitbox a player cannot shrink by what they choose to wear.
 		const struck = this.struckBodyPart(humanoid, otherPart);
-		if (!struck) return;
+		if (!struck) {
+			this.noteDecidedNothing(
+				otherPart,
+				"not a body part, and not traceable to one — nothing to tag",
+			);
+			return;
+		}
 
 		// Nobody is hurt by their own ball, and nobody catches it either — including off
 		// the rebound, which is the case that matters now that balls come off people. Both
@@ -420,7 +458,10 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// A catch is deliberately *not* covered: the catch branch above has already returned, so a
 		// teammate may still catch a throw. Catching is a different mechanic from hurting somebody,
 		// and this rule is only about hurting them.
-		if (typeIs(throwerId, "string") && this.rounds.isFriendlyFire(throwerId, character)) return;
+		if (typeIs(throwerId, "string") && this.rounds.isFriendlyFire(throwerId, character)) {
+			this.noteDecidedNothing(struck, "same side — vetoed, so no damage and no record");
+			return;
+		}
 
 		// **Heard here, which is after every reason this contact might not be a hit.** A catch returned
 		// above, a friendly hit has just returned, and the ball's own thrower and a body it has already
@@ -446,6 +487,14 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// same arrival — and every later contact with this body — is a body the ball has already
 		// tagged.
 		this.hitModels.set(character, struck);
+
+		// **The other half of `landHit`'s line, and the half that was missing.** `landHit` reports a
+		// death when the throw resolves; with no line saying a body was *tagged*, a throw that tagged
+		// somebody and then never resolved is indistinguishable in the log from a throw that never
+		// touched anybody — which is exactly the confusion this pair exists to end. Ungated for
+		// `landHit`'s reason and on the same terms: it fires once per tagged body per throw, and the
+		// two lines are meant to be read against each other.
+		print(`${character.Name} was tagged by ${this.instance.Name} on ${struck.Name}`);
 
 		this.bounceOff(struck);
 	}
@@ -660,23 +709,100 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * The body part a contact should be treated as, or `undefined` when it is not a contact with a
 	 * body at all.
 	 *
-	 * Three answers, and the middle one is the whole point of the method:
+	 * Four answers, and the middle two are the point of the method:
 	 *
 	 * - **A part of the rig itself** → itself, which is the ordinary case.
 	 * - **A part of something worn on the rig** → the body part it is attached to. See
 	 *   {@link wornOn} for why the weld is the right thing to follow rather than a name, a
 	 *   distance, or the accessory's own idea of where it is.
+	 * - **The root part** → the body part it is jointed to, which is the torso. See
+	 *   {@link rootHost}, which is where the reason for that lives.
 	 * - **Anything else inside a character** → `undefined`: a tool, the dodgeball in somebody's hand,
-	 *   a `HumanoidRootPart`, or a worn part that cannot be traced back to a body. A ball that has
-	 *   touched one of those has touched nothing — not a hit, not a catch, and no reason to disarm.
+	 *   or a worn part that cannot be traced back to a body. A ball that has touched one of those has
+	 *   touched nothing — not a hit, not a catch, and no reason to disarm.
 	 */
 	private struckBodyPart(humanoid: Humanoid, otherPart: BasePart): BasePart | undefined {
 		if (this.isBodyPart(humanoid, otherPart)) return otherPart;
 
 		const accessory = otherPart.FindFirstAncestorWhichIsA("Accoutrement");
-		if (!accessory) return undefined;
+		if (accessory) return this.wornOn(humanoid, accessory);
 
-		return this.wornOn(humanoid, accessory);
+		// **The root, and only the root.** Not every welded thing inside a character is routed to its
+		// host — see {@link wornOn} for why a tool and a held ball deliberately are not — so this is
+		// the root asked of *the humanoid* rather than a rule widened to cover everything welded: a
+		// tool and a held ball must stay the ball's business and not become hits on the hand.
+		//
+		// **`Humanoid.RootPart` is the engine's own answer to which part that is** — "a reference to
+		// the humanoid's `HumanoidRootPart` object" — so this is a link rather than a name, which is
+		// the same choice {@link wornOn} makes and for the same reason. It also means a rig that
+		// something has named oddly is still understood.
+		if (otherPart === humanoid.RootPart) return this.rootHost(humanoid, otherPart);
+
+		return undefined;
+	}
+
+	/**
+	 * The body part the root is jointed to — the torso, on both rig types.
+	 *
+	 * **This is the fix for a hit that landed and did nothing, and it is the second version of it.**
+	 * The root used to be dropped outright, on the reasoning that a ball in contact with it is in
+	 * contact with the torso as well, so a report against the root alone means nothing happened. That
+	 * is true of *collision* and false of `Touched`: an R15 rig's root sits below the torso's centre,
+	 * so its underside is exposed between the legs, and a throw arriving at the hips touches the root
+	 * and nothing else. The contact was then discarded, the throw carried on, and the body it had
+	 * visibly struck survived — which is the report this was chased from, and what the refusal line at
+	 * the old `return` finally showed.
+	 *
+	 * **Resolved rather than dropped, and resolved rather than taken as itself.** Treating the root as
+	 * a body part in its own right is what this did even earlier, and it made a catcher unreachable:
+	 * the root is not in {@link CATCH_CONFIG.CATCHABLE_PARTS}, so the first event of a chest arrival
+	 * read as a hit and the catch that should have saved them arrived after the damage. Following the
+	 * joint gets the answer those two options each missed — the contact becomes a *torso* contact, so
+	 * it is a hit **and** it is catchable, which is what a ball into the chest always was.
+	 *
+	 * **Searches the whole rig, and that is the correction the first version of this method needed.**
+	 * That version followed the link, which was right, and it looked for the link *inside the root*,
+	 * which was an assumption — and a false one. **Where the joint lives depends on the rig**: on R15
+	 * the joint holding the root on is a child of `LowerTorso` (and there is no `RootJoint` on the
+	 * root at all), while on R6 it is a child of the root itself. Walking the root's descendants
+	 * therefore found the torso on one rig and nothing on the other — and it failed by *declining*,
+	 * which is the quiet way to be wrong: the throw that landed on a body produced the refusal line
+	 * and then no tag, which is the symptom this method was written to remove and not a new one. A rig
+	 * is one object and the link is somewhere in it, so the whole of it is searched and the answer no
+	 * longer depends on which generation the rig is.
+	 *
+	 * **Follows the link rather than naming a part**, for {@link wornOn}'s reason: which part a rig
+	 * calls its torso is the rig's business, and a hand-written name would have to know R6's `Torso`
+	 * and R15's `LowerTorso` and would still miss a rig nobody has seen. The link is what "inside"
+	 * means here, exactly as it is what "worn" means there — and both shapes of it are handled, see
+	 * {@link connectionParts}.
+	 *
+	 * Only a link with the root at one end counts, so the rest of the rig's joints are nothing to do
+	 * with this — and see {@link wornOn} for the two things deliberately not routed to their host.
+	 *
+	 * Answers `undefined` when no body part is jointed to the root, which would be a rig with no
+	 * torso; the caller reports that rather than swallowing it.
+	 */
+	private rootHost(humanoid: Humanoid, root: BasePart): BasePart | undefined {
+		// The rig, not the root: see the note above on where the joint lives. `root.Parent` rather
+		// than `humanoid.Parent` because the root is a direct child of its rig and asking the part
+		// itself is what makes that assumption visible instead of hidden behind a second lookup.
+		const rig = root.Parent;
+		if (rig === undefined) return undefined;
+
+		for (const descendant of rig.GetDescendants()) {
+			const sides = connectionParts(descendant);
+
+			if (sides[0] !== root && sides[1] !== root) continue;
+
+			// `side`, not `end`: `end` is a Luau keyword and roblox-ts refuses to emit it.
+			for (const side of sides) {
+				if (side === undefined || side === root) continue;
+				if (this.isBodyPart(humanoid, side)) return side;
+			}
+		}
+
+		return undefined;
 	}
 
 	/**
@@ -788,6 +914,41 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 				: otherPart.Name;
 
 		print(`${this.instance.Name} #${this.identity} touched ${subject}`);
+	}
+
+	/**
+	 * Reports a contact this ball made that decided nothing, and why.
+	 *
+	 * **The half of a throw's story that was silent by construction, and the reason a hit that did
+	 * not register was indistinguishable from a ball that never arrived.** Every refusal in
+	 * {@link handleTouch} used to `return` without a word — deliberately, because a normal arrival
+	 * makes a dozen of them that mean nothing. The cost is that "this ball met the body and refused
+	 * it" and "this ball never met the body" produce exactly the same empty log, which is the
+	 * question behind every report of a hit that did not count.
+	 *
+	 * The refusals worth seeing are named, and they are chosen by how often they can fire rather than
+	 * by how interesting they are: **the ones left silent are the ones a single arrival makes a dozen
+	 * of** — a body already on the tag list, and the extra parts of the overlap set that follow it.
+	 * Everything else fires at most once or twice per arrival, and only when something happened that
+	 * the thrower did not intend.
+	 *
+	 * Ungated, like the tag and the landing, because it is the *absence* of those two lines that this
+	 * exists to explain — and a diagnostic that has to be switched on cannot explain a log captured
+	 * without it.
+	 *
+	 * **The body as well as the part, and that is the other half of the same lesson.** `HumanoidRootPart`
+	 * is the name of a part on every rig in the game, so a line saying only that leaves the one
+	 * question it is being read for unanswered: whose root was it? The ball's own thrower and the body
+	 * the throw was aimed at are completely different faults — a ball released into its thrower's own
+	 * leg is a spawn offset, while a ball into a victim's hip is this file failing to resolve a
+	 * contact — and the part's name alone cannot tell them apart. Both are named here, so a refusal
+	 * can be attributed without a second run.
+	 */
+	private noteDecidedNothing(part: BasePart, reason: string): void {
+		const body = part.FindFirstAncestorWhichIsA("Model");
+		const subject = body ? `${part.Name} of ${body.Name}` : part.Name;
+
+		print(`[Ball] ${this.instance.Name} #${this.identity}: ${subject} — ${reason}`);
 	}
 
 	private isPlayer(otherPart: BasePart): boolean {

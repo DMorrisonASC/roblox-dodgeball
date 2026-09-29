@@ -303,33 +303,53 @@ export const BALL_CONFIG = {
 	THROW_MAX_SPEED: 280,
 
 	/**
-	 * Extra upward velocity added to every throw, in studs per second.
+	 * **A multiplier on the derived launch boost. It should stay at 1.**
 	 *
-	 * A correction for the engine, not a design choice. Measured on the server: the
-	 * ball flies as though it left the hand slower vertically than the velocity that
-	 * was written to it, and stays that much behind for the whole flight — so the
-	 * shortfall in position grows as `boost·t`, and the longer the throw the further
-	 * the ball sits below the line it was solved for. The drawn arc is the solved
-	 * one, so what that looks like from the player's seat is a trajectory running
+	 * The boost is no longer a value anybody picks — it is computed at every throw from the two
+	 * numbers that cause the loss:
+	 *
+	 * ```
+	 * boost = THROW_VERTICAL_BOOST_SCALE * Workspace.Gravity / (2 * Workspace:GetRealPhysicsFPS())
+	 * ```
+	 *
+	 * **Why that shape.** The engine's integrator advances a body by its current velocity and only
+	 * then bends it, so the vertical velocity a step acts on is short of the one written to the ball
+	 * by roughly `½·g·dt`. That is a *velocity*, which is why this gets added to the launch rather
+	 * than scaled into it — and `dt` is the physics step, so `1/dt` is the rate the server steps at
+	 * and the loss is inversely proportional to it. `GetRealPhysicsFPS()` reports that rate.
+	 *
+	 * A correction for the engine, not a design choice. Measured on the server: the ball flies as
+	 * though it left the hand slower vertically than the velocity that was written to it, and stays
+	 * that much behind for the whole flight — so the shortfall in position grows as `boost·t`, and
+	 * the longer the throw the further the ball sits below the line it was solved for. The drawn arc
+	 * is the solved one, so what that looks like from the player's seat is a trajectory running
 	 * *above* the ball.
 	 *
-	 * **Tune it against the ball, not with arithmetic.** The loss comes from how the
-	 * engine integrates (roughly `½·g·dt` per step), so this figure is frame-rate
-	 * dependent and the right value for it moves with the server's step size.
-	 * `BallService`'s DEBUG print shows the commanded velocity, and `ThrowProbe`
-	 * reports how far the ball drifts from the plan's own curve — that drift is the
-	 * number to drive to zero.
+	 * **What the fixed value this replaces was doing.** It was `THROW_VERTICAL_BOOST: 2.5`, and 2.5
+	 * is the right boost for a server stepping physics at `196.2 / (2 · 2.5) ≈ 39 FPS`. The rate
+	 * measured for this change was **60**, where the derivation asks for `196.2 / 120 = 1.635` — so
+	 * the fixed figure was over-boosting by about 0.87 studs per second, carrying the ball *above*
+	 * the drawn arc by `0.87 · flight time` studs instead of sagging below it. It was never measured
+	 * against the rate the game actually runs at, which is the whole of why it is derived now.
 	 *
-	 * **The correction belongs on the ball, not on the drawing.** Subtracting the
-	 * same figure from the guide's launch was tried (`PREDICTION_VERTICAL_BIAS`) and
-	 * removed: it moves the landing *marker* by `2·v_h·boost/g`, and `v_h` differs by
-	 * mode, so it dragged the three modes' marks apart by a different amount each.
-	 * Correcting the throw instead leaves every marker where it was and simply makes
-	 * the ball fly the line they came from.
+	 * **Start at 1, and the honest test is whether it stays at 1.** A derivation that needs a fudge
+	 * factor is a derivation that is wrong, and the thing to change is the formula rather than this.
+	 * A consistent residual at this setting is evidence about the *shape* of the loss — read it
+	 * before turning this dial, because turning it hides the evidence without explaining it.
+	 *
+	 * **Tune it against the ball, not with arithmetic.** `BallService`'s DEBUG print shows the
+	 * commanded velocity, the boost it applied and the rate it read, and `ThrowProbe` reports how far
+	 * the ball drifts from the plan's own curve — that drift is the number to drive to zero.
+	 *
+	 * **The correction belongs on the ball, not on the drawing.** Subtracting the same figure from the
+	 * guide's launch was tried (`PREDICTION_VERTICAL_BIAS`) and removed: it moves the landing *marker*
+	 * by `2·v_h·boost/g`, and `v_h` differs by mode, so it dragged the three modes' marks apart by a
+	 * different amount each. Correcting the throw instead leaves every marker where it was and simply
+	 * makes the ball fly the line they came from.
 	 *
 	 * 0 restores pure ballistics and the shortfall with it.
 	 */
-	THROW_VERTICAL_BOOST: 2.5,
+	THROW_VERTICAL_BOOST_SCALE: 1,
 
 	/**
 	 * Launch angle of the curveball, in degrees.
