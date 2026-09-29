@@ -4,6 +4,7 @@ import { ARENA_CONFIG } from "shared/config/arena.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
 import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
+import { findFolder } from "shared/find";
 import { events, RoundResultRow } from "shared/networking";
 import {
     ROUND_STATE_ATTRIBUTE,
@@ -1334,14 +1335,26 @@ function teamFolderName(team: TeamLabel): string {
  * argument is about policy rather than about the place file. It answers with a list rather than a
  * reason for exactly that reason; {@link mapProblem} is what turns the list back into words.
  *
- * Only **direct** `BasePart` children count. A `Model` full of parts is not a spawn and is skipped
- * rather than searched, which keeps "is this a spawn?" a question about one folder's children.
+ * **The folders are searched for; the shape they must have is a contract.** `ArenaSpawns` with an `A`
+ * and a `B` inside it is part of what a playable map *is*: the names are shared config
+ * (`ARENA_CONFIG`), the round has nothing to teleport to without them, and {@link mapProblem} names
+ * the missing one rather than failing mysteriously. The *requirement* is therefore structural and
+ * does not bend — while the *location* is searched, because a map author who tidies `ArenaSpawns`
+ * into a grouping folder of their own has broken nothing. Keeping those two apart is the point: the
+ * structure is an interface, the path is an accident. Both lookups walk the subtree and require the
+ * class at the same time; see `shared/find.ts` for why `FindFirstChild(name, true)` is not the
+ * shortcut it looks like.
+ *
+ * Only **direct** `BasePart` children of the team's folder count. A `Model` full of parts is not a
+ * spawn and is skipped rather than searched, which keeps "is this a spawn?" a question about one
+ * folder's children — deliberately, and it is the one place in this file where a level is meant
+ * rather than assumed.
  */
 function teamSpawnParts(map: Model, team: TeamLabel): BasePart[] {
-    const spawns = map.FindFirstChild(ARENA_CONFIG.ARENA_SPAWNS_FOLDER);
+    const spawns = findFolder(map, ARENA_CONFIG.ARENA_SPAWNS_FOLDER);
     if (spawns === undefined) return [];
 
-    const folder = spawns.FindFirstChild(teamFolderName(team));
+    const folder = findFolder(spawns, teamFolderName(team));
     if (folder === undefined) return [];
 
     const parts: BasePart[] = [];
@@ -1357,7 +1370,7 @@ function teamSpawnParts(map: Model, team: TeamLabel): BasePart[] {
  * Why `map` cannot host a round, or `undefined` if it can.
  *
  * **A sentence rather than a boolean**, because this is read by somebody looking at a place file
- * rather than by code: the string names the full path that is missing or empty, which is the one
+ * rather than by code: the string names the folders that are missing or empty, which is the one
  * thing they need to know, and the same string serves the output line and the error.
  *
  * Takes `Model | undefined` rather than a `Model`, so that "nothing is loaded" — the case that
@@ -1375,7 +1388,10 @@ function mapProblem(map: Model | undefined): string | undefined {
     for (const team of TEAM_LABELS) {
         if (teamSpawnParts(map, team).size() > 0) continue;
 
-        return `${map.Name}.${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}.${teamFolderName(team)} is missing or has no BasePart children`;
+        // **The names rather than a path.** The folders are searched for anywhere inside the map, so
+        // printing `RoLive Map.ArenaSpawns.A` would assert a location the lookup no longer requires —
+        // which is the mistake this rule exists to prevent, in miniature.
+        return `"${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}/${teamFolderName(team)}" is missing from ${map.Name}, or has no BasePart children`;
     }
 
     return undefined;

@@ -24,6 +24,31 @@
 export const BALL_NAME = "DodgeballBall";
 
 /**
+ * Tag marking an arena part as a barrier that stops **characters** and lets everything else through.
+ *
+ * **A name a person sets in Studio and code has to agree with**, which is what puts it next to
+ * `BALL_NAME` rather than among the tags below it — this is not a label code puts on something, it
+ * is a label somebody paints on a part in the place file. It is read in exactly one place
+ * (`collision/CollisionGroups.ts`, as the map is placed) and that is a reason to keep its rules
+ * here in its own comment, not to keep the constant private to that file.
+ *
+ * **`CanTouch` and `CanQuery` are load-bearing, and both are the counter-intuitive pair.** A ball
+ * crossing this wall must not report a world contact — a `Touched` event would disarm it mid-flight
+ * and score the throw as a miss — so the part is **`CanTouch = false`**. And the aim guide walks the
+ * world with a spherecast, so **`CanQuery = false`** is what lets the preview pass through the wall
+ * and go on telling the truth about where a throw will land. Turning either one back on to "make the
+ * wall more solid" reintroduces both bugs: a wall the ball bounces off mid-arena, and a guide that
+ * stops at the centre line. See `SoundEmitter`'s note on the same two flags, kept for the same
+ * reason — and see `collision/CollisionGroups.ts` for this wall beside the other one.
+ *
+ * **This is not the arena's edge.** An edge wall is a `Default` part with all three of `CanCollide`,
+ * `CanTouch` and `CanQuery` true and **no tag at all**: `Default` collides with `Default`, which is
+ * exactly what stopping characters *and* balls means. Tagging one would invite a reader to route it
+ * through this wall's code and silently take the balls out of it.
+ */
+export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
+
+/**
  * Attribute naming whoever a ball belongs to, carried on the **thrower's model**.
  *
  * The value is a string token rather than a `UserId`, because a thrower is not

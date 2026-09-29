@@ -1,6 +1,8 @@
 import { Service } from "@flamework/core";
 import { ServerStorage, Workspace } from "@rbxts/services";
+import { findModel } from "shared/find";
 import { MAP_CONFIG } from "shared/config/map.config";
+import { applyBarrierGroups } from "../collision/CollisionGroups";
 
 /** Prints a line per load and unload. A swap is the whole of what this service does. */
 const DEBUG = true;
@@ -69,19 +71,30 @@ export class MapService {
 	public loadMap(name: string): Model | undefined {
 		this.unloadCurrent();
 
+		// **A structural exception, and this is the justification for it.** `ServerStorage.Maps` is the
+		// root of the game's own storage rather than somewhere a person arranges, so it is looked up as
+		// a child of the service — the alternative is a `GetDescendants()` walk over every arena
+		// template in the place, once per intermission, to find a folder whose name is already a shared
+		// config constant (`MAP_CONFIG.MAPS_FOLDER`). The *map* inside it is searched for rather than
+		// assumed to be a child; see below.
 		const root = ServerStorage.FindFirstChild(MAP_CONFIG.MAPS_FOLDER);
 		if (root === undefined) {
 			warn(`[Map] ServerStorage.${MAP_CONFIG.MAPS_FOLDER} is missing — nothing loaded`);
 			return undefined;
 		}
 
-		const template = root.FindFirstChild(name);
-		if (template === undefined || !template.IsA("Model")) {
-			warn(`[Map] "${name}" is not a Model in ServerStorage.${MAP_CONFIG.MAPS_FOLDER} — nothing loaded`);
+		// **Searched for rather than looked up as a child.** `root.FindFirstChild(name)` answers about
+		// one level, and a map someone has filed inside a grouping folder in `ServerStorage.Maps` would
+		// read as "nobody has built this map yet" — a warning about a model sitting a folder away. The
+		// same search is used for the map's own contents; see `shared/find.ts` for why the class has to
+		// be part of the question rather than a check on the answer.
+		const template = findModel(root, name);
+		if (template === undefined) {
+			warn(`[Map] "${name}" is not a Model anywhere under ServerStorage.${MAP_CONFIG.MAPS_FOLDER} — nothing loaded`);
 			return undefined;
 		}
 
-		const loaded = template.Clone() as Model;
+		const loaded = template.Clone();
 
 		// **Not parented, and that is the whole reason this is two methods.** The clone stays out of
 		// the world until `placeCurrent`, so an arena nobody is playing in is drawn by nobody and
@@ -114,6 +127,14 @@ export class MapService {
 		const current = this.current;
 		if (current === undefined) return;
 		if (current.Parent === Workspace) return;
+
+		// **The barriers are assigned before the map enters the world, and that is the whole reason
+		// this line is above the parenting rather than below it.** The arena becomes collidable the
+		// moment it is in `Workspace`, so a wall that joined a physics step still wearing `Default`
+		// would stop a thrown ball for a frame — and the ball is the one thing a midline wall must
+		// never do. Out here there is no step to be caught by: the pass runs on a model nothing is
+		// simulating yet. See `collision/CollisionGroups.ts` for the two walls and their flags.
+		applyBarrierGroups(current);
 
 		current.Parent = Workspace;
 
