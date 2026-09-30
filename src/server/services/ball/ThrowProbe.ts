@@ -35,6 +35,14 @@ import { LaunchPlan, Trajectory } from "shared/Trajectory";
  *   This is the one to compare across throws: same click, same landing numbers
  *   => the maths is right and what you are seeing move is the engine's contact.
  *
+ * **A Pierce throw compares a plan that stops at a body with a ball that does not, and that difference
+ * is not an error.** The reference curve below is built with no `passable` predicate — it is the plan as
+ * an *ordinary* ball would fly it — so for a Pierce throw the ball keeps going past the contact this
+ * predicts, and the `landing` error printed will be about the length of the throw. Passing the guide's
+ * `passesThroughBodies` when the ball's own attribute says `Pierce` is the one-line fix when somebody
+ * needs this number for that ability. It is not done here because the predicate is written where the
+ * guide is drawn, and lifting it into shared code is a change nobody has asked for.
+ *
  * Printed from `BallService`, behind `DEBUG_CONFIG.VERBOSE_LOGS` — see
  * `shared/config/debug.config.ts`. Everything this file prints is behind that gate; the probe is
  * not even started when it is off.

@@ -11,7 +11,7 @@ import { addViewportConstraint } from "../../ui/viewportConstraint";
 const DEBUG = true;
 
 /** What the game is called, in the one place the client writes it. */
-const TITLE = "DODGEBALL";
+const TITLE = "DODGEBALL Hero";
 
 /**
  * The splash image: the full-viewport background the title sits on.

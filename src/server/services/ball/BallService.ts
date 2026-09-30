@@ -1,17 +1,28 @@
 import { Service, OnStart } from "@flamework/core";
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { BALL_SIZE, THROWER_TOKEN, THROW_ENABLED, PICKUP_LOCKED_UNTIL } from "shared/constants";
+import {
+	ARMED_ABILITY_ATTRIBUTE,
+	BALL_ABILITY_ATTRIBUTE,
+	BALL_SIZE,
+	PICKUP_LOCKED_UNTIL,
+	THROWER_TOKEN,
+	THROW_ENABLED,
+} from "shared/constants";
+import { NPC_TAG } from "../../npc/Behavior";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
+import { abilityOn, isAbilityKind } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
+import { events } from "shared/networking";
 import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
 import { LaunchPlan, ThrowArc } from "shared/Trajectory";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
 import { DevService } from "../../dev/DevService";
+import { SuperService } from "../super/SuperService";
 import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
 
@@ -189,7 +200,11 @@ export class BallService implements OnStart {
 	 */
 	private readonly heldBalls = new Map<Model, HeldBall>();
 
-	constructor(private readonly factory: BallFactory, private readonly dev: DevService) {
+	constructor(
+		private readonly factory: BallFactory,
+		private readonly dev: DevService,
+		private readonly abilities: SuperService,
+	) {
 		// **Switching `InfiniteBalls` on hands the dev a ball, if their hand is empty.**
 		//
 		// The refill at the end of a throw is not enough on its own. A dev whose hand is
@@ -260,6 +275,12 @@ export class BallService implements OnStart {
 
 			this.throwForPlayer(player, target, chosen, typeIs(claim, "Vector3") ? claim : undefined);
 		});
+
+		// **The ability key, and the whole of its server half.** Both of the questions this handler asks
+		// are this service's: where the *ball* is (it owns hands) and what this player *may* do (it holds
+		// the dev flags). The service that counts the charge is told the outcome and never asked to find a
+		// ball — see {@link markHeldBall} for the line between the two.
+		events.Server.OnEvent("markHeldBall", (player, kind) => this.markHeldBall(player, kind));
 
 		Players.PlayerRemoving.Connect((player) => {
 			const character = player.Character;
@@ -384,6 +405,36 @@ export class BallService implements OnStart {
 		if (!held) return false;
 
 		const ball = held.ball;
+
+		// **A marked ball is not put down — it is destroyed, and the charge goes with it.**
+		//
+		// An ability sitting on a ball in the open is an ability anybody can walk over and take, which
+		// is not what a charge is: it was earned by the player who marked the ball, and it is theirs to
+		// throw or to lose. So putting a marked ball down destroys it, and `SuperService` is told the
+		// charge is *forfeited* rather than spent — the difference between putting an ability down and
+		// having used one.
+		//
+		// **Returning from here rather than falling through is load-bearing.** Everything below is about
+		// a ball that has to end up somewhere: a position clear of the dropper, a pickup lockout, an
+		// expiry on the ordinary clock. A destroyed ball has none of that business.
+		if (abilityOn(ball) !== undefined) {
+			// **The entry goes before the instance**, for `removeBall`'s reason: `isHeld` answers from
+			// this map, and a destroyed ball still answering `true` is a ball two other systems can
+			// still see and act on.
+			this.heldBalls.delete(model);
+
+			// The dropper, when there is one. A rig can never mark a ball — it has no key to press —
+			// so this is the ordinary path with a guard rather than a case being handled: an NPC
+			// dropping a ball forfeits nothing because there is nothing on it to forfeit.
+			const player = Players.GetPlayerFromCharacter(model);
+			if (player) this.abilities.forfeitCharge(player);
+
+			ball.Destroy();
+
+			if (DEBUG) print(`[Ball] ${model.Name} dropped a marked dodgeball — it is destroyed`);
+
+			return true;
+		}
 
 		// Out of the hand first, so the weld is not fighting the reparent below.
 		ball.FindFirstChild(GRIP_NAME)?.Destroy();
@@ -527,6 +578,63 @@ export class BallService implements OnStart {
 		// And nobody's and nothing's — a caught ball is still armed and still named to the thrower it
 		// left, which is what this clears.
 		this.factory.makeInert(ball);
+
+		// **And an ordinary ball again, which is the other end of the ability rule.**
+		//
+		// A ball arriving in a hand has finished whatever it was doing: a caught one was Pierce for the
+		// throw it was caught out of, a picked-up one may have been left marked by somebody else, and a
+		// hand-out has never carried anything at all. All three come through this method, so the clear
+		// belongs here rather than at each of them — and it is the half that makes the mark safe: one
+		// that survived a catch would hand the next thrower an ability nobody chose to give them, and
+		// one that survived a pickup would let a dropped mark be collected off the floor and used.
+		//
+		// Written as the empty string rather than removed, which is how `makeInert` above treats
+		// `ThrowerId`: one empty case for a reader instead of two.
+		ball.SetAttribute(BALL_ABILITY_ATTRIBUTE, "");
+
+		// **And nothing left over from the flight it just finished, which is a quieter leak than the one
+		// above and a worse one.** A `NoCollisionConstraint` is parented to the ball and dies with it —
+		// the right lifetime for a *part*, and the wrong one for a *throw*, because a ball outlives its
+		// throws. A Pierce ball lands, lies there, gets picked up, and is thrown again as an ordinary
+		// ball that is still intangible to every body the previous throw was set up against. So the whole
+		// set comes off here, at the moment a ball stops being a throw and becomes something being held.
+		//
+		// **Everything, not just the ability's share.** The thrower and dropper ignores have exactly the
+		// same problem — today a ball is permanently intangible to whoever last threw or dropped it, even
+		// when somebody else is the one throwing it now — and a ball in a hand has no flight to be
+		// ignoring anybody *for*. One sweep is simpler than a registry of which constraint belongs to
+		// which feature, and it is the version that cannot leave one behind.
+		//
+		// **What this deliberately leaves alone is a ball lying loose.** Its constraints stay until it
+		// expires or somebody collects it, and that window is harmless: an unarmed ball does nothing on
+		// contact — `handleTouch` returns on its first line for a ball that is not `Armed` — so the only
+		// visible effect would be a body clipping through a ball on the floor. Closing that too would
+		// mean reaching into the contact path for a case with no symptom.
+		CollisionIgnore.clear(ball);
+
+		// **And then the arm, if this player is carrying one — the other end of the dev shortcut.**
+		//
+		// An armed dev has no ball to put an ability on, so the ability waits on the *player* and moves
+		// onto the first ball that arrives here. All four ways a ball can come into a hand pass through
+		// this method, so this is the one place the arm has to be collected.
+		//
+		// **After the clear above, deliberately, so that arming wins.** A dev who arms and then catches an
+		// enemy's Pierce ball gets *their* arm on it rather than the ability it arrived carrying — which is
+		// what "the next ball they take up is the marked one" means, and the reverse order would let the
+		// incoming ball's ability survive instead.
+		//
+		// The arm is spent by being taken up rather than left standing: a player armed once who picked up
+		// two balls in a row would otherwise have two loaded balls, and the second pickup would load one
+		// they never asked about.
+		const owner = Players.GetPlayerFromCharacter(model);
+		const armed = owner?.GetAttribute(ARMED_ABILITY_ATTRIBUTE);
+
+		if (owner && typeIs(armed, "string") && isAbilityKind(armed)) {
+			ball.SetAttribute(BALL_ABILITY_ATTRIBUTE, armed);
+			owner.SetAttribute(ARMED_ABILITY_ATTRIBUTE, "");
+
+			if (DEBUG) print(`[Super] ${owner.Name}: ${ball.Name} took up the armed ${armed}`);
+		}
 
 		// The trail stays off until the throw — otherwise it hangs off the hand every time
 		// the holder walks around. A ball that is caught keeps the ribbons it flew with,
@@ -688,6 +796,49 @@ export class BallService implements OnStart {
 		// muzzle distance only ever changed how hard that shove was.
 		CollisionIgnore.between(ball, model);
 
+		// **And every body in the world, before this ball exists at all — which is the entire point of doing
+		// it here rather than where the contact is discovered.**
+		//
+		// Every body, and not every *enemy*: a teammate who wandered into the line used to stop the ball,
+		// and being cancelled by somebody on your own side is not a rule anybody can predict or enjoy. See
+		// {@link pierceBodies}, which is where that decision and what it costs are written down.
+		//
+		// A Pierce ball has to go *through* the bodies it hits. The obvious place to arrange that is the
+		// tag branch in `BallComponent`, where the contact is known — and that is the wrong place, for a
+		// reason that is invisible in the source: **`Touched` is reported after the engine has already
+		// resolved the contact.** So a `NoCollisionConstraint` created inside that handler is created
+		// after the deflection it was meant to prevent has already been written to the ball's velocity.
+		// It stops the *next* contact with that body, which is worth nothing, because the throw has
+		// already been turned by the first one. The constraint has to be in place before the two parts
+		// ever meet, and the last moment at which that is true is here.
+		//
+		// **`BallComponent`'s tag branch still sets one, and that is deliberate for now**: it is a
+		// backstop, so that a run which still deflects can be told apart from one where this set-up
+		// failed. It is redundant with the loop below and **comes out in the next change**, once this is
+		// verified in Studio — two answers to one question is not a state to leave the file in.
+		//
+		// **What this relies on, stated because the ability is worthless without it: `Touched` has to
+		// keep firing for a pair whose collision has been taken away.** That event is how `handleTouch`
+		// learns the ball met this body, and therefore how the body is *tagged* — so if a constraint also
+		// silenced `Touched`, a Pierce ball would sail through every enemy and tag nobody, which is a
+		// different failure rather than a smaller one. Collision and touch are separate things in the
+		// engine — `CanTouch` exists precisely because a non-colliding part still fires `Touched` — but
+		// whether a `NoCollisionConstraint` sets both is not something this repository can read out of
+		// the typings. So it is checked in the log rather than assumed here: two enemies in a line should
+		// print two `was tagged by` lines.
+		if (abilityOn(ball) === "Pierce") {
+			const bodies = this.pierceBodies(model);
+
+			for (const body of bodies) CollisionIgnore.between(ball, body);
+
+			if (DEBUG) {
+				print(
+					`[Ball] ${model.Name}: Pierce — set up to pass through ` +
+						`${bodies.size()} ${bodies.size() === 1 ? "body" : "bodies"}`,
+				);
+			}
+		}
+
 		// Move the ball, hand it to this machine's solver, and arm it — all inside
 		// the one frame.
 		//
@@ -748,16 +899,202 @@ export class BallService implements OnStart {
 	}
 
 	/**
+	 * Every body a Pierce ball thrown by `model` should pass through.
+	 *
+	 * **Every body in the world, and the thrower is the only exception** — who is ignored by the line
+	 * above, so he is skipped here rather than constrained twice.
+	 *
+	 * **Why not "every enemy", which is what this was first.** A Pierce ball that stops dead on a
+	 * *teammate* has been cancelled by somebody on your own side, and no amount of correctness in the
+	 * code makes that read as anything but a bug from the seat. So nothing alive stops a Pierce ball:
+	 * the world does, and that is the whole rule.
+	 *
+	 * **What that costs is named rather than hidden.** A teammate no longer blocks a Pierce shot, so
+	 * they cannot be used as cover either — a player standing behind one gains nothing by it. Those two
+	 * cannot both hold, and the ability working is the one worth keeping.
+	 *
+	 * **It also deletes a compromise.** The side test that used to be here was a second expression of
+	 * `RoundService.isFriendlyFire`'s rule, reading `TEAM_ATTRIBUTE` because that service already depends
+	 * on this one and could not be asked back. With no side test there is nothing left to duplicate, so
+	 * the veto remains the single statement of the rule — and with the side test gone, the mark handler is
+	 * the only thing in this file that still asks `SuperService` whether a round is running.
+	 *
+	 * **A teammate is still not *hurt* by it.** The friendly-fire veto in `BallComponent` is untouched
+	 * and has nothing to do with collision: it drops the contact, so there is no tag, no damage and no
+	 * record. This method is about the ball's *path*; that rule is about what a contact is allowed to do.
+	 *
+	 * **NPC rigs come along with everything else**, found the way everything in this codebase finds them
+	 * — the `NPC` tag, which is what `NpcService`, `OutlineService` and `CollisionGroups` each walk.
+	 *
+	 * **Run before the ball is parented to the world, so the enumeration is complete.**
+	 * `CollisionIgnore` builds one constraint per part of the body it is handed, worked out at the
+	 * moment it is called — so what it sees is whatever that rig had at that instant. At this point in
+	 * a throw every rig is standing there with all of its parts, which is the best moment available to
+	 * ask. (In the tag branch the same call happens *during* a contact, which is a worse place to be
+	 * counting somebody's parts, and is part of why the pre-emptive version is the right one.)
+	 */
+	private pierceBodies(model: Model): Array<Model> {
+		const bodies: Array<Model> = [];
+
+		const consider = (body: Model) => {
+			if (body === model) return;
+
+			bodies.push(body);
+		};
+
+		for (const player of Players.GetPlayers()) {
+			const character = player.Character;
+			if (character) consider(character);
+		}
+
+		for (const rig of CollectionService.GetTagged(NPC_TAG)) {
+			if (rig.IsA("Model")) consider(rig);
+		}
+
+		return bodies;
+	}
+
+	/**
 	 * The player path: what the throw remote's handler calls.
 	 *
 	 * A player is not a special kind of thrower, just the only one with a `Player`
 	 * behind it — so there is nothing here but recovering the character and handing
 	 * it to {@link throwBall} as the model. The refill belongs to the throw itself,
 	 * which is what makes it the same refill for an NPC.
+	 *
+	 * **And the one place a charge is spent, because this is the one path a player's throw takes.**
+	 * `throwBall` is reached by an NPC's behavior as well, and a rig holds no charge — so the spend
+	 * belongs to the player path rather than to the throw. It is also deliberately the *remote
+	 * handler's* path: that remote fires on `Enum.UserInputState.Begin` and on nothing else, so this
+	 * runs once per click rather than once per frame, and one throw cannot spend two charges.
 	 */
 	private throwForPlayer(player: Player, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3) {
 		const character = player.Character;
-		if (character) this.throwBall(character, target, arc, claimedLaunch);
+		if (!character) return;
+
+		// **Read before the throw, because the throw empties the hand.** `throwBall` deletes the entry
+		// this asks for, so the marked ball has to be identified while it is still in the hand — and
+		// only the answer is kept: the marker rides the throw by itself, so nothing below needs the
+		// instance.
+		const marked = abilityOn(this.getHeldBall(character)) !== undefined;
+
+		// A ball that did not go — an empty hand, or a body with no hand to take it from — spends
+		// nothing. `throwBall` answers whether anything left, and this is the only caller that cares.
+		if (!this.throwBall(character, target, arc, claimedLaunch)) return;
+
+		// **A dev marks a ball without earning it**, so there is nothing of theirs to spend — the bypass
+		// {@link markHeldBall} documents. Asked here rather than inside `SuperService` because only the
+		// caller knows who threw: that service is told the outcome and never asks who the thrower was.
+		if (marked && !this.dev.isDev(player)) this.abilities.spendCharge(player);
+	}
+
+	/**
+	 * Marks the ball `player` is holding as carrying `kind`.
+	 *
+	 * **The handler for the ability key, and the whole of what a press does.** Four questions, asked in
+	 * the order that costs least to answer, and every refusal is a print rather than a thrown error — a
+	 * key press is not a fault, and the log is where the reason belongs.
+	 *
+	 * **Why the handler is here and not in `SuperService`.** Two of the four questions are this
+	 * service's: where the ball is (it owns hands, and `getHeldBall` exists for this) and what a player
+	 * may do (the dev flags are already held here). Putting it there would mean `SuperService` depending
+	 * on hands — the wrong direction for a service whose whole job is to count two things. As it stands
+	 * that service is asked one question, `hasCharge`, and never has to find a ball.
+	 *
+	 * **The charge is not spent here, deliberately.** See `SuperService.spendCharge`: the charge follows
+	 * the ball, so a mark that is never thrown costs nothing, and a player who marks a ball and changes
+	 * their mind has not paid for a throw they did not make.
+	 */
+	private markHeldBall(player: Player, kind: unknown): void {
+		// **The wire is not typed**, so what arrives is checked rather than trusted — the same treatment
+		// `WalkSpeedService.setSprinting` gives its own argument, and for its reason: a client can send
+		// anything, and this is the line that turns a string into a value the rest of the code can use.
+		if (!typeIs(kind, "string") || !isAbilityKind(kind)) {
+			warn(`[Super] ${player.Name}: mark refused — unknown ability (${tostring(kind)})`);
+			return;
+		}
+
+		// **A living body**, which is the same test the throw makes in effect: a player with no character
+		// has no hand to be holding anything in. Not `SPECTATING_ATTRIBUTE` and not a health poll — a
+		// spectator has a dead body or none, and the ball is a child of the body either way.
+		const character = player.Character;
+		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
+		if (!character || !humanoid || humanoid.Health <= 0) {
+			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no living body`);
+
+			return;
+		}
+
+		// **A dev is exempt from the round gate, and that exemption is the point of the shortcut.** The
+		// rule the key exists for is "a dev can exercise this from a standing start", and a standing start
+		// in Studio is usually an intermission with no round running at all.
+		const dev = this.dev.isDev(player);
+
+		// **Otherwise, only during a round.** Asked of `SuperService` rather than read from the status
+		// folder here, so the rule that grants a charge and the rule that lets one be spent stay one line
+		// in one file — a second copy could let a charge be earned in a round a ball could not be marked in.
+		if (!dev && !this.abilities.isRoundActive()) {
+			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no round is being played`);
+
+			return;
+		}
+
+		const ball = this.getHeldBall(character);
+
+		// **No ball in hand, and a dev: the arm goes on the player instead.**
+		//
+		// This is the whole of the shortcut. A dev in Studio has nothing to mark — no ball is handed out
+		// until a round opens, and `InfiniteBalls` is a flag they have to find first — so "mark the held
+		// ball" is a rule that cannot be exercised from a standing start. Arming the *player* moves the
+		// ability one step earlier: it waits on them, and the next ball that arrives in their hand takes it
+		// up. See `attachToHand`, which is where that happens, and {@link ARMED_ABILITY_ATTRIBUTE} for why
+		// the arm lives on the player rather than the body.
+		//
+		// **A non-dev is refused here exactly as before.** The arm is not a second way to mark a ball, it is
+		// the dev bypass's second shape — so the refusal below is unchanged, and the order of the two
+		// branches does not matter to anybody who cannot already use the shortcut.
+		if (!ball) {
+			if (!dev) {
+				if (DEBUG) print(`[Super] ${player.Name}: mark refused — no ball in hand`);
+
+				return;
+			}
+
+			player.SetAttribute(ARMED_ABILITY_ATTRIBUTE, kind);
+
+			if (DEBUG) {
+				print(`[Super] ${player.Name}: armed ${kind} — the next ball they take up will carry it`);
+			}
+
+			return;
+		}
+
+		// Already carrying something, which is a second press of the same key or two presses close
+		// together. Not a second ability, and the first mark is not overwritten either: the player has
+		// asked for the same thing twice and the answer to that is no.
+		if (abilityOn(ball) !== undefined) {
+			if (DEBUG) print(`[Super] ${player.Name}: mark refused — the held ball is already marked`);
+
+			return;
+		}
+
+		// **The charge, or the dev bypass.** A dev marks a ball holding no charge of their own, which is
+		// what makes this testable without six hits in a row first.
+		const charged = this.abilities.hasCharge(player);
+		if (!charged && !dev) {
+			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no charge`);
+
+			return;
+		}
+
+		ball.SetAttribute(BALL_ABILITY_ATTRIBUTE, kind);
+
+		if (DEBUG) {
+			print(
+				`[Super] ${player.Name}: ${ball.Name} marked as ${kind}` +
+					`${charged ? " — the charge is still held" : " — dev bypass, no charge held"}`,
+			);
+		}
 	}
 
 	/**

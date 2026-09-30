@@ -107,6 +107,27 @@ export const events = Net.Definitions.Create({
 	setSprinting: Net.Definitions.ClientToServerEvent<[active: boolean]>(),
 
 	/**
+	 * Client → server: this player wants the ball in their hand to carry this ability.
+	 *
+	 * **Carries the ability's id as a string**, not an `AbilityKind`: the wire is not typed, so the
+	 * server treats what arrives as an arbitrary string and checks it with `isAbilityKind` — the
+	 * arrangement `castVote` describes at length, and for its reason. A client may legitimately name an
+	 * ability nobody has written, and the refusal belongs where the string is turned into a value.
+	 *
+	 * **Nothing comes back, and that is the design rather than an omission.** Whether the mark happened
+	 * is written on the *ball* — a replicated instance in this player's own hand — so the attribute
+	 * appearing is the acknowledgement, and a reply event would be a second channel carrying a fact the
+	 * client already has. A refusal needs no message either: an unmarked ball a moment later is the
+	 * answer, and the server prints the reason where a reader can find it.
+	 *
+	 * **Nothing on the wire says whether the player may mark a ball.** The server holds the charge,
+	 * knows the dev flags, and is the only machine that can see the ball in the hand, so a client that
+	 * gated its own request would be a second copy of rules it cannot evaluate — the position
+	 * `setSprinting` above argues from the opposite direction.
+	 */
+	markHeldBall: Net.Definitions.ClientToServerEvent<[kind: string]>(),
+
+	/**
 	 * Server → client: the round that has just finished, as the result panel reads it.
 	 *
 	 * **The only entry in this file that travels the other way.** Every other declaration here is a

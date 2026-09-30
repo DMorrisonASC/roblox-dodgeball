@@ -380,6 +380,23 @@ export interface TrajectoryOptions {
 	 * Predicting with a bare ray always marks the impact too late.
 	 */
 	radius?: number;
+	/**
+	 * Parts the arc flies *through* rather than stopping at.
+	 *
+	 * **The mechanism behind Pierce, and the reason this is a predicate rather than a list.** The arc is
+	 * drawn before the ball exists — while the player is still aiming — so the caller has to be able to
+	 * answer "would this throw go through that?" about anything the sweep finds, including things it has
+	 * not found yet. A list of instances would have to be rebuilt every frame and would still be a
+	 * snapshot of a world that moves.
+	 *
+	 * When it answers `true` the part joins the raycast filter and the simulation carries on, so the same
+	 * body is never asked about twice on one arc — which is also what makes {@link Trajectory.hit} the
+	 * first thing that genuinely stops the ball, and {@link Trajectory.passedThrough} everything it went
+	 * through to get there.
+	 *
+	 * Omit it and nothing changes: every part stops the arc, exactly as before this option existed.
+	 */
+	passable?: (part: BasePart) => boolean;
 }
 
 /**
@@ -435,6 +452,14 @@ export class Trajectory {
 	public readonly normal: Vector3 | undefined;
 	/** What the arc hit, if anything. */
 	public readonly hit: BasePart | undefined;
+	/**
+	 * Every part the arc went through rather than stopping at, in the order it met them.
+	 *
+	 * Empty unless {@link TrajectoryOptions.passable} was given. This is what lets a caller answer "what
+	 * did it actually reach" when the thing that stopped it was the wall behind its targets — the case
+	 * the option exists for.
+	 */
+	public readonly passedThrough: ReadonlyArray<BasePart>;
 	/** Flight time to `landing`, in seconds. */
 	public readonly duration: number;
 
@@ -450,10 +475,20 @@ export class Trajectory {
 		const collide = options.collide ?? true;
 		const radius = options.radius ?? 0;
 
+		const passable = options.passable;
+
+		// **Copied rather than held, because parts are added to it as the arc goes through them.** The
+		// caller's list is theirs and is rebuilt fresh every frame; appending to it directly would grow it
+		// by a body per frame for as long as somebody held the mouse down.
+		const ignored: Instance[] = [...(options.ignore ?? [])];
+
 		const params = new RaycastParams();
 		params.FilterType = Enum.RaycastFilterType.Exclude;
-		params.FilterDescendantsInstances = options.ignore ?? [];
+		params.FilterDescendantsInstances = ignored;
 		params.IgnoreWater = true;
+
+		/** Everything the arc has gone through, in the order it met it. See {@link passedThrough}. */
+		const passed: BasePart[] = [];
 
 		const points: Vector3[] = [origin];
 		let position = origin;
@@ -482,15 +517,26 @@ export class Trajectory {
 			}
 
 			if (result) {
-				// `Distance` is how far the shape travelled, so this is where the
-				// projectile's centre stops. `Position` is the point on the surface
-				// that stopped it — a radius away from that centre.
-				points.push(position.add(offset.Unit.mul(result.Distance)));
-				hit = result.Instance;
-				contact = result.Position;
-				normal = result.Normal;
-				position = points[points.size() - 1];
-				break;
+				// **A part the throw goes through does not end the arc — it joins the filter and the simulation
+				// carries on.** Adding the part itself is what stops the same body being asked about on every
+				// step of the way through it; adding its *model* is what makes the whole body transparent
+				// rather than one limb at a time, which matters because the sweep cannot tell a torso from the
+				// arm held in front of it.
+				if (passable?.(result.Instance)) {
+					passed.push(result.Instance);
+					ignored.push(result.Instance.FindFirstAncestorWhichIsA("Model") ?? result.Instance);
+					params.FilterDescendantsInstances = ignored;
+				} else {
+					// `Distance` is how far the shape travelled, so this is where the
+					// projectile's centre stops. `Position` is the point on the surface
+					// that stopped it — a radius away from that centre.
+					points.push(position.add(offset.Unit.mul(result.Distance)));
+					hit = result.Instance;
+					contact = result.Position;
+					normal = result.Normal;
+					position = points[points.size() - 1];
+					break;
+				}
 			}
 
 			points.push(stepPosition);
@@ -504,6 +550,7 @@ export class Trajectory {
 		this.contact = contact;
 		this.normal = normal;
 		this.hit = hit;
+		this.passedThrough = passed;
 		this.duration = elapsed;
 	}
 }

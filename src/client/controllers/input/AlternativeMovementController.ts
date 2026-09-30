@@ -203,31 +203,38 @@ export class AlternativeMovementController implements OnStart {
 
 			// **Scaffolding: what this closure actually sees.** The two prints above say the key
 			// arrived and the action read it; neither says whether the render step got as far as its
-			// `Move` call, and every way of failing to get there is silent. One line per *change*
-			// rather than one per frame — these values are steady while a key is held, so a change is
-			// a press, a release or a diagonal — carrying:
+			// `Move` call, and every way of failing to get there is silent — so this line names the
+			// three facts that decide it:
 			//
 			// - `state` and its `typeOf`: whether the type test below passes at all. **Measured: it
 			//   passes.** The test is not the fault and can be trusted.
 			// - the humanoid, or `none`: whether the reference was ever filled in. **Measured: `none`
 			//   on the first frame of the session, a name by the next** — the seed really does always
 			//   miss, and the re-resolution below is what fills it in.
-			// - `last MoveDirection`, `readonly` and *"describes the direction the `Humanoid` is
-			//   walking in"*. **Measured, and it does not mean what it looked like it meant**: the
-			//   direction is echoed back within the same frame and reads `(0, 0, 0)` at the start of
-			//   the next one, so a zero here is *not* evidence that the write was thrown away. `Move`
-			//   accepts the call either way — see the other print below.
-			// - `PlatformStand` and the root's `Anchored`, because **a humanoid that cannot walk
-			//   accepts a direction and ignores it**, and both of those leave `WalkSpeed`, the state
-			//   and `MoveDirection` reading exactly as they do on a healthy character — which is the
-			//   shape of this failure and the reason these two are here. `PlatformStand` is not
-			//   hypothetical in this codebase: the dodge sets it for its whole duration, so a
-			//   character mid-dash is a character that will not answer `Move`.
+			// - `PlatformStand` and the root's `Anchored`, because **a humanoid that cannot walk accepts
+			//   a direction and ignores it**, and both of those leave `WalkSpeed`, the state and
+			//   `MoveDirection` reading exactly as they do on a healthy character — which is the shape of
+			//   this failure and the reason these two are here. `PlatformStand` is not hypothetical in
+			//   this codebase: the dodge sets it for its whole duration, so a character mid-dash is a
+			//   character that will not answer `Move`. **Measured: both `false` on a character that is
+			//   walking**, which is what rules the pair out as the reason a key does nothing.
+			//
+			// **`MoveDirection` used to be on this line and is not any more, deliberately.** It varies on
+			// every frame the character is walking, so it made the comparison below true every frame and
+			// turned a diagnostic into a heartbeat — thirty lines a second in the first log that captured
+			// a walk, which buries the lines it was meant to be read against. Rounding it would only
+			// soften that, because a character that is turning changes its rounded direction too. And it
+			// has already said everything it had to say: it is echoed by `Move` inside the same frame, so
+			// it was never the overwrite test it was written as, and the walking it demonstrated is
+			// visible in the character's own movement.
+			//
+			// **The check below is the point of the line and has to survive.** A line that prints every
+			// frame is not a report of anything, because a reader cannot pick out which of forty
+			// identical-looking lines was the one where something changed.
 			if (DEBUG) {
 				const line =
 					`state ${tostring(state)} (${typeOf(state)}) — humanoid ` +
 					`${humanoid === undefined ? "none" : (humanoid.Parent?.GetFullName() ?? "?")}, ` +
-					`last MoveDirection ${humanoid === undefined ? "n/a" : tostring(humanoid.MoveDirection)}, ` +
 					`PlatformStand ${humanoid === undefined ? "n/a" : tostring(humanoid.PlatformStand)}, ` +
 					`root anchored ${humanoid?.RootPart?.Anchored ?? "n/a"}`;
 

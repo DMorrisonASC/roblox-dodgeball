@@ -279,6 +279,51 @@ export const SPECTATING_ATTRIBUTE = "Spectating";
 export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
 
 /**
+ * Attribute on a **ball** naming the super ability it is carrying, or `""` for an ordinary ball.
+ *
+ * Written in two places and read in three, which is the whole of its life:
+ *
+ * - **Written** by `BallService.markHeldBall`, when the player holding the ball presses the ability
+ *   key — and by `BallService.attachToHand`, which *clears* it. That clear is the load-bearing half:
+ *   a ball arriving in a hand is an ordinary ball again, whether it arrived by catch, by pickup or by
+ *   a hand-out, so a mark cannot survive into a throw nobody asked for.
+ * - **Read** by `abilityOn`, which is the only reader that decides anything; by `BallService`'s drop
+ *   and throw paths, which are the two ways a marked ball can leave a hand and therefore the two that
+ *   decide whether the charge is forfeited or spent; and by the HUD, which says which ability is
+ *   loaded.
+ *
+ * **On the ball rather than on the player, because the ability belongs to the *throw* and not to the
+ * thrower.** A player can hold a charge and an ordinary ball at the same time, and the ball is the
+ * thing that flies. It is also what makes the forfeit rule survivable: a marked ball that is dropped
+ * is destroyed, so a mark cannot be carried over to the next ball by accident.
+ *
+ * `""` rather than removing the attribute, which is the convention `ThrowerId` already uses — an
+ * empty string is one case for a reader to handle, where an absent attribute is two.
+ */
+export const BALL_ABILITY_ATTRIBUTE = "BallAbility";
+
+/**
+ * Attribute on a **`Player`** saying an ability is armed and waiting for a ball to carry it, or `""`.
+ *
+ * **The dev shortcut's state, and the reason it is on the player rather than the character.** A dev in
+ * Studio has no ball to mark and often no round to mark one in, so the ability is armed *before* there
+ * is anything to put it on — and an arm on the character would be thrown away by the first death,
+ * which is precisely the moment somebody testing something is most likely to hit. On the player it
+ * survives a respawn, and it survives a round ending: it is cleared by the ball that takes it up and
+ * by nothing else. See `BallService.attachToHand` for where it moves onto a ball, and `markHeldBall`
+ * for where it is set.
+ *
+ * **One string, so one arm at a time, and that is deliberate rather than incidental.** Arming Pierce
+ * and then arming something else *replaces* it rather than queueing behind it: an arm means "this is
+ * what the next ball will be", and the next ball can only be one thing. A list would be a claim that
+ * a ball can carry several abilities at once, which nothing here implements.
+ *
+ * `""` for no arm, the convention {@link BALL_ABILITY_ATTRIBUTE} uses, so every reader has one empty
+ * case instead of two.
+ */
+export const ARMED_ABILITY_ATTRIBUTE = "ArmedAbility";
+
+/**
  * Attribute on a **`Player`** holding how many times they have hit somebody with a throw.
  *
  * Written by `StatsService` when a record is loaded and again after every hit, and read by the
@@ -307,6 +352,33 @@ export const STAT_OUTS = "StatOuts";
  * figure has to read as `0` rather than as a division by zero — one rule, stated once.
  */
 export const STAT_RATIO = "StatRatio";
+
+/**
+ * Attribute on a **`Player`** holding how many hits in a row they are currently on.
+ *
+ * Written by `SuperService` on every change to the streak and read by the super HUD, which is why it
+ * is on the **player**: a run of hits outlives the body it was earned in, and dying is one of the
+ * things that *ends* a streak rather than something that should take the readout with it.
+ *
+ * **Sent even though a client could count hits itself, because it could not count *these* hits.**
+ * Only a throw made during a round counts, a throw that lands on nobody breaks the run, and whether a
+ * throw landed on anybody at all is something only the ball's own contact knows — so a client-side
+ * count would be a second implementation of a rule, free to disagree with the one that grants the
+ * charge.
+ */
+export const SUPER_STREAK_ATTRIBUTE = "SuperStreak";
+
+/**
+ * Attribute on a **`Player`** saying they are holding a charge — one earned ability, not yet used.
+ *
+ * A boolean rather than a count, because only one is ever held: reaching the target while already
+ * holding one grants nothing further, and the rule that says so lives where the target is reached.
+ *
+ * Beside {@link SUPER_STREAK_ATTRIBUTE} and for its reasons, including the one about the pair: they
+ * are two halves of one readout, and a reader that saw a new streak beside a stale charge would be
+ * showing a state that never existed.
+ */
+export const SUPER_CHARGE_ATTRIBUTE = "SuperCharge";
 
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 1.5;

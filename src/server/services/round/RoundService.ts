@@ -18,6 +18,7 @@ import { NPC_TAG } from "../../npc/Behavior";
 import { MapService } from "../MapService";
 import { BallService } from "../ball/BallService";
 import { StatsService } from "../stats/StatsService";
+import { SuperService } from "../super/SuperService";
 import { GameMode, RoundView } from "./modes/GameMode";
 import { DEFAULT_MODE, modeFor } from "./modes/registry";
 import { roundStatusFolder } from "./roundStatus";
@@ -154,6 +155,7 @@ export class RoundService implements OnStart {
         private readonly votes: VoteService,
         private readonly maps: MapService,
         private readonly stats: StatsService,
+        private readonly abilities: SuperService,
     ) {}
 
     onStart() {
@@ -596,6 +598,17 @@ export class RoundService implements OnStart {
             player.SetAttribute(SPECTATING_ATTRIBUTE, true);
             return;
         }
+
+        // **A death breaks the run, and it sits here rather than in `eliminate` below.** Those are
+        // different events: `eliminate` is reached only when the *mode* decides the player is out,
+        // while a mode that converts its dead instead — Dodge and Seek — respawns them and eliminates
+        // nobody. Both are deaths, and a run of hits that ended in one has ended either way, so the
+        // notification goes above the mode's decision rather than inside one of its two answers.
+        //
+        // Below both guards rather than at the top of the method, so that "a death" means what this
+        // method already means by it: somebody who was still in the round. A spectator dying again is
+        // not a second death, and their run is already nought.
+        this.abilities.noteDeath(player);
 
         const decision = this.mode.onDeath({ player }, this);
 
@@ -1251,6 +1264,16 @@ export class RoundService implements OnStart {
                 // starts" — written for everybody in the round rather than only for those who
                 // were marked, because a mid-round joiner is marked too and is now playing.
                 player.SetAttribute(SPECTATING_ATTRIBUTE, false);
+
+                // **A run of hits belongs to a round, and this is where a round begins.** Beside the
+                // score board and the two boards cleared above, and for their reason: a streak is a fact
+                // about the round that has just ended, so it is cleared where the next one opens rather
+                // than at the intermission — which is what lets the readout still show it for as long as
+                // the result panel is up.
+                //
+                // The *charge* is deliberately not touched. It is held until it is used, so a player who
+                // earned one and never spent it carries it into this round.
+                this.abilities.resetForRound(player);
             }
             print(`Round started — ${GAME_MODE_NAMES[this.mode.id]}`);
             this.teleportTeamsToArena();

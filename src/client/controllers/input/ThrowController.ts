@@ -11,6 +11,7 @@ import { AimGuide } from "shared/AimGuide";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
+import { abilityOn } from "shared/ability";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
 import { LaunchPlan, Trajectory, ThrowArc } from "shared/Trajectory";
 import { aiming, predictedTarget } from "../../aiming";
@@ -81,6 +82,27 @@ const DEBUG = true;
  * the points are furthest apart.
  */
 const AIM_SMOOTHING_SECONDS = 0.03;
+
+/**
+ * Whether a planned throw should fly *through* `part` rather than stopping at it.
+ *
+ * **The client's half of the server's Pierce rule, and deliberately the same rule: every body.** A part
+ * counts if the model above it has a `Humanoid` in it, which is what "a character or a rig" means from
+ * out here — and it is the set `BallService.pierceBodies` enumerates on the other side (every player's
+ * character, every rig wearing the `NPC` tag, both of which have a humanoid inside them). Scenery
+ * assembled as a model has no humanoid, so a tree still stops the drawn arc exactly as it stops the
+ * ball.
+ *
+ * The server builds its set by walking rosters and tags, which this side cannot do for rigs without
+ * trusting its own copy of the tag; the ancestor test asks the same question about the part the sweep
+ * actually found, so there is nothing here to disagree about — and nothing it can get wrong about the
+ * case that matters, which is the bodies a player is aiming at.
+ */
+function passesThroughBodies(part: BasePart): boolean {
+	const model = part.FindFirstAncestorWhichIsA("Model");
+
+	return model !== undefined && model.FindFirstChildWhichIsA("Humanoid") !== undefined;
+}
 
 @Controller()
 export class ThrowController implements OnStart {
@@ -240,6 +262,15 @@ export class ThrowController implements OnStart {
 		// The radius matters twice over: the guide sweeps a sphere the size of the
 		// ball, and the solve above aimed the ball's *centre* a radius out so its
 		// *surface* is what arrives on the mark.
+
+		// **Whether this throw is a Pierce ball, which changes what the arc is allowed to stop at.**
+		//
+		// Read from the ball in the hand rather than from anything the server said, because the guide is
+		// drawn before the throw exists: the attribute is already on the ball this client is holding, so
+		// this is the same fact the server will act on rather than a copy of it that could disagree.
+		const held = character.FindFirstChild(BALL_NAME);
+		const pierce = abilityOn(held) === "Pierce";
+
 		const arc = new Trajectory(plan.origin, plan.velocity, {
 			ignore: [character, this.guide.instance, ...this.looseBalls()],
 			radius: BALL_SIZE / 2,
@@ -247,6 +278,10 @@ export class ThrowController implements OnStart {
 			// as well as applied. Same vector as the server's, taken from the same
 			// plan, which is the only reason the drawn path can be trusted.
 			acceleration: plan.acceleration,
+			// **And the one line that makes the preview honest for Pierce.** Omitted for every other throw,
+			// which is what keeps a normal ball's arc exactly what it was — see {@link passesThroughBodies}
+			// for what the predicate answers, and why it is the server's rule rather than a second one.
+			passable: pierce ? passesThroughBodies : undefined,
 		});
 
 		// The jitter report is the noisiest thing in the game: it is built to fire whenever the drawn
@@ -284,14 +319,33 @@ export class ThrowController implements OnStart {
 	 * arc sweeps through held balls rather than ignoring them, so a ball in front of a body is a hit
 	 * on the body, which is also what the throw would do.
 	 *
-	 * A hit that is not a body is not a target, and that is the whole rule: a tree, a wall, the
-	 * floor, the sky. This is the case that used to light a model through a trunk.
+	 * **The first body the arc meets, which is not always the thing it stops on.** For an ordinary ball
+	 * those are the same part, so this reads exactly as it always did. A Pierce ball goes *through* the
+	 * bodies it is aimed at and stops on the wall or the floor behind them, so `arc.hit` is scenery and
+	 * the honest answer is the first body it went through — which is also the one the throw will reach
+	 * first. Without this the glow went dark on precisely the shots the ability exists for: the last log
+	 * showed the arc stopping on a rig and the guide drawn as if the ball would come off them.
 	 */
 	private hitModel(arc: Trajectory): Model | undefined {
-		const hit = arc.hit;
-		if (!hit) return undefined;
+		const stopped = this.bodyModel(arc.hit);
+		if (stopped) return stopped;
 
-		const model = hit.FindFirstAncestorWhichIsA("Model");
+		return this.bodyModel(arc.passedThrough[0]);
+	}
+
+	/**
+	 * The body a part belongs to, or nothing.
+	 *
+	 * Separated out so the two callers above cannot drift, because between them they *are* the rule: the
+	 * nearest `Model` above the part says "this is a body rather than scenery", and the `Humanoid` inside
+	 * it says the body is a character rather than a prop that happens to be assembled as a model. A hit
+	 * that fails either half is not a target — a tree, a wall, the floor, the sky — which is the case
+	 * that used to light a model through a trunk.
+	 */
+	private bodyModel(part: BasePart | undefined): Model | undefined {
+		if (!part) return undefined;
+
+		const model = part.FindFirstAncestorWhichIsA("Model");
 		if (!model || !model.FindFirstChildWhichIsA("Humanoid")) return undefined;
 
 		return model;

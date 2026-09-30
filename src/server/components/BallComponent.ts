@@ -1,6 +1,8 @@
 import { OnStart } from "@flamework/core";
 import { BaseComponent, Component } from "@flamework/components";
 import { Players, Workspace } from "@rbxts/services";
+import { abilityOn } from "shared/ability";
+import { CollisionIgnore } from "shared/CollisionIgnore";
 import { BALL_NAME, THROWER_TOKEN } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
@@ -11,6 +13,7 @@ import { emitSound } from "../services/ball/SoundEmitter";
 import { CatchService } from "../services/actions/CatchService";
 import { RoundService } from "../services/round/RoundService";
 import { StatsService } from "../services/stats/StatsService";
+import { SuperService } from "../services/super/SuperService";
 
 /**
  * The tag every dodgeball carries — **the same string as this component's own `tag: "Ball"`, which
@@ -163,6 +166,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		private readonly balls: BallService,
 		private readonly stats: StatsService,
 		private readonly rounds: RoundService,
+		private readonly abilities: SuperService,
 	) {
 		super();
 	}
@@ -255,8 +259,10 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 *
 	 * **A body does not decide anything — it is tagged, and the world ends the throw.** A hit's
 	 * fate is not settled at the hit: real dodgeball lets a catch save the hit player, so a body
-	 * the ball touches is *tagged* and nothing happens to it yet. The ball bounces off and keeps
-	 * flying, still armed, still carrying every tag; it is the next contact that is not a body —
+	 * the ball touches is *tagged* and nothing happens to it yet. The ball goes on flying, still
+	 * armed, still carrying every tag — off the body it struck, unless the ball is a **Pierce** ball,
+	 * which goes through it and on to the next one. See the tag branch below for what that difference
+	 * takes, and why it is more than declining a bounce. It is the next contact that is not a body —
 	 * the floor, a wall, a prop — that ends the throw and resolves every tag into a death. See
 	 * {@link resolveTags}. And a catch before that moment releases every tag and never resolves a
 	 * one: see {@link resolveCatch}.
@@ -481,11 +487,10 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		this.playImpactSound(struck, isHead ? SOUND_CONFIG.HEAD_HIT : SOUND_CONFIG.BODY_HIT);
 
 		// **Tagged, not killed.** The ball has hit this body, and that is the whole of what happens
-		// now: the body goes onto the tag list, the ball bounces off it, and it keeps flying. No
-		// death, no point, no score — all of those wait for the ball to die, which is the moment a
-		// catch can no longer save them. Tagged before the bounce, so that every other part of this
-		// same arrival — and every later contact with this body — is a body the ball has already
-		// tagged.
+		// now: the body goes onto the tag list, and the ball carries on. No death, no point, no score —
+		// all of those wait for the ball to die, which is the moment a catch can no longer save them.
+		// Tagged before it leaves, so that every other part of this same arrival — and every later
+		// contact with this body — is a body the ball has already tagged.
 		this.hitModels.set(character, struck);
 
 		// **The other half of `landHit`'s line, and the half that was missing.** `landHit` reports a
@@ -496,7 +501,58 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// two lines are meant to be read against each other.
 		print(`${character.Name} was tagged by ${this.instance.Name} on ${struck.Name}`);
 
-		this.bounceOff(struck);
+		// **An ordinary ball comes off the body it hit; a Pierce ball goes through it.**
+		//
+		// **Declining `bounceOff` is not enough on its own, and that is the whole physics of this
+		// ability.** A thrown ball is `CanCollide = true` and sits in the `Default` collision group
+		// (`BallService.throwBall` sets the flag; nothing ever moves a ball out of the group), every
+		// character is put into `Character`, and `Character` against `Default` is left at the engine's
+		// default, which is *collides*. So the engine is deflecting the ball off this body whatever this
+		// file does with velocities: `bounceOff` is an addition **on top of** a live contact rather than
+		// the contact itself. `CollisionIgnore` is what takes the contact away — one
+		// `NoCollisionConstraint` per part of this body, parented to the ball, so they die with the ball
+		// *instance* and nothing has to be undone here. That file's own doc describes the job as exactly
+		// this: solid against the world and everyone else, passing through the thing it was aimed at.
+		//
+		// **The lifetime is the ball and not the throw, and that is a known rough edge rather than an
+		// oversight — the prompt asked for "the rest of the flight" and this gives longer.** A ball that
+		// lands is not destroyed: it lies there until it expires or somebody collects it, so these
+		// constraints outlast the flight that needed them, and `attachToHand` does not remove them (it
+		// clears the *ability* on the ball, which is a different thing). Pick a spent Pierce ball up and
+		// throw it again and it is an ordinary ball that is still intangible to the one player it went
+		// through — and whether that also means it never *tags* them again depends on whether a
+		// `NoCollisionConstraint` suppresses `Touched` as well as the contact, which is engine behaviour
+		// this file cannot read out of the typings. The fix, if this matters, is to keep the handles
+		// `CollisionIgnore.between` returns and destroy them where `hitModels` is cleared — one array and
+		// one line — rather than to change anything about the branch below.
+		//
+		// **Against this body, and this is a backstop rather than the rule.** The set-up that matters
+		// happened at the throw, against every body in the world — see `BallService.throwBall` — so this
+		// line is redundant and is kept only while that arrangement is being verified.
+		//
+		// **What it is *not* is where the teammate rule lives.** With every body constrained at the throw,
+		// a teammate is a body a Pierce ball no longer collides with either — that is the rule now:
+		// nothing alive stops a Pierce ball, so a teammate who wanders into the line cannot cancel
+		// somebody's ability. A teammate is still not *hurt* by one: the friendly-fire veto returned above
+		// this line, so there is no tag and no damage. That veto is about what a contact is *allowed to
+		// do*, and this is about the ball's path — two rules that used to look like one.
+		//
+		// Not against the world, here or there: the wall still has to stop the ball, and the floor is what
+		// ends the throw and resolves every tag.
+		//
+		// **What this deliberately does not do is fix the aim guide, and the gap is named here so that
+		// nobody has to rediscover it.** `ThrowController` draws its arc from a `Trajectory`, which
+		// breaks on the first thing its raycast finds and does not ignore other characters — so for a
+		// Pierce ball the preview stops at the first body the real ball will pass straight through, and
+		// the *target highlight* follows the same stopped arc. The preview lies about Pierce, and it is
+		// known to. That fix belongs in `Trajectory` rather than here, because the guide is a
+		// client-side simulation and this is the server's contact, and it is deferred to its own pass
+		// rather than forgotten. **Do not "correct" this branch to make the picture agree with itself.**
+		if (abilityOn(this.instance) === "Pierce") {
+			CollisionIgnore.between(this.instance, character);
+		} else {
+			this.bounceOff(struck);
+		}
 	}
 
 	/**
@@ -533,13 +589,34 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		this.instance.SetAttribute("StatsRecorded", true);
 
-		// Nobody was tagged, so this throw has no entry to add — see the comment above.
-		if (!taggedAny) return;
+		// **A throw that tagged nobody is a miss, and this branch is the only place that knows it.** The
+		// ball has died on the world carrying no tags, which is exactly the event a run of hits is broken
+		// by — so the notification sits above the return rather than beside the hit below it, because
+		// nothing after the return runs. Reported by *token* and not resolved to a player here: the token
+		// is all the ball carries, and whether it names a person is `SuperService`'s question in the same
+		// way it is `StatsService`'s.
+		//
+		// **Nothing else in this method's stop is a miss.** A caught throw never reaches here at all —
+		// the catch branch returns long before this — so a throw that was caught is neither a hit nor a
+		// miss, and a run survives it. That is the same reading the hit side gives it: a catch saves
+		// everybody the ball had tagged, and it saves the thrower's run too.
+		if (!taggedAny) {
+			this.abilities.noteMiss(this.instance.GetAttribute("ThrowerId"));
+
+			return;
+		}
 
 		const throwerToken = this.instance.GetAttribute("ThrowerId");
 		if (!typeIs(throwerToken, "string") || throwerToken === "") return;
 
 		this.stats.recordHit(throwerToken);
+
+		// **The same fact, told to the thing that counts runs.** A second *reader* of one hit rather than
+		// a second hit-detection path: the detection is the tag list, both notifications are driven by it,
+		// and neither owns it. `StatsService` keeps a career total and `SuperService` keeps a run in a row
+		// — different questions about one event, which is why they are handed the same token rather than
+		// one being worked out from the other.
+		this.abilities.noteHit(throwerToken);
 	}
 
 	/**
@@ -639,13 +716,16 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	/**
 	 * Resolves a catch: every tag released, and the thrower punished if the catcher is their enemy.
 	 *
-	 * **Three jobs, in this order, and the first is the absence of a death.** A catch saves every
+	 * **Four jobs, in this order, and the first is the absence of a death.** A catch saves every
 	 * body the ball tagged — so the tag list is emptied here rather than resolved, and that
 	 * emptying is the whole of the save; nothing fires, and a log of the throw would otherwise show
 	 * no trace of it. Then the thrower is out if the catcher is on the other side, and the catcher's
 	 * side scores if the mode keeps score — both decided by the round, which owns sides and score,
 	 * in one call: see `RoundService.resolveCaughtThrower`. A friendly catch does neither, and a
-	 * catch of a rig's throw does neither, for the reasons that method gives.
+	 * catch of a rig's throw does neither, for the reasons that method gives. **And last, the
+	 * thrower's run of hits ends** — a caught throw is a throw that did not land, which is what a
+	 * streak counts, and this is the only place that fact is known. See the call below for why it is
+	 * not the redundant line it looks like.
 	 *
 	 * **A catch that cannot be made never reaches here.** `handleTouch` only calls this after
 	 * `catchBall` has taken the ball into the catcher's hand, so the save below is a fact and not a
@@ -668,10 +748,69 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		const token = typeIs(throwerId, "string") ? throwerId : "";
 		if (token !== "") this.rounds.resolveCaughtThrower(token, catcher);
+
+		// **The thrower's run ends here — required in some modes and redundant in others, which is why
+		// it needs saying rather than deleting.**
+		//
+		// A caught throw is a throw that landed on nobody, and that is what a streak counts, so the run
+		// goes back to zero. Which mode is being played decides whether anything else would have done it:
+		// Team Elimination and Dodge and Seek kill the thrower on a caught throw, so `noteDeath` fires and
+		// a streak that is about to be zeroed is zeroed twice; **Score Rush does not** — the catch scores
+		// and the thrower respawns — so this line is the only thing that resets their run at all. Deleting
+		// it as redundant would quietly turn a caught throw into a streak-*preserving* event in the one
+		// mode nobody re-tested.
+		//
+		// The double call is harmless rather than merely tolerable: `SuperService.resetStreak` returns
+		// before publishing when the streak is already zero, so the second call writes nothing at all and
+		// the HUD never sees the value move from one call to the next. Both calls also resolve the same
+		// token the same way, so they cannot disagree about whose run ended.
+		//
+		// **The thrower's token and not the catcher's** — the catcher is the one who succeeded, and this is
+		// charged to the one who did not. It also sits outside the round's own judgement of the catch: a
+		// friendly catch returns early inside `resolveCaughtThrower` and punishes nobody, but a ball caught
+		// by a teammate still never landed on an enemy, so the run ends either way.
+		if (token !== "") this.abilities.noteMiss(token);
 	}
 
-	/** Whether this touch is a catch: a catchable part, on a character whose window is open. */
+	/**
+	 * Whether this touch is a catch: a catchable part, on a character whose window is open.
+	 *
+	 * **A Pierce ball cannot be caught, and refusing here — before the weld — is the whole of what that
+	 * costs.**
+	 *
+	 * The catch branch is `if (canCatch) { …; return; }`, so answering `false` falls through to the
+	 * friendly-fire veto and then to the tag branch: **the catcher is tagged like any other body and
+	 * dies when the ball lands.** A Pierce ball is not *harmless* to somebody who tries to catch it; it
+	 * is unblockable by them. That is the intent — the answer to a super is to move, not to stand there
+	 * with your hands out.
+	 *
+	 * **The refusal has to sit above the weld rather than after it**, and that is not just tidiness:
+	 * `catchBall` runs `attachToHand`, which *clears* the ball's ability so that a ball arriving in a
+	 * hand is an ordinary ball again. A catch allowed as far as the hand would therefore erase the very
+	 * marker that made it illegal, and the ball would leave the catcher's hand a normal ball — the
+	 * ability would have been cancelled by the thing it was supposed to defeat.
+	 *
+	 * **What is not done on the refusing path is `catches.consume(character)`**, which the catch branch
+	 * would have done. That is deliberate: a catcher's window is an attempt, and an attempt that was
+	 * never allowed to happen should not be spent — so a Pierce ball does not also leave them unable to
+	 * catch the next ordinary one.
+	 */
 	private canCatch(otherPart: BasePart, character: Model): boolean {
+		// **Asked before the part test, not after it**, because this is an answer about the whole
+		// contact rather than about one part of it: a Pierce ball is un-catchable by any part, so there
+		// is nothing to learn from whether the part it happened to touch first was a catchable one.
+		//
+		// **Said out loud, because the refusal is otherwise invisible.** A catcher who fails to catch
+		// produces the same log as one who never tried, and the two are completely different faults, so
+		// this goes through the same ungated helper the friendly-fire veto uses. Its own doc explains
+		// why it is not behind a flag: a diagnostic that has to be switched on cannot explain a log that
+		// was captured without it.
+		if (abilityOn(this.instance) === "Pierce") {
+			this.noteDecidedNothing(otherPart, "a Pierce ball — this body cannot catch it");
+
+			return false;
+		}
+
 		if (!CATCH_CONFIG.CATCHABLE_PARTS.has(otherPart.Name)) return false;
 
 		// Only a ball in flight can be caught. One welded into somebody's hand is

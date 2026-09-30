@@ -46,7 +46,10 @@
 		"roblox-dodgeball:out/client/controllers/hud/RoundResultController@RoundResultController": "client/controllers/hud/RoundResultController@RoundResultController",
 		"roblox-dodgeball:out/client/controllers/hud/LoadingScreenController@LoadingScreenController": "client/controllers/hud/LoadingScreenController@LoadingScreenController",
 		"roblox-dodgeball:out/client/controllers/audio/MusicController@MusicController": "client/controllers/audio/MusicController@MusicController",
-		"roblox-dodgeball:out/client/controllers/input/AlternativeMovementController@AlternativeMovementController": "client/controllers/input/AlternativeMovementController@AlternativeMovementController"
+		"roblox-dodgeball:out/client/controllers/input/AlternativeMovementController@AlternativeMovementController": "client/controllers/input/AlternativeMovementController@AlternativeMovementController",
+		"roblox-dodgeball:out/server/services/super/SuperService@SuperService": "server/services/super/SuperService@SuperService",
+		"roblox-dodgeball:out/client/controllers/input/SuperAbility@SuperAbility": "client/controllers/input/SuperAbility@SuperAbility",
+		"roblox-dodgeball:out/client/controllers/hud/SuperHudController@SuperHudController": "client/controllers/hud/SuperHudController@SuperHudController"
 	},
 	"metadata": {}
 }
