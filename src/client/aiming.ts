@@ -34,7 +34,8 @@ const scope = Fusion.scoped();
 export const aiming = Fusion.Value(scope, false);
 
 /**
- * The model the *drawn arc* would hit, or `undefined` if the throw would hit nothing that counts.
+ * The models the *drawn arc* would reach, in the order it meets them. Empty if it would reach no body
+ * at all.
  *
  * **Written from the arc rather than from the crosshair, which is the whole reason it exists.** The
  * crosshair ray and the throw are two different lines: the ray is straight, from the camera, and the
@@ -43,8 +44,18 @@ export const aiming = Fusion.Value(scope, false);
  * leave a model glowing while the ball was certain to hit the tree. See `AimTargetController` for
  * the full account, and `ThrowController.updateGuide` for where this is computed.
  *
- * `Model | undefined` rather than a boolean, because the reader has to *light* the answer rather
- * than branch on it — a second value naming the model would be the same fact twice. `undefined` is
- * not "not known yet"; it is "nothing would be hit", which is the ordinary case.
+ * **A list rather than one model, because a Pierce ball does not stop at the first body.** Every
+ * other throw stops on the one body it reaches, so this holds exactly one entry — or none — and reads
+ * as it always did. A Pierce throw goes *through* the bodies in its line and stops on the world
+ * behind them, so "what is this aim on" has more than one true answer, and lighting only the first
+ * one was the glow describing a throw that stops where the ball will not.
+ *
+ * **Rewritten every frame, so it is compared by contents and never by reference.** Two frames with
+ * the same bodies in the same order hand over two different tables; a reader that tested `===` would
+ * conclude something had changed every frame and redo its work forever. `AimTargetController` is the
+ * only reader, and it does exactly that comparison.
+ *
+ * Empty rather than absent for "nothing would be reached": that is the ordinary case — a throw at a
+ * wall, at the floor or at the sky — and not a state of not knowing yet.
  */
-export const predictedTarget = Fusion.Value<Model | undefined>(scope, undefined);
+export const predictedTargets = Fusion.Value<Array<Model>>(scope, []);

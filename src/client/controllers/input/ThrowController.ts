@@ -14,7 +14,7 @@ import { REMOTES } from "shared/remotes";
 import { abilityOn } from "shared/ability";
 import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
 import { LaunchPlan, Trajectory, ThrowArc } from "shared/Trajectory";
-import { aiming, predictedTarget } from "../../aiming";
+import { aiming, predictedTargets } from "../../aiming";
 
 const ACTION_NAME = "ThrowDodgeball";
 const ARC_ACTION_NAME = "SelectThrowArc";
@@ -84,24 +84,49 @@ const DEBUG = true;
 const AIM_SMOOTHING_SECONDS = 0.03;
 
 /**
+ * The body a part belongs to, or nothing.
+ *
+ * **The whole of what counts as a body, and the reason it is one function.** The nearest `Model` above
+ * the part says "this is a body rather than scenery"; the `Humanoid` inside it says the body is a
+ * character rather than a prop that happens to be assembled as a model. A part that fails either half
+ * is not a body — a tree, a wall, the floor, the sky — which is the case that used to light a model
+ * through a trunk.
+ *
+ * **Two questions are asked of this one test, and they must not come apart**: the sweep asks whether to
+ * fly *through* a part (see {@link passesThroughBodies}), and the glow asks which body to light. Being
+ * the same call, a part the arc refuses to stop on is always a part whose body the glow is willing to
+ * light — the guide cannot promise something the glow disagrees with, which two expressions of the test
+ * would give it two chances to do.
+ */
+function bodyOf(part: BasePart | undefined): Model | undefined {
+	if (!part) return undefined;
+
+	const model = part.FindFirstAncestorWhichIsA("Model");
+	if (!model || !model.FindFirstChildWhichIsA("Humanoid")) return undefined;
+
+	return model;
+}
+
+/**
  * Whether a planned throw should fly *through* `part` rather than stopping at it.
  *
  * **The client's half of the server's Pierce rule, and deliberately the same rule: every body.** A part
- * counts if the model above it has a `Humanoid` in it, which is what "a character or a rig" means from
- * out here — and it is the set `BallService.pierceBodies` enumerates on the other side (every player's
- * character, every rig wearing the `NPC` tag, both of which have a humanoid inside them). Scenery
- * assembled as a model has no humanoid, so a tree still stops the drawn arc exactly as it stops the
- * ball.
+ * passes if it belongs to a body at all — see {@link bodyOf}, which is that test and the only place it
+ * is written — and that is the set `BallService.pierceBodies` enumerates on the other side (every
+ * player's character, every rig wearing the `NPC` tag, both of which have a humanoid inside them).
+ * Scenery assembled as a model has no humanoid, so a tree still stops the drawn arc exactly as it stops
+ * the ball.
  *
  * The server builds its set by walking rosters and tags, which this side cannot do for rigs without
  * trusting its own copy of the tag; the ancestor test asks the same question about the part the sweep
  * actually found, so there is nothing here to disagree about — and nothing it can get wrong about the
  * case that matters, which is the bodies a player is aiming at.
+ *
+ * A wrapper rather than the test itself, because this is the shape `Trajectory` wants: a predicate it
+ * can be handed. A throw that is not a Pierce one passes `undefined` instead, so the option is free.
  */
 function passesThroughBodies(part: BasePart): boolean {
-	const model = part.FindFirstAncestorWhichIsA("Model");
-
-	return model !== undefined && model.FindFirstChildWhichIsA("Humanoid") !== undefined;
+	return bodyOf(part) !== undefined;
 }
 
 @Controller()
@@ -238,7 +263,7 @@ export class ThrowController implements OnStart {
 			// Nothing is being aimed, so nothing is predicted. Cleared rather than left alone for the
 			// same reason the guide is hidden: the glow is driven by the flag those two share, and a
 			// publish that stopped would leave the last answer standing for whoever read it next.
-			predictedTarget.set(undefined);
+			predictedTargets.set([]);
 			return;
 		}
 
@@ -289,66 +314,65 @@ export class ThrowController implements OnStart {
 		// `shared/config/debug.config.ts`.
 		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) this.reportJitter(target, getThrowMuzzle(character), arc);
 
-		// **What the arc would hit, published for the glow.** The glow answers "what is my aim on",
-		// and the honest answer is where this throw lands rather than what is under the crosshair —
+		// **What the arc would reach, published for the glow.** The glow answers "what is my aim on",
+		// and the honest answer is where this throw goes rather than what is under the crosshair —
 		// those are two different lines and only one of them is the throw. See `AimTargetController`
 		// for what the difference looked like from the player's seat.
 		//
-		// `arc.hit` is that answer, already computed here every frame: the first thing the ball's own
-		// swept sphere meets, with the thrower, the guide and the loose balls excluded exactly as they
-		// are for the drawn path. Computed once and used twice rather than worked out twice, which is
-		// the same reason this file publishes the aiming flag.
-		const arcTarget = this.hitModel(arc);
-		predictedTarget.set(arcTarget);
-		this.reportArc(arc, arcTarget);
+		// **Every body it would reach and not only the one it stops on, because Pierce has more than one
+		// answer to that question.** The arc is this file's answer either way and is already computed
+		// here every frame — see `hitTargets`, which walks the body it stops on *and* the bodies it
+		// passes through — with the thrower, the guide and the loose balls excluded exactly as they are
+		// for the drawn path. Computed once and used twice rather than worked out twice, which is the
+		// same reason this file publishes the aiming flag.
+		const arcTargets = this.hitTargets(arc);
+		predictedTargets.set(arcTargets);
+		this.reportArc(arc, arcTargets);
 
 		this.guide.update(arc.points, { position: arc.contact ?? arc.landing, normal: arc.normal });
 	}
 
 	/**
-	 * The model a planned arc would hit, or nothing.
+	 * Every body a planned arc would reach, in the order it meets them. Empty if it reaches none.
 	 *
-	 * **The rule for what counts as a target is unchanged, and only the line that finds it has.** The
-	 * nearest `Model` above the hit part, with a `Humanoid` inside it: the first half says "this is a
-	 * body rather than scenery", the second says the body is a character rather than a prop that
-	 * happens to be assembled as a model. Both halves were the rule when the glow cast its own
-	 * crosshair ray, and neither of them was why that was wrong.
+	 * **The rule for what counts as a body is unchanged, and only the number of them has.** It is
+	 * `bodyOf` — this module's one statement of it, shared with the sweep — and not a second copy of it
+	 * written here.
 	 *
 	 * `FindFirstAncestorWhichIsA` starts at the *parent*, so a ball welded into somebody's hand still
 	 * resolves to that model and lights them — it is their model, hanging where their body is. The
 	 * arc sweeps through held balls rather than ignoring them, so a ball in front of a body is a hit
 	 * on the body, which is also what the throw would do.
 	 *
-	 * **The first body the arc meets, which is not always the thing it stops on.** For an ordinary ball
-	 * those are the same part, so this reads exactly as it always did. A Pierce ball goes *through* the
-	 * bodies it is aimed at and stops on the wall or the floor behind them, so `arc.hit` is scenery and
-	 * the honest answer is the first body it went through — which is also the one the throw will reach
-	 * first. Without this the glow went dark on precisely the shots the ability exists for: the last log
-	 * showed the arc stopping on a rig and the guide drawn as if the ball would come off them.
-	 */
-	private hitModel(arc: Trajectory): Model | undefined {
-		const stopped = this.bodyModel(arc.hit);
-		if (stopped) return stopped;
-
-		return this.bodyModel(arc.passedThrough[0]);
-	}
-
-	/**
-	 * The body a part belongs to, or nothing.
+	 * **One body for an ordinary throw, and several for a Pierce one.** An ordinary arc ends on the
+	 * first body it meets, so this answers with one entry and the glow reads exactly as it always did.
+	 * A Pierce arc goes *through* the bodies in its line — that is the ability — and ends on the world
+	 * behind them, so `arc.hit` is scenery and the bodies are `arc.passedThrough`. Both are walked,
+	 * because the glow's job is to describe where the throw goes rather than to name where it stops:
+	 * one body was the glow going dark on the bodies beyond the first, which is exactly the shot the
+	 * ability is picked for.
 	 *
-	 * Separated out so the two callers above cannot drift, because between them they *are* the rule: the
-	 * nearest `Model` above the part says "this is a body rather than scenery", and the `Humanoid` inside
-	 * it says the body is a character rather than a prop that happens to be assembled as a model. A hit
-	 * that fails either half is not a target — a tree, a wall, the floor, the sky — which is the case
-	 * that used to light a model through a trunk.
+	 * **The stopping part is walked first and the two lists cannot overlap**, so the order here is the
+	 * order of flight. Repeats are dropped by identity, which covers the sweep meeting two parts of one
+	 * body — a torso and the arm held in front of it — on its way through.
 	 */
-	private bodyModel(part: BasePart | undefined): Model | undefined {
-		if (!part) return undefined;
+	private hitTargets(arc: Trajectory): Array<Model> {
+		const targets: Array<Model> = [];
+		const seen = new Set<Model>();
 
-		const model = part.FindFirstAncestorWhichIsA("Model");
-		if (!model || !model.FindFirstChildWhichIsA("Humanoid")) return undefined;
+		const consider = (part: BasePart | undefined) => {
+			const model = bodyOf(part);
+			if (!model || seen.has(model)) return;
 
-		return model;
+			seen.add(model);
+			targets.push(model);
+		};
+
+		consider(arc.hit);
+
+		for (const part of arc.passedThrough) consider(part);
+
+		return targets;
 	}
 
 	/**
@@ -364,16 +388,22 @@ export class ThrowController implements OnStart {
 	 * report on it. Read it against the drawn path — if the marker is on a tree and this says the tree,
 	 * the whole preview agrees and only the throw is in question.
 	 *
+	 * **The right-hand side is a list now, and usually holds one name.** An ordinary throw stops on the
+	 * body it reaches, so this prints exactly what it always did; a Pierce throw prints every body in
+	 * its line, in order, which is the shape to read the glow against when the question is "why is that
+	 * one lit as well".
+	 *
 	 * Diagnostic scaffolding, in the same spirit as the `[Aim] ray:` line it replaces. Delete once the
 	 * glow is trusted.
 	 */
-	private reportArc(arc: Trajectory, target: Model | undefined): void {
+	private reportArc(arc: Trajectory, targets: Array<Model>): void {
 		const contact = arc.contact;
 		const hit =
 			arc.hit && contact
 				? `${arc.hit.GetFullName()} at ${math.floor(contact.sub(arc.origin).Magnitude)} studs`
 				: "nil";
-		const report = `${hit} -> ${target ? target.Name : "nil"}`;
+		const reached = targets.size() === 0 ? "nil" : targets.map((model) => model.Name).join(", ");
+		const report = `${hit} -> ${reached}`;
 		if (report === this.lastArcReport) return;
 
 		this.lastArcReport = report;

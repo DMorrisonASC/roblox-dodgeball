@@ -2,7 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
-import { aiming, predictedTarget } from "../../aiming";
+import { aiming, predictedTargets } from "../../aiming";
 
 /** Prints a line as a target is lit and as it goes out. Silent while a target stays the same. */
 const DEBUG = true;
@@ -21,7 +21,34 @@ const DEBUG = true;
 const OUTLINE_NAME = "ObjectOutline";
 
 /**
- * Fills the model this throw would land on with colour, for as long as the local player is aiming.
+ * Whether two target lists name the same bodies in the same order.
+ *
+ * **By contents, because the list is a fresh table every frame** — see `client/aiming.ts`. Comparing
+ * the tables themselves would report a change every frame and redo the work forever, and the work is
+ * not free: it writes to instances.
+ *
+ * Order is part of the comparison rather than sorted away. Both sides are built by walking the same
+ * flight in the same direction, so a difference in order is a difference in the arc.
+ */
+function sameTargets(a: Array<Model>, b: Array<Model>): boolean {
+	if (a.size() !== b.size()) return false;
+
+	for (let index = 0; index < a.size(); index++) {
+		if (a[index] !== b[index]) return false;
+	}
+
+	return true;
+}
+
+/**
+ * Fills every body this throw would reach with colour, for as long as the local player is aiming.
+ *
+ * **Every body, not only the one it stops on, because a Pierce ball reaches more than one.** For every
+ * other throw those are the same thing — the arc ends on the first body it meets — so this reads as it
+ * always did. A Pierce ball goes *through* the bodies in its line and stops on the world behind them,
+ * so lighting only the first left every other body in the line unlit while naming a body the ball was
+ * never going to stop on, and those bodies are the whole point of the ability. See {@link retarget}
+ * for the trap that opens the moment more than one body is lit at once.
  *
  * **Client-side, and entirely an opinion.** Nothing here is sent anywhere and nothing is asked of
  * the server: it reads what the drawn arc would hit and changes one property on a highlight the
@@ -57,13 +84,14 @@ const OUTLINE_NAME = "ObjectOutline";
  * landing marker has always been drawn from the arc, so a blocked throw put the *marker* on the
  * trunk and the *glow* on the body behind it, and the two disagreed in plain sight.
  *
- * The question is therefore "where does this throw land", and the answer was already being computed
- * one file away — `ThrowController`'s arc, rebuilt every frame from the same plan the server will
- * run, whose `hit` is the first thing the ball's own swept sphere meets. That answer arrives as
- * `predictedTarget` rather than being recomputed here, because recomputing it would mean rebuilding
- * the plan: the arc mode, the ignore list, the sweep radius and the ceiling. Four things that all
- * have to match or the glow would be describing a different throw from the one being drawn — and
- * this controller has no business knowing any of them.
+ * The question is therefore "where does this throw go", and the answer was already being computed one
+ * file away — `ThrowController`'s arc, rebuilt every frame from the same plan the server will run,
+ * whose hit is the first thing the ball's own swept sphere meets and whose passed-through list is
+ * every body a Pierce ball goes through instead. That answer arrives as `predictedTargets` rather than
+ * being recomputed here, because recomputing it would mean rebuilding the plan: the arc mode, the
+ * ignore list, the sweep radius and the ceiling. Four things that all have to match or the glow would
+ * be describing a different throw from the one being drawn — and this controller has no business
+ * knowing any of them.
  *
  * **What it is aimed at is still asked of the world, not of the game.** A model with a humanoid is a
  * target, whatever it is: no team, no health, no tag, nothing about whether hitting it means
@@ -79,26 +107,31 @@ export class AimTargetController implements OnStart {
 	private readonly player = Players.LocalPlayer;
 
 	/**
-	 * The model currently glowing, if any.
+	 * The models currently glowing, in the order the arc meets them. Empty when nothing is glowing.
 	 *
-	 * One at a time, held so it can be put out again: the previous target is restored *before* the
-	 * new one is lit, so there is never a frame with two models glowing and never one left lit
-	 * because the aim moved off it. `undefined` means nothing is glowing.
+	 * **A list, because a Pierce ball reaches more than one body.** Every other throw stops on the one
+	 * body it reaches, so this holds at most one entry and reads as the single target it replaced. A
+	 * Pierce throw passes *through* the bodies in its line, and the glow has to light all of them or it
+	 * is describing a throw that stops where the ball will not.
+	 *
+	 * Held so that it can be put out again: a body that stops being a target has its colour restored,
+	 * and the bodies that are still targets are left exactly as they are — never cleared and re-lit,
+	 * for the reason {@link retarget} gives.
 	 */
-	private currentTarget: Model | undefined;
+	private currentTargets: Array<Model> = [];
 
 	/**
-	 * The edge colour the glow replaced on the target currently lit, or nothing.
+	 * The edge colour the glow replaced on each body currently lit, keyed by that body.
 	 *
-	 * **One slot, not a table, because only one body is ever lit** — see {@link currentTarget} — and a
-	 * body that stops being the target has its colour put back in the same breath it is dropped.
+	 * **A table rather than one slot, because the glow can be on several bodies at once** — one entry
+	 * per model in {@link currentTargets}, dropped in the same breath that body is put out.
 	 *
 	 * Held across frames rather than read at the moment of the restore, which is the whole point:
 	 * by then the value on the instance is the glow's own, and what has to be put back is what was
 	 * there before it. See {@link setGlow} for the case where something else has written the property
 	 * in the meantime and this must *not* be put back.
 	 */
-	private replacedOutline: Color3 | undefined;
+	private readonly replacedOutline = new Map<Model, Color3>();
 
 	/** The flag as last reported, so only its transitions are printed. Diagnostic scaffolding. */
 	private lastAiming = false;
@@ -128,7 +161,7 @@ export class AimTargetController implements OnStart {
 		if (DEBUG) print(`[Aim] up — watching the aiming flag`);
 	}
 
-	/** One turn of the loop: keep the glow on what the throw would hit, or put it out. */
+	/** One turn of the loop: keep the glow on what the throw would reach, or put it out. */
 	private update(): void {
 		const isAiming = Fusion.peek(aiming);
 
@@ -149,34 +182,58 @@ export class AimTargetController implements OnStart {
 			return;
 		}
 
-		// **The whole of the input.** `undefined` here is the ordinary answer rather than a failure:
-		// it means the arc reaches no body, which is what a throw at a wall, a floor or the sky is.
-		const target = Fusion.peek(predictedTarget);
+		// **The whole of the input.** An empty list here is the ordinary answer rather than a failure:
+		// it means the arc reaches no body, which is what a throw at a wall, a floor or the sky is. The
+		// usual length is one, and more than one means the throw is going through the bodies in its
+		// line rather than stopping on the first.
+		const targets = Fusion.peek(predictedTargets);
 
-		// The common case, and the reason the glow does not flicker: a target that has not changed
-		// is left exactly as it is, so nothing is written to it and nothing is re-lit. It covers
-		// `undefined === undefined` too, so a stretch of aiming at scenery writes nothing at all.
-		if (target === this.currentTarget) return;
+		// The common case, and the reason the glow does not flicker: a set of targets that has not
+		// changed is left exactly as it is, so nothing is written to it and nothing is re-lit. It
+		// covers "nothing, again" too, so a stretch of aiming at scenery writes nothing at all. The
+		// comparison is by contents because the published list is a fresh table every frame — see
+		// {@link sameTargets}.
+		if (sameTargets(targets, this.currentTargets)) return;
 
-		// Out with the old before the new goes on, so the two can never both be lit.
-		this.clear();
-		if (target) this.setGlow(target, true);
+		this.retarget(targets);
 
-		this.currentTarget = target;
+		this.currentTargets = targets;
 	}
 
 	/**
-	 * Puts the glow out on whatever is currently lit.
+	 * Moves the glow from the bodies wearing it to the bodies in `targets`, one body at a time.
+	 *
+	 * **Bodies in both lists are left alone, and that is not tidiness.** Putting everything out and
+	 * lighting the whole new list again would look equivalent and is not: lighting a body that is
+	 * already lit remembers the *glow* colour as the colour to restore, so when the aim finally moves
+	 * off it the edge is "restored" to the white it already wears — a body left outlined in the glow
+	 * colour for the rest of the round, with nothing on screen to say why. With a single target that
+	 * could not happen, because the old one was always put out before the new one went on; with a list
+	 * it happens on any aim that adds or drops a body while holding another, which is every sweep
+	 * across a crowd.
+	 */
+	private retarget(targets: Array<Model>): void {
+		for (const model of this.currentTargets) {
+			if (!targets.includes(model)) this.setGlow(model, false);
+		}
+
+		for (const model of targets) {
+			if (!this.currentTargets.includes(model)) this.setGlow(model, true);
+		}
+	}
+
+	/**
+	 * Puts the glow out on everything currently lit.
 	 *
 	 * Safe to call at any time and as often as wanted — every frame, in fact, since that is how the
-	 * aim being released is noticed. A call with nothing lit is a nil comparison and nothing else.
+	 * aim being released is noticed. A call with nothing lit is a size check and nothing else.
 	 */
 	private clear(): void {
-		const target = this.currentTarget;
-		if (!target) return;
+		if (this.currentTargets.size() === 0) return;
 
-		this.setGlow(target, false);
-		this.currentTarget = undefined;
+		for (const model of this.currentTargets) this.setGlow(model, false);
+
+		this.currentTargets = [];
 	}
 
 	/**
@@ -206,6 +263,14 @@ export class AimTargetController implements OnStart {
 	 * landing marker is read against is the body's own.
 	 */
 	private setGlow(target: Model, on: boolean): void {
+		// **The remembered colour is taken out first, so the early return below cannot strand it.** A body
+		// that was destroyed while it was lit — an NPC rig removed mid-round, a character respawning —
+		// has no highlight left to write to, and the write below is skipped for it. Taking the entry out
+		// here keeps its lifetime exactly "while this body is lit", rather than one entry per body that
+		// died while somebody was aiming at it for the rest of the session.
+		const replaced = this.replacedOutline.get(target);
+		this.replacedOutline.delete(target);
+
 		const highlight = target.FindFirstChild(OUTLINE_NAME);
 		if (!highlight || !highlight.IsA("Highlight")) {
 			// **The case that used to be silent, and so the case that used to be indistinguishable
@@ -217,17 +282,13 @@ export class AimTargetController implements OnStart {
 		}
 
 		if (on) {
-			this.replacedOutline = highlight.OutlineColor;
+			this.replacedOutline.set(target, highlight.OutlineColor);
 			highlight.OutlineColor = AIM_CONFIG.TARGET_GLOW_COLOR;
-		} else {
+		} else if (highlight.OutlineColor === AIM_CONFIG.TARGET_GLOW_COLOR) {
 			// Still ours, so nothing has repainted it while the aim was held — see the note above.
-			// `replacedOutline` absent would mean this was never lit, in which case there is nothing
-			// to put back and the colour already on the instance is the one that belongs there.
-			if (highlight.OutlineColor === AIM_CONFIG.TARGET_GLOW_COLOR) {
-				highlight.OutlineColor = this.replacedOutline ?? highlight.OutlineColor;
-			}
-
-			this.replacedOutline = undefined;
+			// No remembered colour would mean this body was never lit by this controller, in which case
+			// there is nothing to put back and the colour already on the instance belongs there.
+			highlight.OutlineColor = replaced ?? highlight.OutlineColor;
 		}
 
 		// `=true` is the load-bearing half: it says the write reached a real `Highlight`. A `true`
