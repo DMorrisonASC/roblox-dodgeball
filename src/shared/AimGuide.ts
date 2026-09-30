@@ -65,6 +65,26 @@ const DASH_SPEED = 0.5;
 const PATH_SAMPLES = 48;
 
 /**
+ * Whether the preview ends in a landing disc at all. **Currently off, and turning it back on is this
+ * one line.**
+ *
+ * **A creation switch rather than a visibility one**, which is the shape `BALL_CONFIG.TRAIL_ENABLED`
+ * uses and for the same reason: with this off there is no disc to build, so nothing has to be moved,
+ * tinted or pulsed every frame, and nothing can conjure one back by writing to a property. It is also
+ * the cheaper half of the two — the disc's colour comes from an overlap query against the whole landing
+ * area, once a frame, for a part that is not being drawn.
+ *
+ * **The path is untouched either way.** The dashes are the part of the preview that says where the throw
+ * *goes*; this is the disc that says where it *stops*, and the guide is still a guide without it.
+ *
+ * **Nothing has been removed.** The disc's radius, thickness, pulse and both of its colours are still
+ * here below, `AimGuide.createMarker` is still written and still called when this is true, and the
+ * placement the controller hands `AimGuide.update` is still passed — it is simply not read while there
+ * is no disc to put anywhere.
+ */
+const MARKER_ENABLED = false;
+
+/**
  * Radius of the marker in studs, and its thickness.
  *
  * The radius is also the size of the "is somebody standing there" test, so the answer always matches
@@ -101,7 +121,8 @@ interface Dash {
 /** What one aim is drawn with. Absent whenever nothing is drawn. */
 interface Preview {
 	carriage: Part;
-	marker: Part;
+	/** Absent when {@link MARKER_ENABLED} is off — which is the whole of what that switch does. */
+	marker?: Part;
 }
 
 export class AimGuide {
@@ -141,7 +162,8 @@ export class AimGuide {
 	 * Called every frame while aiming, so the instances are built on the first call and moved in
 	 * place from then on. `placement` puts the marker somewhere other than the end of the path, which
 	 * is what a projectile with size needs: the path ends where the ball's *centre* stopped, while
-	 * the marker belongs flat against the surface its edge touched.
+	 * the marker belongs flat against the surface its edge touched. It is not read at all while there
+	 * is no marker to place — see `MARKER_ENABLED`.
 	 */
 	public update(points: ReadonlyArray<Vector3>, placement?: MarkerPlacement): this {
 		const path = resample(points);
@@ -178,15 +200,21 @@ export class AimGuide {
 			dash.beam.Enabled = to.sub(from).Magnitude > 0.02;
 		}
 
-		const at = placement ? placement.position : path[path.size() - 1];
-		const normal = placement && placement.normal ? placement.normal : new Vector3(0, 1, 0);
+		// **Everything below is the disc, and all of it is skipped when there is no disc.** That is what
+		// `MARKER_ENABLED` buys: no `CFrame` to write, no pulse to evaluate, and no `wouldHit` overlap query
+		// against the landing area — which is the expensive part of this method, and the reason the switch is
+		// a creation switch rather than a transparency one. The path above is the same either way.
+		if (preview.marker) {
+			const at = placement ? placement.position : path[path.size() - 1];
+			const normal = placement && placement.normal ? placement.normal : new Vector3(0, 1, 0);
 
-		preview.marker.CFrame = AimGuide.discCFrame(at, normal);
-		// The pulse is a sine on the clock rather than a tween: it never ends, needs no callback, and
-		// cannot be left half-applied by the aim moving underneath it.
-		preview.marker.Transparency =
-			MARKER_TRANSPARENCY + math.sin(now * MARKER_PULSE_SPEED) * MARKER_PULSE_DEPTH;
-		preview.marker.Color = this.wouldHit(at) ? COLOR_WOULD_HIT : COLOR_NEUTRAL;
+			preview.marker.CFrame = AimGuide.discCFrame(at, normal);
+			// The pulse is a sine on the clock rather than a tween: it never ends, needs no callback, and
+			// cannot be left half-applied by the aim moving underneath it.
+			preview.marker.Transparency =
+				MARKER_TRANSPARENCY + math.sin(now * MARKER_PULSE_SPEED) * MARKER_PULSE_DEPTH;
+			preview.marker.Color = this.wouldHit(at) ? COLOR_WOULD_HIT : COLOR_NEUTRAL;
+		}
 
 		return this;
 	}
@@ -196,7 +224,8 @@ export class AimGuide {
 		if (this.preview) {
 			// One destroy: the carriage holds the attachments and the beams.
 			this.preview.carriage.Destroy();
-			this.preview.marker.Destroy();
+			// Optional, because `MARKER_ENABLED` decides whether one was ever built — see `Preview`.
+			this.preview.marker?.Destroy();
 			this.preview = undefined;
 			this.dashes = [];
 		}
@@ -285,7 +314,9 @@ export class AimGuide {
 			this.dashes.push({ beam, from, to });
 		}
 
-		return { carriage, marker: this.createMarker(this.instance) };
+		// The disc is built only when the switch is on — see `MARKER_ENABLED`. Nothing else about the
+		// carriage changes: the dashes are the preview's body, and they are unaffected either way.
+		return { carriage, marker: MARKER_ENABLED ? this.createMarker(this.instance) : undefined };
 	}
 
 	/**

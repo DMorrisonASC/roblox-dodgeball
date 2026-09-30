@@ -48,8 +48,20 @@ import { LaunchPlan, Trajectory } from "shared/Trajectory";
  * not even started when it is off.
  */
 
-/** When to take the path and velocity sample, in seconds of engine time. */
+/** When to take the first path and velocity sample, in seconds of engine time. */
 const SAMPLE_AT = 0.1;
+
+/**
+ * How often to sample again after that, in seconds of engine time.
+ *
+ * **One sample cannot say what shape an error has, and that is the whole question here.** A deviation
+ * that is a constant *velocity* offset grows linearly with time; one that is an *acceleration* offset
+ * grows with the square of it. Both read as "the ball lands short", and they want opposite fixes — so
+ * the curve between the samples is the answer, and a single reading at 0.1s was what hid it. The first
+ * throw measured with this reported a launch *above* the plan and a landing *below* it, which no
+ * constant velocity offset can do and is exactly what more than one sample is needed to see.
+ */
+const SAMPLE_PERIOD = 0.1;
 /** Stop watching a throw after this long, in seconds of engine time. */
 const WATCH_LIMIT = 3;
 /** Ignore velocity changes this soon after release — replication has not settled. */
@@ -82,7 +94,7 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 	);
 
 	let elapsed = 0;
-	let sampled = false;
+	let nextSample = SAMPLE_AT;
 	let previousPosition = ball.Position;
 	let previousElapsed = 0;
 
@@ -92,6 +104,19 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 
 		if (ball.Parent === undefined || elapsed > WATCH_LIMIT) {
 			connection.Disconnect();
+
+			// **The case that used to leave no trace at all.** A ball that meets something which does not
+			// stop it — a glancing wall, another ball — never crosses the predicted surface and never trips
+			// the impact test, so this watch simply ended in silence and read as "this throw was never
+			// watched". One line, on the timeout only, for the reason the HUD controllers print that they
+			// are up: a measurement that produces nothing has to be distinguishable from no measurement.
+			if (ball.Parent !== undefined) {
+				print(
+					`[Probe] still flying at t=${fixed(elapsed)}s (at ${reported(ball.Position)})` +
+						` — never met the predicted surface`,
+				);
+			}
+
 			return;
 		}
 
@@ -108,8 +133,8 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 		const clock = pullSquared > 0.001 ? loss.Dot(pull) / pullSquared : 0;
 		const launchError = loss.sub(pull.mul(clock));
 
-		if (!sampled && elapsed >= SAMPLE_AT) {
-			sampled = true;
+		if (elapsed >= nextSample) {
+			nextSample += SAMPLE_PERIOD;
 			// Compared at the instant the ball is actually at, so the clock offset is
 			// not counted twice.
 			const at = elapsed + clock;
@@ -126,9 +151,21 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 		// plan says it is still falling, or its horizontal part has collapsed.
 		// Detected this way because `Touched` cannot be relied on for a part whose
 		// owner may have changed mid-flight.
+		//
+		// **"Rising while the plan says falling" is the first clause, and it took a log to see that it
+		// was written as something else.** As `velocity.Y > idealVelocity.Y + 1` it fires on a throw that
+		// is flying perfectly: at 60 steps a second the ideal's own vertical velocity drops by
+		// `g/60 ≈ 3.3` studs per second between two samples, so a sampling offset of a third of a frame
+		// is already more than the 1 stud/s of tolerance. The test can therefore only pass if the ball's
+		// velocity is read at exactly the plan's instant, which it never is — and every throw of a
+		// session ended this watch within a few frames, before the 0.1s sample, which is why this file
+		// had never reported a landing. Both meanings are kept and nothing else is: a ball that has
+		// genuinely been stopped satisfies the horizontal collapse, and a ball coming off something
+		// satisfies the first. A clock offset satisfies neither.
 		const horizontal = new Vector3(velocity.X, 0, velocity.Z).Magnitude;
 		const idealHorizontal = new Vector3(idealVelocity.X, 0, idealVelocity.Z).Magnitude;
-		const caught = velocity.Y > idealVelocity.Y + 1 || (idealHorizontal > 1 && horizontal < idealHorizontal * 0.5);
+		const caught =
+			(velocity.Y > 0 && idealVelocity.Y < 0) || (idealHorizontal > 1 && horizontal < idealHorizontal * 0.5);
 
 		if (elapsed > IMPACT_GRACE && caught) {
 			connection.Disconnect();
@@ -151,9 +188,19 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 						` | frame ${fixed(frame)}s`,
 				);
 			} else {
+				// **And the landing is reported either way, because a ball that bounces inside a single frame
+				// never crosses the predicted surface *between two samples*.** At 60 steps a second and
+				// 170 studs a second a frame is nearly three studs of travel, and the bounce sends the ball
+				// back up inside one of them — so the crossing the interpolation above looks for is not
+				// there, and the one throw this matters most for reported no landing at all. The sample
+				// before the impact is the closest thing to where it met the floor.
 				print(
 					`[Probe] stopped t=${fixed(elapsed)}s without crossing the predicted` +
 						` surface (at ${reported(position)}) — it hit something else`,
+				);
+				print(
+					`[Probe] landing (last sample)` +
+						` ${describe(previousPosition.sub(predicted.landing), heading)}`,
 				);
 			}
 

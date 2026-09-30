@@ -49,7 +49,8 @@
 		"roblox-dodgeball:out/client/controllers/input/AlternativeMovementController@AlternativeMovementController": "client/controllers/input/AlternativeMovementController@AlternativeMovementController",
 		"roblox-dodgeball:out/server/services/super/SuperService@SuperService": "server/services/super/SuperService@SuperService",
 		"roblox-dodgeball:out/client/controllers/input/SuperAbility@SuperAbility": "client/controllers/input/SuperAbility@SuperAbility",
-		"roblox-dodgeball:out/client/controllers/hud/SuperHudController@SuperHudController": "client/controllers/hud/SuperHudController@SuperHudController"
+		"roblox-dodgeball:out/client/controllers/hud/SuperHudController@SuperHudController": "client/controllers/hud/SuperHudController@SuperHudController",
+		"roblox-dodgeball:out/client/controllers/camera/ShiftLock@ShiftLock": "client/controllers/camera/ShiftLock@ShiftLock"
 	},
 	"metadata": {}
 }

@@ -19,5 +19,8 @@ export const DEBUG_CONFIG = {
 	 * cadence rather than on an event. Errors and lifecycle lines are never gated — those are
 	 * what is left when this is off, and they are the ones worth reading by default.
 	 */
-	VERBOSE_LOGS: false,
+	// TEMPORARY (2026-09-30): on for one diagnostic run of the throw probe — the ball landing short of
+	// the aim guide's marker. Put back to `false` once the numbers are read; see `ThrowProbe` for what
+	// each field means, and `BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE` for the dial they inform.
+	VERBOSE_LOGS: true,
 } as const;

@@ -49,6 +49,42 @@ export const BALL_NAME = "DodgeballBall";
 export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
 
 /**
+ * A lobby part that turns the custom shift lock on while a player stands inside it.
+ *
+ * **A label somebody paints on a part in the place file**, exactly like {@link CHARACTER_BARRIER_TAG}
+ * above and for the same reason: the box is level design rather than a number, and moving it is a
+ * Studio edit. Read in one place — `client/controllers/camera/ShiftLock.ts`, which checks it in every
+ * phase, so a zone is a zone whenever a player is standing in one.
+ *
+ * **The part's dimensions *are* the zone.** There is no separate radius or extent: the check asks
+ * whether any part of the local player's body overlaps the part's own box, so it is whatever size and
+ * rotation the builder gave it. Any number of them may exist; a player inside any one of them is
+ * inside the zone.
+ *
+ * **Anywhere in `Workspace`, and only in `Workspace`.** The check walks the whole tag with no path,
+ * name or model assumed — loose at the top level, in a folder, inside a model, all of them count
+ * equally, and nothing is expected to be called "Lobby". What it does *not* count is a part that is
+ * outside the world: a tagged part in an arena that has been loaded but not yet placed is still
+ * returned by `GetTagged` (a `Clone` copies its tags — the same fact `BallSpawnerService` had to guard
+ * against), and its box would be evaluated at those coordinates anyway. So the part has to be a
+ * descendant of `Workspace`, exactly as the spawners require. A box that is not in the world is not
+ * somewhere a player can walk.
+ *
+ * **`CanTouch = false`, and that is not what stops the detection.** It is tempting to read it as
+ * "this part is inert, so nothing will find the player in it" — the opposite is true. Nothing here
+ * uses `Touched` at all: the check is a box overlap, which needs neither touch events nor collisions,
+ * and `CanTouch = false` is there to stop the part generating touch events *at all* — an invisible box
+ * that reported touches would be handing `Touched` to every ball, rig and character passing through it
+ * for no reason. **`CanQuery = false`** is the other half, on the same reasoning as the barrier's: the
+ * aim guide walks the world with a spherecast, and a zone would otherwise be something the preview
+ * stopped on. Neither flag affects the overlap check.
+ *
+ * **No collision group**, unlike the barrier: this part is not meant to affect anything, and a group
+ * would be a statement that it does.
+ */
+export const SHIFT_LOCK_ZONE_TAG = "ShiftLockZone";
+
+/**
  * Attribute naming whoever a ball belongs to, carried on the **thrower's model**.
  *
  * The value is a string token rather than a `UserId`, because a thrower is not
