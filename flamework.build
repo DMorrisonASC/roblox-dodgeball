@@ -45,7 +45,8 @@
 		"roblox-dodgeball:out/server/services/visual/OutlineService@OutlineService": "server/services/visual/OutlineService@OutlineService",
 		"roblox-dodgeball:out/client/controllers/hud/RoundResultController@RoundResultController": "client/controllers/hud/RoundResultController@RoundResultController",
 		"roblox-dodgeball:out/client/controllers/hud/LoadingScreenController@LoadingScreenController": "client/controllers/hud/LoadingScreenController@LoadingScreenController",
-		"roblox-dodgeball:out/client/controllers/audio/MusicController@MusicController": "client/controllers/audio/MusicController@MusicController"
+		"roblox-dodgeball:out/client/controllers/audio/MusicController@MusicController": "client/controllers/audio/MusicController@MusicController",
+		"roblox-dodgeball:out/client/controllers/input/AlternativeMovementController@AlternativeMovementController": "client/controllers/input/AlternativeMovementController@AlternativeMovementController"
 	},
 	"metadata": {}
 }

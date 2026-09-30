@@ -33,6 +33,33 @@ const COMBO_AXES: Record<string, Vector3 | undefined> = {
 	DW: new Vector3(1, 0, 1),
 	AS: new Vector3(-1, 0, -1),
 	DS: new Vector3(1, 0, -1),
+
+	// **The same geometry for the other hand, and it has to be here rather than in a second table.**
+	// `U`/`H`/`J`/`K` is the alternative to WASD — `AlternativeMovementController` moves the body with
+	// these four keys — and a dodge has to come from either set or the two features disagree about
+	// which keys count as movement. `W` and `U` are one step of heading, `H` and `A` one step of
+	// -right; a player who has learned one set has learned the other.
+	//
+	// **The rows are keyed by the *sorted* join of the keys — see {@link comboOf} — so the key is not
+	// the pair written the way it is read.** `U` with `H` is the row `"HU"` and `U` with `K` is
+	// `"KU"`, because `H` and `K` sort before `U`. That ordering is the table's own rule and not a
+	// detail of these rows: writing `UH` here would be a row nothing ever looks up, and the diagonal
+	// it was meant to describe would silently stop being a dodge input at all — the failure
+	// `evaluateGesture` describes, where an absent pair does not merely fail to fire but clears a
+	// pending tap on the way past.
+	//
+	// The diagonals are here for the reason the WASD ones are, which is not symmetry for its own
+	// sake: a pair that is *absent* from this table is not merely "not a dodge input", it is an input
+	// that **clears a pending tap** — see `evaluateGesture`. Leaving `U+K` out would not make it dodge
+	// differently from `D+W`, it would make it quietly worse.
+	U: new Vector3(0, 0, 1),
+	J: new Vector3(0, 0, -1),
+	K: new Vector3(1, 0, 0),
+	H: new Vector3(-1, 0, 0),
+	HU: new Vector3(-1, 0, 1),
+	KU: new Vector3(1, 0, 1),
+	HJ: new Vector3(-1, 0, -1),
+	JK: new Vector3(1, 0, -1),
 };
 
 /**

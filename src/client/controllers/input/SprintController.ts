@@ -6,17 +6,48 @@ import { events } from "shared/networking";
 /** Prints the bind once, and each change of what is being asked for. */
 const DEBUG = true;
 
+/**
+ * The keys that sprint — either of them.
+ *
+ * **Two, and the pair is the whole of this change.** The right hand that drives with `U`/`H`/`J`/`K`
+ * should not have to cross the keyboard for the sprint, and the left hand that is already on WASD is
+ * the one that owns `LeftAlt`. Neither key is *the* sprint key: they are two spellings of one input,
+ * and every decision below is about the pair rather than about either of them.
+ *
+ * **`M`, and it was `RightAlt` first.** `RightAlt` is the obvious right-hand answer — it is the key
+ * beside the arrow cluster — and it was bound and tried. **It did not sprint.** The cause was not
+ * chased, deliberately: a key that does nothing is a key to replace, and `M` sits on the same side of
+ * the board and was unbound. Two things are worth recording for whoever reads this next, since
+ * neither is settled. It was not this file's filtering — both keys go through the one list, and
+ * `LeftAlt` worked — so if the fault is real it is below this controller rather than here. And the
+ * likeliest reason lives outside the game: on a layout with `AltGr`, the right-hand Alt is the
+ * operating system's character-composition key, and whether it is delivered as `RightAlt` at all is
+ * the OS's decision, not the engine's.
+ *
+ * Annotated rather than inferred, for the reason the movement controller's key list is: a bare array
+ * of two key codes is narrowed to those two literals, and `includes` then refuses the general
+ * `KeyCode` that an input event carries.
+ */
+const SPRINT_KEYS: Array<Enum.KeyCode> = [Enum.KeyCode.LeftAlt, Enum.KeyCode.M];
+
 /** The client half of the sprint remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
 
 /**
  * Holds a key down and says so; decides nothing.
  *
- * **`LeftAlt` is a held key, so this controller is built from the pair of signals a *hold* needs.**
+ * **These are held keys, so this controller is built from the pair of signals a *hold* needs.**
  * `InputBegan` and `InputEnded` rather than one bound action with an `inputState`, which is the
  * shape `DodgeController` already uses for its movement keys and for the same reason: an action
  * bound once fires on the way down and again on the way up, and half of those arrivals are the
  * engine re-announcing a key that never came up.
+ *
+ * **Two keys and one flag, which is why the keys held are counted rather than remembered one at a
+ * time.** The pair can overlap: hold `LeftAlt`, press `M`, release `LeftAlt` — the *sprint* has not
+ * changed, and a controller holding a single "is it down" flag would report a release on that last
+ * event and stop a sprint the player is still asking for with the other hand. So what goes to the
+ * server is whether *any* of the two is down, and a set is what makes that answerable. It is the same
+ * rule `DodgeController` keeps over its movement keys, arrived at the same way.
  *
  * **Nothing is decided here, including whether the sprint is allowed.** The pool is the server's,
  * and a client that refused to send a press because its own copy of the pool was at zero would be a
@@ -36,8 +67,17 @@ export class SprintController implements OnStart {
 	/** Resolved on first use: `Client.Get` waits for the server's remote. */
 	private sprintRemote?: ClientRemotes["setSprinting"];
 
-	/** Whether the key is being reported as down. The client's own copy of what it last said. */
+	/** Whether a sprint key is being reported as down. The client's own copy of what it last said. */
 	private holding = false;
+
+	/**
+	 * The sprint keys currently down.
+	 *
+	 * **A set and not a second boolean**, because either key can hold the sprint and the two can
+	 * overlap — see the class doc. It answers the only question the server is told about: is any of
+	 * them down.
+	 */
+	private readonly heldKeys = new Set<Enum.KeyCode>();
 
 	public onStart(): void {
 		// **Resolved before any input can arrive, and out of band.** `Client.Get` waits for the
@@ -50,34 +90,41 @@ export class SprintController implements OnStart {
 		});
 
 		UserInputService.InputBegan.Connect((input, gameProcessed) => {
-			if (input.KeyCode !== Enum.KeyCode.LeftAlt) return;
+			if (!SPRINT_KEYS.includes(input.KeyCode)) return;
 
 			// Typing in chat, or a menu is open: Alt belonged to whatever has focus, not to the game.
 			if (gameProcessed) return;
 
-			this.setHolding(true);
+			this.heldKeys.add(input.KeyCode);
+			this.setHolding(this.heldKeys.size() > 0);
 		});
 
 		// The key-up is taken however the engine labels it, exactly as `DodgeController` takes its
 		// releases: a release is unambiguous, and one delivered while a menu has focus is still a
-		// release.
+		// release. The key is dropped from the set first, so what is reported is what is *still*
+		// down — which is the whole reason the set exists.
 		UserInputService.InputEnded.Connect((input) => {
-			if (input.KeyCode !== Enum.KeyCode.LeftAlt) return;
+			if (!SPRINT_KEYS.includes(input.KeyCode)) return;
 
-			this.setHolding(false);
+			this.heldKeys.delete(input.KeyCode);
+			this.setHolding(this.heldKeys.size() > 0);
 		});
 
-		// **Losing focus releases the key, because nothing else will.** The window that took focus
+		// **Losing focus releases every key, because nothing else will.** The window that took focus
 		// receives the key-up, so without this the sprint would continue for the rest of the session:
 		// the client would never send `false`, and the server — which is told the key state rather
 		// than asking for it — would go on believing it. `DodgeController` clears its held keys on
 		// this same signal for the same reason, and that is the shape being followed here.
-		UserInputService.WindowFocusReleased.Connect(() => this.setHolding(false));
+		UserInputService.WindowFocusReleased.Connect(() => {
+			this.heldKeys.clear();
+			this.setHolding(false);
+		});
 
 		// Printed once at startup, for the reason the catch prints its bind: "the key does nothing"
 		// has two completely different causes — the bind never happened, or the press never arrived —
-		// and this is the line that tells them apart.
-		if (DEBUG) print(`[Sprint] LeftAlt bound`);
+		// and this is the line that tells them apart. Both keys are named, read from the list itself
+		// so that the line cannot fall out of step with what is actually bound.
+		if (DEBUG) print(`[Sprint] ${SPRINT_KEYS.map((key) => key.Name).join(" and ")} bound`);
 	}
 
 	/**
@@ -92,9 +139,27 @@ export class SprintController implements OnStart {
 
 		this.holding = active;
 
-		if (DEBUG) print(`[Sprint] ${active ? "held" : "released"}`);
+		// The keys down come along, because with two of them a bare "held" cannot say which one, and
+		// the case where that matters is exactly the one the second key introduced: a `held` line that
+		// still names a key after one of the two has come up is the overlap working.
+		if (DEBUG) print(`[Sprint] ${active ? "held" : "released"} — ${this.heldKeysLabel()}`);
 
 		this.getRemote().SendToServer(active);
+	}
+
+	/**
+	 * The sprint keys currently down, as one string.
+	 *
+	 * Sorted, so that the same two keys make the same line whichever order they were pressed in —
+	 * the rule `DodgeController`'s `comboOf` follows, and for the same reason: a diagnostic whose text
+	 * depends on the order of two events is one nobody can compare between runs.
+	 */
+	private heldKeysLabel(): string {
+		const names: string[] = [];
+		for (const key of this.heldKeys) names.push(key.Name);
+		names.sort();
+
+		return names.size() === 0 ? "nothing" : names.join(" + ");
 	}
 
 	private getRemote(): ClientRemotes["setSprinting"] {
