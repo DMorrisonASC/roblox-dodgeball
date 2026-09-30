@@ -28,6 +28,19 @@ export interface HudTheme {
 		error: Color3;
 		/** The empty well a progress fill sits in. See {@link hudTheme} for why this reads oddly. */
 		trough: Color3;
+		/**
+		 * The screen itself: what the game is drawn on, and what a full-screen overlay covers it with.
+		 *
+		 * **The one entry here that is a surface rather than a foreground.** Everything above it is
+		 * something drawn *on* the page — text, an accent, a state — and until the loading screen
+		 * there was nothing in the client that covered the page. The alternative was for that one
+		 * controller to reach into big-ui's `Palette` for a background, which is exactly the import
+		 * this module exists to prevent, so the colour is named here instead.
+		 *
+		 * `surface` rather than `background`, because `trough` is the other use of that word in this
+		 * interface and it means a well *inside* something.
+		 */
+		surface: Color3;
 	};
 
 	/** The theme's spacing scale, in pixels. `Spacing(n)` is `n` eighths. */
@@ -81,6 +94,9 @@ export function hudTheme(): HudTheme {
 			// near-black text colour is the darkest surface it has, so that is what a trough is
 			// made of until the palette grows a dark background of its own.
 			trough: Palette.text.primary,
+			// Not picked by hand, for once: the palette's own "behind everything" surface, which is
+			// what a full-screen overlay wants and is light because the theme is.
+			surface: Palette.background.default,
 		},
 
 		spacing: {

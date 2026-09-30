@@ -4,6 +4,26 @@ import { Players } from "@rbxts/services";
 const GUI_NAME = "HudGui";
 
 /**
+ * The name of the second GUI — the one that paints into the safe region instead of respecting it.
+ *
+ * A separate name and a separate `ScreenGui`, because the two answer opposite questions about the
+ * same screen. See {@link getSplashScreenGui}.
+ */
+const SPLASH_GUI_NAME = "SplashGui";
+
+/**
+ * Where the splash GUI sits against the shared one, in the `ScreenGui` order.
+ *
+ * **Zero is the shared GUI's value, and it is the default** — nothing in this project sets
+ * `DisplayOrder`, so `HudGui` has been at `0` all along, and every panel's layering has been
+ * `ZIndex` *inside* it. This is a different ladder: `DisplayOrder` orders whole `ScreenGui`s against
+ * each other and it wins outright, so a pixel drawn by the GUI at `1` is drawn over every pixel of
+ * the GUI at `0`, whatever either tree's `ZIndex` says. That is exactly what a full-screen splash
+ * needs, and exactly why one cannot be built out of the shared GUI's tree.
+ */
+const SPLASH_DISPLAY_ORDER = 1;
+
+/**
  * The `ScreenGui` the HUDs mount into: the one that is already there, or a new one.
  *
  * One GUI for every HUD rather than one each, because `PlayerGui` collecting a `ScreenGui` per
@@ -51,6 +71,56 @@ export function getHudScreenGui(): ScreenGui {
 	gui.Name = GUI_NAME;
 	gui.ResetOnSpawn = false;
 	gui.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets;
+	gui.Parent = playerGui;
+
+	return gui;
+}
+
+/**
+ * The `ScreenGui` a full-screen splash mounts into: the same find-or-create, with **no insets at
+ * all**.
+ *
+ * **The one difference from {@link getHudScreenGui}, and it is the whole point: that one respects
+ * the safe region and this one paints into it.** `ScreenInsets` belongs to the `ScreenGui` and
+ * applies to everything inside it, so a child of the shared GUI — however it is sized — can never
+ * draw into the strip under Roblox's topbar, nor the strip the touch controls sit in on a phone. For
+ * a HUD that is right: the strip is Roblox's chrome, and a panel that painted into it would be
+ * drawing where the GUI does not own. For an image whose job is to *cover the screen* it is wrong in
+ * the opposite direction: a splash that stops a few pixels below the top of the screen leaves a band
+ * of the game showing through it, which reads as broken rather than as deliberate.
+ *
+ * **A second GUI rather than a setting on the first, and this is forced rather than chosen.** `Do
+ * not change getHudScreenGui` is not a style rule: nine HUD controllers parent into it and every one
+ * of them wants `CoreUISafeInsets`, so the shared helper's value is a decision nine files depend on.
+ * The alternative — a flag on the helper, or the caller setting the property — would put a
+ * screen-wide decision in the hands of whichever HUD mounted last.
+ *
+ * **`PlayerGui` holding two `ScreenGui`s is expected, and it is not the thing that helper exists to
+ * prevent.** The argument there was against a GUI *per HUD* — six of them, indistinguishable — and
+ * it is answered by these two having different jobs and different names. See
+ * {@link SPLASH_DISPLAY_ORDER} for why the second one has to be *above* the first rather than
+ * merely beside it.
+ *
+ * Found by name on a second call exactly as its sibling is, and for the same reason: a `Folder`
+ * somebody happened to call `SplashGui` is not this GUI, so the name is checked and the class is
+ * confirmed before the existing instance is handed back.
+ */
+export function getSplashScreenGui(): ScreenGui {
+	const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
+
+	const existing = playerGui.FindFirstChild(SPLASH_GUI_NAME);
+	if (existing?.IsA("ScreenGui")) {
+		existing.ResetOnSpawn = false;
+		existing.ScreenInsets = Enum.ScreenInsets.None;
+		existing.DisplayOrder = SPLASH_DISPLAY_ORDER;
+		return existing;
+	}
+
+	const gui = new Instance("ScreenGui");
+	gui.Name = SPLASH_GUI_NAME;
+	gui.ResetOnSpawn = false;
+	gui.ScreenInsets = Enum.ScreenInsets.None;
+	gui.DisplayOrder = SPLASH_DISPLAY_ORDER;
 	gui.Parent = playerGui;
 
 	return gui;
