@@ -1,13 +1,15 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, RunService } from "@rbxts/services";
+import { Players, RunService, Workspace } from "@rbxts/services";
 import { abilityOn, ABILITY_NAMES, isAbilityKind } from "shared/ability";
 import { SUPER_CONFIG } from "shared/config/super.config";
 import {
 	ARMED_ABILITY_ATTRIBUTE,
 	BALL_NAME,
 	SUPER_CHARGE_ATTRIBUTE,
+	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
+	SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE,
 	SUPER_STREAK_ATTRIBUTE,
 } from "shared/constants";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
@@ -47,12 +49,18 @@ const LABEL_GAP = 8;
 const NOTHING = "—";
 
 /**
- * The streak, the charge, and whether the ball in hand is marked.
+ * The streak, the charge, whether the ball in hand is marked, and any MultiBall window that is running.
  *
- * **A readout of two attributes and one ball, and nothing here decides anything.** The streak and the
- * charge are on the *player*, written by `SuperService`, and the mark is on the ball — so the only
+ * **A readout of four things, and nothing here decides any of them.** The streak, the charge and the
+ * window are on the *player*, written by `SuperService`, and the mark is on the ball — so the only
  * thing this controller does is read, which is what makes it impossible for it to disagree with the
  * rule it is showing. Nothing is sent, nothing is asked for, and no reply is waited on.
+ *
+ * **The window's countdown is the one value here that is computed, and it is arithmetic rather than an
+ * opinion.** The server stamps the deadline on the player and this subtracts the engine's shared clock
+ * from it — the same clock the server wrote it with, which is what makes the number mean anything. It
+ * is not a second implementation of "how long is a window": that is one number in `SUPER_CONFIG`, and
+ * the client is drawing it, not deciding it.
  *
  * **Why `3/6` rather than six pips.** The count is the mechanic — "three more" is a number, and six
  * marks a player has to count is the same number with more drawing. It also matches what a player can
@@ -61,14 +69,15 @@ const NOTHING = "—";
  * The denominator comes from {@link SUPER_CONFIG}, the same number the server grants at, so the
  * readout cannot drift from the rule.
  *
- * **Why one `RenderStepped` loop for three values, two of which are discrete.** The two player
- * attributes change rarely, and on their own they would want `GetAttributeChangedSignal` — that is
- * what the legend's toggle row does. The third does not: the ball in hand is a *different instance*
- * after every throw, catch and respawn, so a subscription to it would have to be rebuilt on each of
- * those, and a subscription that is rebuilt is a subscription that can be missed. One loop that reads
- * all three is one mechanism instead of two, and its cost is two attribute reads and one
- * `FindFirstChild` per frame — which is `CooldownHudController`'s argument for its own loop, reached
- * the same way.
+ * **Why one `RenderStepped` loop for four values, three of which change rarely.** The player
+ * attributes change on the server's own schedule, and on their own they would want
+ * `GetAttributeChangedSignal` — that is what the legend's toggle row does. The fourth does not: the
+ * ball in hand is a *different instance* after every throw, catch and respawn, so a subscription to it
+ * would have to be rebuilt on each of those, and a subscription that is rebuilt is a subscription that
+ * can be missed. And the window's countdown changes every frame by definition — it is a countdown — so
+ * no subscription could draw it at all. One loop that reads all four is one mechanism instead of two,
+ * and its cost is three attribute reads, one `FindFirstChild` and one clock read per frame — which is
+ * `CooldownHudController`'s argument for its own loop, reached the same way.
  */
 @Controller()
 export class SuperHudController implements OnStart {
@@ -86,12 +95,14 @@ export class SuperHudController implements OnStart {
 		// anything mounts, and a value captured earlier would be Material's default.
 		const theme = hudTheme();
 
-		// Both seeded empty, so a player who has never hit anybody sees a readout rather than a card
+		// All seeded empty, so a player who has never hit anybody sees a readout rather than a card
 		// waiting for its first value. The attributes do not exist until `SuperService` first publishes
-		// them, and `0/6` is the honest reading of "nothing written yet".
+		// them, and `0/6` is the honest reading of "nothing written yet" — as is `—` for a window that
+		// has never been opened.
 		const streakText = Fusion.Value(scope, `0/${SUPER_CONFIG.STREAK_REQUIRED}`);
 		const chargeText = Fusion.Value(scope, NOTHING);
 		const ballText = Fusion.Value(scope, NOTHING);
+		const multiBallText = Fusion.Value(scope, NOTHING);
 
 		// Rows first: `Card` takes its children at construction and parents them itself.
 		const streakRow = this.addRow(scope, theme, "Streak", streakText);
@@ -105,8 +116,15 @@ export class SuperHudController implements OnStart {
 		const abilityRow = this.addRow(scope, theme, "Ability", ballText);
 		abilityRow.LayoutOrder = 3;
 
+		// **A fourth row rather than a second readout**, because it answers a question the row above it
+		// cannot: the ability row says what is *loaded*, and a window is not loaded — it is running, with a
+		// count and a clock. It sits last because it is the only row that is usually empty, and a strip
+		// whose permanent rows are at the top reads the same whether or not a window is open.
+		const multiBallRow = this.addRow(scope, theme, "MultiBall", multiBallText);
+		multiBallRow.LayoutOrder = 4;
+
 		const container = Card(scope, {
-			children: [streakRow, chargeRow, abilityRow],
+			children: [streakRow, chargeRow, abilityRow, multiBallRow],
 			padding: theme.spacing.sm,
 			childGap: ROW_SPACING,
 		});
@@ -156,6 +174,31 @@ export class SuperHudController implements OnStart {
 					ballText.set(`${ABILITY_NAMES[armed]} (armed)`);
 				} else {
 					ballText.set(NOTHING);
+				}
+
+				// **A count and a clock, and the clock is the engine's rather than this machine's.** The
+				// deadline on the player was stamped with `Workspace:GetServerTimeNow()` on the server, so
+				// subtracting this machine's `os.clock` from it would be subtracting two different clocks —
+				// the same call here reads the same clock the server wrote. See
+				// `SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE`.
+				//
+				// Read rather than counted down locally, which is the same rule as everything else in this
+				// file: the client is drawing a number the server decided, and a client that ran its own
+				// timer would be a second implementation of "how long is a window" free to disagree with
+				// the one that supplies the balls. `0` in both attributes is "no window", the empty case the
+				// server writes when one closes.
+				const multiBallBalls = player.GetAttribute(SUPER_MULTI_BALL_COUNT_ATTRIBUTE);
+				const multiBallEndsAt = player.GetAttribute(SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE);
+
+				if (typeIs(multiBallBalls, "number") && multiBallBalls > 0 && typeIs(multiBallEndsAt, "number") && multiBallEndsAt > 0) {
+					const secondsLeft = math.max(
+						0,
+						math.ceil(multiBallEndsAt - Workspace.GetServerTimeNow()),
+					);
+
+					multiBallText.set(`${multiBallBalls}/${SUPER_CONFIG.MULTI_BALL_BALL_COUNT}, ${secondsLeft}s`);
+				} else {
+					multiBallText.set(NOTHING);
 				}
 			}),
 		);

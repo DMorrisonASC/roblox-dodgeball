@@ -12,7 +12,7 @@ import { NPC_TAG } from "../../npc/Behavior";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { abilityOn, isAbilityKind } from "shared/ability";
+import { abilityOn, isBallAbility } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { events } from "shared/networking";
@@ -282,6 +282,13 @@ export class BallService implements OnStart {
 		// ball — see {@link markHeldBall} for the line between the two.
 		events.Server.OnEvent("markHeldBall", (player, kind) => this.markHeldBall(player, kind));
 
+		// **The second ability key, and the other thing a press can mean.** A press of `4` marks nothing:
+		// it buys a *window* on the player, which is a fact with no ball to ride and therefore no kind to
+		// carry. See {@link activateMultiBall}, which is the whole of the handler — and note that it is
+		// here rather than in `SuperService` for the same split the mark handler above documents: this
+		// service owns hands and dev flags, that one counts charges and never touches a ball.
+		events.Server.OnEvent("multiBall", (player) => this.activateMultiBall(player));
+
 		Players.PlayerRemoving.Connect((player) => {
 			const character = player.Character;
 			if (character) this.heldBalls.delete(character);
@@ -433,6 +440,15 @@ export class BallService implements OnStart {
 
 			if (DEBUG) print(`[Ball] ${model.Name} dropped a marked dodgeball — it is destroyed`);
 
+			// **And an open MultiBall window fills the hand the marker emptied.** These two rules are
+			// deliberately different and must not be made consistent: the *mark* is the ball's, so losing
+			// the ball forfeits the charge above; the *window* is the player's, so losing a ball does not
+			// touch it. A player holding both — a Pierce mark on the ball and a window running — keeps the
+			// window and loses the mark, which is what it means for one ability to live on a thing and the
+			// other to live on a person. Free rather than paid, because nothing was thrown: see
+			// {@link refillFromBuff}.
+			this.refillFromBuff(model, false);
+
 			return true;
 		}
 
@@ -484,6 +500,13 @@ export class BallService implements OnStart {
 		scheduleBallExpiry(ball, BALL_CONFIG.LIFETIME_SECONDS, (expiring) => this.isHeld(expiring));
 
 		if (DEBUG) print(`[Ball] ${model.Name} dropped a dodgeball`);
+
+		// **And the hand is filled again if a MultiBall window is open**, which is the whole of the bug
+		// this ability exposed: putting a ball down used to mean losing the super move with it, because
+		// the ability lived on the ball. This one lives on the player, so the ball is left where it lands
+		// and the window hands over the next one. **Free rather than paid** — nothing was thrown, so there
+		// is no throw to answer and the count does not move. See {@link refillFromBuff}.
+		this.refillFromBuff(model, false);
 
 		return true;
 	}
@@ -629,7 +652,11 @@ export class BallService implements OnStart {
 		const owner = Players.GetPlayerFromCharacter(model);
 		const armed = owner?.GetAttribute(ARMED_ABILITY_ATTRIBUTE);
 
-		if (owner && typeIs(armed, "string") && isAbilityKind(armed)) {
+		// **`isBallAbility`, because the arm is a ball's ability waiting to happen** — the attribute this is
+		// about to write is the ball's, so the arm is held to the same narrower test the mark handler
+		// applies on the wire. An arm naming a player-level buff would otherwise put that word on a ball by
+		// the back door, which is the one thing the check at the mark handler exists to prevent.
+		if (owner && typeIs(armed, "string") && isBallAbility(armed)) {
 			ball.SetAttribute(BALL_ABILITY_ATTRIBUTE, armed);
 			owner.SetAttribute(ARMED_ABILITY_ATTRIBUTE, "");
 
@@ -883,17 +910,147 @@ export class BallService implements OnStart {
 		// `scheduleBallExpiry`, which is the one place a ball's lifetime is decided.
 		scheduleBallExpiry(ball, BALL_CONFIG.LIFETIME_SECONDS, (expiring) => this.isHeld(expiring));
 
+		// **A ball that has just been thrown is answered by whatever supplies this thrower's next one**,
+		// and the two suppliers are asked in a deliberate order: the MultiBall window first, then the dev
+		// flag.
+		//
+		// The window goes first because it is the *player's* purchase and its count is the whole of what
+		// they are watching. A dev with `InfiniteBalls` on would otherwise never see the count move, which
+		// is exactly the state this ability is most likely to be tested in. The dev flag is the fallback
+		// rather than an alternative, which is why it now asks whether the hand is still empty.
+		//
+		// A window with nothing left in it supplies nothing, and the thrower fetches their next ball off
+		// the floor like anybody else: running out ends the supply, not the round.
+		this.refillFromBuff(model, true);
+
 		// A dev with `InfiniteBalls` never runs out: the throw they just made is answered
 		// with another ball, by the same call the first one arrived by. This is the one
 		// throw in the game that refills itself — every other thrower fetches its next
 		// ball, which is what the loose balls on the floor are for. It is not the only way
 		// in: switching the flag on gives an empty hand a ball too, which is what a dev who
 		// has just thrown their last one actually needs. See the constructor.
-		if (this.hasInfiniteBalls(model)) {
+		if (this.hasInfiniteBalls(model) && !this.getHeldBall(model)) {
 			this.giveBall(model);
 
 			if (DEBUG) print(`[Ball] ${model.Name}: refilled by InfiniteBalls`);
 		}
+
+		return true;
+	}
+
+	/**
+	 * The whole of the `4` key's server half: buys `player` a MultiBall window.
+	 *
+	 * **The handler is here and the state is in `SuperService`**, which is {@link markHeldBall}'s split
+	 * for its reason — this service owns hands and holds the dev flags, and that service counts charges
+	 * and has never touched a ball. The two handlers are deliberately the same shape for a second
+	 * reason: two ability keys that behave differently when refused would be two rules about what a key
+	 * press means.
+	 *
+	 * **Four questions, in the order that costs least to answer, and every refusal is a print** rather
+	 * than a thrown error, for `markHeldBall`'s reason: a key press is not a fault, and the log is where
+	 * the reason belongs.
+	 *
+	 * **What a press commits the player to is the one place the two abilities part company.** A mark
+	 * waits for a ball and spends nothing; this spends the charge on the spot and starts the clock, so a
+	 * player who presses `4` and throws nothing has still paid for the ten seconds they did not use. See
+	 * `SuperService.activateMultiBall`, where that decision is argued.
+	 */
+	private activateMultiBall(player: Player): void {
+		// **A living body**, the same test the mark makes and the throw makes in effect: there is no hand
+		// to fill and no player to put a clock on.
+		const character = player.Character;
+		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
+		if (!character || !humanoid || humanoid.Health <= 0) {
+			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no living body`);
+
+			return;
+		}
+
+		const dev = this.dev.isDev(player);
+
+		// **A dev is exempt from the round gate, and that exemption is the shortcut's whole point** — a
+		// standing start in Studio is usually an intermission with no round running at all. Asked of
+		// `SuperService` rather than read from the status folder here, so the rule that grants a charge
+		// and the rule that lets one be spent stay one line in one file, exactly as the mark does it.
+		if (!dev && !this.abilities.isRoundActive()) {
+			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no round is being played`);
+
+			return;
+		}
+
+		// **The charge, or the dev bypass.** A dev opens a window holding no charge of their own, which is
+		// what makes this testable from a standing start — the mark handler's shortcut, on the other key.
+		const charged = this.abilities.hasCharge(player);
+		if (!charged && !dev) {
+			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no charge`);
+
+			return;
+		}
+
+		// **A second press is refused rather than restarted**, and the answer is the "no" the mark handler
+		// gives a second mark: the player has asked for something they already have, and one charge does
+		// not buy two windows. Returned as a boolean by the service rather than asked as a question here,
+		// because opening a window and answering whether one was opened are the same act.
+		if (!this.abilities.activateMultiBall(player)) {
+			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — a window is already open`);
+
+			return;
+		}
+
+		// **A dev opens windows without earning them**, so there is nothing of theirs to spend — the same
+		// bypass `throwForPlayer` applies to a mark, applied here to the same kind of press. Asked at the
+		// call site rather than inside `SuperService` for the reason that one gives: only the caller knows
+		// who pressed.
+		if (!dev) this.abilities.spendCharge(player);
+
+		// **And the hand is filled on the way in**, which is one of the two free refills: a player who
+		// opens a window on an empty hand cannot use the ten seconds they have just paid for. See
+		// {@link refillFromBuff}.
+		this.refillFromBuff(character, false);
+	}
+
+	/**
+	 * Gives `model` a ball out of their MultiBall window, and answers whether it supplied one.
+	 *
+	 * **One rule, one parameter, because whether the count is charged depends on *why* the hand is
+	 * empty.** A ball that was just thrown is replaced by the window and costs one of the five — that is
+	 * what the count is for. A hand emptied any other way — the window opening over it, or a ball leaving
+	 * it without being thrown — is filled for free, because there was no throw to answer. `spent` is the
+	 * whole of that difference, and the callers are the two cases.
+	 *
+	 * **The count is a number of throws, so the last one is deliberately not replaced.** A ball is handed
+	 * over only if the window still has something left *after* this spend, which is what makes `5` mean
+	 * "five throws" rather than "five replacements plus the ball you were holding". The second question is
+	 * asked after the spend rather than before it because that is the rule: the throw is paid for, and
+	 * then the window decides whether there is another ball for the hand.
+	 *
+	 * **Nothing here marks anything, and that is the ability rather than an omission.** The ball this
+	 * hands over comes from the same `giveBall` a hand-out uses, so it is an ordinary ball in every way:
+	 * catchable, taggable, pickable, and carrying no ability of its own.
+	 *
+	 * **The callers, and why this is one method rather than three:** the end of a throw (paid), the
+	 * activation handler (free), and both ways out of {@link dropBall} (free). Every one of them is a
+	 * moment at which a hand that should have a ball might not, which is the single condition this
+	 * answers.
+	 */
+	private refillFromBuff(model: Model, spent: boolean): boolean {
+		const player = Players.GetPlayerFromCharacter(model);
+		if (!player) return false;
+
+		// Nothing to fill. A hand holding a ball is not a hand this has any business in — which is also
+		// what stops a window opened by a player who is already holding one from spending the count.
+		if (this.getHeldBall(model)) return false;
+
+		if (spent && !this.abilities.consumeMultiBallBall(player)) return false;
+
+		// Asked after the spend: the throw is paid for either way, and what the window still holds decides
+		// whether this ball is replaced. See this method's doc for why `5` has to mean five throws.
+		if (!this.abilities.hasMultiBallBalls(player)) return false;
+
+		this.giveBall(model);
+
+		if (DEBUG) print(`[Super] ${model.Name}: MultiBall supplied a ball`);
 
 		return true;
 	}
@@ -1009,8 +1166,15 @@ export class BallService implements OnStart {
 		// **The wire is not typed**, so what arrives is checked rather than trusted — the same treatment
 		// `WalkSpeedService.setSprinting` gives its own argument, and for its reason: a client can send
 		// anything, and this is the line that turns a string into a value the rest of the code can use.
-		if (!typeIs(kind, "string") || !isAbilityKind(kind)) {
-			warn(`[Super] ${player.Name}: mark refused — unknown ability (${tostring(kind)})`);
+		//
+		// **`isBallAbility` rather than `isAbilityKind`, which is a second question and not the same
+		// one.** With MultiBall in the vocabulary there is now an ability that belongs to a *player* and
+		// has nothing to mark, so "is this an ability" no longer answers what a remote whose whole job is
+		// to write an ability onto a ball needs to know. Without the narrower check, a client could send
+		// the word for a player-level buff and have it stamped on a ball, where the HUD would then report
+		// it as a loaded ability that nothing implements.
+		if (!typeIs(kind, "string") || !isBallAbility(kind)) {
+			warn(`[Super] ${player.Name}: mark refused — not an ability a ball can carry (${tostring(kind)})`);
 			return;
 		}
 

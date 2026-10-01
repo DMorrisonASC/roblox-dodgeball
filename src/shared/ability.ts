@@ -9,13 +9,18 @@ import { BALL_ABILITY_ATTRIBUTE } from "./constants";
  * and the client has no business deciding anything about it. All the client needs is a stable id to
  * read back and a name to print, and both of those are strings.
  *
- * **One member, and that is the shape rather than the state of a plan.** The union is what the rest
- * of this feature is written against: `"MultiBall"` and `"Freeze"` become one line each when they are
- * built, and nothing here is built for them in advance. `GameModeId` makes the same point about
- * modes — the union names everything the game intends to have, while what can actually be *used* is
- * decided by the code that exists.
+ * **Two members, and they do not live in the same place — which is why this file cannot say where
+ * either of them is stored.** `"Pierce"` is a property of a *ball*: the mark rides the throw and
+ * decides what that ball does in flight. `"MultiBall"` is a property of a *player*: a timed window
+ * that supplies balls to a hand, and nothing about a thrown ball carries it at all. What the union
+ * names is the vocabulary, and what an ability *is* — a mark, a buff, or something neither of those
+ * words fits — is decided by the code that implements it.
+ *
+ * **`"Freeze"` becomes one line here when it is built**, and nothing is built for it in advance —
+ * `GameModeId` makes the same point about modes, while what can actually be *used* is decided by the
+ * code that exists. {@link ABILITY_NAMES} is what stops a member being added without a name.
  */
-export type AbilityKind = "Pierce";
+export type AbilityKind = "Pierce" | "MultiBall";
 
 /**
  * What each ability is called on screen.
@@ -27,6 +32,7 @@ export type AbilityKind = "Pierce";
  */
 export const ABILITY_NAMES: Record<AbilityKind, string> = {
 	Pierce: "Pierce",
+	MultiBall: "MultiBall",
 };
 
 /**
@@ -39,6 +45,36 @@ export const ABILITY_NAMES: Record<AbilityKind, string> = {
  */
 export function isAbilityKind(value: string): value is AbilityKind {
 	return ABILITY_NAMES[value as AbilityKind] !== undefined;
+}
+
+/**
+ * Which abilities a ball can carry.
+ *
+ * **Not the same list as the abilities that exist, and the distinction is now load-bearing.** The
+ * mark remote takes an arbitrary string and writes it onto a *ball*, so with more than one ability in
+ * the vocabulary that remote has to be able to answer "is this the kind of ability a ball can hold"
+ * as well as "is this an ability" — otherwise a client can send the word for a player-level buff and
+ * have it written onto a ball as though a ball could be one. See `BallService.markHeldBall`, which is
+ * the only reader that hands out consequences.
+ *
+ * **A `Record<AbilityKind, boolean>` rather than a list of the true ones**, so that adding a member
+ * to the union without saying where it lives is a compile error rather than an ability nobody can
+ * place. The trick {@link ABILITY_NAMES} plays for the label, for the same reason and the same cost.
+ */
+const BALL_ABILITIES: Record<AbilityKind, boolean> = {
+	Pierce: true,
+	MultiBall: false,
+};
+
+/**
+ * Whether `value` names an ability a ball can carry.
+ *
+ * The check made of what arrives on the mark remote, where {@link isAbilityKind} is not enough on its
+ * own: naming an ability and being allowed to put it on a ball are two questions, and the wire can
+ * only be trusted for the first.
+ */
+export function isBallAbility(value: string): value is AbilityKind {
+	return isAbilityKind(value) && BALL_ABILITIES[value];
 }
 
 /**

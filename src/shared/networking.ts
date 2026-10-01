@@ -128,6 +128,22 @@ export const events = Net.Definitions.Create({
 	markHeldBall: Net.Definitions.ClientToServerEvent<[kind: string]>(),
 
 	/**
+	 * Client → server: this player is spending their charge on a MultiBall window.
+	 *
+	 * **No argument, unlike {@link markHeldBall} above, and the difference is the two abilities rather
+	 * than an economy.** A mark has to say *what* the ball is being marked as, because the ball is what
+	 * carries the ability and there is more than one word it could be. This names one ability in the
+	 * key that sent it: there is nothing for the client to choose, and therefore nothing arriving that
+	 * needs checking — the server asks whether this player may have a window, not what they asked for.
+	 *
+	 * **Nothing comes back**, for the reason the mark gives: the answer is two attributes on the player,
+	 * which replicate on their own, so a reply event would be a second channel carrying a fact this
+	 * machine already has. A refusal needs no message either — an unchanged pair of attributes 
+	 * a moment later is the answer, and the server prints the reason where a reader can find it.
+	 */
+	multiBall: Net.Definitions.ClientToServerEvent<[]>(),
+
+	/**
 	 * Server → client: the round that has just finished, as the result panel reads it.
 	 *
 	 * **The only entry in this file that travels the other way.** Every other declaration here is a

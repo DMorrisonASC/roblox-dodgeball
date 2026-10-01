@@ -20,4 +20,35 @@ export const SUPER_CONFIG = {
 	 * length of a run, not a budget.
 	 */
 	STREAK_REQUIRED: 6,
+
+	/**
+	 * How long a MultiBall window lasts, in seconds. **Placeholder — 10 is the ask.**
+	 *
+	 * **The window is a clock rather than a count of throws, and that is the whole shape of the
+	 * ability.** A charge buys a stretch of *time* in which throwing is answered; how the player spends
+	 * it is theirs, and throwing nothing is a legal way to spend it. That is also why the charge goes
+	 * at the press for this ability and at the throw for Pierce — see `SuperService.activateMultiBall`.
+	 *
+	 * Ten seconds is a guess at "long enough for a handful of throws, short enough that it is over
+	 * before the round moves on" rather than a measured number, and it is the one to move when the
+	 * window turns out to be too generous or too brief. Nothing else has to change with it: the count
+	 * below is spent by throwing, and this is only how long the chance lasts.
+	 */
+	MULTI_BALL_DURATION_SECONDS: 10,
+
+	/**
+	 * How many throws a MultiBall window pays for. **Placeholder — 5 is the ask.**
+	 *
+	 * **A count of *throws*, not of balls on the field.** The window replaces the ball a player throws
+	 * until this many have gone, and then it stops replacing them: the last throw of the window is not
+	 * answered, so spending the final one leaves the hand empty. The ball a player is already holding
+	 * when the window opens is therefore *on top* of this number rather than inside it — which is also
+	 * why a window opened on an empty hand hands over its first ball without charging for it. See
+	 * `BallService.refillFromBuff`, where "answer this throw" and "fill this hand" are one rule.
+	 *
+	 * **Running out does not close the window.** With the count at nought the clock runs on and the
+	 * player can still fetch a ball off the floor and throw it; the ability stops supplying balls, and
+	 * nothing about it stops the player playing.
+	 */
+	MULTI_BALL_BALL_COUNT: 5,
 } as const;

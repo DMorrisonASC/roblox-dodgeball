@@ -589,6 +589,14 @@ export class RoundService implements OnStart {
             );
         }
 
+        // **And the MultiBall window closes with them, above the guards rather than beside the streak
+        // below.** The streak is a fact about a *round*, which is why `noteDeath` sits under both returns
+        // next to the mode's own decision — but a window is a clock on a *player*, and it does not care
+        // whether a round was being played when the body died. A dev who presses `4` in the lobby and then
+        // resets is the case that makes the difference visible: their window is as finished as anybody's,
+        // and leaving it running would carry a super through the respawn.
+        this.abilities.clearMultiBall(player);
+
         // A death in the lobby is not an elimination, so nothing is written outside a round.
         if (this.state !== RoundState.Playing) return;
 
@@ -1127,6 +1135,14 @@ export class RoundService implements OnStart {
             // balls to be dealt with *after* the arena they were carried on had been destroyed — and
             // the point of doing this at all is that nothing the round owned outlives it.
             this.clearEndedRoundHeldBalls();
+
+            // **And every ability window, for the reason those held balls go.** A super bought in one
+            // round must not be carried into the next, and a window measured in seconds would otherwise
+            // survive the whole intermission and be spent in a round that had nothing to do with it.
+            // Every player rather than the round's participants, because the window is the *player's*: a
+            // spectator who opened one is as finished with it as anybody, and the two are one list to
+            // write over once a minute.
+            for (const player of Players.GetPlayers()) this.abilities.clearMultiBall(player);
 
             // **The map swap, and this is the only moment it is safe.** Everybody has just been put
             // in the lobby, which lives in `Workspace` and belongs to no map — so there is

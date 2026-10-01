@@ -416,6 +416,35 @@ export const SUPER_STREAK_ATTRIBUTE = "SuperStreak";
  */
 export const SUPER_CHARGE_ATTRIBUTE = "SuperCharge";
 
+/**
+ * Attribute on a **`Player`** holding the balls left in their MultiBall window, or `0` for no window.
+ *
+ * **The third and fourth of the same readout, and they are a pair for that reason.** `0` here and `0`
+ * in {@link SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE} mean "no window", which is one empty case for a reader
+ * rather than an absent attribute beside a present one — the convention `BALL_ABILITY_ATTRIBUTE` and
+ * `ARMED_ABILITY_ATTRIBUTE` already use.
+ *
+ * **On the player, because a MultiBall window is the player's rather than any ball's.** Nothing a ball
+ * carries can say whether its thrower still has a window open, so the two facts a player can read
+ * about themselves are the two facts the ability has.
+ */
+export const SUPER_MULTI_BALL_COUNT_ATTRIBUTE = "SuperMultiBallCount";
+
+/**
+ * Attribute on a **`Player`** holding the moment their MultiBall window closes, or `0` for no window.
+ *
+ * **On the engine's server clock and not `os.clock`, and that is what makes a countdown possible at
+ * all.** `os.clock` counts each machine's own uptime, so a time stamped on the server means nothing
+ * subtracted from a value on a client — two different clocks. `Workspace:GetServerTimeNow()` is the
+ * one clock both ends of the wire share, so the server stamps the deadline with it and the HUD reads
+ * it with the same call. The alternative was the server pushing "seconds remaining" on a heartbeat,
+ * which is the same fact retold once a second and a rule the client could have worked out.
+ *
+ * Beside {@link SUPER_MULTI_BALL_COUNT_ATTRIBUTE} and written with it every time: a count beside a
+ * stale deadline would describe a window that never existed.
+ */
+export const SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE = "SuperMultiBallEndsAt";
+
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 1.5;
 
