@@ -97,4 +97,52 @@ export const CHARACTER_CONFIG = {
      * reason a player could ever learn.
      */
     SPAWN_SHIELD_SECONDS: 1,
+
+    /**
+     * The clips this game dresses a character in, per rig, as asset ids.
+     *
+     * **Four sets and two rigs, because those are the two axes the engine gives us.** The set names
+     * — `idle`, `walk`, `run`, `jump` — are not this codebase's choosing: they are the names Roblox's
+     * animation script looks its own sets up by, and they are the whole of the interface between it
+     * and the controller that reads these. A body wears the id for its own rig, chosen by
+     * `Humanoid.RigType` on the body being dressed, because an R6 clip never loads onto an R15 rig.
+     * The pair is the shape `dodge.config.ts` already keeps for its flourish, arrived at for the same
+     * reason.
+     *
+     * **"Walk" is the base speed and "run" is the sprint**, which is why these sit beside
+     * {@link CHARACTER_CONFIG.BASE_WALK_SPEED} and {@link CHARACTER_CONFIG.SPRINT_SPEED_BONUS}: a
+     * clip and a speed are one decision. An animation authored for 20 studs/s played at 35 reads as a
+     * slide, and the reverse as a jog that never arrives. Which of the two sets is used *when* is
+     * Roblox's business rather than ours — its script picks between them by how fast the body is
+     * going — so both are claimed, with these ids.
+     *
+     * **An empty id is the *off* switch, and it is how a rig opts out of one set.** The controller
+     * leaves that set exactly as Roblox made it, which is what the two blank R6 lines below are for:
+     * only the R15 renders of idle and jump were uploaded, so an R6 body keeps the default standing
+     * and jumping animations and still wears this game's walk and sprint. Blank rather than filled
+     * with the R15 ids on purpose — the probe would refuse them on an R6 body anyway, and a config
+     * that says what it means beats one that says something the loader is expected to reject.
+     *
+     * **Every id here was checked against Roblox's asset API, and the R15 column was replaced on
+     * 2026-10-01 because of what that check found.** The ids that used to sit there were emotes —
+     * asset type 61, owned by the groups `STUDIO KAMI` and `WONDER UGC` rather than by this game —
+     * and an emote is not a clip that can be loaded as one, so an R15 body was left with two claimed
+     * sets whose clips could never arrive: a character that moved with no animation at all, because
+     * a claimed set is no longer falling back to Roblox's own. The controller probes every id on the
+     * body that will wear it for exactly that reason, and its `DEBUG` output names the rig it read.
+     *
+     * **Quoted with the `rbxassetid://` prefix and never as a bare number.** The loader treats a
+     * bare number as a name and finds nothing, which is the trap the dodge ids record at length.
+     */
+    IDLE_ANIMATION_R6: "",
+    IDLE_ANIMATION_R15: "rbxassetid://109708134574404",
+
+    WALK_ANIMATION_R6: "rbxassetid://71443035611308",
+    WALK_ANIMATION_R15: "rbxassetid://136049554497965",
+
+    RUN_ANIMATION_R6: "rbxassetid://138082827258827",
+    RUN_ANIMATION_R15: "rbxassetid://112953741427605",
+
+    JUMP_ANIMATION_R6: "",
+    JUMP_ANIMATION_R15: "rbxassetid://108854279734771",
 } as const;
