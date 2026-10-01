@@ -23,16 +23,32 @@ const MARK_KEY = Enum.KeyCode.Three;
 const MULTI_BALL_KEY = Enum.KeyCode.Four;
 
 /**
- * The ability this key marks, which is the only one that exists.
+ * The key that asks the server to mark the held ball as Freeze. **`5`, and nothing else binds it.**
  *
- * **A constant rather than something the player selects**, and that is the honest shape of a feature
- * with one ability in it: there is nothing to choose between, so there is no selection and no key to
- * choose with. It still travels on the wire, because the server is being asked to mark a ball *as*
- * something and inferring the something from the key would put the mapping between keys and abilities
- * on two machines. When a second ability exists this becomes the value a selection sets, and nothing
- * else in this file changes.
+ * **A key of its own rather than a mode the marking keys switch between.** `3` and `5` send the same
+ * remote with a different word in it, and the only thing this file has to know about an ability is its
+ * name — what it *does* is the server's business, which is why a new ability costs one constant and one
+ * branch here and nothing else on the client.
  */
-const ABILITY: AbilityKind = "Pierce";
+const FREEZE_KEY = Enum.KeyCode.Five;
+
+/**
+ * The ability `3` marks.
+ *
+ * **A constant per key rather than something the player selects**, which is the honest shape of a
+ * mechanic whose abilities are bound to letters: there is nothing to cycle through, so there is no
+ * selection and no key to select with. The word still travels on the wire, because the server is being
+ * asked to mark a ball *as* something — and it is written here rather than derived from the key, because
+ * a mapping between keys and abilities on two machines is a mapping that can disagree with itself.
+ *
+ * This used to be called `ABILITY` and to be described as "the only one that exists". There are three
+ * abilities now and two of them are marks, so a name that tells the two marking keys apart is worth the
+ * four lines it costs.
+ */
+const PIERCE: AbilityKind = "Pierce";
+
+/** What `5` marks, named for {@link PIERCE}'s reason: each key names what it is asking for. */
+const FREEZE: AbilityKind = "Freeze";
 
 /** The client half of the mark remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -98,18 +114,19 @@ export class SuperAbility implements OnStart {
 		});
 
 		UserInputService.InputBegan.Connect((input, gameProcessed) => {
-			if (input.KeyCode !== MARK_KEY && input.KeyCode !== MULTI_BALL_KEY) return;
+			const key = input.KeyCode;
+			if (key !== MARK_KEY && key !== FREEZE_KEY && key !== MULTI_BALL_KEY) return;
 
 			// Typing in chat, or a menu is open: the key belonged to whatever has focus, not to the game.
 			if (gameProcessed) return;
 
 			// A repeat announcement of a key already down, which is not a second press. See the set.
-			if (this.holding.has(input.KeyCode)) return;
-			this.holding.add(input.KeyCode);
+			if (this.holding.has(key)) return;
+			this.holding.add(key);
 
-			// **The two presses, and the only place this file decides which is which.** Everything else
+			// **The three presses, and the only place this file decides which is which.** Everything else
 			// about them is the server's: this asks, and reads the answer off an attribute.
-			if (input.KeyCode === MULTI_BALL_KEY) {
+			if (key === MULTI_BALL_KEY) {
 				if (DEBUG) print(`[Super] ${MULTI_BALL_KEY.Name} — asking to spend the charge on a window`);
 
 				this.getMultiBallRemote().SendToServer();
@@ -117,9 +134,15 @@ export class SuperAbility implements OnStart {
 				return;
 			}
 
-			if (DEBUG) print(`[Super] ${MARK_KEY.Name} — asking to mark the held ball as ${ABILITY}`);
+			// **One remote for both marking keys, and the word is the whole of the difference between
+			// them.** `"Pierce"` and `"Freeze"` are both abilities a *ball* can carry, and the server
+			// checks that the word names one rather than trusting it — see `isBallAbility`, which is also
+			// what refuses the word for a player-level buff arriving at this same remote.
+			const kind: AbilityKind = key === FREEZE_KEY ? FREEZE : PIERCE;
 
-			this.getRemote().SendToServer(ABILITY);
+			if (DEBUG) print(`[Super] ${key.Name} — asking to mark the held ball as ${ABILITY_NAMES[kind]}`);
+
+			this.getRemote().SendToServer(kind);
 		});
 
 		// The key-up is taken however the engine labels it, exactly as `SprintController` takes its
@@ -141,7 +164,8 @@ export class SuperAbility implements OnStart {
 		// key does nothing" has two completely different causes — the bind never happened, or the press
 		// never arrived — and this is the line that tells them apart.
 		if (DEBUG) {
-			print(`[Super] ${MARK_KEY.Name} bound — marks the held ball as ${ABILITY}`);
+			print(`[Super] ${MARK_KEY.Name} bound — marks the held ball as ${ABILITY_NAMES[PIERCE]}`);
+			print(`[Super] ${FREEZE_KEY.Name} bound — marks the held ball as ${ABILITY_NAMES[FREEZE]}`);
 			print(`[Super] ${MULTI_BALL_KEY.Name} bound — buys a ${ABILITY_NAMES.MultiBall} window`);
 		}
 	}

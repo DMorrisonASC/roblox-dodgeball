@@ -8,6 +8,7 @@ import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { lockoutElapsed } from "./actionLock";
 import { DevService } from "../../dev/DevService";
+import { FreezeService } from "./FreezeService";
 import { extendReadyAt, publishReadyAt } from "./readyAt";
 import { BallService } from "../ball/BallService";
 import { DodgeService } from "./DodgeService";
@@ -105,6 +106,7 @@ export class CatchService implements OnStart {
 		private readonly dev: DevService,
 		private readonly dodges: DodgeService,
 		private readonly balls: BallService,
+		private readonly freezes: FreezeService,
 	) {
 		// The dodge is gated on the catch, and this is where the catch side of that is handed
 		// over: the two services are gated on each other, and Flamework errors on a circular
@@ -358,6 +360,15 @@ export class CatchService implements OnStart {
 	 * cannot be read as two different rules. {@link lockoutElapsed} is that shared lockout.
 	 */
 	private blocksCatch(model: Model): boolean {
+		// **Frozen first, and for the reason `DodgeService.blocksDodge` gives from the other side**: the two
+		// things below are clocks that expire on their own, and a freeze is a state that has to be waited
+		// out. A frozen body hears that it is frozen rather than that its dodge ended a moment ago.
+		if (this.freezes.isFrozen(model)) {
+			if (DEBUG) print(`[Catch] ${model.Name}: refused — frozen`);
+
+			return true;
+		}
+
 		if (this.dodges.isDodging(model)) {
 			if (DEBUG) print(`[Catch] ${model.Name}: refused — a dodge is in flight`);
 			return true;

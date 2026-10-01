@@ -9,6 +9,7 @@ import { createThrowBehavior } from "../../npc/behaviors/ThrowBehavior";
 import { BallPickupService } from "../ball/BallPickupService";
 import { BallService } from "../ball/BallService";
 import { CatchService } from "../actions/CatchService";
+import { FreezeService } from "../actions/FreezeService";
 
 /** Prints each model as it is picked up. A print per tick would flood the output. */
 const DEBUG = true;
@@ -58,6 +59,7 @@ export class NpcService implements OnStart {
 		private readonly catches: CatchService,
 		private readonly balls: BallService,
 		private readonly pickups: BallPickupService,
+		private readonly freezes: FreezeService,
 	) {
 		this.behaviors = [
 			createCatchBehavior(catches, balls),
@@ -162,6 +164,25 @@ export class NpcService implements OnStart {
 		const prepared = new Set<string>();
 
 		while (!loop.stopped && model.HasTag(NPC_TAG) && model.Parent !== undefined && humanoid.Health > 0) {
+			// **A frozen rig does nothing, and this is the one gate every behavior passes through.** A check
+			// inside each behavior would be one guard per mechanic and a silent omission in the next one
+			// anybody adds; here it cannot be forgotten, and it stops throwing, catching and picking a ball up
+			// in one line.
+			//
+			// **Inside the loop rather than in its condition, and that move is a bug fix rather than a
+			// preference.** This first went into the `while` above — which meant a frozen rig *left the loop*,
+			// and a loop is not a thing that comes back: `start` is called from the tag's added-signal and
+			// from the scan at startup, and a rig already wearing its tag never fires either again. So the
+			// freeze would have been permanent, and worse, the line after this loop is what reports a
+			// death: a rig killed while frozen left through the freeze rather than through its health,
+			// `announceDeath` was never called, and `RespawnBehavior` — which learns about deaths from that
+			// call and from nothing else — never brought it back. That is the whole of "the enemy falls down
+			// and never re-spawns", and it only happened to rigs that were frozen when they died.
+			if (this.freezes.isFrozen(model)) {
+				task.wait(period);
+				continue;
+			}
+
 			const now = os.clock();
 
 			for (const behavior of this.behaviors) {

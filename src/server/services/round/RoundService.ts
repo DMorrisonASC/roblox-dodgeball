@@ -17,6 +17,7 @@ import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
 import { MapService } from "../MapService";
 import { BallService } from "../ball/BallService";
+import { FreezeService } from "../actions/FreezeService";
 import { StatsService } from "../stats/StatsService";
 import { SuperService } from "../super/SuperService";
 import { GameMode, RoundView } from "./modes/GameMode";
@@ -156,6 +157,7 @@ export class RoundService implements OnStart {
         private readonly maps: MapService,
         private readonly stats: StatsService,
         private readonly abilities: SuperService,
+        private readonly freezes: FreezeService,
     ) {}
 
     onStart() {
@@ -596,6 +598,22 @@ export class RoundService implements OnStart {
         // resets is the case that makes the difference visible: their window is as finished as anybody's,
         // and leaving it running would carry a super through the respawn.
         this.abilities.clearMultiBall(player);
+
+        // **And the freeze comes off the body before anything respawns it.** The watcher in
+        // `FreezeService` fires on the same `Died` signal as this handler, and this one is connected
+        // first — at `CharacterAdded`, before any ball could have frozen the body. So the watcher's
+        // release runs *after* the mode has decided and possibly after `LoadCharacter` has begun
+        // replacing the body, and whether the anchor is still clearable at that point depends on the
+        // engine's own ordering: `unfreeze` skips its teardown when the model has no parent left. That is
+        // harmless for a body that is going away, and it is exactly the kind of latent ordering a respawn
+        // bug hides in, so the clear happens here instead — before the body is replaced rather than at
+        // some unspecified point during it.
+        //
+        // The watcher stays, and is not a duplicate of this: it is what clears a freeze on a body no
+        // round ever hears about — a rig, which never reaches this method at all, and any death outside
+        // a playing round, which returns at the guard below.
+        const dying = player.Character;
+        if (dying) this.freezes.unfreeze(dying);
 
         // A death in the lobby is not an elimination, so nothing is written outside a round.
         if (this.state !== RoundState.Playing) return;
@@ -1143,6 +1161,17 @@ export class RoundService implements OnStart {
             // spectator who opened one is as finished with it as anybody, and the two are one list to
             // write over once a minute.
             for (const player of Players.GetPlayers()) this.abilities.clearMultiBall(player);
+
+            // **And every freeze, for the same reason and from the same moment.** A body held in place by
+            // an ability belongs to the round the ability was spent in, and a round boundary is the one
+            // point in the game where nothing carries over. Every body rather than the round's
+            // participants, because a freeze is a fact about a body: a spectator caught in a splash is as
+            // frozen as a player caught in one, and a rig has no side to be a participant of.
+            //
+            // This is the *only* thing that ends a freeze early. The other two are its own clock and its
+            // body's death, and both live in `FreezeService` — where they are one watcher per frozen body
+            // rather than a call from here, because a rig's death never reaches this file at all.
+            this.freezes.unfreezeAll();
 
             // **The map swap, and this is the only moment it is safe.** Everybody has just been put
             // in the lobby, which lives in `Workspace` and belongs to no map — so there is

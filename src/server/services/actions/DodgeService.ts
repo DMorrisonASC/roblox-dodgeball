@@ -10,6 +10,7 @@ import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { lockoutElapsed } from "./actionLock";
 import { DevService } from "../../dev/DevService";
+import { FreezeService } from "./FreezeService";
 import { extendReadyAt, publishReadyAt } from "./readyAt";
 import { emitSound } from "../ball/SoundEmitter";
 
@@ -229,7 +230,7 @@ export class DodgeService implements OnStart {
 	 */
 	private catchState?: CatchState;
 
-	constructor(private readonly dev: DevService) {}
+	constructor(private readonly dev: DevService, private readonly freezes: FreezeService) {}
 
 	/**
 	 * Hands this service the catch window it has to respect. Called by `CatchService` itself.
@@ -390,6 +391,17 @@ export class DodgeService implements OnStart {
 	 * {@link lockoutElapsed}, so this gate and the two others cannot disagree about it.
 	 */
 	private blocksDodge(model: Model): boolean {
+		// **Frozen first, because everything below is a clock and this is a state.** A window and a
+		// lockout both expire on their own, so a refusal from either of them can be waited out; a freeze
+		// cannot, and it is the only thing in this list that changes the answer to "can this body act at
+		// all". Asked first so a frozen player is told the real reason rather than that they are still
+		// cooling down from something that finished two seconds ago.
+		if (this.freezes.isFrozen(model)) {
+			if (DEBUG) print(`[Dodge] ${model.Name}: refused — frozen`);
+
+			return true;
+		}
+
 		const state = this.catchState;
 		if (!state) return false;
 

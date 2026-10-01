@@ -189,6 +189,36 @@ function findOutline(target: Instance): Highlight | undefined {
 }
 
 /**
+ * Draws `target`'s outline in `colour` for as long as the caller needs it, and answers with the colour
+ * it was wearing so the caller can put it back.
+ *
+ * **The one way something other than this service is allowed to repaint an outline, and it exists
+ * because a `Highlight` cannot be duplicated.** The engine draws one outline per adornee: a second
+ * `Highlight` on the same model is not two effects but an undefined choice between them — the decision
+ * `AimTargetController` documents on the client, which is why *it* recolours rather than creates.
+ * A server-side override has one advantage over that one: this file owns both the name and the lookup,
+ * so a caller needs neither a second copy of the name nor a second implementation of the search.
+ *
+ * **Returned rather than remembered here**, because how long an override lasts is the caller's
+ * question and not this file's: the aim glow releases its colour when the aim moves off a body, and the
+ * freeze releases it when the body thaws. This service has nothing to keep in step for either of them.
+ *
+ * **A missing outline is a state and not an error**, for {@link paint}'s reason: a body that has not
+ * been dressed has nothing to recolour, and the caller is told that by the `undefined` rather than
+ * having to ask first. Nothing is created here to make an override possible — creating one would be the
+ * second `Highlight` this whole arrangement exists to avoid.
+ */
+export function overrideOutlineColour(target: Instance, colour: Color3): Color3 | undefined {
+	const highlight = findOutline(target);
+	if (highlight === undefined) return undefined;
+
+	const previous = highlight.OutlineColor;
+	highlight.OutlineColor = colour;
+
+	return previous;
+}
+
+/**
  * Puts an outline around `target`, once — in the default colour, which a player's side may then
  * overpaint. See {@link paint} for the half that decides what colour it should be.
  *

@@ -51,4 +51,58 @@ export const SUPER_CONFIG = {
 	 * nothing about it stops the player playing.
 	 */
 	MULTI_BALL_BALL_COUNT: 5,
+
+	/**
+	 * How long a Freeze bite lasts, in seconds. **Placeholder — 3 is the guess.**
+	 *
+	 * **Long enough to be worth a charge, short enough that it is a moment rather than a round.** Three
+	 * seconds is about the time it takes somebody to be reached by whoever the freeze was bought for,
+	 * which is the whole use of it: it does not win anything on its own, it makes the next few seconds
+	 * unavoidable for everybody standing near where the ball landed.
+	 *
+	 * The number to move first if the ability reads as unfair, and the one to move up if it reads as
+	 * pointless. Nothing else changes with it: the clock is per body, so a body frozen late in the
+	 * effect's window is held for the full duration rather than whatever was left.
+	 */
+	FREEZE_DURATION_SECONDS: 3,
+
+	/**
+	 * How far the freeze reaches from the body part a Freeze ball struck, in studs. **Placeholder.**
+	 *
+	 * **The hit radius and the miss radius are two numbers because they are two different promises.**
+	 * Hitting somebody is what the ability is aimed at, so it pays a radius wide enough to catch the
+	 * people standing with them; a ball that hits the world is the ability going wrong, so it pays a
+	 * smaller one — enough that a shot which lands at somebody's feet still does something, not enough
+	 * that a wild throw freezes a room.
+	 *
+	 * Eight studs is a little more than two bodies across, which is the shape to check in Studio: too
+	 * small and the splash is a slower Pierce with no splash at all, too large and one throw in a
+	 * group freezes everybody in it.
+	 */
+	FREEZE_HIT_RADIUS: 8,
+
+	/**
+	 * How far the freeze reaches from where a Freeze ball stopped, in studs, when it tagged nobody.
+	 * **Placeholder.**
+	 *
+	 * Smaller than {@link FREEZE_HIT_RADIUS} on purpose — see that comment for why the two are not one
+	 * number. Five studs is about one body's reach, so a ball that clips a wall beside somebody freezes
+	 * them and a ball that hits the wall across the arena freezes nobody.
+	 */
+	FREEZE_MISS_RADIUS: 5,
+
+	/**
+	 * The colour a frozen body's outline is drawn in. **Placeholder — and the one non-number here.**
+	 *
+	 * **Blue, and deliberately nothing like a side's colour.** The outline a body already wears is doing
+	 * a job: it is black for a rig and a side's colour for a player who is in a round. So a freeze has to
+	 * read as a *state* rather than be mistaken for a team, and a saturated blue is on nobody's side in
+	 * this game.
+	 *
+	 * It is written onto the `Highlight` the body already has rather than by adding a second one — the
+	 * engine draws one outline per model and its choice between two is undefined. See
+	 * `OutlineService.overrideOutlineColour`, which is the only writer, and `FreezeService.unfreeze`,
+	 * which puts back whatever was there before.
+	 */
+	FREEZE_OUTLINE_COLOR: Color3.fromRGB(80, 160, 255),
 } as const;

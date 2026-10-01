@@ -9,18 +9,19 @@ import { BALL_ABILITY_ATTRIBUTE } from "./constants";
  * and the client has no business deciding anything about it. All the client needs is a stable id to
  * read back and a name to print, and both of those are strings.
  *
- * **Two members, and they do not live in the same place — which is why this file cannot say where
- * either of them is stored.** `"Pierce"` is a property of a *ball*: the mark rides the throw and
- * decides what that ball does in flight. `"MultiBall"` is a property of a *player*: a timed window
- * that supplies balls to a hand, and nothing about a thrown ball carries it at all. What the union
- * names is the vocabulary, and what an ability *is* — a mark, a buff, or something neither of those
- * words fits — is decided by the code that implements it.
+ * **Three members, and they do not all live in the same place — which is why this file cannot say where
+ * any of them is stored.** `"Pierce"` and `"Freeze"` are properties of a *ball*: the mark rides the
+ * throw and decides what that ball does. `"MultiBall"` is a property of a *player*: a timed window that
+ * supplies balls to a hand, and nothing about a thrown ball carries it at all. What the union names is
+ * the vocabulary, and what an ability *is* — a mark, a buff, or something neither of those words fits —
+ * is decided by the code that implements it.
  *
- * **`"Freeze"` becomes one line here when it is built**, and nothing is built for it in advance —
+ * **A fourth becomes one line here when it is built**, and nothing is built for it in advance —
  * `GameModeId` makes the same point about modes, while what can actually be *used* is decided by the
- * code that exists. {@link ABILITY_NAMES} is what stops a member being added without a name.
+ * code that exists. Two files will refuse to compile until it is placed: {@link ABILITY_NAMES} wants a
+ * name for it, and `BALL_ABILITIES` wants an answer to whether a ball can carry it.
  */
-export type AbilityKind = "Pierce" | "MultiBall";
+export type AbilityKind = "Pierce" | "MultiBall" | "Freeze";
 
 /**
  * What each ability is called on screen.
@@ -33,6 +34,7 @@ export type AbilityKind = "Pierce" | "MultiBall";
 export const ABILITY_NAMES: Record<AbilityKind, string> = {
 	Pierce: "Pierce",
 	MultiBall: "MultiBall",
+	Freeze: "Freeze",
 };
 
 /**
@@ -64,6 +66,7 @@ export function isAbilityKind(value: string): value is AbilityKind {
 const BALL_ABILITIES: Record<AbilityKind, boolean> = {
 	Pierce: true,
 	MultiBall: false,
+	Freeze: true,
 };
 
 /**

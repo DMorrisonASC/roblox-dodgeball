@@ -8,9 +8,11 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
+import { SUPER_CONFIG } from "shared/config/super.config";
 import { BallService } from "../services/ball/BallService";
 import { emitSound } from "../services/ball/SoundEmitter";
 import { CatchService } from "../services/actions/CatchService";
+import { FreezeService } from "../services/actions/FreezeService";
 import { RoundService } from "../services/round/RoundService";
 import { StatsService } from "../services/stats/StatsService";
 import { SuperService } from "../services/super/SuperService";
@@ -167,6 +169,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		private readonly stats: StatsService,
 		private readonly rounds: RoundService,
 		private readonly abilities: SuperService,
+		private readonly freezes: FreezeService,
 	) {
 		super();
 	}
@@ -363,6 +366,24 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			this.resolveTags(throwerId);
 			this.score(taggedAny);
 
+			// **A Freeze ball that arrived without tagging anybody splashes where it stopped**, and the
+			// flag it asks is the one this branch already reads to count the throw: `taggedAny` was taken
+			// before `resolveTags` emptied the list, and "did this throw land on a body" is exactly the
+			// question a splash has to answer before it fires.
+			//
+			// **A ball that tagged somebody does not splash here**, because it splashed at that contact —
+			// see the tag branch above. That is what keeps "a ball that hits two enemies" at two splashes
+			// rather than three: the landing of a ball that hit somebody is the end of that event, not a
+			// second one.
+			//
+			// The radius is the *miss* radius and the position is the ball's own, both of which are the
+			// difference between a free hit and a throw that went somewhere it was not aimed.
+			if (!taggedAny && abilityOn(this.instance) === "Freeze") {
+				this.freezes.freezeInRadius(this.instance.Position, SUPER_CONFIG.FREEZE_MISS_RADIUS, (model) =>
+					this.splashSpares(throwerId, model),
+				);
+			}
+
 			this.instance.SetAttribute("Armed", false);
 			return;
 		}
@@ -500,6 +521,29 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// `landHit`'s reason and on the same terms: it fires once per tagged body per throw, and the
 		// two lines are meant to be read against each other.
 		print(`${character.Name} was tagged by ${this.instance.Name} on ${struck.Name}`);
+
+		// **The splash, and it fires here rather than at the landing — which is the whole of what this
+		// ability is.** The tag above is the direct hit, and it is deliberately nothing special: that body
+		// dies when the ball lands, like any other hit, and no line here treats it differently. What the
+		// ability adds is everything *around* it, frozen at the contact.
+		//
+		// **At the contact and not at the landing, which is not an implementation detail.** A splash that
+		// waited for the ball to come down would be a different ability — one that arrives late, misses
+		// anybody who walked away, and can be outrun. Freezing the room is supposed to be unavoidable once
+		// the ball has touched somebody, so it happens on the touch.
+		//
+		// **This branch runs once per body, so a ball that tags two enemies splashes twice**, at each
+		// impact point. The tag list is per body and so is this; nothing counts them.
+		//
+		// **The body just struck is inside its own radius and is not excluded from it.** Excluding it would
+		// be exactly the "special handling for the direct hit" this ability does not have, and it changes
+		// nothing about the outcome: that body is already tagged, and a tagged body dies when the ball lands
+		// whether or not it was frozen on the way there.
+		if (abilityOn(this.instance) === "Freeze") {
+			this.freezes.freezeInRadius(struck.Position, SUPER_CONFIG.FREEZE_HIT_RADIUS, (model) =>
+				this.splashSpares(throwerId, model),
+			);
+		}
 
 		// **An ordinary ball comes off the body it hit; a Pierce ball goes through it.**
 		//
@@ -794,6 +838,13 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * would have done. That is deliberate: a catcher's window is an attempt, and an attempt that was
 	 * never allowed to happen should not be spent — so a Pierce ball does not also leave them unable to
 	 * catch the next ordinary one.
+	 *
+	 * **A Freeze ball cannot be caught either, and the reason is timing rather than symmetry.** The
+	 * ability's whole effect lands at the *contact* — the splash fires there, before the ball has finished
+	 * flying — so a catch would be a save against the wrong moment: by the time a window could have
+	 * mattered, the thing it might have prevented has already happened to everybody standing around. And
+	 * letting it be caught would hand the catcher a ball whose effect they were just inside the radius
+	 * of, which is not a save, it is a reward for standing where the splash was.
 	 */
 	private canCatch(otherPart: BasePart, character: Model): boolean {
 		// **Asked before the part test, not after it**, because this is an answer about the whole
@@ -811,6 +862,15 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			return false;
 		}
 
+		// The third ability's refusal, and a peer of the one above rather than a special case of it: what
+		// makes a ball un-catchable is the ability on it, and each ability gives its own reason here. See
+		// the doc above for the timing argument this one is making.
+		if (abilityOn(this.instance) === "Freeze") {
+			this.noteDecidedNothing(otherPart, "a Freeze ball — this body cannot catch it");
+
+			return false;
+		}
+
 		if (!CATCH_CONFIG.CATCHABLE_PARTS.has(otherPart.Name)) return false;
 
 		// Only a ball in flight can be caught. One welded into somebody's hand is
@@ -818,6 +878,32 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		if (this.instance.Parent !== Workspace) return false;
 
 		return this.catches.isCatching(character);
+	}
+
+	/**
+	 * Whether a Freeze splash has to leave `model` alone: the thrower, and the thrower's own side.
+	 *
+	 * **Two tests because they are two rules, and the first is not a case of the second.**
+	 * `RoundService.isFriendlyFire` answers about *sides*, and sides only exist while a round is being
+	 * played — it returns `false` outside one, and it returns `false` for a thrower with no player
+	 * behind it. So on its own it would let a dev testing in the lobby, or a rig's throw, freeze the
+	 * thrower with their own ball. The token comparison is that missing half, and it is the same
+	 * comparison the contact rules already make: the ball carries the thrower's token, the model carries
+	 * its own, and a player's is their `UserId` as text where a rig's is a GUID — which is the point,
+	 * because this check cannot tell the two apart and has no reason to.
+	 *
+	 * **A ball with no token excludes nobody**, which is the honest reading of a fact that is missing
+	 * rather than a body that is protected: every thrown ball is stamped at release, so this is the
+	 * never-happens case, and freezing everybody in the radius is the safer direction to be wrong in —
+	 * the alternative is a splash that silently does nothing.
+	 */
+	private splashSpares(throwerToken: unknown, model: Model): boolean {
+		const token = typeIs(throwerToken, "string") ? throwerToken : "";
+		if (token === "") return false;
+
+		if (model.GetAttribute(THROWER_TOKEN) === token) return true;
+
+		return this.rounds.isFriendlyFire(token, model);
 	}
 
 	/**

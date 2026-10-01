@@ -23,6 +23,7 @@ import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
 import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
+import { FreezeService } from "../actions/FreezeService";
 import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
 
@@ -204,6 +205,7 @@ export class BallService implements OnStart {
 		private readonly factory: BallFactory,
 		private readonly dev: DevService,
 		private readonly abilities: SuperService,
+		private readonly freezes: FreezeService,
 	) {
 		// **Switching `InfiniteBalls` on hands the dev a ball, if their hand is empty.**
 		//
@@ -772,6 +774,20 @@ export class BallService implements OnStart {
 	 * ask while there is nothing to throw.
 	 */
 	public throwBall(model: Model, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3): boolean {
+		// **A frozen body does not throw, and the gate is here rather than on the remote.** `throwBall` is
+		// the only thing in the game that throws — a player's click and a rig's behavior both arrive here,
+		// which is `ActionService`'s own note about where a throw gate belongs — so a check in the remote
+		// handler would leave a frozen NPC throwing at whatever it happened to be facing.
+		//
+		// It answers `false`, which is the same answer an empty hand gets. That matters twice: a behavior
+		// asking on a timer does nothing with either, and `throwForPlayer` spends the charge only when a
+		// ball actually left — so a frozen player loses nothing for the throw they could not make.
+		if (this.freezes.isFrozen(model)) {
+			if (DEBUG) print(`[Ball] ${model.Name}: throw refused — frozen`);
+
+			return false;
+		}
+
 		const held = this.heldBalls.get(model);
 		if (!held || held.ball.Parent !== model) return false;
 
