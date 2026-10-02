@@ -12,6 +12,20 @@ const ACTION_NAME = "UHJK";
 const BINDING_NAME = "AlternativeMovement";
 
 /**
+ * The four keys the default controls walk with.
+ *
+ * **Read by the scaffolding below and by nothing else**, which is why the list exists rather than the
+ * keys being tested inline: what the diagnostic asks is "is the *keyboard* asking to move", and that
+ * question is about these four keys rather than about anything this file binds.
+ */
+const MOVEMENT_KEYS: Array<Enum.KeyCode> = [
+	Enum.KeyCode.W,
+	Enum.KeyCode.A,
+	Enum.KeyCode.S,
+	Enum.KeyCode.D,
+];
+
+/**
  * **The whole risk of this change, and it is a documented one rather than a guess.**
  *
  * The default control scripts write the character's movement **every frame**, so a second writer only
@@ -154,6 +168,29 @@ export class AlternativeMovementController implements OnStart {
 			});
 		}
 
+		// **Scaffolding: whether the window itself lost focus, which is the one event that explains a
+		// body stopping dead with the key still down.** Three controllers in this codebase handle
+		// `WindowFocusReleased` — `SprintController` on the sprint keys, and `DodgeController` and
+		// `SuperAbility` on theirs — and every one of them *clears the keys it believes are held*,
+		// because a key-up delivered while the window is elsewhere never arrives here. That is the
+		// right behaviour and it is invisible in a capture: the release it produces is the same line
+		// the player letting go produces, so the two causes read identically.
+		//
+		// **`LeftAlt` was the suspect these lines were added for, and it is gone from the game.** The
+		// sprint used to be bound to it, and Alt is the one key Windows itself does something with: a tap
+		// hands the window's focus to the system menu and back, which fires the release above, drops the
+		// keys the engine's default controls believe are held — `S` included, still physically down — and
+		// leaves a body that will not move until a fresh press. The sprint has since moved to
+		// `LeftShift`, so that particular trigger is gone by construction and these two prints are no
+		// longer watching for it. **They stay, because the mechanism is not specific to Alt**: a chat
+		// box, an alt-tab, a notification stealing focus, and any future binding on a key the operating
+		// system has an opinion about all produce the same reading, and it is a reading that is
+		// expensive to reconstruct from a log after the fact.
+		if (DEBUG) {
+			UserInputService.WindowFocusReleased.Connect(() => print(`[Move] window focus LOST`));
+			UserInputService.WindowFocused.Connect(() => print(`[Move] window focus back`));
+		}
+
 		// **The humanoid is re-resolved per body; the *connection* is not.** `CharacterAdded` fires
 		// once for each new character and one subscription serves every one of them, so what has to
 		// change on a respawn is the reference this closure holds and nothing else. Seeded from the
@@ -181,6 +218,15 @@ export class AlternativeMovementController implements OnStart {
 		/** The last frame line printed, so the scaffolding below narrates a *change* and not a frame rate. */
 		let lastFrameLine = "";
 
+		/**
+		 * The last held-keys line printed, for the same reason.
+		 *
+		 * A separate variable from {@link lastFrameLine} because the two narrate different things: that
+		 * one is about the body, this one is about the keyboard, and a change in either is worth a line
+		 * even when the other has not moved.
+		 */
+		let lastKeyLine = "";
+
 		/** The last direction `Move` was called with, so a re-press of the same key prints again. */
 		let lastCalled = "";
 
@@ -195,6 +241,41 @@ export class AlternativeMovementController implements OnStart {
 			// line. This costs one `FindFirstChildWhichIsA` on a frame with no body, and nothing at all
 			// once there is one.
 			if (humanoid === undefined) humanoid = humanoidOf(player.Character);
+
+			// **Scaffolding: the direction the *keyboard* is asking for, against the direction the
+			// humanoid is being walked in.** These are two different facts and the freeze is the gap
+			// between them: `IsKeyDown` is the physical key, and `MoveDirection` is what the last
+			// writer in the frame asked for. A held `W`/`A`/`S`/`D` with a zero `MoveDirection` is a
+			// body *nobody is asking to move* — the default controls have lost the key, which is what a
+			// focus loss does to them — and that is the reading the freeze needs, because from the
+			// player's seat a body that cannot walk and a body nobody is asking to walk look identical.
+			//
+			// **The reverse is deliberately not printed.** A non-zero `MoveDirection` with no direction
+			// key down is this file's own `U`/`H`/`J`/`K` source doing its job, so a line for it would
+			// be one this file prints at itself whenever its own feature works.
+			//
+			// Printed on change and not per frame, for the reason the frame line above is, and the
+			// vector is printed in full rather than its length: a `nan` in it is a different fault
+			// again and would read as `0`. `WalkSpeed` and the focused text box ride along because they
+			// are the two legitimate reasons a held key moves nothing — a body that is not allowed to
+			// walk, and a keyboard that is typing rather than playing.
+			if (DEBUG) {
+				const held = MOVEMENT_KEYS.filter((key) => UserInputService.IsKeyDown(key));
+				const asked = humanoid !== undefined && humanoid.MoveDirection.Magnitude > 0;
+
+				if (held.size() > 0 && !asked) {
+					const line =
+						`${held.map((key) => key.Name).join("+")} held, ` +
+						`MoveDirection ${humanoid === undefined ? "n/a" : tostring(humanoid.MoveDirection)}, ` +
+						`WalkSpeed ${humanoid === undefined ? "n/a" : string.format("%.1f", humanoid.WalkSpeed)}, ` +
+						`text box ${UserInputService.GetFocusedTextBox() === undefined ? "no" : "yes"}`;
+
+					if (line !== lastKeyLine) {
+						lastKeyLine = line;
+						print(`[Move] keys — ${line}`);
+					}
+				}
+			}
 
 			// **Read from `GetState`, which is the action's current value** — a `Direction2D` action
 			// answers with a `Vector2`, and one that has never been touched answers with something

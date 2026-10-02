@@ -97,7 +97,7 @@ interface LegendRow {
 const ROWS: LegendRow[] = [
 	{ label: "Throw |", keys: "X, C, V" },
 	{ label: "Dodge |", keys: `Double tap W A S D ${LIGHTNING}` },
-	{ label: "Sprint |", keys: "Left Alt, M" },
+	{ label: "Sprint |", keys: "Left Shift, M" },
 	{ label: "Catch |", keys: "E" },
 	{ label: "Drop |", keys: "1" },
 	{ label: "Throw Toggle |", keys: "2", toggleAttribute: THROW_ENABLED, invert: true },

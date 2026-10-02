@@ -254,8 +254,10 @@ export class AimGuide {
 		const character = Players.LocalPlayer.Character;
 		if (character) filter.push(character);
 
-		this.overlap.FilterType = Enum.RaycastFilterType.Exclude;
-		this.overlap.FilterDescendantsInstances = filter;
+		// `ExcludeInstances` rather than the deprecated `FilterType`/`FilterDescendantsInstances` pair —
+		// the same note in `shared/throw.ts` covers this one, and it is an `OverlapParams` because this
+		// is a region check rather than a ray.
+		this.overlap.ExcludeInstances = filter;
 
 		for (const part of Workspace.GetPartBoundsInRadius(at, MARKER_RADIUS, this.overlap)) {
 			const humanoid = part.FindFirstAncestorWhichIsA("Model")?.FindFirstChildWhichIsA("Humanoid");

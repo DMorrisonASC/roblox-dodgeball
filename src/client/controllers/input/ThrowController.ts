@@ -600,9 +600,11 @@ export class ThrowController implements OnStart {
 
 		// Ignore the thrower, so aiming over your own body doesn't put the
 		// target at your feet.
+		//
+		// `ExcludeInstances` rather than the deprecated `FilterType`/`FilterDescendantsInstances` pair —
+		// see `shared/throw.ts` for the note, which covers every ray and overlap the throw uses.
 		const params = new RaycastParams();
-		params.FilterType = Enum.RaycastFilterType.Exclude;
-		params.FilterDescendantsInstances = character ? [character] : [];
+		params.ExcludeInstances = character ? [character] : [];
 		params.IgnoreWater = true;
 
 		const hit = Workspace.Raycast(ray.Origin, ray.Direction.mul(AIM_DISTANCE), params);

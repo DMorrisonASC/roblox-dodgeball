@@ -160,7 +160,7 @@ export class WalkSpeedService implements OnStart {
         // took, which is the same reason `Trajectory` integrates by step rather than assuming a rate.
         RunService.Heartbeat.Connect((dt) => this.onHeartbeat(dt));
 
-        if (DEBUG) print(`[Sprint] up — LeftAlt/M, ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s pool`);
+        if (DEBUG) print(`[Sprint] up — LeftShift/M, ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s pool`);
     }
 
     /**

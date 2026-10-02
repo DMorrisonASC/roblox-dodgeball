@@ -18,20 +18,38 @@ import { LaunchPlan, flatLaunchSpeed, leftAxis, minimumReachSpeed, planLaunch, T
 const TORSO_PARTS = ["UpperTorso", "Torso", "HumanoidRootPart"];
 
 /**
- * Where a throw starts: {@link BALL_CONFIG.THROW_MUZZLE_DISTANCE} studs in front of
- * the thrower's torso.
+ * The part the launch point's *height* is taken from.
  *
- * The torso, not the head. The head is animated, so idle turns — looking left
- * and right — visibly swing the launch point around. The torso only moves when
- * the body itself does, so the ball always leaves from the same place relative
- * to the player no matter what the head is doing.
+ * The same name on both rigs, which is why there is no list beside {@link TORSO_PARTS}: R6 calls it
+ * `Head` and so does R15.
+ */
+const HEAD_PART = "Head";
+
+/**
+ * Where a throw starts: level with the thrower's head, {@link BALL_CONFIG.THROW_MUZZLE_DISTANCE} studs
+ * in front of the thrower's torso.
  *
- * The *direction* comes from the `HumanoidRootPart` rather than the torso.
- * Motor6Ds hang off the root, so animation moves the torso but never the root —
- * and because this offset is a multi-stud lever, any torso rotation gets
- * multiplied into the launch point several times over, which shows up as the
- * aim guide wobbling along with the walk cycle. The root's facing only changes
- * when the character itself actually turns.
+ * **The head's height, the torso's position, and the split between them is the whole point.** Taking
+ * the launch point *from the head* is what let idle turns — looking left and right — visibly swing it
+ * around the player, because the head is animated and the torso is not. Dropping to the torso alone
+ * fixes the swing and puts the ball out of a chest, which is lower than where a throw reads as coming
+ * from. So the *position and facing* come from the body, which does not move with the head, and the
+ * *height* comes from the head — a number that barely changes when it turns, and one that is measured
+ * rather than written down because it is the part of this that differs between rigs: an R15 head and an
+ * R6 head are not carried at the same height above the part this function measures from, and the exact
+ * difference in studs is not something to write down here and keep true. Reading the offset instead of
+ * naming it follows both rigs, and any custom one, without a number to maintain.
+ *
+ * The *direction* comes from the `HumanoidRootPart` rather than the torso. Motor6Ds hang off the root,
+ * so animation moves the torso but never the root — and because this offset is a multi-stud lever, any
+ * torso rotation gets multiplied into the launch point several times over, which shows up as the aim
+ * guide wobbling along with the walk cycle. The root's facing only changes when the character itself
+ * actually turns.
+ *
+ * A character with no head of its own throws from torso height rather than not throwing at all: the
+ * offset is zero, which is what this function did before the head was read at all. Nothing is printed
+ * for that case, and the reason is the caller: this runs once per frame per client while the aim guide
+ * is up, so a line per frame is not a report.
  *
  * When a throw animation lands, this is the seam it plugs into: return the
  * animated hand's release point instead, and nothing else has to change.
@@ -46,7 +64,15 @@ export function getThrowMuzzle(character: Model): Vector3 {
 	const root = character.FindFirstChild("HumanoidRootPart");
 	const forward = root && root.IsA("BasePart") ? root.CFrame.LookVector : anchor.CFrame.LookVector;
 
-	return anchor.CFrame.Position.add(forward.mul(BALL_CONFIG.THROW_MUZZLE_DISTANCE));
+	// Read from the head's own position rather than from its size or a rig table: what is wanted is the
+	// height it is actually carried at, which is the whole reason the head is consulted instead of the
+	// torso.
+	const head = character.FindFirstChild(HEAD_PART);
+	const height = head !== undefined && head.IsA("BasePart") ? head.Position.Y - anchor.Position.Y : 0;
+
+	const muzzle = anchor.CFrame.Position.add(forward.mul(BALL_CONFIG.THROW_MUZZLE_DISTANCE));
+
+	return muzzle.add(new Vector3(0, height, 0));
 }
 
 function findTorso(character: Model): BasePart | undefined {
@@ -56,6 +82,34 @@ function findTorso(character: Model): BasePart | undefined {
 	}
 
 	return undefined;
+}
+
+/**
+ * Why the muzzle is where it is, as one line for the throw log.
+ *
+ * **The same two readings `getThrowMuzzle` adds up, named.** The number that matters is the rise — the
+ * head's height above the part the muzzle is anchored to — because a muzzle at the anchor's own height
+ * throws the ball out of the chest, and everything about the throw still works when it does. That is
+ * the failure this offset exists to prevent and the one nothing else in the game prints: `getThrowMuzzle`
+ * cannot say it (the client calls it once a frame while the aim guide is up, so a print there is not a
+ * report), and the ball's flight does not reveal its own starting height against a body whose
+ * proportions nobody has written down.
+ *
+ * Called once per throw, from the throw path. Delete it when the offset is trusted.
+ */
+export function describeMuzzle(character: Model): string {
+	const anchor = findTorso(character);
+	const head = character.FindFirstChild(HEAD_PART);
+	const headIsPart = head !== undefined && head.IsA("BasePart");
+
+	const anchorY = anchor ? anchor.Position.Y : 0;
+	const headY = headIsPart ? (head as BasePart).Position.Y : anchorY;
+
+	return (
+		`${anchor ? anchor.Name : "no anchor"} y ${string.format("%.2f", anchorY)}, ` +
+		`head ${headIsPart ? `y ${string.format("%.2f", headY)}` : "NOT FOUND"} ` +
+		`(rise ${string.format("%.2f", headY - anchorY)})`
+	);
 }
 
 /** How far the ball's edge sits from the point its centre is aimed at. */
@@ -88,9 +142,18 @@ const CURVE_ANGLE = math.rad(BALL_CONFIG.THROW_CURVE_ANGLE);
  * same every time — which is what the landing needs to be.
  */
 function centreAimPoint(character: Model, muzzle: Vector3, target: Vector3): Vector3 {
+	// **The filter is set with `ExcludeInstances`, and the pair it replaces is deprecated.** The typings
+	// for `RaycastParams` mark `FilterType`, `FilterDescendantsInstances` and `AddToFilter` as deprecated
+	// in favour of `ExcludeInstances` and `IncludeInstances` — so this is the way the engine is
+	// maintained for, and the same sentence is now true of every other ray in the throw path.
+	//
+	// **Worth being certain about rather than merely working, because of what this ray decides.** It is
+	// cast for the surface *normal* at the aim point, and a filter that quietly failed would not read as
+	// a broken ray: it would come back with the thrower's own body as the surface, and aim the ball a
+	// radius off the mark in whatever direction their torso happens to face. Small, systematic, and
+	// invisible in every line the aim prints.
 	const params = new RaycastParams();
-	params.FilterType = Enum.RaycastFilterType.Exclude;
-	params.FilterDescendantsInstances = [character];
+	params.ExcludeInstances = [character];
 	params.IgnoreWater = true;
 
 	const delta = target.sub(muzzle);

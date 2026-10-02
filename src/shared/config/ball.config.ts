@@ -223,13 +223,18 @@ export const BALL_CONFIG = {
 	 * How far in front of the thrower's torso the ball starts its flight, in studs,
 	 * measured along the direction the body is facing.
 	 *
+	 * **Horizontal only.** The launch point's height is not a number here: it is read off the thrower's
+	 * head, see `shared/throw.ts` → `getThrowMuzzle`. That is deliberate, because the height is the one
+	 * part of the offset that differs between rigs, and a constant would be right on one of them and
+	 * wrong on the other.
+	 *
 	 * Read this as a **lever arm**: it is the radius the launch point swings on when
 	 * the character moves or turns, so every stud of offset multiplies body motion
 	 * into the aim guide at a 1:1 ratio. A large value here makes the guide appear
 	 * to wobble as you walk; it does not make the throw safer, because
 	 * `CollisionIgnore` already guarantees the ball cannot hit its thrower.
 	 *
-	 * This is the one number to change to move the launch point. It is read in
+	 * This is the one number to change to move the launch point horizontally. It is read in
 	 * exactly one place — `shared/throw.ts` → `getThrowMuzzle` — which both the
 	 * server (real throw) and the client (aim guide) call, so tuning it moves both
 	 * together and the guide keeps telling the truth.
@@ -303,27 +308,43 @@ export const BALL_CONFIG = {
 	THROW_MAX_SPEED: 280,
 
 	/**
-	 * **A multiplier on the derived launch boost. It should stay at 1.**
+	 * **A multiplier on the derived launch correction. It should stay at 1.**
 	 *
-	 * The boost is no longer a value anybody picks — it is computed at every throw from the two
-	 * numbers that cause the loss:
+	 * The correction is no longer a value anybody picks, and no longer only vertical — it is computed
+	 * at every throw from the acceleration the ball is about to fly under:
 	 *
 	 * ```
-	 * boost = THROW_VERTICAL_BOOST_SCALE * Workspace.Gravity / (2 * Workspace:GetRealPhysicsFPS())
+	 * correction = -½ · dt · pull,   pull = plan.acceleration - gravity
 	 * ```
+	 *
+	 * which for the gravity-only arcs is the figure this field was written for,
+	 * `THROW_VERTICAL_BOOST_SCALE * Workspace.Gravity / (2 * Workspace:GetRealPhysicsFPS())`, aimed
+	 * straight up.
 	 *
 	 * **Why that shape.** The engine's integrator advances a body by its current velocity and only
-	 * then bends it, so the vertical velocity a step acts on is short of the one written to the ball
-	 * by roughly `½·g·dt`. That is a *velocity*, which is why this gets added to the launch rather
-	 * than scaled into it — and `dt` is the physics step, so `1/dt` is the rate the server steps at
-	 * and the loss is inversely proportional to it. `GetRealPhysicsFPS()` reports that rate.
+	 * then bends it, so a step's worth of the pull is missing from the velocity that step acts on: the
+	 * ball gains `½·a·dt·t` of position along `a` on top of the arc it was solved for. That is a
+	 * *velocity*, which is why it is added to the launch rather than scaled into it — and `dt` is the
+	 * physics step, so `1/dt` is the rate the server steps at and the loss is inversely proportional to
+	 * it. `GetRealPhysicsFPS()` reports that rate. **The integrator does not care which way `a` points**,
+	 * which is why the correction is taken from the whole pull rather than from gravity.
 	 *
 	 * A correction for the engine, not a design choice. Measured on the server: the ball flies as
-	 * though it left the hand slower vertically than the velocity that was written to it, and stays
-	 * that much behind for the whole flight — so the shortfall in position grows as `boost·t`, and
-	 * the longer the throw the further the ball sits below the line it was solved for. The drawn arc
-	 * is the solved one, so what that looks like from the player's seat is a trajectory running
-	 * *above* the ball.
+	 * though it left the hand slower along the pull than the velocity that was written to it, and stays
+	 * that much behind for the whole flight — so the shortfall in position grows as `correction·t`, and
+	 * the longer the throw the further the ball sits off the line it was solved for. The drawn arc is
+	 * the solved one, so what that looks like from the player's seat is a trajectory running above the
+	 * ball.
+	 *
+	 * **Amended, because `pull` is not always gravity and only gravity's half used to be here.** For a
+	 * curve the pull carries the sideways acceleration the ball flies under, and half a step of *that*
+	 * was never taken off the launch — so a curve flew its solved arc plus `½·a·dt·t` of extra bow,
+	 * invisible at the start of the flight and worth about `½·a·dt·flightTime` studs (0.76 on a 0.31 s
+	 * throw) at the landing, in the direction of the bow. Straight and overhead throws were unaffected
+	 * because they have no pull to be wrong about, which is the whole of why this read as a
+	 * curve-only miss for so long. This dial scales both halves, so `0` still means pure ballistics —
+	 * now on both axes — and `1` is still the only setting the derivation supports. See
+	 * `BallService.launchCorrection` for the arithmetic and the log that found it.
 	 *
 	 * **What the fixed value this replaces was doing.** It was `THROW_VERTICAL_BOOST: 2.5`, and 2.5
 	 * is the right boost for a server stepping physics at `196.2 / (2 · 2.5) ≈ 39 FPS`. The rate
@@ -338,8 +359,9 @@ export const BALL_CONFIG = {
 	 * before turning this dial, because turning it hides the evidence without explaining it.
 	 *
 	 * **Tune it against the ball, not with arithmetic.** `BallService`'s DEBUG print shows the
-	 * commanded velocity, the boost it applied and the rate it read, and `ThrowProbe` reports how far
-	 * the ball drifts from the plan's own curve — that drift is the number to drive to zero.
+	 * commanded velocity, both halves of the correction it applied and the rate it read, and
+	 * `ThrowProbe` reports how far the ball drifts from the plan's own curve — that drift is the
+	 * number to drive to zero.
 	 *
 	 * **The correction belongs on the ball, not on the drawing.** Subtracting the same figure from the
 	 * guide's launch was tried (`PREDICTION_VERTICAL_BIAS`) and removed: it moves the landing *marker*
@@ -350,6 +372,32 @@ export const BALL_CONFIG = {
 	 * 0 restores pure ballistics and the shortfall with it.
 	 */
 	THROW_VERTICAL_BOOST_SCALE: 1,
+
+	/**
+	 * A hand-tuned nudge to where the ball is put on its launch, in the throw's **own** frame, in studs.
+	 *
+	 * **The one place a throw can be corrected after the plan has been solved, and the only place it can
+	 * be done without moving the aim guide.** Everything that shapes the flight — the muzzle, the aim
+	 * point, the solve, the arc — lives in `shared/throw.ts`, which the client calls with the same
+	 * inputs to draw the line the player is aiming with. A tune in there moves the marker as well as the
+	 * ball, so it cannot tell you which of the two you were right about. This is downstream of all of it:
+	 * the plan is already made, and this shifts where the ball starts by three fixed numbers.
+	 *
+	 * - `forward` — along the line to the mark. A miss *long* or *short*.
+	 * - `left` — to the left of that line, which is the axis a curve bows on, because `leftAxis` is what
+	 *   the bow is built from. A curve that lands wide is this number.
+	 * - `up` — world up. A ball arriving high or low.
+	 *
+	 * **What it costs: the ball no longer starts on the drawn line.** A shift here translates the whole
+	 * flight, so the landing moves by the same vector and the shape is untouched — which is what makes it
+	 * usable as a dial, a measured miss being one number to subtract. `ThrowProbe` sees it as a
+	 * *constant* `path` offset, never a growing one, and that is how it is told apart from a real solve
+	 * error while it is in.
+	 *
+	 * **Zeroed, and it should stay zeroed.** A non-zero nudge is a fault in the plan being papered over.
+	 * Tune with it, write down what it took, fix the cause, and put it back to zero.
+	 */
+	THROW_LAUNCH_NUDGE: { forward: 0, left: 0.5, up: 0.2 },
 
 	/**
 	 * Launch angle of the curveball, in degrees.

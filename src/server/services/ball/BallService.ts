@@ -1,5 +1,5 @@
 import { Service, OnStart } from "@flamework/core";
-import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
+import { CollectionService, Players, ReplicatedStorage, RunService, Workspace } from "@rbxts/services";
 import {
 	ARMED_ABILITY_ATTRIBUTE,
 	BALL_ABILITY_ATTRIBUTE,
@@ -16,8 +16,8 @@ import { abilityOn, isBallAbility } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { events } from "shared/networking";
-import { planPlayerThrow, getThrowMuzzle } from "shared/throw";
-import { LaunchPlan, ThrowArc } from "shared/Trajectory";
+import { planPlayerThrow, getThrowMuzzle, describeMuzzle } from "shared/throw";
+import { LaunchPlan, ThrowArc, leftAxis } from "shared/Trajectory";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
@@ -165,13 +165,27 @@ function physicsRate(): number {
 }
 
 /**
- * The upward velocity a throw needs so the ball flies the arc it was solved for, in studs per second.
+ * The velocity a throw needs added to its launch so the ball flies the arc it was solved for, in
+ * studs per second.
  *
  * **Derived, not tuned.** The engine integrates a body by its current velocity and only then bends
- * it, so the vertical velocity a step acts on is short of the one written to the ball by roughly
- * `½·g·dt` — a *velocity*, which is why it is added to the launch rather than scaled from it. See
- * `BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE` for the derivation, for the fixed value it replaces and
- * what frame rate that value implied, and for why the scale should stay at 1.
+ * it, so a step's worth of the pull is missing from the velocity a step acts on: the ball gains
+ * `½·a·dt·t` of position along `a` on top of the arc it was solved for. One velocity cancels that for
+ * every `a` at once — `−½·dt·a` — so this is written from the *pull* the ball is about to fly under.
+ * Gravity is always part of that pull; the sideways acceleration a curve carries is the other part,
+ * and it is the only arc where the answer is not straight up. See
+ * `BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE` for the derivation, for the fixed value it replaces, what
+ * frame rate that value implied, and why the scale should stay at 1.
+ *
+ * **The second term is what the curve was missing, and the log said so before this was written.** The
+ * pull's *gravity* half has been here since the throw stopped sagging; the curve's half — half a step
+ * of `plan.acceleration`, aimed back along the bow — was never applied, because no arc but the curve
+ * has a pull to apply it for. What that cost is a curve flying its solved arc plus `½·a·dt·t` of bow:
+ * a fraction of a stud at the start of the flight and worst at the landing, where it put the ball
+ * about `½·a·dt·flightTime` studs (0.76 on a 0.31 s throw) wide of the mark the guide drew, in the
+ * direction of the bow. `ThrowProbe` showed it as a `launch error` that repeated unchanged across
+ * samples, which is the shape of a *launch-state* term rather than a wrong force — a wrong
+ * `VectorForce` grows between samples, and this did not.
  *
  * **Server-only, and deliberately not in `shared/throw.ts`.** That file exists so the client's aim
  * guide and the server's throw compute one answer; this reads the *local* machine's physics rate, so
@@ -180,11 +194,52 @@ function physicsRate(): number {
  * draws the solve, and this is the server correcting the engine's own loss on top of it.
  *
  * **Read at every throw rather than cached**, because the rate is a measurement that moves — a
- * server can change how it steps while the game runs — and a boost derived once at boot would be
- * wrong for exactly the throws this exists to fix.
+ * server can change how it steps while the game runs — and a correction derived once at boot would
+ * be wrong for exactly the throws this exists to fix.
  */
-function verticalBoost(): number {
-	return (BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE * Workspace.Gravity) / (2 * physicsRate());
+function launchCorrection(acceleration: Vector3): Vector3 {
+	// Half a physics step, once, because both terms are the same fraction of their own acceleration.
+	const half = BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE / (2 * physicsRate());
+
+	// Up by half a step of gravity, and back along the throw's own pull by half a step of it. The
+	// second term is exactly zero for `straight` and `overhead` — `plan.acceleration` is the zero
+	// vector for both — so their launch is bit-for-bit what it was before this took a parameter.
+	return new Vector3(0, half * Workspace.Gravity, 0).sub(acceleration.mul(half));
+}
+
+/**
+ * The `Workspace` attribute that overrides {@link BALL_CONFIG.THROW_LAUNCH_NUDGE} while it is set,
+ * as a `Vector3` of `X = forward, Y = left, Z = up`.
+ */
+const NUDGE_ATTRIBUTE = "ThrowLaunchNudge";
+
+/**
+ * The launch nudge for this throw, in the throw's own frame — the live attribute if one is set, the
+ * config's numbers otherwise.
+ *
+ * **Why there are two sources at all, and it is not for tidiness: a config cannot be edited into a
+ * running game.** `BALL_CONFIG` is a module, and Roblox runs a module once and hands the same table
+ * to every later `require` — so changing the config mid-session changes the file and the compiled
+ * output and *not* the table the running server already holds. A value that has to be found by
+ * watching what a throw does therefore costs a play-session restart per attempt, which is the wrong
+ * shape for a dial. An attribute is read here, at the throw, so writing one moves the very next ball
+ * with no restart: `Workspace` in the Explorer, or `workspace:SetAttribute("ThrowLaunchNudge",
+ * Vector3.new(0, 5, 0))` from the command bar.
+ *
+ * **The components are the config's own three numbers in the config's own order**, `X` forward,
+ * `Y` left, `Z` up, so a value found live can be written into the config unchanged.
+ *
+ * **The attribute is a place to find a number, not a place to keep one.** It is invisible to the
+ * repository, to a code review and to the next person who runs the game — so a value that matters
+ * belongs in the config and the attribute deleted. The log says which of the two a throw used.
+ */
+function launchNudge(): { forward: number; left: number; up: number; live: boolean } {
+	const live = Workspace.GetAttribute(NUDGE_ATTRIBUTE);
+
+	if (typeIs(live, "Vector3")) return { forward: live.X, left: live.Y, up: live.Z, live: true };
+
+	const configured = BALL_CONFIG.THROW_LAUNCH_NUDGE;
+	return { forward: configured.forward, left: configured.left, up: configured.up, live: false };
 }
 
 @Service()
@@ -814,22 +869,58 @@ export class BallService implements OnStart {
 		const launch = this.acceptLaunch(ownLaunch, claimedLaunch);
 		const plan = planPlayerThrow(model, target, arc, launch);
 
-		// What actually goes on the ball: the solve, plus the launch boost that
-		// covers the engine's own vertical loss. The boost is derived from this
-		// machine's gravity and physics rate rather than fixed — see
-		// `BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE` for the derivation, and
-		// `verticalBoost` for why it is read on every throw. The guide draws the
-		// solve, so this is what makes the ball fly the drawn line instead of sagging
-		// below it.
-		const boost = verticalBoost();
-		const commanded = plan.velocity.add(new Vector3(0, boost, 0));
+		// What actually goes on the ball: the solve, plus the correction that covers the engine's own
+		// loss. It is derived from this machine's gravity, physics rate and — for a curve — the pull
+		// the plan gave it, rather than fixed: see `BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE` for the
+		// derivation, and `launchCorrection` for why it is read on every throw and why the pull is an
+		// input to it. The guide draws the solve, so this is what makes the ball fly the drawn line
+		// instead of sagging below it, and on a curve instead of bowing wider than it.
+		const correction = launchCorrection(plan.acceleration);
+		const commanded = plan.velocity.add(correction);
+
+		// **The one tune that does not also move the aim guide.** See `THROW_LAUNCH_NUDGE`: it is applied
+		// to the ball's starting point and nothing else, in the throw's own frame, because that is the
+		// frame a miss is measured in — `forward` is the line to the mark, `left` is the axis a curve
+		// bows on, `up` is world up. Untouched when all three are zero, so the zero case is the launch
+		// the plan asked for, exactly.
+		const nudge = launchNudge();
+		const nudged = nudge.forward !== 0 || nudge.left !== 0 || nudge.up !== 0;
+
+		const placement = nudged
+			? plan.origin
+					.add(new Vector3(plan.velocity.X, 0, plan.velocity.Z).Unit.mul(nudge.forward))
+					.add(leftAxis(plan.origin, target).mul(nudge.left))
+					.add(new Vector3(0, nudge.up, 0))
+			: plan.origin;
 
 		if (DEBUG) {
+			// Both halves of the correction, and only the second one is ever zero for a reason: a
+			// straight throw's line has no pull in it, so its log line is the one it always was.
+			const curvePull = new Vector3(correction.X, 0, correction.Z).Magnitude;
+			const curve = curvePull > 0.001 ? `, curve pull ${string.format("%.3f", curvePull)}` : "";
+
+			// Only when it is doing something, and that is the exception rather than the rule here: the
+			// nudge is a dial somebody turned, not a measurement that has to be distinguishable from a
+			// missing one. A launch that reads `0.00/0.00/0.00` is the plan's own.
+			//
+			// Hoisted rather than interpolated, for `BallComponent.logTouch`'s reason — a template
+			// literal nested inside another renders a hole. `(attribute)` names the source, because a
+			// nudge living on the live dial is in nobody's repository and has to say so.
+			const source = nudge.live ? " (attribute)" : "";
+			const tuned = nudged
+				? `, nudge ${string.format("%.2f", nudge.forward)}/${string.format(
+						"%.2f",
+						nudge.left,
+					)}/${string.format("%.2f", nudge.up)}${source}`
+				: "";
+
 			print(
 				`[Ball] ${model.Name}: ${plan.arc} ${this.describeThrow(plan, commanded)}, ` +
 					`release ${releasePosition} -> launch ${plan.origin}` +
 					` (${string.format("%.2f", launch.sub(ownLaunch).Magnitude)} studs from our own)` +
-					` | boost ${string.format("%.3f", boost)} at ${string.format("%.0f", physicsRate())} fps`,
+					` | muzzle ${describeMuzzle(model)}` +
+					` | boost ${string.format("%.3f", correction.Y)}${curve}` +
+					` at ${string.format("%.0f", physicsRate())} fps${tuned}`,
 			);
 		}
 
@@ -896,7 +987,9 @@ export class BallService implements OnStart {
 		// structurally: the ball cannot collide with its thrower's body at all, so
 		// being close to the hand for a frame no longer matters.
 		ball.CanCollide = false;
-		ball.Position = plan.origin;
+		// `placement` rather than `plan.origin`: the same point unless `THROW_LAUNCH_NUDGE` has been
+		// turned, which is the one dial downstream of the plan — see where it is computed above.
+		ball.Position = placement;
 		ball.Parent = Workspace;
 
 		// The ball was welded into the character, so it belonged to the thrower's
@@ -904,6 +997,11 @@ export class BallService implements OnStart {
 		// the frame it was released on. Called with no argument the server takes it
 		// back, so the whole flight is simulated in one place.
 		ball.SetNetworkOwner();
+
+		// **And whether it took, asked a frame later rather than here.** See `reportOwnership`: this is
+		// the only place in the project that can tell whether the flight being watched is stepped by the
+		// machine that derived the boost, and no other number in the log can answer it.
+		if (DEBUG) this.reportOwnership(ball, model);
 
 		ball.AssemblyLinearVelocity = commanded;
 		ball.CanCollide = true;
@@ -952,6 +1050,80 @@ export class BallService implements OnStart {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Reports who is actually simulating `ball`, from the first `Heartbeat` after it was thrown.
+	 *
+	 * **The question `SetNetworkOwner` cannot answer for itself, and the one every launch number in this
+	 * file is written on top of.** The ball belonged to the thrower's client while it sat in their hand —
+	 * it was welded to it — and the call above takes it back so that one machine steps the whole flight.
+	 * Which machine matters beyond tidiness: {@link launchCorrection} is derived from *this* server's
+	 * measured physics rate and written into the launch, and the loss it corrects is proportional to the
+	 * step. A flight stepped by the thrower's client instead runs at a rate the correction was not
+	 * computed from, and what the player sees is the ball sitting off the drawn arc by
+	 * `(correction − ½·a·dt)·t` — the fault the correction exists to remove, arriving from the other
+	 * end, and one that no other line in the game can tell apart from the correction being wrong.
+	 *
+	 * **Two reads, and the second one is the answer.** The engine applies an ownership change at a step
+	 * boundary, so the first read after the request is allowed to still name the client it was taken
+	 * from; only a read that *repeats* is a hand-off that did not take. When the first read is already
+	 * the server's there is nothing to chase and the second never happens.
+	 *
+	 * **The line prints either way.** A check that speaks only when it fails cannot be told apart from
+	 * one that is not running, which is `ThrowProbe`'s timeout rule as well — so "owned by the server"
+	 * is an answer, not silence. `CanSetNetworkOwnership` is asked on the failing path only, and for its
+	 * reason: an anchored part and a part outside the workspace are two refusals with two different
+	 * fixes, and the engine is the only thing that knows which this was.
+	 *
+	 * One line per throw, behind `DEBUG`, like the launch line above it. Delete it once the hand-off is
+	 * trusted.
+	 */
+	private reportOwnership(ball: BasePart, thrower: Model): void {
+		let frame = 0;
+
+		const connection = RunService.Heartbeat.Connect(() => {
+			frame++;
+
+			// A ball that has already gone — destroyed by a respawn, collected, expired — has no
+			// ownership left to report, and the line says that rather than going quiet about it.
+			if (ball.Parent === undefined) {
+				connection.Disconnect();
+				print(`[Ball] ${thrower.Name}: flight ownership — never read, the ball was gone within a frame`);
+
+				return;
+			}
+
+			const owner = ball.GetNetworkOwner();
+
+			if (owner === undefined) {
+				connection.Disconnect();
+
+				const settling = frame === 1 ? "" : ` (took ${frame} frames)`;
+				print(`[Ball] ${thrower.Name}: flight owned by the server${settling}`);
+
+				return;
+			}
+
+			// A client still holds it. One more read before believing it — see the doc above.
+			if (frame === 1) return;
+
+			connection.Disconnect();
+
+			// Why the server could not take it, asked of the engine rather than guessed — the second
+			// return is the engine's own sentence about the refusal, and it is empty when there is none.
+			const [canSet, reason] = ball.CanSetNetworkOwnership();
+
+			// Hoisted rather than interpolated, and deliberately: a template literal nested inside
+			// another compiles to backticks inside backticks and renders a hole — the trap
+			// `BallComponent.logTouch` documents at its own `subject`.
+			const refusal = canSet ? "" : `: ${reason}`;
+
+			print(
+				`[Ball] ${thrower.Name}: flight owned by ${owner.Name} two frames in — it is being stepped at ` +
+					`that machine's rate while the boost was derived from ours (canSet ${canSet}${refusal})`,
+			);
+		});
 	}
 
 	/**

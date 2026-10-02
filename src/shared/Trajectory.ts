@@ -483,8 +483,10 @@ export class Trajectory {
 		const ignored: Instance[] = [...(options.ignore ?? [])];
 
 		const params = new RaycastParams();
-		params.FilterType = Enum.RaycastFilterType.Exclude;
-		params.FilterDescendantsInstances = ignored;
+		// `ExcludeInstances`, not the deprecated `FilterType`/`FilterDescendantsInstances` pair — see the
+		// note in `shared/throw.ts`. This is the ray the drawn line is made of, so it is the one where a
+		// filter that quietly failed would be most visible: the arc would stop on the thrower.
+		params.ExcludeInstances = ignored;
 		params.IgnoreWater = true;
 
 		/** Everything the arc has gone through, in the order it met it. See {@link passedThrough}. */
@@ -525,7 +527,7 @@ export class Trajectory {
 				if (passable?.(result.Instance)) {
 					passed.push(result.Instance);
 					ignored.push(result.Instance.FindFirstAncestorWhichIsA("Model") ?? result.Instance);
-					params.FilterDescendantsInstances = ignored;
+					params.ExcludeInstances = ignored;
 				} else {
 					// `Distance` is how far the shape travelled, so this is where the
 					// projectile's centre stops. `Position` is the point on the surface

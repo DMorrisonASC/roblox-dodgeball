@@ -9,26 +9,45 @@ const DEBUG = true;
 /**
  * The keys that sprint — either of them.
  *
- * **Two, and the pair is the whole of this change.** The right hand that drives with `U`/`H`/`J`/`K`
- * should not have to cross the keyboard for the sprint, and the left hand that is already on WASD is
- * the one that owns `LeftAlt`. Neither key is *the* sprint key: they are two spellings of one input,
- * and every decision below is about the pair rather than about either of them.
+ * **Two, and the pair is the whole of this arrangement.** The right hand that drives with
+ * `U`/`H`/`J`/`K` should not have to cross the keyboard for the sprint, and the left hand that is
+ * already on WASD is the one that owns `LeftShift` — the left little finger, and the one key on that
+ * side of the board that nothing else in this game uses. Neither key is *the* sprint key: they are
+ * two spellings of one input, and every decision below is about the pair rather than about either of
+ * them.
+ *
+ * **`LeftShift`, and the key before it was `LeftAlt`.** The old binding worked, and it also took the
+ * player's movement with it: holding a direction, holding `LeftAlt`, and letting go of `LeftAlt`
+ * stopped the body dead with the direction key still down, and it would not move again until a fresh
+ * press. **The cause is outside the game — Alt is the one key Windows itself acts on.** Tapping it
+ * hands the window's focus to the system menu and back, which fires `WindowFocusReleased`; three
+ * controllers here clear the keys they believe are held on that event — this one among them, and
+ * correctly — and the engine's own default controls do the same with *their* held keys, so the
+ * movement was dropped and only a new press could restore it. Recorded because it read as a gameplay
+ * bug and was chased as one: the server reporting `[Walk] 20 (Base:20)` on the release, and the body's
+ * own measured speed at `0.0` inside the next 80 milliseconds. **A key the operating system has an
+ * opinion about is not a key to bind a hold to**, which is the lesson `RightAlt` taught from the other
+ * end of the keyboard.
+ *
+ * **Shift is only free because the engine's own use of it is switched off.** Roblox's default shift
+ * lock is a `LeftShift` toggle, and it is disabled in the place file — see `ShiftLock`, which says so,
+ * and which is the reason this game has a shift lock of its own at all. If that setting is ever turned
+ * back on, this binding starts toggling the engine's mouse lock as well and the two shift locks will
+ * fight over the camera.
  *
  * **`M`, and it was `RightAlt` first.** `RightAlt` is the obvious right-hand answer — it is the key
  * beside the arrow cluster — and it was bound and tried. **It did not sprint.** The cause was not
  * chased, deliberately: a key that does nothing is a key to replace, and `M` sits on the same side of
- * the board and was unbound. Two things are worth recording for whoever reads this next, since
- * neither is settled. It was not this file's filtering — both keys go through the one list, and
- * `LeftAlt` worked — so if the fault is real it is below this controller rather than here. And the
- * likeliest reason lives outside the game: on a layout with `AltGr`, the right-hand Alt is the
- * operating system's character-composition key, and whether it is delivered as `RightAlt` at all is
- * the OS's decision, not the engine's.
+ * the board and was unbound. What that binding turned out to have in common with `LeftAlt` is the
+ * paragraph above: on a layout with `AltGr`, the right-hand Alt is the operating system's
+ * character-composition key, and whether it is delivered as `RightAlt` at all is the OS's decision
+ * rather than the engine's. Neither Alt key survives in this list, for that reason.
  *
  * Annotated rather than inferred, for the reason the movement controller's key list is: a bare array
  * of two key codes is narrowed to those two literals, and `includes` then refuses the general
  * `KeyCode` that an input event carries.
  */
-const SPRINT_KEYS: Array<Enum.KeyCode> = [Enum.KeyCode.LeftAlt, Enum.KeyCode.M];
+const SPRINT_KEYS: Array<Enum.KeyCode> = [Enum.KeyCode.LeftShift, Enum.KeyCode.M];
 
 /** The client half of the sprint remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -43,7 +62,7 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
  * engine re-announcing a key that never came up.
  *
  * **Two keys and one flag, which is why the keys held are counted rather than remembered one at a
- * time.** The pair can overlap: hold `LeftAlt`, press `M`, release `LeftAlt` — the *sprint* has not
+ * time.** The pair can overlap: hold `LeftShift`, press `M`, release `LeftShift` — the *sprint* has not
  * changed, and a controller holding a single "is it down" flag would report a release on that last
  * event and stop a sprint the player is still asking for with the other hand. So what goes to the
  * server is whether *any* of the two is down, and a set is what makes that answerable. It is the same

@@ -439,7 +439,16 @@ export class LocomotionAnimationController implements OnStart {
 		// the base line never prints the second line at all, and a body whose two clips hold the same
 		// animation prints both lines and looks identical anyway — which no amount of reading the
 		// code can tell apart from the outside.
-		if (DEBUG) print(`[Animate] moving clip: ${wanted} (speed ${string.format("%.1f", moving.speed)})`);
+		if (DEBUG) {
+			// **The body's own walk speed rides along**, because it is the other reason a body that is
+			// being asked to move does not. This line is printed at the moment a clip changes, which is
+			// also the moment a freeze tends to show up in the output, and a zero here would be a
+			// different fault from a character that is being asked to move and cannot.
+			print(
+				`[Animate] moving clip: ${wanted} (speed ${string.format("%.1f", moving.speed)}, ` +
+					`walk speed ${string.format("%.1f", moving.humanoid.WalkSpeed)})`,
+			);
+		}
 	}
 
 	/**
