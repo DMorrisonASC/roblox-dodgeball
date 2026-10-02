@@ -64,7 +64,8 @@ const COUNT_GAP = 8;
 const COUNT_WIDTH = 28;
 
 /**
- * The vote: a row of buttons, one per mode, up only while the window is open.
+ * The vote: a row of buttons, one per mode, up only while the window is open **and only until this
+ * player has answered it**.
  *
  * **It decides nothing, and it counts nothing either.** Which modes are on offer, when the window
  * opens, who won, which mode the next round plays and how many votes each option has are all the
@@ -72,6 +73,11 @@ const COUNT_WIDTH = 28;
  * beside each one, and send back the one that was pressed. The figure next to a label is read off
  * the folder like everything else here, which is the point: a count worked out on this machine would
  * be a second tally, and the one a player could edit.
+ *
+ * **And it takes itself away once that has happened**, because a window that is still open for
+ * everybody else has nothing left to ask of somebody who has already answered, and a row of buttons
+ * across the top of the screen is not a thing to leave up out of politeness. See {@link voted} for
+ * the state and {@link confirmVote} for what sets it.
  *
  * The options arrive as an attribute rather than being a list in this file, so a mode that has
  * been designed but not written simply is not offered. Building Dodge and Seek will put a third
@@ -83,6 +89,27 @@ export class ModeVoteController implements OnStart {
 
 	/** Whether the buttons have been built. See {@link buildButtons}. */
 	private built = false;
+
+	/** The scope {@link voted} lives in. See its note for why it is not the mount's. */
+	private readonly voteScope = Fusion.scoped();
+
+	/**
+	 * Whether *this* player's vote has been counted, which is what takes the row away.
+	 *
+	 * **A field rather than a local in `mount`, because two methods need it**: the row's visibility is
+	 * built in `mount` and the vote that sets it is sent from `cast`. It gets a scope of its own rather than
+	 * the mount's for the same reason — it outlives no part of the mount, but it does have to be reachable
+	 * from a closure that the mount does not own.
+	 *
+	 * **A second state rather than a third condition on the window**, because the two answer different
+	 * questions: the window is the server's, and this is this client's own business. The row is up only while
+	 * both say yes.
+	 *
+	 * **Cleared when the window closes**, so the next vote is offered like the first: the row comes back on
+	 * the next intermission because the window closed in between, and nothing has to remember which round it
+	 * was.
+	 */
+	private readonly voted = Fusion.Value(this.voteScope, false);
 
 	public onStart(): void {
 		// Spawned rather than done inline: mounting waits for the status folder, and a controller's
@@ -103,7 +130,13 @@ export class ModeVoteController implements OnStart {
 
 		scope.push(
 			status.GetAttributeChangedSignal(ROUND_VOTE_OPEN_ATTRIBUTE).Connect(() => {
-				open.set(status.GetAttribute(ROUND_VOTE_OPEN_ATTRIBUTE) === true);
+				const nowOpen = status.GetAttribute(ROUND_VOTE_OPEN_ATTRIBUTE) === true;
+
+				// **A closed window forgets the answer**, which is what makes the next one offer the row
+				// again — the only place this is cleared, so there is nowhere else for it to be missed.
+				if (!nowOpen) this.voted.set(false);
+
+				open.set(nowOpen);
 			}),
 		);
 
@@ -117,7 +150,10 @@ export class ModeVoteController implements OnStart {
 			Size: new UDim2(ROW_WIDTH_SCALE, 0, 0, 0),
 			AutomaticSize: Enum.AutomaticSize.Y,
 			BackgroundTransparency: 1,
-			Visible: open,
+			// **Both questions, and the row goes when either says so.** The server's window, and this
+			// client's own answer to it — see `voted`, and `confirmVote` for what sets that: the count going
+			// up, which is the server saying the vote landed, rather than the click.
+			Visible: Fusion.Computed(scope, (use) => use(open) && !use(this.voted)),
 		});
 
 		// The standard's flexbox: a horizontal list owns the positions, so no button needs a
@@ -206,7 +242,7 @@ export class ModeVoteController implements OnStart {
 				label: GAME_MODE_NAMES[id],
 				variant: "contained",
 				layoutOrder: 1,
-				onActivate: () => this.cast(id),
+				onActivate: () => this.cast(id, status),
 			});
 
 			// big-ui ships the button hugging its own label — `AutomaticSize = X` — and an automatic
@@ -254,17 +290,52 @@ export class ModeVoteController implements OnStart {
 	}
 
 	/**
-	 * Send a vote.
+	 * Send a vote, and arrange for the row to go away once the server has counted it.
 	 *
-	 * **Nothing is predicted here.** The button does not mark itself, because the server is the
-	 * only thing that knows whether the vote was counted — a window that had just closed, or a mode
-	 * this build cannot run, are both refusals only the server can make. Feedback that the vote
-	 * landed is deliberately absent for now; the print says what was sent.
+	 * **Nothing is predicted here, and that is what shapes the hiding rather than the sending.** The button
+	 * does not mark itself and the row does not vanish on the click, because the server is the only thing that
+	 * knows whether the vote was counted: a window that had just closed, and a mode this build cannot run, are
+	 * both refusals only it can make — and a row that hid on a refusal would have taken away the chance to
+	 * answer at all. So the click sends, and {@link confirmVote} waits for the count.
+	 *
+	 * **This is where the row's feedback landed.** The note here used to say that feedback was deliberately
+	 * absent; it is now the disappearance of the row, on the server's own evidence — the same fact the print
+	 * below reports, and the only one available on this side of the wire.
 	 */
-	private cast(mode: GameModeId): void {
+	private cast(mode: GameModeId, status: Instance): void {
 		if (DEBUG) print(`[Vote] voted for ${GAME_MODE_NAMES[mode]}`);
 
 		this.getVoteRemote().SendToServer(mode);
+		this.confirmVote(status, mode);
+	}
+
+	/**
+	 * Takes the row away when this option's count goes up — the server saying the vote landed.
+	 *
+	 * **On the count rather than on the click**, for the reason {@link cast} gives: a refusal looks exactly
+	 * like a vote until the count moves, and only one of the two should take the row away. The count arrives
+	 * on the channel the figures beside the buttons are already reading, so this costs one connection and no
+	 * new server behaviour.
+	 *
+	 * **One connection per click, and it lets go of itself.** `before` is captured so that an earlier count
+	 * cannot hide the row, and the connection is disconnected the moment it has done its job — by hand rather
+	 * than through a scope, because this is not tied to the life of any instance.
+	 *
+	 * **The race worth naming:** a count that rises because somebody *else* voted for the same option in the
+	 * same instant would hide this row with this player's own vote possibly refused. Closing that needs a
+	 * per-player acknowledgement from the server, which does not exist — the counts are the only answer the
+	 * folder carries, and they are not attributed.
+	 */
+	private confirmVote(status: Instance, mode: GameModeId): void {
+		const name = voteCountAttribute(mode);
+		const before = countOf(status, name);
+
+		const connection = status.GetAttributeChangedSignal(name).Connect(() => {
+			if (countOf(status, name) <= before) return;
+
+			connection.Disconnect();
+			this.voted.set(true);
+		});
 	}
 
 	private getVoteRemote(): ClientRemotes["castVote"] {

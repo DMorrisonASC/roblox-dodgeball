@@ -24,6 +24,7 @@ import { NPC_TAG } from "../../npc/Behavior";
 import { MapService } from "../MapService";
 import { BallService } from "../ball/BallService";
 import { FreezeService } from "../actions/FreezeService";
+import { WalkSpeedService } from "../character/WalkSpeedService";
 import { StatsService } from "../stats/StatsService";
 import { SuperService } from "../super/SuperService";
 import { GameMode, RoundView } from "./modes/GameMode";
@@ -39,6 +40,53 @@ enum RoundState {
 
 /** The two sides, in the order a round has them. For anything that has to ask about both. */
 const TEAM_LABELS: ReadonlyArray<TeamLabel> = [TEAM_A, TEAM_B];
+
+/**
+ * The name the round's opening movement hold contributes under. See {@link RoundService.holdArenaEntry}.
+ *
+ * **Named rather than anonymous, for the reason `WalkSpeedService` gives about the sprint's key**: the map
+ * of contributions *is* the speed, and a hold under one name is one thing to take off again. It is also the
+ * name that appears inside the `[Walk]` line, which is the only place this freeze is visible after the fact.
+ */
+const ARENA_FREEZE_KEY = "ArenaFreeze";
+
+/**
+ * What that contribution is worth, in studs per second. **A deep negative, and that is the mechanism.**
+ *
+ * The contributions are *summed*, so a hold is not "set the speed to zero" — the base is still in the sum, and
+ * so is the sprint if the player is holding the key. A contribution of `0` would leave a character walking at
+ * whatever the others add up to. What actually stops the body is the clamp in `recalculateSpeed`:
+ * `max(0, 20 - 1000)` is `0`. It is the same figure and the same trick `FreezeService` uses for the ability's
+ * own hold, deliberately, so that anyone who has read one of them has read both.
+ */
+const ARENA_FREEZE_SPEED = -1000;
+
+/**
+ * What a boundary's transition does beyond covering the screen and moving everybody.
+ *
+ * **An options object rather than two more positional arguments**, because both are read at the call site as
+ * often as they are written, and a bare `true` in the middle of a call is the shape that goes wrong quietly:
+ * see {@link RoundService.transitionAround}, which used to take the round-end flag that way.
+ */
+interface TransitionOptions {
+    /**
+     * How long to hold everybody still after the move, in seconds, **measured from the move itself**.
+     *
+     * **Its full length is always waited for**, whatever the cover is doing — the two clocks are separate on
+     * purpose, so that a transition changed or removed does not change this number. See `transitionAround`.
+     *
+     * Omitted or `0` for a boundary that holds nobody — the round's end does not, which is why that is the
+     * default: a hold is the exception rather than the rule.
+     */
+    holdEveryoneFor?: number;
+
+    /**
+     * Whether this boundary is covered at all. Defaults to yes; `false` is how the round's end is switched
+     * off. See `WIPE_AT_ROUND_END` for that decision — and note that a hold still runs without a cover,
+     * because the freeze is a rule about the round rather than part of the wipe.
+     */
+    wipe?: boolean;
+}
 
 /**
  * Lethal damage for a thrower whose ball has been caught.
@@ -164,6 +212,7 @@ export class RoundService implements OnStart {
         private readonly stats: StatsService,
         private readonly abilities: SuperService,
         private readonly freezes: FreezeService,
+        private readonly speeds: WalkSpeedService,
     ) {}
 
     onStart() {
@@ -538,7 +587,8 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Runs one round transition: cover the screens, move everybody behind the cover, and open them again.
+     * Runs one round transition: cover the screens, move everybody behind the cover, hold them where they
+     * land if the boundary asks for it, and open the screens again.
      *
      * **The move is inside the cover, and that is the whole of what this file owes the animation.** An
      * earlier version of this held the clock for the wipe's length and called it a transition, which it was
@@ -546,51 +596,169 @@ export class RoundService implements OnStart {
      * and *then* a curtain drawn over the aftermath. Doing it the other way round is only possible on this
      * side of the wire, because the move is the server's and so is the timing.
      *
-     * **Three steps, in this order, and each one is load-bearing.**
+     * **And the hold begins at the move rather than after the cover**, which is the second correction this
+     * went through. The first version applied the arena freeze once the transition had finished, so a round
+     * opened with everybody arriving, walking about under the grid, and *then* being frozen wherever they had
+     * wandered to — the freeze was a separate beat after the arrival instead of the thing that holds the
+     * arrival still. It is applied on the line after `moveEveryone` now, for the same reason the move is
+     * inside the cover: the hold has to be measured from the landing to mean anything.
+     *
+     * **Four steps, in this order, and each one is load-bearing.**
      *
      * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE}, which is the clients' cue to close their grids. A counter
      *    rather than the phase, because the phase is published early by design — see that constant — and a
      *    wipe keyed on it would have finished and gone before this ran.
      * 2. Wait `TRANSITION_COVER_SECONDS`: the clients' own closing time plus a step of latency, so that the
      *    move below lands on covered screens rather than on half-covered ones.
-     * 3. `moveEveryone()` — the teleport, hidden — and then `TRANSITION_OPEN_SECONDS` to let the cover open.
+     * 3. `moveEveryone()` — the teleport, hidden — and {@link holdArenaEntry} on the very next line.
+     * 4. Wait, and {@link releaseArenaEntry}, which is the last thing this does.
+     *
+     * **The hold and the cover each run their own clock, which is the correction this went through last.**
+     * They shared one wait — the longer of the two — and that made the freeze depend on the transition in a
+     * way that was easy to miss: a transition whose opening outlasted the hold held the players for the
+     * *transition's* length, so slowing the cover down silently lengthened the freeze with it, and the freeze
+     * could never be shortened below it either. The freeze is a rule about the round and the cover is a piece
+     * of presentation, and neither should be able to change the other's numbers. So the hold is now waited in
+     * full and released on the tick it ends, whatever the cover is doing, and only then is whatever is *left*
+     * of the cover waited out.
+     *
+     * **The clock still waits for both**, because a clock running behind a cover is the one thing this whole
+     * arrangement exists to prevent — so the round's first second is the later of the two ends. When the hold
+     * is the longer of them, which is the arrangement these numbers are meant to be in, the later of the two
+     * *is* the release, and the release is the last statement before the caller's clock goes. When the cover is
+     * the longer, the tail of it hides players who are free to move: that is the price of the separation, and
+     * `ARENA_FREEZE_SECONDS` says what to do about it.
      *
      * **The clock is what this buys.** The phase's clock is published with the phase and does not move until
      * this returns, so a round neither spends its opening seconds behind a cover nor starts counting before
-     * its players are standing in the arena, and an intermission does not count down the time the result is
-     * being hidden behind a grid.
+     * its players are standing in the arena and able to move, and an intermission does not count down the
+     * time the result is being hidden behind a grid.
      *
      * **Called from inside the loop and awaited**, like `waitWhilePaused`, so the phase is really held rather
      * than merely late in reporting. `await` rather than a bare `task.wait` because this is called from
      * `gameLoop`, which is `async` — see that function's note on why a throw from in there ends the session.
      *
      * **Not gated on the pause.** A paused or below-minimum round still teleported everybody, so the cover is
-     * still the truth; what the pause holds is the *counting*, and this runs before anything counts. See
-     * `ENABLED`: switching the transition off is what removes the cover, the wait and the hold together,
-     * because there is then nothing to hide behind.
+     * still the truth; what the pause holds is the *counting*, and this runs before anything counts.
      *
-     * **`wipeHere` is the round-end flag**, defaulted to on because the round's opening is not the boundary
-     * anybody would want to switch off. With it off there is no cover to move behind, so the move simply
-     * happens and there is nothing to wait for — see `WIPE_AT_ROUND_END`, which is what supplies this flag,
-     * so the two cannot disagree about whether a boundary is covered.
+     * **`options` rather than more arguments**, because both of them are read at the call site as often as
+     * they are written and one of them was a bare `true`: see {@link TransitionOptions}. With `wipe` off there
+     * is no cover to move behind, so the move happens at once — but a hold still runs, because the freeze is a
+     * rule about the round rather than part of the cover.
      */
-    private async transitionAround(moveEveryone: () => void, wipeHere = true) {
-        if (!TRANSITION_CONFIG.ENABLED || !wipeHere) {
-            moveEveryone();
-            return;
+    private async transitionAround(moveEveryone: () => void, options: TransitionOptions = {}): Promise<void> {
+        const holdFor = options.holdEveryoneFor ?? 0;
+        const wiping = TRANSITION_CONFIG.ENABLED && (options.wipe ?? true);
+
+        if (wiping) {
+            const current = this.statusFolder.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+            this.statusFolder.SetAttribute(
+                ROUND_TRANSITION_ATTRIBUTE,
+                (typeIs(current, "number") ? current : 0) + 1,
+            );
+
+            print(
+                `[Round] transition — cover in ${TRANSITION_COVER_SECONDS}s, then the move, ` +
+                    `then ${TRANSITION_OPEN_SECONDS}s to open`,
+            );
+
+            task.wait(TRANSITION_COVER_SECONDS);
         }
 
-        const current = this.statusFolder.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
-        this.statusFolder.SetAttribute(
-            ROUND_TRANSITION_ATTRIBUTE,
-            (typeIs(current, "number") ? current : 0) + 1,
-        );
-
-        print(`[Round] transition — cover in ${TRANSITION_COVER_SECONDS}s, then the move, then ${TRANSITION_OPEN_SECONDS}s`);
-
-        task.wait(TRANSITION_COVER_SECONDS);
         moveEveryone();
-        task.wait(TRANSITION_OPEN_SECONDS);
+
+        // **The hold, on the line after the move, which is the whole of what it is for.** Everything held is
+        // held from the instant it landed.
+        if (holdFor > 0) this.holdArenaEntry();
+
+        // **The hold's own length, waited in full and released on the tick it ends** — not shared with the
+        // cover's wait, so that changing the transition cannot change how long the freeze lasts. See this
+        // method's doc for what that costs and why it is the right way round.
+        //
+        // The figure is accumulated from what `task.wait` returned rather than read from a clock, which is the
+        // shape `LoadingScreenController` uses and for its reason: the number in the release line is what
+        // actually happened, so a frame that ran long is visible in the log rather than rounded away. The loop
+        // is for the residual — one `task.wait` on a healthy server returns the whole duration.
+        let frozen = 0;
+        while (frozen < holdFor) frozen += task.wait(holdFor - frozen);
+
+        if (holdFor > 0) this.releaseArenaEntry(frozen);
+
+        // **And then whatever is left of the cover**, measured against the hold that has already run rather
+        // than against the move: when the hold is the longer of the two this is negative and nothing happens,
+        // which is the ordinary case, and the line above is the last thing before the clock.
+        const coverLeft = (wiping ? TRANSITION_OPEN_SECONDS : 0) - frozen;
+        if (coverLeft > 0) task.wait(coverLeft);
+    }
+
+    /**
+     * Holds every player still, from the instant the transition landed them there.
+     *
+     * **The arena-entry freeze: the round's opening beat.** A round begins by moving everybody from the lobby
+     * to a spawn, and until this existed the first thing a round asked of a player was to read a new place and
+     * act on it in the same second they arrived. Now they are held where they land, so the round's opening
+     * seconds are for looking around rather than for already being somewhere.
+     *
+     * **The gate is `WalkSpeedService`, which is the whole of the mechanism.** That service is already the one
+     * authority for how fast a character may walk, and it is the *server's* — so this is a hold rather than a
+     * request, there is no client-side state to lie about, and a client that wrote its own `WalkSpeed` is
+     * overwritten by the next recalculation. Nothing new was invented for it: a key in the existing sum, added
+     * here and removed by {@link releaseArenaEntry}. The contributions are *summed*, so the hold is a deep
+     * negative rather than a zero — see {@link ARENA_FREEZE_SPEED}.
+     *
+     * **A walk-speed hold and not the ability's freeze**, which is the nearest thing to it and the wrong
+     * thing: that one anchors the root, disables jumping and draws a block of ice, because it is a *state a
+     * player is put into*. This is "not walking", and the body is otherwise untouched. **Jumping is
+     * deliberately not blocked with it** — a body standing on its spawn has no horizontal momentum for a jump
+     * to carry, so a player who jumps on the spot is no closer to anybody. See `FreezeService` if that stops
+     * being true.
+     *
+     * **Keyed to the *body*, which leaves one hole worth naming.** Everybody present is held, and a body that
+     * replaces one during the hold — a death, which in the opening seconds would take a thrown ball — arrives
+     * wearing its own fresh base speed and can walk. Left as it is: closing it means re-applying the key from
+     * `CharacterAdded` for the length of the window, which is machinery for a case that needs the round to
+     * have already been played at.
+     */
+    private holdArenaEntry(): void {
+        const frozen = Players.GetPlayers();
+
+        for (const player of frozen) {
+            const character = player.Character;
+            if (character) this.speeds.addModifier(character, ARENA_FREEZE_KEY, ARENA_FREEZE_SPEED);
+        }
+
+        print(
+            `[Round] arena freeze — ${frozen.size()} player(s) held from the landing, ` +
+                `${ARENA_CONFIG.ARENA_FREEZE_SECONDS}s`,
+        );
+    }
+
+    /**
+     * Lifts the hold {@link holdArenaEntry} put on, and reports what it lasted.
+     *
+     * **Every player, rather than the list that was held**, and that is safe because `removeModifier` is a
+     * documented no-op for a key a model never had: anybody who arrived during the hold has no such
+     * contribution and is left exactly as they are — which is also the right treatment of them, since a player
+     * who joins mid-round is watching it rather than in it, and lands in the lobby.
+     *
+     * **The elapsed figure is passed in rather than measured here**, because what is worth reporting is the
+     * length of the hold, which began at the move — not the length of this call, which is the same tick.
+     *
+     * **Called on the last line of `transitionAround`**, so the caller's next statement — the line that starts
+     * the round's clock — runs on the same tick as the release rather than a frame or a timer later. That is
+     * the "aligned by construction" half of the freeze: the hold and the clock are not two durations that were
+     * made to agree, they are one moment written in two places, one line apart.
+     */
+    private releaseArenaEntry(held: number): void {
+        for (const player of Players.GetPlayers()) {
+            const character = player.Character;
+            if (character) this.speeds.removeModifier(character, ARENA_FREEZE_KEY);
+        }
+
+        print(
+            `[Round] arena freeze lifted — held ${string.format("%.2f", held)}s, ` +
+                `${Players.GetPlayers().size()} player(s)`,
+        );
     }
 
     private handlePlayerJoined(player: Player) {
@@ -1214,7 +1382,11 @@ export class RoundService implements OnStart {
             // covered. Finding the lobby first gives both. See `transitionAround`.
             const lobby = await this.waitForLobby();
 
-            await this.transitionAround(() => this.teleportAll(lobby), TRANSITION_CONFIG.WIPE_AT_ROUND_END);
+            // **No hold at this boundary**, and the absence is the point: the round is over, so there is
+            // nothing to hold anybody for — the only thing being covered here is the move back to the lobby.
+            await this.transitionAround(() => this.teleportAll(lobby), {
+                wipe: TRANSITION_CONFIG.WIPE_AT_ROUND_END,
+            });
 
             // **Two cleanups, and this is the order they belong in.** The held balls go first: a ball
             // in a hand is welded to a character, so it is not a descendant of the map and the map's
@@ -1401,13 +1573,16 @@ export class RoundService implements OnStart {
             // every winner a frame after it was set.
             this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, "");
 
-            // **The move goes inside the transition, and the clock does not start until it is over.** The
-            // phase and its clock are published first — that is what the HUD reads, and it is what names the
-            // round — and then the transition covers the screens, moves everybody to their side's spawn and
-            // opens them again. The clock published at its full length above does not move until then, so
-            // the opening of a round is neither spent behind a cover nor counted down at while the players
-            // are still standing in the lobby. See `transitionAround`.
-            await this.transitionAround(() => this.teleportTeamsToArena());
+            // **The move goes inside the transition, and the hold begins where the players land.** The phase
+            // and its clock are published first — that is what the HUD reads, and it is what names the round —
+            // and then the transition covers the screens, moves everybody to their side's spawn, and keeps
+            // them there for `ARENA_FREEZE_SECONDS` measured *from that move*. The clock published at its full
+            // length above does not move until this returns, which is the tick the hold lifts: see
+            // `transitionAround`, whose last act is the release, and `releaseArenaEntry` for why that and the
+            // round's first second are one moment rather than two timers that agree.
+            await this.transitionAround(() => this.teleportTeamsToArena(), {
+                holdEveryoneFor: ARENA_CONFIG.ARENA_FREEZE_SECONDS,
+            });
 
             while (this.timeRemaining > 0) {
                 // **The round may already be over**, decided from outside this loop: a player leaving

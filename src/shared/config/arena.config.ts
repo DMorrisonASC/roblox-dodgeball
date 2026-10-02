@@ -112,4 +112,31 @@ export const ARENA_CONFIG = {
 	 * of seconds, counted down one at a time.
 	 */
 	ROUND_SECONDS: 150,
+
+	/**
+	 * How long every player is held still from the moment they are put on their spawn, in seconds.
+	 *
+	 * **Measured from the landing, not from the end of the transition.** They arrive under the cover and are
+	 * held where they land, so this is the length of the round's opening beat and the transition happens inside
+	 * it — a body cannot walk off its spawn while nobody can see it. The number is therefore comparable with
+	 * the transition's own length rather than added to it; see `TRANSITION_OPEN_SECONDS`, which is the cover's
+	 * and is the figure to compare it against.
+	 *
+	 * **The round's clock starts when this ends**, on the same tick — not because two durations were made
+	 * equal but because they are one statement, one line apart. See `RoundService.transitionAround`, which
+	 * waits this out in full and then starts the round.
+	 *
+	 * **It is independent of the transition, and that is deliberate.** The two run their own clocks rather
+	 * than sharing the longer of them, so making the wipe slower, faster or switching it off entirely cannot
+	 * change how long players are held — the number below is the whole of it. The one thing to keep in mind is
+	 * the comparison with `TRANSITION_OPEN_SECONDS`: at or above it, the freeze outlasts the cover and the
+	 * round's clock starts on the tick the hold lifts, which is the arrangement these numbers are meant to be
+	 * in. Below it, the freeze ends behind the cover and the tail of the wipe hides players who are free to
+	 * move — harmless to the round, but it is what the separation costs.
+	 *
+	 * **Three seconds, and it is a placeholder that costs the round nothing.** The timer is not running yet, so
+	 * nothing is subtracted from `ROUND_SECONDS` — the only thing it spends is three seconds of the players'
+	 * time, which is what it exists to spend: long enough to land, look, and see where you are standing.
+	 */
+	ARENA_FREEZE_SECONDS: 5,
 } as const;
