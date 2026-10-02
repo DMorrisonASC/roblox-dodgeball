@@ -379,8 +379,12 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// The radius is the *miss* radius and the position is the ball's own, both of which are the
 			// difference between a free hit and a throw that went somewhere it was not aimed.
 			if (!taggedAny && abilityOn(this.instance) === "Freeze") {
-				this.freezes.freezeInRadius(this.instance.Position, SUPER_CONFIG.FREEZE_MISS_RADIUS, (model) =>
-					this.splashSpares(throwerId, model),
+				// Where the ball stopped, which is where the burst is fired. See the tag branch above for why
+				// it is the ball's own position rather than the position of whatever it came to rest on.
+				this.freezes.freezeInRadius(
+					this.instance.Position,
+					SUPER_CONFIG.FREEZE_MISS_RADIUS,
+					(model) => this.splashSpares(throwerId, model),
 				);
 			}
 
@@ -540,8 +544,15 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// nothing about the outcome: that body is already tagged, and a tagged body dies when the ball lands
 		// whether or not it was frozen on the way there.
 		if (abilityOn(this.instance) === "Freeze") {
-			this.freezes.freezeInRadius(struck.Position, SUPER_CONFIG.FREEZE_HIT_RADIUS, (model) =>
-				this.splashSpares(throwerId, model),
+			// **The ball's own position rather than the struck part's.** The splash's radius is eight studs,
+			// so where its centre sits inside that sphere changes nothing about who is caught — but this is
+			// also the point the burst is fired from, and a limb's centre is inside the limb, which would
+			// put the shards inside somebody's chest. The ball's centre at the contact is one ball radius
+			// off the skin, which is where the impact actually was.
+			this.freezes.freezeInRadius(
+				this.instance.Position,
+				SUPER_CONFIG.FREEZE_HIT_RADIUS,
+				(model) => this.splashSpares(throwerId, model),
 			);
 		}
 

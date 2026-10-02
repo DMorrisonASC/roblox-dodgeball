@@ -12,7 +12,7 @@ import { NPC_TAG } from "../../npc/Behavior";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { abilityOn, isBallAbility } from "shared/ability";
+import { abilityOn, isBallAbility, AbilityKind } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { events } from "shared/networking";
@@ -669,8 +669,11 @@ export class BallService implements OnStart {
 		// one that survived a pickup would let a dropped mark be collected off the floor and used.
 		//
 		// Written as the empty string rather than removed, which is how `makeInert` above treats
-		// `ThrowerId`: one empty case for a reader instead of two.
-		ball.SetAttribute(BALL_ABILITY_ATTRIBUTE, "");
+		// `ThrowerId`: one empty case for a reader instead of two. It goes through `setBallAbility`
+		// because a ball that arrives carrying an aura has to lose it here too — this is the moment a
+		// ball stops being a throw and becomes something being held, and a held ball with no mark on it
+		// is not a Freeze ball until its new holder says so.
+		this.setBallAbility(ball, "");
 
 		// **And nothing left over from the flight it just finished, which is a quieter leak than the one
 		// above and a worse one.** A `NoCollisionConstraint` is parented to the ball and dies with it —
@@ -714,7 +717,10 @@ export class BallService implements OnStart {
 		// applies on the wire. An arm naming a player-level buff would otherwise put that word on a ball by
 		// the back door, which is the one thing the check at the mark handler exists to prevent.
 		if (owner && typeIs(armed, "string") && isBallAbility(armed)) {
-			ball.SetAttribute(BALL_ABILITY_ATTRIBUTE, armed);
+			// Through `setBallAbility` like every other write of this attribute, which is what makes an
+			// armed Freeze ball arrive in the hand already wearing its aura rather than only after the
+			// dev has thrown it once.
+			this.setBallAbility(ball, armed);
 			owner.SetAttribute(ARMED_ABILITY_ATTRIBUTE, "");
 
 			if (DEBUG) print(`[Super] ${owner.Name}: ${ball.Name} took up the armed ${armed}`);
@@ -741,6 +747,40 @@ export class BallService implements OnStart {
 		this.heldBalls.set(model, { ball, trail });
 
 		return true;
+	}
+
+	/**
+	 * Makes `ball` a `<kind>` ball: writes the ability on it, and puts the effects that belong to that
+	 * ability on or off it.
+	 *
+	 * **Why this exists.** The attribute is the ability's only record — every gameplay reader goes
+	 * through `abilityOn` — and the aura is that same fact said out loud to the players standing nearby.
+	 * They are two halves of one statement, so they are written in one place. A caller that set the
+	 * attribute and forgot the aura would leave a marked ball that looks ordinary; a caller that did the
+	 * reverse would leave a ball glowing with nothing behind it. Neither is a state anything downstream
+	 * would catch, because both look like a working ball from inside the code and neither does from
+	 * across the arena.
+	 *
+	 * **Only Freeze has anything to attach today**, which is why the question is a plain test and not a
+	 * `switch` waiting for company: `isBallAbility` already owns the list of which abilities exist, so
+	 * this reads it rather than keeping a second copy that could disagree with it. A second ball ability
+	 * with an effect of its own adds one branch here and gets both of its sides — on and off — at once.
+	 *
+	 * `""` means "no ability", the same empty-string spelling `makeInert` gives `ThrowerId` and the one
+	 * the mark handler puts on a ball for a clear.
+	 */
+	private setBallAbility(ball: BasePart, kind: AbilityKind | ""): void {
+		ball.SetAttribute(BALL_ABILITY_ATTRIBUTE, kind);
+
+		if (kind === "Freeze") {
+			// **The flash first, then the aura, and the order is the sequence the player sees.** The flash is
+			// the *moment* — the ball flaring is what says the press landed — and the aura is the *state* that
+			// then persists. Reversed, the ball would already be glowing before it reacted.
+			this.freezes.flashActivation(ball);
+			this.freezes.attachAura(ball);
+		} else {
+			this.freezes.detachAura(ball);
+		}
 	}
 
 	/**
@@ -850,6 +890,17 @@ export class BallService implements OnStart {
 
 		// Release the ball from the hand before launching it.
 		ball.FindFirstChild(GRIP_NAME)?.Destroy();
+		// **And the aura comes off with the grip, which is what makes it mean "in a hand".**
+		//
+		// The aura and the trail below are the two indicators, and they are for two states: the aura says
+		// *loaded and held*, the trail says *in flight*. This is the one moment both change, so it is the
+		// one moment both are written — the trail arms and the aura goes. A ball that kept its aura here
+		// would wear two effects into the air, and the flight indicator, which is the one that bends with
+		// the arc, would be the harder of the two to read.
+		//
+		// The ability itself is deliberately *not* cleared: it is read off the ball at the moment of
+		// impact, so it has to survive the whole throw. Only the picture of it comes off.
+		this.freezes.detachAura(ball);
 		// Armed and attributed at the moment of release rather than when the ball
 		// was made: a caught ball has been through somebody else's hand since, and
 		// this throw is what decides whose ball it is now. The immunity check and
@@ -1439,7 +1490,7 @@ export class BallService implements OnStart {
 			return;
 		}
 
-		ball.SetAttribute(BALL_ABILITY_ATTRIBUTE, kind);
+		this.setBallAbility(ball, kind);
 
 		if (DEBUG) {
 			print(
