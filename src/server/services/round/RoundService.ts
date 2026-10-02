@@ -3,12 +3,18 @@ import { CollectionService, Players, Workspace } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
+import {
+    TRANSITION_CONFIG,
+    TRANSITION_COVER_SECONDS,
+    TRANSITION_OPEN_SECONDS,
+} from "shared/config/transition.config";
 import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import { findFolder } from "shared/find";
 import { events, RoundResultRow } from "shared/networking";
 import {
     ROUND_STATE_ATTRIBUTE,
     ROUND_TIME_ATTRIBUTE,
+    ROUND_TRANSITION_ATTRIBUTE,
     ROUND_WINNER_ATTRIBUTE,
     SPECTATING_ATTRIBUTE,
     TEAM_ATTRIBUTE,
@@ -529,6 +535,62 @@ export class RoundService implements OnStart {
         while (this.isRoundsPaused()) {
             task.wait(1);
         }
+    }
+
+    /**
+     * Runs one round transition: cover the screens, move everybody behind the cover, and open them again.
+     *
+     * **The move is inside the cover, and that is the whole of what this file owes the animation.** An
+     * earlier version of this held the clock for the wipe's length and called it a transition, which it was
+     * not: the bodies were already in their new places by the time the grid closed, so the player saw the cut
+     * and *then* a curtain drawn over the aftermath. Doing it the other way round is only possible on this
+     * side of the wire, because the move is the server's and so is the timing.
+     *
+     * **Three steps, in this order, and each one is load-bearing.**
+     *
+     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE}, which is the clients' cue to close their grids. A counter
+     *    rather than the phase, because the phase is published early by design — see that constant — and a
+     *    wipe keyed on it would have finished and gone before this ran.
+     * 2. Wait `TRANSITION_COVER_SECONDS`: the clients' own closing time plus a step of latency, so that the
+     *    move below lands on covered screens rather than on half-covered ones.
+     * 3. `moveEveryone()` — the teleport, hidden — and then `TRANSITION_OPEN_SECONDS` to let the cover open.
+     *
+     * **The clock is what this buys.** The phase's clock is published with the phase and does not move until
+     * this returns, so a round neither spends its opening seconds behind a cover nor starts counting before
+     * its players are standing in the arena, and an intermission does not count down the time the result is
+     * being hidden behind a grid.
+     *
+     * **Called from inside the loop and awaited**, like `waitWhilePaused`, so the phase is really held rather
+     * than merely late in reporting. `await` rather than a bare `task.wait` because this is called from
+     * `gameLoop`, which is `async` — see that function's note on why a throw from in there ends the session.
+     *
+     * **Not gated on the pause.** A paused or below-minimum round still teleported everybody, so the cover is
+     * still the truth; what the pause holds is the *counting*, and this runs before anything counts. See
+     * `ENABLED`: switching the transition off is what removes the cover, the wait and the hold together,
+     * because there is then nothing to hide behind.
+     *
+     * **`wipeHere` is the round-end flag**, defaulted to on because the round's opening is not the boundary
+     * anybody would want to switch off. With it off there is no cover to move behind, so the move simply
+     * happens and there is nothing to wait for — see `WIPE_AT_ROUND_END`, which is what supplies this flag,
+     * so the two cannot disagree about whether a boundary is covered.
+     */
+    private async transitionAround(moveEveryone: () => void, wipeHere = true) {
+        if (!TRANSITION_CONFIG.ENABLED || !wipeHere) {
+            moveEveryone();
+            return;
+        }
+
+        const current = this.statusFolder.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+        this.statusFolder.SetAttribute(
+            ROUND_TRANSITION_ATTRIBUTE,
+            (typeIs(current, "number") ? current : 0) + 1,
+        );
+
+        print(`[Round] transition — cover in ${TRANSITION_COVER_SECONDS}s, then the move, then ${TRANSITION_OPEN_SECONDS}s`);
+
+        task.wait(TRANSITION_COVER_SECONDS);
+        moveEveryone();
+        task.wait(TRANSITION_OPEN_SECONDS);
     }
 
     private handlePlayerJoined(player: Player) {
@@ -1144,7 +1206,15 @@ export class RoundService implements OnStart {
             // publish below this line, a held intermission was indistinguishable from a frozen round
             // — see the note above for what that looked like. See `waitForLobby` for the two lines it
             // prints around one, which is the other half of the same answer.
-            this.teleportAll(await this.waitForLobby());
+            //
+            // **The lookup comes out here and the move goes into the transition, and they had to part
+            // company for the cover to work.** This was one line — `teleportAll(await waitForLobby())` —
+            // and the two halves want opposite things: the wait can hold for as long as the lobby is
+            // missing, so it has to happen with the screens clear, while the move has to happen with them
+            // covered. Finding the lobby first gives both. See `transitionAround`.
+            const lobby = await this.waitForLobby();
+
+            await this.transitionAround(() => this.teleportAll(lobby), TRANSITION_CONFIG.WIPE_AT_ROUND_END);
 
             // **Two cleanups, and this is the order they belong in.** The held balls go first: a ball
             // in a hand is welded to a character, so it is not a descendant of the map and the map's
@@ -1321,7 +1391,6 @@ export class RoundService implements OnStart {
                 this.abilities.resetForRound(player);
             }
             print(`Round started — ${GAME_MODE_NAMES[this.mode.id]}`);
-            this.teleportTeamsToArena();
 
             this.timeRemaining = ARENA_CONFIG.ROUND_SECONDS;
             this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Playing");
@@ -1331,6 +1400,14 @@ export class RoundService implements OnStart {
             // what that round decided, so clearing at the intermission's own start would wipe
             // every winner a frame after it was set.
             this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, "");
+
+            // **The move goes inside the transition, and the clock does not start until it is over.** The
+            // phase and its clock are published first — that is what the HUD reads, and it is what names the
+            // round — and then the transition covers the screens, moves everybody to their side's spawn and
+            // opens them again. The clock published at its full length above does not move until then, so
+            // the opening of a round is neither spent behind a cover nor counted down at while the players
+            // are still standing in the lobby. See `transitionAround`.
+            await this.transitionAround(() => this.teleportTeamsToArena());
 
             while (this.timeRemaining > 0) {
                 // **The round may already be over**, decided from outside this loop: a player leaving

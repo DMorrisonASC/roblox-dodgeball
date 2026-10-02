@@ -1,6 +1,8 @@
 import { Controller, OnStart } from "@flamework/core";
+import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
+import { sprinting } from "../../sprinting";
 
 /** Prints the write once per body, and each body that was left alone and why. */
 const DEBUG = true;
@@ -148,15 +150,6 @@ interface Moving {
 
 	/** The id {@link Moving.run} was loaded from. See {@link Moving.walkId}. */
 	runId: string;
-
-	/**
-	 * The speed the humanoid last reported from its own `Running` event.
-	 *
-	 * **The measured speed, and it is a different question from the configured one.** This is what
-	 * the engine's script animates from — how fast the body is *actually* going — and it is what
-	 * tells a body walking into a wall from a body standing still.
-	 */
-	speed: number;
 
 	/** Which of the two is playing, or `none` while standing still or off the ground. */
 	playing: "walk" | "run" | "none";
@@ -356,21 +349,20 @@ export class LocomotionAnimationController implements OnStart {
 		const run = this.loadMovingClip(runId, animator);
 		if (!walk || !run) return;
 
-		const moving: Moving = { humanoid, animator, walk, walkId, run, runId, speed: 0, playing: "none" };
+		const moving: Moving = { humanoid, animator, walk, walkId, run, runId, playing: "none" };
 
-		// **The engine's own measurement of how fast the body is going, taken from the event its
-		// script reads.** `Running` is fired by the humanoid's physics on this client, so it costs
-		// nothing and it reports the horizontal speed the body is actually travelling at — which is
-		// the question "is this body moving", and not the same question as "what is it allowed to
-		// walk at".
-		const running = humanoid.Running.Connect((speed) => {
-			moving.speed = speed;
-		});
+		// **Nothing is subscribed to the humanoid's `Running` event, and that is a correction.** It was the
+		// source of the speed this file decides from, on the argument that it is the engine's own measurement
+		// and costs nothing — but it is an *event*, so it reports changes, and between two of them the value a
+		// listener holds is simply the last thing it was told. Nothing about a jump goes through it. A body that
+		// had just landed wore the walk clip while standing still, and a body travelling at twenty studs wore no
+		// moving clip at all — both from that one number being stale. The measurement is taken per tick now; see
+		// `measuredSpeed`.
 
 		// Spawned, because the loop is the rest of this body's life and `dress` is a handler on the
 		// way in. A body that never moves runs this loop idle for as long as it exists, which is the
 		// cost of asking the question at all.
-		task.spawn(() => this.follow(character, moving, running));
+		task.spawn(() => this.follow(character, moving));
 	}
 
 	/**
@@ -379,10 +371,9 @@ export class LocomotionAnimationController implements OnStart {
 	 * **Death and despawn are the same exit**, because both end the body: `Health` at zero is a
 	 * corpse this file has no opinion about, and a character whose parent is nil has been replaced.
 	 * Either way the loop is over, and a track left playing on a body that has died is a corpse
-	 * still walking. The `Running` connection goes with it — it is a connection to a humanoid that
-	 * will never report again, and one per life would be a session's worth of them by the end.
+	 * still walking.
 	 */
-	private follow(character: Model, moving: Moving, running: RBXScriptConnection): void {
+	private follow(character: Model, moving: Moving): void {
 		// **Reported once and then not again, because a tick that fails fails twenty times a second.**
 		// The first failure is the one worth reading; twenty lines a second would bury it and the
 		// output with it.
@@ -404,7 +395,6 @@ export class LocomotionAnimationController implements OnStart {
 			task.wait(MOVEMENT_TICK_SECONDS);
 		}
 
-		running.Disconnect();
 		moving.walk.Destroy();
 		moving.run.Destroy();
 	}
@@ -414,9 +404,27 @@ export class LocomotionAnimationController implements OnStart {
 	 *
 	 * The guard is what makes a twenty-times-a-second poll affordable: the body spends almost all of
 	 * its life in one answer, and the work of a tick that agrees with the last one is a state read.
+	 *
+	 * **The speed is measured once here and handed to both readers** — the decision and the line
+	 * below — so the number that is printed is the number the choice was made from. It used to be the
+	 * other way round: a number that arrived from an event *between* ticks was printed next to a
+	 * decision made from it, which is how a line reading `speed 19.5` beside `none` and `speed 0.1`
+	 * beside `walk` came to be written by a rule that reads neither of those ways.
+	 *
+	 * **The sprint input is read here too, and printed with it**, because the clip is now decided by a
+	 * key *and* a measurement: a line showing only one of the two could not tell "the player is not
+	 * holding sprint" from "the player is holding sprint and the body cannot move", and telling those
+	 * apart is most of what this decision does.
 	 */
 	private step(moving: Moving): void {
-		const wanted = this.wantedClip(moving);
+		const speed = this.measuredSpeed(moving);
+
+		// **Peeked rather than watched**, which is `aiming.ts`'s arrangement: a `peek` builds no graph edge,
+		// so this poll cannot outlive the module that owns the value, and the twenty-times-a-second loop is
+		// the observer.
+		const wantsSprint = Fusion.peek(sprinting);
+
+		const wanted = this.wantedClip(moving, speed, wantsSprint);
 
 		if (wanted === moving.playing) return;
 
@@ -444,11 +452,45 @@ export class LocomotionAnimationController implements OnStart {
 			// being asked to move does not. This line is printed at the moment a clip changes, which is
 			// also the moment a freeze tends to show up in the output, and a zero here would be a
 			// different fault from a character that is being asked to move and cannot.
+			//
+			// **The sprint key is printed beside it, and the three together are the whole diagnosis**: a
+			// `run` line with the key not held would be a stale read of the input, a `walk` line with the
+			// key held and a walk speed above the base would be the server refusing a sprint the client
+			// asked for, and a `none` line with the key held is a body that cannot move — into a wall, or
+			// held by something.
 			print(
-				`[Animate] moving clip: ${wanted} (speed ${string.format("%.1f", moving.speed)}, ` +
+				`[Animate] moving clip: ${wanted} (sprint ${wantsSprint ? "held" : "not held"}, ` +
+					`speed ${string.format("%.1f", speed)}, ` +
 					`walk speed ${string.format("%.1f", moving.humanoid.WalkSpeed)})`,
 			);
 		}
+	}
+
+	/**
+	 * How fast the body is travelling across the ground at this instant, in studs per second.
+	 *
+	 * **Measured from the physics rather than taken from the humanoid's `Running` event, and that is a
+	 * fix rather than a preference.** The event was the earlier source, on the argument that it is the
+	 * engine's own figure and costs nothing — but it fires when the running speed *changes*, so
+	 * between two of them the value a listener is holding is the last thing it was told. Nothing about
+	 * a jump goes through it, and what it reports on the way back down is not the body's speed at that
+	 * instant. The two symptoms were a body standing still wearing the walk clip — legs running in
+	 * place after a landing — and a body travelling at twenty studs wearing no moving clip at all.
+	 * Both are the same fault: a number that was true when it was written and is not true now.
+	 *
+	 * **Horizontal only, which is what the event's figure meant too.** A body's fall speed is not a
+	 * walking speed, and a body dropping off the arena wall with no keys held must not read as a body
+	 * walking. The state gate below already refuses most of that; this makes it true without leaning
+	 * on the gate.
+	 *
+	 * A body with no root part reads as still, which is the safe direction to be wrong in — a body
+	 * still being assembled has no legs to move yet either.
+	 */
+	private measuredSpeed(moving: Moving): number {
+		const velocity = moving.humanoid.RootPart?.AssemblyLinearVelocity;
+		if (velocity === undefined) return 0;
+
+		return math.sqrt(velocity.X * velocity.X + velocity.Z * velocity.Z);
 	}
 
 	/**
@@ -459,24 +501,35 @@ export class LocomotionAnimationController implements OnStart {
 	 * still, the jump and fall clips while it is in the air — and a walking clip held through them
 	 * would be this file overriding decisions it did not come here to make.
 	 *
-	 * **The two halves of this read two different numbers, deliberately.** Whether the body is moving
-	 * is the *measured* speed, because that is what the engine's script uses and it is the only figure
-	 * that can tell walking into a wall from standing still. Which clip it should be wearing is the
-	 * *configured* speed — {@link CHARACTER_CONFIG.BASE_WALK_SPEED}, the number every character is set
-	 * to and the number the sprint adds to — because a measured speed dips when a sprint turns a
-	 * corner, and a threshold read off it would flap between the two clips every time it did.
+	 * **A key picks between the two moving clips; the measurement only decides whether either is
+	 * wanted.** That reverses what this used to do: it read the *configured* speed — whether
+	 * `WalkSpeed` had been raised above {@link CHARACTER_CONFIG.BASE_WALK_SPEED} — on the argument that
+	 * a measured speed dips when a sprint turns a corner, and that a threshold read off it would flap
+	 * between the two clips every time it did. The case that argument never covered is the one the key
+	 * answers: the pool is the server's, so a player holding sprint with nothing left to spend moved at
+	 * walking pace and wore the walking clip — the animation agreeing with the server rather than with
+	 * the player. **The player's hands are the input**, and a sprint that is visibly asked for and not
+	 * paid for is a fact the player already knows.
 	 *
-	 * **What this cannot see** is a surface that slows a body down while it sprints: the sprint's
-	 * contribution is *added* to a reduced base, so the total can land under the line and read as a
-	 * walk. Left as it is rather than corrected, because correcting it means a second copy of the
-	 * sprint's arithmetic on the client, and the cost when it happens is the walk clip at a sprint —
-	 * a cosmetic miss rather than a broken move.
+	 * **The measurement is a gate on both, and it is what stops the two failures the key alone would
+	 * allow.** Standing still holding sprint is not a sprint — the legs keep the engine's idle clip —
+	 * and neither is a body pressed against a wall with the key down, because the measured speed is the
+	 * only figure that can tell walking into a wall from walking across a floor. See
+	 * {@link measuredSpeed} for where that figure comes from and why it is measured rather than
+	 * received.
+	 *
+	 * **What this knowingly costs, and the half of it to watch in Studio:** a body the server has
+	 * refused to sprint wears the sprint clip at walking pace, so a player out of stamina runs on the
+	 * spot in the sense that matters — the legs are going faster than the ground is. If that reads worse
+	 * than the walking clip did, the fix is to gate on `WalkSpeed` as *well* as the key, which is one
+	 * line and puts the two facts back in agreement; the trade is that a refused sprint then looks like
+	 * nothing happened at all.
 	 */
-	private wantedClip(moving: Moving): "walk" | "run" | "none" {
+	private wantedClip(moving: Moving, speed: number, wantsSprint: boolean): "walk" | "run" | "none" {
 		if (moving.humanoid.GetState() !== Enum.HumanoidStateType.Running) return "none";
-		if (moving.speed <= STANDING_SPEED) return "none";
+		if (speed <= STANDING_SPEED) return "none";
 
-		return moving.humanoid.WalkSpeed > CHARACTER_CONFIG.BASE_WALK_SPEED ? "run" : "walk";
+		return wantsSprint ? "run" : "walk";
 	}
 
 	/**

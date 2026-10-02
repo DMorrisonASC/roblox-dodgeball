@@ -2,6 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import Net from "@rbxts/net";
 import { Players, UserInputService } from "@rbxts/services";
 import { events } from "shared/networking";
+import { sprinting } from "../../sprinting";
 
 /** Prints the bind once, and each change of what is being asked for. */
 const DEBUG = true;
@@ -157,6 +158,15 @@ export class SprintController implements OnStart {
 		if (this.holding === active) return;
 
 		this.holding = active;
+
+		// **And the client's own half of the same fact, which goes out to nothing.** The remote tells the
+		// *server* what to do with the key; this tells the rest of the client what the key is, because one
+		// reader needs to know: the moving clip cannot tell a sprint from a walk by looking at the body —
+		// both are simply "moving" — so it asks the key. See `client/sprinting.ts`.
+		//
+		// Written inside the guard, so the published state changes exactly when the server is told that it
+		// has, and a held key's repeat announcements cannot become a stream of writes either.
+		sprinting.set(active);
 
 		// The keys down come along, because with two of them a bare "held" cannot say which one, and
 		// the case where that matters is exactly the one the second key introduced: a `held` line that

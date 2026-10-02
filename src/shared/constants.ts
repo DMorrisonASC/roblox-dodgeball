@@ -214,6 +214,24 @@ export const ROUND_TIME_ATTRIBUTE = "TimeRemaining";
 export const ROUND_WINNER_ATTRIBUTE = "Winner";
 
 /**
+ * Attribute on {@link ROUND_STATUS_FOLDER}: **a count of the transitions the server has started**, bumped
+ * the instant before it moves everybody.
+ *
+ * **A counter of its own rather than the phase, and the reason is the whole point of it.** The phase is
+ * published *early* on purpose: an intermission announces itself before the lobby is even looked up, because
+ * a phase that is held must not read as the previous one (`RoundService` says so at length). The teleport
+ * then happens later — after the lobby resolves, after the held balls and the map are dealt with — so a wipe
+ * keyed on the phase would play and finish inside that gap and cover nothing at all. This is written
+ * immediately before the move instead, which is what lets the client's cover close *around* the cut rather
+ * than after it.
+ *
+ * A number rather than a boolean because the count is the useful part: **any change is a transition**, so a
+ * client needs no notion of which phase it is moving between, and a client that mounts mid-transition simply
+ * reads a value and waits for the next one.
+ */
+export const ROUND_TRANSITION_ATTRIBUTE = "Transition";
+
+/**
  * Attribute on {@link ROUND_STATUS_FOLDER}: which mode the round is being played as.
  *
  * The mode's **id** — a `GameModeId`, such as `"DodgeAndSeek"` — and not its display name, which

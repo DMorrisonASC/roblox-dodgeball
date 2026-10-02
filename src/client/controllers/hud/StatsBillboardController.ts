@@ -99,7 +99,15 @@ export class StatsBillboardController implements OnStart {
 		const head = character.WaitForChild("Head") as BasePart;
 
 		const scope = Fusion.innerScope(parent);
-		player.CharacterRemoving.Connect(() => Fusion.doCleanup(scope));
+
+		// **Pushed into the scope it tears down, which is the fix for an error this used to print on every
+		// death.** The connection was made and forgotten, so it outlived the cleanup it performs: the body it
+		// belonged to was gone, but the handler was still attached to the *player*, and it therefore ran again
+		// on every later removal — cleaning a scope that had already been cleaned. That is Fusion's
+		// `poisonedScope` followed by a stack of `destroyedTwice` lines, once per respawn, for the rest of the
+		// session. A connection held by the scope is disconnected when the scope is cleaned, so the handler
+		// cannot outlive the body it was made for.
+		scope.push(player.CharacterRemoving.Connect(() => Fusion.doCleanup(scope)));
 
 		const billboard = new Instance("BillboardGui");
 		billboard.Name = BILLBOARD_NAME;

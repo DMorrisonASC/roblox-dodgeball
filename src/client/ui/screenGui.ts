@@ -24,6 +24,25 @@ const SPLASH_GUI_NAME = "SplashGui";
 const SPLASH_DISPLAY_ORDER = 1;
 
 /**
+ * The third GUI's name and its rung on that ladder, and it sits above the splash on purpose.
+ *
+ * **2 is the next number rather than a big one.** `DisplayOrder` is a ladder, not a priority: `0` is
+ * every HUD, `1` is the join splash, and this is the one screen-wide cover that happens *during* a
+ * session rather than at its start — so it is the next rung. A value chosen for headroom, `100` say,
+ * would be saying "this has to beat something I have not met" about a GUI that only has to beat two, and
+ * it would hide the more useful fact: the splash and this one answer the same question, and are worth
+ * keeping adjacent so that stays visible.
+ *
+ * **Above the splash rather than below, and it is the one case where they can meet.** A client still
+ * under the join splash when a round begins is a client that joined during the intermission and has not
+ * finished arriving; the round starts without it either way. Below the splash, the wipe would simply not
+ * be seen — above it, the worst case is a wipe over a join screen, which is a client being told a round
+ * started while it was still loading, which is true.
+ */
+const TRANSITION_GUI_NAME = "TransitionGui";
+const TRANSITION_DISPLAY_ORDER = 2;
+
+/**
  * The `ScreenGui` the HUDs mount into: the one that is already there, or a new one.
  *
  * One GUI for every HUD rather than one each, because `PlayerGui` collecting a `ScreenGui` per
@@ -121,6 +140,52 @@ export function getSplashScreenGui(): ScreenGui {
 	gui.ResetOnSpawn = false;
 	gui.ScreenInsets = Enum.ScreenInsets.None;
 	gui.DisplayOrder = SPLASH_DISPLAY_ORDER;
+	gui.Parent = playerGui;
+
+	return gui;
+}
+
+/**
+ * The `ScreenGui` the round-start wipe mounts into: the same find-or-create as both of its siblings, and
+ * `None` insets for the splash's reason.
+ *
+ * **Why this is a third `ScreenGui`, restated because a third one is where the argument has to be
+ * made rather than inherited.** `getHudScreenGui`'s case against one GUI per feature was about
+ * *panels* — a thing that sits in a corner and wants the safe region — and it is answered by these GUIs
+ * not being panels but whole-screen covers with two different moments. A wipe parented into the shared
+ * GUI inherits `CoreUISafeInsets` from it, and `ScreenInsets` belongs to the `ScreenGui`: a child cannot
+ * paint the strip under Roblox's topbar however it is sized, so the grid would leave a band of the game
+ * showing along the top and another along the bottom of a phone screen. That is the same failure the
+ * splash's doc describes, and it reads as broken rather than as deliberate in both cases.
+ *
+ * **It is also what puts the wipe over the HUDs rather than behind them.** `DisplayOrder` orders whole
+ * `ScreenGui`s and beats any `ZIndex` inside either tree, so the eleven HUD controllers' panels, the
+ * shop, the result screen and the spectator label are all covered by one value on this GUI — see
+ * {@link TRANSITION_DISPLAY_ORDER} for the value and for why it is one above the splash rather than far
+ * above it.
+ *
+ * **The `ScreenGui` is reused between rounds and never destroyed.** The controller destroys the grid
+ * inside it when the wipe ends, so what stays in `PlayerGui` between rounds is an empty, disabled-free
+ * GUI with a name — the same thing the splash leaves behind after a join. Making a new one per round
+ * would be a `ScreenGui` created and thrown away once a minute, and the find-or-create below is what
+ * makes that unnecessary.
+ */
+export function getTransitionScreenGui(): ScreenGui {
+	const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
+
+	const existing = playerGui.FindFirstChild(TRANSITION_GUI_NAME);
+	if (existing?.IsA("ScreenGui")) {
+		existing.ResetOnSpawn = false;
+		existing.ScreenInsets = Enum.ScreenInsets.None;
+		existing.DisplayOrder = TRANSITION_DISPLAY_ORDER;
+		return existing;
+	}
+
+	const gui = new Instance("ScreenGui");
+	gui.Name = TRANSITION_GUI_NAME;
+	gui.ResetOnSpawn = false;
+	gui.ScreenInsets = Enum.ScreenInsets.None;
+	gui.DisplayOrder = TRANSITION_DISPLAY_ORDER;
 	gui.Parent = playerGui;
 
 	return gui;
