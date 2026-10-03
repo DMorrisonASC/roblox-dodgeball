@@ -10,7 +10,7 @@
  */
 export const DEV_CONFIG = {
 	/** Fill in by hand. Empty means nobody is a dev. */
-	userIds: [41354175, 20236513, 66317709, 3656818034] as number[],
+	userIds: [41354175, 20236513, 66317709, 3656818034,550972110] as number[],
 
 	/**
 	 * What each flag is set to when a dev joins.

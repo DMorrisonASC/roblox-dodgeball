@@ -45,5 +45,5 @@ export const MAP_CONFIG = {
 	 * nor a fatal error: the round boundary refuses to start the round, says in the output exactly
 	 * which path is missing, and retries on the next intermission. See `RoundService.mapProblem`.
 	 */
-	MAP_NAMES: ["RoLive Map"],
+	MAP_NAMES: ["ArenaV1"],
 } as const;

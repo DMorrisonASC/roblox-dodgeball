@@ -9,6 +9,25 @@
  */
 export const ARENA_CONFIG = {
 	/**
+	 * The arena a round is played in: the thing in `Workspace` with this name.
+	 *
+	 * **A permanent part of the world, and that is the newest structure this project has had.** The
+	 * arena used to be cloned from `ServerStorage` into `Workspace` when a round started and destroyed
+	 * when it ended, so its name was a key into `MAP_CONFIG.MAP_NAMES` and a round could be played in a
+	 * different one each time. There is now one arena, it sits in the place file like the lobby does,
+	 * and nothing is cloned or destroyed per round — so this is a name to *look something up by* rather
+	 * than a name to load, and the version suffix is here because the arena is expected to be replaced
+	 * wholesale rather than edited in place.
+	 *
+	 * **A direct child of `Workspace`, deliberately, and this is the one lookup in the round that pins
+	 * a location rather than searching for one.** Everything else searches a subtree — see
+	 * `shared/find.ts` for why — because what it wants may be nested anywhere inside something else.
+	 * The arena has no such parent: it is a sibling of the lobby, at the root of the world, and saying
+	 * so is what makes the round's own `[Round] arena resolved` line print a path worth reading.
+	 */
+	ARENA_NAME: "ArenaV1",
+
+	/**
 	 * **Placeholder.** The middle of the arena, in world studs. Nothing reads it:
 	 * spawn placement is done by the spawn parts named below.
 	 */
@@ -25,11 +44,15 @@ export const ARENA_CONFIG = {
 	 *
 	 * Looked up by name **anywhere in `Workspace`**, so this and the part have to agree — a loose
 	 * part at the root works, and so does one nested inside a lobby model, which is how lobbies tend
-	 * to be built. The one place it is *not* looked is inside a map: the lobby outlives every map
-	 * swap — it is where players wait while one arena is destroyed and the next is cloned in, so it
-	 * would be the one thing a swap could not afford to take with it. It is therefore the only part
-	 * the round reads that no map owns, which is why `RoundService.lobbySpawn` searches `Workspace`
-	 * while team spawns read the map.
+	 * to be built. It is the one part the round reads that the arena does not own: the arena is a
+	 * `Model` at the root of the world and the lobby is a sibling of it, which is why
+	 * `RoundService.lobbySpawn` walks the whole of `Workspace` while the team spawns are read from
+	 * inside the arena.
+	 *
+	 * **Keep this part out of the arena.** The walk does not skip anything inside `ArenaV1` — it used
+	 * to skip a copy inside the round's map, and there is no per-round map any more — so a
+	 * `LobbySpawn` under the arena would be found, and every intermission would put the players in the
+	 * arena to wait.
 	 *
 	 * **A missing one stops the intermission, not the session — and this used to say the opposite.**
 	 * The entry here argued that a missing spawn was an error rather than a silent fallback, because a
@@ -44,18 +67,21 @@ export const ARENA_CONFIG = {
 	LOBBY_SPAWN_NAME: "LobbySpawn",
 
 	/**
-	 * The folder inside a map holding one folder of spawn parts per side.
+	 * The folder inside the arena holding one folder of spawn parts per side.
 	 *
-	 * `Maps/<map>/ArenaSpawns/A` and `.../B`, each a folder of `BasePart`s — one part per place a
-	 * player on that side may start, put there by hand. Which of them a player gets is picked at
-	 * random, which is what stops a side arriving in a single pile; see
-	 * `RoundService.getRandomTeamSpawn`.
+	 * `ArenaV1/ArenaSpawns/A` and `.../B`, each a folder of `BasePart`s — one part per place a player
+	 * on that side may start, put there by hand. Which of them a player gets is picked at random,
+	 * which is what stops a side arriving in a single pile; see `RoundService.getRandomTeamSpawn`.
 	 *
-	 * **Inside the map rather than at `Workspace` root**, so a map carries its own spawns: a new arena
-	 * is a `Model` in `ServerStorage.Maps` with everything it needs, and nothing about spawning has to
-	 * be duplicated outside it or kept in step with which map happens to be loaded. The lobby is the
-	 * exception, and it is the one part the round reads that no map owns — see
+	 * **Inside the arena rather than at `Workspace` root**, so the arena carries its own spawns and
+	 * nothing about spawning sits outside it to be kept in step with it. The lobby is the exception,
+	 * and it is the one part the round reads that the arena does not own — see
 	 * {@link ARENA_CONFIG.LOBBY_SPAWN_NAME}.
+	 *
+	 * **Searched for inside the arena rather than required at a path.** `ArenaV1.ArenaSpawns` is where
+	 * it is today, but tidying it into a grouping folder of the arena's own breaks nothing: the
+	 * *structure* — an `ArenaSpawns` folder with an `A` and a `B` inside it — is the interface, and
+	 * where it happens to sit is not. See `shared/find.ts`.
 	 *
 	 * **A folder of folders rather than a naming convention**, because the parts inside need no names
 	 * at all: they are picked by position, so `Spawn1`…`Spawn9` would be nine names to keep right for
@@ -63,7 +89,7 @@ export const ARENA_CONFIG = {
 	 *
 	 * Missing, or holding no parts, is an **error** rather than a fallback — the same rule the lobby
 	 * spawn follows and for the same reason: a round that cannot place its players should not start.
-	 * `RoundService.getRandomTeamSpawn` names the map it looked in, so the fix is obvious.
+	 * `RoundService.arenaProblem` names the arena it looked in, so the fix is obvious.
 	 */
 	ARENA_SPAWNS_FOLDER: "ArenaSpawns",
 
@@ -103,7 +129,7 @@ export const ARENA_CONFIG = {
 	 * construction and a fractional one would be rounded in the HUD rather than in
 	 * the clock. Read by `RoundService`.
 	 */
-	INTERMISSION_SECONDS: 30,
+	INTERMISSION_SECONDS: 16,
 
 	/**
 	 * How long a round lasts, in seconds.

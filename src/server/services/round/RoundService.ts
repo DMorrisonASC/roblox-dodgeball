@@ -21,6 +21,7 @@ import {
 } from "shared/constants";
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
+import { applyBarrierGroups } from "../../collision/CollisionGroups";
 import { MapService } from "../MapService";
 import { BallService } from "../ball/BallService";
 import { FreezeService } from "../actions/FreezeService";
@@ -246,8 +247,8 @@ export class RoundService implements OnStart {
         // `waitForLobby` for what the consequence looks like from the player's seat. Inferring the
         // moment afterwards, from the gap between two intermissions, is guesswork; this catches it
         // instead. What it answers is *when*, and that is the half that names a suspect: the line
-        // lands beside whichever `[Map]`, `[Round]` or `[NPC]` line was doing something at that
-        // instant, so whatever reconstructs this later has a timestamp instead of a theory.
+        // lands beside whichever `[Round]` or `[NPC]` line was doing something at that instant, so
+        // whatever reconstructs this later has a timestamp instead of a theory.
         //
         // **The name test is what makes it a watcher rather than a log.** `DescendantRemoving` fires
         // for every removal anywhere in `Workspace` — every ball destroyed, every emitter cleaned up,
@@ -282,10 +283,17 @@ export class RoundService implements OnStart {
 
             // **The half that names a culprit rather than a moment.** A signal fires synchronously
             // from inside whatever removed the instance, so a removal made by this project's own code
-            // leaves that code's frames on the stack — a `Destroy()` in `RespawnBehavior`, the
-            // spawner's round cleanup, or `MapService.unloadCurrent` all appear here by file and line.
-            // A stack that is nothing but the signal dispatch is its own answer, and the interesting
-            // one: the remover is not project code, and the place is where to look.
+            // leaves that code's frames on the stack — a `Destroy()` in `RespawnBehavior` or the
+            // spawner's round cleanup both appear here by file and line. A stack that is nothing but
+            // the signal dispatch is its own answer, and the interesting one: the remover is not
+            // project code, and the place is where to look.
+            //
+            // **The list of suspects got shorter with the permanent arena**, which is worth knowing
+            // before reading a traceback: `MapService.unloadCurrent` was the third name here — it
+            // destroyed the arena once a round, and would have taken the lobby with it had the lobby
+            // ever been authored inside one — and nothing tears anything down per round any more. What
+            // is left is this project's two tag-driven destroys, neither of which can reach a part that
+            // is not wearing its tag.
             print(`[Round] ${ARENA_CONFIG.LOBBY_SPAWN_NAME} removal traceback:\n${debug.traceback()}`);
         });
 
@@ -1061,38 +1069,36 @@ export class RoundService implements OnStart {
      * from the wrong place: it is called from inside {@link gameLoop}, and a throw from there rejects
      * the loop's promise and stops the round system for the rest of the session. See
      * {@link waitForLobby} for the rule that replaced it, and the round boundary further down for the
-     * same lesson already learned about the map.
+     * same lesson already learned about the arena.
      *
      * **It walks `Workspace` rather than taking the first thing of that name, and that is the second
      * bug this lookup had.** `FindFirstChild(name, true)` answers with the first instance *of that
      * name*, whatever it is — so a single Folder or Model called `LobbySpawn` anywhere in the world
      * shadows the real part and the whole lookup reads as "no lobby", with the part it wanted sitting
-     * a few studs away. That is exactly what a lookup that works at start-up and stops working once a
-     * map is placed looks like: the arena arrives, it holds something of that name, and the answer
-     * flips. **The type has to be part of the question, not a check applied to an answer that has
-     * already been chosen.**
+     * a few studs away. **The type has to be part of the question, not a check applied to an answer
+     * that has already been chosen.**
      *
      * **Looked up anywhere in `Workspace`, not only at its root.** The lobby was once a loose part at
      * the root and a plain `FindFirstChild(name)` was written to that shape, which broke the moment
      * the part was tidied into a model — and broke *silently*, because a part present in the place
      * and missed by a too-shallow lookup is a part the loop simply sits waiting for. Anywhere in
-     * `Workspace` means a lobby can be restructured as freely as a map can.
+     * `Workspace` means the lobby can be restructured as freely as the arena can.
      *
-     * **A map's own copy is skipped.** A map is placed in `Workspace` for the length of a round and
-     * this runs at the boundary, when the outgoing map is still standing there — so a `LobbySpawn`
-     * inside an arena is the one copy that must never win. The lobby is the part of the world no map
-     * owns; this is where that is enforced rather than assumed.
+     * **The whole of `Workspace` is the search space now, and the one thing that used to be excluded
+     * from it has gone.** A copy inside the round's map was skipped, because a map standing in the
+     * world held its own `LobbySpawn` and that was the copy that must never win. There is no
+     * per-round map any more — the arena is permanent, and it *is* the arena rather than a copy of
+     * one — so there is nothing to be shadowed by and the skip is gone with it. What is left to
+     * watch is the place file rather than the code: a `LobbySpawn` built *inside* `ArenaV1` is now a
+     * part this finds, and the fix is to rename it. See `ARENA_CONFIG.LOBBY_SPAWN_NAME`.
      *
      * The walk is the whole of `Workspace`, once an intermission — or once a second while waiting for
-     * one, which is a few hundred instances next to the map clone it sits beside.
+     * one, which is a few hundred instances next to nothing.
      */
     private lobbySpawn(): CFrame | undefined {
-        const map = this.maps.getCurrent();
-
         for (const descendant of Workspace.GetDescendants()) {
             if (descendant.Name !== ARENA_CONFIG.LOBBY_SPAWN_NAME) continue;
             if (!descendant.IsA("BasePart")) continue;
-            if (map !== undefined && descendant.IsDescendantOf(map)) continue;
 
             return descendant.CFrame.add(new Vector3(0, 3, 0));
         }
@@ -1122,7 +1128,7 @@ export class RoundService implements OnStart {
 
         if (named.size() === 0) return `Nothing in Workspace is named "${ARENA_CONFIG.LOBBY_SPAWN_NAME}".`;
 
-        return `Workspace has ${named.join(", ")} — and none of those is a BasePart outside a map.`;
+        return `Workspace has ${named.join(", ")} — and none of those is a BasePart.`;
     }
 
     /**
@@ -1139,6 +1145,12 @@ export class RoundService implements OnStart {
      * up after a minute would be a round system that stayed dead for the rest of the session, which is
      * the outcome this whole arrangement exists to remove. A lookup a second costs nothing next to
      * that.
+     *
+     * **Nothing is destroyed while this waits, and that is the newest reason it is safe to wait.** The
+     * hold used to sit in front of the map swap, so going on without a lobby would have dropped
+     * everybody into an arena that was about to be torn down around them; the arena is permanent now,
+     * so nobody is in the way of anything. What it still costs is the intermission itself: held at its
+     * full length, saying so, until the part turns up.
      */
     private async waitForLobby(): Promise<CFrame> {
         let waiting = false;
@@ -1156,8 +1168,8 @@ export class RoundService implements OnStart {
 
                 warn(
                     `[Round] no "${ARENA_CONFIG.LOBBY_SPAWN_NAME}" in Workspace — holding the intermission ` +
-                        `until there is one. Everyone is standing in the arena, which is destroyed at the ` +
-                        `end of an intermission, so there is nowhere to put them until it exists. ` +
+                        `until there is one. Everybody is standing in the arena, and there is nowhere else ` +
+                        `to put them until the part exists. ` +
                         this.describeLobbyCandidates(),
                 );
             }
@@ -1181,44 +1193,49 @@ export class RoundService implements OnStart {
      * is per *call*, so a returning player is not sent back to the spot they died on.
      */
     private arenaSpawnFor(player: Player): CFrame {
-        return this.getRandomTeamSpawn(this.teams.get(player) === TEAM_B ? TEAM_B : TEAM_A);
+        return this.getRandomTeamSpawn(findArena(), this.teams.get(player) === TEAM_B ? TEAM_B : TEAM_A);
     }
 
     /**
      * One of `team`'s spawn parts, picked uniformly at random.
      *
-     * **A folder of parts inside the loaded map**, one per place a player may stand, rather than a
-     * spread around a point. A spread could not know how big the platform underneath it was, so it
+     * **A folder of parts inside the permanent arena**, one per place a player may stand, rather than
+     * a spread around a point. A spread could not know how big the platform underneath it was, so it
      * could walk people off the edge — and the answer to that would have been a radius small enough
      * to defeat the point. A part is a spot somebody has looked at and decided is a fine place to
      * begin; the randomness is then only *which* of those spots, a choice with no geometry in it.
      *
-     * **The map is asked for its spawns, by path, at the moment they are needed.** Nothing caches
-     * the parts or the folder across a round: the map they belong to is destroyed at the next
-     * intermission, so anything held here would be a reference into a torn-down model — the kind of
-     * stale handle that works until a swap happens and then places somebody in the void.
+     * **The arena is asked for its spawns at the moment they are needed, and the answer is not kept.**
+     * Nothing caches the parts or the folder: the arena is a permanent part of the world, so a
+     * reference into it would not go stale the way one into a destroyed map would — but the parts
+     * inside it are one Studio edit away from being replaced, and a cached list would be the last
+     * round's spawns. It is also why the arena arrives as an argument rather than being looked up
+     * here: this is reached both by a respawn and by the opening teleport, and both want the arena as
+     * it is *now*.
      *
-     * **Every failure here is an error, and that is the enforcement.** These are only reachable if
-     * the load sequence failed earlier — no map was loaded, or the map is missing its spawns — and
-     * both mean a round cannot start. A round that began with everybody in the lobby would look like
-     * a hang; an error names what is wrong.
+     * **Every failure here is an error, and that is the enforcement.** These are only reachable if the
+     * round boundary's own check was skipped — no arena at all, or an arena with no spawns on a side —
+     * and both mean a round cannot start. A round that began with everybody in the lobby would look
+     * like a hang; an error names what is wrong. See `arenaProblem`, which is what turns the same
+     * emptiness into the sentence a person reads before this is ever reached.
      *
      * Only **direct** `BasePart` children count. A `Model` full of parts is not a spawn and is
      * skipped rather than searched, so there is one rule about what a spawn is and the errors above
      * describe it exactly.
      */
-    private getRandomTeamSpawn(team: TeamLabel): CFrame {
-        const map = this.maps.getCurrent();
-        if (map === undefined) error(`[Round] no map loaded — cannot resolve team ${team} spawns`);
+    private getRandomTeamSpawn(arena: Instance | undefined, team: TeamLabel): CFrame {
+        if (arena === undefined) {
+            error(`[Round] no "${ARENA_CONFIG.ARENA_NAME}" in Workspace — cannot resolve team ${team} spawns`);
+        }
 
-        const parts = teamSpawnParts(map, team);
+        const parts = teamSpawnParts(arena, team);
 
-        // Still an error, even though the round boundary refuses a map like this before it gets
+        // Still an error, even though the round boundary refuses an arena like this before it gets
         // here. This is the enforcement the round leans on: a caller that skipped the boundary, or
-        // a map that lost its spawns mid-round, finds out here rather than placing somebody in the
-        // void. `mapProblem` is what turns the same emptiness into the sentence a person reads.
+        // an arena that lost its spawns mid-round, finds out here rather than placing somebody in the
+        // void. `arenaProblem` is what turns the same emptiness into the sentence a person reads.
         if (parts.size() === 0) {
-            error(`[Round] no spawn parts at ${map.Name}.${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}.${teamFolderName(team)}`);
+            error(`[Round] no spawn parts at ${arena.Name}.${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}.${teamFolderName(team)}`);
         }
 
         return parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
@@ -1283,12 +1300,13 @@ export class RoundService implements OnStart {
      * **The round-end companion to {@link clearHeldBalls}, and the two are not the same job.** That
      * one empties hands *before* a round so nobody carries a ball into it; this one empties them
      * *after* one, and the difference is who it is about — a ball that was part of the round just
-     * finished, in the hand of somebody being moved out of the arena that is about to be destroyed.
+     * finished, in the hand of somebody being moved back to the lobby.
      *
-     * **Destroyed rather than dropped.** The hand it is in is on its way to the lobby, and a drop
-     * would put the ball on the arena floor a moment before that floor stops existing. A ball that is
-     * destroyed has no position to be wrong about, which is the same argument {@link clearHeldBalls}
-     * makes for the same call.
+     * **Destroyed rather than dropped.** The hand it is in is on its way to the lobby, and a dropped
+     * ball would land on the arena floor and stay there — the arena is permanent now and nothing walks
+     * it, so the next round would be played around the last round's litter. A ball that is destroyed
+     * has no position to be wrong about, which is the same argument {@link clearHeldBalls} makes for
+     * the same call.
      *
      * **The roster is taken as it stands, and that is forced rather than chosen.** `activePlayers` is
      * cleared on the line above this in the loop — that clear is part of entering an intermission — so
@@ -1303,10 +1321,11 @@ export class RoundService implements OnStart {
      * a leaver's character is destroyed with them, so their ball is already gone by the time anybody
      * could ask, and a second attempt to remove it would just be a lookup that finds nothing.
      *
-     * **Held balls are a round concern, so they are cleaned up here rather than by the map.** A ball in
-     * a hand is welded to a *character*, and a character is not a descendant of the arena — so
-     * `MapService`'s cleanup, which walks the map, cannot see one however hard it looks. Two cleanups,
-     * two owners: this one for what the round is carrying, the map's for what the map contains.
+     * **Held balls are a hand's business, so they are cleaned up here rather than by a sweep of the
+     * arena.** A ball in a hand is welded to a *character*, and a character is not a descendant of the
+     * arena — so a cleanup that walked the arena would not find one however hard it looked. The loose
+     * balls are the spawner's, and they are swept by tag rather than by position for the same reason:
+     * see `BallSpawnerService.cleanupRoundBalls`, which skips anything held.
      */
     private clearEndedRoundHeldBalls() {
         let cleared = 0;
@@ -1388,12 +1407,14 @@ export class RoundService implements OnStart {
                 wipe: TRANSITION_CONFIG.WIPE_AT_ROUND_END,
             });
 
-            // **Two cleanups, and this is the order they belong in.** The held balls go first: a ball
-            // in a hand is welded to a character, so it is not a descendant of the map and the map's
-            // own cleanup can never see one. Then the map, which takes the loose balls, the corpses
-            // and everything else that belongs to the arena. The other way round would leave the held
-            // balls to be dealt with *after* the arena they were carried on had been destroyed — and
-            // the point of doing this at all is that nothing the round owned outlives it.
+            // **The cleanup that has to happen here, and the ordering that used to matter.** The held
+            // balls go first, and the reason is structural rather than a preference: a ball in a hand is
+            // welded to a *character*, so it is not a descendant of the arena and a sweep of the arena
+            // cannot see it however hard it looks. The other half of this pair used to be the arena
+            // itself — unloading the map took the loose balls, the corpses and everything else the round
+            // had left lying in it — and that call is gone now that the arena is permanent. The round
+            // boundary below carries the full account of what each of those things belongs to instead;
+            // what survives here is the half only this loop can do.
             this.clearEndedRoundHeldBalls();
 
             // **And every ability window, for the reason those held balls go.** A super bought in one
@@ -1415,21 +1436,19 @@ export class RoundService implements OnStart {
             // rather than a call from here, because a rig's death never reaches this file at all.
             this.freezes.unfreezeAll();
 
-            // **The map swap, and this is the only moment it is safe.** Everybody has just been put
-            // in the lobby, which lives in `Workspace` and belongs to no map — so there is
-            // nobody standing on the arena that is about to be destroyed, and nothing left behind in
-            // it. Unloading before loading is what guarantees two arenas are never in `Workspace` at
-            // once; `loadMap` does it again internally, so the order is true by construction rather
-            // than by this comment.
+            // **No map to swap, and this line is where the swap used to be.** The arena is a permanent
+            // part of the place — `ArenaV1` at the root of `Workspace`, a sibling of the lobby — so an
+            // intermission now has nothing to clone, nothing to place and nothing to destroy. What
+            // stood here was `unloadCurrent` and `loadMap`: the first tore down the arena the round had
+            // just been played in, and that is also what made the second safe to pay for, because a
+            // `Clone` is the expensive half of a swap and an intermission is where there is time to pay
+            // it.
             //
-            // Loading *here* rather than at the round's opening whistle is deliberate, and it is
-            // about the `Clone`: that is the expensive half of a swap, and this pays for it while
-            // nothing is happening. What is deliberately *not* here is putting it in the world — the
-            // clone stays out of `Workspace` until `placeCurrent` runs at the round boundary, so the
-            // intermission is not thirty seconds of every client looking at an arena that no round is
-            // being played in, which is exactly what a map loaded here and left parented would be.
-            this.maps.unloadCurrent();
-            this.maps.loadMap(this.maps.pickNext());
+            // **Both of those jobs have an owner, and neither of them is a line here.** Clearing the
+            // world of the round that has just ended is what the two cleanups above and the spawner's
+            // own sweep are for — the round boundary below carries the full account of what the unload
+            // covered and who covers it now. Paying for a clone is not a cost anybody has to schedule
+            // any more, because nothing is cloned.
 
             // The clock is published above the lobby wait now — see the note there for why the phase
             // goes out before anything that can hold. Counting starts here, which is what leaves a
@@ -1484,14 +1503,15 @@ export class RoundService implements OnStart {
 
             // --- Playing ---
 
-            // **A round whose map cannot host it does not start.**
+            // **A round whose arena cannot host it does not start.**
             //
             // This check exists because of what happens without it, which is worth spelling out
-            // because it is not obvious from the code below: `getRandomTeamSpawn` raises when there
-            // is no map, which is the right thing for *it* to do — but it is called from inside
-            // this loop, and `gameLoop` is an `async` function. roblox-ts turns that into a promise,
-            // and a throw inside it rejects the promise instead of unwinding a coroutine. Nothing
-            // handles the rejection, so the loop simply stops — for the rest of the server's life.
+            // because it is not obvious from the code below: `getRandomTeamSpawn` raises when there is
+            // no arena, or when a side's spawn folder is missing or empty, which is the right thing for
+            // *it* to do — but it is called from inside this loop, and `gameLoop` is an `async`
+            // function. roblox-ts turns that into a promise, and a throw inside it rejects the promise
+            // instead of unwinding a coroutine. Nothing handles the rejection, so the loop simply stops
+            // — for the rest of the server's life.
             //
             // What the player sees is not an error message but a *frozen HUD*: the throw happens
             // before `ROUND_STATE_ATTRIBUTE` is set to `"Playing"`, so the folder still says
@@ -1500,23 +1520,89 @@ export class RoundService implements OnStart {
             //
             // Checking here instead costs one intermission rather than the session, and it is
             // checked **before anything is half-started**: no sides are assigned, nobody is marked
-            // as playing, no clock is set. The loop goes round, the map is retried, and building the
-            // map while the server is running works on the next cycle with no restart.
-            const problem = mapProblem(this.maps.getCurrent());
+            // as playing, no clock is set. The loop goes round, the arena is looked for again, and
+            // repairing the place while the server is running works on the next cycle with no restart
+            // — the same bargain `waitForLobby` makes for the lobby, one step earlier.
+            //
+            // **The arena is resolved here and handed down, which is where `MapService` used to be
+            // asked four times.** The map was loaded, checked against, placed, and then read again
+            // during the round for its spawns — four questions with one answer that could not change,
+            // which is what made them all go through that service. The arena is a permanent part of
+            // the place, so there is nothing to load or to place, and one lookup answers every question
+            // the round has about it.
+            const arena = findArena();
+            const problem = arenaProblem(arena);
 
-            if (problem !== undefined) {
+            // **`arena === undefined` is in this test to narrow the type, not to report anything
+            // extra.** `arenaProblem` answers with the missing-arena sentence in exactly that case, so
+            // `problem` is never `undefined` here while the arena is — which means one message and one
+            // `continue` cover both halves, and the compiler is told what the reader can already see.
+            if (arena === undefined || problem !== undefined) {
                 print(`[Round] cannot start — ${problem}. Retrying next intermission.`);
 
                 continue;
             }
 
-            // **Now the arena goes into the world.** It was cloned at the top of the intermission so
-            // that the cost was paid while nothing was happening, and it has been held out of
-            // `Workspace` until here so that nobody spends the intermission looking at it. This is
-            // the only ordering that works: after the check above, so a map that cannot host a round
-            // is never put into the world only to be taken out again, and before the teleport below,
-            // so nobody is ever moved onto an arena that is not there yet.
-            this.maps.placeCurrent();
+            // **The arena's barriers are put in their collision group here, and this is a side effect
+            // that had to be replaced rather than a new rule.** `MapService.placeCurrent` ran
+            // `applyBarrierGroups` over the clone as it entered the world, and that was the only place
+            // the `CharacterBarrier` tag was ever read — so with nothing placed per round, a tagged wall
+            // in the permanent arena would keep whatever group the place file gave it and stop **balls
+            // as well as characters**, which is the exact opposite of what the tag means. See
+            // `applyBarrierGroups` and `CHARACTER_BARRIER_TAG`.
+            //
+            // **Every round rather than once at boot**, because this project's place files are edited
+            // while a server is running: a wall added or tagged after boot would otherwise stay in the
+            // wrong group until the next restart. The pass is idempotent and walks one arena, once a
+            // round, which is what makes that affordable.
+            //
+            // **A `Folder` arena gets no barrier pass, and says so rather than going quiet.**
+            // `applyBarrierGroups` takes a `Model` — the class that tag's own documentation is written
+            // around — so a `Folder` arena would silently leave its walls in `Default`. One warning a
+            // round is the honest version of that, and the fix is one word in the place file.
+            if (arena.IsA("Model")) {
+                applyBarrierGroups(arena);
+            } else {
+                warn(
+                    `[Round] "${arena.GetFullName()}" is a ${arena.ClassName} rather than a Model — ` +
+                        `barrier groups were not assigned`,
+                );
+            }
+
+            // **What the unload used to do, and who does it now.** Tearing the arena down at the end
+            // of every round was also the one sweep that cleared whatever the round had left lying in
+            // it, and that call is gone — so this is the account of where each of those things goes
+            // instead. Loose balls: `BallSpawnerService.cleanupRoundBalls`, on the same Playing →
+            // Intermission edge this loop is standing on, which destroys every ball wearing the round's
+            // tag and deliberately leaves a held one alone. Held balls: the two cleanups above, one at
+            // each boundary. Corpses: the engine's own respawn clock, and the body it makes is routed
+            // by `handlePlayerJoined` — an eliminated player comes back as a spectator in the lobby
+            // through the same branch a joiner takes. Ability debris: its own lifetime, plus
+            // `freezeAll`'s opposite above. Rigs: the `NPC` tag and `NpcService`, which own a rig for as
+            // long as it is tagged — note that rigs now *outlive a round*, where a destroyed arena used
+            // to take them with it, and that is left alone deliberately: a rig is furniture of the
+            // arena rather than of a round.
+            //
+            // **Nothing is added here on purpose.** A new sweep of this arena would be a second owner
+            // for things that already have one, and the first thing it would get wrong is the balls: a
+            // ball in somebody's hand is not the arena's litter, and a walk over the arena cannot tell
+            // one from a ball on the floor. `clearEndedRoundHeldBalls` and the spawner's sweep exist in
+            // that order for exactly that reason.
+
+            // **And what the arena is, in one line, before anybody is moved onto it.** The paths are the
+            // point: the arena and its two spawn folders are the three things a round cannot start
+            // without, so printing them turns "the round started in the wrong place" into a place-file
+            // question with a name in it. Printed after the checks above rather than before, so that the
+            // failing case is reported by the `cannot start` line instead of by a line that reads as
+            // though everything were fine.
+            const spawnsA = spawnFolderFor(arena, TEAM_A);
+            const spawnsB = spawnFolderFor(arena, TEAM_B);
+
+            print(
+                `[Round] arena resolved — ${arena.GetFullName()}; ` +
+                    `spawns ${spawnsA !== undefined ? spawnsA.GetFullName() : "missing"} and ` +
+                    `${spawnsB !== undefined ? spawnsB.GetFullName() : "missing"}`,
+            );
 
             this.state = RoundState.Playing;
 
@@ -1642,39 +1728,53 @@ function playerFromToken(throwerToken: string): Player | undefined {
     return Players.GetPlayerByUserId(userId);
 }
 
-/** The name of `team`'s spawn folder inside a map. The labels are the folder names. */
+/** The name of `team`'s spawn folder inside the arena. The labels are the folder names. */
 function teamFolderName(team: TeamLabel): string {
     return team === TEAM_B ? ARENA_CONFIG.ARENA_TEAM_FOLDER_B : ARENA_CONFIG.ARENA_TEAM_FOLDER_A;
 }
 
 /**
- * The `BasePart` children of `map`'s spawn folder for `team`.
+ * `team`'s spawn folder inside `arena`, or nothing if the arena has none.
+ *
+ * **The two-level lookup, written once, because three callers want it.** The spawn picker wants the
+ * parts inside this folder, `arenaProblem` wants to know it is there and not empty, and the round's
+ * own `[Round] arena resolved` line wants its full path for the log — and all three used to write
+ * their own pair of `findFolder` calls half a screen apart, which is three places for the folder's
+ * name to be spelled differently.
+ *
+ * **Both levels are searched for rather than named as children**, so an arena author who tidies
+ * `ArenaSpawns` into a grouping folder of their own has broken nothing. See `shared/find.ts` for why
+ * the class has to be part of the question rather than a check on the answer.
+ */
+function spawnFolderFor(arena: Instance, team: TeamLabel): Folder | undefined {
+    const spawns = findFolder(arena, ARENA_CONFIG.ARENA_SPAWNS_FOLDER);
+    if (spawns === undefined) return undefined;
+
+    return findFolder(spawns, teamFolderName(team));
+}
+
+/**
+ * The `BasePart` children of `arena`'s spawn folder for `team`.
  *
  * **One traversal, two callers that disagree about what emptiness means** — the round boundary
  * skips the round, the spawn picker throws — so "what counts as a spawn" is decided once and the
  * argument is about policy rather than about the place file. It answers with a list rather than a
- * reason for exactly that reason; {@link mapProblem} is what turns the list back into words.
+ * reason for exactly that reason; {@link arenaProblem} is what turns the list back into words.
  *
  * **The folders are searched for; the shape they must have is a contract.** `ArenaSpawns` with an `A`
- * and a `B` inside it is part of what a playable map *is*: the names are shared config
- * (`ARENA_CONFIG`), the round has nothing to teleport to without them, and {@link mapProblem} names
+ * and a `B` inside it is part of what a playable arena *is*: the names are shared config
+ * (`ARENA_CONFIG`), the round has nothing to teleport to without them, and {@link arenaProblem} names
  * the missing one rather than failing mysteriously. The *requirement* is therefore structural and
- * does not bend — while the *location* is searched, because a map author who tidies `ArenaSpawns`
- * into a grouping folder of their own has broken nothing. Keeping those two apart is the point: the
- * structure is an interface, the path is an accident. Both lookups walk the subtree and require the
- * class at the same time; see `shared/find.ts` for why `FindFirstChild(name, true)` is not the
- * shortcut it looks like.
+ * does not bend — while the *location* is searched. Keeping those two apart is the point: the
+ * structure is an interface, the path is an accident.
  *
  * Only **direct** `BasePart` children of the team's folder count. A `Model` full of parts is not a
  * spawn and is skipped rather than searched, which keeps "is this a spawn?" a question about one
  * folder's children — deliberately, and it is the one place in this file where a level is meant
  * rather than assumed.
  */
-function teamSpawnParts(map: Model, team: TeamLabel): BasePart[] {
-    const spawns = findFolder(map, ARENA_CONFIG.ARENA_SPAWNS_FOLDER);
-    if (spawns === undefined) return [];
-
-    const folder = findFolder(spawns, teamFolderName(team));
+function teamSpawnParts(arena: Instance, team: TeamLabel): BasePart[] {
+    const folder = spawnFolderFor(arena, team);
     if (folder === undefined) return [];
 
     const parts: BasePart[] = [];
@@ -1687,31 +1787,59 @@ function teamSpawnParts(map: Model, team: TeamLabel): BasePart[] {
 }
 
 /**
- * Why `map` cannot host a round, or `undefined` if it can.
+ * The arena a round is played in: the permanent thing in `Workspace`, or nothing if there is not one.
+ *
+ * **One place for the lookup, and everything else in this file is handed the answer.** The round
+ * boundary, the spawn picker and the barrier pass all want the same instance, and the version before
+ * this asked `MapService` for "the current map" at four separate points — which was the right shape
+ * while a map was loaded per round and that service was the only thing holding one, and is the wrong
+ * shape now that the arena is simply part of the place file.
+ *
+ * **A direct child of `Workspace`, and the only lookup here that pins a location.** Everything else
+ * searches a subtree because what it wants may be nested anywhere inside something else; the arena
+ * is at the root of the world beside the lobby, and `ARENA_CONFIG.ARENA_NAME` says why that is worth
+ * stating rather than searching for.
+ *
+ * **A `Model` or a `Folder`, because those are the two things an arena can be.** Anything else
+ * wearing the name — a stray part, say — is treated as no arena at all, and the round then says
+ * `no "ArenaV1" in Workspace`, which is the same fix as a rename: look at what is called that at the
+ * root of the world. The one caller that needs a `Model` specifically is the barrier pass, and it
+ * says so itself; see the round boundary.
+ */
+function findArena(): Instance | undefined {
+    const found = Workspace.FindFirstChild(ARENA_CONFIG.ARENA_NAME);
+    if (found === undefined) return undefined;
+    if (!found.IsA("Model") && !found.IsA("Folder")) return undefined;
+
+    return found;
+}
+
+/**
+ * Why `arena` cannot host a round, or `undefined` if it can.
  *
  * **A sentence rather than a boolean**, because this is read by somebody looking at a place file
- * rather than by code: the string names the folders that are missing or empty, which is the one
+ * rather than by code: the string names the folder that is missing or empty, which is the one
  * thing they need to know, and the same string serves the output line and the error.
  *
- * Takes `Model | undefined` rather than a `Model`, so that "nothing is loaded" — the case that
- * actually happens when `MAP_CONFIG.MAP_NAMES` names a map nobody has built yet — is one of the
+ * Takes `Instance | undefined` rather than an `Instance`, so that "there is no arena" — a place
+ * whose `ArenaV1` has been renamed, deleted, or is not a `Model` or `Folder` — is one of the
  * ordinary answers rather than something every caller has to check first.
  *
- * **Both sides are checked, not just a named one.** A round needs both, so a map missing either
- * cannot host a round whatever the caller was about to do with the other, and a map that is half
+ * **Both sides are checked, not just a named one.** A round needs both, so an arena missing either
+ * cannot host a round whatever the caller was about to do with the other, and an arena that is half
  * built should be reported as such the first time it is tried rather than at the second team's
  * teleport.
  */
-function mapProblem(map: Model | undefined): string | undefined {
-    if (map === undefined) return "no map is loaded";
+function arenaProblem(arena: Instance | undefined): string | undefined {
+    if (arena === undefined) return `no "${ARENA_CONFIG.ARENA_NAME}" in Workspace`;
 
     for (const team of TEAM_LABELS) {
-        if (teamSpawnParts(map, team).size() > 0) continue;
+        if (teamSpawnParts(arena, team).size() > 0) continue;
 
-        // **The names rather than a path.** The folders are searched for anywhere inside the map, so
-        // printing `RoLive Map.ArenaSpawns.A` would assert a location the lookup no longer requires —
+        // **The names rather than a path.** The folders are searched for anywhere inside the arena, so
+        // printing `ArenaV1.ArenaSpawns.A` would assert a location the lookup no longer requires —
         // which is the mistake this rule exists to prevent, in miniature.
-        return `"${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}/${teamFolderName(team)}" is missing from ${map.Name}, or has no BasePart children`;
+        return `"${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}/${teamFolderName(team)}" is missing from ${arena.Name}, or has no BasePart children`;
     }
 
     return undefined;
@@ -1726,7 +1854,7 @@ function mapProblem(map: Model | undefined): string | undefined {
  * to know how a rig is shaped, what it is named, or where `NpcService` decided to put it.
  *
  * **`IsDescendantOf(Workspace)` is the filter that makes it safe**, and it is the same guard
- * `BallSpawnerService` uses before it reparents a loose ball back into the map. A tagged rig that is
+ * `BallSpawnerService` uses before it reparents a loose ball back into the world. A tagged rig that is
  * not in the world is one in the middle of being rebuilt — a respawn kills the old model before it
  * builds the new one — and a model outside the world is holding nothing that a round should reach for.
  * The `IsA("Model")` test is there for the tag's sake rather than the code's: a tag is a string that

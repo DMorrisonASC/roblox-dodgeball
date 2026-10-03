@@ -5,9 +5,9 @@ import { startSpawnShield } from "./services/character/SpawnShield";
 print("[main] igniting");
 
 // **Before `ignite()`, and the ordering is the point rather than the tidiness.** A service's
-// `onStart` runs inside `Flamework.ignite()`, and `MapService` is one of them — it reads the
-// `Barrier` group as it places an arena. Registering after the ignite would be registering after the
-// first thing that needs it has already run.
+// `onStart` runs inside `Flamework.ignite()`, and `RoundService` is one of them — it puts the arena's
+// `CharacterBarrier` parts into the `Barrier` group at the round boundary, which is the first thing
+// that reads the group. Registering after the ignite would be registering after that had already run.
 startCollisionGroups();
 
 Flamework.addPaths("src/server/services");

@@ -5,12 +5,14 @@
 		"roblox-dodgeball:out/client/controllers/audio/MusicController@MusicController": "client/controllers/audio/MusicController@MusicController",
 		"roblox-dodgeball:out/client/controllers/camera/ShiftLock@ShiftLock": "client/controllers/camera/ShiftLock@ShiftLock",
 		"roblox-dodgeball:out/client/controllers/character/LocomotionAnimationController@LocomotionAnimationController": "client/controllers/character/LocomotionAnimationController@LocomotionAnimationController",
+		"roblox-dodgeball:out/client/controllers/character/TeamRingController@TeamRingController": "client/controllers/character/TeamRingController@TeamRingController",
 		"roblox-dodgeball:out/client/controllers/hud/ControlsLegendController@ControlsLegendController": "client/controllers/hud/ControlsLegendController@ControlsLegendController",
 		"roblox-dodgeball:out/client/controllers/hud/CooldownHudController@CooldownHudController": "client/controllers/hud/CooldownHudController@CooldownHudController",
 		"roblox-dodgeball:out/client/controllers/hud/LoadingScreenController@LoadingScreenController": "client/controllers/hud/LoadingScreenController@LoadingScreenController",
 		"roblox-dodgeball:out/client/controllers/hud/ModeVoteController@ModeVoteController": "client/controllers/hud/ModeVoteController@ModeVoteController",
 		"roblox-dodgeball:out/client/controllers/hud/RoundResultController@RoundResultController": "client/controllers/hud/RoundResultController@RoundResultController",
 		"roblox-dodgeball:out/client/controllers/hud/RoundStatusController@RoundStatusController": "client/controllers/hud/RoundStatusController@RoundStatusController",
+		"roblox-dodgeball:out/client/controllers/hud/RoundTransitionController@RoundTransitionController": "client/controllers/hud/RoundTransitionController@RoundTransitionController",
 		"roblox-dodgeball:out/client/controllers/hud/ShopController@ShopController": "client/controllers/hud/ShopController@ShopController",
 		"roblox-dodgeball:out/client/controllers/hud/SpectatorController@SpectatorController": "client/controllers/hud/SpectatorController@SpectatorController",
 		"roblox-dodgeball:out/client/controllers/hud/StatsBillboardController@StatsBillboardController": "client/controllers/hud/StatsBillboardController@StatsBillboardController",
@@ -52,8 +54,7 @@
 		"roblox-dodgeball:out/server/services/actions/ActionService@ActionService": "server/services/actions/ActionService@ActionService",
 		"roblox-dodgeball:out/server/services/ball/BallSpawnerService@BallSpawnerService": "server/services/ball/BallSpawnerService@BallSpawnerService",
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
-		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
-		"roblox-dodgeball:out/client/controllers/hud/RoundTransitionController@RoundTransitionController": "client/controllers/hud/RoundTransitionController@RoundTransitionController"
+		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService"
 	},
 	"metadata": {}
 }
