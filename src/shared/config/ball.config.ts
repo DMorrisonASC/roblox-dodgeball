@@ -126,16 +126,6 @@ export const BALL_CONFIG = {
 	// ---------------------------------------------------------------- spawner
 
 	/**
-	 * How many loose balls one spawner part keeps around it.
-	 *
-	 * **Per part, not per player**, which is the opposite of what the placeholders below assumed:
-	 * a spawner is a piece of the arena, and the arena decides how many balls the fight over it
-	 * should have. Two spawners either side of the map are two independent counts, so a ball
-	 * carried off from one is replaced there and not at the other.
-	 */
-	BALLS_PER_SPAWNER: 3,
-
-	/**
 	 * How far from a spawner part a ball still counts as "its", in studs.
 	 *
 	 * This is what makes the count mean *loose balls near the spawner* rather than *balls in the
@@ -149,9 +139,9 @@ export const BALL_CONFIG = {
 	/**
 	 * How far apart a spawner's balls land, in studs, as a maximum either side of the part.
 	 *
-	 * Purely to stop the balls stacking on one another at the spawner's own position, where they
-	 * would settle into a single pile and read as one ball. Drawn per ball, so a spawner that
-	 * refills its whole count at once spreads them out rather than dropping them in a heap.
+	 * Purely to stop two balls stacking on one another at the same position, where they would settle
+	 * into a single pile and read as one ball. It did more work when a part kept three of them, and it
+	 * is kept now because two neighbouring spawners can still land a ball on each other's spot.
 	 */
 	SPAWN_OFFSET_RANGE: 2,
 
@@ -168,9 +158,10 @@ export const BALL_CONFIG = {
 	 * **Placeholder.** Balls wanted in the world per player, as a rate rather than a headcount.
 	 *
 	 * No reader, and no longer a design this project is following: the spawner that now exists
-	 * counts per part — see {@link BALL_CONFIG.BALLS_PER_SPAWNER} — because a ball's *place* is
-	 * what matters when deciding whether the arena has enough of them. Kept only so the shape of
-	 * the alternative is still visible; nothing reads it, and nothing should.
+	 * counts one ball per part, with `MATCH_BALL_COUNT` as the arena's budget — see
+	 * `src/server/config/match.config.ts` — because a ball's *place* is what matters when deciding
+	 * whether the arena has enough of them. Kept only so the shape of the alternative is still
+	 * visible; nothing reads it, and nothing should.
 	 */
 	BALLS_PER_PLAYER: 1.2,
 

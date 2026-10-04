@@ -1,5 +1,6 @@
 import { CollectionService, PhysicsService, Players, Workspace } from "@rbxts/services";
 import { CHARACTER_BARRIER_TAG } from "shared/constants";
+import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { NPC_TAG } from "../npc/Behavior";
 
 /** The group characters belong to. Assigned by {@link followCharacters}; nothing else joins it. */
@@ -279,12 +280,14 @@ function assignPart(instance: Instance): void {
  * Both of those were found the first time a real place file disagreed with the assumption — the
  * second the moment the arena stopped being a cloned `Model`. A tag is the opposite kind of rule: it
  * says what a part *is*, so a wall can be moved, grouped, nested or reorganised and it is still a
- * wall. This is the shape `ShiftLock.checkZone` and `BallSpawnerService.tick` already use.
+ * wall. This is the shape `ShiftLock.checkZone` and `BallSpawnerService.tick` already use — and since
+ * `taggedPartsInWorkspace`, the two of them and this pass all expand a container the same way, so
+ * tagging the folder the walls live in is the same act as tagging each wall.
  *
- * **`Workspace` is the scope, which is the half the tag alone cannot say.** `GetTagged` answers about
- * every tagged instance in the game, including one sitting in a template in `ServerStorage` or in a
- * model mid-rebuild — and a wall that is not in the world is not a wall. Filtering on
- * `IsDescendantOf(Workspace)` is the same guard those two callers make, for the same reason.
+ * **`Workspace` is the scope, which is the half the tag alone cannot say — and that half belongs to
+ * `taggedPartsInWorkspace` now rather than to this pass.** What stood here was the paragraph
+ * explaining why a tagged wall outside the world is not a wall; it moved into that function, because
+ * the three readers that need it were each writing out their own version of it.
  *
  * **The old argument against a tag search is gone rather than ignored.** It was that a search
  * filtered to `Workspace` would find nothing, because the round's map was still a clone out of the
@@ -304,13 +307,10 @@ export function applyBarrierGroups(): void {
 	let assigned = 0;
 	let report = "";
 
-	for (const part of CollectionService.GetTagged(CHARACTER_BARRIER_TAG)) {
-		// A tag is a string anybody can put on anything, and `GetTagged` hands back whatever wears it —
-		// the same walk `roundParticipants` makes over the `NPC` tag, and for the same reason: the class
-		// has to be part of the question rather than a check applied to an answer already chosen.
-		if (!part.IsA("BasePart")) continue;
-		if (!part.IsDescendantOf(Workspace)) continue;
-
+	// **The arena's walls, wherever they are tagged — on the parts, or on a folder holding them, and only
+	// where there is a world for them to be in.** That last half is `taggedPartsInWorkspace`'s now; see it
+	// for why a wall outside `Workspace` is not a wall.
+	for (const part of taggedPartsInWorkspace(CHARACTER_BARRIER_TAG)) {
 		part.CollisionGroup = BARRIER_GROUP;
 		assigned++;
 

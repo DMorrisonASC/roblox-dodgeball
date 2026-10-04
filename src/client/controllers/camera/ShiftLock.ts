@@ -1,7 +1,6 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import {
-	CollectionService,
 	ContextActionService,
 	Players,
 	ReplicatedStorage,
@@ -13,6 +12,7 @@ import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SHIFT_LOCK_CONFIG } from "shared/config/shiftLock.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, SHIFT_LOCK_ZONE_TAG } from "shared/constants";
+import { taggedParts, taggedPartsInWorkspace } from "shared/taggedParts";
 import { freeLook } from "../../freeLook";
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. */
@@ -356,25 +356,19 @@ export class ShiftLock implements OnStart {
 
 		// **The count is the answer to "is the tag there at all", and it is printed rather than worked out
 		// later.** Tags replicate, so a part tagged in the place file is visible from here — which makes a
-		// zero, or a tagged thing that is not a part, the difference between "the box is in the wrong place"
-		// and "nothing is tagged". `NpcService` prints the same kind of line at startup for the same reason,
-		// and it is the first thing to grep for when a tag-driven feature does nothing.
-		const tagged = CollectionService.GetTagged(SHIFT_LOCK_ZONE_TAG);
-		const parts = tagged.filter((zone) => zone.IsA("BasePart"));
+		// zero the difference between "the box is in the wrong place" and "nothing is tagged". `NpcService`
+		// prints the same kind of line at startup for the same reason, and it is the first thing to grep for
+		// when a tag-driven feature does nothing.
+		//
+		// **The parts come from `taggedParts`, so the tag can go on the box or on a folder holding it.** The
+		// warning that used to stand here — telling the reader the tag belonged on the part rather than on a
+		// model around it — is gone because the case it described now works.
+		const parts = taggedParts(SHIFT_LOCK_ZONE_TAG);
 
 		if (DEBUG) {
 			print(
 				`[ShiftLock] up — ${parts.size()} ${SHIFT_LOCK_ZONE_TAG} part(s), ` +
 					`watching during ${INTERMISSION}, ${RELEASE_KEYS.size()} key(s) bound to release the camera`,
-			);
-		}
-
-		// The trap this names is the one worth naming: a tag put on the *model* that wraps the box rather
-		// than on the box, which reads as "the zone is tagged" everywhere except here.
-		if (parts.size() < tagged.size()) {
-			warn(
-				`[ShiftLock] ${SHIFT_LOCK_ZONE_TAG} is on ${tagged.size() - parts.size()} thing(s) that are not` +
-					` parts — the tag belongs on the part itself, not on a model around it`,
 			);
 		}
 	}
@@ -491,17 +485,13 @@ export class ShiftLock implements OnStart {
 		// The part *is* the box — its own `CFrame` and `Size`, in whatever place and rotation the builder
 		// put it. Nothing is queried for the zone itself, which is why its `CanQuery = false` (see
 		// `SHIFT_LOCK_ZONE_TAG`) has no bearing on this check.
-		for (const zone of CollectionService.GetTagged(SHIFT_LOCK_ZONE_TAG)) {
-			if (!zone.IsA("BasePart")) continue;
-
-			// **Only a zone that is in the world is a zone.** `GetTagged` returns tagged instances wherever
-			// they live and a `Clone` copies its tags — the fact `BallSpawnerService` had to guard against
-			// when the arena is loaded a round early. A part's `CFrame` is world-space regardless of its
-			// parent, so without this line a zone inside an unplaced arena would still be evaluated, at
-			// those coordinates, from inside the lobby. A box that is not in the world is not somewhere a
-			// player can walk into.
-			if (!zone.IsDescendantOf(Workspace)) continue;
-
+		//
+		// **`taggedPartsInWorkspace`, so a folder of boxes tagged as a zone works like a single tagged box
+		// and a zone outside the world is left alone** — that second half was this loop's own guard, and it
+		// lives with the function now. This runs ten times a second, so the expansion is paid on every tick,
+		// which is the one thing worth knowing about it here: the same order of work the call it replaced
+		// was already doing — one `GetTagged`, one allocated list, and a walk of any tagged container.
+		for (const zone of taggedPartsInWorkspace(SHIFT_LOCK_ZONE_TAG)) {
 			if (Workspace.GetPartBoundsInBox(zone.CFrame, zone.Size, params).size() > 0) {
 				this.inZone = true;
 				break;

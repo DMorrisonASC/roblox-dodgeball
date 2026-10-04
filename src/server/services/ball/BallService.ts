@@ -75,6 +75,17 @@ const BALL_TAG = "Ball";
 const CATCH_EMITTER_NAME = "CatchEmitter";
 
 /**
+ * What a throw sound's emitter is called. See {@link CATCH_EMITTER_NAME}.
+ *
+ * **A second name in this one file rather than a shared one, because a leftover has to be
+ * attributable.** Two events play sounds from here now — a catch and a throw — and "no emitters
+ * remain" is only a useful statement if searching for a name says *which* event leaked. One name for
+ * both would make it a true answer about the wrong thing, which is the whole reason the helper takes
+ * the name as an argument.
+ */
+const THROW_EMITTER_NAME = "ThrowEmitter";
+
+/**
  * How often a loose ball is checked for having stopped, in seconds.
  *
  * Short enough that the creep below {@link BALL_CONFIG.MIN_SPEED} is not something
@@ -363,8 +374,15 @@ export class BallService implements OnStart {
 	 *
 	 * The public door for a hand-out, and the only one of the three that *makes* a ball: a catch and
 	 * a pickup take one that already exists — see {@link catchBall} and {@link pickupBall} — while
-	 * this is the game handing one out. `JoinService` calls it for a joining player and an NPC's
-	 * throwing behavior calls it for a rig, which is what makes a hand-out the same act for both.
+	 * this is the game handing one out.
+	 *
+	 * **Its callers, because "who gets handed a ball" is the question this method keeps being asked.**
+	 * An NPC's throwing behavior hands one to a rig, and a player is supplied by two things they earn:
+	 * the MultiBall window and the `InfiniteBalls` dev flag. All three are answers to a throw or to
+	 * something bought. **Nothing hands a player a ball on arrival** — a spawning body is armed by
+	 * picking one up off the floor, which is what `JoinService` used to do and deliberately no longer
+	 * does. Two populations arriving at one door is the point: they get the same ball, so "in a hand"
+	 * stays one state rather than two.
 	 *
 	 * Keyed on the **model**, like everything else here. What differs between a player and an NPC is
 	 * only the token on the model, which this does not touch and should not have to: whoever knows who
@@ -1055,6 +1073,18 @@ export class BallService implements OnStart {
 		if (DEBUG) this.reportOwnership(ball, model);
 
 		ball.AssemblyLinearVelocity = commanded;
+
+		// **The ball has left the hand, so the throw sound plays at the launch point.** This is the
+		// moment it is given velocity — the last instant it is in the hand and already the first instant
+		// it is not — and the ball is where `placement` put it, so it is asked for its own `CFrame`
+		// rather than the plan's. `plan.origin` is the intent; a turned `THROW_LAUNCH_NUDGE` moves the
+		// ball and deliberately not the plan, so the ball is the honest answer of the two.
+		//
+		// Ungated, like the other three: `emitSound` puts its log line behind `VERBOSE_LOGS` and never
+		// the sound. The emitter tidies itself away on the helper's timer, which is the whole of what
+		// this call site owes it.
+		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.THROW, THROW_EMITTER_NAME);
+
 		ball.CanCollide = true;
 		ball.Massless = false;
 		// After `Massless`, never before: the force is sized from the ball's

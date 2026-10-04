@@ -12,6 +12,7 @@ import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import { findFolder } from "shared/find";
 import { events, RoundResultRow } from "shared/networking";
 import {
+    ROUND_MODE_ATTRIBUTE,
     ROUND_STATE_ATTRIBUTE,
     ROUND_TIME_ATTRIBUTE,
     ROUND_TRANSITION_ATTRIBUTE,
@@ -19,6 +20,7 @@ import {
     SPECTATING_ATTRIBUTE,
     TEAM_ATTRIBUTE,
 } from "shared/constants";
+import { MATCH_MIN_PLAYERS, MATCH_SETTLE_SECONDS } from "../../config/match.config";
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
 import { applyBarrierGroups } from "../../collision/CollisionGroups";
@@ -26,10 +28,12 @@ import { MapService } from "../MapService";
 import { BallService } from "../ball/BallService";
 import { FreezeService } from "../actions/FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
+import { MatchService } from "../match/MatchService";
 import { StatsService } from "../stats/StatsService";
 import { SuperService } from "../super/SuperService";
 import { GameMode, RoundView } from "./modes/GameMode";
-import { DEFAULT_MODE, modeFor } from "./modes/registry";
+import { DEFAULT_MODE } from "./modes/registry";
+import { SCORE_RUSH } from "./modes/ScoreRushMode";
 import { roundStatusFolder } from "./roundStatus";
 import { DRAW, RoundOutcome, TEAM_A, TEAM_B, TeamLabel } from "./team";
 import { VoteService } from "./VoteService";
@@ -99,6 +103,22 @@ interface TransitionOptions {
  * survives.
  */
 const CATCH_DEATH_DAMAGE = 1000;
+
+/**
+ * Whether the mode vote is offered at all.
+ *
+ * **A named switch rather than a deletion, and the calls it guards stay exactly where they are.**
+ * Matchmaking makes the mode a thing a dev asks for (`!dev match`) rather than a thing the lobby votes
+ * on, so the vote is off — but `VoteService` is untouched, its three call sites remain in `gameLoop`
+ * behind this flag, and turning the vote back on is this one line. Deleting the calls instead would be
+ * rewriting a working feature in the middle of building another one, and it would take the
+ * `ROUND_MODE_ATTRIBUTE` writer with it — see the round boundary, which writes that attribute now.
+ *
+ * **What switching it off also does, deliberately:** `openVote` never runs, so the client's vote row
+ * never appears at all — the flag it reads is seeded `false` by `VoteService.onStart` and nothing ever
+ * sets it true.
+ */
+const VOTE_ENABLED = false;
 
 /**
  * The round: a clock, a roster, and the rules a mode supplies.
@@ -187,6 +207,25 @@ export class RoundService implements OnStart {
     private finished = false;
 
     /**
+     * The mode a match is waiting to open on.
+     *
+     * **The request and the flag are one field on purpose.** "Has a match been asked for" and "which mode
+     * was it asked for" are the same question here: the intermission waits on this being set, and the round
+     * boundary consumes it. A separate `pending: boolean` beside it would be a second answer that could
+     * disagree with the mode sitting next to it.
+     *
+     * **Two things set it, through the one method that does.** A dev sets it with `!dev match`, and the
+     * intermission's settle window sets it for a roster that has stopped changing — see
+     * `MATCH_SETTLE_SECONDS`. Both go through {@link startMatch}, so there is exactly one place the field is
+     * written and exactly one line saying a match is coming.
+     *
+     * **Read once at the round boundary and cleared there**, which is what makes one request start exactly
+     * one round — a request that outlived its match would start the next one too, and `Round started` would
+     * appear twice with no request between them.
+     */
+    private pendingMatch?: GameMode;
+
+    /**
      * Whether the lobby's spawns have been reported yet.
      *
      * **Once a session rather than once an intermission**, because what the line says is a property of
@@ -221,6 +260,7 @@ export class RoundService implements OnStart {
         private readonly balls: BallService,
         private readonly votes: VoteService,
         private readonly maps: MapService,
+        private readonly matches: MatchService,
         private readonly stats: StatsService,
         private readonly abilities: SuperService,
         private readonly freezes: FreezeService,
@@ -324,6 +364,12 @@ export class RoundService implements OnStart {
         // a reader should be told "nobody has won" rather than handed the absence of an answer.
         this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, "");
 
+        // **The dev command that starts a match, registered where both halves of it are visible.** The
+        // handler lives here rather than in `DevService` because the two things it needs — the round's own
+        // state and the roster — belong to this service and to `MatchService`, and asking `DevService` to
+        // hold both would make its dependency on this file a cycle. See `DevService.onCommand`.
+        this.dev.onCommand("match", (player) => this.requestMatch(player));
+
         task.spawn(() => this.gameLoop());
     }
 
@@ -334,6 +380,61 @@ export class RoundService implements OnStart {
 
     public getTimeRemaining(): number {
         return this.timeRemaining;
+    }
+
+    /**
+     * Asks for a match to open on `mode`, at the next round boundary.
+     *
+     * **The only thing that sets {@link pendingMatch}, and it has two callers.** A dev asks through
+     * {@link requestMatch}, and the intermission's settle window asks for a roster that has stopped
+     * changing — see `MATCH_SETTLE_SECONDS`. Both arrive here because the boundary below wants the same
+     * thing from either of them: one mode, consumed once, and a `Round started` with a line above it saying
+     * which of the two it was.
+     *
+     * **It checks nothing, and the callers are why.** Whether a match is already running and whether there
+     * are players to put in one have two different answers to print, and {@link requestMatch} is the place
+     * that prints them; the settle window asks its own question before calling, and only ever fires on a
+     * roster `canStart` has already accepted. Each caller checks in the way its own situation calls for, and
+     * this method stays the single place the request is made — so the two can never disagree about what
+     * "asked for" means.
+     */
+    public startMatch(mode: GameMode): void {
+        this.pendingMatch = mode;
+
+        print(`[Round] match requested — ${GAME_MODE_NAMES[mode.id]}`);
+    }
+
+    /**
+     * `!dev match`: the two questions a request has to get past, then the request.
+     *
+     * **Both refusals name which condition failed**, because they are different faults with different
+     * fixes: a request during a match is somebody who should wait, and a request with an empty roster is
+     * somebody who has to recruit. One message saying "cannot start" would leave the dev to work out which
+     * of the two they are looking at.
+     *
+     * **This is where the state check lives**, rather than in `startMatch` — see that method's note. The
+     * phase is read from `state` rather than from the published attribute, because this side of the wire
+     * is the one that owns it.
+     */
+    private requestMatch(player: Player): void {
+        if (this.state !== RoundState.Intermission) {
+            print(`[Round] ${player.Name} asked for a match — one is already being played`);
+
+            return;
+        }
+
+        if (!this.matches.canStart()) {
+            const counts = this.matches.countsFor();
+
+            print(
+                `[Round] ${player.Name} asked for a match — refused, needs ${MATCH_MIN_PLAYERS} player(s) with` +
+                    ` one a side, and the roster is A ${counts.a}, B ${counts.b}`,
+            );
+
+            return;
+        }
+
+        this.startMatch(SCORE_RUSH);
     }
 
     // ---- Internals ----
@@ -369,23 +470,28 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Puts the server's players on sides, the way the mode wants them.
+     * Puts the match's players on the sides they chose.
      *
-     * **Assigned at the start of every round, never on join.** A player arriving mid-round
-     * cannot shift the balance of a round already under way, and nobody carries a side into
-     * the next one — which is both fairer and the reason this clears the table rather than
-     * topping it up.
+     * **Assigned at the start of every match, from the opt-in roster.** A player in the lobby who has not
+     * asked to play is not on a side, and nobody carries a side from the last match into this one — which
+     * is both fairer and the reason this clears the table rather than topping it up.
      *
-     * The split itself is the mode's — see `GameMode.assign`. Both symmetric modes want the even
-     * shuffle in `splitEvenly`, and Dodge and Seek wants one seeker against everybody else. What
-     * is *not* the mode's is the two things below: the table the round counts from, and the
-     * attribute that publishes a side to everything outside this service. A mode says who is on
-     * which side; the round is what makes that true.
+     * **The mode is no longer asked, and that is the change matchmaking made here.** This used to hand
+     * `Players.GetPlayers()` to `GameMode.assign` and let `splitEvenly` do the even shuffle; the sides are
+     * decided by the players themselves now, by walking into the join part for the side they want, and
+     * `MatchService` does no balancing at all — the counts on the two signs are whatever the players asked
+     * for. A mode that re-split the roster would throw that away — two friends who picked the same side
+     * would be put on opposite ones — so `GameMode.assign` is unused on this path. See
+     * `MatchService.optIn` for the rule that replaced it.
+     *
+     * What is still the round's rather than anybody else's is the two things below: the table the round
+     * counts from, and the attribute that publishes a side to everything outside this service. The roster
+     * says who is playing and which side they are on; the round is what makes that true.
      */
     private assignTeams(): void {
         this.teams.clear();
 
-        const assigned = this.mode.assign(Players.GetPlayers());
+        const assigned = this.matches.roster();
 
         for (const [player, team] of assigned) {
             this.teams.set(player, team);
@@ -732,14 +838,19 @@ export class RoundService implements OnStart {
      * to carry, so a player who jumps on the spot is no closer to anybody. See `FreezeService` if that stops
      * being true.
      *
-     * **Keyed to the *body*, which leaves one hole worth naming.** Everybody present is held, and a body that
-     * replaces one during the hold — a death, which in the opening seconds would take a thrown ball — arrives
-     * wearing its own fresh base speed and can walk. Left as it is: closing it means re-applying the key from
-     * `CharacterAdded` for the length of the window, which is machinery for a case that needs the round to
-     * have already been played at.
+     * **Keyed to the *body*, which leaves one hole worth naming.** Every player in the round is held, and a
+     * body that replaces one during the hold — a death, which in the opening seconds would take a thrown
+     * ball — arrives wearing its own fresh base speed and can walk. Left as it is: closing it means
+     * re-applying the key from `CharacterAdded` for the length of the window, which is machinery for a case
+     * that needs the round to have already been played at.
      */
     private holdArenaEntry(): void {
-        const frozen = Players.GetPlayers();
+        // **The match's players, for the reason the teleport above is theirs.** Everybody present used to be
+        // held, which was the same set as the round's players until opting in existed — and now it is not, so
+        // holding a lobby spectator still for five seconds while they walk about would be this change leaking
+        // into a system that has nothing to do with it. The hold is a rule about *arriving* in the arena, and
+        // only the players who arrived are held.
+        const frozen = this.playersInRound();
 
         for (const player of frozen) {
             const character = player.Character;
@@ -1284,9 +1395,16 @@ export class RoundService implements OnStart {
      * Resolved through {@link arenaSpawnFor} per player, and that is what makes a bad place
      * file safe: a missing part raises on the *first* lookup, before the first character has
      * been moved, so nothing ends up half-sent to a side that does not exist.
+     *
+     * **The match's players only, which is what leaves everybody else in the lobby.** This used to move
+     * every player in the server, and with opt-in that would be the whole feature undone in one line: a
+     * spectator standing in the lobby would be teleported into the arena and asked to play a match they
+     * never joined. `activePlayers` is exactly the roster at this point — filled a few lines above and
+     * emptied at every intermission — so this is the roster by construction rather than by a second filter
+     * that could disagree with it.
      */
     private teleportTeamsToArena() {
-        for (const player of Players.GetPlayers()) {
+        for (const player of this.playersInRound()) {
             const character = player.Character;
             if (character) character.PivotTo(this.arenaSpawnFor(player));
         }
@@ -1446,6 +1564,13 @@ export class RoundService implements OnStart {
             // what survives here is the half only this loop can do.
             this.clearEndedRoundHeldBalls();
 
+            // **And the roster goes with them, which is what sends everybody back to the join part.** The
+            // teleport above has already put every player in the lobby — opted in or not, that is where an
+            // intermission moves everybody — so this is the other half of "one match, then ask again": the
+            // sides are forgotten, the sign goes back to nought, and the next match is made of whoever walks
+            // into the part. See `MatchService.clear`, which is also what repaints the sign.
+            this.matches.clear();
+
             // **And every ability window, for the reason those held balls go.** A super bought in one
             // round must not be carried into the next, and a window measured in seconds would otherwise
             // survive the whole intermission and be spent in a round that had nothing to do with it.
@@ -1487,18 +1612,48 @@ export class RoundService implements OnStart {
             // same reason and at the same moment: a frozen tick `continue`s below without touching
             // either, so this measures *running* seconds. A window timed off the wall clock would
             // close while a round was still being held up.
+            // **The intermission no longer counts down to a round: it waits for one.**
+            //
+            // The clock it used to run was the only thing that started a round, which made every round
+            // something the server decided on its own — and with matchmaking that is the wrong shape twice
+            // over: a match has players who *chose* to be in it and sides somebody picked, and neither of
+            // those exists just because a timer ran out. So this is the same loop with a different question
+            // at the top: it turns until `pendingMatch` is set, and exactly two things ever set it — a dev
+            // asking, and the settle window further down.
+            //
+            // **The clock still runs, and wraps rather than reaching zero.** The number on the HUD is the
+            // honest sign that the server is alive, and freezing it for a wait with no promised end would
+            // read as a hung server — the same lie the held intermission used to tell. So the countdown
+            // restarts at its full length each time it reaches zero: the clock says the server is running by
+            // moving rather than by stopping, and a wrap is not a round boundary.
             let elapsed = 0;
 
-            while (this.timeRemaining > 0) {
+            // **The settle window's two numbers, counted on the clock's own ticks.**
+            //
+            // `settledFor` is how many ticks the roster has been startable and unchanged, and `roster` is
+            // the roster that count was last measured against. Both are declared out here rather than inside
+            // the loop because both have to survive a wrap: the countdown going round again is a fact about
+            // the clock, not about the sides, and a grace period that reset itself every sixteen seconds
+            // would be a match that never started.
+            let settledFor = 0;
+            let roster = this.matches.rosterRevision();
+
+            while (this.pendingMatch === undefined) {
                 // A paused tick does nothing at all: no second off the clock, no change of
                 // state, no teleport. The phase resumes from whatever the clock said when it
                 // was switched off, which is the whole difference between pausing and ending.
                 //
                 // **A server below the minimum freezes in exactly the same way**, and for the same
-                // reason: there is no round to be counting down to. This single line is where
-                // "freeze, don't skip" lives — the clock is not reset, so a server that fills up
-                // later resumes the intermission it was already in, vote window included.
+                // reason: there is nobody to start a match for. This single line is where "freeze,
+                // don't skip" lives — and it is the *only* thing that stops the clock, which is the
+                // honest reading of it: with one player in the server the clock stands still because no
+                // match could be started anyway.
+                //
+                // **And the settle count goes with the clock.** A paused or half-empty server is not
+                // accumulating a start: the sides may well still be startable from before, and a match that
+                // began the instant the population came back would open while nobody was there to see it.
                 if (this.isRoundsPaused() || this.belowMinimum()) {
+                    settledFor = 0;
                     task.wait(1);
                     continue;
                 }
@@ -1508,29 +1663,95 @@ export class RoundService implements OnStart {
                 // above, so its intermission has not really begun and the window should not be open
                 // while nobody is there to vote. Opening it here rather than once before the loop
                 // is also what lets a server that fills up thirty seconds later still get this vote.
-                if (elapsed === 0) this.votes.openVote();
+                //
+                // **Switched off, and left standing.** See `VOTE_ENABLED` — the vote is not offered any
+                // more, and the call stays where it is so that turning it back on is that one line.
+                if (VOTE_ENABLED && elapsed === 0) this.votes.openVote();
 
                 task.wait(1);
                 this.timeRemaining--;
                 elapsed++;
+
+                // **The wrap.** Reaching zero is not the end of anything now, it is the clock going round
+                // again — and `elapsed` goes round with it, so a wrapped intermission behaves like a fresh
+                // one to anything counting running seconds, the vote window above included.
+                if (this.timeRemaining <= 0) {
+                    this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
+                    elapsed = 0;
+                }
+
                 this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
-                if (elapsed === GAME_MODE_CONFIG.VOTE_SECONDS) this.votes.closeVote();
+                if (VOTE_ENABLED && elapsed === GAME_MODE_CONFIG.VOTE_SECONDS) this.votes.closeVote();
+
+                // **The start nobody asked for: a roster that is ready and has stopped moving.**
+                //
+                // **Read against the revision rather than the counts, and a side switch is why.** `countsFor`
+                // cannot see the change that matters most here — a player crossing from `A` to `B` leaves it
+                // identical — and that crossing is exactly the move this window exists to wait out. Any
+                // touch, move, departure or clearing moves the number, so comparing it is the question "is
+                // this the same roster I was looking at a second ago".
+                //
+                // **A roster that is not startable resets the count rather than pausing it**, so one player
+                // waiting alone on a pad does not carry a half-elapsed window into the instant somebody joins
+                // them: the match then starts a full `MATCH_SETTLE_SECONDS` after the sides were complete,
+                // which is the window the last arrival is owed.
+                const current = this.matches.rosterRevision();
+
+                if (current !== roster) {
+                    roster = current;
+                    settledFor = 0;
+                } else if (this.matches.canStart()) {
+                    settledFor++;
+
+                    if (settledFor >= MATCH_SETTLE_SECONDS) {
+                        // **Two lines, because two places know the two facts.** `startMatch` says what is
+                        // coming and in which mode; this says why it was asked for without anybody asking.
+                        // It is also the line that tells a dev their command was not needed.
+                        const counts = this.matches.countsFor();
+
+                        print(
+                            `[Round] starting on its own — the sides held still for ${MATCH_SETTLE_SECONDS}s` +
+                                ` (A: ${counts.a}, B: ${counts.b})`,
+                        );
+
+                        // The same door the dev command uses, so the field still has exactly one writer — and
+                        // a request that arrived a moment earlier still wins, because this branch is only
+                        // reached while it is unset.
+                        this.startMatch(SCORE_RUSH);
+                    }
+                } else {
+                    settledFor = 0;
+                }
             }
 
             await this.waitWhilePaused();
+
+            // **The request has arrived, and everything below is the boundary it asked for.** The `await`
+            // above is the existing pause point and keeps its meaning: a match requested while a dev has
+            // rounds held up waits for them, the same rule every other boundary follows.
 
             // Closed again on the boundary, which is the call that matters when the window never
             // elapsed — a harness paused through the intermission, or a round cut short. It is a
             // no-op if the first close already ran, so this cannot re-roll a tie that has been
             // broken already.
-            this.votes.closeVote();
+            if (VOTE_ENABLED) this.votes.closeVote();
 
             // The intermission's last act: nobody carries a ball into a round. See
             // `clearHeldBalls` for why it is destroyed here rather than dropped after the teleport.
             this.clearHeldBalls();
 
             // --- Playing ---
+
+            // **The request is taken here, before anything can refuse it, and that ordering is the whole of
+            // why it sits above the arena check.** A request cleared only on the successful path would
+            // survive a refused start — and since the intermission now waits on `pendingMatch` being set,
+            // the loop would come straight back to this line with the request still in flight and spin:
+            // no clock, no pause, no teleport, just `cannot start` a frame apart for as long as the place
+            // file is broken. Taken here, a refused start drops the request and the intermission goes back
+            // to waiting for somebody to ask again.
+            const requested = this.pendingMatch;
+            this.pendingMatch = undefined;
 
             // **A round whose arena cannot host it does not start.**
             //
@@ -1567,7 +1788,7 @@ export class RoundService implements OnStart {
             // `problem` is never `undefined` here while the arena is — which means one message and one
             // `continue` cover both halves, and the compiler is told what the reader can already see.
             if (arena === undefined || problem !== undefined) {
-                print(`[Round] cannot start — ${problem}. Retrying next intermission.`);
+                print(`[Round] cannot start — ${problem}. Waiting for another match.`);
 
                 continue;
             }
@@ -1630,10 +1851,21 @@ export class RoundService implements OnStart {
 
             this.state = RoundState.Playing;
 
-            // The mode for this round, from whatever the vote decided. Resolved once, here, rather
-            // than read live: the vote may be opened again during the *next* intermission, and a
-            // round must not be able to change its own rules underneath itself.
-            this.mode = modeFor(this.votes.selection()) ?? DEFAULT_MODE;
+            // **The mode is the one that was asked for, and everything else plays Score Rush.** Resolved once,
+            // here, rather than read live: a mode is fixed for the length of the round it opened, so a round
+            // cannot change its own rules underneath itself. The vote used to decide this — see
+            // `VOTE_ENABLED` — and with it switched off the fallback is the mode this whole change exists to
+            // play. `DEFAULT_MODE` still initialises the field, which is what keeps a server that has never
+            // opened a match behaving as it always did.
+            this.mode = requested ?? SCORE_RUSH;
+
+            // **And the mode is published here, because the vote is no longer the one that publishes it.**
+            // `VoteService.closeVote` was the only writer of this attribute, and a vote that never opens
+            // never writes it — so without this line every reader (the top bar's name, the rings, the
+            // outlines) would be holding the last vote of the session, or nothing at all. Written *before*
+            // the sides are, which is the order the colour readers need: the outline repaints on both
+            // attributes, and the mode has to be true before the sides it paints are.
+            this.statusFolder.SetAttribute(ROUND_MODE_ATTRIBUTE, this.mode.id);
 
             // A fresh scoreboard for a fresh round: a round that inherited one would be starting
             // in the middle of somebody else's game. The round is also un-finished here — it is
@@ -1653,15 +1885,17 @@ export class RoundService implements OnStart {
 
             this.assignTeams();
 
+            // **The round is the roster, and everybody else is watching it.** Only the players `MatchService`
+            // has put on a side go into `activePlayers`; somebody standing in the lobby who never touched the
+            // join part is not in the match and not on a side, and this is the line that says so to everything
+            // outside this service. The teleport below covers the match's players only, and a spectator who
+            // dies and respawns is sent back to the lobby by the same branch a joiner takes — see
+            // `handlePlayerJoined`.
+            //
+            // **The streak is cleared for everybody, spectator or not**, and that is the one thing in here
+            // that is not about the roster: a run of hits is a fact about the round that has just ended, and
+            // somebody who sat this one out did not earn the one they were carrying.
             for (const player of Players.GetPlayers()) {
-                this.activePlayers.add(player);
-
-                // In the round, therefore not spectating. This is where last round's eliminated
-                // players come back, which is the whole of "the indicator goes when a round
-                // starts" — written for everybody in the round rather than only for those who
-                // were marked, because a mid-round joiner is marked too and is now playing.
-                player.SetAttribute(SPECTATING_ATTRIBUTE, false);
-
                 // **A run of hits belongs to a round, and this is where a round begins.** Beside the
                 // score board and the two boards cleared above, and for their reason: a streak is a fact
                 // about the round that has just ended, so it is cleared where the next one opens rather
@@ -1671,6 +1905,18 @@ export class RoundService implements OnStart {
                 // The *charge* is deliberately not touched. It is held until it is used, so a player who
                 // earned one and never spent it carries it into this round.
                 this.abilities.resetForRound(player);
+
+                // **In the round, therefore not spectating.** This is where last round's eliminated players
+                // come back, and where an opt-in that arrived while the boundary was working becomes a
+                // participant — written only for the players the round actually has, which is what makes the
+                // attribute mean "in the match" rather than "in the server".
+                if (!this.teams.has(player)) {
+                    player.SetAttribute(SPECTATING_ATTRIBUTE, true);
+                    continue;
+                }
+
+                this.activePlayers.add(player);
+                player.SetAttribute(SPECTATING_ATTRIBUTE, false);
             }
             print(`Round started — ${GAME_MODE_NAMES[this.mode.id]}`);
 
@@ -1908,8 +2154,9 @@ function arenaProblem(arena: Model | undefined): string | undefined {
  * builds with `NPC_TAG`, so asking the collection answers "is this an NPC?" without this file having
  * to know how a rig is shaped, what it is named, or where `NpcService` decided to put it.
  *
- * **`IsDescendantOf(Workspace)` is the filter that makes it safe**, and it is the same guard
- * `BallSpawnerService` uses before it reparents a loose ball back into the world. A tagged rig that is
+ * **`IsDescendantOf(Workspace)` is the filter that makes it safe**, and it is the same condition the
+ * part-side readers get from `taggedPartsInWorkspace` — this one stays a raw read because it wants
+ * rigs rather than parts. A tagged rig that is
  * not in the world is one in the middle of being rebuilt — a respawn kills the old model before it
  * builds the new one — and a model outside the world is holding nothing that a round should reach for.
  * The `IsA("Model")` test is there for the tag's sake rather than the code's: a tag is a string that

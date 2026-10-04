@@ -1,23 +1,15 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { BALL_CONFIG } from "shared/config/ball.config";
-import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { MATCH_SPAWNER_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { MATCH_BALL_COUNT } from "../../config/match.config";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallFactory } from "./BallFactory";
 import { BallService } from "./BallService";
 
 /** Prints a line when the round's balls are cleared, and nothing else. */
 const DEBUG = true;
-
-/**
- * The tag that marks a part as a spawner: a piece of arena that keeps loose balls around it.
- *
- * **A tag rather than a list**, for the reason everything else here is tagged: a spawner is a
- * placement decision — where the balls should be — and placing one is done in Studio by tagging a
- * part, with nothing to write and nothing to register. Several are independent, and the tag is
- * how the loop finds them all without being told about any of them.
- */
-const SPAWNER_TAG = "BallSpawner";
 
 /**
  * The tag that marks a ball as one the round owns.
@@ -104,10 +96,17 @@ export class BallSpawnerService implements OnStart {
 
 			// **And the arena is stocked on the way in, not a tick later.** The loop below would get
 			// to this within a second anyway, but that second is a second of a round with an empty
-			// floor — and since the tick's ancestry guard means nothing is put out during an
-			// intermission any more, the whistle is the first moment these spawners are in the world at
-			// all. Safe to call here because the map is placed *before* the round is published, so the
-			// spawners are already in `Workspace` by the time this runs.
+			// floor — and with the tick now gated on the phase, this is the first call allowed to put
+			// anything out, so the floor is stocked on the boundary itself rather than up to a second
+			// after it.
+			//
+			// **What stood here was wrong, and is worth recording.** It said the tick's ancestry guard
+			// meant nothing was put out during an intermission — true when that guard was written,
+			// because the arena was a clone that sat out of the world between rounds. The arena is
+			// permanent now, so these parts are in `Workspace` all through an intermission and the loop
+			// was quietly stocking the floor for a match nobody had asked for. That is where the balls
+			// at boot came from. The gate in `tick` makes the sentence true again, for a different
+			// reason.
 			if (state === PLAYING) this.tick();
 
 			this.previousState = state;
@@ -115,7 +114,47 @@ export class BallSpawnerService implements OnStart {
 
 		task.spawn(() => this.tickLoop());
 
-		if (DEBUG) print(`[Spawner] up — watching ${ROUND_STATUS_FOLDER}.${ROUND_STATE_ATTRIBUTE}`);
+		this.report();
+	}
+
+	/**
+	 * Says what the tag found, once, at boot.
+	 *
+	 * **Because "the spawner does nothing" has two causes and the loop below is silent about both.** A
+	 * tag is invisible in code: nothing may wear it, or the parts wearing it may not be in the world —
+	 * and each is a `continue` with nothing on the other side, so the only evidence is a floor with no
+	 * balls on it and an output that says nothing at all. This project has paid for the first of those
+	 * three times over, with the barrier, the join pads and this tag; `taggedPartsInWorkspace` is the half
+	 * of the answer that makes a container work, and this line is the half that says what was found.
+	 *
+	 * **Two numbers rather than one, and the pair is the point.** The first is how many things wear the
+	 * tag; the second is how many parts the loop will actually walk — so `1 tagged thing(s), 6 usable
+	 * part(s)` is a folder doing its job, and `1 tagged thing(s), 0 usable part(s)` is a tag that found
+	 * nothing the world can use. Either way the count is printed, **including at nought**, in the shape
+	 * `ShiftLock` prints for its own zone tag: it arrives in the first second rather than an hour later.
+	 *
+	 * **And the tag's own name is in the line, which is what makes a rename diagnosable.** The spawner
+	 * tag is the one Studio-visible thing this service names, and re-tagging the parts is a manual step
+	 * that can be forgotten — so a place still wearing the old tag reads
+	 * `MatchSpawner: 0 tagged thing(s), 0 usable part(s)`, which says "nothing wears this" rather than
+	 * leaving a bare nought to interpret.
+	 *
+	 * **A snapshot of boot rather than a live total**, because the loop re-reads the tag every second and a
+	 * part tagged while the server runs starts being stocked immediately — this line not changing is not
+	 * evidence that nothing changed.
+	 */
+	private report(): void {
+		// The raw tag for the first number, the filtered parts for the second: the difference between them
+		// is what says a tag exists and the world cannot use it, which is the one fault this line is for.
+		const tagged = CollectionService.GetTagged(MATCH_SPAWNER_TAG);
+		const parts = taggedPartsInWorkspace(MATCH_SPAWNER_TAG);
+
+		if (DEBUG) {
+			print(
+				`[Spawner] up — watching ${ROUND_STATUS_FOLDER}.${ROUND_STATE_ATTRIBUTE}, ${MATCH_SPAWNER_TAG}:` +
+					` ${tagged.size()} tagged thing(s), ${parts.size()} usable part(s)`,
+			);
+		}
 	}
 
 	/** Every spawner's count, once a second. See {@link tick}. */
@@ -127,31 +166,79 @@ export class BallSpawnerService implements OnStart {
 	}
 
 	/**
-	 * Tops up every spawner that is short of its count.
+	 * Tops up every spawner that is short of its ball, while a match is on and the arena has room.
 	 *
 	 * A plain walk over the tagged parts rather than a registry: the tag is the list, and a spawner
 	 * placed in Studio while the game is running starts being topped up on the next tick with
 	 * nothing to tell this service about it.
+	 *
+	 * **The parts come from `taggedPartsInWorkspace`, which is what the two guards that used to stand in
+	 * this loop became.** A tagged folder stocks the parts inside it, and a spawner outside the world
+	 * stocks nothing: this loop's whole act is to put a ball into `Workspace` beside a part, so a part that
+	 * is not in `Workspace` is somewhere a ball cannot lie — that reasoning lives with the function now.
+	 * The `IsA("BasePart")` check that was here is gone rather than kept as a harmless no-op: it can no
+	 * longer be false, and a guard that cannot fail teaches a reader something untrue about what this loop
+	 * is handed.
+	 *
+	 * **Nothing is stocked outside a match, and that is the first line rather than a condition on each
+	 * spawn.** The arena is permanent, so these parts are in the world for the whole of an intermission —
+	 * which is exactly where the balls used to come from: this loop's first turn landed mid-intermission
+	 * and stocked the floor for a match nobody had asked for. The phase is read once here rather than
+	 * asked per part, because it is a fact about the whole tick.
+	 *
+	 * **One ball each, under a budget of {@link MATCH_BALL_COUNT}.** The per-part rule is the `continue`
+	 * below; the budget is counted from the world as this tick starts and spent as the walk goes, so the
+	 * two limits cannot disagree about how many balls the arena is holding.
 	 */
 	private tick(): void {
-		const state = this.stateOf();
+		if (this.stateOf() !== PLAYING) return;
 
-		for (const instance of CollectionService.GetTagged(SPAWNER_TAG)) {
-			if (!instance.IsA("BasePart")) continue;
+		let budget = MATCH_BALL_COUNT - this.roundBallCount();
 
-			// **A spawner outside the world is not stocking anything.** `MapService` clones the next
-			// arena while an intermission runs and holds it out of `Workspace` until the round is about
-			// to start, and a `Clone` carries the tags with it — so without this the loop would find the
-			// spawners of an arena nobody can see and top them up, which means balls parented to
-			// `Workspace` falling through empty space where the arena is not. The tag answers "is this a
-			// spawner"; where it is answers "is its arena somewhere right now".
-			if (!instance.IsDescendantOf(Workspace)) continue;
+		for (const instance of taggedPartsInWorkspace(MATCH_SPAWNER_TAG)) {
+			// **One each: a part with a ball lying beside it is not short of anything.** `countLoose` is
+			// the same question the pickup search asks, so "there is a ball here" means the same thing to
+			// both — and it counts any loose ball, which is why a ball somebody threw back is as good as
+			// one this service made.
+			if (this.countLoose(instance.Position) > 0) continue;
 
-			const nearby = this.countLoose(instance.Position);
-			const missing = BALL_CONFIG.BALLS_PER_SPAWNER - nearby;
+			// **The cap, and the caveat that comes with it.** When the parts outnumber the budget this walks
+			// from the front of `GetTagged`'s list and leaves the tail empty, and that order promises
+			// nothing — it is not the arena's layout, or its folders, or anything anybody chose. It cannot
+			// happen at six parts and a budget of eight, and it is not guarded against now: the fix would be
+			// to spread the balls across the parts, and what "spread" should mean for twelve of them is a
+			// question about the arena rather than about this loop. Left until there is an arena that asks
+			// it.
+			if (budget <= 0) break;
 
-			for (let index = 0; index < missing; index++) this.spawn(instance, state);
+			this.spawn(instance);
+			budget--;
 		}
+	}
+
+	/**
+	 * How many balls the match owns right now: every part wearing {@link ROUND_BALL_TAG}, on the floor or
+	 * in somebody's hand.
+	 *
+	 * **Counted from the world rather than tallied as the balls are made**, and that is the correction a
+	 * tally would need: a ball destroyed on impact is gone before anybody takes it back, so a counter
+	 * incremented at {@link spawn} would drift above the truth and the budget would quietly stop replacing
+	 * anything. Read afresh each tick, this cannot disagree with what is out there.
+	 *
+	 * **A held ball counts**, deliberately — it is still the match's ball and still one of the budget, and
+	 * a count that ignored it would put a replacement on the floor for a ball somebody is carrying.
+	 *
+	 * The raw tag rather than `taggedParts`, because this is the same set {@link cleanupRoundBalls} sweeps
+	 * and the two must agree about what the match owns.
+	 */
+	private roundBallCount(): number {
+		let count = 0;
+
+		for (const instance of CollectionService.GetTagged(ROUND_BALL_TAG)) {
+			if (instance.IsA("BasePart")) count++;
+		}
+
+		return count;
 	}
 
 	/** How many loose balls are lying within {@link BALL_CONFIG.SPAWN_RADIUS} of `centre`. */
@@ -178,18 +265,19 @@ export class BallSpawnerService implements OnStart {
 	/**
 	 * Puts one ball out beside `spawner`.
 	 *
-	 * The offset is drawn per ball and small — see {@link BALL_CONFIG.SPAWN_OFFSET_RANGE} — so a
-	 * spawner refilling its whole count does not stack them in one place. The height clears the
-	 * spawner part's own top, so a ball dropped on a platform lands on the platform rather than
-	 * inside it.
+	 * The offset is drawn per ball and small — see {@link BALL_CONFIG.SPAWN_OFFSET_RANGE} — so two
+	 * neighbouring spawners do not drop their balls on the same spot. The height clears the spawner part's
+	 * own top, so a ball dropped on a platform lands on the platform rather than inside it.
 	 *
-	 * The clock it is put on depends on the round, and that is the entire difference the round
-	 * makes to a ball: during a round it is not on a clock at all, because the arena's balls have
-	 * to still be there when somebody goes back for one, and the round's own end is what clears
-	 * them. Between rounds they are on the ordinary lifetime, so a server sitting in intermission
-	 * does not quietly fill with them.
+	 * **No expiry clock at all, which is now the truth for every ball this service makes.** The clock used
+	 * to depend on the round — `math.huge` inside one, the ordinary lifetime between them — and that was
+	 * how an intermission avoided slowly carpeting itself. The gate in {@link tick} does that job now by
+	 * not making the ball in the first place, so a match ball is always on `math.huge`: still there when
+	 * somebody goes back for it, and cleared by the round's own end. `BALL_CONFIG.LIFETIME_SECONDS` is
+	 * untouched and still governs a thrown ball, which is `BallService`'s business rather than this
+	 * one's.
 	 */
-	private spawn(spawner: BasePart, state: string): void {
+	private spawn(spawner: BasePart): void {
 		const range = BALL_CONFIG.SPAWN_OFFSET_RANGE;
 		const offset = new Vector3(
 			math.random(-range * 100, range * 100) / 100,
@@ -201,9 +289,7 @@ export class BallSpawnerService implements OnStart {
 		const ball = this.factory.createLoose(position);
 		ball.AddTag(ROUND_BALL_TAG);
 
-		const timeout = state === PLAYING ? math.huge : BALL_CONFIG.LIFETIME_SECONDS;
-
-		scheduleBallExpiry(ball, timeout, (expiring) => this.balls.isHeld(expiring));
+		scheduleBallExpiry(ball, math.huge, (expiring) => this.balls.isHeld(expiring));
 	}
 
 	/**

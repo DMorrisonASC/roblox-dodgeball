@@ -55,7 +55,8 @@
 		"roblox-dodgeball:out/server/services/ball/BallSpawnerService@BallSpawnerService": "server/services/ball/BallSpawnerService@BallSpawnerService",
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
-		"roblox-dodgeball:out/client/controllers/hud/CameraToastController@CameraToastController": "client/controllers/hud/CameraToastController@CameraToastController"
+		"roblox-dodgeball:out/client/controllers/hud/CameraToastController@CameraToastController": "client/controllers/hud/CameraToastController@CameraToastController",
+		"roblox-dodgeball:out/server/services/match/MatchService@MatchService": "server/services/match/MatchService@MatchService"
 	},
 	"metadata": {}
 }

@@ -85,6 +85,76 @@ export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
 export const SHIFT_LOCK_ZONE_TAG = "ShiftLockZone";
 
 /**
+ * Tags marking the two parts a player walks into to pick a side for the next match.
+ *
+ * **One tag per side, and the split is the whole rule: the part you touch is the side you ask for.**
+ * There used to be one `MatchJoin` part, and the service placed whoever touched it on whichever side
+ * was emptier — the player said "I would like to play" and `MatchService` chose the team. These two say
+ * what the one part could not: **the player chooses**, by walking up to the sign they want, and
+ * touching the *other* part moves them again until the match starts. A choice made by walking is one
+ * visible in the lobby and needs no menu, which is why this is two parts rather than one part and a
+ * prompt.
+ *
+ * **A label somebody paints on a part in the place file**, exactly like {@link CHARACTER_BARRIER_TAG}
+ * and {@link SHIFT_LOCK_ZONE_TAG} above, and read in one place — `services/match/MatchService.ts`,
+ * which decorates the part, connects its `Touched` and puts that side's counts sign above it.
+ *
+ * **`CanTouch = true` on both, and that is the exception rather than an oversight.** The barrier and
+ * the zone are deliberately `CanTouch = false`, so that an invisible box does not hand touch events to
+ * every ball that crosses it; these parts' whole job *is* the touch, so they are the case the other two
+ * are the rule against. `CanQuery = false` for the reason both of them have it — the aim guide casts
+ * through the world, and a lobby prop must not be what the preview stops on. `CanCollide = false`,
+ * because a lobby is somewhere people walk.
+ *
+ * **And `Anchored = true`, which the old lobby spawn was not.** That part walked off the bottom of the
+ * world and the engine destroyed it at `FallenPartsDestroyHeight`, with no Lua on the stack and nothing
+ * in the output — the failure these parts must not repeat. `MatchService` sets all four from code and
+ * warns when it has had to, so the trap is a line in the log rather than an afternoon.
+ *
+ * **A side's own part, and nothing else.** These say *which side*, not *which match*: the roster is
+ * still cleared at the end of every match, so a player picks again next time, and both tags are read
+ * by the server only — nothing on the client needs to know which part is which side.
+ */
+export const MATCH_JOIN_A_TAG = "MatchJoinA";
+
+/** The other side's part. See {@link MATCH_JOIN_A_TAG}. */
+export const MATCH_JOIN_B_TAG = "MatchJoinB";
+
+/**
+ * Tag marking a piece of arena that keeps match balls beside it.
+ *
+ * **A marker, and the only thing read from it is where it is.** `BallSpawnerService` puts one ball
+ * beside each tagged part while a match is running, so a spawner is a *placement decision* — where the
+ * balls should be — and placing one is done in Studio by tagging a part, with nothing to write and
+ * nothing to register. Several are independent, and the tag is how the loop finds them all without
+ * being told about any of them. It reads the part's `Position` and `Size` and nothing else, so the
+ * part needs to be somewhere a ball can lie rather than shaped in any particular way.
+ *
+ * **Named for the match, and that is the whole reason for the name.** The tag used to be
+ * `BallSpawner`, which said nothing about *which* game wanted the balls — and a practice court wants
+ * its own floor stocked without a match running, so that service needs a tag of its own. Naming this
+ * one for the context it belongs to is what leaves room for the second, and it had to be done before
+ * the second existed rather than after: a rename once two services read the tag is a rename with a
+ * broken half in the middle.
+ *
+ * **A label somebody paints on a part in the place file**, exactly like {@link CHARACTER_BARRIER_TAG}
+ * and {@link SHIFT_LOCK_ZONE_TAG} above — and, like the join tags below, it may equally be put on a
+ * folder, because every reader goes through `taggedPartsInWorkspace`, which expands a container into
+ * the parts inside it.
+ *
+ * **`Anchored = true`, which the old lobby spawn was not, and the three flags off.** That part walked
+ * off the bottom of the world and the engine destroyed it at `FallenPartsDestroyHeight`, with nothing
+ * in the output — the failure a spawner must not repeat, because a part that has fallen is a part with
+ * no balls beside it and no evidence that anything went wrong. `CanCollide`, `CanTouch` and `CanQuery`
+ * are all `false` so that a floor marker is not something to walk into, is not handed touch events it
+ * has no use for, and is not what the aim guide's spherecast stops on.
+ *
+ * **Nothing sets any of that from code**, unlike the join parts — the spawner only reads the part — so
+ * these are the flags to give it in the place file.
+ */
+export const MATCH_SPAWNER_TAG = "MatchSpawner";
+
+/**
  * Attribute naming whoever a ball belongs to, carried on the **thrower's model**.
  *
  * The value is a string token rather than a `UserId`, because a thrower is not

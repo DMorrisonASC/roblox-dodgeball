@@ -89,6 +89,20 @@ export class DevService implements OnStart {
 	 */
 	private readonly flagListeners = new Map<string, ((player: Player, on: boolean) => void)[]>();
 
+	/**
+	 * Commands a system owns, keyed on the word that invokes them.
+	 *
+	 * **A registration door rather than another branch in this file, and it exists because of a
+	 * dependency the other shape would have created.** `RoundService` already injects `DevService` to ask
+	 * whether rounds are paused, so a `match` command handled *here* would need `RoundService` injected
+	 * back the other way — a cycle, in a container that has to construct one of them first. Letting the
+	 * system that can serve a verb register it keeps the arrow pointing one way, and keeps this file what
+	 * it has always been: a chat parser that knows which words exist and nothing about what they do.
+	 *
+	 * The handler is called with the player who asked, and it runs protected — see `handleChat`.
+	 */
+	private readonly commands = new Map<string, (player: Player) => void>();
+
 	public onStart() {
 		Players.PlayerAdded.Connect((player) => this.welcome(player));
 
@@ -138,6 +152,22 @@ export class DevService implements OnStart {
 		} else {
 			this.flagListeners.set(flag, [listener]);
 		}
+	}
+
+	/**
+	 * Registers a command word, and the handler that answers it for the player who typed it.
+	 *
+	 * **The word is matched case-insensitively, and a registered word wins over the flags.** A verb is
+	 * something a system asked to own; a flag is a state to toggle. `!dev match` has no on/off to give, so
+	 * the flag parse below would answer it with the usage line and the command would read as a typo — see
+	 * `handleChat`. Registration is per *word*, so registering one twice replaces the handler rather than
+	 * stacking two.
+	 *
+	 * Called once per system that owns a verb, from that system's own `onStart` — see {@link commands} for
+	 * why it is registered from there rather than dispatched in here.
+	 */
+	public onCommand(name: string, handler: (player: Player) => void): void {
+		this.commands.set(name.lower(), handler);
 	}
 
 	/**
@@ -253,6 +283,20 @@ export class DevService implements OnStart {
 		}
 
 		if (at < 0) return;
+
+		// **A registered verb first, because it is not a flag and has no on/off to give.** `!dev match` is the
+		// whole command — the word after it is absent — so the flag parse below would answer it with the usage
+		// line and the command would read as a typo. Protected, so one command that throws cannot take the
+		// chat handler down with it: the same protection `setFlag` gives its listeners, for the same reason.
+		const verb = words[at + 1];
+		const handler = verb !== undefined ? this.commands.get(verb) : undefined;
+
+		if (handler !== undefined) {
+			const [ok, err] = pcall(() => handler(player));
+			if (!ok) warn(`[Dev] the ${verb} command failed: ${tostring(err)}`);
+
+			return;
+		}
 
 		const requested = this.findFlag(words[at + 1]);
 		const state = words[at + 2];
