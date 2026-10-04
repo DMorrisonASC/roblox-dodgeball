@@ -187,6 +187,17 @@ export class RoundService implements OnStart {
     private finished = false;
 
     /**
+     * Whether the lobby's spawns have been reported yet.
+     *
+     * **Once a session rather than once an intermission**, because what the line says is a property of
+     * the place file rather than of the round: which folder the lobby is, and how many places there are
+     * in it. A line a minute about a constant is noise, and the question it answers — "did the round
+     * find the new layout at all" — is asked once, when somebody has just changed the layout. See
+     * {@link lobbySpawn}.
+     */
+    private lobbyLogged = false;
+
+    /**
      * Who is on which team this round.
      *
      * A table *beside* the attribute rather than instead of it, and both written in the one
@@ -1062,73 +1073,91 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * The place's lobby spawn, or nothing if the place has none.
+     * One of the arena's lobby spawns, picked uniformly at random, or nothing if there is nowhere to put
+     * anybody.
      *
-     * **A lookup rather than a rule, and that is the whole of what changed.** This used to be
-     * `getSpawn(name)`, which `error()`ed — the right *answer* to "this place has no lobby", thrown
-     * from the wrong place: it is called from inside {@link gameLoop}, and a throw from there rejects
-     * the loop's promise and stops the round system for the rest of the session. See
-     * {@link waitForLobby} for the rule that replaced it, and the round boundary further down for the
-     * same lesson already learned about the arena.
+     * **The lobby is a folder of parts inside the arena now, which is the shape a side's spawns already
+     * had.** `LobbySpawns` is looked for with `findFolder` rather than pinned by name, only direct
+     * `BasePart` children count, and the pick is `math.random` over however many there are — exactly
+     * `getRandomTeamSpawn`, one level simpler because a lobby has no sides. It used to find a single part
+     * called `LobbySpawn` anywhere in `Workspace`, which was one place to stand for a whole lobby.
      *
-     * **It walks `Workspace` rather than taking the first thing of that name, and that is the second
-     * bug this lookup had.** `FindFirstChild(name, true)` answers with the first instance *of that
-     * name*, whatever it is — so a single Folder or Model called `LobbySpawn` anywhere in the world
-     * shadows the real part and the whole lookup reads as "no lobby", with the part it wanted sitting
-     * a few studs away. **The type has to be part of the question, not a check applied to an answer
-     * that has already been chosen.**
+     * **What the old version taught is why the new one is shaped this way, and both lessons still
+     * apply.** A lookup by name alone answers with the first instance *of that name whatever it is*, so
+     * the type has to be part of the question rather than a check applied to an answer already chosen;
+     * and a lookup that is too shallow finds nothing while the thing it wants sits a few studs away,
+     * which is exactly what "the lobby is inside the arena" would have looked like to a walk of the
+     * root. The folder search and the `IsA("BasePart")` test are those two rules, written once each.
      *
-     * **Looked up anywhere in `Workspace`, not only at its root.** The lobby was once a loose part at
-     * the root and a plain `FindFirstChild(name)` was written to that shape, which broke the moment
-     * the part was tidied into a model — and broke *silently*, because a part present in the place
-     * and missed by a too-shallow lookup is a part the loop simply sits waiting for. Anywhere in
-     * `Workspace` means the lobby can be restructured as freely as the arena can.
+     * **`undefined` for every way this can fail, and saying which is somebody else's job.** No arena, no
+     * folder, and a folder holding no parts all read the same here on purpose: this answers "where can I
+     * put somebody" rather than "why not". {@link waitForLobby} is the one place that holds an
+     * intermission while the answer is no, and {@link describeLobbyCandidates} is the one place that says
+     * which of the three it was — so there is no second copy of that sentence to keep in step.
      *
-     * **The whole of `Workspace` is the search space now, and the one thing that used to be excluded
-     * from it has gone.** A copy inside the round's map was skipped, because a map standing in the
-     * world held its own `LobbySpawn` and that was the copy that must never win. There is no
-     * per-round map any more — the arena is permanent, and it *is* the arena rather than a copy of
-     * one — so there is nothing to be shadowed by and the skip is gone with it. What is left to
-     * watch is the place file rather than the code: a `LobbySpawn` built *inside* `ArenaV1` is now a
-     * part this finds, and the fix is to rename it. See `ARENA_CONFIG.LOBBY_SPAWN_NAME`.
+     * **Nothing is cached and the draw is per call**, for the reason `getRandomTeamSpawn` gives: the parts
+     * are one Studio edit away from being replaced, so a list held here would be the last intermission's,
+     * and two players moved in the same frame should not land on each other.
      *
-     * The walk is the whole of `Workspace`, once an intermission — or once a second while waiting for
-     * one, which is a few hundred instances next to nothing.
+     * **And one line, once a session, when this first succeeds.** See {@link lobbyLogged}.
      */
     private lobbySpawn(): CFrame | undefined {
-        for (const descendant of Workspace.GetDescendants()) {
-            if (descendant.Name !== ARENA_CONFIG.LOBBY_SPAWN_NAME) continue;
-            if (!descendant.IsA("BasePart")) continue;
+        const arena = findArena();
+        if (arena === undefined) return undefined;
 
-            return descendant.CFrame.add(new Vector3(0, 3, 0));
+        const folder = lobbySpawnFolder(arena);
+        if (folder === undefined) return undefined;
+
+        const parts = basePartsIn(folder);
+        if (parts.size() === 0) return undefined;
+
+        if (!this.lobbyLogged) {
+            this.lobbyLogged = true;
+
+            print(`[Round] lobby spawns resolved — ${folder.GetFullName()}, ${parts.size()} candidates`);
         }
 
-        return undefined;
+        // The same lift `getRandomTeamSpawn` uses, and for the same reason: a body pivoted onto the floor
+        // it is standing on arrives half inside it, so every spawn is a place to stand rather than a place
+        // to intersect.
+        return parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
     }
 
     /**
-     * What the world has to say about the lobby it is missing, as one sentence.
+     * What the world has to say about the lobby it cannot find, as one sentence.
      *
      * **The distinction this exists to draw is between "absent" and "present but unusable"**, because
      * those two read identically from the warning alone and have completely different fixes: one is a
-     * part to add, the other is a part to correct. It is worth a second walk for that, and it is only
-     * taken when the lookup has already failed — once per hold, not per frame.
+     * folder to add, the other is parts to put in it. It is worth two extra lookups for that, and they
+     * are only taken when {@link lobbySpawn} has already failed — once per hold, not per frame.
      *
-     * Anything found is reported with its full path and its class, which is the pair somebody needs:
-     * the path says where it is, and the class says why it was not good enough.
+     * **It walks the same path the search walks, in the same order**, so the sentence names the step
+     * that is missing rather than the whole route: no arena, then no `LobbySpawns` inside it, then
+     * nothing in that folder a player can stand on. The parts come from the same helper the search uses
+     * for the same reason — "what counts as a spawn" is one rule, and a description that counted them
+     * differently from the way they are picked would be a second one, disagreeing in the one case
+     * somebody is reading the sentence to diagnose.
+     *
+     * The last branch is the case that should be impossible: the search would have found a part and the
+     * description just did. Said out loud rather than left out, because the alternative is a sentence
+     * that reads like a place-file fault when the fault is here.
      */
     private describeLobbyCandidates(): string {
-        const named: string[] = [];
+        const arena = findArena();
+        if (arena === undefined) return `nothing in Workspace is a Model named "${ARENA_CONFIG.ARENA_NAME}".`;
 
-        for (const descendant of Workspace.GetDescendants()) {
-            if (descendant.Name !== ARENA_CONFIG.LOBBY_SPAWN_NAME) continue;
-
-            named.push(`${descendant.GetFullName()} (${descendant.ClassName})`);
+        const folder = lobbySpawnFolder(arena);
+        if (folder === undefined) {
+            return `"${arena.GetFullName()}" has no folder called "${ARENA_CONFIG.LOBBY_SPAWNS_FOLDER}".`;
         }
 
-        if (named.size() === 0) return `Nothing in Workspace is named "${ARENA_CONFIG.LOBBY_SPAWN_NAME}".`;
+        const parts = basePartsIn(folder);
+        if (parts.size() === 0) return `"${folder.GetFullName()}" holds no BasePart children.`;
 
-        return `Workspace has ${named.join(", ")} — and none of those is a BasePart.`;
+        return (
+            `"${folder.GetFullName()}" holds ${parts.size()} BasePart(s), which the search should have taken` +
+            ` one of — so that points at the lookup rather than at the place file.`
+        );
     }
 
     /**
@@ -1150,7 +1179,7 @@ export class RoundService implements OnStart {
      * hold used to sit in front of the map swap, so going on without a lobby would have dropped
      * everybody into an arena that was about to be torn down around them; the arena is permanent now,
      * so nobody is in the way of anything. What it still costs is the intermission itself: held at its
-     * full length, saying so, until the part turns up.
+     * full length, saying so, until the spawns turn up.
      */
     private async waitForLobby(): Promise<CFrame> {
         let waiting = false;
@@ -1159,7 +1188,7 @@ export class RoundService implements OnStart {
             const lobby = this.lobbySpawn();
 
             if (lobby !== undefined) {
-                if (waiting) print(`[Round] ${ARENA_CONFIG.LOBBY_SPAWN_NAME} found — the intermission can run`);
+                if (waiting) print(`[Round] ${ARENA_CONFIG.LOBBY_SPAWNS_FOLDER} found — the intermission can run`);
                 return lobby;
             }
 
@@ -1167,9 +1196,9 @@ export class RoundService implements OnStart {
                 waiting = true;
 
                 warn(
-                    `[Round] no "${ARENA_CONFIG.LOBBY_SPAWN_NAME}" in Workspace — holding the intermission ` +
-                        `until there is one. Everybody is standing in the arena, and there is nowhere else ` +
-                        `to put them until the part exists. ` +
+                    `[Round] no usable lobby in "${ARENA_CONFIG.ARENA_NAME}" — holding the intermission until ` +
+                        `there is one. Everybody is standing in the arena, and there is nowhere else to put ` +
+                        `them until "${ARENA_CONFIG.LOBBY_SPAWNS_FOLDER}" has parts in it. ` +
                         this.describeLobbyCandidates(),
                 );
             }
@@ -1552,22 +1581,17 @@ export class RoundService implements OnStart {
             // `applyBarrierGroups` and `CHARACTER_BARRIER_TAG`.
             //
             // **Every round rather than once at boot**, because this project's place files are edited
-            // while a server is running: a wall added or tagged after boot would otherwise stay in the
-            // wrong group until the next restart. The pass is idempotent and walks one arena, once a
-            // round, which is what makes that affordable.
+            // while a server is running: a wall added, tagged or moved after boot would otherwise stay
+            // in the wrong group until the next restart. The pass is idempotent and touches only tagged
+            // parts, once a round, which is what makes that affordable.
             //
-            // **A `Folder` arena gets no barrier pass, and says so rather than going quiet.**
-            // `applyBarrierGroups` takes a `Model` — the class that tag's own documentation is written
-            // around — so a `Folder` arena would silently leave its walls in `Default`. One warning a
-            // round is the honest version of that, and the fix is one word in the place file.
-            if (arena.IsA("Model")) {
-                applyBarrierGroups(arena);
-            } else {
-                warn(
-                    `[Round] "${arena.GetFullName()}" is a ${arena.ClassName} rather than a Model — ` +
-                        `barrier groups were not assigned`,
-                );
-            }
+            // **No argument and no class check, and that is the correction the first real place file
+            // forced.** This used to hand the arena over and skip the pass unless the arena was a
+            // `Model` — which in a place whose arena is a `Folder` meant the wall was never assigned at
+            // all, with one warning a round as the only evidence that it had not been. The pass finds
+            // its parts by tag now, so neither where the arena sits nor what class it is can matter.
+            // `findArena` still cares about both, because the *spawn folders* are looked up inside it.
+            applyBarrierGroups();
 
             // **What the unload used to do, and who does it now.** Tearing the arena down at the end
             // of every round was also the one sweep that cleared whatever the round had left lying in
@@ -1754,6 +1778,38 @@ function spawnFolderFor(arena: Instance, team: TeamLabel): Folder | undefined {
 }
 
 /**
+ * The arena's `LobbySpawns` folder, or nothing if it has none.
+ *
+ * **Searched for rather than named as a child**, for the reason {@link spawnFolderFor} gives about
+ * `ArenaSpawns`: somebody who tidies the folder into a grouping folder of the arena's own has broken
+ * nothing, and the *shape* — a folder of `BasePart`s — is the part that is a contract.
+ */
+function lobbySpawnFolder(arena: Instance): Folder | undefined {
+    return findFolder(arena, ARENA_CONFIG.LOBBY_SPAWNS_FOLDER);
+}
+
+/**
+ * The direct `BasePart` children of `folder`.
+ *
+ * **The one place "what counts as a spawn" is decided for the lobby**, shared by the search that picks
+ * one and the sentence that explains an empty result — the same split `teamSpawnParts` makes for a
+ * side's spawns, and for the same reason: two callers disagree about what emptiness *means*, and
+ * neither of them should disagree about what emptiness *is*.
+ *
+ * Only **direct** children, deliberately: a `Model` full of parts is not a spawn and is skipped rather
+ * than searched, so "is this a spawn?" stays a question about one folder's children.
+ */
+function basePartsIn(folder: Folder): BasePart[] {
+    const parts: BasePart[] = [];
+
+    for (const child of folder.GetChildren()) {
+        if (child.IsA("BasePart")) parts.push(child);
+    }
+
+    return parts;
+}
+
+/**
  * The `BasePart` children of `arena`'s spawn folder for `team`.
  *
  * **One traversal, two callers that disagree about what emptiness means** — the round boundary
@@ -1787,29 +1843,28 @@ function teamSpawnParts(arena: Instance, team: TeamLabel): BasePart[] {
 }
 
 /**
- * The arena a round is played in: the permanent thing in `Workspace`, or nothing if there is not one.
+ * The arena a round is played in: the permanent `Model` in `Workspace`, or nothing if there is not one.
  *
  * **One place for the lookup, and everything else in this file is handed the answer.** The round
- * boundary, the spawn picker and the barrier pass all want the same instance, and the version before
- * this asked `MapService` for "the current map" at four separate points — which was the right shape
- * while a map was loaded per round and that service was the only thing holding one, and is the wrong
- * shape now that the arena is simply part of the place file.
+ * boundary, the spawn pickers and the lobby all want the same instance, and the version before this
+ * asked `MapService` for "the current map" at four separate points — which was the right shape while
+ * a map was loaded per round and that service was the only thing holding one, and is the wrong shape
+ * now that the arena is simply part of the place file.
+ *
+ * **A `Model`, because that is what an arena is and what the name promises.** The arenas are replaced
+ * wholesale rather than edited, so the class is part of the question: a `Folder` wearing the name is
+ * read as no arena at all, and the sentence the round prints names the class rather than leaving
+ * somebody to work out why a thing that exists cannot be found.
  *
  * **A direct child of `Workspace`, and the only lookup here that pins a location.** Everything else
- * searches a subtree because what it wants may be nested anywhere inside something else; the arena
- * is at the root of the world beside the lobby, and `ARENA_CONFIG.ARENA_NAME` says why that is worth
- * stating rather than searching for.
- *
- * **A `Model` or a `Folder`, because those are the two things an arena can be.** Anything else
- * wearing the name — a stray part, say — is treated as no arena at all, and the round then says
- * `no "ArenaV1" in Workspace`, which is the same fix as a rename: look at what is called that at the
- * root of the world. The one caller that needs a `Model` specifically is the barrier pass, and it
- * says so itself; see the round boundary.
+ * searches a subtree because what it wants may be nested anywhere inside something else; the arena is
+ * at the root of the world, and `ARENA_CONFIG.ARENA_NAME` says why that is worth stating rather than
+ * searching for.
  */
-function findArena(): Instance | undefined {
+function findArena(): Model | undefined {
     const found = Workspace.FindFirstChild(ARENA_CONFIG.ARENA_NAME);
     if (found === undefined) return undefined;
-    if (!found.IsA("Model") && !found.IsA("Folder")) return undefined;
+    if (!found.IsA("Model")) return undefined;
 
     return found;
 }
@@ -1821,23 +1876,23 @@ function findArena(): Instance | undefined {
  * rather than by code: the string names the folder that is missing or empty, which is the one
  * thing they need to know, and the same string serves the output line and the error.
  *
- * Takes `Instance | undefined` rather than an `Instance`, so that "there is no arena" — a place
- * whose `ArenaV1` has been renamed, deleted, or is not a `Model` or `Folder` — is one of the
- * ordinary answers rather than something every caller has to check first.
+ * Takes `Model | undefined` rather than a `Model`, so that "there is no arena" — a place whose
+ * `ARENA_CONFIG.ARENA_NAME` has been renamed, deleted, or is not a `Model` — is one of the ordinary
+ * answers rather than something every caller has to check first.
  *
  * **Both sides are checked, not just a named one.** A round needs both, so an arena missing either
  * cannot host a round whatever the caller was about to do with the other, and an arena that is half
  * built should be reported as such the first time it is tried rather than at the second team's
  * teleport.
  */
-function arenaProblem(arena: Instance | undefined): string | undefined {
-    if (arena === undefined) return `no "${ARENA_CONFIG.ARENA_NAME}" in Workspace`;
+function arenaProblem(arena: Model | undefined): string | undefined {
+    if (arena === undefined) return `no Model named "${ARENA_CONFIG.ARENA_NAME}" in Workspace`;
 
     for (const team of TEAM_LABELS) {
         if (teamSpawnParts(arena, team).size() > 0) continue;
 
         // **The names rather than a path.** The folders are searched for anywhere inside the arena, so
-        // printing `ArenaV1.ArenaSpawns.A` would assert a location the lookup no longer requires —
+        // printing `ArenaV2.ArenaSpawns.A` would assert a location the lookup no longer requires —
         // which is the mistake this rule exists to prevent, in miniature.
         return `"${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}/${teamFolderName(team)}" is missing from ${arena.Name}, or has no BasePart children`;
     }

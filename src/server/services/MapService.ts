@@ -128,13 +128,13 @@ export class MapService {
 		if (current === undefined) return;
 		if (current.Parent === Workspace) return;
 
-		// **The barriers are assigned before the map enters the world, and that is the whole reason
-		// this line is above the parenting rather than below it.** The arena becomes collidable the
-		// moment it is in `Workspace`, so a wall that joined a physics step still wearing `Default`
-		// would stop a thrown ball for a frame — and the ball is the one thing a midline wall must
-		// never do. Out here there is no step to be caught by: the pass runs on a model nothing is
-		// simulating yet. See `collision/CollisionGroups.ts` for the two walls and their flags.
-		applyBarrierGroups(current);
+		// **This call is a no-op now, and it is left as a note rather than as a rule.** The barrier pass
+		// finds its parts by tag *inside `Workspace`* — see `applyBarrierGroups` — and a model that has
+		// not been parented yet has none for it to find, so the ordering this comment used to argue for
+		// no longer exists to argue about. The pass belongs where the arena is permanent, which is the
+		// round boundary in `RoundService`; this service is not called from anywhere any more, so the
+		// line stays only because the file stays.
+		applyBarrierGroups();
 
 		current.Parent = Workspace;
 

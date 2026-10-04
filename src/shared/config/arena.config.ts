@@ -9,23 +9,27 @@
  */
 export const ARENA_CONFIG = {
 	/**
-	 * The arena a round is played in: the thing in `Workspace` with this name.
+	 * The arena a round is played in: the `Model` in `Workspace` with this name.
 	 *
 	 * **A permanent part of the world, and that is the newest structure this project has had.** The
 	 * arena used to be cloned from `ServerStorage` into `Workspace` when a round started and destroyed
 	 * when it ended, so its name was a key into `MAP_CONFIG.MAP_NAMES` and a round could be played in a
 	 * different one each time. There is now one arena, it sits in the place file like the lobby does,
 	 * and nothing is cloned or destroyed per round — so this is a name to *look something up by* rather
-	 * than a name to load, and the version suffix is here because the arena is expected to be replaced
-	 * wholesale rather than edited in place.
+	 * than a name to load.
+	 *
+	 * **The version suffix is real and has already moved once**: `ArenaV1` was replaced wholesale by
+	 * `ArenaV2`, which is what the arenas are for — a new one is a new model rather than an edit to the
+	 * old one, and this line is the whole of what a swap costs in code. The `Model` class is part of the
+	 * lookup rather than an assumption; a `Folder` wearing the name reads as no arena at all.
 	 *
 	 * **A direct child of `Workspace`, deliberately, and this is the one lookup in the round that pins
 	 * a location rather than searching for one.** Everything else searches a subtree — see
 	 * `shared/find.ts` for why — because what it wants may be nested anywhere inside something else.
-	 * The arena has no such parent: it is a sibling of the lobby, at the root of the world, and saying
-	 * so is what makes the round's own `[Round] arena resolved` line print a path worth reading.
+	 * The arena has no such parent: it is at the root of the world, and saying so is what makes the
+	 * round's own `[Round] arena resolved` line print a path worth reading.
 	 */
-	ARENA_NAME: "ArenaV1",
+	ARENA_NAME: "ArenaV2",
 
 	/**
 	 * **Placeholder.** The middle of the arena, in world studs. Nothing reads it:
@@ -65,6 +69,29 @@ export const ARENA_CONFIG = {
 	 * and resumes the moment it turns up.
 	 */
 	LOBBY_SPAWN_NAME: "LobbySpawn",
+
+	/**
+	 * The folder inside the arena holding the places a player may wait between rounds.
+	 *
+	 * `ArenaV2/LobbySpawns`, a folder of `BasePart`s — one per valid spot, put there by hand. Which of
+	 * them a player gets is picked at random, exactly as a side's spawn is, which is what stops everybody
+	 * arriving in one pile; see `RoundService.lobbySpawn`.
+	 *
+	 * **This is what {@link ARENA_CONFIG.LOBBY_SPAWN_NAME} used to be, and it replaced it.** The lobby
+	 * was one part looked up by name anywhere in `Workspace`, which was one place to stand for a whole
+	 * lobby; it is a folder of them now, inside the arena, which makes the lobby a thing the arena has
+	 * rather than a thing the world happens to contain. The old name is left in place until the code
+	 * that still reads it goes with it.
+	 *
+	 * **Searched for anywhere inside the arena rather than required at a path**, for the reason
+	 * {@link ARENA_CONFIG.ARENA_SPAWNS_FOLDER} gives about `ArenaSpawns`: the *structure* — a folder of
+	 * parts — is the contract, and where it happens to sit is not. See `shared/find.ts`.
+	 *
+	 * Missing, or holding no parts, **holds the intermission rather than erroring**: nobody can be put
+	 * in a lobby that is not there, and the round's own loop is the one place a throw must never come
+	 * from. See `RoundService.waitForLobby`.
+	 */
+	LOBBY_SPAWNS_FOLDER: "LobbySpawns",
 
 	/**
 	 * The folder inside the arena holding one folder of spawn parts per side.

@@ -264,55 +264,64 @@ function assignPart(instance: Instance): void {
 }
 
 /**
- * Puts every part of `map` wearing {@link CHARACTER_BARRIER_TAG} into the `Barrier` group.
+ * Puts every part in `Workspace` wearing {@link CHARACTER_BARRIER_TAG} into the `Barrier` group.
  *
  * **Assigned here rather than in Studio, and that is not a preference.** A collision group set on a
  * part in the place file is a *name*, and the group it names is registered by this file at boot — so
- * the part in `ServerStorage` would be relying on a registration from a session that has since
- * ended, or on somebody having set the same thing up by hand in the DataModel. Assigning it as the
- * map is placed makes the wall correct because the code ran, rather than because the file agreed.
+ * the part would be relying on a registration from a session that has since ended, or on somebody
+ * having set the same thing up by hand in the DataModel. Assigning it from the tag makes the wall
+ * correct because the code ran, rather than because the file agreed.
  *
- * **The clone is what is walked, not the template.** `Clone()` copies `CollectionService` tags, so
- * the tagged part arrives in the clone and is findable before the clone is ever in the world — which
- * is why this can run before the map is parented and no physics step ever sees a barrier wearing
- * `Default`. The template is never touched, and that includes not being given the group: a group
- * assigned to a `ServerStorage` part would be saved back into the place file by anybody who saved the
- * place in Studio, which is the one thing this wall is meant not to need.
+ * **It finds its parts by tag, and that replaced walking a container.** It used to take a root — the
+ * map first, then the arena — and walk its `GetDescendants()`, which made the wall's *place* part of
+ * the rule: a barrier outside that one container was never visited, and the container also had to be
+ * the right *class*, which quietly turned "the arena is a `Folder`" into "there are no barriers".
+ * Both of those were found the first time a real place file disagreed with the assumption — the
+ * second the moment the arena stopped being a cloned `Model`. A tag is the opposite kind of rule: it
+ * says what a part *is*, so a wall can be moved, grouped, nested or reorganised and it is still a
+ * wall. This is the shape `ShiftLock.checkZone` and `BallSpawnerService.tick` already use.
  *
- * **It searches the whole subtree, and it has to.** `GetDescendants()` rather than a lookup by name
- * at one level, because the barrier sits inside a folder of the arena's own — that is where it is in
- * the map template today. Anything here that finds a place-file part searches the tree it was given;
- * see `shared/find.ts`. The tag is the other half of the same rule: `GetTagged` would find a barrier
- * anywhere in the game, and it is *not* what this uses, because at this moment the clone is still out
- * of the world and a tag search filtered to `Workspace` would find nothing at all.
+ * **`Workspace` is the scope, which is the half the tag alone cannot say.** `GetTagged` answers about
+ * every tagged instance in the game, including one sitting in a template in `ServerStorage` or in a
+ * model mid-rebuild — and a wall that is not in the world is not a wall. Filtering on
+ * `IsDescendantOf(Workspace)` is the same guard those two callers make, for the same reason.
+ *
+ * **The old argument against a tag search is gone rather than ignored.** It was that a search
+ * filtered to `Workspace` would find nothing, because the round's map was still a clone out of the
+ * world when the pass ran. That was true while a map was cloned in per round, and it stopped being
+ * true when the arena became a permanent part of the place: nothing is cloned, so anything tagged is
+ * already somewhere a player can walk into it.
  *
  * **The read-back is the point of the line rather than a flourish on it.** Reported always rather
- * than behind a flag, because a map with no barrier is a legitimate state (an arena whose midline has
- * not been built yet): the count saying zero is the evidence that the pass ran, and each part's name
- * with its resulting group is the evidence that the assignment *took*. A part still reading `Default`
- * after this ran is a name the engine did not accept — which otherwise looks exactly like a pass that
- * never found the tag — and a wall whose *other* half is the thing being hit shows up here too, as a
- * part that is not in the list.
+ * than behind a flag, because an arena with no barrier is a legitimate state (a midline nobody has
+ * built yet): the count saying zero is the evidence that the pass ran, and each part's name with its
+ * resulting group is the evidence that the assignment *took*. A part still reading `Default` after
+ * this ran is a name the engine did not accept — which otherwise looks exactly like a pass that never
+ * found the tag — and a wall whose *other* half is the thing being hit shows up here too, as a part
+ * that is not in the list.
  */
-export function applyBarrierGroups(map: Model): void {
+export function applyBarrierGroups(): void {
 	let assigned = 0;
 	let report = "";
 
-	for (const descendant of map.GetDescendants()) {
-		if (!descendant.IsA("BasePart")) continue;
-		if (!descendant.HasTag(CHARACTER_BARRIER_TAG)) continue;
+	for (const part of CollectionService.GetTagged(CHARACTER_BARRIER_TAG)) {
+		// A tag is a string anybody can put on anything, and `GetTagged` hands back whatever wears it —
+		// the same walk `roundParticipants` makes over the `NPC` tag, and for the same reason: the class
+		// has to be part of the question rather than a check applied to an answer already chosen.
+		if (!part.IsA("BasePart")) continue;
+		if (!part.IsDescendantOf(Workspace)) continue;
 
-		descendant.CollisionGroup = BARRIER_GROUP;
+		part.CollisionGroup = BARRIER_GROUP;
 		assigned++;
 
 		// Built as a local rather than nested inside the print's own template: roblox-ts compiles
 		// each template literal to a Luau interpolated string, so nesting one puts backticks inside
 		// backticks — which parses, and quietly renders as nothing.
-		const part = `${descendant.Name} = ${descendant.CollisionGroup}`;
-		report = report === "" ? part : `${report}, ${part}`;
+		const described = `${part.Name} = ${part.CollisionGroup}`;
+		report = report === "" ? described : `${report}, ${described}`;
 	}
 
 	const suffix = report === "" ? "" : `: ${report}`;
 
-	print(`[Collision] ${assigned} barrier part(s) in "${map.Name}"${suffix}`);
+	print(`[Collision] ${assigned} barrier part(s) in ${Workspace.Name}${suffix}`);
 }
