@@ -39,6 +39,12 @@ interface NpcLoop {
  *
  * Tagging a rig by hand in Studio is therefore a complete way to make an NPC:
  * the added-signal starts the loop, and nothing has to be written or spawned.
+ *
+ * **A rig is managed only while it is in `Workspace`, and that is the second half of the interface.**
+ * The tag says what a model *is*; it says nothing about where the model is, and `CollectionService`
+ * answers about the whole DataModel — so a rig inside an arena template parked in `ServerStorage`
+ * wears `NPC` exactly as the rigs standing in the arena do, and this service could not tell them
+ * apart. See `run` for the gate that does, and for what simulating those rigs cost.
  */
 @Service()
 export class NpcService implements OnStart {
@@ -77,6 +83,21 @@ export class NpcService implements OnStart {
 		// Rigs tagged before this service started — including everything tagged in
 		// Studio before Play — never fire the added-signal, so they are scanned for
 		// rather than waited on.
+		//
+		// **Deliberately world-blind, and that is the point of the gate in `run` rather than here.** Every
+		// rig wearing the tag is given a loop, and the gate is what declines to act on one that is out of
+		// the world. That costs an idle loop per parked rig and buys the one case a filter *here* would
+		// have thrown away for good: a rig that is put into the world later — a template dragged out of
+		// `ServerStorage` to test with — starts working on its own next turn, because being parented fires
+		// no tag signal and this scan is the only moment it could have been noticed at all.
+		//
+		// **What this scan does not cover is a clone, and that is worth being exact about rather than
+		// letting it read as "maps work".** A rig inside a model `MapService` clones has no loop: the
+		// copy's rigs are new instances, their tags came with the copy rather than being applied to it, and
+		// nothing here ever sees them — which is the case `RespawnBehavior`'s strip-and-re-add exists
+		// around (see its comment for the project's reading of what `Clone` does and does not fire). So
+		// this line is not what makes a placed map's rigs run, and nothing does today; the map rotation is
+		// parked while the arena is permanent, and it will need a story for that when it comes back.
 		for (const instance of CollectionService.GetTagged(NPC_TAG)) {
 			if (instance.IsA("Model")) this.start(instance);
 		}
@@ -133,7 +154,15 @@ export class NpcService implements OnStart {
 
 		task.spawn(() => this.run(model, loop));
 
-		if (DEBUG) print(`[NPC] ${model.Name}: managed — ${this.describeBehaviors(model)}`);
+		if (DEBUG) {
+			// **Which of the two states it is in, said out loud.** "This rig is managed" and "this rig is
+			// managed and doing nothing" are identical from anywhere but here — and the second one is the
+			// whole of "there are balls coming from somewhere and I cannot see who is throwing them", a
+			// question this file should answer in one line rather than leave to be inferred. A rig outside
+			// the world names itself here instead of only being skipped quietly by the gate in `run`.
+			const idle = model.IsDescendantOf(Workspace) ? "" : " — not in the world, so idle until it is placed";
+			print(`[NPC] ${model.Name}: managed — ${this.describeBehaviors(model)}${idle}`);
+		}
 	}
 
 	/** Ends `model`'s loop at its next turn. */
@@ -164,7 +193,36 @@ export class NpcService implements OnStart {
 		const prepared = new Set<string>();
 
 		while (!loop.stopped && model.HasTag(NPC_TAG) && model.Parent !== undefined && humanoid.Health > 0) {
-			// **A frozen rig does nothing, and this is the one gate every behavior passes through.** A check
+			// **A rig that is not in the world does nothing, and this is the first of the two gates every
+			// behavior passes through.** The tag says a model is an NPC; it does not say the model is
+			// anywhere. `CollectionService` answers about the whole DataModel, so a rig inside an arena
+			// template parked in `ServerStorage` wears `NPC` exactly as the rigs in the live arena do — and
+			// before this line, every one of them was simulated.
+			//
+			// **What that cost, because nothing about the code says it out loud.** A rig out of the world
+			// still ran its behaviors, `ThrowBehavior.prepare` still handed it a ball, and every throw it
+			// made still parented that ball to `Workspace` — which is where a thrown ball goes, because a
+			// ball's business is to be in the world. So an unused map sitting in `ServerStorage` put balls
+			// into the world out of nowhere, at whatever coordinates its rigs had been saved at, and the
+			// only true thing to say about them from the player's seat was that they had no source.
+			//
+			// **Inside the loop rather than in its condition**, for the reason the freeze gate below gives
+			// at length: a condition ends the loop and nothing brings a loop back. A rig put into the world
+			// later — a map being placed, or somebody dragging a rig out of `ServerStorage` to test it —
+			// starts working on its own next turn, with no re-tagging behind it and no second mechanism.
+			//
+			// **This is the rule the rest of the project already keeps, and it was only missing here.**
+			// `RoundService.roundParticipants` filters this same tag this same way, `taggedPartsInWorkspace`
+			// is the `BasePart` half of it, and `TAGS.md` is where the rule is written down along with why
+			// it is needed (`MapService` clones arrive wearing every tag their template had). Kept inline
+			// rather than shared for the reason `roundParticipants` keeps its own: the test is one call, and
+			// what needs writing down is the reason rather than the expression.
+			if (!model.IsDescendantOf(Workspace)) {
+				task.wait(period);
+				continue;
+			}
+
+			// **A frozen rig does nothing, and this is the second gate every behavior passes through.** A check
 			// inside each behavior would be one guard per mechanic and a silent omission in the next one
 			// anybody adds; here it cannot be forgotten, and it stops throwing, catching and picking a ball up
 			// in one line.

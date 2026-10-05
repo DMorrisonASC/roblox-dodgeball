@@ -30,7 +30,7 @@ a place file that no build touches.
 | --- | --- | --- | --- |
 | `Ball` | `BallComponent` decorator, `tag: "Ball"` | `BallFactory.finish` — nothing else | 7 files, listed below |
 | `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.cleanupRoundBalls` |
-| `BallSpawner` | `BallSpawnerService`, `SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.tick` |
+| `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups` |
 | `NPC` | `npc/Behavior.ts`, `NPC_TAG` | `NpcService.spawn`, `RespawnBehavior`, or painted in Studio | `NpcService`, `CollisionGroups`, `RoundService`, `OutlineService` |
 | `Behavior_Catching` | `npc/Behavior.ts`, `BEHAVIOR_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted | `NpcService`'s per-behavior gate |
@@ -84,13 +84,17 @@ alone** — destroying a ball out of a hand would take it from a player mid-acti
 has nothing to do with them. The tag comes off before the destroy, so a ball on its way out is not
 counted as the round's for the frame in between.
 
-## `BallSpawner` — painted, not written
+## `MatchSpawner` — painted, not written
 
-Marks a part as a piece of arena that keeps loose balls around it. Read by `tick`, and the read has a
-second condition worth knowing: the part must also be **a descendant of `Workspace`**. `MapService`
-clones the next arena during an intermission and holds it out of the world, and a `Clone` carries its
-tags — so without that check the loop would stock an arena nobody can see, dropping balls into empty
-space.
+Marks a part as a piece of arena that keeps loose balls around it. The name itself lives in
+`shared/constants.ts` (`MATCH_SPAWNER_TAG`) rather than in the service that reads it, because the boot
+diagnostic prints it — see `BallSpawnerService.report`, and see the constant for why it is named for
+the match rather than for balls.
+
+Read by `tick`, and the read has a second condition worth knowing: the part must also be **a
+descendant of `Workspace`**. `MapService` clones the next arena during an intermission and holds it
+out of the world, and a `Clone` carries its tags — so without that check the loop would stock an
+arena nobody can see, dropping balls into empty space.
 
 A misspelling is silent: that part is never topped up, and nothing says so.
 
@@ -117,6 +121,20 @@ removes every tag from the replacement and re-adds them rather than trusting `Cl
 them.
 
 `GetInstanceRemovedSignal(NPC_TAG)` is what stops a loop, so taking `NPC` off a rig retires it.
+
+**A rig is managed only while it is in `Workspace`, and that is the second condition on this tag.**
+It is the same rule `MatchSpawner` needs, arriving on the other kind of tag, and it is needed for the
+same reason: `CollectionService` answers about the whole DataModel, so a rig inside an arena template
+parked in `ServerStorage` wears `NPC` exactly as the rigs standing in the arena do.
+`NpcService.run` skips a rig that is out of the world and `RoundService.roundParticipants` filters
+this tag the same way.
+
+`NpcService` was the reader where the rule was missing, and **what it cost is not visible in the
+code, so it is written down here**: a rig out of the world is still simulated, so its behaviors ran,
+`ThrowBehavior.prepare` handed it a ball, and every throw it made parented that ball to `Workspace` —
+which is where a thrown ball goes. An unused map in `ServerStorage` therefore put balls into the
+world out of nowhere, at the coordinates its rigs had been saved at, with nothing in the output to
+say where they came from.
 
 ## Cloning
 
