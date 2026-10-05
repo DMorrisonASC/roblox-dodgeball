@@ -584,8 +584,13 @@ export const BALL_CONFIG = {
 	 *
 	 * `4` gives a full star at `0°`, `45°`, `90°` and `135°`, and is the default to judge
 	 * everything else by. `2` — a plain cross, `0°` and `90°` — is the cheap version and is
-	 * what to drop to if a busy server starts to notice: at four ribbons a ball in flight
-	 * costs eight attachments and four trails, so ten balls is forty trails.
+	 * what to drop to if a busy server starts to notice.
+	 *
+	 * **This count is the halo's too**, because the two layers are meant to be one tube at two
+	 * thicknesses rather than two different shapes — see {@link BALL_CONFIG.TRAIL_HALO_ENABLED}. So a
+	 * ball in flight now costs twice this in trails and in attachments: at `4` that is eight trails
+	 * drawing and sixteen attachments riding the ball, and eight balls all in the air would be
+	 * sixty-four trails. Lower it here or switch the halo off there; either one halves the same number.
 	 *
 	 * Three at `60°` also works and sits between the two. Any count divides the circle
 	 * evenly, so this is the only number to change.
@@ -601,10 +606,19 @@ export const BALL_CONFIG = {
 	 * reason a thrown ball draws a long streak and a rolled one draws almost none, and it is
 	 * the number to reach for when a hard throw draws further than it should. It is a time,
 	 * not a distance, so it is not the length itself — at
-	 * {@link BALL_CONFIG.THROW_SPEED} this is around forty studs, and at
-	 * {@link BALL_CONFIG.THROW_MAX_SPEED} about a hundred and twelve.
+	 * {@link BALL_CONFIG.THROW_MAX_SPEED} this is a hundred and forty studs of drawing, and an
+	 * ordinary two-hundred-stud-a-second throw leaves a wake about a hundred studs long.
+	 *
+	 * **Long is the point, and this went up from `0.4` for that reason.** The whole effect is a claim
+	 * about where a ball came from, and the claim is only useful if it is still on screen by the time
+	 * somebody looks up — so the length is what makes the throw *readable* rather than merely visible.
+	 * What it costs is drawing: every second of lifetime is another sixty segments alive per ribbon, and
+	 * this is the number in this block that would come down first if the arena ever looked like it was
+	 * full of tubes.
+	 *
+	 * The halo has its own, deliberately longer — see {@link BALL_CONFIG.TRAIL_HALO_LIFETIME}.
 	 */
-	TRAIL_LIFETIME: 0.4,
+	TRAIL_LIFETIME: 0.5,
 
 	/**
 	 * How wide each ribbon is where it leaves the ball, as a fraction of the gap between its
@@ -612,8 +626,53 @@ export const BALL_CONFIG = {
 	 *
 	 * A scale rather than a stud measurement because the gap is what a ribbon's width
 	 * *is* — see {@link BALL_CONFIG.TRAIL_SPREAD}, which sets it. `1` is the full gap.
+	 *
+	 * **Above `1` on purpose, and that is the flare.** At `1` the ribbon is exactly as wide as the pair
+	 * of attachments it spans, and those sit *inside* the ball — see
+	 * {@link BALL_CONFIG.TRAIL_SPREAD} — so the ribbon's edges are hidden behind the ball's own
+	 * silhouette and the head of the trail has no shape of its own. Above `1` the ribbon comes out past
+	 * it, and the size of that overhang is `2 × TRAIL_SPREAD × this` ball diameters across: at the values
+	 * here that is a ribbon about `1.69` studs wide on a ball that is `1.5`, so a little under a tenth of
+	 * a stud of ribbon shows on each side of the ball. A small overhang and a large difference — the head
+	 * becomes something the ball is *emerging from* rather than a line it is dragging, which is the whole
+	 * of what separates a comet from a streamer.
+	 *
+	 * **Not much further than this, though.** Past about `1.5` the head is an opaque bar wider than the
+	 * ball, and since every ribbon is opaque at that keypoint it hides the thing that is supposed to be
+	 * flying — which is a real cost for a game where watching the ball is the game.
+	 *
+	 * This is the widest point of the whole ribbon — see {@link BALL_CONFIG.TRAIL_WIDTH_NECK} for the
+	 * step down that follows it, which is the other half of the shape.
 	 */
-	TRAIL_WIDTH_LEADING: 1.0,
+	TRAIL_WIDTH_LEADING: 1.25,
+
+	/**
+	 * How wide each ribbon is at the neck, as a fraction of the gap —
+	 * {@link BALL_CONFIG.TRAIL_WIDTH_LEADING}'s scale, measured
+	 * {@link BALL_CONFIG.TRAIL_WIDTH_NECK_AT} of the way along the ribbon.
+	 *
+	 * **The number that makes the trail read as *fast*.** A ribbon that goes from the flare straight to
+	 * the tail falls away at a constant rate, and a constant rate reads as a cone: a shape, sitting
+	 * there, rather than something moving. Dropping sharply just behind the flare and then easing out
+	 * gives the eye a hot head with a wake, and it is the wake that says *this was going somewhere*. It
+	 * is the same trick as the middle keypoint in {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE}, applied to the
+	 * silhouette rather than to the colour.
+	 *
+	 * **Just over a third of the flare, which is about where the step becomes visible.** At `1` there is
+	 * no neck at all and the trail is the cone above; much under a quarter of the flare and the head is a
+	 * disc on a thread, which reads as a lollipop rather than as speed.
+	 */
+	TRAIL_WIDTH_NECK: 0.45,
+
+	/**
+	 * How far along the ribbon the neck sits, from `0` (at the ball) to `1` (the oldest end).
+	 *
+	 * **Before a quarter, and that is deliberate.** This is the position the flare falls from, so it
+	 * decides how much of the trail is head: later and the trail is a stubby teardrop with a thin
+	 * line behind it, earlier and the flare itself has no room to be seen and the whole thing is a
+	 * taper with a bump on the front.
+	 */
+	TRAIL_WIDTH_NECK_AT: 0.22,
 
 	/**
 	 * How wide each ribbon is at its oldest end, on the same scale as
@@ -629,12 +688,40 @@ export const BALL_CONFIG = {
 	 * The trail's colour where it leaves the ball.
 	 *
 	 * Warm white rather than pure white, so the head reads as the hot end of something
-	 * rather than as a plain painted line. Paired with
-	 * {@link BALL_CONFIG.TRAIL_COLOR_TRAILING} for the fade behind it — a `Trail` takes its
-	 * colour as a sequence, so unlike a single part it can carry the whole gradient on its
-	 * own and needs no second instance to do it.
+	 * rather than as a plain painted line. Paired with {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE} and
+	 * {@link BALL_CONFIG.TRAIL_COLOR_TRAILING} for the fade behind it — a `Trail` takes its colour as a
+	 * sequence, so unlike a single part it can carry the whole gradient on its own and needs no second
+	 * instance to do it. Three keypoints rather than two, for the reason the middle one gives.
 	 */
 	TRAIL_COLOR_LEADING: Color3.fromRGB(255, 255, 240),
+
+	/**
+	 * The colour a third of the way down the trail, and **the one that makes it fire rather than
+	 * ribbon.**
+	 *
+	 * A `ColorSequence` interpolates between its keypoints in a straight line through the colour, and
+	 * white to dull red is a straight line through *grey*: with the two ends this block used to have,
+	 * the middle of every trail was a pale washed-out pink that read as a faded strip rather than as
+	 * something cooling. An amber keypoint puts a saturated step in the way — the trail goes white-hot,
+	 * then orange, then embers — and the eye reads that as heat rather than as a gradient. It costs one
+	 * keypoint.
+	 *
+	 * See {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE_AT} for where it sits.
+	 */
+	TRAIL_COLOR_MIDDLE: Color3.fromRGB(255, 166, 48),
+
+	/**
+	 * How far along the trail the middle colour sits, from `0` (at the ball) to `1` (the oldest end).
+	 *
+	 * **Early, and a little behind the neck.** The hot end of a thrown ball is short and the cooling tail
+	 * is long, so the amber belongs near the ball where the eye is anyway; push this past the halfway
+	 * point and the trail starts to look like it is on fire at the back and cold at the front, which is
+	 * the one thing a cooling trail must not say. It is deliberately *not* the same figure as
+	 * {@link BALL_CONFIG.TRAIL_WIDTH_NECK_AT}, though it sits close to it: a width break and a colour
+	 * break at the same point read as a joint in a manufactured thing, so the silhouette gets there first
+	 * and the colour follows it.
+	 */
+	TRAIL_COLOR_MIDDLE_AT: 0.3,
 
 	/**
 	 * The trail's colour at its oldest end, on the same scale as
@@ -655,6 +742,164 @@ export const BALL_CONFIG = {
 	 * them sit on a line through the ball, so this is half of the trail's diameter. A
 	 * fraction rather than a stud count so the trail stays in proportion if `BALL_SIZE` is
 	 * ever changed; the exact value is not delicate, it only sets how fat the tube looks.
+	 *
+	 * **This is the core's thickness and the halo's is a separate, larger number** — see
+	 * {@link BALL_CONFIG.TRAIL_HALO_SPREAD}. Together they are the whole reason the effect has two
+	 * layers, so the relationship worth holding on to is that this one has to stay the *smaller* of the
+	 * two. What the value itself means in studs: the attachments sit this fraction of a ball diameter
+	 * from the ball's centre, so at `0.45` they are `0.675` studs out on a ball whose surface is at
+	 * `0.75`. That is *inside* the ball, which is what hides the ribbon's edges behind the ball's own
+	 * silhouette until {@link BALL_CONFIG.TRAIL_WIDTH_LEADING} flares the head out past it — the two
+	 * numbers are one shape between them and only make sense together.
 	 */
-	TRAIL_SPREAD: 0.4,
+	TRAIL_SPREAD: 0.45,
+
+	// ----------------------------------------------------------- trail: texture
+
+	/**
+	 * A texture for the ribbons. **THE USER UPLOADS THIS — `""` means none, which is the default.**
+	 *
+	 * The one upgrade left in this block that is not a number, and the honest reason it is empty: every
+	 * other entry here is a shape or a colour chosen from what the engine draws natively, while a texture
+	 * has to exist as an uploaded asset and nothing on disk can stand in for one — the same argument
+	 * `SUPER_CONFIG.FREEZE_AURA_TEXTURE` makes about the same kind of id. Empty means every ribbon is
+	 * drawn with the engine's own plain gradient, which is what this effect has always done.
+	 *
+	 * **What it buys.** A `Trail` with no texture is a solid ribbon whose only gradient is the ones this
+	 * file draws *along* it, and its edges are hard: it has a definite outline from every angle, which is
+	 * what a streamer has and a beam of light does not. A soft-edged streak — one that fades across the
+	 * ribbon's width as well as along it — is most of the difference between a bright line and something
+	 * that looks like it is giving off light.
+	 *
+	 * **Applied to both layers**, because one texture at two thicknesses keeps them reading as one
+	 * object: a texture on the core and none on the halo would put the hard edge back around the middle
+	 * of the effect, where it is hardest to miss.
+	 */
+	TRAIL_TEXTURE: "",
+
+	/**
+	 * How the texture above is laid out along a ribbon. **Ignored while
+	 * {@link BALL_CONFIG.TRAIL_TEXTURE} is empty.**
+	 *
+	 * `Stretch` is the engine's default and the one chosen here: the image is stretched over the ribbon's
+	 * whole length, so a texture that is itself a bright-to-dark gradient reads as the fade this file was
+	 * already drawing, only softer — which is the safe first thing to try. `Wrap` repeats the image
+	 * instead, at {@link BALL_CONFIG.TRAIL_TEXTURE_LENGTH}, and is the choice for a *tiling* streak: a
+	 * dash, a chevron or a run of arrows, which is a different and much more deliberate look.
+	 */
+	TRAIL_TEXTURE_MODE: Enum.TextureMode.Stretch,
+
+	/**
+	 * How long one repeat of the texture is, in studs. **Ignored unless
+	 * {@link BALL_CONFIG.TRAIL_TEXTURE_MODE} is `Wrap`.**
+	 *
+	 * Only meaningful for a repeating texture, and the number to think in is how many dashes a throw
+	 * should be: a full-speed wake is about a hundred and forty studs long — see
+	 * {@link BALL_CONFIG.TRAIL_LIFETIME} — so this at `8` is roughly seventeen dashes on a hard throw
+	 * and two or three on a lob. Large enough to read as separate marks rather than as a flicker, small
+	 * enough that the gaps do not turn the trail into a dotted line.
+	 */
+	TRAIL_TEXTURE_LENGTH: 8,
+
+	// -------------------------------------------------------------- trail: halo
+
+	/**
+	 * Whether a second, wider and softer set of ribbons is drawn around the core ones. **Creation
+	 * switch**, in the shape of {@link BALL_CONFIG.TRAIL_ENABLED}: false and the ribbons are never
+	 * built.
+	 *
+	 * **Why there is a second layer at all.** One set of ribbons can only be one thickness, and the two
+	 * thicknesses this effect wants are opposites: a narrow hot core that reads as a line of light, and a
+	 * broad dim haze around it that reads as heat. As one ribbon you have to pick one — thin enough to
+	 * be a streak and there is no glow, fat enough to glow and it is a curtain — and the picture is not a
+	 * compromise between them, it is both at once. Where they overlap the translucency does the rest: a
+	 * soft edge over a hard one is most of what "glowing" means.
+	 *
+	 * **The halo is the polish and the core is the effect**, so this is the half to switch off: with it
+	 * false a ball flies exactly what this block drew before there was a halo, and a busy server gets back
+	 * the other half of {@link BALL_CONFIG.TRAIL_COUNT}'s cost. The layer is drawn at angles *between*
+	 * the core's, so switching it off leaves a clean star rather than a shape with a gap in it.
+	 */
+	TRAIL_HALO_ENABLED: true,
+
+	/**
+	 * How far the halo's attachments sit from the ball's centre, as a fraction of the ball's own
+	 * diameter — {@link BALL_CONFIG.TRAIL_SPREAD}'s scale, and the halo's thickness.
+	 *
+	 * **Larger than the core's, and that is the whole arrangement.** At `0.9` the attachments are `1.35`
+	 * studs from the ball's centre where the core's are at `0.675` — so the haze's ribbons are twice as
+	 * far out, and at {@link BALL_CONFIG.TRAIL_HALO_WIDTH_LEADING} they span about `2.3` studs of a ball
+	 * that is `1.5`. The ball sits *inside* the haze rather than on top of it, which is the only way the
+	 * second layer can read as glow rather than as a second trail.
+	 *
+	 * **Bring it down to the core's value and the effect inverts**: the two layers draw at the same
+	 * width, and what comes out is a brighter trail rather than a softer one. These are the two numbers
+	 * in this block that have to stay in an order, and this one is deliberately the larger.
+	 */
+	TRAIL_HALO_SPREAD: 0.9,
+
+	/**
+	 * How long a halo segment lives, in seconds. **Deliberately longer than
+	 * {@link BALL_CONFIG.TRAIL_LIFETIME}.**
+	 *
+	 * A hot core cools faster than the air it came through, so a haze that outlives the streak is what
+	 * says the ball *had been* somewhere rather than that it is being dragged — and it is why this is not
+	 * simply the core's number reused. Matched lifetimes read as one wide ribbon; this one at about half
+	 * again is the size of the difference, and it is also what makes the wake outlast the throw for the
+	 * moment after the ball has landed.
+	 */
+	TRAIL_HALO_LIFETIME: 0.75,
+
+	/**
+	 * How wide the halo is where it leaves the ball — {@link BALL_CONFIG.TRAIL_WIDTH_LEADING}'s scale,
+	 * which is a fraction of the halo's **own** gap rather than of the core's, so the two are not
+	 * comparable numbers.
+	 *
+	 * **Under `1`, where the core's is over it, and that difference is deliberate.** The flare is what
+	 * gives the core a head — see that number for the arithmetic — and this layer's job is to be the
+	 * light around that head rather than a second one. Under `1` the ribbon's edges stop short of its own
+	 * attachments, so the haze fills the span it was built between instead of bulging past the points it
+	 * was built around.
+	 */
+	TRAIL_HALO_WIDTH_LEADING: 0.85,
+
+	/**
+	 * How wide the halo is at its oldest end, on the same scale as
+	 * {@link BALL_CONFIG.TRAIL_HALO_WIDTH_LEADING}.
+	 *
+	 * Tapering to almost nothing like everything else on this trail, because the one thing that must not
+	 * happen here is a wide soft end: the whole silhouette of the effect has to keep pointing at where
+	 * the ball has been, and a haze that ends in a broad soft blob blunts the point.
+	 */
+	TRAIL_HALO_WIDTH_TRAILING: 0.04,
+
+	/**
+	 * The halo's colour where it leaves the ball — {@link BALL_CONFIG.TRAIL_COLOR_LEADING}'s terms, and
+	 * it sits a step further into orange on purpose.
+	 *
+	 * The haze is the part of the effect the eye reads as *heat* rather than as light, so it is the part
+	 * that should be the least white: a halo the colour of the core would just be the core, wider. The
+	 * two fades also mean the trail reads as white, then orange, then a dark red residue — see
+	 * {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE} for why the middle of that matters.
+	 */
+	TRAIL_HALO_COLOR_LEADING: Color3.fromRGB(255, 116, 20),
+
+	/**
+	 * The halo's colour at its oldest end, on the same scale as
+	 * {@link BALL_CONFIG.TRAIL_HALO_COLOR_LEADING} — a dark red, cooler than the core's ember because it
+	 * outlives it.
+	 */
+	TRAIL_HALO_COLOR_TRAILING: Color3.fromRGB(120, 24, 8),
+
+	/**
+	 * How opaque the halo is where it leaves the ball, `0` being solid and `1` invisible. **It always
+	 * fades to nothing by the tail**, and that is not a knob: a haze with a visible edge is a ribbon
+	 * again.
+	 *
+	 * **Just over half, and the first number to reach for if the effect reads as a smear.** The halo is
+	 * drawn across the core and not only behind it, so this is also what decides whether the streak stays
+	 * legible inside its own glow: much lower and the trail is a thin bright line inside a wide haze,
+	 * much higher and the haze *is* the trail with the core as a detail inside it.
+	 */
+	TRAIL_HALO_TRANSPARENCY_LEADING: 0.55,
 } as const;
