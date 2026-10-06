@@ -262,9 +262,10 @@ export class BallService implements OnStart {
 	 * What each model is holding, keyed on the **model** rather than the player.
 	 *
 	 * A catcher can be an NPC, and a caught ball has to end up in the same place a
-	 * handed-out one does — otherwise it could not be thrown afterwards. The only
-	 * thing that genuinely needs a `Player` is the throw remote's handler, which
-	 * recovers the character from it; everything else is model work.
+	 * handed-out one does — otherwise it could not be thrown afterwards. So the map is
+	 * keyed on the thing that holds the ball, whatever is behind it: a `Player` is
+	 * resolved only where a question is genuinely about one — the marks, the window and
+	 * the dev flags all arrive on the remote with a player attached.
 	 */
 	private readonly heldBalls = new Map<Model, HeldBall>();
 
@@ -422,9 +423,10 @@ export class BallService implements OnStart {
 	 * until then it costs nothing.
 	 *
 	 * **This is where a catch is confirmed, and it is worth being exact about why, because both
-	 * neighbouring candidates are wrong.** `attachToHand` is the wider door: the hand-out on join and
-	 * the pickup off the floor come through it too, and it has no idea which of the four it was called
-	 * for, so a sound there would play on every spawn and every ball collected. And a catch is not
+	 * neighbouring candidates are wrong.** `attachToHand` is the wider door: the pickup off the floor
+	 * and a rig's hand-out come through it too, and it has no idea which of the four it was called
+	 * for, so a sound there would play on every ball collected and every ball a rig takes up. And a
+	 * catch is not
 	 * confirmed anywhere in `CatchService` — `attemptCatch` opens a window that most attempts never
 	 * spend, and `consume`, the other plausible hook, is *also* how a window is dropped on expiry, on
 	 * death and on a dev's flag going off. Neither of those is a catch.
@@ -868,9 +870,10 @@ export class BallService implements OnStart {
 	 * Turns the ball's pickup prompt off while it is held, and back on when it is
 	 * thrown.
 	 *
-	 * Nothing creates a prompt today — balls are handed out rather than picked up —
-	 * so this does nothing yet. The hook is here so that a ball which grows one is
-	 * still only offered while it is lying on the ground.
+	 * Nothing creates a prompt today — `BallPickupService` collects a ball by walking
+	 * over it rather than by offering one — so this does nothing yet. The hook is here
+	 * so that a ball which grows one is still only offered while it is lying on the
+	 * ground.
 	 */
 	private setPromptEnabled(ball: BasePart, enabled: boolean): void {
 		const prompt = ball.FindFirstChildWhichIsA("ProximityPrompt");
@@ -906,15 +909,16 @@ export class BallService implements OnStart {
 	 * Throws whatever `model` is holding, at `target`.
 	 *
 	 * Keyed on the **model**, so an NPC's throw is this function with a different
-	 * model and target in it rather than a second copy of the throw. The only
-	 * player-shaped thing left in here is the remote handler below — the one place a
-	 * `Player` exists to take a character from — plus the dev check that lets a
-	 * flagged dev throw with an empty hand.
+	 * model and target in it rather than a second copy of the throw. A `Player` is
+	 * still around, but never as the thing being thrown from: the remote handlers in
+	 * {@link onStart}, the charge and MultiBall bookkeeping — which belongs to a
+	 * player rather than to a body — and the dev check that lets a flagged dev throw
+	 * with an empty hand.
 	 *
-	 * **Throwing empties the hand.** A ball comes from the hand-out on join, from a
-	 * pickup, from a catch — or, for a dev with `InfiniteBalls`, from the throw they
-	 * just made, which is the one throw in the game that answers itself. Everyone else
-	 * fetches the next one, which is what the loose balls on the floor are for.
+	 * **Throwing empties the hand.** A ball comes from a pickup, from a catch, or from
+	 * a MultiBall window's refill — and, for a dev with `InfiniteBalls`, from the
+	 * throw they just made. Everyone else fetches the next one, which is what the loose
+	 * balls on the floor are for.
 	 *
 	 * Returns whether a ball went. An empty hand is not an error: a behavior may
 	 * ask while there is nothing to throw.
@@ -1156,11 +1160,12 @@ export class BallService implements OnStart {
 		this.refillFromBuff(model, true);
 
 		// A dev with `InfiniteBalls` never runs out: the throw they just made is answered
-		// with another ball, by the same call the first one arrived by. This is the one
-		// throw in the game that refills itself — every other thrower fetches its next
-		// ball, which is what the loose balls on the floor are for. It is not the only way
-		// in: switching the flag on gives an empty hand a ball too, which is what a dev who
-		// has just thrown their last one actually needs. See the constructor.
+		// with another ball, by the same call the first one arrived by. **The other
+		// self-refilling throw is a MultiBall one** — `refillFromBuff` above answers it while
+		// the window has throws left — so "every other thrower fetches their next ball" was
+		// true before that ability existed and is not true now. It is not the only way in
+		// either: switching the flag on gives an empty hand a ball too, which is what a dev
+		// who has just thrown their last one actually needs. See the constructor.
 		if (this.hasInfiniteBalls(model) && !this.getHeldBall(model)) {
 			this.giveBall(model);
 
@@ -1388,8 +1393,9 @@ export class BallService implements OnStart {
 	 * **It also deletes a compromise.** The side test that used to be here was a second expression of
 	 * `RoundService.isFriendlyFire`'s rule, reading `TEAM_ATTRIBUTE` because that service already depends
 	 * on this one and could not be asked back. With no side test there is nothing left to duplicate, so
-	 * the veto remains the single statement of the rule — and with the side test gone, the mark handler is
-	 * the only thing in this file that still asks `SuperService` whether a round is running.
+	 * the veto remains the single statement of the rule — and with the side test gone, this file asks
+	 * `SuperService` whether a round is running in exactly two places, the mark handler and
+	 * `activateMultiBall`, where it used to ask in three.
 	 *
 	 * **A teammate is still not *hurt* by it.** The friendly-fire veto in `BallComponent` is untouched
 	 * and has nothing to do with collision: it drops the contact, so there is no tag, no damage and no
@@ -1532,9 +1538,10 @@ export class BallService implements OnStart {
 
 		// **No ball in hand, and a dev: the arm goes on the player instead.**
 		//
-		// This is the whole of the shortcut. A dev in Studio has nothing to mark — no ball is handed out
-		// until a round opens, and `InfiniteBalls` is a flag they have to find first — so "mark the held
-		// ball" is a rule that cannot be exercised from a standing start. Arming the *player* moves the
+		// This is the whole of the shortcut. A dev in Studio usually has nothing to mark — the arena's
+		// spawners only stock the floor while a round is playing, so outside one there is no ball to pick
+		// up, and `InfiniteBalls` is a flag they have to find first — so "mark the held ball" is a rule
+		// that cannot be exercised from a standing start. Arming the *player* moves the
 		// ability one step earlier: it waits on them, and the next ball that arrives in their hand takes it
 		// up. See `attachToHand`, which is where that happens, and {@link ARMED_ABILITY_ATTRIBUTE} for why
 		// the arm lives on the player rather than the body.
@@ -1612,9 +1619,10 @@ export class BallService implements OnStart {
 	/**
 	 * Whether `model` is a dev who has switched `InfiniteBalls` on.
 	 *
-	 * Asking about a dev is the only reason a `Player` appears in this file at all —
-	 * the flags live on players, and an NPC never has one, so an NPC simply never
-	 * takes this branch.
+	 * The flags live on players and an NPC never has one, so an NPC simply never takes
+	 * this branch. Asking about a dev is not the only reason a `Player` shows up in
+	 * this file, though — the charge and MultiBall bookkeeping asks for one as well,
+	 * and for the same reason: it belongs to a player rather than to a body.
 	 */
 	private hasInfiniteBalls(model: Model): boolean {
 		const player = Players.GetPlayerFromCharacter(model);

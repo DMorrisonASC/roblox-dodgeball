@@ -12,8 +12,9 @@ import { DodgeService } from "../actions/DodgeService";
  * The tag every ball carries.
  *
  * Must match the `tag` in `BallComponent`'s decorator, which is what turns a ball
- * into a component — and this is the *second* reader of it, so the two have to
- * agree or this service searches an empty list forever.
+ * into a component. This is one of the copies of that name, not the only other
+ * reader of it — every file that has to find a ball spells it out — so all of them
+ * have to agree, or this service searches an empty list forever.
  */
 const BALL_TAG = "Ball";
 

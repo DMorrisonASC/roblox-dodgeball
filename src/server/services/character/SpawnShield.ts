@@ -57,11 +57,11 @@ export function startSpawnShield(): void {
  *
  * **Per character rather than per player**, because a character is what wears a shield and
  * characters are replaced on every death — which is the moment this exists for. Death is followed by
- * a new body in every mode: a mode may respawn the player itself (`ScoreRushMode`,
- * `DodgeAndSeekMode`) or leave them for the engine's own timer (Team Elimination), and both arrive
- * here as `CharacterAdded`. So there is no mode-specific path to remember and nothing that has to be
- * kept in step with the round — "the player died" and "a shield is applied" are one event seen from
- * two sides.
+ * a new body in every case, and **every one of those bodies comes from `RespawnService`**: instantly
+ * for a death in the lobby or an elimination, after `ARENA_CONFIG.RESPAWN_DELAY_SECONDS` for an
+ * in-round one. All of them arrive here as `CharacterAdded`, so there is no mode-specific path to
+ * remember and nothing that has to be kept in step with the round — "the player died" and "a shield
+ * is applied" are one event seen from two sides.
  *
  * The connection is deliberately never disconnected: it lives on the `Player`, dies with it, and is
  * one per player rather than one per life. `OutlineService` hooks the same signal the same way.

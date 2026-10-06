@@ -13,10 +13,11 @@ export const ARENA_CONFIG = {
 	 *
 	 * **A permanent part of the world, and that is the newest structure this project has had.** The
 	 * arena used to be cloned from `ServerStorage` into `Workspace` when a round started and destroyed
-	 * when it ended, so its name was a key into `MAP_CONFIG.MAP_NAMES` and a round could be played in a
-	 * different one each time. There is now one arena, it sits in the place file like the lobby does,
-	 * and nothing is cloned or destroyed per round — so this is a name to *look something up by* rather
-	 * than a name to load.
+	 * when it ended, so which arena a round played in was an entry in a rotation list held in a map
+	 * config — that config and the service that read it have both since been deleted, because the arena
+	 * stopped needing them the moment it stayed put. There is now one arena, it sits in the
+	 * place file like the lobby does, and nothing is cloned or destroyed per round — so this is a name
+	 * to *look something up by* rather than a name to load.
 	 *
 	 * **The version suffix is real and has already moved once**: `ArenaV1` was replaced wholesale by
 	 * `ArenaV2`, which is what the arenas are for — a new one is a new model rather than an edit to the

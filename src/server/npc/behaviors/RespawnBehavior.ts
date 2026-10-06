@@ -10,7 +10,7 @@ const DEBUG = true; // prints each rig that goes down and each that comes back
  * Respawning, for an NPC.
  *
  * A rig wearing this tag comes back after it is killed, which is the one thing a
- * test rig wants that a player gets from the engine: a dummy that has been
+ * test rig wants that a player gets from `RespawnService`: a dummy that has been
  * knocked down stays knocked down otherwise, and re-tagging one by hand between
  * attempts is most of what testing a throw is.
  *
@@ -31,7 +31,7 @@ const DEBUG = true; // prints each rig that goes down and each that comes back
  *
  * So the copy is taken from the rig **while it is still alive and on its feet**,
  * when this behavior first sees it, and is kept out of the world until it is
- * needed. What comes back is what the engine gives a player who dies: a rig that
+ * needed. What comes back is the shape a player's own respawn takes: a rig that
  * has never been dead, at full health, standing where it was put. The corpse is
  * only ever read from — for its name and its tags — before it is destroyed.
  *

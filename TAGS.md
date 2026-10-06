@@ -123,8 +123,9 @@ it that used to be written out at the call site:
   the tag may be painted on the pad or on a folder holding several pads. That is the reading anyone
   building an arena would expect, and it is why the tag does not have to be on a part.
 - **The part must be a descendant of `Workspace`.** The rule is unchanged, but the *reason* in the
-  previous revision of this file is now historical: `MapService` no longer clones an arena and holds
-  it out of the world — the arena is permanent and `MapService` is dead code. The guard stays because
+  previous revision of this file is now historical twice over: `MapService` no longer clones an arena
+  and holds it out of the world — **it has since been deleted outright** — and the arena is permanent.
+  The guard stays because
   the tag is still a DataModel-wide fact: a tagged part parked in `ServerStorage`, or in a
   half-built arena nobody has placed yet, is not somewhere a ball can lie, and `GetTagged` answers
   about it exactly as loudly as it answers about the parts you can see. `SHIFT_LOCK_ZONE_TAG`'s own
@@ -273,7 +274,8 @@ testplay", and fixed by the world gate.
   above exists.
 - **`MapService` used to clone arenas out of `ServerStorage`**, which is where the previous revision
   of this file's "the clone arrives wearing every tag the template had" note came from. That is
-  historical: `MapService` is dead code and the arena is permanent. The *lesson* is not historical,
+  historical, and it has gone a step further: **`MapService` has been deleted** and the arena is
+  permanent. The *lesson* is not historical,
   though, and it is why the world guard exists in three readers — a clone, a parked template and a
   half-built arena all wear their tags from outside the world.
 

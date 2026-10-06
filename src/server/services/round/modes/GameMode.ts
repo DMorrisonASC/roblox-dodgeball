@@ -117,18 +117,23 @@ export interface GameMode {
 	/**
 	 * Whether this mode keeps a score.
 	 *
-	 * Read by the HUD and by nothing else, and it exists so that a mode without points does not
-	 * have to publish zeroes: a scoreboard drawn from an untouched map would show a scoreless
-	 * mode as a 0–0 draw, which is a claim about the round rather than an absence of one.
+	 * **Read by `RoundService`, which is what decides whether a score is tallied and printed at all**
+	 * — see `finishRound`, `registerHit` and `resolveCaughtThrower` — and by the HUD through what the
+	 * round publishes. It exists so that a mode without points does not have to publish zeroes: a
+	 * scoreboard drawn from an untouched map would show a scoreless mode as a 0–0 draw, which is a
+	 * claim about the round rather than an absence of one.
 	 */
 	readonly scores: boolean;
 
 	/**
-	 * The sides for the opening whistle: one label per player, and every player gets one.
+	 * How a mode divides a set of players into sides.
 	 *
-	 * Called with the whole server rather than with whoever is left, because it *is* the moment
-	 * the round's roster is decided — a mode that wants to leave somebody out has to say so here,
-	 * and there is nowhere else it could.
+	 * **Nothing calls it.** The round's sides are decided by `MatchService`'s opt-in roster —
+	 * `RoundService.assignTeams` reads `matches.roster()` and writes `TEAM_ATTRIBUTE` from it — so who
+	 * is on which side is a fact about who walked into a join part rather than something a mode
+	 * decides. The method and its implementations are kept because a mode that wants to divide its own
+	 * sides is a real thing to want, and deleting them would be the harder change; but a reader should
+	 * not expect the split described here to be the one in play.
 	 */
 	assign(players: ReadonlyArray<Player>): Map<Player, TeamLabel>;
 
@@ -160,11 +165,11 @@ export interface GameMode {
 	 * reason `getTimeRemaining` is on the view. A mode that ends on a target ends the moment it is
 	 * reached; a mode that ends on the clock reads `0` and decides.
 	 *
-	 * **A mode is responsible for the both-sides-empty case.** Every mode has to answer it, and
-	 * each one answers it differently — a mode that respawns is not "won" by a side that happens to
-	 * be the last one with a player in the server — so the round does not guess on the mode's
-	 * behalf. Team Elimination's answer is that nobody wins, which is also what stops an empty
-	 * server sitting inside a round until the clock runs out.
+	 * **The both-sides-empty case is not the mode's, whatever this used to say.** `RoundService`
+	 * checks the *connected* roster first — `rosterOutcome` answers `DRAW` or hands the round to the
+	 * side still standing, and its own doc says the roster "outranks the mode" — so this method is
+	 * only ever consulted while both sides still have somebody in the server. What is left to a mode
+	 * is in-round emptiness: zero dodgers left, nobody on a side still *in* the round.
 	 */
 	outcome(view: RoundView): RoundOutcome | undefined;
 }
@@ -172,10 +177,12 @@ export interface GameMode {
 /**
  * The server split into two sides, as evenly as it goes, and shuffled.
  *
- * **The two symmetric modes' opening whistle, in one place**, so "evenly" means one thing.
- * Dodge and Seek does not call this — one seeker and the rest dodgers is not an even split — but
- * it is the same kind of decision, and a mode that wanted an even split gets it without repeating
- * the shuffle.
+ * **A mode's own way to split players, and no round calls it today** — see {@link GameMode.assign},
+ * which nothing invokes, because the sides come from the opt-in roster instead. The shuffle is the
+ * fiddly half to get right, which is why it is kept: the two symmetric modes' `assign`
+ * implementations are its only readers. Dodge and Seek does not call this — one seeker and the rest
+ * dodgers is not an even split — but it is the same kind of decision, and a mode that wanted an even
+ * split gets it without repeating the shuffle.
  *
  * The split is by *position* in a shuffled list, because there is nothing to balance on yet and a
  * shuffle is the honest form of "evenly": anything else would be a claim about who should be

@@ -30,8 +30,8 @@ const OUTLINE_NAME = "ObjectOutline";
  * **Must match the `tag` in `BallComponent`'s decorator**, which is the source of truth:
  * the decorator is what turns a ball into a component, and Flamework reads that literal at
  * build time, so it cannot be imported from here. This is therefore a copy rather than a
- * shared constant — exactly as it is in `BallService` and `BallPickupService`, which are
- * the other two readers of a name that three files have to agree on.
+ * shared constant, and one copy among several — every file that has to find a ball spells
+ * the name out, so all of them have to agree with the decorator.
  */
 const BALL_TAG = "Ball";
 
@@ -40,8 +40,9 @@ const BALL_TAG = "Ball";
  *
  * **Must match the string `RoundService` publishes** on `ROUND_STATE_ATTRIBUTE`: a phase goes out as
  * its own name, and those names are `RoundState`'s members by convention rather than by
- * construction — so there is no constant to import and this is a copy. `StatsService` keeps the
- * same one for the same reason, which makes this the third file to spell it out.
+ * construction — so there is no constant to import and this is a copy. `StatsService` keeps the same
+ * one for the same reason, and so does every other file that has to test the phase: the word is
+ * written out in each of them rather than imported from one.
  */
 const PLAYING = "Playing";
 

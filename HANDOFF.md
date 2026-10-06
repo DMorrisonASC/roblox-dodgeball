@@ -182,12 +182,12 @@ src/shared/                      runs on both sides
   networking.ts / remotes.ts     @rbxts/net event declarations; the throw RemoteEvent's names
   taggedParts.ts                 taggedParts / taggedPartsInWorkspace — a tag on a container
                                  expands to its BasePart descendants
-  find.ts                        findFolder / findModel — whole-subtree walk with the class as part
-                                 of the question
+  find.ts                        findFolder — whole-subtree walk with the class as part of the
+                                 question
   throw.ts / dodge.ts / module.ts
   Trajectory.ts / AimGuide.ts / TrailEffect.ts / CollisionIgnore.ts
   ringPattern.ts                 the white RGBA halo/band/rosette maths for the team rings
-  config/*.ts                    arena, ball, catch, dodge, gameMode, map, npc, action, aim,
+  config/*.ts                    arena, ball, catch, dodge, gameMode, npc, action, aim,
                                  character, debug, economy, images, ring, shiftLock, shop, sound,
                                  stats, super, transition, ui
 
@@ -207,7 +207,6 @@ src/server/
   services/stats/StatsService.ts hits + outs, DataStore "PlayerStats", autosave
   services/visual/OutlineService.ts   per-body Highlight, team colours, freeze override
   services/npc/NpcService.ts     + npc/Behavior.ts, npc/behaviors/*
-  services/MapService.ts         ** DEAD CODE ** — nothing calls it; see §6
   components/BallComponent.ts    the throw -> hit path (friendly-fire guard, tag deferral, splash)
   dev/                           DevService + dev.config (chat commands and flags)
   config/                        match.config.ts, outline.config.ts
@@ -267,17 +266,19 @@ round on a timer. **The intermission waits for a match to be asked for** — the
 - The clock ticks and **wraps** rather than reaching zero: `if (this.timeRemaining <= 0) {
   this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS; elapsed = 0; }`. Reaching zero is not a
   boundary any more; the countdown is the honest sign that the server is alive.
-- **The start nobody asked for — the settle window.** Read against
+- **The normal start — the settle window.** This is how a round begins on a live server: the sides
+  fill up, hold still, and the match opens by itself. `!dev match` is the manual override for
+  testing, not the other way round. Read against
   `matches.rosterRevision()` rather than the counts, because a side switch leaves the counts
   identical and that crossing is exactly what this window exists to wait out. Revision changed →
   `settledFor = 0`. Revision unchanged and `matches.canStart()` → `settledFor++`, and at
   `>= MATCH_SETTLE_SECONDS` (5) it prints `[Round] starting on its own — the sides held still for 5s`
   and calls `startMatch(SCORE_RUSH)`.
 
-**Exactly two things ever start a match**, and both go through `startMatch`, so `pendingMatch` has
-one writer: a dev's `!dev match` (`requestMatch`, which prints its own refusals) and the settle
-window. A request that arrives a moment earlier wins, because the settle branch is only reachable
-while `pendingMatch` is unset.
+**Two things can start a match, and both go through `startMatch`**, so `pendingMatch` has one
+writer: the settle window above, which is the normal path, and a dev's `!dev match` (`requestMatch`,
+which prints its own refusals) as the manual override. A dev request that arrives a moment earlier
+wins, because the settle branch is only reachable while `pendingMatch` is unset.
 
 ### Round boundary
 
@@ -359,7 +360,7 @@ the code says so in several places. Do not reintroduce it.
 
 ---
 
-## 6. The arena, and what `MapService` used to be
+## 6. The arena
 
 **There is a permanent arena and it is authored in the place file.** `ARENA_CONFIG.ARENA_NAME =
 "ArenaV2"`, a direct child of `Workspace` — "the one lookup in the round that pins a location rather
@@ -368,22 +369,37 @@ than searching for one". The doc records the history: the arena used to be clone
 **`ArenaV1` was replaced wholesale by `ArenaV2`** — the version suffix is real and has already moved
 once.
 
+**The code that did the cloning is deleted, as of this revision.** `src/server/services/MapService.ts`
+and `src/shared/config/map.config.ts` are gone, and `RoundService` no longer carries the injection
+that pointed at the service. Nothing about the arena changed to make that possible — it had been
+dead since the arena became permanent, and the deletion is the tidying that decision always implied.
+The reasoning those files carried is deliberately **not** preserved anywhere: a deleted file's
+comments are gone with it, and the only thing worth keeping is the one-line history here.
+
 - **The lobby is now inside the arena.** `ARENA_CONFIG.LOBBY_SPAWNS_FOLDER = "LobbySpawns"`, a folder
   of spawn parts replacing the single `LOBBY_SPAWN_NAME = "LobbySpawn"` part. That name is still
-  declared and nothing reads it; it is left in place until the code that used it is gone.
+  declared and has exactly one reader: the `DescendantRemoving` watcher in `RoundService.onStart`,
+  which fires when a part of that name is removed from `Workspace` and prints its position, its tags
+  and a traceback. The watcher is live scaffolding for a part that went missing mid-session (see §5),
+  not a rule — **whether to delete the watcher and the constant together is a separate decision**,
+  and not one this revision made.
 - Team spawns live in `ArenaSpawns/{A,B}` inside the arena (`ARENA_SPAWNS_FOLDER`,
   `ARENA_TEAM_FOLDER_A/B`).
 - `findArena()` and `arenaProblem(arena)` are module-level functions at the bottom of
   `RoundService.ts`. `arenaProblem` returns **a sentence naming the missing path**, which is what
   turns "the spawn list is empty" into something a person can act on.
-- **`MAP_CONFIG` is effectively dead.** `MAP_CONFIG.MAP_NAMES = ["ArenaV1"]` is a stale single entry,
-  and **`MapService` is never called** — `RoundService` still injects it as `maps`, and every other
-  mention of it in the tree is a comment explaining what it used to do. `ArenaV1` is parked and
-  unused. Rebuilding a map-swap feature would mean starting from this dead code, not extending it.
+- **The map rotation is deleted, not merely dormant.** `MapService.ts` and `map.config.ts` were the
+  whole of it: a clone → hold → place → unload → rotate system whose only entry point was a
+  `RoundService` constructor parameter that **nothing ever called** (`this.maps.` appears nowhere in
+  the file), which is what made the removal a deletion rather than a surgery. `ArenaV1` is now named
+  by nothing in `src/`; whether a `ServerStorage` template of that name is still parked in the place
+  file is a place-file question, not a code one. **Rebuilding map swapping means writing it again
+  against the permanent arena** — there is no dead code left to extend.
 - **Barriers.** `CHARACTER_BARRIER_TAG` parts are put into the `Barrier` collision group by
   `applyBarrierGroups()`, called at every round boundary. See `CollisionGroups` and §3's note about
   the class check that a real place file forced out.
-- The old map-placement open items are moot (see §15), with one replacement: **nothing sweeps the
+- The old map-placement open items are moot — the decision they described has been made and the code
+  deleted — with one replacement: **nothing sweeps the
   arena any more.** Loose balls, corpses and ability debris each have their own lifetime — the
   account is written out at the round boundary, and it is the thing to read before adding a new
   thing that leaves something behind.
@@ -608,6 +624,23 @@ Roughly in commit order (`git log` from 2026-09-28):
 - **Respawn ownership, the streak/crown rework, and all-part catching** (`5bcc374`, §11, §12).
 - **Uncommitted at the time of writing: the economy** (§11) — coins, the chest, the power lock,
   milestones, the premium catalog, `CurrencyHudController`.
+- **The dead map rotation deleted.** `services/MapService.ts` and `shared/config/map.config.ts` are
+  gone, the `maps` injection is out of `RoundService` (it had no call site), `flamework.build` was
+  regenerated from a wiped `out`, and §6, §15 and `TAGS.md` were brought in step. See §6.
+- **The comment audit — 37 stale comments across 14 files, then the counts they quoted.** Every
+  comment in that pass argued for a decision the code had stopped making: a service the file no
+  longer calls, a field that is no longer the reason for the line, a count that had grown. Comments
+  only, no behaviour moved.
+- **The counts, re-derived from the source and then either corrected or replaced.** Eight of them,
+  plus `OutlineService`'s Ball tag. **Where the number moves every time a file is added it is now a
+  description** — "every file that has to find a ball", "the services that care" — rather than a
+  number that drifts stale again. Where the *claim* was wrong as well as the count, the claim was
+  rewritten rather than renumbered: `SuperService`'s "read by nothing on this machine" was true of
+  its four `SUPER_*` attributes and false of the crown, which `EconomyService` reads, and
+  `BallService`'s "the remote handler below" pointed the wrong way — both handlers are above it.
+- **`findModel` deleted from `shared/find.ts`.** Its only caller was `MapService.loadMap`, so the dead
+  map rotation took it with it; `RoundService` is the only caller left in that file and it wants
+  `findFolder`.
 
 ---
 
@@ -771,10 +804,10 @@ part — and the roster is forgotten at the end of every match, so they choose a
 - **Numbers** (`src/server/config/match.config.ts`, all Placeholders): `MATCH_MIN_PLAYERS = 2`,
   `MATCH_MAX_PER_TEAM = 4` (so a match is 4v4, and the cap is enforced at the part),
   `MATCH_BALL_COUNT = 8`, `MATCH_TOUCH_DEBOUNCE_SECONDS = 0.5`, `MATCH_SETTLE_SECONDS = 5`.
-- **How a match starts:** a dev's `!dev match`, or the intermission's **settle window** — a startable
-  roster that has not changed for `MATCH_SETTLE_SECONDS`, read against `rosterRevision` (not the
-  counts, because a side switch leaves the counts identical). Both go through `startMatch`, so
-  `pendingMatch` has exactly one writer.
+- **How a match starts:** the intermission's **settle window** is the normal path — a startable roster
+  that has not changed for `MATCH_SETTLE_SECONDS`, read against `rosterRevision` (not the counts,
+  because a side switch leaves the counts identical). `!dev match` is the manual override. Both go
+  through `startMatch`, so `pendingMatch` has exactly one writer.
 - **`MatchService.clear()`** empties the roster and repaints the signs; it is called at intermission
   entry, which is what sends everybody back to the pick-a-side part.
 
@@ -800,18 +833,16 @@ Carried over from the previous handoff where still live, plus what this revision
    override has to be threaded through `createRibbons` *and* the adopt-existing branch).
 5. **Every premium `gamepassId` is `0`.** No Game Pass exists yet, so the catalog is unbuildable as
    a purchasable thing until the developer creates them in the dashboard.
-6. **`MAP_CONFIG` and `MapService` are dead code**, and `ArenaV1` is parked. Deciding whether to
-   delete them or build the swap back is a real decision, not a cleanup.
-7. **The aim preview still lies about Pierce** (recorded in `BallComponent`/`ThrowController` as
+6. **The aim preview still lies about Pierce** (recorded in `BallComponent`/`ThrowController` as
    known). The held-ball `CanQuery` half of that bug is fixed; the Pierce half is not.
-8. **Only Score Rush is playable** (§8) — the other two modes are unreachable, and re-enabling them
+7. **Only Score Rush is playable** (§8) — the other two modes are unreachable, and re-enabling them
    means deciding whether the vote comes back or the mode is chosen some other way.
-9. **The `+3` stud lift** in the spawn lookup was kept against the user's own snippet and is still
+8. **The `+3` stud lift** in the spawn lookup was kept against the user's own snippet and is still
    unconfirmed as wanted.
-10. **`IasTest.ts`** is a finished input test with `DEBUG = false`, written to be deleted.
-11. **`shared/module.ts` is a stub** (`makeHello`) and `src/shared/config/ui.fon` is an empty file.
+9. **`IasTest.ts`** is a finished input test with `DEBUG = false`, written to be deleted.
+10. **`shared/module.ts` is a stub** (`makeHello`) and `src/shared/config/ui.fon` is an empty file.
     Both are dead weight.
-12. **`rojo serve` exits 1** (§1). Cause unknown, not investigated.
+11. **`rojo serve` exits 1** (§1). Cause unknown, not investigated.
 
 ---
 
@@ -841,8 +872,8 @@ only worth anything about code that still exists.
 **Observed, but about systems that no longer exist — do not treat as current:**
 
 - `[Map] loaded "RoLive Map"`, and the map unload -> load order 8 ms apart. The map is no longer
-  cloned, `MAP_CONFIG.MAP_NAMES` now reads `["ArenaV1"]`, and the arena is `ArenaV2` in the place
-  file. Nothing logs a map load any more.
+  cloned, the arena is `ArenaV2` in the place file, and the `MapService`/`MAP_CONFIG` pair that
+  produced those lines has since been deleted. Nothing logs a map load any more.
 - The vote window opening/closing timestamps (23:04:00.983 -> 23:04:21.352). `VOTE_ENABLED = false`.
 
 **And one uncorrected hypothesis from the user that is worth re-checking before it is believed:** they

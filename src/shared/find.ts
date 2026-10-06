@@ -20,6 +20,10 @@
  * and "it is a child of the map" is a fact that expires. Where a fixed path is kept, the reason
  * belongs in the comment beside it: the names being shared config, the shape being part of what a
  * map *is*, and a violation being reported rather than passing silently.
+ *
+ * **The folder lookup is the only one left in here.** A `findModel` sat beside it for the map
+ * rotation and went with `MapService` when that was deleted — `RoundService` is the only remaining
+ * caller, and it wants folders.
  */
 
 /** The first descendant of `root` called `name` that is a `Folder`, or nothing. */
@@ -27,18 +31,6 @@ export function findFolder(root: Instance, name: string): Folder | undefined {
 	for (const descendant of root.GetDescendants()) {
 		if (descendant.Name !== name) continue;
 		if (!descendant.IsA("Folder")) continue;
-
-		return descendant;
-	}
-
-	return undefined;
-}
-
-/** The first descendant of `root` called `name` that is a `Model`, or nothing. See {@link findFolder}. */
-export function findModel(root: Instance, name: string): Model | undefined {
-	for (const descendant of root.GetDescendants()) {
-		if (descendant.Name !== name) continue;
-		if (!descendant.IsA("Model")) continue;
 
 		return descendant;
 	}

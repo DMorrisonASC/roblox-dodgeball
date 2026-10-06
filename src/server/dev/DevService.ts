@@ -54,7 +54,8 @@ const DEBUG = true;
  * Deliberately not an admin system: it whitelists by UserId, marks the player with
  * attributes, and answers a chat command. What it gives a gameplay system is *one
  * place* to ask "is this a dev, and is this flag on" — so no call site carries a
- * UserId, and the whole thing is three call sites wide.
+ * UserId, and every service that cares asks here rather than keeping a list of its
+ * own.
  *
  * The attribute **is** the state. There is no table of devs kept beside it, which
  * is what makes `setFlag` take effect the instant it is called: every reader sees

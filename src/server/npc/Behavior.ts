@@ -27,9 +27,9 @@ export const BEHAVIOR_PICKUP = "Behavior_Pickup";
 /**
  * Enables the respawn behavior: the rig gets up again after it is killed.
  *
- * The one behavior here that is not a mechanic of the *game* — a player is
- * respawned by the engine and an NPC has no such thing, so this is what a test
- * rig gets instead. See `RespawnBehavior`.
+ * The one behavior here that is not a mechanic of the *game* — a rig has no round to
+ * come back into and no `RoundService` to decide whether it should, so this is what a
+ * test rig gets instead. See `RespawnBehavior`.
  */
 export const BEHAVIOR_RESPAWN = "Behavior_Respawn";
 

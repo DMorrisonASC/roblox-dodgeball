@@ -110,9 +110,13 @@ interface SprintState {
  *
  * The cost is worth naming: this is now two things — a sum of contributions, and one stateful
  * mechanic that feeds it. It is still one *concern*, which is how fast this body moves, and the
- * alternative was two owners of that concern. If a second modifier ever arrives it should come in the
- * same way: named contributions, applied from {@link trackPlayer}, re-applied to a new body by the
- * same handler that sets the base on it.
+ * alternative was two owners of that concern.
+ *
+ * **Two more modifiers have arrived since, and they did not come in the way the paragraph here used
+ * to prescribe.** `FreezeService` adds `Frozen` and `RoundService` adds `ArenaFreeze`, and each calls
+ * `addModifier` on the body it is affecting rather than routing through {@link trackPlayer} — because
+ * each already knows which body it means and neither wants a hook deciding for it. What held was the
+ * part that mattered: a *name*, so any of the four can be taken off again without disturbing the rest.
  */
 @Service()
 export class WalkSpeedService implements OnStart {
@@ -282,8 +286,8 @@ export class WalkSpeedService implements OnStart {
      * Sum every contribution and write the result to the Humanoid.
      *
      * **The sum is the entire reason for the map, and it is what makes a power-up a one-line change.**
-     * A model has whatever contributions have been added to it, and sprint is now the second thing
-     * that has ever added one:
+     * A model has whatever contributions have been added to it, and sprint was the second thing ever to
+     * add one — there are three more now, from two other services:
      *
      *     Base: 20                          ->  20
      *     Base: 20, Sprint: 15              ->  35
@@ -294,12 +298,12 @@ export class WalkSpeedService implements OnStart {
      * through the same two calls any other modifier would rather than writing `Humanoid.WalkSpeed`
      * itself.
      *
-     * **This comment changed when sprint landed, and the old wording is worth recording.** It used to
-     * describe a hypothetical speed potion and to say outright that `addModifier` and `removeModifier`
-     * did not exist yet, offering itself as their specification. They exist now, sprint is their
-     * caller, and the figure in the example is the real base from `CHARACTER_CONFIG` rather than the
-     * Roblox default it used to be — so there is nothing left here that is not true of the running
-     * code, which is the only state a comment like this is allowed to be in.
+     * **That the names keep arriving is the argument for the shape, and it has now been made three
+     * times.** `Frozen` comes from `FreezeService`, `ArenaFreeze` from `RoundService`, and each is one
+     * name and one number in this map rather than a service writing speeds of its own — so this
+     * comment's claim is no longer that there is one contributor but that there are four keys and one
+     * sum. **The paragraph that used to sit here said "there is nothing left here that is not true of
+     * the running code", and the count in it had gone stale when the second and third arrived.**
      */
     private recalculateSpeed(model: Model, humanoid: Humanoid): void {
         const entry = this.speeds.get(model);

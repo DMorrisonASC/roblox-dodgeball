@@ -92,12 +92,13 @@ export class NpcService implements OnStart {
 		// no tag signal and this scan is the only moment it could have been noticed at all.
 		//
 		// **What this scan does not cover is a clone, and that is worth being exact about rather than
-		// letting it read as "maps work".** A rig inside a model `MapService` clones has no loop: the
+		// letting it read as "maps work".** A rig that arrives inside a copied model has no loop: the
 		// copy's rigs are new instances, their tags came with the copy rather than being applied to it, and
 		// nothing here ever sees them — which is the case `RespawnBehavior`'s strip-and-re-add exists
-		// around (see its comment for the project's reading of what `Clone` does and does not fire). So
-		// this line is not what makes a placed map's rigs run, and nothing does today; the map rotation is
-		// parked while the arena is permanent, and it will need a story for that when it comes back.
+		// around (see its comment for the project's reading of what `Clone` does and does not fire). The
+		// only code that ever cloned a whole model like that was the map rotation, which is parked while
+		// the arena is permanent and never runs; so there is no live case today, and this paragraph is
+		// here so that bringing the rotation back does not silently reintroduce it.
 		for (const instance of CollectionService.GetTagged(NPC_TAG)) {
 			if (instance.IsA("Model")) this.start(instance);
 		}
@@ -208,13 +209,13 @@ export class NpcService implements OnStart {
 			//
 			// **Inside the loop rather than in its condition**, for the reason the freeze gate below gives
 			// at length: a condition ends the loop and nothing brings a loop back. A rig put into the world
-			// later — a map being placed, or somebody dragging a rig out of `ServerStorage` to test it —
-			// starts working on its own next turn, with no re-tagging behind it and no second mechanism.
+			// later — somebody dragging one out of `ServerStorage` to test it, say — starts working on its
+			// own next turn, with no re-tagging behind it and no second mechanism.
 			//
 			// **This is the rule the rest of the project already keeps, and it was only missing here.**
 			// `RoundService.roundParticipants` filters this same tag this same way, `taggedPartsInWorkspace`
 			// is the `BasePart` half of it, and `TAGS.md` is where the rule is written down along with why
-			// it is needed (`MapService` clones arrive wearing every tag their template had). Kept inline
+			// it is needed (a `Clone` copies its tags, so anything copied arrives wearing them). Kept inline
 			// rather than shared for the reason `roundParticipants` keeps its own: the test is one call, and
 			// what needs writing down is the reason rather than the expression.
 			if (!model.IsDescendantOf(Workspace)) {

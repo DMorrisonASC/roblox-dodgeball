@@ -20,9 +20,9 @@ const DEBUG = true;
  *
  * A literal here rather than an import, which is what `StatsService`, `BallSpawnerService` and
  * `OutlineService` each do with the same two words — the attribute is a string on a folder and there
- * is no constant for its *values*, only for its name. Four readers agreeing on the word by writing it
- * is the arrangement that already exists; the alternative is a constant in `shared/constants.ts` that
- * none of the four is currently using.
+ * is no constant for its *values*, only for its name. Every file that has to test the phase writing
+ * it out is the arrangement that already exists; the alternative is a constant in
+ * `shared/constants.ts` that none of them is currently using.
  */
 const PLAYING = "Playing";
 
@@ -48,10 +48,10 @@ interface MultiBallWindow {
  * The streak a player is on, and the charge they are holding.
  *
  * **The rules, in one place, because they are one mechanic.** A hit is a throw that landed on an
- * enemy, and the count of them is what the crown is decided from; a *death* puts that count back to
- * zero and nothing else does; a charge is held until it is used and only one is held at a time. Every
- * one of those sentences is a line below rather than a rule spread across the callers that report the
- * events.
+ * enemy, and the count of them is what the crown is decided from; a *death* and the opening of the
+ * next round put that count back to zero, and nothing else does; a charge is held until it is used
+ * and only one is held at a time. Every one of those sentences is a line below rather than a rule
+ * spread across the callers that report the events.
  *
  * **A miss used to break the run, and no longer does.** The count has become "hits since you last died"
  * — which is what it always was, minus the reset that made it a *run* — and the reason is that it no
@@ -64,10 +64,12 @@ interface MultiBallWindow {
  * charge", it is told when one is spent or forfeited, and the marking of a ball belongs to the hand
  * the ball is in — see `BallService.markHeldBall` for why that is the right side of the line.
  *
- * **Two copies of the state, and one of them is authoritative.** The `Map` and the `Set` below are
- * the truth; the two attributes are published for the client and are read by nothing on this machine.
- * The alternative — treating the attributes as the state — would mean every rule being a read of a
- * value the client can see, and a `Player` attribute is not a place to keep a decision.
+ * **Two copies of the state, and one of them is authoritative.** The `Map`s and the `Set` below are
+ * the truth; the `SUPER_*` attributes that {@link publish} writes are for the client and are read by
+ * nothing on this machine — the crown, which {@link refreshCrowns} works out from the same streaks,
+ * is the one attribute this service writes that another server system reads. The alternative —
+ * treating the attributes as the state — would mean every rule being a read of a value the client
+ * can see, and a `Player` attribute is not a place to keep a decision.
  *
  * **Its own service rather than a corner of `StatsService`, which was the smaller home available.**
  * It was considered and it is the wrong fit: `StatsService` keeps a user's *career* in a `DataStore`,

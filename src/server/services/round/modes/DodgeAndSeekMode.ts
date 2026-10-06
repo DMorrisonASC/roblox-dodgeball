@@ -50,6 +50,10 @@ class DodgeAndSeekMode implements GameMode {
 	/**
 	 * One seeker picked at random, everybody else a dodger.
 	 *
+	 * **Nothing calls this.** The round's sides come from `MatchService`'s opt-in roster, and what a
+	 * real round does with the two sides is convert a hit dodger through `onDeath` — so the opening
+	 * split described below is not the one any round in play uses. See {@link GameMode.assign}.
+	 *
 	 * Everyone is made a dodger first and one of them is then promoted, which is what makes the two
 	 * degenerate sizes fall out rather than need branches: **nobody in the round** produces an empty
 	 * map, and **one player** produces a lone dodger without the promotion ever running.

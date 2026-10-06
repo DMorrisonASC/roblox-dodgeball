@@ -17,9 +17,14 @@ import { roundStatusFolder } from "./roundStatus";
  * The vote for the next round's mode: the window, the ballots, and the tally.
  *
  * **It owns no round logic at all.** It decides *which* mode the next round plays; `RoundService`
- * decides when a round is and asks it. That split is what keeps the interesting half — a majority
- * over a set of options, with a tiebreak — readable on its own, and it is why nothing here knows
- * what a round clock is.
+ * decides when a round is. That split is what keeps the interesting half — a majority over a set of
+ * options, with a tiebreak — readable on its own, and it is why nothing here knows what a round
+ * clock is.
+ *
+ * **And it is switched off, so nothing asks it anything.** `RoundService`'s `VOTE_ENABLED` flag keeps
+ * the window from opening, `selection()` has no callers, and the round takes its mode from its own
+ * match request instead. Everything below is a working feature waiting on one flag — read it as
+ * "what the vote does when it runs", not as "what the round is doing".
  *
  * The window is opened and closed **by the round**, not by a timer of its own, so that a dev
  * pausing rounds pauses the vote with them. A `task.delay` here would have gone on counting while
@@ -46,11 +51,11 @@ export class VoteService implements OnStart {
 	private readonly ballots = new Map<Player, GameModeId>();
 
 	/**
-	 * The mode the last closed vote chose, and the one the next round will run.
+	 * The mode the last closed vote chose.
 	 *
-	 * Starts at the game's original mode, which is what makes the first round of a server behave
-	 * exactly as it did before any of this existed: there has been no vote yet, so the round plays
-	 * what it always played.
+	 * **Nothing reads it.** {@link selection} is the only door onto it and has no callers, because the
+	 * round takes its mode from its own match request — so this is the vote's answer to itself, kept
+	 * because the vote is a working feature waiting on a flag rather than a deleted one.
 	 */
 	private selected: GameModeId = DEFAULT_MODE.id;
 
@@ -60,8 +65,10 @@ export class VoteService implements OnStart {
 		// The window is arithmetic on the intermission, so a short enough intermission asks for a
 		// window it cannot have. Said **once, here**, rather than checked wherever the number is read:
 		// this is the one moment that knows the server is starting, and a warning printed per round
-		// would be one nobody reads. The window still opens — see `VOTE_MIN_SECONDS` for why a token
-		// window beats no vote at all.
+		// would be one nobody reads. **No window opens today** — `VOTE_ENABLED` in `RoundService` is
+		// false — so this warning is quiet in play, and the arithmetic is kept because a flag is what
+		// switches a vote back on rather than the deletion of the code that runs it. See
+		// `VOTE_MIN_SECONDS` for why a token window beats no vote at all.
 		const wanted = ARENA_CONFIG.INTERMISSION_SECONDS - GAME_MODE_CONFIG.VOTE_CLOSING_BUFFER;
 
 		if (wanted < GAME_MODE_CONFIG.VOTE_MIN_SECONDS) {
@@ -113,11 +120,11 @@ export class VoteService implements OnStart {
 	/**
 	 * Close the window, count the ballots and decide.
 	 *
-	 * **Idempotent, and that is load-bearing.** `RoundService` closes the vote both when the window
-	 * elapses and again on the boundary before the round starts, because a vote that never reached
-	 * its ten seconds — a paused harness, a reload — must still produce an answer rather than leave
-	 * the round with no mode. The second call is a no-op, so the boundary close cannot re-roll a
-	 * tie that was already broken.
+	 * **Idempotent, and that is what made leaving the call sites in place possible.** `RoundService`
+	 * closes the vote both when the window elapses and again on the boundary before the round starts;
+	 * the second call is a no-op, so the boundary close cannot re-roll a tie that was already broken.
+	 * Neither call runs today — both sit behind `VOTE_ENABLED` — so the property is what makes turning
+	 * the vote back on a one-line change rather than a rewrite of this method's callers.
 	 */
 	public closeVote(): void {
 		if (!this.windowOpen) return;
@@ -141,10 +148,10 @@ export class VoteService implements OnStart {
 
 		print(`[Vote] next round: ${GAME_MODE_NAMES[this.selected]}`);
 
-		// Written here rather than at the round's opening whistle, because the intermission that
-		// follows is exactly when somebody wants to know what they are about to play. See
-		// `ROUND_MODE_ATTRIBUTE` — the **id**, not the display name: it is the key every table about
-		// a mode is looked up by, on both sides of the wire.
+		// The **id**, not the display name: it is the key every table about a mode is looked up by, on
+		// both sides of the wire. **`RoundService` is the writer now** — it publishes the mode at the
+		// round's opening, from the match request — so this line has not run since the vote was switched
+		// off. It stays because it is what the vote would publish if it ran again.
 		this.statusFolder.SetAttribute(ROUND_MODE_ATTRIBUTE, this.selected);
 	}
 

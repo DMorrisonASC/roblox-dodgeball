@@ -32,9 +32,11 @@ const CATCH_BUSY_SECONDS = CATCH_CONFIG.WINDOW_SECONDS + ACTION_CONFIG.ACTION_LO
  *
  * An attempt does not catch anything by itself — it opens a window, and the ball
  * that arrives inside that window is the one caught. That is what makes catching
- * a read of the throw rather than a state you can stand in: `BallComponent` asks
+ * a read of the throw rather than a reaction to the ball's arrival: `BallComponent` asks
  * {@link isCatching} when a ball touches a catchable part, and {@link consume}s
- * the window so one attempt catches one ball.
+ * the window so one attempt catches one ball. **And the window is also a shield** — see
+ * `catch.config.ts`, which spells out the consequence of every limb catching: any body
+ * contact while it is open is a catch, so it defends as well as reads.
  *
  * Everything is keyed on the **model**, never the player. A catcher is any living
  * humanoid — an NPC differs from a player's character in nothing but the player
@@ -186,10 +188,10 @@ export class CatchService implements OnStart {
 		// which keeps the test honest rather than exempting the tester from the rule under test.
 		// The lockouts below hold for a dev too, for the same reason.
 		//
-		// Ahead of {@link blocksCatch} rather than behind it because this is the refusal most presses
-		// now want — everybody is handed a ball on join, so an armed hand is the common case — and
-		// because it is the one that cannot be waited out: a lockout expires on its own, and a ball in
-		// the hand does not.
+		// Ahead of {@link blocksCatch} rather than behind it because it is the one that cannot be waited
+		// out: a lockout expires on its own, and a ball in the hand does not. (This used to rest on
+		// "everybody is handed a ball on join", which stopped being true when players started fetching
+		// their own off the arena floor — see `JoinService` — so the ordering rests on the wait alone.)
 		const held = this.balls.getHeldBall(model);
 		if (held) {
 			// Named, and with its `Armed` flag, because those two facts are the whole diagnosis when a
@@ -386,9 +388,15 @@ export class CatchService implements OnStart {
 	 * Drops everything this service holds about `model`: its window and its catch cycle.
 	 *
 	 * For the two moments a model stops being a catcher for good — its humanoid dying and its
-	 * player leaving. Both maps are keyed on the model, so an entry that outlives it is never read
-	 * again and never cleared; these are the two are dropped together because they are the whole
-	 * of what this service remembers about one.
+	 * player leaving. Every map here is keyed on the model, so an entry that outlives it is never
+	 * read again and never cleared; these are the two that are dropped together because they are
+	 * the whole of what this service holds against one *catcher*.
+	 *
+	 * **`lastCatchCloseAt` is the one this deliberately leaves standing.** {@link consume} records
+	 * the moment the window stopped counting rather than clearing the row, because the dodge reads
+	 * it through {@link getLastCatchWindowCloseTime} — handed over by
+	 * {@link DodgeService.watchCatchState} — *after* the window has closed, so deleting the row
+	 * here would throw away the answer it is there to give.
 	 *
 	 * **A spent window does not come through here.** A ball caught inside the window ends the
 	 * window and nothing else, because the cycle is what the player owes between attempts and a

@@ -24,7 +24,6 @@ import { MATCH_MIN_PLAYERS, MATCH_SETTLE_SECONDS } from "../../config/match.conf
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
 import { applyBarrierGroups } from "../../collision/CollisionGroups";
-import { MapService } from "../MapService";
 import { RespawnService } from "../character/RespawnService";
 import { BallService } from "../ball/BallService";
 import { FreezeService } from "../actions/FreezeService";
@@ -141,10 +140,11 @@ export class RoundService implements OnStart {
     /**
      * The rules this round is being played by.
      *
-     * Replaced at the opening of every playing phase from whatever the vote chose, so a mode is
-     * fixed for the length of a round and cannot change under one that is already running. It
-     * starts at the game's original mode, which is what makes the very first round — before any
-     * vote has been held — behave exactly as it did before modes existed.
+     * **Replaced at the opening of every playing phase from the match request**, so a mode is fixed
+     * for the length of a round and cannot change under one that is already running. Both start paths
+     * fix it at Score Rush today, so `requested ?? SCORE_RUSH` is Score Rush either way; the vote used
+     * to be the writer and is switched off. `DEFAULT_MODE` initialises the field and is overwritten
+     * at the first boundary.
      */
     private mode: GameMode = DEFAULT_MODE;
 
@@ -216,10 +216,10 @@ export class RoundService implements OnStart {
      * boundary consumes it. A separate `pending: boolean` beside it would be a second answer that could
      * disagree with the mode sitting next to it.
      *
-     * **Two things set it, through the one method that does.** A dev sets it with `!dev match`, and the
-     * intermission's settle window sets it for a roster that has stopped changing — see
-     * `MATCH_SETTLE_SECONDS`. Both go through {@link startMatch}, so there is exactly one place the field is
-     * written and exactly one line saying a match is coming.
+     * **Two things set it, through the one method that does.** The intermission's settle window sets it for
+     * a roster that has stopped changing — see `MATCH_SETTLE_SECONDS` — which is how a match normally
+     * begins, and a dev's `!dev match` sets it as the manual override. Both go through {@link startMatch},
+     * so there is exactly one place the field is written and exactly one line saying a match is coming.
      *
      * **Read once at the round boundary and cleared there**, which is what makes one request start exactly
      * one round — a request that outlived its match would start the next one too, and `Round started` would
@@ -261,7 +261,6 @@ export class RoundService implements OnStart {
         private readonly dev: DevService,
         private readonly balls: BallService,
         private readonly votes: VoteService,
-        private readonly maps: MapService,
         private readonly matches: MatchService,
         private readonly stats: StatsService,
         private readonly economy: EconomyService,
@@ -389,9 +388,10 @@ export class RoundService implements OnStart {
     /**
      * Asks for a match to open on `mode`, at the next round boundary.
      *
-     * **The only thing that sets {@link pendingMatch}, and it has two callers.** A dev asks through
-     * {@link requestMatch}, and the intermission's settle window asks for a roster that has stopped
-     * changing — see `MATCH_SETTLE_SECONDS`. Both arrive here because the boundary below wants the same
+     * **The only thing that sets {@link pendingMatch}, and it has two callers.** The intermission's settle
+     * window is the normal one — it asks for a roster that has stopped changing, see
+     * `MATCH_SETTLE_SECONDS` — and {@link requestMatch} is the manual override behind a dev's `!dev match`.
+     * Both arrive here because the boundary below wants the same
      * thing from either of them: one mode, consumed once, and a `Round started` with a line above it saying
      * which of the two it was.
      *
@@ -1592,10 +1592,13 @@ export class RoundService implements OnStart {
             // `error()`ed, so a place file with no `LobbySpawn` took the loop down on its very first
             // turn — with one rejection line and nothing after it.
             //
-            // **Waiting is the only safe answer here, not a fallback position.** Everybody is
-            // standing in the arena, and the next lines destroy it — so going on without somewhere to
-            // put them would drop the whole server into the void, which is precisely the "everyone in
-            // the wrong place" that `LOBBY_SPAWN_NAME`'s note says a missing lobby must never cause.
+            // **Waiting is the only safe answer here, not a fallback position.** Everybody is standing
+            // in the arena, and the next lines move them out of it — so going on without somewhere to
+            // put them would leave the whole server standing where the round ended, which is precisely
+            // the "everyone in the wrong place" that `LOBBY_SPAWN_NAME`'s note says a missing lobby
+            // must never cause. (This sentence used to say "the next lines destroy it", from when the
+            // arena was unloaded at the end of a round; the arena is permanent now, so the teleport is
+            // the whole of the move.)
             // Nothing below this point has run yet, so there is nothing to undo: the loop simply comes
             // back when the part exists.
             //
@@ -1665,8 +1668,9 @@ export class RoundService implements OnStart {
             this.freezes.unfreezeAll();
 
             // **No map to swap, and this line is where the swap used to be.** The arena is a permanent
-            // part of the place — `ArenaV1` at the root of `Workspace`, a sibling of the lobby — so an
-            // intermission now has nothing to clone, nothing to place and nothing to destroy. What
+            // part of the place — `ArenaV2` at the root of `Workspace`, with the lobby's spawn parts
+            // inside it — so an intermission now has nothing to clone, nothing to place and nothing to
+            // destroy. What
             // stood here was `unloadCurrent` and `loadMap`: the first tore down the arena the round had
             // just been played in, and that is also what made the second safe to pay for, because a
             // `Clone` is the expensive half of a swap and an intermission is where there is time to pay
@@ -1692,8 +1696,9 @@ export class RoundService implements OnStart {
             // something the server decided on its own — and with matchmaking that is the wrong shape twice
             // over: a match has players who *chose* to be in it and sides somebody picked, and neither of
             // those exists just because a timer ran out. So this is the same loop with a different question
-            // at the top: it turns until `pendingMatch` is set, and exactly two things ever set it — a dev
-            // asking, and the settle window further down.
+            // at the top: it turns until `pendingMatch` is set. Two things set it — the settle window
+            // further down, which is how a match normally begins, and a dev's `!dev match` as the manual
+            // override.
             //
             // **The clock still runs, and wraps rather than reaching zero.** The number on the HUD is the
             // honest sign that the server is alive, and freezing it for a wait with no promised end would
@@ -1758,7 +1763,13 @@ export class RoundService implements OnStart {
 
                 if (VOTE_ENABLED && elapsed === GAME_MODE_CONFIG.VOTE_SECONDS) this.votes.closeVote();
 
-                // **The start nobody asked for: a roster that is ready and has stopped moving.**
+                // **The normal start: a roster that is ready and has stopped moving.**
+                //
+                // **Nobody has to ask for a match for one to happen, and that is the design rather than a
+                // fallback.** A server whose sides are full and have stopped moving keeps opening rounds by
+                // itself; `!dev match` is the override beside it, for a dev who does not want to wait out
+                // the window. Both arrive at the same door — see {@link startMatch} — so nothing below cares
+                // which of the two this is.
                 //
                 // **Read against the revision rather than the counts, and a side switch is why.** `countsFor`
                 // cannot see the change that matters most here — a player crossing from `A` to `B` leaves it
@@ -1780,8 +1791,9 @@ export class RoundService implements OnStart {
 
                     if (settledFor >= MATCH_SETTLE_SECONDS) {
                         // **Two lines, because two places know the two facts.** `startMatch` says what is
-                        // coming and in which mode; this says why it was asked for without anybody asking.
-                        // It is also the line that tells a dev their command was not needed.
+                        // coming and in which mode; this says the request came from the roster rather than
+                        // from a dev, which is the normal path and the one worth being able to tell apart
+                        // in the output from somebody having typed `!dev match`.
                         const counts = this.matches.countsFor();
 
                         print(

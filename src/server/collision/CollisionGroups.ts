@@ -6,7 +6,7 @@ import { NPC_TAG } from "../npc/Behavior";
 /** The group characters belong to. Assigned by {@link followCharacters}; nothing else joins it. */
 const CHARACTER_GROUP = "Character";
 
-/** The group a midline wall belongs to. Assigned at map placement, and never to anything else. */
+/** The group a midline wall belongs to. Assigned by {@link applyBarrierGroups}, at every round boundary, and never to anything else. */
 const BARRIER_GROUP = "Barrier";
 
 /**
@@ -59,11 +59,12 @@ let started = false;
  * `Barrier` against `Default`, off.
  *
  * **A module called from `main.server.ts` rather than a service.** Registering a group is not
- * something a feature *asks for*; it is a fact about the world that has to be true before the first
- * arena is placed, and membership is a fact about characters rather than about any one system. The
- * alternative considered was hanging the assignment off `WalkSpeedService`, which already has a
- * per-body hook; that would have made one service responsible for walk speed *and* for collision
- * membership, for no gain beyond not having this file.
+ * something a feature *asks for*; it is a fact about the world that has to be true before anything
+ * reads the groups — `main.server.ts` registers them ahead of `Flamework.ignite()`, because a
+ * service's `onStart` is where the first of those reads happens. And membership is a fact about
+ * characters rather than about any one system. The alternative considered was hanging the assignment
+ * off `WalkSpeedService`, which already has a per-body hook; that would have made one service
+ * responsible for walk speed *and* for collision membership, for no gain beyond not having this file.
  */
 export function startCollisionGroups(): void {
 	if (started) return;
