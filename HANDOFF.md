@@ -412,10 +412,10 @@ once.
     removed from a live character and the `heldBalls` row is cleaned up properly.
 - **Tags:** `"Ball"` on every ball (must match `BallComponent`'s decorator literal — Flamework reads
   it at build time, so it is a copy, not an import); `"RoundBall"` only on balls the spawner created;
-  `"MatchSpawner"` painted in Studio on the parts the spawner reads. See `TAGS.md`, which is the
-  register — **and note its staleness**: `MatchJoinA`/`MatchJoinB` and `ShiftLockZone` are defined in
-  `shared/constants.ts` but are missing from its table, and its `CharacterBarrier` and map notes
-  still describe the pre-`ArenaV2` world.
+  `"MatchSpawner"` painted in Studio on the parts the spawner reads. **`TAGS.md` is the register**, and
+  it is current: thirteen tags, including the four it was missing — `MatchJoinA`, `MatchJoinB`,
+  `ShiftLockZone`, and the `MatchJoinTouched` debounce, which is the one tag that is state rather than
+  a label.
 - **`BallSpawnerService`** — still so named, but it reads `MATCH_SPAWNER_TAG`. **One ball per tagged
   part** (not the old `BALLS_PER_SPAWNER = 3`), under a total budget of `MATCH_BALL_COUNT = 8`
   counted from the `RoundBall`-tagged balls that exist each tick. It spawns **only while
@@ -808,13 +808,10 @@ Carried over from the previous handoff where still live, plus what this revision
    means deciding whether the vote comes back or the mode is chosen some other way.
 9. **The `+3` stud lift** in the spawn lookup was kept against the user's own snippet and is still
    unconfirmed as wanted.
-10. **`TAGS.md` is behind the code** in three places (missing `MatchJoinA`/`MatchJoinB` and
-    `ShiftLockZone`; `CharacterBarrier` described as read at placement when it is read every round;
-    `ArenaV1` and "the round's map" mentioned where the arena is now permanent).
-11. **`IasTest.ts`** is a finished input test with `DEBUG = false`, written to be deleted.
-12. **`shared/module.ts` is a stub** (`makeHello`) and `src/shared/config/ui.fon` is an empty file.
+10. **`IasTest.ts`** is a finished input test with `DEBUG = false`, written to be deleted.
+11. **`shared/module.ts` is a stub** (`makeHello`) and `src/shared/config/ui.fon` is an empty file.
     Both are dead weight.
-13. **`rojo serve` exits 1** (§1). Cause unknown, not investigated.
+12. **`rojo serve` exits 1** (§1). Cause unknown, not investigated.
 
 ---
 
@@ -860,7 +857,7 @@ right, but for a different reason than was stated.
 | Document | What it is | State |
 |---|---|---|
 | `HANDOFF.md` | this file | current as of 2026-10-06 |
-| `TAGS.md` | the register of every `CollectionService` tag, with why the strings cannot be imported from each other | **stale in three places** — see open item 10. Its "why there are copies" section is still exactly right and worth reading before touching the `Ball` tag |
+| `TAGS.md` | the register of every `CollectionService` tag (thirteen), with why the strings cannot be imported from each other | current as of 2026-10-06. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
 | `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | current, and still the best description of the mock's structure. The layout tree in it is the *mock's*; the economy's shop does not exist yet |
 | `README.md` | upstream roblox-ts boilerplate | says nothing about this project; ignore it |
 | `tools/pattern/` | the Node renderer and PNG output used to design the ring pattern (`shared/ringPattern.ts`) | one-off design tooling, not part of the build |
