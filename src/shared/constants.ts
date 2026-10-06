@@ -534,6 +534,41 @@ export const SUPER_CHARGE_ATTRIBUTE = "SuperCharge";
 export const CROWN_ATTRIBUTE = "Crown";
 
 /**
+ * Attribute on a **`Player`** holding how many coins they own.
+ *
+ * Written by `EconomyService` when a record loads and after every change, and read by the client's
+ * coin readout — which is why it is on the **player** and not the character: the wallet outlives every
+ * body it was filled in. An attribute rather than a remote, for the reason `STAT_HITS` gives: it
+ * replicates on its own, so the HUD needs nothing to ask and nothing to wait for.
+ *
+ * **A number, never negative.** Every write is clamped to at least nought, so a reader that renders
+ * the raw value cannot draw a debt that does not exist.
+ */
+export const COINS_ATTRIBUTE = "Coins";
+
+/**
+ * Attribute on a **`Player`** holding the powers they own, as one `|`-joined string.
+ *
+ * **A packed string rather than one attribute per power**, so adding a power to the roster costs
+ * nothing here and an unowned power is simply a word that is absent. The delimiter is private to
+ * `shared/economy.ts`, which is the only reader and writer; the empty case is `""` — "owns none of
+ * them" — rather than an absent attribute.
+ *
+ * **Ownership, not loadout.** What a player *owns* is permanent and decided by the server; which one
+ * is on the ball in their hand is `BALL_ABILITY_ATTRIBUTE`, a different fact on a different instance.
+ */
+export const OWNED_POWERS_ATTRIBUTE = "OwnedPowers";
+
+/**
+ * Attribute on a **`Player`** holding the cosmetic ids they own, as one `|`-joined string.
+ *
+ * The same shape as {@link OWNED_POWERS_ATTRIBUTE} and for its reason: one packed string means a new
+ * cosmetic costs no new attribute, and the empty case is `""`. Earnable and premium items share the
+ * one id space, so this says *which ids* without saying how each was obtained.
+ */
+export const OWNED_COSMETICS_ATTRIBUTE = "OwnedCosmetics";
+
+/**
  * Attribute on a **`Player`** holding the balls left in their MultiBall window, or `0` for no window.
  *
  * **The third and fourth of the same readout, and they are a pair for that reason.** `0` here and `0`

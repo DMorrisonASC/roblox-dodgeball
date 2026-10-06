@@ -31,6 +31,7 @@ import { FreezeService } from "../actions/FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
 import { MatchService } from "../match/MatchService";
 import { StatsService } from "../stats/StatsService";
+import { EconomyService } from "../economy/EconomyService";
 import { SuperService } from "../super/SuperService";
 import { GameMode, RoundView } from "./modes/GameMode";
 import { DEFAULT_MODE } from "./modes/registry";
@@ -263,6 +264,7 @@ export class RoundService implements OnStart {
         private readonly maps: MapService,
         private readonly matches: MatchService,
         private readonly stats: StatsService,
+        private readonly economy: EconomyService,
         private readonly abilities: SuperService,
         private readonly freezes: FreezeService,
         private readonly speeds: WalkSpeedService,
@@ -617,6 +619,12 @@ export class RoundService implements OnStart {
         this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, outcome);
 
         this.sendResult(outcome);
+
+        // **The economy is told after the board is out**, so a payout cannot be observed before the
+        // result it is paying for. Everything the round knows — the winner, the rosters, each player's
+        // hits — is passed here, and the service does the earning, the counters and the milestone
+        // checks in one call. See `EconomyService.onRoundEnded`.
+        this.economy.onRoundEnded(outcome, this.teams, this.roundHits);
 
         print(`[Round] ${result}`);
     }

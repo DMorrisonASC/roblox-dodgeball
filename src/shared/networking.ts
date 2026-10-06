@@ -168,4 +168,25 @@ export const events = Net.Definitions.Create({
 	 * and there is nothing on the folder for it to catch up from.
 	 */
 	roundResult: Net.Definitions.ServerToClientEvent<[mode: string, winner: string, rows: RoundResultRow[]]>(),
+
+	/**
+	 * Client → server: this player wants to spend coins on a Power Chest.
+	 *
+	 * **Carries nothing, for {@link multiBall}'s reason.** The chest's price, the roster and this
+	 * player's wallet are all facts the server alone holds, so there is nothing a client could truthfully
+	 * say here. The answer is {@link chestResult}, because a chest *does* need an answer: unlike a mark
+	 * or a window, whose acknowledgement is a replicated attribute, a refusal here has to say why — "not
+	 * enough coins" and "all collected" are different answers to a player, and the wallet is the one
+	 * attribute that is allowed to stay unchanged by a successful action's *opposite*.
+	 */
+	openPowerChest: Net.Definitions.ClientToServerEvent<[]>(),
+
+	/**
+	 * Server → client: what the chest the player just opened did.
+	 *
+	 * **`granted` is the power's id on success and `""` on refusal**, and `reason` is the human
+	 * sentence for the refusal (empty on success) — so a client draws the answer from one event rather
+	 * than inferring it from which attributes changed. Sent to the one player, not broadcast.
+	 */
+	chestResult: Net.Definitions.ServerToClientEvent<[granted: string, reason: string]>(),
 });

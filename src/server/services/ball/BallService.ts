@@ -23,6 +23,7 @@ import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
 import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
+import { EconomyService } from "../economy/EconomyService";
 import { FreezeService } from "../actions/FreezeService";
 import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
@@ -272,6 +273,7 @@ export class BallService implements OnStart {
 		private readonly dev: DevService,
 		private readonly abilities: SuperService,
 		private readonly freezes: FreezeService,
+		private readonly economy: EconomyService,
 	) {
 		// **Switching `InfiniteBalls` on hands the dev a ball, if their hand is empty.**
 		//
@@ -1273,6 +1275,15 @@ export class BallService implements OnStart {
 
 		const dev = this.dev.isDev(player);
 
+		// **MultiBall has to be owned too**, which is the same lock the marks carry: the window is a power
+		// unlocked by the chest, and this is where an unowned one is refused. A dev bypasses it as they
+		// bypass the round gate and the charge below.
+		if (!dev && !this.economy.ownsPower(player, "MultiBall")) {
+			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — not owned`);
+
+			return;
+		}
+
 		// **A dev is exempt from the round gate, and that exemption is the shortcut's whole point** — a
 		// standing start in Studio is usually an intermission with no round running at all. Asked of
 		// `SuperService` rather than read from the status folder here, so the rule that grants a charge
@@ -1497,6 +1508,16 @@ export class BallService implements OnStart {
 		// rule the key exists for is "a dev can exercise this from a standing start", and a standing start
 		// in Studio is usually an intermission with no round running at all.
 		const dev = this.dev.isDev(player);
+
+		// **The power has to be owned, which is the newest gate and sits before the round's.** A key that
+		// marks a ball is a request to use a power the player may not have unlocked yet: the chest grants
+		// powers, and this is the lock the chest opens. Asked of `EconomyService`, which owns the roster —
+		// the dev bypass skips it exactly as it skips the round gate and the charge.
+		if (!dev && !this.economy.ownsPower(player, kind)) {
+			if (DEBUG) print(`[Super] ${player.Name}: mark refused — ${kind} not owned`);
+
+			return;
+		}
 
 		// **Otherwise, only during a round.** Asked of `SuperService` rather than read from the status
 		// folder here, so the rule that grants a charge and the rule that lets one be spent stay one line

@@ -58,7 +58,9 @@
 		"roblox-dodgeball:out/client/controllers/hud/CameraToastController@CameraToastController": "client/controllers/hud/CameraToastController@CameraToastController",
 		"roblox-dodgeball:out/server/services/match/MatchService@MatchService": "server/services/match/MatchService@MatchService",
 		"roblox-dodgeball:out/server/services/character/RespawnService@RespawnService": "server/services/character/RespawnService@RespawnService",
-		"roblox-dodgeball:out/client/controllers/hud/RespawnHudController@RespawnHudController": "client/controllers/hud/RespawnHudController@RespawnHudController"
+		"roblox-dodgeball:out/client/controllers/hud/RespawnHudController@RespawnHudController": "client/controllers/hud/RespawnHudController@RespawnHudController",
+		"roblox-dodgeball:out/server/services/economy/EconomyService@EconomyService": "server/services/economy/EconomyService@EconomyService",
+		"roblox-dodgeball:out/client/controllers/hud/CurrencyHudController@CurrencyHudController": "client/controllers/hud/CurrencyHudController@CurrencyHudController"
 	},
 	"metadata": {}
 }
