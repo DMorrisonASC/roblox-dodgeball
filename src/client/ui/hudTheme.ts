@@ -41,6 +41,53 @@ export interface HudTheme {
 		 * interface and it means a well *inside* something.
 		 */
 		surface: Color3;
+		/**
+		 * A raised page: the background a panel of content sits *on top of* the screen.
+		 *
+		 * **Distinct from {@link surface} on purpose, and the pair is the whole trick.** The theme is
+		 * light, so a panel that used `surface` would be a panel the same colour as what is behind it
+		 * — a border and nothing else. The palette has two surfaces for exactly this reason: one is
+		 * the page and one is the paper laid on it, so naming both lets a panel and its cards read as
+		 * a stack of two materials rather than as one flat field.
+		 */
+		panel: Color3;
+		/**
+		 * A card inside a panel: the first surface *inside* {@link panel}, for one item or one fact.
+		 *
+		 * The inverse of the pair rather than a third colour — a card is the page colour showing
+		 * through a hole in the paper, which is what makes an inset well read as inset. Chosen this
+		 * way round deliberately: the panel is the thing that covers the game, so it is the one that
+		 * has to be opaque and paper-like, and a card can afford to be the subtler of the two.
+		 */
+		card: Color3;
+		/**
+		 * A hairline: the edge of a panel, a card, or a divider between two of them.
+		 *
+		 * Named for the job rather than for a shade, because what a border *is* depends on what it
+		 * separates — the same value is used for a panel's outline against the game and for a card's
+		 * outline against a panel, and both want "a line, one pixel, that is not a colour of its own".
+		 */
+		border: Color3;
+		/**
+		 * The colour of money, and the one colour in the economy that means *a number you have*.
+		 *
+		 * Deliberately not {@link warning} even though it maps to the same palette value today: a
+		 * warning is a state something is *in*, and a coin is a thing something *is*. Reading the
+		 * balance of an account through the name "warning" is the kind of semantic drift that ends
+		 * with a caution colour on a success message, so the job gets its own name and the mapping
+		 * stays in one place if the palette ever grows a better amber.
+		 */
+		coin: Color3;
+		/**
+		 * Text drawn *on* an accent surface — a filled button, a coloured name bar.
+		 *
+		 * **A separate name from {@link textPrimary} rather than the same value, because the two are a
+		 * pair that has to stay legible.** The shop's tiles draw a saturated bar under each item and
+		 * put the name on it; the moment that bar's colour changes, the text on it stops being
+		 * ordinary text and becomes a contrast problem. Naming the job is what lets this be revisited
+		 * when the accent colour is.
+		 */
+		onAccent: Color3;
 	};
 
 	/** The theme's spacing scale, in pixels. `Spacing(n)` is `n` eighths. */
@@ -97,6 +144,25 @@ export function hudTheme(): HudTheme {
 			// Not picked by hand, for once: the palette's own "behind everything" surface, which is
 			// what a full-screen overlay wants and is light because the theme is.
 			surface: Palette.background.default,
+			// The other half of the pair, from the palette's own two surfaces for the same reason:
+			// `paper` is the raised one, so it is what a panel is made of, and a card takes the page
+			// colour back — see the two entries in {@link HudTheme} for why that is a stack rather
+			// than a shade.
+			panel: Palette.background.paper,
+			card: Palette.background.default,
+			// A disabled-text colour is the palette's lightest neutral, which is what a hairline is:
+			// present enough to separate two surfaces, gone enough not to draw the eye. There is no
+			// `divider` in the palette, and this is the nearest thing that is *not* a real colour —
+			// a border that used `text.secondary` would read as a line somebody meant you to see.
+			border: Palette.text.disabled,
+			// Amber, which is what every currency in every game is, and `warning.main` is the
+			// palette's amber. Mapped here rather than at the call site so that the day the palette
+			// grows a gold, the shop does not have to be found.
+			coin: Palette.warning.main,
+			// The palette's own white, which is what a name bar wants on top of it. Not `surface`:
+			// that is the near-white *page* colour, and a page colour used as a foreground is how a
+			// label ends up reading as a slightly dirty grey rather than as white.
+			onAccent: Palette.common.white,
 		},
 
 		spacing: {
