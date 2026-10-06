@@ -344,6 +344,17 @@ export class ThrowController implements OnStart {
 	 * arc sweeps through held balls rather than ignoring them, so a ball in front of a body is a hit
 	 * on the body, which is also what the throw would do.
 	 *
+	 * **That paragraph described what was wanted rather than what happened, until a log showed the
+	 * difference.** A sweep asks a part's `CanQuery` where the thrown ball's physics asks its
+	 * `CanCollide` — see `RaycastParams.RespectCanCollide`, which is off — and a held ball is
+	 * `CanCollide = false` with `CanQuery` still true. So the arc *stopped* on the ball in somebody's
+	 * hand, a couple of studs short of their body, while the real ball flew through it and hit the body
+	 * behind: the glow named the right model and the drawn path ended in the wrong place, which from the
+	 * player's seat is a trajectory that says the throw will miss and a ball that hits. A throwing rig
+	 * holds a ball nearly always — the throw refills the hand — so this was every throw at a rig.
+	 * `BallService.attachToHand` now clears `CanQuery` for the length of a hold, which is what makes
+	 * the paragraph above the description of what happens.
+	 *
 	 * **One body for an ordinary throw, and several for a Pierce one.** An ordinary arc ends on the
 	 * first body it meets, so this answers with one entry and the glow reads exactly as it always did.
 	 * A Pierce arc goes *through* the bodies in its line — that is the ability — and ends on the world

@@ -62,12 +62,12 @@ const NOTHING = "—";
  * is not a second implementation of "how long is a window": that is one number in `SUPER_CONFIG`, and
  * the client is drawing it, not deciding it.
  *
- * **Why `3/6` rather than six pips.** The count is the mechanic — "three more" is a number, and six
- * marks a player has to count is the same number with more drawing. It also matches what a player can
- * already read about themselves: this game prints its figures as pairs (`21H/6O`), the legend's rows
- * are label-and-text, and a pip row would be six frames and a layout saying what five characters say.
- * The denominator comes from {@link SUPER_CONFIG}, the same number the server grants at, so the
- * readout cannot drift from the rule.
+ * **Why the row is a bare number and no longer `3/6`.** The denominator was
+ * `SUPER_CONFIG.STREAK_REQUIRED`, the run of hits that bought a charge, and the readout carried it on
+ * purpose — "so the readout cannot drift from the rule". There is no rule left to drift from: nothing is
+ * granted at any number, the count is "hits since you last died", and a `/6` beside it would be a target
+ * the game is not counting towards. The number is the whole of what a player can read about themselves
+ * here, which is why the row is now just the number.
  *
  * **Why one `RenderStepped` loop for four values, three of which change rarely.** The player
  * attributes change on the server's own schedule, and on their own they would want
@@ -97,9 +97,9 @@ export class SuperHudController implements OnStart {
 
 		// All seeded empty, so a player who has never hit anybody sees a readout rather than a card
 		// waiting for its first value. The attributes do not exist until `SuperService` first publishes
-		// them, and `0/6` is the honest reading of "nothing written yet" — as is `—` for a window that
+		// them, and `0` is the honest reading of "nothing written yet" — as is `—` for a window that
 		// has never been opened.
-		const streakText = Fusion.Value(scope, `0/${SUPER_CONFIG.STREAK_REQUIRED}`);
+		const streakText = Fusion.Value(scope, "0");
 		const chargeText = Fusion.Value(scope, NOTHING);
 		const ballText = Fusion.Value(scope, NOTHING);
 		const multiBallText = Fusion.Value(scope, NOTHING);
@@ -149,9 +149,7 @@ export class SuperHudController implements OnStart {
 				const charged = player.GetAttribute(SUPER_CHARGE_ATTRIBUTE);
 
 				// A non-number is a player whose streak has never been published, which reads as none.
-				streakText.set(
-					`${typeIs(streak, "number") ? streak : 0}/${SUPER_CONFIG.STREAK_REQUIRED}`,
-				);
+				streakText.set(`${typeIs(streak, "number") ? streak : 0}`);
 				chargeText.set(charged === true ? "READY" : NOTHING);
 
 				// Found by name rather than asked of `BallService`, because the client cannot ask it:

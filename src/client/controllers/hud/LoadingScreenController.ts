@@ -155,7 +155,8 @@ export class LoadingScreenController implements OnStart {
 	 * **Kept rather than fired and forgotten, and this is the whole of the "a re-show is possible"
 	 * structure.** There is no re-show today: the screen is dismissed once, at the join, and nothing
 	 * puts it back. Holding it here is what would let a later owner reach for it — to put it back up
-	 * over a `LoadCharacter`, say — without this class having to be reopened. As it stands the field
+	 * over an in-round respawn's wait, say, which is the one gap in the game a player spends looking at
+	 * nothing — without this class having to be reopened. As it stands the field
 	 * is written once and cleared on dismissal, and a re-show would go through {@link mount} again
 	 * rather than through anything new.
 	 */

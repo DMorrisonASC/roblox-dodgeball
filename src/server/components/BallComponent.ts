@@ -5,7 +5,6 @@ import { abilityOn } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { BALL_NAME, THROWER_TOKEN } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
-import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
 import { SUPER_CONFIG } from "shared/config/super.config";
@@ -404,16 +403,18 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// {@link struckBodyPart}.
 		//
 		// **This reverses the rule that used to be here, and the reason it existed is worth
-		// keeping.** An earlier version treated an accessory *as itself*: a `Handle` is not in
-		// {@link CATCH_CONFIG.CATCHABLE_PARTS}, so a scarf's tassel lying across the chest read as
+		// keeping.** An earlier version treated an accessory *as itself*: a `Handle` is not a part of
+		// the rig by any measure — it was not in the catchable set the config used to carry, and the
+		// engine does not call it a limb either — so a scarf's tassel lying across the chest read as
 		// a lethal hit, and the torso contact behind it — the one that would have caught the ball —
 		// was then skipped by {@link hitModels}. The reply was to ignore accessory contacts
 		// entirely, which fixed the scarf by making the accessory inert and turned it into a shield
 		// in the same move. Resolving to the host part is the option neither of those took: the
-		// scarf contact becomes an `UpperTorso` contact, which *is* catchable, so that case comes
-		// out right for the right reason. What remains is a hat whose mesh reaches further from the
-		// head than the head is wide — a glance off a beanie is a head contact, and lethal. That is
-		// the price of a hitbox a player cannot shrink by what they choose to wear.
+		// scarf contact becomes an `UpperTorso` contact, which is a part of the body and so a
+		// catchable one, so that case comes out right for the right reason. What remains is a hat
+		// whose mesh reaches further from the head than the head is wide — a glance off a beanie is a
+		// head contact, and lethal. That is the price of a hitbox a player cannot shrink by what they
+		// choose to wear.
 		const struck = this.struckBodyPart(humanoid, otherPart);
 		if (!struck) {
 			this.noteDecidedNothing(
@@ -442,17 +443,20 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		if (this.hitModels.has(character)) return;
 
 		// **The first body part to arrive decides the whole contact, and nothing later may
-		// change its mind.** A catchable part first — a torso or an arm — is a catch; anything
-		// else first, the head or a leg, is a hit.
+		// change its mind.** What it decides is *which body*: the tag, the one-per-throw rule, and the
+		// fact that every part the engine reports afterwards is refused above.
 		//
-		// Being plain about what that means: this is a rule about the engine's report order.
-		// At throw speeds the ball crosses several studs in a frame, so an arrival is not a
-		// sequence of hits but one overlap set, reported in whatever order the engine walks it
-		// — a ball into the chest is often reported against the head too. If the head comes
-		// first, this reads as a hit, and that is the intended rule rather than a slip.
+		// **It no longer decides hit-versus-catch, and that is the parts change.** Every part of the
+		// body can catch now, so whichever part the engine happens to report first gives the same
+		// answer — and the note that stood here said the opposite, arguing that a head reported first
+		// *had* to read as a hit or "a ball aimed at the head would be caught by the torso it also
+		// touches". That was true while only the torso and the arms could catch. With every part
+		// catchable the argument dissolves: the head catching it is the same answer rather than a
+		// loophole, and what the rule is left doing is bounding the contact to one body.
 		//
-		// The alternative — letting any catchable part anywhere in the set win — takes the head
-		// out of the game: a ball aimed at one would be caught by the torso it also touches.
+		// **The cost is the point of the change, and it is worth reading twice**: a catcher whose
+		// window is open cannot be hit by an ordinary throw at all, wherever it lands on them. See
+		// `canCatch` for the answers that remain.
 		if (this.canCatch(struck, character)) {
 			// Spent before the ball is handed over, so one attempt catches one ball
 			// even if two arrive together.
@@ -644,22 +648,24 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		this.instance.SetAttribute("StatsRecorded", true);
 
-		// **A throw that tagged nobody is a miss, and this branch is the only place that knows it.** The
-		// ball has died on the world carrying no tags, which is exactly the event a run of hits is broken
-		// by — so the notification sits above the return rather than beside the hit below it, because
-		// nothing after the return runs. Reported by *token* and not resolved to a player here: the token
-		// is all the ball carries, and whether it names a person is `SuperService`'s question in the same
-		// way it is `StatsService`'s.
+		// **A throw that tagged nobody is a miss, and nothing is told about it.** This branch used to
+		// report one to `SuperService`, which zeroed the thrower's run of hits. The count is "hits since
+		// you last died" now and has no miss reset, so there is nothing on the other end of that call —
+		// see `SuperService.noteHit` for what stood there and why it went.
 		//
-		// **Nothing else in this method's stop is a miss.** A caught throw never reaches here at all —
-		// the catch branch returns long before this — so a throw that was caught is neither a hit nor a
-		// miss, and a run survives it. That is the same reading the hit side gives it: a catch saves
-		// everybody the ball had tagged, and it saves the thrower's run too.
-		if (!taggedAny) {
-			this.abilities.noteMiss(this.instance.GetAttribute("ThrowerId"));
-
-			return;
-		}
+		// **The branch itself stays, and it is load-bearing rather than a leftover.** What follows it is
+		// the hit accounting, and that accounting does not re-test `taggedAny` — so deleting this as the
+		// empty branch it now looks like would record every miss as a hit and raise the thrower's count
+		// for it. The `return` is the whole of what this does: a miss is a throw whose accounting is done,
+		// which is what `StatsRecorded` above has just said, and that is the end of it.
+		//
+		// **A caught throw never reaches here at all** — the catch branch returns long before this — so a
+		// throw that was caught is neither a hit nor a miss. It also used to end the thrower's run, by a
+		// call of its own in `resolveCatch`; that call has gone with this one, so a caught throw leaves
+		// the count alone in every mode. In Team Elimination and Dodge and Seek the thrower dies for it
+		// and the count goes anyway; in Score Rush the thrower survives, and that is the one mode where
+		// the difference is visible.
+		if (!taggedAny) return;
 
 		const throwerToken = this.instance.GetAttribute("ThrowerId");
 		if (!typeIs(throwerToken, "string") || throwerToken === "") return;
@@ -771,16 +777,19 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	/**
 	 * Resolves a catch: every tag released, and the thrower punished if the catcher is their enemy.
 	 *
-	 * **Four jobs, in this order, and the first is the absence of a death.** A catch saves every
+	 * **Three jobs, in this order, and the first is the absence of a death.** A catch saves every
 	 * body the ball tagged — so the tag list is emptied here rather than resolved, and that
 	 * emptying is the whole of the save; nothing fires, and a log of the throw would otherwise show
 	 * no trace of it. Then the thrower is out if the catcher is on the other side, and the catcher's
 	 * side scores if the mode keeps score — both decided by the round, which owns sides and score,
 	 * in one call: see `RoundService.resolveCaughtThrower`. A friendly catch does neither, and a
-	 * catch of a rig's throw does neither, for the reasons that method gives. **And last, the
-	 * thrower's run of hits ends** — a caught throw is a throw that did not land, which is what a
-	 * streak counts, and this is the only place that fact is known. See the call below for why it is
-	 * not the redundant line it looks like.
+	 * catch of a rig's throw does neither, for the reasons that method gives.
+	 *
+	 * **There used to be a fourth job here: ending the thrower's run of hits.** A caught throw is a throw
+	 * that did not land, and the run used to be broken by anything that did not land — so this was the
+	 * line that ended it in the one mode that does *not* kill the thrower for being caught, which is Score
+	 * Rush. The count has no miss reset any more and a caught throw is not special, so there is nothing to
+	 * report and nothing replaced it. See `BallComponent.score` for the other end of the same removal.
 	 *
 	 * **A catch that cannot be made never reaches here.** `handleTouch` only calls this after
 	 * `catchBall` has taken the ball into the catcher's hand, so the save below is a fact and not a
@@ -804,31 +813,22 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		const token = typeIs(throwerId, "string") ? throwerId : "";
 		if (token !== "") this.rounds.resolveCaughtThrower(token, catcher);
 
-		// **The thrower's run ends here — required in some modes and redundant in others, which is why
-		// it needs saying rather than deleting.**
-		//
-		// A caught throw is a throw that landed on nobody, and that is what a streak counts, so the run
-		// goes back to zero. Which mode is being played decides whether anything else would have done it:
-		// Team Elimination and Dodge and Seek kill the thrower on a caught throw, so `noteDeath` fires and
-		// a streak that is about to be zeroed is zeroed twice; **Score Rush does not** — the catch scores
-		// and the thrower respawns — so this line is the only thing that resets their run at all. Deleting
-		// it as redundant would quietly turn a caught throw into a streak-*preserving* event in the one
-		// mode nobody re-tested.
-		//
-		// The double call is harmless rather than merely tolerable: `SuperService.resetStreak` returns
-		// before publishing when the streak is already zero, so the second call writes nothing at all and
-		// the HUD never sees the value move from one call to the next. Both calls also resolve the same
-		// token the same way, so they cannot disagree about whose run ended.
-		//
-		// **The thrower's token and not the catcher's** — the catcher is the one who succeeded, and this is
-		// charged to the one who did not. It also sits outside the round's own judgement of the catch: a
-		// friendly catch returns early inside `resolveCaughtThrower` and punishes nobody, but a ball caught
-		// by a teammate still never landed on an enemy, so the run ends either way.
-		if (token !== "") this.abilities.noteMiss(token);
+		// **The run of hits used to end here, and no line replaced it.** A caught throw is still a throw
+		// that landed on nobody, but the count is not broken by one any more — it is "hits since you last
+		// died" — so a catch cannot touch it. In Team Elimination and Dodge and Seek the thrower dies for
+		// the catch and the count goes through `noteDeath` anyway; in Score Rush the thrower survives and
+		// keeps it, which is the one place this removal is visible. See `SuperService.noteHit` for what
+		// the count is now and why nothing ends it but a death.
 	}
 
 	/**
-	 * Whether this touch is a catch: a catchable part, on a character whose window is open.
+	 * Whether this touch is a catch: **any part of the body**, on a character whose window is open.
+	 *
+	 * **"Any part of the body" is a rule rather than a list, and it is `struckBodyPart`'s answer.** What
+	 * arrives here is never the part the engine reported — it is what that method resolved the contact to,
+	 * which is always a part `Humanoid.GetLimb` recognises as a limb of this rig. So the exclusion of the
+	 * head and the legs used to be the *only* thing the part test did, and deleting it is the whole of
+	 * "every part of the body can catch". See the test's own note, below the ability refusals.
 	 *
 	 * **A Pierce ball cannot be caught, and refusing here — before the weld — is the whole of what that
 	 * costs.**
@@ -882,7 +882,28 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			return false;
 		}
 
-		if (!CATCH_CONFIG.CATCHABLE_PARTS.has(otherPart.Name)) return false;
+		// **Where the part test used to be, and there is no replacement — that absence is the change.** What
+		// stood here asked whether `otherPart.Name` was in a hand-written set of torso and arm names, and the
+		// answer it gave for everything else was "this part cannot catch" — the head and the legs, on purpose,
+		// because they were what a throw was aimed *at*.
+		//
+		// **`otherPart` is not the part the engine reported, which is why the set could go.** It is what
+		// `struckBodyPart` resolved the contact to: an accessory becomes the body part it is worn on, the root
+		// becomes the torso it is jointed to, and a tool or a ball in a hand becomes nothing at all and never
+		// reaches this method. So "is this a part of the body" has already been answered a frame earlier — by
+		// `Humanoid.GetLimb`, which knows R6, R15 and any rig nobody has written a list for yet.
+		//
+		// **A rule rather than a longer list, and the list is the thing being replaced.** Adding `Head` and
+		// four leg names would have made the same mistake somewhere new: R6 calls a thigh `Left Leg` and R15
+		// calls it `LeftUpperLeg`, and a rig from a generation nobody has seen would be un-catchable until
+		// somebody noticed. The engine's own answer to "what limbs does this rig have" cannot drift from the
+		// rig it is asked about.
+		//
+		// **What it costs, said plainly: the window is now a shield.** While it is open, *any* body contact
+		// with a catchable ball is a catch — so a catcher cannot be hit by an ordinary throw for that second,
+		// wherever it lands on them. That is "all parts of the body catch" read from the other end, and
+		// `CATCH_CONFIG.WINDOW_SECONDS` carries the same note with the answers that remain: the length of the
+		// window, one ball per window, and the two abilities a window cannot stop — both refused just above.
 
 		// Only a ball in flight can be caught. One welded into somebody's hand is
 		// already held, and taking it would leave a ball with two welds on it.
@@ -990,9 +1011,10 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * the old `return` finally showed.
 	 *
 	 * **Resolved rather than dropped, and resolved rather than taken as itself.** Treating the root as
-	 * a body part in its own right is what this did even earlier, and it made a catcher unreachable:
-	 * the root is not in {@link CATCH_CONFIG.CATCHABLE_PARTS}, so the first event of a chest arrival
-	 * read as a hit and the catch that should have saved them arrived after the damage. Following the
+	 * a body part in its own right is what this did even earlier, and it made a catcher unreachable: the
+	 * root is not a limb — `Humanoid.GetLimb` answers `Unknown` for it, which is the same fact the
+	 * config's catchable-names set used to spell out — so the first event of a chest arrival read as a
+	 * hit and the catch that should have saved them arrived after the damage. Following the
 	 * joint gets the answer those two options each missed — the contact becomes a *torso* contact, so
 	 * it is a hit **and** it is catchable, which is what a ball into the chest always was.
 	 *
@@ -1093,11 +1115,18 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 *
 	 * **Where the sharp case is, because it is not every death, and the difference is what to look
 	 * for.** An NPC rig keeps its corpse: `RespawnBehavior` sets `BreakJointsOnDeath = false` and
-	 * builds the replacement from a clone seconds later, long after any impact clip has finished. A
-	 * player in Team Elimination is eliminated and left dead until the engine's own respawn timer,
-	 * which is the same story. **A player converted in Dodge and Seek is not**: that mode answers
-	 * `respawn`, and `RoundService.handleDeath` carries that out with `player.LoadCharacter()`, which
-	 * destroys the old character on the spot. That is the hit whose sound was being cut short.
+	 * builds the replacement from a clone seconds later, long after any impact clip has finished. An
+	 * eliminated player is the same story — out of the round, left dead, and given a new body by
+	 * `RespawnService`. **A death in the lobby, or the load that ends an in-round wait, is not**: those go
+	 * through `RespawnService.loadNow`, which destroys the old character on the spot, and that is the hit
+	 * whose sound can be cut short.
+	 *
+	 * **A converted player in Dodge and Seek used to be the example here, and no longer is.** That mode
+	 * answers `respawn`, and the load that answer asks for is now *scheduled* by the arena's own delay
+	 * rather than run on the spot — so the corpse outlives any impact clip and this emitter's parenting stops
+	 * mattering to it. The reasoning above stands on its own reason rather than on that case: an impact is a
+	 * fact about a *moment*, and the thing that was hit is the one part of the scene with a reason to stop
+	 * existing right then.
 	 *
 	 * Everything about the emitter itself — the flags, the parenting order, the two cleanup paths and
 	 * the `PlayOnRemove` that is deliberately not used — now lives in {@link emitSound}, which is

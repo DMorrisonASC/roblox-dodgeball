@@ -296,7 +296,7 @@ export const BALL_CONFIG = {
 	 * angle instead would slow the ball without costing range, but it would stop the throw being
 	 * flat — see `MIN_THROW_ANGLE` in `shared/Trajectory.ts`.
 	 */
-	THROW_MAX_SPEED: 280,
+	THROW_MAX_SPEED: 200,
 
 	/**
 	 * **A multiplier on the derived launch correction. It should stay at 1.**
@@ -388,7 +388,7 @@ export const BALL_CONFIG = {
 	 * **Zeroed, and it should stay zeroed.** A non-zero nudge is a fault in the plan being papered over.
 	 * Tune with it, write down what it took, fix the cause, and put it back to zero.
 	 */
-	THROW_LAUNCH_NUDGE: { forward: 0, left: 0.5, up: 0.2 },
+	THROW_LAUNCH_NUDGE: { forward: 0.5, left: 0.5, up: 0 },
 
 	/**
 	 * Launch angle of the curveball, in degrees.

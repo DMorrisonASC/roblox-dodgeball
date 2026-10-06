@@ -187,9 +187,30 @@ export const ARENA_CONFIG = {
 	 * in. Below it, the freeze ends behind the cover and the tail of the wipe hides players who are free to
 	 * move — harmless to the round, but it is what the separation costs.
 	 *
-	 * **Three seconds, and it is a placeholder that costs the round nothing.** The timer is not running yet, so
-	 * nothing is subtracted from `ROUND_SECONDS` — the only thing it spends is three seconds of the players'
+	 * **Five seconds, and it is a placeholder that costs the round nothing.** The timer is not running yet, so
+	 * nothing is subtracted from `ROUND_SECONDS` — the only thing it spends is five seconds of the players'
 	 * time, which is what it exists to spend: long enough to land, look, and see where you are standing.
 	 */
 	ARENA_FREEZE_SECONDS: 5,
+
+	/**
+	 * How long a player waits for a body after dying inside a round, in seconds.
+	 *
+	 * **Placeholder — three is the ask.** This is the delay an in-round death gets, and the reason the project
+	 * owns every character load: `RespawnTime` is the engine's one clock for every death, so asking it for an
+	 * instant respawn outside a round — nought — is asking it for one inside a round as well, and it does not
+	 * know a round exists to be told otherwise. See `Players.CharacterAutoLoads` in `main.server.ts` for the
+	 * switch and `RespawnService` for the mechanism.
+	 *
+	 * **What it delays, and what it deliberately does not.** It delays the `respawn` branch of
+	 * `RoundService.handleDeath` — Score Rush's answer, and Dodge and Seek's — which is the one death in the
+	 * game that hands the body straight back. It does **not** delay the load a joining player gets, a death
+	 * outside a round, or an eliminated player in Team Elimination: those three want a body *now*, and all
+	 * three are the same call to `RespawnService.loadNow` with a different reason on it.
+	 *
+	 * **Chosen against the round's clock rather than against feel.** A round is `ROUND_SECONDS` long, this is
+	 * what a death costs out of it, and it is also the number the dying player watches counting down — so the
+	 * figure to compare it against is the one above it.
+	 */
+	RESPAWN_DELAY_SECONDS: 3,
 } as const;

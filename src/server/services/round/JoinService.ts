@@ -1,9 +1,12 @@
 import { Service, OnStart } from "@flamework/core";
 import { Players } from "@rbxts/services";
 import { THROWER_TOKEN } from "shared/constants";
+import { RespawnService } from "../character/RespawnService";
 
 @Service()
 export class JoinService implements OnStart {
+    constructor(private readonly respawns: RespawnService) {}
+
     onStart() {
         Players.PlayerAdded.Connect((player) => {
             this.welcome(player);
@@ -56,5 +59,18 @@ export class JoinService implements OnStart {
         if (character) {
             stampToken(character);
         }
+
+        // **And then a body, which the engine no longer provides.** `Players.CharacterAutoLoads` is off — see
+        // `main.server.ts` for why — so a joining player has nothing until this project loads one, and this is
+        // the join half of that: the only other place a body comes from is `RoundService`, which loads after a
+        // death. A player arriving and never appearing is what a missing load looks like, which is the whole
+        // subject of `RespawnService`'s class doc.
+        //
+        // **After the connection above, never before it.** The load is what fires `CharacterAdded`, and the
+        // token is stamped *by* that handler — so loading first would hand the server a body with no token on
+        // it, which is a model the ball system cannot attribute to anybody: the thrower of its ball, the
+        // owner of its save, and the name on its damage would all be nothing. The order is therefore load
+        // *after* subscribing, and the `if` above is the same rule for a body that somehow already exists.
+        this.respawns.loadNow(player, "joined");
     }
 }

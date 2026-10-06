@@ -2,12 +2,14 @@ import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { SUPER_CONFIG } from "shared/config/super.config";
 import {
+	CROWN_ATTRIBUTE,
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
 	SUPER_CHARGE_ATTRIBUTE,
 	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
 	SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE,
 	SUPER_STREAK_ATTRIBUTE,
+	TEAM_ATTRIBUTE,
 } from "shared/constants";
 
 /** Prints the mount line, and every grant, spend and forfeit. */
@@ -46,9 +48,16 @@ interface MultiBallWindow {
  * The streak a player is on, and the charge they are holding.
  *
  * **The rules, in one place, because they are one mechanic.** A hit is a throw that landed on an
- * enemy; six of them in a row earn one charge; a miss or a death puts the streak back to zero; a
- * charge is held until it is used and only one is held at a time. Every one of those sentences is a
- * line below rather than a rule spread across the callers that report the events.
+ * enemy, and the count of them is what the crown is decided from; a *death* puts that count back to
+ * zero and nothing else does; a charge is held until it is used and only one is held at a time. Every
+ * one of those sentences is a line below rather than a rule spread across the callers that report the
+ * events.
+ *
+ * **A miss used to break the run, and no longer does.** The count has become "hits since you last died"
+ * — which is what it always was, minus the reset that made it a *run* — and the reason is that it no
+ * longer buys anything. A threshold that grants an ability needs a way to be lost; a threshold that puts
+ * a crown on your head does not, and resetting on a miss only made a hot player's crown flicker. See
+ * {@link noteHit} for the note where the count is made, and {@link refreshCrowns} for what reads it.
  *
  * **What is not here is anything about abilities.** This service does not know what Pierce does, does
  * not know a ball can carry one, and never touches a ball. It answers "does this player hold a
@@ -106,15 +115,41 @@ export class SuperService implements OnStart {
 			// nothing to clear — which is also what makes it safe for a death or a round ending to close a
 			// window the clock was still going to close.
 			this.multiBalls.delete(player);
+
+			// **And the crown is recomputed, because the player who just left may have been the reason
+			// somebody else was not wearing it.** A team's highest hitter leaving hands the crown to
+			// whoever is next, and that is a change nobody on this server did anything to cause.
+			//
+			// After the deletion above rather than before it, which matters: `refreshCrowns` reads this
+			// map, so a leaver whose row is already gone counts as nought — which is what they are — where
+			// a refresh before the delete would leave their count holding the team's maximum for a player
+			// who is no longer in the game.
+			this.refreshCrowns();
 		});
 
 		if (DEBUG) {
-			print(`[Super] up — ${SUPER_CONFIG.STREAK_REQUIRED} hits in a row earns one charge`);
+			print(
+				`[Super] up — crowning at ${SUPER_CONFIG.CROWN_STREAK_THRESHOLD} hits,` +
+					` or the most on a side; nothing grants a charge but the dev bypass`,
+			);
 		}
 	}
 
 	/**
-	 * One hit against the thrower's streak, granting the charge when it reaches the target.
+	 * One hit against the thrower's count — **the only thing in the game that raises it.**
+	 *
+	 * **What puts the count back to zero: dying, and the round ending.** There is no miss reset any more,
+	 * and that is the whole of what this method's change carried: the count used to be a *run*, broken by
+	 * a throw that landed on nobody, and it is now "hits since you last died". A reader who comes looking
+	 * for the miss reset will find {@link noteMiss} gone with no replacement, which is deliberate rather
+	 * than an omission — see the class doc for why it went with the charge.
+	 *
+	 * **This used to grant a charge at `STREAK_REQUIRED`, and grants nothing now.** What stood here was
+	 * six hits in a row buying one super, with the count zeroed at the moment it was paid out. Nothing
+	 * grants a charge any more except the dev bypass in `BallService`; the charge system itself is intact
+	 * and untouched — the mark remote, the aura, `hasCharge`, `spendCharge`, `forfeitCharge` and the HUD's
+	 * charge row are all still here and all still work. **Power-up boxes are the intended source**, and
+	 * until they exist a charge is something only a dev can obtain.
 	 *
 	 * **A token and not a `Player`, which is forced rather than chosen.** A hit arrives from a ball,
 	 * and the token stamped on it at release is the whole of what that ball knows about who threw it —
@@ -127,56 +162,34 @@ export class SuperService implements OnStart {
 		if (player === undefined) return;
 
 		// **Only a round counts.** The rule `StatsService` applies to its own figures, read from the
-		// same channel — see {@link isRoundActive}. Without it, a hit in the lobby would build towards
-		// an ability, which is a reward for practising while nothing is at stake.
+		// same channel — see {@link isRoundActive}. Without it, a hit in the lobby would count towards a
+		// crown, which is a reward for practising while nothing is at stake.
 		if (!this.isRoundActive()) return;
 
 		const streak = (this.streaks.get(player) ?? 0) + 1;
 
-		// **At the target the charge is granted and the streak starts over.** Reset rather than left
-		// standing at the target, because a full readout on somebody who has just spent what it was
-		// full of is a readout telling them the wrong thing. A player who already holds a charge and
-		// reaches the target again is reset the same way: there is only one charge, so there is nothing
-		// left to grant, and a streak parked at six would look like one about to be granted.
-		if (streak >= SUPER_CONFIG.STREAK_REQUIRED) {
-			this.streaks.set(player, 0);
-			this.charged.add(player);
-			this.publish(player);
-
-			if (DEBUG) print(`[Super] ${player.Name}: charge earned at ${streak} in a row`);
-
-			return;
-		}
-
 		this.streaks.set(player, streak);
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: streak ${streak}/${SUPER_CONFIG.STREAK_REQUIRED}`);
+		// **And the crown is decided after the count, never before.** Whether this hit crowned anybody
+		// depends on the count it has just made and on every other player's count and side, so the
+		// recomputation has to follow the write — and it carries the other half of the rule as well: this
+		// hit may have taken the crown off the player who used to be their side's highest.
+		this.refreshCrowns();
+
+		if (DEBUG) print(`[Super] ${player.Name}: hits ${streak}`);
 	}
 
 	/**
-	 * A throw that landed on nobody, so the streak goes back to zero.
+	 * A player died, so the count goes back to zero. **The charge does not.**
 	 *
-	 * Takes a token for {@link noteHit}'s reason: the same ball reports it, from the same throw, and
-	 * the token is all that ball carries. The call site is `BallComponent.score` — the one place that
-	 * knows a throw ended having tagged nobody.
-	 */
-	public noteMiss(throwerToken: unknown): void {
-		const player = playerOf(throwerToken);
-		if (player === undefined) return;
-
-		// Guarded exactly as a hit is, so the two cannot disagree about which throws count. A miss
-		// between rounds leaves the streak where the round left it, which is what the readout is
-		// showing until the next round opens and clears it.
-		if (!this.isRoundActive()) return;
-
-		this.resetStreak(player, "missed");
-	}
-
-	/**
-	 * A player died, so the streak goes back to zero. **The charge does not.**
+	 * **This is now the only thing outside the round boundary that resets the count.** A throw that
+	 * landed on nobody used to reset it too, through a `noteMiss` that used to stand here; that method is
+	 * gone rather than switched off, and nothing replaced it, because the count no longer buys anything
+	 * that has to be defended. See `BallComponent.score`, which still refuses to record a hit for a miss
+	 * and simply no longer reports one.
 	 *
-	 * **A `Player` and not a token, and that is the difference between this and the two above.** A
+	 * **A `Player` and not a token, and that is the difference between this and the hit above.** A
 	 * death is a fact about somebody the round has already resolved — `RoundService.handleDeath` is
 	 * handed the player and nothing else — where a hit arrives from a ball that knows only who threw
 	 * it. `StatsService` draws the same line between `recordHit` and `recordOut`, in its own words.
@@ -188,6 +201,11 @@ export class SuperService implements OnStart {
 	 */
 	public noteDeath(player: Player): void {
 		this.resetStreak(player, "died");
+
+		// **And a death can move a crown that is not this player's.** The count has just gone to nought,
+		// which changes the maximum it was measured against — so the answer is recomputed even though the
+		// player who died is certainly not wearing it any more.
+		this.refreshCrowns();
 	}
 
 	/** Whether `player` is holding a charge. The whole of what the mark handler asks this service. */
@@ -361,6 +379,11 @@ export class SuperService implements OnStart {
 	 * therefore still on screen for the intermission, which is the same lifetime `roundHits` and
 	 * `roundOuts` were given and for the same reason: a readout that emptied itself a frame after the
 	 * last hit would wipe the thing it exists to show.
+	 *
+	 * **This does not recompute the crown, and its caller does — once, after its loop.** Every count on
+	 * the server has just gone to nought, so there is one answer to work out for the whole server and
+	 * running the comparison per player would be the same sum done once per head. See
+	 * {@link refreshCrowns}, which `RoundService` calls at the boundary for exactly this.
 	 */
 	public resetForRound(player: Player): void {
 		if ((this.streaks.get(player) ?? 0) === 0) return;
@@ -395,6 +418,59 @@ export class SuperService implements OnStart {
 
 		player.SetAttribute(SUPER_MULTI_BALL_COUNT_ATTRIBUTE, window?.remaining ?? 0);
 		player.SetAttribute(SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE, window?.endsAt ?? 0);
+	}
+
+	/**
+	 * Recomputes who wears the crown, and writes {@link CROWN_ATTRIBUTE} on every player.
+	 *
+	 * **The rule, and both halves of it.** A player is crowned if `hits >= CROWN_STREAK_THRESHOLD` — hot
+	 * on their own, whatever anybody else is doing — **or** if their count equals the highest on their
+	 * side and is at least `1`. The floor is the half that says a side where nobody has hit anybody
+	 * crowns nobody, rather than crowning whoever happens to be sitting at nought. **A tie at the top
+	 * crowns both**, because the two halves are independent tests and a tiebreak would mean inventing a
+	 * reason why one of two equal players is the hot one.
+	 *
+	 * **Computed here rather than in the client, because "the highest on their team" is not a question
+	 * one client can answer.** It needs every player's count *and* every player's side at the same
+	 * instant, and a client would be reading a replica of two tables this file owns, a message behind —
+	 * so two clients could disagree about who is wearing a crown, and the player being crowned would be
+	 * watching a third answer. The count and the side are decided here, so the answer is decided here and
+	 * sent; that is the same argument that puts the streak itself on the player rather than letting each
+	 * HUD count its own hits, one step further out.
+	 *
+	 * **Called from every event that can change an answer, which is why it is a method rather than
+	 * something worked out where the attribute is read.** A hit and a death change one row; a round
+	 * opening zeroes every row; a roster assignment changes who is compared against whom; a player
+	 * leaving can hand the crown to whoever was second. There is no cheaper incremental version of this
+	 * that is not a second copy of the rule, and the list it walks is as long as the server's player list.
+	 *
+	 * **Silent when nothing changed.** This runs on every hit in the game, so the write is guarded rather
+	 * than unconditional — an attribute set to the value it already holds is at best a no-op the engine
+	 * has to look at, and at worst a replication of nothing to every client. The print is only for a
+	 * player being crowned, since a crown coming off is the ordinary case of a count coming off.
+	 */
+	public refreshCrowns(): void {
+		// **One pass to find each side's best, one to decide.** The two cannot be one pass: a player's
+		// answer depends on a maximum that may belong to somebody further down the list, so the whole
+		// comparison has to be finished before anybody is judged against it.
+		const bests = new Map<string, number>();
+
+		for (const player of Players.GetPlayers()) {
+			const team = teamOf(player);
+			bests.set(team, math.max(bests.get(team) ?? 0, this.streaks.get(player) ?? 0));
+		}
+
+		for (const player of Players.GetPlayers()) {
+			const count = this.streaks.get(player) ?? 0;
+			const crowned =
+				count >= SUPER_CONFIG.CROWN_STREAK_THRESHOLD || (count >= 1 && count === bests.get(teamOf(player)));
+
+			if (player.GetAttribute(CROWN_ATTRIBUTE) === crowned) continue;
+
+			player.SetAttribute(CROWN_ATTRIBUTE, crowned);
+
+			if (DEBUG && crowned) print(`[Super] ${player.Name}: crowned at ${count} hit(s)`);
+		}
 	}
 
 	/** Zeroes `player`'s streak and says why, unless it is already zero. */
@@ -460,4 +536,24 @@ function playerOf(throwerToken: unknown): Player | undefined {
 	if (userId === undefined) return undefined;
 
 	return Players.GetPlayerByUserId(userId);
+}
+
+/**
+ * The side `player` is on, as the label `TEAM_ATTRIBUTE` holds, or `""` when they have none.
+ *
+ * **Read from the attribute rather than from the round's own table**, which is the whole of the
+ * dependency this service has on sides: the round publishes a side per player and this compares them,
+ * and nothing here has to know what a side *is* or when it is assigned. It also means a player who is
+ * not in the round — a spectator holding a stale label, a joiner yet to be given one — is compared
+ * among the ones like them, which is a group with no hits in it in every case the crown can be earned
+ * in, and the floor of `1` is what keeps it from crowning anybody.
+ *
+ * **A plain `string` and not a `TeamLabel`, deliberately.** This is an attribute read, so the honest
+ * type is "whatever was written there", and the two-line body is the answer to "which of those is
+ * real": `""` is not a side, and the comparison treats it as a group rather than as a third team.
+ */
+function teamOf(player: Player): string {
+	const team = player.GetAttribute(TEAM_ATTRIBUTE);
+
+	return typeIs(team, "string") ? team : "";
 }

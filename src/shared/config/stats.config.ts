@@ -36,4 +36,30 @@ export const STATS_CONFIG = {
 
 	/** How far above a head the billboard floats, in studs. Clear of the head and of a tall hat. */
 	BILLBOARD_OFFSET_Y: 2.5,
+
+	/**
+	 * The crown, drawn above the head of a player who is hot.
+	 *
+	 * **An image and never an emoji glyph.** The same sigil as a character would render differently on
+	 * every platform and as a hollow box on some of them, and a box above a player's head is worse than
+	 * nothing at all — so this is an upload, and the whole of the crown's look is these four numbers.
+	 *
+	 * **Its own offset from the billboard's, because the two can be up at once.** A crowned player with a
+	 * record to show wears both, and they are different sizes: the crown sits above the line of text
+	 * rather than inside it.
+	 *
+	 * The reach is the billboard's number as a starting point rather than a shared constant, because the
+	 * two are answers to the same question — how far away is a label worth drawing — asked about objects
+	 * of different sizes. See `BILLBOARD_MAX_DISTANCE`.
+	 */
+	CROWN_IMAGE: "rbxassetid://109209442459081",
+
+	/** How big the crown is drawn, in pixels. **Placeholder.** Scaled to fit rather than stretched. */
+	CROWN_SIZE: UDim2.fromOffset(40, 40),
+
+	/** How far above a head the crown floats, in studs. **Placeholder** — above the billboard's. */
+	CROWN_OFFSET_Y: 4.5,
+
+	/** How far the crown is drawn, in studs. **Placeholder** — see the note above. */
+	CROWN_MAX_DISTANCE: 100,
 } as const;

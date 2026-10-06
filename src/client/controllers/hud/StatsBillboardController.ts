@@ -3,7 +3,13 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { STATS_CONFIG } from "shared/config/stats.config";
-import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, STAT_HITS, STAT_OUTS } from "shared/constants";
+import {
+	CROWN_ATTRIBUTE,
+	ROUND_STATE_ATTRIBUTE,
+	ROUND_STATUS_FOLDER,
+	STAT_HITS,
+	STAT_OUTS,
+} from "shared/constants";
 
 /** Prints once, when the billboards are up — the line that says the controller ran at all. */
 const DEBUG = true;
@@ -13,6 +19,15 @@ const INTERMISSION = "Intermission";
 
 /** What the billboard is called, so a stray one can be told from anything else on a head. */
 const BILLBOARD_NAME = "StatsBillboard";
+
+/**
+ * What the crown is called, on the same head and for the same reason.
+ *
+ * **A second instance rather than a row inside the billboard**, because the two are shown on different
+ * clocks and to different rules: the record is drawn between rounds and the crown is drawn *during* one,
+ * so they are up at different times and neither can be a child of the other's visibility.
+ */
+const CROWN_NAME = "CrownBillboard";
 
 /**
  * Room for the line above a head, in pixels.
@@ -42,6 +57,18 @@ const BILLBOARD_SIZE = UDim2.fromOffset(320, 40);
  *
  * One `BillboardGui` per player **per body**, mounted on `CharacterAdded` and torn down with the
  * character that carried it. See {@link attach} for why a respawn gets a scope of its own.
+ *
+ * **And the crown, which is the second thing this file hangs on the same head.** A player who is hot
+ * wears an image above them, for as long as `CROWN_ATTRIBUTE` says so — which the *server* decides, since
+ * "the most hits on their side" needs every count and every side at once. See `SuperService.refreshCrowns`
+ * for the rule, and {@link attach} for how little the client has to do with the answer.
+ *
+ * **The two readouts are on opposite clocks, and that is what makes them one file rather than two.** The
+ * record is for an intermission and the crown is for a round; what they share is everything mechanical —
+ * a player list to watch, a body to wait for, a scope per body to tear down — and none of that is about
+ * either readout. Adding the crown here rather than in a controller of its own is what keeps one copy of
+ * that machinery, and the connection it is built on (`CharacterAdded`, and the attribute's own signal)
+ * is the same pair the record uses.
  */
 @Controller()
 export class StatsBillboardController implements OnStart {
@@ -73,7 +100,7 @@ export class StatsBillboardController implements OnStart {
 		// and HUDs do, for the same reason.
 		for (const player of Players.GetPlayers()) this.watch(player, state, scope);
 
-		if (DEBUG) print(`[HUD] stat billboards up — ${Players.GetPlayers().size()} players`);
+		if (DEBUG) print(`[HUD] stat billboards and crowns up — ${Players.GetPlayers().size()} players`);
 	}
 
 	/** Gives `player` a billboard above every body they get, for as long as they are in the game. */
@@ -137,6 +164,39 @@ export class StatsBillboardController implements OnStart {
 			align: Enum.TextXAlignment.Center,
 		});
 		label.Parent = billboard;
+
+		// **And the crown, which is the same machinery pointed at a different source.** The flag is watched
+		// on the *player* rather than on the body, because that is where the server wrote it — and that is
+		// the whole of what a respawn costs: the answer did not change, so the only thing that has to be
+		// rebuilt is the billboard, which is what this method is for.
+		const crowned = watchFlag(scope, player, CROWN_ATTRIBUTE);
+
+		const crown = new Instance("BillboardGui");
+		crown.Name = CROWN_NAME;
+		crown.Adornee = head;
+		crown.Size = STATS_CONFIG.CROWN_SIZE;
+		crown.StudsOffsetWorldSpace = new Vector3(0, STATS_CONFIG.CROWN_OFFSET_Y, 0);
+		// **Occluded, like the record above it, and that is a decision rather than the default.** A crown is
+		// something about a body standing in the map: a crowned player behind a wall is a player you cannot
+		// see, exactly as their numbers are. It is also the one property here worth revisiting — `true` draws
+		// it through geometry like an objective marker, which is a different game.
+		crown.AlwaysOnTop = false;
+		crown.MaxDistance = STATS_CONFIG.CROWN_MAX_DISTANCE;
+		crown.Parent = head;
+
+		Fusion.Hydrate(scope, crown)({
+			Enabled: Fusion.Computed(scope, (use) => use(crowned)),
+		});
+
+		const image = new Instance("ImageLabel");
+		image.Name = "Image";
+		image.BackgroundTransparency = 1;
+		image.Size = UDim2.fromScale(1, 1);
+		image.Image = STATS_CONFIG.CROWN_IMAGE;
+		// **Fitted rather than stretched**, because the shape of the upload is the uploader's business: a
+		// crown drawn into a box it was not made for is a crown that looks wrong at every distance.
+		image.ScaleType = Enum.ScaleType.Fit;
+		image.Parent = crown;
 	}
 }
 
@@ -186,4 +246,25 @@ function countOf(player: Player, name: string): number {
 	const value = player.GetAttribute(name);
 
 	return typeIs(value, "number") ? value : 0;
+}
+
+/**
+ * A boolean attribute as a `Value`, for {@link watchCount}'s reason and in exactly its shape.
+ *
+ * **The crown's flag is watched on the player and never on the body**, which is what makes a respawn
+ * free: the answer did not change, so the only thing to rebuild is the billboard — and every body gets
+ * one of those because every body runs {@link StatsBillboardController.attach}. An attribute that was
+ * never written reads as `false`, which is the honest answer for a player who has not been crowned.
+ */
+function watchFlag(scope: Fusion.Scope<unknown>, player: Player, name: string): Fusion.Value<boolean> {
+	const state = Fusion.Value(scope, flagOf(player, name));
+
+	scope.push(player.GetAttributeChangedSignal(name).Connect(() => state.set(flagOf(player, name))));
+
+	return state;
+}
+
+/** A boolean attribute, or `false`. */
+function flagOf(player: Player, name: string): boolean {
+	return player.GetAttribute(name) === true;
 }

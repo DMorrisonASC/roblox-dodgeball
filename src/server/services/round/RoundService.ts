@@ -25,6 +25,7 @@ import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
 import { applyBarrierGroups } from "../../collision/CollisionGroups";
 import { MapService } from "../MapService";
+import { RespawnService } from "../character/RespawnService";
 import { BallService } from "../ball/BallService";
 import { FreezeService } from "../actions/FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
@@ -265,6 +266,7 @@ export class RoundService implements OnStart {
         private readonly abilities: SuperService,
         private readonly freezes: FreezeService,
         private readonly speeds: WalkSpeedService,
+        private readonly respawns: RespawnService,
     ) {}
 
     onStart() {
@@ -497,6 +499,13 @@ export class RoundService implements OnStart {
             this.teams.set(player, team);
             player.SetAttribute(TEAM_ATTRIBUTE, team);
         }
+
+        // **And the crown is recomputed, because this is the one moment who-is-on-whose-side changes for
+        // everybody at once.** The crown compares players against their own side, so a roster arriving
+        // changes every comparison in the game — and it covers the case that matters most: a round opening
+        // gives everybody a side and no hits, which is what takes last round's crowns off. See
+        // `SuperService.refreshCrowns`.
+        this.abilities.refreshCrowns();
     }
 
     /**
@@ -924,6 +933,12 @@ export class RoundService implements OnStart {
         if (this.state === RoundState.Playing && !this.activePlayers.has(player)) {
             player.SetAttribute(SPECTATING_ATTRIBUTE, true);
         }
+
+        // **And the crown is recomputed for a joiner, which is mostly about everybody else.** A player
+        // arriving has no count and no side, so they cannot be crowned by this call — what it is really
+        // for is the roster they have just joined, and the case it matters for is the one that never
+        // reaches this method: a player *leaving*, which `SuperService` handles on its own.
+        this.abilities.refreshCrowns();
     }
 
     /**
@@ -962,12 +977,17 @@ export class RoundService implements OnStart {
         // **And the freeze comes off the body before anything respawns it.** The watcher in
         // `FreezeService` fires on the same `Died` signal as this handler, and this one is connected
         // first — at `CharacterAdded`, before any ball could have frozen the body. So the watcher's
-        // release runs *after* the mode has decided and possibly after `LoadCharacter` has begun
-        // replacing the body, and whether the anchor is still clearable at that point depends on the
-        // engine's own ordering: `unfreeze` skips its teardown when the model has no parent left. That is
-        // harmless for a body that is going away, and it is exactly the kind of latent ordering a respawn
-        // bug hides in, so the clear happens here instead — before the body is replaced rather than at
-        // some unspecified point during it.
+        // release runs *after* the mode has decided, and whether the anchor is still clearable at that
+        // point depends on the engine's own ordering: `unfreeze` skips its teardown when the model has no
+        // parent left. That is harmless for a body that is going away, and it is exactly the kind of
+        // latent ordering a respawn bug hides in, so the clear happens here instead — while the body is
+        // unambiguously still there, rather than at some unspecified point after it has begun to go.
+        //
+        // **An in-round respawn no longer happens on the spot, and the race is still live.** The branch at
+        // the bottom of this method now schedules its load a few seconds out rather than replacing the body
+        // immediately — but the two guards above load *now*, so a death in the lobby is still a body being
+        // replaced at the moment the watcher's own release is queued. The clear stays here for that case, and
+        // for the rigs and dev resets that never reach this method at all.
         //
         // The watcher stays, and is not a duplicate of this: it is what clears a freeze on a body no
         // round ever hears about — a rig, which never reaches this method at all, and any death outside
@@ -975,13 +995,28 @@ export class RoundService implements OnStart {
         const dying = player.Character;
         if (dying) this.freezes.unfreeze(dying);
 
-        // A death in the lobby is not an elimination, so nothing is written outside a round.
-        if (this.state !== RoundState.Playing) return;
+        // A death in the lobby is not an elimination, so nothing is written outside a round — **but a body is
+        // still owed, and it used to be the engine's.** With `CharacterAutoLoads` off (see `main.server.ts`)
+        // nothing brings one back but this project, so the load happens before the return rather than not at
+        // all. Instant, which is the rule for everything outside a round: there is no countdown to watch while
+        // a match is not being played, and a player standing in the lobby has nothing at stake.
+        if (this.state !== RoundState.Playing) {
+            this.respawns.loadNow(player, "outside a round");
+
+            return;
+        }
 
         // Already out — a spectator who dies again is still a spectator. This is the case the
         // old code covered by clearing `activePlayers` unconditionally and then re-marking them.
+        //
+        // **And they get a body for the same reason as the guard above rather than despite being out.** An
+        // eliminated player is a person in the lobby with a character to walk around in; the engine handed them
+        // one on its own clock, and this is that load moved to the moment it is wanted.
         if (!this.activePlayers.has(player)) {
             player.SetAttribute(SPECTATING_ATTRIBUTE, true);
+
+            this.respawns.loadNow(player, "outside a round");
+
             return;
         }
 
@@ -1003,15 +1038,23 @@ export class RoundService implements OnStart {
             return;
         }
 
-        // Back in — on a new side if the mode asked for one, and then a body to go with it.
+        // Back in — on a new side if the mode asked for one, and then a body to go with it, **after the round's
+        // own delay.** This is the one death in the game that does not hand the body straight back, and the wait
+        // exists because the engine's own respawn had to be switched off for it to be possible at all: the
+        // engine does not know a round is running, so it cannot be asked to wait three seconds. See
+        // `RespawnService`, which owns the timer and is the only thing that calls the load.
         //
-        // The respawn is `LoadCharacter`, which fires the `CharacterAdded` handler above. Because
-        // they were never taken out of `activePlayers`, that handler puts them back on their own
-        // side's spawn rather than in the lobby — so *where* they come back needs no code here,
-        // and the answer cannot drift from the one the round's opening teleport uses.
+        // **Scheduled rather than awaited, so nothing on this stack is held.** `handleDeath` runs inside
+        // `Humanoid.Died`, and a `task.wait` here would sit in that signal's handler for the length of the
+        // delay; the service's timer does the same job with this code back on its way immediately.
+        //
+        // The load that ends the wait fires the `CharacterAdded` handler above. Because they were never taken
+        // out of `activePlayers`, that handler puts them back on their own side's spawn rather than in the
+        // lobby — so *where* they come back needs no code here, and the answer cannot drift from the one the
+        // round's opening teleport uses.
         if (decision.team !== undefined) this.setTeam(player, decision.team);
 
-        player.LoadCharacter();
+        this.respawns.schedule(player, ARENA_CONFIG.RESPAWN_DELAY_SECONDS);
     }
 
     /**
@@ -1034,12 +1077,24 @@ export class RoundService implements OnStart {
 
         this.stats.recordOut(player);
         this.roundOuts.set(player, (this.roundOuts.get(player) ?? 0) + 1);
+
+        // **And a body, immediately — which is why this death did not gain a delay.** Elimination means *out of
+        // the round*, not *out of the game*: an eliminated player is a spectator in the lobby with a character
+        // to watch from, which is what the engine used to provide on its own clock and what this load provides
+        // at the moment it is wanted. Every path that is not the round's own respawn takes its body now.
+        this.respawns.loadNow(player, "eliminated");
     }
 
     /** Put `player` on `team` — in the table the round counts from, and on the player. */
     private setTeam(player: Player, team: TeamLabel): void {
         this.teams.set(player, team);
         player.SetAttribute(TEAM_ATTRIBUTE, team);
+
+        // **And the crown follows a side change, because the players this one is compared against are
+        // different ones now.** This is the Dodge-and-Seek conversion's path: a body that changes sides
+        // mid-round carries the count it has already earned into a new comparison. See
+        // `SuperService.refreshCrowns`.
+        this.abilities.refreshCrowns();
     }
 
     /**
@@ -1577,7 +1632,18 @@ export class RoundService implements OnStart {
             // Every player rather than the round's participants, because the window is the *player's*: a
             // spectator who opened one is as finished with it as anybody, and the two are one list to
             // write over once a minute.
-            for (const player of Players.GetPlayers()) this.abilities.clearMultiBall(player);
+            //
+            // **And every wait for a body, in the same loop because it is the same kind of thing.** A player
+            // who died inside the round and was still counting down when it was decided has *no character at
+            // all* — and the teleport to the lobby above moves bodies rather than making them, so a timer left
+            // to fire on its own would leave them invisible for the whole intermission and looking exactly like
+            // a break in the join path. `cancel(player, true)` drops the wait and loads in the same call: the
+            // intermission is a place with nothing at stake, so the body is wanted now rather than in three
+            // seconds. See `RespawnService.cancel`, whose flag exists for precisely this caller.
+            for (const player of Players.GetPlayers()) {
+                this.abilities.clearMultiBall(player);
+                this.respawns.cancel(player, true);
+            }
 
             // **And every freeze, for the same reason and from the same moment.** A body held in place by
             // an ability belongs to the round the ability was spent in, and a round boundary is the one
@@ -1820,8 +1886,9 @@ export class RoundService implements OnStart {
             // instead. Loose balls: `BallSpawnerService.cleanupRoundBalls`, on the same Playing →
             // Intermission edge this loop is standing on, which destroys every ball wearing the round's
             // tag and deliberately leaves a held one alone. Held balls: the two cleanups above, one at
-            // each boundary. Corpses: the engine's own respawn clock, and the body it makes is routed
-            // by `handlePlayerJoined` — an eliminated player comes back as a spectator in the lobby
+            // each boundary. Corpses: `RespawnService`, which replaces one on the spot for a death in the
+            // lobby or an elimination and after the delay inside a round — and the body it loads is routed
+            // by `handlePlayerJoined`, so an eliminated player comes back as a spectator in the lobby
             // through the same branch a joiner takes. Ability debris: its own lifetime, plus
             // `freezeAll`'s opposite above. Rigs: the `NPC` tag and `NpcService`, which own a rig for as
             // long as it is tagged — note that rigs now *outlive a round*, where a destroyed arena used
@@ -1918,6 +1985,14 @@ export class RoundService implements OnStart {
                 this.activePlayers.add(player);
                 player.SetAttribute(SPECTATING_ATTRIBUTE, false);
             }
+
+            // **And one crown recomputation for the whole server, rather than one per player in the loop
+            // above.** Every count on the server has just gone to nought, so there is a single answer to
+            // work out and it is the same answer for everybody — which is why this is one call after the
+            // loop instead of a line inside it. See `SuperService.resetForRound`, which explains why the
+            // reset itself does not do this.
+            this.abilities.refreshCrowns();
+
             print(`Round started — ${GAME_MODE_NAMES[this.mode.id]}`);
 
             this.timeRemaining = ARENA_CONFIG.ROUND_SECONDS;

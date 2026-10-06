@@ -392,6 +392,20 @@ export function voteCountAttribute(id: string): string {
 export const SPECTATING_ATTRIBUTE = "Spectating";
 
 /**
+ * Attribute on a **`Player`** holding the instant their next body arrives, on the engine's shared clock.
+ *
+ * **An instant rather than a countdown, and on the player rather than on a folder**, which is the shape the
+ * action cooldowns already use: `RespawnService` writes `Workspace:GetServerTimeNow() + the delay`, and the
+ * client subtracts the same clock per frame — so the readout is smooth, needs no remote, and cannot drift
+ * from the timer it is describing. `0` is the empty case, which every reader treats as "no body is on its
+ * way" rather than as a countdown of zero.
+ *
+ * **Written and cleared by one service**, so the three moments a wait can end — the timer firing, the round
+ * ending, the player leaving — are three lines in `RespawnService` rather than a rule each caller keeps.
+ */
+export const RESPAWN_AT_ATTRIBUTE = "RespawnAt";
+
+/**
  * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
  *
  * Written by `BallService.dropBall`, read by `BallPickupService`. On the ball rather than
@@ -503,6 +517,21 @@ export const SUPER_STREAK_ATTRIBUTE = "SuperStreak";
  * showing a state that never existed.
  */
 export const SUPER_CHARGE_ATTRIBUTE = "SuperCharge";
+
+/**
+ * Attribute on a **`Player`** saying they are wearing the crown — three hits, or the most on their side.
+ *
+ * **On the player rather than on the body**, for {@link SUPER_STREAK_ATTRIBUTE}'s reason and for one
+ * more: the crown is derived from a count that outlives a body, so putting it on the character would
+ * mean recomputing a server-side answer in every client the moment somebody respawned. Here a respawn
+ * costs nothing at all — the player keeps the attribute, and the client's only job is to hang a new
+ * `BillboardGui` on the new head.
+ *
+ * **A boolean rather than the count**, because the count is already published beside it: a client that
+ * wanted to answer the question for itself would need every other player's count *and* side, and two
+ * clients could then disagree about who is hot. The server decides, and this is the decision.
+ */
+export const CROWN_ATTRIBUTE = "Crown";
 
 /**
  * Attribute on a **`Player`** holding the balls left in their MultiBall window, or `0` for no window.

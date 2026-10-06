@@ -536,6 +536,11 @@ export class BallService implements OnStart {
 		ball.Parent = Workspace;
 		ball.Massless = false;
 		ball.CanCollide = true;
+		// **And answers queries again, which is the pair to the hand's `CanQuery = false`.** The ball is in
+		// the world now, so the aim preview is entitled to stop on it — and would, if it were not for the
+		// guide's own decision to pass through balls (see `ThrowController.looseBalls`). See
+		// `attachToHand` for the whole of why a held ball is the one the preview must not see.
+		ball.CanQuery = true;
 
 		// In front of the model and above it, so the ball falls onto a clear patch of floor
 		// rather than being placed into the character or the ground — see
@@ -670,6 +675,32 @@ export class BallService implements OnStart {
 		// inside the holder, which was the old thrower-push bug wearing a different hat.
 		ball.CFrame = hand.CFrame.mul(GRIP_OFFSET);
 		ball.CanCollide = false; // don't shove the holder around while held
+
+		// **And a ball in a hand stops answering queries, which is what keeps the aim preview from
+		// stopping on it.** A `Trajectory` sweep asks a part's `CanQuery` while the thrown ball's physics
+		// asks its `CanCollide` — the two questions are not the same one unless
+		// `RaycastParams.RespectCanCollide` is turned on, and it is off. So a held ball, being
+		// `CanCollide = false` with `CanQuery` still true, was the one thing in the world the *drawn* arc
+		// stopped on while the real ball flew straight through it.
+		//
+		// **A throwing rig holds a ball nearly always** — the throw refills the hand immediately — so the
+		// drawn path ended on the ball in the rig's hand, a couple of studs short of its body, and read as
+		// a throw that would miss, while the ball passed through, hit the body, and killed it. The probe
+		// said the same thing in its own words: `stopped without crossing the predicted surface — it hit
+		// something else`, which is exactly what a ball does with a surface that no ball can touch.
+		//
+		// **The house idiom rather than an invention.** `CanQuery = false` is already how this project
+		// keeps a part out of the preview's spherecast: the midline wall, the spawner parts, the lobby
+		// signs, the sound emitters and the team rings all carry it for that reason, and a ball in a hand
+		// is the same claim — it is not scenery, so the sweep that answers "where does this throw go" must
+		// not stop on it.
+		//
+		// **What this is not: a physics change.** `CanQuery` is the *query* half only. The ball is still
+		// `CanCollide = false` while held for the reason the line above gives, and `dropBall` and
+		// `throwBall` put the query half back on the two lines that make a ball free again. Every ray in
+		// the game that has business with a loose ball — the settle loop's ground probe, the drop
+		// reach — keeps it, because those only ever look at balls parented to `Workspace`.
+		ball.CanQuery = false;
 		ball.Massless = true;
 		ball.Parent = model;
 
@@ -1086,6 +1117,10 @@ export class BallService implements OnStart {
 		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.THROW, THROW_EMITTER_NAME);
 
 		ball.CanCollide = true;
+		// **And the query half comes back with it**, which is the other end of `attachToHand`'s
+		// `CanQuery = false`: from here the ball is a thing in the world, and a sweep is entitled to stop on
+		// it rather than passing through it because it used to be in somebody's hand.
+		ball.CanQuery = true;
 		ball.Massless = false;
 		// After `Massless`, never before: the force is sized from the ball's
 		// mass, and a massless ball reads zero and gets nothing.

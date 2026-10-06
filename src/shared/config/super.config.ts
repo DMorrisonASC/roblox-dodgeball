@@ -8,18 +8,19 @@
  */
 export const SUPER_CONFIG = {
 	/**
-	 * Hits in a row that earn one charge.
+	 * Hits a player needs to wear a crown on their own, without being compared to anybody.
 	 *
-	 * **Placeholder.** Six is a first guess at "a long enough run to feel earned" rather than a
-	 * measured number, and it is the one to move when a charge turns out to arrive too often or too
-	 * rarely. Nothing else has to change with it: the streak counts up to this, the charge is granted
-	 * at it, and the HUD reads it as the denominator of its readout rather than carrying its own copy.
+	 * **Placeholder.** Three is a first guess, and it is the number to move when the crown turns up too
+	 * early or too late. It is half of the rule — a player at or above this is crowned whatever their
+	 * side is doing, and a player below it can still be crowned by being the highest on their side. See
+	 * `SuperService.refreshCrowns` for the pair and for why a tie crowns both.
 	 *
-	 * What it is not is a limit on how many charges can be earned over a round. A charge is spent or
-	 * forfeited and the streak starts again, so six more hits earn the next one — this number is the
-	 * length of a run, not a budget.
+	 * **It is not a target, and nothing is earned at it.** The number that stood here was
+	 * `STREAK_REQUIRED`, the run of hits that bought a super charge. That grant is gone — see
+	 * `SuperService.noteHit` for what it was and why — and this is what replaced it: the same count, read
+	 * as a threshold for something *visible* rather than something spendable.
 	 */
-	STREAK_REQUIRED: 6,
+	CROWN_STREAK_THRESHOLD: 3,
 
 	/**
 	 * How long a MultiBall window lasts, in seconds. **Placeholder — 10 is the ask.**
