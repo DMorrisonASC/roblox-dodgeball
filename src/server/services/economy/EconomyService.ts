@@ -13,6 +13,7 @@ import {
 	MILESTONES,
 	POWER_ROSTER,
 	COSMETICS,
+	CosmeticDef,
 	MilestoneDef,
 } from "shared/config/economy.config";
 import {
@@ -22,6 +23,7 @@ import {
 	toSavedEconomy,
 	joinPowers,
 	joinCosmeticIds,
+	EQUIPPED_ATTRIBUTE,
 } from "shared/economy";
 import { events } from "shared/networking";
 import { DevService } from "../../dev/DevService";
@@ -85,8 +87,11 @@ export class EconomyService implements OnStart {
 			player.GetAttributeChangedSignal(CROWN_ATTRIBUTE).Connect(() => this.checkMilestones(player));
 		});
 
-		// The chest remote: the one thing a client can ask the economy to do.
+		// The two things a client can ask the economy to do: open a chest, and wear something. Both are
+		// requests rather than values — see `equipCosmetic` for why the client never gets to say what it
+		// owns, and `openChest` for why the chest is the one that needs a reply.
 		events.Server.OnEvent("openPowerChest", (player) => this.openChest(player));
+		events.Server.OnEvent("equipCosmetic", (player, slot, id) => this.equipCosmetic(player, slot, id));
 
 		// Dev shortcuts, so the loop can be exercised from a standing start.
 		this.dev.onCommand("coins", (player) => {
@@ -157,6 +162,96 @@ export class EconomyService implements OnStart {
 	/** Whether `player` owns `kind`, the one fact `BallService` asks before honouring a key. */
 	public ownsPower(player: Player, kind: AbilityKind): boolean {
 		return this.records.get(player)?.powers.has(kind) ?? false;
+	}
+
+	/**
+	 * Wears `id` in `slot`, or clears the slot back to the default when `id` is empty.
+	 *
+	 * **Everything is checked here, and nothing is taken from the caller's word.** This is reached
+	 * straight from an untyped wire, so the order below is the whole of the security rather than a
+	 * formality — and the order is deliberately *structural first, expensive second*:
+	 *
+	 * 1. **`slot` must be a string, and one this build publishes** — `EQUIPPED_ATTRIBUTE`'s own keys. It is
+	 *    first because it is the cheapest check and because every check after it is a lookup keyed by the
+	 *    slot.
+	 * 2. **`id` must be a string.** Anything else is dropped without a reply.
+	 * 3. **The record must be loaded.** A player whose `GetAsync` has not answered has no record to write,
+	 *    and the request is dropped rather than queued — the same call `onRoundEnded` makes for the same
+	 *    reason: a store that has not answered is already the worse failure, and a queue is machinery a
+	 *    solo economy should not carry.
+	 * 4. **An empty `id` is valid and means the default.** It clears the slot and stops there, because
+	 *    there is no catalogue entry to check it against — see `EQUIPPED_TRAIL_ATTRIBUTE` for why `""`
+	 *    rather than an absent attribute.
+	 * 5. **A non-empty `id` must be a key in `COSMETICS`, and that def's `slot` must equal the slot asked
+	 *    for.** The second half is not decoration: without it a trail could be equipped into the
+	 *    elimination slot, and the two attributes would then describe a state the catalogue cannot
+	 *    produce and no reader would have a branch for.
+	 * 6. **And the player must own it, read from the record and never from an attribute.** The client's
+	 *    `OWNED_COSMETICS_ATTRIBUTE` is a copy it renders from; this set is the only one that decides
+	 *    anything. A client that names an id it does not own changes nothing at all, which is the whole
+	 *    design: the client says *what it would like to wear*, and every other fact in the sentence is the
+	 *    server's to supply.
+	 *
+	 * **The write is the whole of the dirty marking, and that is not a shortcut.** There is nothing to
+	 * flag: `autosaveLoop` compares each record's serialized form against the last value it wrote, so
+	 * changing the record *is* being dirty. A flag beside that comparison would be a second convention
+	 * that could disagree with the first, which is exactly what the existing persistence avoids.
+	 *
+	 * **Silent on refusal, on purpose.** All five refusals are "that request was not valid" — a correct
+	 * client sends none of them, and there is no sentence a player needs, unlike the chest's three
+	 * distinct ones. The acknowledgement is {@link publish} writing the attribute, which replicates on
+	 * its own; see `shared/networking.ts` on the event for the same call.
+	 */
+	public equipCosmetic(player: Player, slot: unknown, id: unknown): void {
+		if (!typeIs(slot, "string")) return;
+		if (EQUIPPED_ATTRIBUTE[slot] === undefined) return;
+		if (!typeIs(id, "string")) return;
+
+		const record = this.records.get(player);
+		if (record === undefined) return;
+
+		if (id === "") {
+			record.equipped.delete(slot);
+		} else {
+			const def = COSMETICS[id];
+			if (def === undefined || def.slot !== slot) return;
+			if (!record.cosmetics.has(id)) return;
+
+			record.equipped.set(slot, id);
+		}
+
+		this.publish(player);
+
+		if (DEBUG) print(`[Economy] ${player.Name}: ${slot} equipped ${id === "" ? "(default)" : id}`);
+	}
+
+	/**
+	 * The trail colours `player` has equipped, or nothing for the default red.
+	 *
+	 * **The server answering a question the server asked.** `BallService.attachToHand` calls this on the
+	 * way to `BallTrail.attach`, and it reads the *record* rather than the attribute for
+	 * {@link equipCosmetic}'s reason: the attribute is a rendering copy, and a ball's appearance is not
+	 * something a client gets to assert.
+	 *
+	 * **`undefined` is the common answer and three different situations give it** — no player at all (an
+	 * NPC rig, or a body with no `Player` behind it), nothing equipped in the slot, and an equipped id
+	 * this build no longer catalogues. All three mean "the default", so they are deliberately not told
+	 * apart: the caller has one question and wants one answer.
+	 *
+	 * **It returns the def's own `colors`, which is `undefined` for every elimination cosmetic and for
+	 * every cosmetic with no colours at all** — so equipping one changes nothing yet, which is honest
+	 * rather than broken. See `COSMETICS` and the note there on the render hook.
+	 */
+	public equippedTrailColors(player: Player | undefined): CosmeticDef["colors"] {
+		if (player === undefined) return undefined;
+
+		const id = this.records.get(player)?.equipped.get("trail");
+		if (id === undefined) return undefined;
+
+		const def = COSMETICS[id];
+		if (def === undefined || def.slot !== "trail") return undefined;
+
+		return def.colors;
 	}
 
 	/**
@@ -262,7 +357,20 @@ export class EconomyService implements OnStart {
 		}
 	}
 
-	/** Writes the three attribute halves of the record, so the client sees one consistent snapshot. */
+	/**
+	 * Writes the record's attributes, so the client sees one consistent snapshot.
+	 *
+	 * **Every slot is written on every publish, including the ones nobody is wearing**, which is what
+	 * makes an absent attribute impossible: a reader never has to tell "nothing equipped" from "the
+	 * economy has not published yet", because the empty string is written either way. It is a handful of
+	 * `SetAttribute` calls on a change that already writes three, and the alternative — writing only the
+	 * slot that moved — would leave a client that joined between two changes with no attribute to read
+	 * at all.
+	 *
+	 * The slot table is walked rather than the two names being spelled out here and read again in the
+	 * panel: {@link EQUIPPED_ATTRIBUTE} is the one place the pairing is written down, so a third slot is
+	 * one line in that file and nothing here.
+	 */
 	private publish(player: Player): void {
 		const record = this.records.get(player);
 		if (record === undefined) return;
@@ -270,6 +378,10 @@ export class EconomyService implements OnStart {
 		player.SetAttribute(COINS_ATTRIBUTE, record.coins);
 		player.SetAttribute(OWNED_POWERS_ATTRIBUTE, joinPowers(record.powers));
 		player.SetAttribute(OWNED_COSMETICS_ATTRIBUTE, joinCosmeticIds(record.cosmetics));
+
+		for (const [slot, attribute] of pairs(EQUIPPED_ATTRIBUTE)) {
+			player.SetAttribute(attribute, record.equipped.get(slot) ?? "");
+		}
 	}
 
 	/** The chest's answer, to the player who asked. */

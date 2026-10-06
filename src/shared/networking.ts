@@ -189,4 +189,26 @@ export const events = Net.Definitions.Create({
 	 * than inferring it from which attributes changed. Sent to the one player, not broadcast.
 	 */
 	chestResult: Net.Definitions.ServerToClientEvent<[granted: string, reason: string]>(),
+
+	/**
+	 * Client → server: this player wants to wear this cosmetic in this slot.
+	 *
+	 * **Two strings, and the slot is on the wire for one reason: an empty id names no slot by itself.**
+	 * `""` is the meaningful value "no cosmetic — the default" (see `EQUIPPED_TRAIL_ATTRIBUTE`), and a
+	 * message carrying only that would leave the server unable to tell a trail being cleared from an
+	 * elimination being cleared. So both travel, and both are checked on arrival: the slot must be one
+	 * this build knows, and the id must be either empty or a catalogued cosmetic *of that slot*.
+	 *
+	 * **Ownership is deliberately not sayable from this end.** The client asserts what it would like to
+	 * wear; whether it owns the thing is answered by the server from its own record, because a client
+	 * that could tell the server what it owned would be a client that could equip anything. See
+	 * `EconomyService.equipCosmetic` for the order the checks run in.
+	 *
+	 * **No reply event, unlike {@link openPowerChest}.** A chest needs an answer because its refusals are
+	 * three different sentences a player cannot distinguish by watching nothing happen; an equip's
+	 * refusals are all "that request was not valid", which a correct client never sends and which is not
+	 * worth a sentence. The acknowledgement is the attribute changing, which replicates on its own — the
+	 * same shape `toggleThrow` and `markHeldBall` use.
+	 */
+	equipCosmetic: Net.Definitions.ClientToServerEvent<[slot: string, id: string]>(),
 });

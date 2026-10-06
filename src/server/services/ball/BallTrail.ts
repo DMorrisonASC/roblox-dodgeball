@@ -42,6 +42,38 @@ const MIN_SEGMENT = 0.1;
 const LIGHT_EMISSION = 1;
 
 /**
+ * The three colours a trail's core is drawn in, in the direction the eye reads it.
+ *
+ * **Deliberately the shape `CosmeticDef.colors` already has**, which is the reason it is a named
+ * interface here rather than three parameters: `COSMETICS`' def is structurally this, so the economy can
+ * hand a def's colours straight to {@link BallTrail.attach} without either file importing the other.
+ *
+ * **And it is only the core.** The halo's two colours are not in this shape, which is a real limit and
+ * not an oversight — see {@link BallTrail.attach} for what it costs and what the def would need.
+ */
+export interface TrailColors {
+	leading: Color3;
+	middle: Color3;
+	trailing: Color3;
+}
+
+/**
+ * The core's colours when nobody has equipped anything: {@link BALL_CONFIG}'s own three.
+ *
+ * **A plain object of references rather than a prepared `ColorSequence`, and that is a rule about this
+ * project's loading rather than a preference.** A top-level initializer that *calls a function* runs
+ * before the function's body has been assigned in the emitted Luau — roblox-ts hoists a bare `local` and
+ * the call is `nil`, which takes the whole module down at require time and surfaces as "nothing loads"
+ * with no compile error. Three property reads off a table cannot fail that way; the sequence is built
+ * inside `attach` instead. `ThemeController.derive` documents the same trap from the other side.
+ */
+const DEFAULT_CORE_COLORS: TrailColors = {
+	leading: BALL_CONFIG.TRAIL_COLOR_LEADING,
+	middle: BALL_CONFIG.TRAIL_COLOR_MIDDLE,
+	trailing: BALL_CONFIG.TRAIL_COLOR_TRAILING,
+};
+
+/**
  * The trail a ball leaves behind it: two sets of flat ribbons arranged around the ball's own
  * axis, which together read as a lit tube with a haze around it.
  *
@@ -112,21 +144,67 @@ export class BallTrail {
 	 * top of the core's — the seam the half-step in `createRibbons` exists to avoid. `ribbonsOf` answers
 	 * "already wearing a trail" from the ball itself rather than this assuming it.
 	 *
+	 * **`colors` is the trail the *holder* brings, and it is applied on both branches.** That second half
+	 * is the part that is easy to get half-right and impossible to notice: a recolour that ran only where
+	 * ribbons are *built* would work exactly once per ball and then stop, because every later hand the ball
+	 * passed through would take the adopt branch and find the previous holder's colours still on it — a
+	 * ball that goes on wearing a trail belonging to somebody who let go of it. So the adopt branch repaints
+	 * the core too, and that is also the argument for taking the parameter rather than leaving the colours
+	 * to construction: this method is *the* moment a ball changes hands, and a ball's appearance has to be
+	 * restated at that moment rather than set once when the ribbon was made. It is why the default is
+	 * applied through the same path — a ball picked up by a player wearing nothing has to *lose* the last
+	 * holder's colours, which only happens if the default is written as deliberately as an override is.
+	 *
+	 * **What does not recolour is the halo, and that is a fact about the def rather than an oversight.**
+	 * {@link TrailColors} has three fields because a `CosmeticDef.colors` has three; the halo draws from
+	 * {@link BALL_CONFIG.TRAIL_HALO_COLOR_LEADING} and its trailing partner, which nothing outside this
+	 * file can reach. So an equipped cosmetic moves the core and leaves the haze around it at its own
+	 * orange-to-ember, which is honestly half a trail changing. **Deriving the halo from the core was
+	 * refused rather than attempted**: the halo is tuned deliberately cooler than the core and is the layer
+	 * that has to stay a haze, so one computed from the other would be a change to every default ball's
+	 * look bought with a cosmetic. The fix belongs in the def — `CosmeticDef` would need a halo pair
+	 * (`haloLeading`, `haloTrailing`) and then one more `applyCore`-shaped write here.
+	 *
 	 * Returns nothing when the trail is switched off, which is the whole of what
 	 * {@link BALL_CONFIG.TRAIL_ENABLED} does: no ribbon is built, so "off" means the
 	 * instances are not there rather than that they are idle.
 	 */
-	public static attach(ball: BasePart): BallTrail | undefined {
+	public static attach(ball: BasePart, colors?: TrailColors): BallTrail | undefined {
 		if (!BALL_CONFIG.TRAIL_ENABLED) return undefined;
+
+		const core = coreLook(colors ?? DEFAULT_CORE_COLORS);
 
 		const existing = ribbonsOf(ball);
 		if (existing.size() > 0) {
 			const trail = new BallTrail(existing);
+			recolourCore(existing, core);
 			trail.setArmed(false);
 			return trail;
 		}
 
-		return new BallTrail(createRibbons(ball));
+		return new BallTrail(createRibbons(ball, core));
+	}
+}
+
+/** The core's colour sequence for `colors`, at the same keypoint the default uses. */
+function coreLook(colors: TrailColors): ColorSequence {
+	return new ColorSequence([
+		new ColorSequenceKeypoint(0, colors.leading),
+		new ColorSequenceKeypoint(BALL_CONFIG.TRAIL_COLOR_MIDDLE_AT, colors.middle),
+		new ColorSequenceKeypoint(1, colors.trailing),
+	]);
+}
+
+/**
+ * Repaints the core ribbons of a trail that is already built, leaving the halo alone.
+ *
+ * **By name rather than by position**, because `createRibbons` builds the two layers interleaved and a
+ * count would have to be kept in step with it; {@link RIBBON_NAME} and {@link HALO_NAME} already answer
+ * "which layer is this" for `ribbonsOf`, and this is the same question.
+ */
+function recolourCore(ribbons: Trail[], color: ColorSequence): void {
+	for (const ribbon of ribbons) {
+		if (ribbon.Name === RIBBON_NAME) ribbon.Color = color;
 	}
 }
 
@@ -175,18 +253,14 @@ function ribbonsOf(ball: BasePart): Trail[] {
  * so all of them pass through the ball's centre: the pair is a diameter of the trail's
  * cross-section, and the gap between them is the ribbon's width.
  */
-function createRibbons(ball: BasePart): Trail[] {
+function createRibbons(ball: BasePart, core: ColorSequence): Trail[] {
 	const ribbons: Trail[] = [];
 	const step = math.pi / BALL_CONFIG.TRAIL_COUNT;
 
 	for (let index = 0; index < BALL_CONFIG.TRAIL_COUNT; index++) {
 		ribbons.push(
 			buildRibbon(ball, RIBBON_NAME, index, index * step, BALL_SIZE * BALL_CONFIG.TRAIL_SPREAD, {
-				color: new ColorSequence([
-					new ColorSequenceKeypoint(0, BALL_CONFIG.TRAIL_COLOR_LEADING),
-					new ColorSequenceKeypoint(BALL_CONFIG.TRAIL_COLOR_MIDDLE_AT, BALL_CONFIG.TRAIL_COLOR_MIDDLE),
-					new ColorSequenceKeypoint(1, BALL_CONFIG.TRAIL_COLOR_TRAILING),
-				]),
+				color: core,
 				transparency: new NumberSequence([
 					new NumberSequenceKeypoint(0, 0),
 					new NumberSequenceKeypoint(1, 1),

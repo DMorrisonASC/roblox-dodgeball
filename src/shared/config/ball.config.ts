@@ -558,6 +558,38 @@ export const BALL_CONFIG = {
 	 */
 	DROP_PICKUP_LOCKOUT: 1.0,
 
+	// ------------------------------------------------------------- appearance
+
+	/**
+	 * The ball's own colour: **one red, and the same red for every ball that has not been given
+	 * something else.**
+	 *
+	 * **This replaces a random colour, and removing the randomness is the whole of the change.**
+	 * `SphereService` used to ask for a fresh `BrickColor.random()` for every ball it made, so the
+	 * colour a ball wore said nothing at all: it differed per *instance* rather than per *player*, it
+	 * was different again on every spawn, and it was different again every time somebody picked up a
+	 * ball that had already existed. A colour with no reader and no meaning is one that costs the only
+	 * thing a ball's appearance is good for — saying whose ball this is.
+	 *
+	 * **What it is for now is a baseline, and the baseline is the point.** This is the colour of a loose
+	 * ball in the arena and of a player who has nothing equipped, with no exceptions: every ball in the
+	 * game wears this one unless a *holder* has brought something else to it, so "wearing something
+	 * else" is a fact about a player rather than a fact about a spawn. The design is heading toward
+	 * per-ball appearance owned by whoever is holding the ball, and a single predictable default is
+	 * what that diverges from — with a random fallback there would be nothing for an equip to be a
+	 * *change* from, because "no cosmetic equipped" would have to mean "whatever this one rolled".
+	 *
+	 * **A red, and the classic one.** A dodge ball is a red ball in every version of the cliché this
+	 * game is quoting, and `196, 40, 28` is the `Color3` behind the engine's `Bright red` — the colour
+	 * a person setting one in Studio arrives at, rather than a red invented here.
+	 *
+	 * **Deliberately not read by the trail.** `TRAIL_COLOR_*` below are the trail's own colours and are
+	 * independent of this on purpose: a ball's paint and its trail are two axes, and the per-ball work
+	 * that follows this is expected to move the first without touching the second. See
+	 * `BallTrail.attach`, which takes the trail's colours as a parameter for exactly that reason.
+	 */
+	BALL_COLOR: Color3.fromRGB(196, 40, 28),
+
 	// ------------------------------------------------------------------ trail
 
 	/**

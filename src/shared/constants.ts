@@ -569,6 +569,37 @@ export const OWNED_POWERS_ATTRIBUTE = "OwnedPowers";
 export const OWNED_COSMETICS_ATTRIBUTE = "OwnedCosmetics";
 
 /**
+ * Attribute on a **`Player`** holding the trail cosmetic they have equipped, or `""` for the default.
+ *
+ * **One attribute per slot rather than one packed string, which is the opposite of the call
+ * {@link OWNED_COSMETICS_ATTRIBUTE} makes — and the difference is what the value *is*.** Ownership is a
+ * *set*: several ids at once, so packing them into one string is the only way to keep them in one
+ * attribute. Equipped is a *choice*, one id per slot, so a packed string would have to carry the slot as
+ * well as the id — a second delimiter and a second convention inside `shared/economy.ts`, which is the
+ * file whose whole job is to be the one place a shape is agreed. An attribute whose *name* is the slot
+ * and whose *value* is the id needs neither.
+ *
+ * **`""` is a real value here rather than an absent attribute.** It means "no cosmetic — the default",
+ * and it is written rather than removed so that `EquippedTrail = ""` and no such attribute at all are
+ * not two spellings of one fact. That is the empty-string convention `BALL_ABILITY_ATTRIBUTE` and a
+ * ball's `ThrowerId` already use.
+ *
+ * **Published by `EconomyService`, read by the Inventory panel, written by nobody else.** The server is
+ * the only writer for the reason `OWNED_POWERS_ATTRIBUTE` gives: what a player wears is decided by a
+ * record the client cannot reach.
+ */
+export const EQUIPPED_TRAIL_ATTRIBUTE = "EquippedTrail";
+
+/**
+ * Attribute on a **`Player`** holding the elimination cosmetic they have equipped, or `""`.
+ *
+ * The elimination slot's own attribute, on {@link EQUIPPED_TRAIL_ATTRIBUTE}'s terms: stored and
+ * published today, drawn nowhere yet, because no elimination cosmetic has a render path. See
+ * `EconomyService.equipCosmetic` for why the state is still written.
+ */
+export const EQUIPPED_ELIMINATION_ATTRIBUTE = "EquippedElimination";
+
+/**
  * Attribute on a **`Player`** holding the balls left in their MultiBall window, or `0` for no window.
  *
  * **The third and fourth of the same readout, and they are a pair for that reason.** `0` here and `0`

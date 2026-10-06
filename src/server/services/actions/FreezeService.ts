@@ -575,11 +575,12 @@ export class FreezeService {
 	 *
 	 * **A light, deliberately — the first version of this painted the ball instead, and that was wrong.**
 	 * Writing white and then `#243E7D` onto the ball's `Color` does not read as light; it reads as the ball
-	 * having been repainted, and it throws away the one thing a ball's appearance is. Every ball's colour is
-	 * a *random* `BrickColor` picked when it was made (`SphereService.createBall`), so for that fraction of
-	 * a second the player is holding a ball that is not theirs. A `PointLight` is the engine's own answer to
-	 * "something shiny has light on it", and it leaves the ball's colour alone because it *is* the light
-	 * rather than a colour standing in for one.
+	 * having been repainted, and it throws away the one thing a ball's appearance is. A ball's colour is a
+	 * fact about the ball — one default red, and whatever its holder has brought to it (see
+	 * `BALL_CONFIG.BALL_COLOR` and `BallTrail.attach`) — so for that fraction of a second the player is
+	 * holding a ball that is not theirs. A `PointLight` is the engine's own answer to "something shiny has
+	 * light on it", and it leaves the ball's colour alone because it *is* the light rather than a colour
+	 * standing in for something.
 	 *
 	 * **Two things go on and both come off**: the light itself, and — with
 	 * {@link SUPER_CONFIG.FREEZE_FLASH_GLOW_MATERIAL} — `Neon` on the ball, because a light inside a sphere

@@ -2,6 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, ReplicatedStorage } from "@rbxts/services";
+import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { STATS_CONFIG } from "shared/config/stats.config";
 import {
 	CROWN_ATTRIBUTE,
@@ -85,6 +86,13 @@ export class StatsBillboardController implements OnStart {
 
 		const scope = Fusion.scoped();
 
+		// **The HUD's colours, read once with the rest of the mount and handed to every body below.**
+		// Read now rather than at module load, for the reason `hudTheme` gives: `configureTheme` has run
+		// by the time anything mounts, and a value captured earlier would be Material's default. Read
+		// here rather than in `attach`, even though that is where it is painted, because the theme is
+		// fixed for the session — there is nothing about a respawn that would change it.
+		const theme = hudTheme();
+
 		// The phase, as a `Value` rather than read where it is needed: a `Computed` has to be able to
 		// *watch* this, and `GetAttribute` inside one is a reading taken once rather than a dependency.
 		const state = Fusion.Value(scope, stateOf(folder));
@@ -93,19 +101,24 @@ export class StatsBillboardController implements OnStart {
 			folder.GetAttributeChangedSignal(ROUND_STATE_ATTRIBUTE).Connect(() => state.set(stateOf(folder))),
 		);
 
-		scope.push(Players.PlayerAdded.Connect((player) => this.watch(player, state, scope)));
+		scope.push(Players.PlayerAdded.Connect((player) => this.watch(player, state, scope, theme)));
 
 		// A player already in the game when this mounted never fires the added-signal, so the ones
 		// already here are walked rather than waited for — the scan-and-subscribe the other services
 		// and HUDs do, for the same reason.
-		for (const player of Players.GetPlayers()) this.watch(player, state, scope);
+		for (const player of Players.GetPlayers()) this.watch(player, state, scope, theme);
 
 		if (DEBUG) print(`[HUD] stat billboards and crowns up — ${Players.GetPlayers().size()} players`);
 	}
 
 	/** Gives `player` a billboard above every body they get, for as long as they are in the game. */
-	private watch(player: Player, state: Fusion.Value<string>, parent: Fusion.Scope<unknown>): void {
-		player.CharacterAdded.Connect((character) => this.attach(character, player, state, parent));
+	private watch(
+		player: Player,
+		state: Fusion.Value<string>,
+		parent: Fusion.Scope<unknown>,
+		theme: HudTheme,
+	): void {
+		player.CharacterAdded.Connect((character) => this.attach(character, player, state, parent, theme));
 	}
 
 	/**
@@ -118,9 +131,17 @@ export class StatsBillboardController implements OnStart {
 	 * scope it came from, so a respawn takes its own down and leaves nothing behind.
 	 *
 	 * The `Text` is big-ui's, so this label reads the same theme as every other piece of the HUD —
-	 * see `ThemeController`, which configures it before any of this mounts.
+	 * see `ThemeController`, which configures it before any of this mounts. The theme arrives as a
+	 * parameter rather than being read here, so that the HUD reads its colours exactly once, in
+	 * `mount`, and this method cannot disagree with the rest of the file about them.
 	 */
-	private attach(character: Model, player: Player, state: Fusion.Value<string>, parent: Fusion.Scope<unknown>): void {
+	private attach(
+		character: Model,
+		player: Player,
+		state: Fusion.Value<string>,
+		parent: Fusion.Scope<unknown>,
+		theme: HudTheme,
+	): void {
 		// Waited for rather than found: a character is announced before its parts have all arrived,
 		// and a head that is not there yet is a billboard with nowhere to go.
 		const head = character.WaitForChild("Head") as BasePart;
@@ -163,6 +184,16 @@ export class StatsBillboardController implements OnStart {
 			variant: "caption",
 			align: Enum.TextXAlignment.Center,
 		});
+
+		// **The theme's colour, painted onto the instance rather than asked for as a prop.** big-ui's
+		// `color` is not a `Color3` — it is its own nine-word vocabulary (`"primary" | "secondary" |
+		// "disabled" | "primaryMain" | …`) which the component resolves against its own palette, so a
+		// `Color3` handed to it is a type error and would be ignored at runtime in favour of the
+		// default. `TextColor3` on the label that `Text` returns *is* a `Color3`, which is where a
+		// colour from `hudTheme` belongs. Leaving the prop off would give the same colour, because
+		// big-ui's default is `Palette.text.primary`; the assignment is here so the choice is visible
+		// and so moving to another theme colour is one word rather than a discovery.
+		label.TextColor3 = theme.colors.onAccent;
 		label.Parent = billboard;
 
 		// **And the crown, which is the same machinery pointed at a different source.** The flag is watched

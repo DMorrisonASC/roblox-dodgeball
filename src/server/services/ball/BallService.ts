@@ -785,7 +785,12 @@ export class BallService implements OnStart {
 		// sets on one ball would be twice the density at twice the cost, and would throw off
 		// the angles the cross-section is built from. Nothing is built at all when the trail
 		// is switched off — see `BallTrail.attach`.
-		const trail = BallTrail.attach(ball);
+		// **And the trail the holder brings to it, which is the one thing here that is about a player
+		// rather than about a ball.** The colours come from the record rather than from an attribute, so
+		// a client cannot talk its way into a trail — see `EconomyService.equippedTrailColors`. Handing
+		// them in on every attach, including the adopt-existing branch, is what makes a ball picked up
+		// from somebody else change its trail to its new holder's rather than keeping the last one's.
+		const trail = BallTrail.attach(ball, this.economy.equippedTrailColors(owner));
 
 		this.setPromptEnabled(ball, false);
 

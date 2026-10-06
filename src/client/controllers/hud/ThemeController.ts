@@ -26,7 +26,12 @@ const GOLDFISH = Color3.fromRGB(243, 134, 48);
 /** unreal food pills, `#FA6900` — the palette's hot orange, and the theme's `error`. */
 const FOOD_PILLS = Color3.fromRGB(250, 105, 0);
 
-/** The two ends of the scale, which the theme needs named but which are not really colours. */
+/**
+ * The two ends of the scale, which the theme needs named but which are not really colours.
+ *
+ * White is also the text scale's light end — see {@link TEXT_INVERSE} — so nothing below needs a
+ * second white, and the two names refer to one value deliberately.
+ */
 const BLACK = Color3.fromRGB(0, 0, 0);
 const WHITE = Color3.fromRGB(255, 255, 255);
 
@@ -84,11 +89,18 @@ const FOOD_PILLS_DARK = derive(FOOD_PILLS, { value: -0.2 });
 /**
  * The one text colour, in three weights.
  *
- * **All three are dark, and there is no other text colour anywhere in the theme.** The game is
- * played in daylight and every surface is light, so dark text is not a choice to be made per
- * component — it is simply what the theme is. That is why no colour group below carries a
- * different `contrast` from its neighbours and why there is no helper that decides one: a theme
- * that worked out its own contrast would be one that expected to need light text somewhere.
+ * **All three are dark, and that is what the theme is rather than a choice made per component.**
+ * The game is played in daylight and every surface is light, so dark text is simply what the panels
+ * want. That is why no colour group below carries a different `contrast` from its neighbours and
+ * why there is no helper that decides one: a theme that worked out its own contrast would be one
+ * that expected to need light text somewhere.
+ *
+ * **{@link TEXT_INVERSE} is where that expectation is answered, and it is the only light text
+ * colour in the file.** Not because a surface in the game is dark — none is — but because the
+ * trough behind a cooldown bar is this very colour at near-black, so anything drawn on one is drawn
+ * on the text colour itself. It is named here rather than left to a call site so that the pairing
+ * is on the record: a component that swaps one for the other is inverting its text, not recolouring
+ * it.
  *
  * These are beach storm's own hue family, not greys: near-black with the cream's warm
  * yellow-green left in it. Pure grey next to this palette reads as a different, colder surface
@@ -100,6 +112,23 @@ const FOOD_PILLS_DARK = derive(FOOD_PILLS, { value: -0.2 });
 const TEXT_PRIMARY = Color3.fromRGB(35, 40, 30);
 const TEXT_SECONDARY = Color3.fromRGB(90, 95, 80);
 const TEXT_DISABLED = Color3.fromRGB(160, 165, 145);
+
+/**
+ * The inverse of {@link TEXT_PRIMARY}: what the text scale's dark end becomes on a surface that
+ * would otherwise hide it.
+ *
+ * **The scale's own white rather than a fourth hand-set hex.** Inverting a text colour is not a new
+ * colour, it is the other end of the one already here — so this is a *name* for the palette's white
+ * rather than a second white beside it. Two values that had to be kept equal by hand would be two
+ * things to keep in step, which is the same argument the shared Aoi and Pondwater tones are made
+ * with; one value, two names, each saying the job it is doing at the place it is asked for.
+ *
+ * **Nothing in the theme paints with it yet, and that is correct rather than unfinished.** Every
+ * `contrast` below is {@link TEXT_PRIMARY}, because every surface in the game is light — there is
+ * no dark group for this to be the contrast *of*. It exists because the trough does: see the note
+ * on the text trio, and `hudTheme().colors.trough`, which is `TEXT_PRIMARY` itself.
+ */
+const TEXT_INVERSE = WHITE;
 
 /**
  * The colour behind the panels: beach storm with its brightness taken down a third.
@@ -137,7 +166,11 @@ export class ThemeController implements OnStart {
 			palette: {
 				common: {
 					black: BLACK,
-					white: WHITE,
+					// The scale's light end, and named here as the text scale's inverse as well: one
+					// white with a job rather than two that have to be kept equal — see
+					// {@link TEXT_INVERSE}. This is what big-ui itself reaches for on a dark surface,
+					// and what the HUD publishes as `hudTheme().colors.onAccent`.
+					white: TEXT_INVERSE,
 				},
 				primary: {
 					main: AOI,

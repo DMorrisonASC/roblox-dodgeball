@@ -1,11 +1,12 @@
 import { Service } from "@flamework/core";
 import { Workspace } from "@rbxts/services";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { TrailEffect, TrailOptions } from "shared/TrailEffect";
 
 /** Everything you can customise when asking for a sphere. */
 export interface SphereOptions {
-    /** Defaults to a random BrickColor. */
-    color?: BrickColor;
+    /** Defaults to {@link BALL_CONFIG.BALL_COLOR} — one red, the same for every ball. */
+    color?: Color3;
     /** Trail settings. Defaults to purple; pass `false` for a bare sphere. */
     trail?: TrailOptions | false;
 }
@@ -17,6 +18,11 @@ export class SphereService {
      * Used both for held balls (welded to the hand) and for thrown projectiles.
      *
      * A purple trail is attached by default — pass `{ trail: false }` to opt out.
+     *
+     * **The colour is one red unless the caller names another, and that is a reversal.** This used to
+     * be `BrickColor.random()`, which made a ball's colour different on every spawn and meaningless
+     * everywhere — see {@link BALL_CONFIG.BALL_COLOR} for what replaced it and why. Nothing in the
+     * game passes a colour today, so every ball is that red.
      */
     public createBall(size = 4, options: SphereOptions = {}): Part {
         const ball = new Instance("Part");
@@ -24,7 +30,7 @@ export class SphereService {
         ball.Size = new Vector3(size, size, size);
         ball.Material = Enum.Material.SmoothPlastic;
         ball.Anchored = false;
-        ball.BrickColor = options.color ?? BrickColor.random();
+        ball.Color = options.color ?? BALL_CONFIG.BALL_COLOR;
 
         if (options.trail !== false) {
             this.addTrail(ball, options.trail);
