@@ -445,7 +445,7 @@ export const BALL_CONFIG = {
 	 *   throw so easily: the line climbs `d·tan θ`, so the more this angle rises,
 	 *   the further the aim can rise above the hand before the flat solve gives up.
 	 */
-	THROW_CURVE_ANGLE: 20,
+	THROW_CURVE_ANGLE: 10,
 
 	/**
 	 * How hard a curveball is pulled sideways, in studs per second squared, toward

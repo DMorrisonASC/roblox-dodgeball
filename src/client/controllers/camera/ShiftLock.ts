@@ -1,9 +1,9 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import {
-	ContextActionService,
 	Players,
 	ReplicatedStorage,
+	RunService,
 	StarterGui,
 	UserInputService,
 	Workspace,
@@ -11,9 +11,9 @@ import {
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SHIFT_LOCK_CONFIG } from "shared/config/shiftLock.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
-import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, SHIFT_LOCK_ZONE_TAG } from "shared/constants";
-import { taggedParts, taggedPartsInWorkspace } from "shared/taggedParts";
-import { freeLook } from "../../freeLook";
+import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { taggedParts } from "shared/taggedParts";
+import { inTaggedZone } from "../../roundZone";
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. */
 const PLAYING = "Playing";
@@ -23,23 +23,6 @@ const INTERMISSION = "Intermission";
 
 /** Prints the lock's transitions. See `shared/config/debug.config.ts` — they are behind the gate too. */
 const DEBUG = true;
-
-/** The action the player's own camera release is bound under. */
-const RELEASE_ACTION = "ReleaseCamera";
-
-/**
- * The key that hands the camera back to the player, as **both** of the codes the engine can report for
- * it.
- *
- * **Two codes for one key, because which of them arrives is a fact about the client rather than about
- * this file.** The key in the top-left corner of a US layout is `` ` `` on its own and `~` with shift
- * held, and the engine has a `KeyCode` for each — `Backquote` and `Tilde` — while which one
- * `ContextActionService` is handed when either is pressed is not something the typings say. Binding both
- * means the key works whichever of the two turns up, and a press the engine reports the other way
- * round does nothing at all, which is the correct amount of wrong. One action and one handler, so
- * nothing downstream has to know there were ever two.
- */
-const RELEASE_KEYS: Array<Enum.KeyCode> = [Enum.KeyCode.Backquote, Enum.KeyCode.Tilde];
 
 /** The phase the round folder is publishing, or nothing while it has not published one yet. */
 function phaseOf(status: Instance): string | undefined {
@@ -92,30 +75,29 @@ function cameraSettings(): UserGameSettings | undefined {
  * false`, a property set in Studio — it is not reachable from code, and nothing here tries) so that
  * the two can never be on at once and fight over the same two settings.
  *
- * **Three things ask for it, and the third one is the player's.** While a round is being played the
- * lock is on for everyone, because the throw is aimed from the centre of the screen — the camera *is*
- * the aim, and a crosshair that followed the body instead of the view would be pointing somewhere the
+ * **Two things ask for it, and neither of them is the player.** While a round is being played the lock
+ * is on for everyone, because the throw is aimed from the centre of the screen — the camera *is* the
+ * aim, and a crosshair that followed the body instead of the view would be pointing somewhere the
  * player is not looking. Outside a round it is off, and the player is free to run around and look at
- * the lobby — **except inside a zone somebody places** ({@link SHIFT_LOCK_ZONE_TAG}), where it comes
- * back so a practice throw lines up the way a real one will. And on top of both of those, `~` is the
- * player's own way out: it hands the camera back even in the middle of a round, which is a deliberate
- * hole in the rule above — a player who would rather have their ordinary camera than an aimed throw may
- * have one, and what they give up for it is the aim. See {@link released}.
+ * the lobby — **except inside a zone somebody places** ({@link PRACTICE_ZONE_TAG}), where it comes
+ * back so a practice throw lines up the way a real one will.
  *
- * **The round takes it back when the next one starts, and that is the whole of what the release
- * loses.** The key is a comfort setting rather than a mode: every round begins with the camera where
- * the game means it to be, so the opening whistle is never a different game depending on who pressed
- * what during the lobby. A player who wants out again presses it again — at most once a round.
+ * **There used to be a third and it was the player's own key. It is gone.** `~` handed the camera back
+ * — even in the middle of a round — on the argument that a player who would rather have their ordinary
+ * camera than an aimed throw should be allowed one. What that argument missed is what the lock *is*:
+ * the camera is the aim, so taking it off is not opting out of a comfort feature, it is switching off
+ * the mechanism the game is played through. The key was also the backpack's, so its only other effect
+ * was to open an empty inventory over the press. **The camera is the game's to decide, and nobody's to
+ * refuse** — which leaves one input fewer to combine below, and one state the HUD has to explain.
  *
  * **The inputs are combined rather than ordered, and the zone is checked in every phase.** The lock is
- * on while the round or the zone is asking *and* the player has not released it, which is what makes
- * the zone safe to leave armed all the time: during a round it changes nothing (the round is already
- * asking), it can never *release* a lock the round is holding — a player who walked out of a lobby zone
- * mid-round is still locked, which is the rule the round exists to have — and it cannot take the camera
- * back off a player who has just turned it off by hand. Gating the zone on the phase instead was tried
- * first and is worse in two ways: a player standing in a zone when a round ended lost the camera for the
- * tenth of a second the tick took to put it back, and the tick needed a second copy of the phase's rule
- * kept in step with the first. See {@link refresh}, which is where all of it is combined.
+ * on while the round or the zone is asking, which is what makes the zone safe to leave armed all the
+ * time: during a round it changes nothing (the round is already asking), and it can never *take away* a
+ * lock the round is holding — a player who walked out of a lobby zone mid-round is still locked, which
+ * is the rule the round exists to have. Gating the zone on the phase instead was tried first and is
+ * worse in two ways: a player standing in a zone when a round ended lost the camera for the tenth of a
+ * second the tick took to put it back, and the tick needed a second copy of the phase's rule kept in
+ * step with the first. See {@link refresh}, which is where all of it is combined.
  *
  * **The engine's two user settings rather than the camera's `CFrame`.** `MouseBehavior` is what holds the
  * mouse at the centre of the screen — and *that* is what makes the aim work, because `ThrowController`
@@ -164,13 +146,14 @@ function cameraSettings(): UserGameSettings | undefined {
  * a Fusion scope the way the HUD controllers hand theirs over, so the file has one thing that owns them
  * — but nothing tears that scope down, because both are meant to outlive everything: the phase
  * subscription has to hear every round for the rest of the session, and the character subscription has
- * to hear every respawn. The release that actually happens in play is the phase's — playing to
- * intermission, and every way a round can end — and a client that is going away has nothing to release,
- * because the settings it wrote are the user's and there is no later.
+ * to hear every respawn. The only setting change that happens in play is the phase's — playing to
+ * intermission, and every way a round can end — and a client that is going away has nothing to put
+ * back, because the settings it wrote are the user's and there is no later.
  *
- * **What this is not:** it is not movement, and it is not aim. The one key it binds is the player's own
- * way *out* of it — see {@link released} — and the whole of the effect is that the character turns with
- * the view and that the body is not in the way of it.
+ * **What this is not:** it is not movement, and it is not aim. It binds no key at all any more — the
+ * one it used to bind was the player's own way out of the lock, and that is gone; the class doc says
+ * why — and the whole of the effect is that the character turns with the view and that the body is not
+ * in the way of it.
  */
 @Controller()
 export class ShiftLock implements OnStart {
@@ -206,26 +189,6 @@ export class ShiftLock implements OnStart {
 
 	/** What the zone says: the local player's body is inside a tagged box right now. */
 	private inZone = false;
-
-	/**
-	 * Whether the player has taken the camera off by hand — the `~` release, and the only one of the
-	 * three inputs that is theirs to set.
-	 *
-	 * **It outranks the other two, and it is the only input that can take a lock away from the round.**
-	 * That is the deliberate hole in "while a round is played the lock is on for everyone": a player who
-	 * would rather have their ordinary camera than an aimed throw may have one, and the cost of that is
-	 * theirs rather than anybody else's. Nothing else here can release a lock the round is holding — see
-	 * {@link refresh}.
-	 *
-	 * **It does not survive a round starting.** Cleared from {@link applyPhase} on the intermission →
-	 * playing edge, so a round always opens with the camera the game means everybody to have and the
-	 * player presses `~` again if they still want out. A comfort setting is not a mode.
-	 *
-	 * **Published as well as kept**, because a HUD says what just happened: every change is mirrored into
-	 * `freeLook`, which is a *publication* of this rather than a second copy of it — nothing reads it back
-	 * into the decision below. See that module for why the two controllers do not hold each other instead.
-	 */
-	private released = false;
 
 	/**
 	 * The local player's body, held so the camera offset can be put on the next one.
@@ -311,9 +274,11 @@ export class ShiftLock implements OnStart {
 		const character = this.player.Character;
 		if (character) this.watchCharacter(character);
 
-		// **The key was the backpack's, so the backpack goes — and this is where that is decided.** `~`
-		// is the default backpack toggle on desktop, and the two cannot share it: every press that asks
-		// for the camera back would open the player's inventory window over the top of it.
+		// **The backpack's window stays shut, and its reason has changed rather than gone.** It used to be
+		// that `~` was the backpack's toggle and this file wanted the key: every press that asked for the
+		// camera back would have opened the player's inventory window over the top of it. Nothing binds
+		// `~` any more, so the key is free — and the window still goes, because there is nothing to put
+		// in it.
 		//
 		// **The GUI is disabled rather than the CoreScripts' action being unbound**, and that is the
 		// difference between a fix and a guess. Unbinding means knowing what the CoreScripts called
@@ -328,10 +293,10 @@ export class ShiftLock implements OnStart {
 		// in it — the ball is a part welded to a hand rather than a tool, which `BallService` states as
 		// a decision — and the shop sells abilities rather than equipment. What is *not* touched is the
 		// container: `Player.Backpack` still exists and a `Tool` in it would still equip, so what is
-		// gone is the window and the key that opened it rather than any machinery. If tools are ever
-		// added, this is the line to revisit — the alternatives are unbinding whatever action owns the
-		// key (a sweep of `ContextActionService.GetAllBoundActionInfo`) or moving the backpack to a
-		// different key with that same sweep's help.
+		// gone is the window rather than any machinery. If tools are ever added, this is the line to
+		// revisit — the alternatives are unbinding whatever action owns the key (a sweep of
+		// `ContextActionService.GetAllBoundActionInfo`) or moving the backpack to a different key with
+		// that same sweep's help.
 		StarterGui.SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false);
 
 		// **The read-back is the point of this line rather than a flourish on it.** `SetCoreGuiEnabled`
@@ -345,26 +310,11 @@ export class ShiftLock implements OnStart {
 			);
 		}
 
-		// **The one key this file binds, and it is bound here rather than in `ActionController`.** The
-		// binds that live there are the ones that ask the *server* for something — a drop, a throw
-		// toggle — and this asks for nothing outside this file: the camera is the client's, so the key
-		// belongs to the controller that owns the state. `SprintController` and `SuperAbility` bind their
-		// own keys for the same reason.
-		//
-		// `Begin` only, and `Sink` like the other action binds: one action per press, and the key does not
-		// go on to whatever sits under it. Typing in the chat box is unaffected — the chat's own action is
-		// bound above this one, so a `~` typed into a message never arrives here.
-		ContextActionService.BindAction(
-			RELEASE_ACTION,
-			(_actionName, inputState) => {
-				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
-
-				this.toggleRelease();
-				return Enum.ContextActionResult.Sink;
-			},
-			false,
-			...RELEASE_KEYS,
-		);
+		// **Started here rather than on the first lock, so the offset is camera-relative from the first
+		// frame of it.** A static vector would be right for one frame and then wrong for as long as the
+		// body faced anywhere but the camera — and "wrong" here means swinging the whole frame around the
+		// character, which is the thing this exists to stop.
+		this.watchOffset();
 
 		task.spawn(() => this.watchZones());
 
@@ -377,12 +327,12 @@ export class ShiftLock implements OnStart {
 		// **The parts come from `taggedParts`, so the tag can go on the box or on a folder holding it.** The
 		// warning that used to stand here — telling the reader the tag belonged on the part rather than on a
 		// model around it — is gone because the case it described now works.
-		const parts = taggedParts(SHIFT_LOCK_ZONE_TAG);
+		const parts = taggedParts(PRACTICE_ZONE_TAG);
 
 		if (DEBUG) {
 			print(
-				`[ShiftLock] up — ${parts.size()} ${SHIFT_LOCK_ZONE_TAG} part(s), ` +
-					`watching during ${INTERMISSION}, ${RELEASE_KEYS.size()} key(s) bound to release the camera`,
+				`[ShiftLock] up — ${parts.size()} ${PRACTICE_ZONE_TAG} part(s), ` +
+					`watching during ${INTERMISSION}, no key bound`,
 			);
 		}
 	}
@@ -426,24 +376,18 @@ export class ShiftLock implements OnStart {
 	 *
 	 * **The phase is one input rather than the rule.** It used to release the lock outright on
 	 * entering the intermission and hand the camera to the zone check; now it only reports whether a
-	 * round is being played, and the lock is held while the round or the zone asks for it and the player
-	 * has not released it. The visible difference is one case, and it is a fix: a player standing in a
-	 * zone when a round ends keeps the camera, instead of losing it for the tenth of a second the zone
-	 * tick takes to put it back.
+	 * round is being played, and the lock is held while the round or the zone asks for it. The visible
+	 * difference is one case, and it is a fix: a player standing in a zone when a round ends keeps the
+	 * camera, instead of losing it for the tenth of a second the zone tick takes to put it back.
 	 *
-	 * **And it is also where the player's release is taken back — once, on the one edge it should be.**
-	 * The test is the *transition* rather than the state, a round starting rather than a round being
-	 * played, because this runs on every change of the attribute: keyed on the state instead, any later
-	 * publication of `Playing` would clear a release the player had just set mid-round. There is one such
-	 * publication per round today — the round boundary's — and testing the edge makes that fact
-	 * irrelevant rather than merely true.
+	 * **It used to do one thing more, and losing that is what made it this short.** It was also where the
+	 * player's `~` release was taken back — on the one edge it should be, a round *starting* rather than a
+	 * round being played, so that any later publication of `Playing` could not clear a release the player
+	 * had just set mid-round. With no release there is nothing to take back, and the edge test went with
+	 * it: this now records the phase and does nothing else.
 	 */
 	private applyPhase(phase: string | undefined): void {
-		const wasPlaying = this.phaseLocked;
-
 		this.phaseLocked = phase === PLAYING;
-
-		if (this.phaseLocked && !wasPlaying) this.setReleased(false);
 
 		this.refresh();
 	}
@@ -484,33 +428,17 @@ export class ShiftLock implements OnStart {
 		// tick after the respawn corrects it if they came back somewhere else.
 		if (!character) return;
 
-		const params = new OverlapParams();
-		// **`Include` with one instance in it, so the only thing that can answer is this player's own
-		// body.** `Exclude` would be a standing invitation to be wrong: the lobby has loose balls, rigs
-		// and other players in it, and any of them standing in the box would lock *this* player's camera
-		// for them. The character model rather than its root part, so a player leaning over the edge with
-		// one arm inside the zone is inside it.
-		params.FilterType = Enum.RaycastFilterType.Include;
-		params.FilterDescendantsInstances = [character];
-
 		const wasInside = this.inZone;
-		this.inZone = false;
 
-		// The part *is* the box — its own `CFrame` and `Size`, in whatever place and rotation the builder
-		// put it. Nothing is queried for the zone itself, which is why its `CanQuery = false` (see
-		// `SHIFT_LOCK_ZONE_TAG`) has no bearing on this check.
+		// **The box itself is asked about somewhere else now.** The tag, the bounds test and the note that
+		// the part *is* the box all live in `client/roundZone.ts`, because the dodge input needs the same
+		// answer and a rule about where you may act does not survive two copies of itself. What stays here
+		// is what is the camera's own: the tick, and the change detection below.
 		//
-		// **`taggedPartsInWorkspace`, so a folder of boxes tagged as a zone works like a single tagged box
-		// and a zone outside the world is left alone** — that second half was this loop's own guard, and it
-		// lives with the function now. This runs ten times a second, so the expansion is paid on every tick,
-		// which is the one thing worth knowing about it here: the same order of work the call it replaced
-		// was already doing — one `GetTagged`, one allocated list, and a walk of any tagged container.
-		for (const zone of taggedPartsInWorkspace(SHIFT_LOCK_ZONE_TAG)) {
-			if (Workspace.GetPartBoundsInBox(zone.CFrame, zone.Size, params).size() > 0) {
-				this.inZone = true;
-				break;
-			}
-		}
+		// **The split is worth having because of the rates.** This runs ten times a second and is the whole
+		// reason a zone is noticed at all; the dodge asks once per double-tap, which is a handful of times
+		// a second at most. Neither of them caches, and both are reading the same function.
+		this.inZone = inTaggedZone(character);
 
 		// Only when the answer changed, which is what keeps the loop's ten-a-second silence: nothing here
 		// needs working out twice, and `refresh` would otherwise be asked to re-derive a state it already
@@ -553,65 +481,31 @@ export class ShiftLock implements OnStart {
 	}
 
 	/**
-	 * The player pressed `~`: flips their release, publishes it, and re-derives the lock.
+	 * Works out whether the camera should be held, from the two things that can ask for it.
 	 *
-	 * **Nothing here asks what the round or the zone wants.** Both of those are inputs to
-	 * {@link refresh} and neither is consulted at the moment of the press — the player has asked for the
-	 * camera, and the whole of what that means is worked out in the one place that owns the rule.
-	 */
-	private toggleRelease(): void {
-		this.setReleased(!this.released);
-
-		// **A line per press, like `ActionController`'s, and for the same reason.** "Did the key arrive"
-		// and "did the camera move" are two different questions, and the state's own print answers only
-		// the second: a press in the lobby, where the camera was already unlocked, changes no state and
-		// so prints nothing at all. This is the line that says the bind is live and the press was heard.
-		if (DEBUG) print(`[ShiftLock] ${this.released ? "released" : "recaptured"} by hand — the ~ key`);
-
-		this.refresh();
-	}
-
-	/**
-	 * Sets the player's release, and tells the toast when it changed.
+	 * **The round and the zone are added, and neither can undo the other.** A round being played holds the
+	 * camera for everybody and keeps holding it whatever the player does with their feet; a zone asks for
+	 * the same lock outside a round. That is what makes the zone safe to check at all times: it can *add*
+	 * the lock, but it can never take away one the round is holding — so a player who walks out of a lobby
+	 * zone mid-round is still locked, which is the rule the round exists to have.
 	 *
-	 * **The changed test is what keeps this file's own output honest.** It is called from two places —
-	 * a press, and the round boundary — and the boundary runs it on every round start, so without the
-	 * guard a camera nobody had released would be republished once a round for a state that had not
-	 * moved. Whether a Fusion `Value` ignores an equal write is not something this file should be leaning
-	 * on to keep its log and its toast truthful.
-	 */
-	private setReleased(on: boolean): void {
-		if (this.released === on) return;
-
-		this.released = on;
-		freeLook.set(on);
-	}
-
-	/**
-	 * Works out whether the camera should be held, from the three things that can ask for it — and from
-	 * the one that can refuse.
+	 * **There used to be a third input, and it could refuse both.** It was the player's `~` release, and it
+	 * outranked these two, which was the only way to get the ordinary camera back in the middle of a round.
+	 * See the class doc for why it is gone; what is left is one rule with two terms in it, and the function
+	 * is the shorter for it.
 	 *
-	 * **The round and the zone are added, and the player's release overrides both.** A round being played
-	 * holds the camera for everybody and keeps holding it whatever the player does with their feet; a zone
-	 * asks for the same lock outside a round. Adding those two is what makes the zone safe to check at all
-	 * times: neither can switch the other off, so a zone can *add* the lock but can never remove one the
-	 * round is holding. The release is not a third thing to add — it is the player saying no, and it wins
-	 * over both, which is the only way a player gets their camera back in the middle of a round.
-	 *
-	 * **The reason printed names whichever inputs are saying something**, so the log reads the way the rule
-	 * does: `locked — the round`, `locked — the zone`, `unlocked — nothing is asking for it`, and for a
-	 * released camera `unlocked — the round, and the player has released it`. A `locked — the zone` during
-	 * a round is therefore impossible, and an unlock line that names the round is proof the player asked
-	 * for it rather than a fault.
+	 * **The reason printed names which input is saying something**, so the log reads the way the rule does:
+	 * `locked — the round`, `locked — the zone`, and `unlocked — nothing is asking for it`. Every unlock
+	 * line therefore names a phase or a zone the player has left, and none of them can be a player asking
+	 * for their camera back — there is no such ask any more.
 	 */
 	private refresh(): void {
 		const asking = this.phaseLocked ? "the round" : this.inZone ? "the zone" : "nothing is asking for it";
-		const reason = this.released ? `${asking}, and the player has released it` : asking;
 
-		if (!this.released && (this.phaseLocked || this.inZone)) {
-			this.lock(reason);
+		if (this.phaseLocked || this.inZone) {
+			this.lock(asking);
 		} else {
-			this.unlock(reason);
+			this.unlock(asking);
 		}
 	}
 
@@ -700,11 +594,70 @@ export class ShiftLock implements OnStart {
 	 *
 	 * Safe to call with no body — a player who has not spawned yet has nothing to offset, and their
 	 * state is deliberately kept across the gap. See {@link watchCharacter}.
+	 *
+	 * **What it writes is not `CAMERA_OFFSET` itself**, and the difference is the whole of
+	 * {@link offsetForBody}. Called on every state change *and* once a frame while locked — see
+	 * {@link watchOffset}, which is the half that keeps the shoulder on one side of the screen.
 	 */
 	private applyOffset(): void {
 		const humanoid = this.humanoid;
 		if (!humanoid) return;
 
-		humanoid.CameraOffset = this.isLocked() ? SHIFT_LOCK_CONFIG.CAMERA_OFFSET : Vector3.zero;
+		humanoid.CameraOffset = this.isLocked() ? this.offsetForBody() : Vector3.zero;
+	}
+
+	/**
+	 * `SHIFT_LOCK_CONFIG.CAMERA_OFFSET` — an offset meant in **camera** space, converted into the frame
+	 * `Humanoid.CameraOffset` is actually applied in, which is the body's.
+	 *
+	 * **The conversion, and why it is a no-op most of the time.** The property is body-relative — the
+	 * config entry carries the elimination that shows it, since there is no documentation to quote — so a
+	 * static value rotates with the player while the screen does not: turn to face the camera and the
+	 * shoulder the view sits over changes sides. Rotating the intended camera-space vector into the body's
+	 * frame first, every frame, makes the *world* result the camera-relative one. So the body keeps the
+	 * same side of the screen however it is pointing, which is what the config value always meant to say.
+	 *
+	 * **When the body already faces the way the camera looks — the ordinary case, and the only one a
+	 * static offset ever got right — the two frames agree and this returns the config's vector
+	 * unchanged.** That is the property worth holding on to: the shoulder a player is used to is exactly
+	 * where it was, and the change is visible only in the poses that used to be wrong.
+	 *
+	 * Falls back to the raw vector when either frame is missing — no body, or no camera yet — because an
+	 * unconverted offset is simply the old behaviour, which is the better failure: a shoulder in the wrong
+	 * place for a frame, rather than a `nil` written into a property.
+	 */
+	private offsetForBody(): Vector3 {
+		const intent = SHIFT_LOCK_CONFIG.CAMERA_OFFSET;
+
+		const root = this.humanoid?.RootPart;
+		const camera = Workspace.CurrentCamera;
+		if (!root || !camera) return intent;
+
+		return root.CFrame.VectorToObjectSpace(camera.CFrame.VectorToWorldSpace(intent));
+	}
+
+	/**
+	 * Keeps the offset camera-relative for as long as the client is running, from the render step.
+	 *
+	 * **A one-frame lag, and it is the right side to be on.** Bound one step *after*
+	 * `RenderPriority.Camera`, so the camera has already placed itself for this frame and the yaw being
+	 * read is the current one; the offset written here is the one the next frame's camera will use. A
+	 * shoulder that is a frame behind a mouse that moved a pixel in the meantime is not something an eye
+	 * can find, and running *first* instead would read the previous frame's camera for the same lag with
+	 * less obvious ordering.
+	 *
+	 * **Bound once and never unbound**, with the lock checked inside it. The lock comes and goes several
+	 * times a session — a round, a zone — and a binding re-established on each of those would be a second
+	 * piece of state to keep in step with {@link isLocked}.
+	 *
+	 * **This is not the camera fork the class doc argues against, and the distinction is the point.**
+	 * Nothing here writes `Camera.CFrame` or takes the camera over: Roblox's own scripts still decide
+	 * where the camera is, and this only feeds them a correct input instead of a static one. What is being
+	 * replaced is a value that was only ever right in the pose where the body and the camera agree.
+	 */
+	private watchOffset(): void {
+		RunService.BindToRenderStep("ShiftLockOffset", Enum.RenderPriority.Camera.Value + 1, () => {
+			if (this.isLocked()) this.applyOffset();
+		});
 	}
 }

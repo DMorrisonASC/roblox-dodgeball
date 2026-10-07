@@ -81,8 +81,16 @@ export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
  *
  * **No collision group**, unlike the barrier: this part is not meant to affect anything, and a group
  * would be a statement that it does.
+ *
+ * **A rename, and not an alias.** This was `SHIFT_LOCK_ZONE_TAG = "ShiftLockZone"` until the
+ * practice-zone work. The old string is deliberately **not** accepted alongside the new one: a reader
+ * that matched either would keep a half-repainted place file working for exactly as long as it took
+ * somebody to notice, and what that hides is the failure this whole file exists to warn about — a tag
+ * that stops matching goes quiet in the same way a working path does. So the value changed, the
+ * constant's name changed with it, and a part still wearing the old string reads as **no zone at all**.
+ * `[ShiftLock] up — N practiceZone part(s)` is the line that says which of the two you have.
  */
-export const SHIFT_LOCK_ZONE_TAG = "ShiftLockZone";
+export const PRACTICE_ZONE_TAG = "practiceZone";
 
 /**
  * Tags marking the two parts a player walks into to pick a side for the next match.
@@ -96,7 +104,7 @@ export const SHIFT_LOCK_ZONE_TAG = "ShiftLockZone";
  * prompt.
  *
  * **A label somebody paints on a part in the place file**, exactly like {@link CHARACTER_BARRIER_TAG}
- * and {@link SHIFT_LOCK_ZONE_TAG} above, and read in one place — `services/match/MatchService.ts`,
+ * and {@link PRACTICE_ZONE_TAG} above, and read in one place — `services/match/MatchService.ts`,
  * which decorates the part, connects its `Touched` and puts that side's counts sign above it.
  *
  * **`CanTouch = true` on both, and that is the exception rather than an oversight.** The barrier and
@@ -138,7 +146,7 @@ export const MATCH_JOIN_B_TAG = "MatchJoinB";
  * broken half in the middle.
  *
  * **A label somebody paints on a part in the place file**, exactly like {@link CHARACTER_BARRIER_TAG}
- * and {@link SHIFT_LOCK_ZONE_TAG} above — and, like the join tags below, it may equally be put on a
+ * and {@link PRACTICE_ZONE_TAG} above — and, like the join tags below, it may equally be put on a
  * folder, because every reader goes through `taggedPartsInWorkspace`, which expands a container into
  * the parts inside it.
  *
@@ -414,6 +422,26 @@ export function voteCountAttribute(id: string): string {
  * character is replaced on respawn, and being out of a round outlives the body it happened to.
  */
 export const SPECTATING_ATTRIBUTE = "Spectating";
+
+/**
+ * Attribute on a **`Player`** saying their body is standing inside a practice zone right now.
+ *
+ * Written by `PracticeZoneService`, which is the zone's owner on this side: it is the only thing that
+ * runs the bounds test, and every rule that cares about the zone reads this rather than asking the
+ * question again. **A fact rather than a query** is the whole point — the dodge gate can then afford
+ * to check it, the dock can watch it, and a ball's contact handler can consult it without any of them
+ * paying for a `GetPartBoundsInBox` walk on their own hot path.
+ *
+ * On the player rather than the character, for the reason every other player attribute is: a character
+ * is replaced on respawn, and standing in a zone outlives the body that happened to be standing there.
+ * The service re-detects and re-publishes on `CharacterAdded`, so a body that respawns inside the zone
+ * keeps the fact rather than waiting for the next tick to relearn it.
+ *
+ * The client reads it too — `DockController` for the dock, and it is what `roundZone.ts` is expected to
+ * become the source for. The client's own bounds test lives on because the camera needs an answer on
+ * its own tick rather than at replication's, and the two can differ by at most the tracker's interval.
+ */
+export const PRACTICE_ZONE_ATTRIBUTE = "PracticeZone";
 
 /**
  * Attribute on a **`Player`** holding the instant their next body arrives, on the engine's shared clock.

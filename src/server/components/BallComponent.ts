@@ -3,7 +3,7 @@ import { BaseComponent, Component } from "@flamework/components";
 import { Players, Workspace } from "@rbxts/services";
 import { abilityOn } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
-import { BALL_NAME, THROWER_TOKEN } from "shared/constants";
+import { BALL_NAME, PRACTICE_ZONE_ATTRIBUTE, THROWER_TOKEN } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
@@ -316,6 +316,31 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		const character = otherPart.FindFirstAncestorWhichIsA("Model");
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
+
+		// **A practice player is not a body to this ball at all, and the throw carries on past them.**
+		//
+		// This is the half of the zone's ball rule that no collision group can express. The group stops
+		// the *bounce* — `PracticePlayer` against `Ball` is set not to collide — but a collision group
+		// does not suppress `Touched`, which is the same engine fact that makes `CanTouch` a flag of its
+		// own and that the barrier relies on being true. So without this the ball would sail through
+		// somebody in a practice zone and *tag* them on the way, which is the rule inverted rather than
+		// enforced.
+		//
+		// **Answered here rather than where tags resolve**, because this is the single funnel every
+		// ball-versus-body contact passes through, and a veto belongs where the contact is judged — the
+		// same reasoning the friendly-fire veto below it uses. Refusing later, in the round code that
+		// turns a tag into a death, would leave the ball having spent itself on a body it was never
+		// allowed to touch, and the practice player having been bounced off instead of ignored.
+		//
+		// Read from the player's attribute rather than from the zone geometry: `PracticeZoneService` owns
+		// that question on this side and answers it on a tick, so asking it again here would put a bounds
+		// walk on the ball's own hot path. The attribute can be up to one interval stale, which is the
+		// trade the tracker makes for every consumer it has.
+		const player = character ? Players.GetPlayerFromCharacter(character) : undefined;
+		if (player && player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true) {
+			this.noteDecidedNothing(otherPart, "in a practice zone — carried on past them");
+			return;
+		}
 
 		// Not a character — or a ball, which reaches here only when this throw already has somebody on
 		// it, and is then the throw's death like any wall. See the guard above for the whole rule.
@@ -913,9 +938,10 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	}
 
 	/**
-	 * Whether a Freeze splash has to leave `model` alone: the thrower, and the thrower's own side.
+	 * Whether a Freeze splash has to leave `model` alone: **the thrower, the thrower's own side, and
+	 * anybody standing in a practice zone.**
 	 *
-	 * **Two tests because they are two rules, and the first is not a case of the second.**
+	 * **Three tests because they are three rules, and the first is not a case of the second.**
 	 * `RoundService.isFriendlyFire` answers about *sides*, and sides only exist while a round is being
 	 * played — it returns `false` outside one, and it returns `false` for a thrower with no player
 	 * behind it. So on its own it would let a dev testing in the lobby, or a rig's throw, freeze the
@@ -924,12 +950,31 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * its own, and a player's is their `UserId` as text where a rig's is a GUID — which is the point,
 	 * because this check cannot tell the two apart and has no reason to.
 	 *
+	 * **The zone is a rule about the *target* rather than about the throw, and it is asked first for
+	 * that reason.** Both of the rules below are claims about who threw the ball; this one is a claim
+	 * about where the body is standing, and it holds whatever the answer to the other two is — a splash
+	 * that lands in a practice zone leaves its players alone *whoever* threw it, which is the only
+	 * reading of a shared practice area that is worth anything to the person standing in it.
+	 *
+	 * **Asked above the token guard rather than below it, and that is not tidiness.** The guard returns
+	 * `false` before any test of the body, so a zone check placed under it would be skipped for exactly
+	 * the throws most likely to reach a practice zone — a rig's, and a dev's in the lobby, which are the
+	 * tokenless cases that guard exists for. See the note below for why a tokenless ball excludes nobody:
+	 * that rule is about a missing fact on the *ball*, and it was never meant to decide anything about
+	 * the body it lands beside.
+	 *
 	 * **A ball with no token excludes nobody**, which is the honest reading of a fact that is missing
 	 * rather than a body that is protected: every thrown ball is stamped at release, so this is the
 	 * never-happens case, and freezing everybody in the radius is the safer direction to be wrong in —
 	 * the alternative is a splash that silently does nothing.
 	 */
 	private splashSpares(throwerToken: unknown, model: Model): boolean {
+		// Read from the tracker's published fact rather than from the zone geometry: this predicate runs
+		// once per body in the radius, so a bounds walk here would be a query per body per splash — the
+		// cost that kept the server from asking this question until `PracticeZoneService` existed.
+		const player = Players.GetPlayerFromCharacter(model);
+		if (player && player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true) return true;
+
 		const token = typeIs(throwerToken, "string") ? throwerToken : "";
 		if (token === "") return false;
 

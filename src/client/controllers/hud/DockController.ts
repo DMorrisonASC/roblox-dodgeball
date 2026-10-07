@@ -1,8 +1,8 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Button } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { ReplicatedStorage } from "@rbxts/services";
-import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { Players, ReplicatedStorage } from "@rbxts/services";
+import { PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { INTERMISSION, roundPhase, togglePanel } from "../../panels";
 import { hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
@@ -43,6 +43,18 @@ const DOCK_GAP = 8;
  * things a player does *instead of* playing — reading a catalogue, looking at what they own — and the
  * moment a round starts they are in the way of the game. Gating the dock on the phase is therefore one
  * rule rather than two: the buttons go away, and (see the panels) anything they opened goes with them.
+ *
+ * **It is also hidden inside a practice zone, and that is a second rule rather than a refinement of the
+ * first.** A practice zone is for practising — throwing, dodging, catching — and a shop is the opposite
+ * of that: a player who is fiddling with a catalogue is not practising, and a player who opens one from
+ * inside a zone has to leave the zone to use what they bought. The zone is a place the game has already
+ * decided the *round's* rules do not apply in, and the dock is the one piece of the intermission the
+ * zone takes away instead of granting.
+ *
+ * **The whole dock hides, not the two buttons**, which is the same statement today: the frame's
+ * `Visible` is the only visibility any of it has, and the two buttons are all it holds. Written down
+ * because a third button is expected — see below — and the answer has to be chosen before there is one
+ * to choose about.
  *
  * **A player who joins mid-round sees no dock until the round ends**, which is correct and is worth
  * stating because it is the case that looks like a bug from the inside: `ROUND_STATE_ATTRIBUTE` reads
@@ -112,6 +124,31 @@ export class DockController implements OnStart {
 	private addDock(): void {
 		const theme = hudTheme();
 
+		/**
+		 * **Whether the local player is standing in a practice zone — the tracker's fact, watched.**
+		 *
+		 * Read from the attribute `PracticeZoneService` publishes rather than from the client's own
+		 * `roundZone.ts` check, and the difference matters: a `Computed` re-runs whenever its sources
+		 * move, so a zone test *inside* one would be a `GetPartBoundsInBox` walk on every re-render of
+		 * something that has nothing to do with the zone. The attribute is a plain replicated fact, so
+		 * watching it costs a subscription and nothing per frame — and it is the *server's* answer, which
+		 * is the one that decides whether the player is really in there.
+		 *
+		 * Seeded from the opening read, because a client that mounts while its player is already standing
+		 * in a zone will never hear a change to an attribute that was already true.
+		 */
+		const inPracticeZone = Fusion.Value(this.scope, false);
+
+		const player = Players.LocalPlayer;
+
+		this.scope.push(
+			player.GetAttributeChangedSignal(PRACTICE_ZONE_ATTRIBUTE).Connect(() => {
+				inPracticeZone.set(player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true);
+			}),
+		);
+
+		inPracticeZone.set(player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true);
+
 		const dock = Fusion.New(this.scope, "Frame")({
 			Name: "Dock",
 			// No size of its own: `UIListLayout` plus `AutomaticSize` is what makes the frame exactly
@@ -122,7 +159,18 @@ export class DockController implements OnStart {
 			Position: new UDim2(0.5, 0, 1, -DOCK_BOTTOM_INSET),
 			BackgroundTransparency: 1,
 			ZIndex: DOCK_Z_INDEX,
-			Visible: Fusion.Computed(this.scope, (use) => use(roundPhase) === INTERMISSION),
+			// **Both `use` calls hoisted above the test, and that is load-bearing rather than style.** A
+			// `Computed`'s dependencies are the `use` calls that actually *ran*, so `use(roundPhase) ===
+			// INTERMISSION && !use(inPracticeZone)` written as one expression would drop the zone
+			// dependency on every frame the phase is not `Intermission` — and the dock would then be
+			// watching the zone only at the moments it is already hidden, which is the one time it does
+			// not matter. Hoisted, both sources are registered on every run.
+			Visible: Fusion.Computed(this.scope, (use) => {
+				const phase = use(roundPhase);
+				const inZone = use(inPracticeZone);
+
+				return phase === INTERMISSION && !inZone;
+			}),
 		});
 
 		Fusion.New(this.scope, "UIListLayout")({

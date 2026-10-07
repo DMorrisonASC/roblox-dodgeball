@@ -4,6 +4,7 @@ import { Players, UserInputService, Workspace } from "@rbxts/services";
 import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { flattenToGround } from "shared/dodge";
 import { events } from "shared/networking";
+import { inRoundOrZone } from "../../roundZone";
 
 /** Prints which key completed a double-tap, and whether the request went out. */
 const DEBUG = true;
@@ -281,6 +282,15 @@ export class DodgeController implements OnStart {
 	 * that can see a key: distance, duration and cooldown all belong to the server.
 	 */
 	private requestDodge(combo: string): void {
+		// **The state first, because it is not a clock.** `DodgeService.requestDodge` asks the same question
+		// and is the authority: a dodge is something you do in a round or in a tagged zone, and outside both
+		// there is nothing left for the rest of this method to decide. Asked here so that a press in the
+		// lobby does not go out on the wire and come back a refusal a round trip later.
+		if (!inRoundOrZone(this.player.Character)) {
+			if (DEBUG) print(`[Dodge] ${combo} double-tapped outside a round and outside a zone`);
+			return;
+		}
+
 		if (this.findHumanoid() === undefined) {
 			if (DEBUG) print(`[Dodge] ${combo} double-tapped with nothing to move`);
 			return;

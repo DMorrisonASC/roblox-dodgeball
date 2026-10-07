@@ -9,7 +9,8 @@ matching*, and the code that reads it goes quiet in exactly the way a working pa
 This file is the list.
 
 **Re-verified against the source 2026-10-06** (commit `5bcc374`, with the economy work uncommitted).
-The previous revision was three tags short — `MatchJoinA`, `MatchJoinB` and `ShiftLockZone` — and
+The previous revision was three tags short — `MatchJoinA`, `MatchJoinB` and `ShiftLockZone` (now
+`practiceZone`) — and
 described `CharacterBarrier` and `MatchSpawner` in terms of a map that is no longer cloned.
 
 ## Why there are copies at all
@@ -36,7 +37,7 @@ a place file that no build touches.
 | `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.roundBallCount` (the budget) and `cleanupRoundBalls` (the sweep) |
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
-| `ShiftLockZone` | `shared/constants.ts`, `SHIFT_LOCK_ZONE_TAG` | *painted in Studio* | `client/controllers/camera/ShiftLock` — the only tag read on the client |
+| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `client/roundZone.ts` — the only tag read on the client, asked by `ShiftLock` and by the dodge input |
 | `MatchJoinA` | `shared/constants.ts`, `MATCH_JOIN_A_TAG` | *painted in Studio* — the part's flags are then forced from code | `MatchService.mountSide` |
 | `MatchJoinB` | `shared/constants.ts`, `MATCH_JOIN_B_TAG` | as above | as above |
 | `MatchJoinTouched` | `MatchService`, `DEBOUNCE_TAG` | `MatchService.touched`, on a **character** | `MatchService.touched` |
@@ -128,7 +129,7 @@ it that used to be written out at the call site:
   The guard stays because
   the tag is still a DataModel-wide fact: a tagged part parked in `ServerStorage`, or in a
   half-built arena nobody has placed yet, is not somewhere a ball can lie, and `GetTagged` answers
-  about it exactly as loudly as it answers about the parts you can see. `SHIFT_LOCK_ZONE_TAG`'s own
+  about it exactly as loudly as it answers about the parts you can see. `PRACTICE_ZONE_TAG`'s own
   doc makes the same argument for the same reason.
 
 A misspelling is silent: that part is never topped up, and nothing says so — except the count in the
@@ -164,22 +165,45 @@ cross it and balls bounce off it, which is the exact symptom pair described in
 means. Tagging one would invite a reader to route it through this wall's code and silently take the
 balls out of it.
 
-## `ShiftLockZone` — painted, not written, and read on the client
+## `practiceZone` — painted, and now a rule rather than a camera
 
-A lobby part that turns the custom shift lock on while a player stands inside it. It is the **only
-tag in this file whose reader is a client controller** (`client/controllers/camera/ShiftLock.ts`),
-and that is the right machine for it: the thing it changes is the local player's camera, the check is
-a local box overlap, and nothing on the server has an opinion about it.
+A lobby part that makes a place to practise. Standing inside one: the custom shift lock is forced, a
+dodge works, **players do not collide with each other**, **balls do not hit players** (they hit rigs
+and the world as usual), **a Freeze splash leaves players alone**, and the Shop and Inventory are
+hidden. **Renamed from `ShiftLockZone`**, and the code side of that is mechanical while the Studio side
+is not — see the note at the end of this section.
+
+**What changed, and why the paragraph that used to stand here had to go.** The zone used to be purely
+a camera: *"nothing on the server has an opinion about it"* was true, and every rule above makes it
+false. Six of the seven are enforced on the server, and five of those six are decisions that cannot be
+made per frame on a client.
+
+**Two halves, one fact.** `client/roundZone.ts` answers "in a round, or in a practice zone" for the
+camera and the dodge input, and it is still the **only tag read on the client**. On the server
+`PracticeZoneService` owns membership: it runs the same bounds test on a tick, and publishes the answer
+as **`PracticeZone` on the `Player`**. Everything else reads that attribute — the dodge gate, the ball's
+contact handler, the Freeze splash, the dock — so the zone costs **one query per player per tick** no
+matter how many rules are asking, and no two rules can come to different answers about the same body.
+The two detections can differ by at most one interval (0.1 s); the client's is kept only because the
+camera needs an answer on its own tick rather than at replication's.
 
 Two lookups, for two different questions:
 
 - **Once, at mount**, `taggedParts` (the whole DataModel, no `Workspace` filter) — purely to print
-  `[ShiftLock] up — N ShiftLockZone part(s)`. That count is the diagnostic: the commonest cause of "the
+  `[ShiftLock] up — N practiceZone part(s)`. That count is the diagnostic: the commonest cause of "the
   zone does nothing" is that nothing wears the tag at all, and a zero is the answer. `MatchService`
-  prints its own counts in the same shape for the same reason.
+  prints its own counts in the same shape for the same reason. **It is a snapshot taken once, at
+  mount** — a part tagged afterwards will never appear in it, so paint the part before starting the
+  session if that line is what you are reading.
 - **Ten times a second**, `taggedPartsInWorkspace` — the real check. The workspace half of that
   helper was this loop's own guard before the helper existed, and the expansion is paid on every tick,
   which is the one thing worth knowing about it here.
+
+**The Studio half of the rename is the one no build can catch.** The tag string lives on parts in the
+place file, so renaming the constant changes what the code *asks for* and nothing about what the parts
+*wear*: until the parts are repainted in the Tag Editor — and any copy of the map or saved environment
+with them — the zone is not detected at all, and the symptom is "nothing happens in the practice
+area", which reads exactly like a code bug. The count in the line above is how you tell the two apart.
 
 **The part's dimensions *are* the zone.** There is no separate radius: the check is
 `Workspace.GetPartBoundsInBox(zone.CFrame, zone.Size, params)` with the character excluded, so the
@@ -250,7 +274,7 @@ them.
 `GetInstanceRemovedSignal(NPC_TAG)` is what stops a loop, so taking `NPC` off a rig retires it.
 
 **A rig is managed only while it is in `Workspace`, and that is the second condition on this tag.**
-It is the same rule `MatchSpawner` and `ShiftLockZone` need, arriving on the other kind of tag, and it
+It is the same rule `MatchSpawner` and `practiceZone` need, arriving on the other kind of tag, and it
 is needed for the same reason: `CollectionService` answers about the whole DataModel, so a rig inside
 an arena template parked in `ServerStorage` wears `NPC` exactly as the rigs standing in the arena do.
 `NpcService.run` skips a rig that is out of the world and `RoundService.roundParticipants` filters
@@ -297,7 +321,7 @@ duplicated — the source of truth is the file named.
 | `"Playing"` / `"Intermission"` | `RoundService` publishes them as the phase name | **server:** `BallSpawnerService`, `MatchService`, `StatsService`, `SuperService`, `OutlineService`. **client:** `RoundStatusController`, `RoundResultController`, `StatsBillboardController`, `TeamRingController`, `MusicController`, `ShiftLock` |
 | `"LobbySpawn"` | `shared/config/arena.config.ts` (`LOBBY_SPAWN_NAME`) | `RoundService`, in the `DescendantRemoving` watcher that traces the part's disappearance. **Nothing reads this name as a spawn any more** — the lobby is a folder of `LobbySpawns` parts — so the only reason the string still exists is that watcher, which is scaffolding worth deleting once the part is traced |
 | `DodgeballBall` | `shared/constants.ts` (`BALL_NAME`) | **imported, not copied** |
-| `THROWER_TOKEN`, `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE`, `TEAM_ATTRIBUTE`, `SPECTATING_ATTRIBUTE`, `RESPAWN_AT_ATTRIBUTE`, `COINS_ATTRIBUTE`, `OWNED_POWERS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE`, `CROWN_ATTRIBUTE`, `STAT_HITS` / `STAT_OUTS` / `STAT_RATIO`, `BALL_ABILITY_ATTRIBUTE`, `ARMED_ABILITY_ATTRIBUTE`, `CHARACTER_BARRIER_TAG`, `MATCH_JOIN_A_TAG` / `MATCH_JOIN_B_TAG`, `MATCH_SPAWNER_TAG`, `SHIFT_LOCK_ZONE_TAG` | `shared/constants.ts` | **imported, not copied.** This is the list to check first: every one of them is read by two files or more, and every one of them is a *string* that a typo would silently break |
+| `THROWER_TOKEN`, `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE`, `TEAM_ATTRIBUTE`, `SPECTATING_ATTRIBUTE`, `RESPAWN_AT_ATTRIBUTE`, `COINS_ATTRIBUTE`, `OWNED_POWERS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE`, `CROWN_ATTRIBUTE`, `STAT_HITS` / `STAT_OUTS` / `STAT_RATIO`, `BALL_ABILITY_ATTRIBUTE`, `ARMED_ABILITY_ATTRIBUTE`, `CHARACTER_BARRIER_TAG`, `MATCH_JOIN_A_TAG` / `MATCH_JOIN_B_TAG`, `MATCH_SPAWNER_TAG`, `PRACTICE_ZONE_TAG` | `shared/constants.ts` | **imported, not copied.** This is the list to check first: every one of them is read by two files or more, and every one of them is a *string* that a typo would silently break |
 
 **The distinction that matters:** the tag strings in this file are the ones that *cannot* be imported
 — a Flamework decorator literal, or a string painted on an instance in Studio. Everything in the
@@ -318,5 +342,5 @@ mistake waiting to happen, one `GetAttribute("Typos")` at a time.
   exported ones are the sources of truth. A grep for `const [A-Z_]*TAG[A-Z_]* = "` finds both.
 - **In the log:** every tag this game prints comes with the instance it was read from, and the four
   count lines are the ones to grep for when a tag looks dead — `[Spawner] up … N tagged thing(s), M
-  usable part(s)`, `[Match] up — <tag>: N part(s)`, `[ShiftLock] up — N ShiftLockZone part(s)`, and
+  usable part(s)`, `[Match] up — <tag>: N part(s)`, `[ShiftLock] up — N practiceZone part(s)`, and
   `[Round] cleared N held balls`.

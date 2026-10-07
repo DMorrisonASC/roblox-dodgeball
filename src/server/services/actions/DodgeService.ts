@@ -1,10 +1,10 @@
 import { OnStart, Service } from "@flamework/core";
-import { Players } from "@rbxts/services";
+import { Players, ReplicatedStorage } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
+import { CATCH_READY_AT, DODGE_READY_AT, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
@@ -36,6 +36,9 @@ const MIN_DIRECTION_MAGNITUDE = 0.9;
  * and one name per event is what makes "no dodge emitters remain" a statement about dodges.
  */
 const DODGE_EMITTER_NAME = "DodgeEmitter";
+
+/** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. A word between two files. */
+const PLAYING = "Playing";
 
 /**
  * A dash in flight, and the one way to end it early.
@@ -259,11 +262,10 @@ export class DodgeService implements OnStart {
 	/**
 	 * Asks for `model` to dodge `direction`.
 	 *
-	 * Returns whether the model moved. Everything that decides that — the model
-	 * having a living humanoid, being off cooldown and having been given a usable
-	 * direction — is checked here, so a caller cannot half-ask, and the
-	 * direction is normalized rather than trusted: a client can send anything, and
-	 * the only thing its direction is allowed to decide is which way the dash goes.
+	 * Returns whether the model moved. Everything that decides that — a round being played, the model
+	 * having a living humanoid, being off cooldown and having been given a usable direction — is checked
+	 * here, so a caller cannot half-ask, and the direction is normalized rather than trusted: a client can
+	 * send anything, and the only thing its direction is allowed to decide is which way the dash goes.
 	 */
 	public requestDodge(model: Model, direction: Vector3): boolean {
 		const entity = resolveDodgeable(model);
@@ -282,6 +284,43 @@ export class DodgeService implements OnStart {
 		// that flag buys freedom from the *dodge's* own clock, and this is a rule about the two
 		// actions rather than a clock of either one. Turn the flag off to test it.
 		if (this.blocksDodge(model)) return false;
+
+		// **The state gate: a round has to be being played, or this body has to be in a practice zone.**
+		//
+		// **This supersedes "round only", and the reason it was round-only is the reason it changed.** The
+		// earlier argument was cost: a zone half here would have been a `GetPartBoundsInBox` walk over
+		// every tagged zone part on every press of a movement key — the one place in the game where the
+		// query rate is set by how fast somebody can mash rather than by a tick. That argument was correct
+		// for as long as the zone was a *question the server had to ask*. It is not a question any more:
+		// `PracticeZoneService` owns membership and publishes it on the player, so the zone half below is
+		// an attribute read, and the cost that ruled it out is the thing that has gone. The decision
+		// changed because its reason did, which is the only good reason to change one.
+		//
+		// **Placed here, before the cooldown is read or charged**, which is the position `blocksDodge`
+		// occupies and for the reason that method gives: a dodge that was never allowed has not happened, so
+		// it must not be charged for one. `blocksDodge` keeps the first word of the two — a freeze is a
+		// state about the *body*, and this one is about where the body is and what the round is doing.
+		//
+		// The two halves come from different places on purpose. The round is read from the round folder,
+		// which is how every other reader on this side gets at it, and it is the *same* source the client's
+		// half reads — so the two sides cannot disagree about what the round is doing. The zone is read from
+		// the player, which is how every other consumer gets at *that*, and it is likewise the client's
+		// source once the tracker's fact has replicated. A folder that is not there yet reads as "no round"
+		// and a player who has never been in a zone carries no attribute; both are the right answer while
+		// the server is still igniting.
+		const status = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
+		const playing = status?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
+
+		if (!playing) {
+			const player = Players.GetPlayerFromCharacter(model);
+			const inZone = player !== undefined && player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true;
+
+			if (!inZone) {
+				if (DEBUG) print(`[Dodge] ${model.Name}: refused — no round, and not in a practice zone`);
+
+				return false;
+			}
+		}
 
 		// A dev with `NoCooldown` drops the clock entirely — the read here *and* the
 		// write below, because keeping only one of them would mean charging a cooldown

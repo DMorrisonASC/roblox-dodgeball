@@ -25,22 +25,47 @@ export const SHIFT_LOCK_CONFIG = {
 	ZONE_TICK_INTERVAL: 0.3,
 
 	/**
-	 * Where the camera sits relative to the body while the lock is on, in **camera space**.
+	 * Where the camera sits relative to the body while the lock is on — written as **camera space**, and
+	 * converted by `ShiftLock` before it is handed to Roblox. The distinction is the whole of this entry.
 	 *
-	 * **The axis is the camera's, not the world's**, and that is the whole of what is easy to get
-	 * wrong here. `Humanoid.CameraOffset` is applied in the frame of the camera the player is looking
-	 * through, so `+X` is the camera's *right* — and `+Z` is **backwards**, because `CFrame.LookVector`
-	 * is `-Z`. A `(0, 0, 2)` offset therefore moves the view back along the throw line rather than off
-	 * the shoulder, which looks like a zoom that will not hold still rather than like a shift lock.
+	 * **What the value means: how far to the player's right and how far up the camera's pivot sits.**
+	 * `X` is the offset to the camera's right, `Y` is up, and `Z` is along the view — positive is
+	 * *backwards*, because `CFrame.LookVector` is `-Z`, so a `Z` here behaves like a zoom rather than a
+	 * shift. The pivot is what the camera orbits *and* what it looks at, so an `X` of 2 puts the body that
+	 * far off the middle of the frame, leaving the aim line through the other side. **The sign is which
+	 * side**, and it is the one thing to flip if the body reads better on the other shoulder.
 	 *
-	 * The body goes to the player's right so that it stops covering the middle of the screen — and that
-	 * middle is where the throw goes, because the aim ray is cast from the centre. The **sign is a taste
-	 * call**: flipping it puts the body on the other shoulder and changes nothing else, so it is the one
-	 * thing to try in Studio if the view reads better the other way.
+	 * **`Humanoid.CameraOffset` is applied in the *body's* frame, not the camera's — and that is an
+	 * elimination rather than a quotation, because there is nothing to quote.** The typings carry the
+	 * property, its type and a link, and no prose about the frame at all. What settles it is what was
+	 * seen in the running game:
 	 *
-	 * **Placeholder: 2 studs is a guess.** It has to clear a stand-in torso — an `R6` torso is about two
-	 * studs across — without pushing the camera so far that aiming feels like it is happening to
-	 * somebody else.
+	 * - A **camera**-space offset cannot change which side of the screen the body is on, because the pivot
+	 *   would be fixed in the very frame the screen *is*.
+	 * - A **world**-space offset cannot change sides when the body turns under a stationary camera either —
+	 *   the offset is fixed in world terms, and turning the body moves nothing.
+	 * - A **body**-relative offset does exactly one thing the other two cannot: it swings the pivot around
+	 *   the character as the character turns. That is what happened — the body held one side of the screen
+	 *   until the player turned to face the camera, and then it was on the other.
+	 *
+	 * **So a value here is not enough by itself, and `(2, 2, 0)` alone was the bug.** A static body-relative
+	 * offset rotates with the body while the screen does not, which means the shoulder the camera sits over
+	 * changes sides every time the player turns around. `ShiftLock.watchOffset` re-expresses this vector
+	 * into the body's frame once a frame, so the offset is camera-relative *in effect* and the body keeps
+	 * one side of the screen wherever it is pointing. Read this value as an intent, not as the number that
+	 * ends up in the property.
+	 *
+	 * **A reversal, and the argument it replaces is kept because it is still half right.** The value was
+	 * briefly `(0, 2, 0)` — no lateral offset at all — on the reasoning that an `X` pushes the body off the
+	 * centre of the frame. That is true, and it is the point of the entry. What the reasoning missed is
+	 * that centring the body was never the request: the request is for the body to hold **one** side, and
+	 * zeroing `X` trades a body that swaps sides for a camera with no shoulder at all.
+	 *
+	 * **`Y` is 2.** The camera's subject is the `HumanoidRootPart`, whose centre sits at roughly hip height,
+	 * so an unraised pivot looks along the body from the waist; two studs puts it at the torso's centre,
+	 * which is where a shoulder-height aim reads from. It is still a guess — the number to move if the view
+	 * reads too low or too high — and it is deliberately untouched by anything lateral, because a vertical
+	 * pivot cannot change which side of the screen the body is on.
 	 */
 	CAMERA_OFFSET: new Vector3(2, 2, 0),
 
