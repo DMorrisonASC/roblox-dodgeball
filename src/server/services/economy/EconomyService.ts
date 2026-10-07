@@ -1,19 +1,22 @@
 import { OnStart, Service } from "@flamework/core";
 import { DataStoreService, HttpService, Players } from "@rbxts/services";
-import { AbilityKind } from "shared/ability";
+import { AbilityKind, isAbilityKind } from "shared/ability";
 import {
 	COINS_ATTRIBUTE,
 	CROWN_ATTRIBUTE,
 	OWNED_COSMETICS_ATTRIBUTE,
 	OWNED_POWERS_ATTRIBUTE,
+	POWER_POOL_ATTRIBUTE,
 	STAT_HITS,
 } from "shared/constants";
 import {
 	ECONOMY_CONFIG,
+	CHEST_POOL,
 	MILESTONES,
 	POWER_ROSTER,
 	COSMETICS,
 	CosmeticDef,
+	ChestPrize,
 	MilestoneDef,
 } from "shared/config/economy.config";
 import {
@@ -87,11 +90,13 @@ export class EconomyService implements OnStart {
 			player.GetAttributeChangedSignal(CROWN_ATTRIBUTE).Connect(() => this.checkMilestones(player));
 		});
 
-		// The two things a client can ask the economy to do: open a chest, and wear something. Both are
-		// requests rather than values — see `equipCosmetic` for why the client never gets to say what it
-		// owns, and `openChest` for why the chest is the one that needs a reply.
+		// The three things a client can ask the economy to do: open a chest, wear something, and move a power in
+		// or out of the box's pool. All three are *requests* rather than values — see `equipCosmetic` and
+		// `togglePowerPool` for why the client never gets to say what it owns, and `openChest` for why the chest
+		// is the one that needs a reply.
 		events.Server.OnEvent("openPowerChest", (player) => this.openChest(player));
 		events.Server.OnEvent("equipCosmetic", (player, slot, id) => this.equipCosmetic(player, slot, id));
+		events.Server.OnEvent("togglePowerPool", (player, power) => this.togglePowerPool(player, power));
 
 		// Dev shortcuts, so the loop can be exercised from a standing start.
 		this.dev.onCommand("coins", (player) => {
@@ -279,16 +284,68 @@ export class EconomyService implements OnStart {
 			return;
 		}
 
-		const unowned = POWER_ROSTER.filter((kind) => !record.powers.has(kind));
-		if (unowned.size() === 0) {
-			this.sendChestResult(player, "", "all powers collected");
+		// **A refusal rather than a guaranteed miss, and that is a product decision worth writing down.** If
+		// every entry in the pool is already owned, spending 50 coins can only produce nothing, and the honest
+		// thing is to say so before taking the money rather than after. It is also the only refusal here that
+		// describes a *finished* state rather than a failure: everything the chest can give has been given.
+		//
+		// The wording no longer says "powers", because the pool is not powers — it is every prize, and items
+		// join it the day they exist. A message naming one arm of a union is a message that goes stale the
+		// moment the union grows.
+		const prizes = CHEST_POOL.filter((prize) => !this.ownsPrize(record, prize));
+		if (prizes.size() === 0) {
+			this.sendChestResult(player, "", "nothing left in the chest to win");
 			return;
 		}
 
-		const granted = unowned[math.random(unowned.size()) - 1];
+		// **Rolled over the whole pool, unowned entries included, and that is the mechanic.** Filtering the
+		// roll down to what the player does not have would make every chest a guaranteed grant and delete the
+		// duplicate outcome entirely — the filter is not a defensive measure, it is the *only* thing that
+		// makes a miss possible. There is no miss-rate number anywhere in the config: the chance of getting
+		// nothing is exactly the fraction of `CHEST_POOL` this player already owns, derived on every roll.
+		const prize = CHEST_POOL[math.random(CHEST_POOL.size()) - 1];
 
+		// **The coins go before the outcome is known, and the order is the mechanic rather than sloppiness.**
+		// A roll that only charged on success would be a free re-roll on every duplicate, which turns the
+		// duplicate from the point of the pool into a retry button.
 		record.coins -= ECONOMY_CONFIG.CHEST_COST;
+
+		// **The duplicate is the outcome, not an error case.** It is what the pool is for: a player who owns
+		// most of it mostly gets nothing, which is what keeps a full collection from being worth grinding for
+		// and what makes the remaining entries feel like they cost something. No pity mechanic, deliberately —
+		// every roll is independent of every roll before it, and a counter that improved the odds after a miss
+		// would be a second, invisible rule deciding the same thing.
+		//
+		// The message says what happened — *you already had that* — rather than "you failed", because nothing
+		// went wrong: the chest worked exactly as designed and the player got the commonest result.
+		if (this.ownsPrize(record, prize)) {
+			this.publish(player);
+
+			if (DEBUG) {
+				print(
+					`[Economy] ${player.Name}: chest rolled ${prize.power} — already owned, ` +
+						`${record.coins} coins left`,
+				);
+			}
+
+			this.sendChestResult(player, "", "you already had that one");
+			return;
+		}
+
+		const granted = prize.power;
 		record.powers.add(granted);
+		// **And the new power joins the pool, which is the difference between a setting and a broken box.**
+		// Without this a player who narrows their pool and then earns a power never sees it in the box — and the
+		// symptom is a box that ignores an item they demonstrably own, which reads as a bug in the box rather than
+		// as a pool that is out of date.
+		//
+		// **Unconditionally, including into a pool the player has emptied.** The alternative — leave the pool
+		// alone while it is empty — treats "everything off" as a decision about *future* powers, which is not what
+		// the tab says it is: it is where you narrow what the box may hand you, and it has to be visible to the
+		// player to be usable, so something just earned cannot go in invisibly. The cost is that an emptied pool
+		// gains one entry back, which is a small, visible, reversible surprise; cheaper than a power that
+		// silently never appears.
+		record.pool.add(granted);
 		this.publish(player);
 
 		if (DEBUG) {
@@ -298,13 +355,65 @@ export class EconomyService implements OnStart {
 		this.sendChestResult(player, granted, "");
 	}
 
-	/** Grants a power outright — the dev command's door, and the only bypass to the chest. */
+	/**
+	 * Grants a power outright — the dev command's door, and the only bypass to the chest.
+	 *
+	 * **This is the other way a power arrives, and the pool is written here for the same reason it is written
+	 * in `openChest`.** `!dev powers` walks the whole roster through this method, so covering it here is what
+	 * makes the dev shortcut produce a usable pool rather than a shelf that is right and a box that is empty.
+	 * The two doors are not one door, though — `openChest` adds its grant to the pool itself, because it does
+	 * not come through here.
+	 */
 	public grantPower(player: Player, kind: AbilityKind): void {
 		const record = this.records.get(player);
 		if (record === undefined) return;
 
 		record.powers.add(kind);
+		record.pool.add(kind);
 		this.publish(player);
+	}
+
+	/**
+	 * Puts `power` into the item-box pool, or takes it out.
+	 *
+	 * **Checked in this order, and the order is cheapest-and-most-structural first:**
+	 *
+	 * 1. **`power` must be a string.** It arrives from an untyped wire; nothing else is assumed about it.
+	 * 2. **`isAbilityKind(power)`** — a name this build knows. Without this an arbitrary word would enter the
+	 *    set, be joined into the attribute, and be read back by the panel as a power that cannot exist.
+	 * 3. **The record must be loaded.** A request arriving before the `GetAsync` answers is dropped rather
+	 *    than queued — {@link equipCosmetic}'s call, for its reason.
+	 * 4. **And the player must own it, read from `record.powers` and never from an attribute.** This is the
+	 *    check that makes the remote safe rather than merely tidy: the pool is a *subset of what you own*, so a
+	 *    client cannot talk itself into a pool entry it has not earned. The client's `OWNED_POWERS_ATTRIBUTE`
+	 *    is a copy it renders from; the record is the only set that decides.
+	 *
+	 * **A toggle rather than a setter, so a stale client is harmless rather than dangerous.** The wire asks
+	 * for a flip and the record performs a flip, so a client that has lost track of its own pool sends the same
+	 * message it would have sent had it been right — see the declaration for why that matters more than it
+	 * looks.
+	 *
+	 * There is nothing to mark dirty: {@link autosaveLoop} compares the serialized record against the last
+	 * value it wrote, so changing the record *is* being dirty.
+	 */
+	public togglePowerPool(player: Player, power: unknown): void {
+		if (!typeIs(power, "string")) return;
+		if (!isAbilityKind(power)) return;
+
+		const record = this.records.get(player);
+		if (record === undefined) return;
+
+		if (!record.powers.has(power)) return;
+
+		if (record.pool.has(power)) {
+			record.pool.delete(power);
+		} else {
+			record.pool.add(power);
+		}
+
+		this.publish(player);
+
+		if (DEBUG) print(`[Economy] ${player.Name}: ${power} pool ${record.pool.has(power) ? "on" : "off"}`);
 	}
 
 	/** Adds coins outright — the dev command's door. Clamped to at least nought. */
@@ -370,6 +479,11 @@ export class EconomyService implements OnStart {
 	 * The slot table is walked rather than the two names being spelled out here and read again in the
 	 * panel: {@link EQUIPPED_ATTRIBUTE} is the one place the pairing is written down, so a third slot is
 	 * one line in that file and nothing here.
+	 *
+	 * **The pool is written on every publish like the rest, and it has to be**, because `""` is a real
+	 * value for it — "the box has nothing to give" — so a reader cannot tell a pool that was never
+	 * published from one that was deliberately emptied. Publishing it unconditionally is what makes the
+	 * attribute the client reads always the record's own answer. See `POWER_POOL_ATTRIBUTE`.
 	 */
 	private publish(player: Player): void {
 		const record = this.records.get(player);
@@ -377,11 +491,25 @@ export class EconomyService implements OnStart {
 
 		player.SetAttribute(COINS_ATTRIBUTE, record.coins);
 		player.SetAttribute(OWNED_POWERS_ATTRIBUTE, joinPowers(record.powers));
+		player.SetAttribute(POWER_POOL_ATTRIBUTE, joinPowers(record.pool));
 		player.SetAttribute(OWNED_COSMETICS_ATTRIBUTE, joinCosmeticIds(record.cosmetics));
 
 		for (const [slot, attribute] of pairs(EQUIPPED_ATTRIBUTE)) {
 			player.SetAttribute(attribute, record.equipped.get(slot) ?? "");
 		}
+	}
+
+	/**
+	 * Whether `record` already has `prize` — the only question the chest asks about a roll.
+	 *
+	 * **One place, asked twice, and the two asks are not the same check.** The refusal asks it of every entry
+	 * in the pool to decide whether there is anything left to win; the roll asks it of the one entry that
+	 * came up. Writing the membership test inline in both would be two chances for the item arm to be
+	 * handled in one of them and forgotten in the other — which is exactly the bug the tagged
+	 * {@link ChestPrize} exists to prevent, and it only pays off if the test lives in one function.
+	 */
+	private ownsPrize(record: EconomyRecord, prize: ChestPrize): boolean {
+		return prize.kind === "power" && record.powers.has(prize.power);
 	}
 
 	/** The chest's answer, to the player who asked. */

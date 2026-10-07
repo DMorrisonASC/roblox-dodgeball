@@ -54,6 +54,36 @@ export const ECONOMY_CONFIG = {
 export const POWER_ROSTER: readonly AbilityKind[] = ["Pierce", "MultiBall", "Freeze"];
 
 /**
+ * One thing the Power Chest can roll.
+ *
+ * **A tagged entry rather than a bare `AbilityKind`, because the pool is meant to hold items too.** Powers
+ * arrived first and items do not exist yet, so `"power"` is the only arm today — but the *shape* is what
+ * lets an item be added later without a second list, a second odds rule or a second grant path. An item
+ * arm is one member here and one entry below.
+ *
+ * **Deliberately not built now.** There is no item def, no item slot and no item grant path in this
+ * project, and adding an empty arm would be inventing a concept to fill a type. The comment is the
+ * specification; the code is what exists.
+ */
+export type ChestPrize = { readonly kind: "power"; readonly power: AbilityKind };
+
+/**
+ * Everything the chest can roll: **one flat list, and the whole of the pool.**
+ *
+ * **One list rather than `{ powers, items }` in parallel, and that is the shape the odds depend on.** With a
+ * single list, adding an entry re-derives every probability in the pool with no rule to write; two lists
+ * would need a rule for how they are interleaved, and that rule would be the real probability model hiding
+ * inside `EconomyService` where nobody would look for it.
+ *
+ * **The pool is not filtered to what a player does not own, and that is the mechanic rather than an
+ * oversight.** The chest rolls over all of it; if it lands on something the player already has, they get
+ * nothing, and *that* is the only way to get nothing. There is no miss-rate number anywhere in this file —
+ * the chance of a miss is derived, and it is exactly the fraction of this list the player already owns. See
+ * `EconomyService.openChest`.
+ */
+export const CHEST_POOL: readonly ChestPrize[] = POWER_ROSTER.map((power) => ({ kind: "power", power }));
+
+/**
  * The counters a milestone can be read from.
  *
  * `"crown"` is not a counter — it is the crown attribute flipping on, and its threshold is always `1`.
@@ -96,7 +126,7 @@ export const MILESTONES: readonly MilestoneDef[] = [
 ];
 
 /** Where a cosmetic is seen, which is what decides what a future render hook must touch. */
-export type CosmeticSlot = "trail" | "elimination";
+export type CosmeticSlot = "trail" | "elimination" | "ball";
 
 /** One cosmetic. Earnable items are granted by a milestone; premium items carry a Game Pass. */
 export interface CosmeticDef {

@@ -560,6 +560,29 @@ export const COINS_ATTRIBUTE = "Coins";
 export const OWNED_POWERS_ATTRIBUTE = "OwnedPowers";
 
 /**
+ * Attribute on a **`Player`** holding the subset of their powers the item box may grant, as one
+ * `|`-joined string.
+ *
+ * **The same shape as {@link OWNED_POWERS_ATTRIBUTE}, and deliberately not the same attribute.** What a
+ * player *owns* is permanent and decided by the server; what the *box may give them* is a choice they
+ * make and can change — the distinction `OWNED_POWERS_ATTRIBUTE` already draws between ownership and the
+ * ball in somebody's hand, applied to a second question. It is separate because the two facts have
+ * different lifetimes and different authors: ownership only ever grows and only the server writes it,
+ * while a pool shrinks and grows again and the player is the one deciding.
+ *
+ * **The empty string is a real value and means "the box has nothing to give".** Unlike the equipped
+ * attributes, where `""` means "no cosmetic", there is no default to fall back to here: the pool *is*
+ * the player's decision, and turning every power off is one of the states it can be in. The server always
+ * writes it from the record, so `""` on a player who has loaded is never "not published yet" — see
+ * `EconomyService.publish`.
+ *
+ * Joined with the same helper the owned set uses, `joinPowers` in `shared/economy.ts`, because this is
+ * the same *kind* of value: a set of `AbilityKind` packed into one attribute. A second packing convention
+ * for the same data would be a second thing to keep in step for no gain.
+ */
+export const POWER_POOL_ATTRIBUTE = "PowerPool";
+
+/**
  * Attribute on a **`Player`** holding the cosmetic ids they own, as one `|`-joined string.
  *
  * The same shape as {@link OWNED_POWERS_ATTRIBUTE} and for its reason: one packed string means a new

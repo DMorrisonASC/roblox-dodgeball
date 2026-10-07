@@ -6,14 +6,8 @@ import { Players } from "@rbxts/services";
 import { ABILITY_NAMES, isAbilityKind } from "shared/ability";
 import type { AbilityKind } from "shared/ability";
 import { COINS_ATTRIBUTE, OWNED_COSMETICS_ATTRIBUTE, OWNED_POWERS_ATTRIBUTE } from "shared/constants";
-import {
-	COSMETICS,
-	ECONOMY_CONFIG,
-	MILESTONES,
-	POWER_ROSTER,
-	PREMIUM_COSMETICS,
-} from "shared/config/economy.config";
-import type { CosmeticDef, MilestoneDef } from "shared/config/economy.config";
+import { ECONOMY_CONFIG, POWER_ROSTER, PREMIUM_COSMETICS } from "shared/config/economy.config";
+import type { CosmeticDef } from "shared/config/economy.config";
 import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
 import { INTERMISSION, roundPhase, shopOpen } from "../../panels";
@@ -45,27 +39,30 @@ const DEBUG = true;
 const COLUMNS = 3;
 
 /**
- * The panel's three views, in the order they are worth looking at.
+ * The panel's two views.
  *
- * **These replace the mock's five tabs, and the replacement is a mapping rather than a rewrite of the
- * idea.** The tab strip was the part of this panel that was right — a small number of named views,
- * one at a time, over a shelf of tiles — and what was wrong was what the tabs named: `Effects`,
- * `Emotes`, `Radios` and `Pets` are four things the economy has no concept of at all, and the fifth
- * (`Powers`) is a real one. So the strip keeps its structure and loses the four tabs with nothing
- * behind them, and `Powers` gains the two views the economy *does* have that the mock never did.
+ * **`Earned` is gone, and its content was deleted rather than moved.** It was a shelf of achievement tiles
+ * whose whole content was "what you get" and "what you have to do for it" — and the Inventory now says both
+ * of those on the tile of the cosmetic itself, as an `Unlock by …` line on the item the player is looking at.
+ * Two places to read one condition are two places to keep in step, and the Inventory's is the one standing
+ * next to the thing it describes. See `InventoryController.unlockText`.
  *
- * **The order is the value ladder and should read that way:** what coins buy, then what playing gives,
- * then what is meant to cost Robux. See {@link addPremiumPane} for why the last of the three is a
- * catalogue with no way to buy from it yet.
+ * **`Premium` became `Cosmetics`, because the tab stopped being about a price tier.** It renders the premium
+ * catalogue today, because that is the only buyable set that exists — but what it is *for* is "cosmetics you
+ * could buy", so the day a cosmetic is bought some other way it belongs on this shelf without the tab being
+ * renamed a second time. The words on the tiles are where the price is said.
  *
- * A tab carries a colour *job* rather than a colour, so the theme stays the only place a colour is
- * chosen from — `theme.colors[tab.colour]` is the whole lookup, and a tab wanting a different one
- * names a different job.
+ * **The order puts the catalogue first and the action second, which reverses the old ladder.** The old order
+ * was "what coins buy, then what playing gives, then what costs Robux"; with the middle one gone, the only
+ * thing left to order is a shelf with nothing to press and a button that spends coins — and a player looking
+ * for the chest should not have to read past a catalogue to find it.
+ *
+ * A tab carries a colour *job* rather than a colour, so the theme stays the only place a colour is chosen
+ * from — `theme.colors[tab.colour]` is the whole lookup.
  */
 const TABS = [
-	{ name: "Powers", colour: "accent" },
-	{ name: "Earned", colour: "success" },
-	{ name: "Premium", colour: "coin" },
+	{ name: "Cosmetics", colour: "coin" },
+	{ name: "Power & Items", colour: "accent" },
 ] as const;
 
 type TabName = (typeof TABS)[number]["name"];
@@ -74,33 +71,19 @@ type TabName = (typeof TABS)[number]["name"];
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
 
 /**
- * What a player has to do to earn `milestone`, in one line.
+ * Where a cosmetic is worn, in one word — the only thing `slot` means to a player.
  *
- * **The goal is written from `stat` and `threshold`, which is the whole of what the client can know.**
- * Nothing here is a progress figure and nothing here *can* be: see {@link addEarnedPane} for the
- * counters the server does not publish, and why this panel shows two states rather than a bar over a
- * number this machine would have to invent.
- *
- * The `crown` case reads "Wear the crown" rather than "Crown 1 time" because its threshold is not a
- * count of anything — it is the boolean being true — and a phrase with a `1` in it invites the reader
- * to look for a way to do it twice.
+ * **Branch by branch rather than a ternary, and that is a correction rather than a style.** This used to
+ * read `def.slot === "trail" ? "Trail" : "Elimination"`, which was right for exactly as long as the union
+ * had two members: the moment `"ball"` joined it, every ball cosmetic would have been labelled an
+ * elimination, silently, with no compile error to catch it. Spelling each slot out means a new member
+ * arrives here as a missing branch a reader can see rather than as the wrong word on a shelf.
  */
-function goalText(milestone: MilestoneDef): string {
-	switch (milestone.stat) {
-		case "matches":
-			return milestone.threshold === 1 ? "Play 1 match" : `Play ${milestone.threshold} matches`;
-		case "wins":
-			return milestone.threshold === 1 ? "Win 1 match" : `Win ${milestone.threshold} matches`;
-		case "hits":
-			return `Land ${milestone.threshold} hits`;
-		case "crown":
-			return "Wear the crown";
-	}
-}
-
-/** Where a cosmetic is worn, in one word — the only thing `slot` means to a player. */
 function slotLabel(def: CosmeticDef): string {
-	return def.slot === "trail" ? "Trail" : "Elimination";
+	if (def.slot === "trail") return "Trail";
+	if (def.slot === "elimination") return "Elimination";
+
+	return "Ball";
 }
 
 /**
@@ -136,8 +119,16 @@ export class ShopController implements OnStart {
 	private scope = Fusion.scoped();
 	private mounted = false;
 
-	/** Which of the three views is showing. `Powers` first, because it is the one to act on. */
-	private currentTab = Fusion.Value<TabName>(this.scope, "Powers");
+	/**
+	 * Which of the two views is showing.
+	 *
+	 * **`Power & Items` first, because it is the one to act on.** The old seed was `Powers` for the same
+	 * reason — the tab a player opened the panel for is the one with the button, and the catalogue is
+	 * something to look at rather than something to do. TABS puts the catalogue first because that is the
+	 * reading order; this puts the chest up because that is the *opening* order, and the two are allowed to
+	 * differ.
+	 */
+	private currentTab = Fusion.Value<TabName>(this.scope, "Power & Items");
 
 	/**
 	 * The player's wallet, as a number.
@@ -191,7 +182,7 @@ export class ShopController implements OnStart {
 
 		const theme = hudTheme();
 
-		print("[Shop] panel up — Powers (coins) · Earned (milestones) · Premium (catalogue)");
+		print("[Shop] panel up — Cosmetics (catalogue) · Power & Items (the chest, over the whole pool)");
 
 		const panel = addPanelFrame(
 			this.scope,
@@ -208,9 +199,8 @@ export class ShopController implements OnStart {
 		});
 
 		const content = addContentBand(this.scope, panel, 3);
+		this.addCosmeticsPane(content, theme);
 		this.addPowersPane(content, theme);
-		this.addEarnedPane(content, theme);
-		this.addPremiumPane(content, theme);
 
 		this.addFooter(panel, theme);
 
@@ -263,9 +253,9 @@ export class ShopController implements OnStart {
 		const pane = addPane(
 			this.scope,
 			content,
-			"Powers",
-			1,
-			Fusion.Computed(this.scope, (use) => use(this.currentTab) === "Powers"),
+			"PowerItems",
+			2,
+			Fusion.Computed(this.scope, (use) => use(this.currentTab) === "Power & Items"),
 		);
 		const grid = addGrid(this.scope, pane, COLUMNS, POWER_ROSTER.size());
 
@@ -283,61 +273,10 @@ export class ShopController implements OnStart {
 		});
 	}
 
-	// ---------- tab 2: earned ----------
+	// ---------- tab 1: cosmetics ----------
 
 	/**
-	 * Milestones: free, and never for sale.
-	 *
-	 * **Two states rather than a progress bar, and that is a missing data source rather than a design
-	 * preference.** A tile reading "4/25 wins" needs the player's *current* win count on the client, and
-	 * there is no such attribute: `EconomyService` keeps `matches` and `wins` inside its private record
-	 * and publishes neither, and of the four counters only `hits` exists as one (`StatsService`'s
-	 * lifetime `Stat_HITS`). Drawing a fraction would mean counting wins on this machine — a second,
-	 * client-side copy of a number the server owns and acts on, free to disagree with the server that
-	 * actually hands the cosmetic over. So a tile shows the goal and whether it is met, and a progress
-	 * figure waits for the server to publish the counters it already has.
-	 *
-	 * What *can* be shown honestly is ownership, because `OWNED_COSMETICS_ATTRIBUTE` is the server's own
-	 * answer — and since the server grants on reaching the threshold, "owned" and "earned" are the same
-	 * fact. There is no third "reached but pending" state to draw.
-	 */
-	private addEarnedPane(content: Frame, theme: HudTheme): void {
-		const pane = addPane(
-			this.scope,
-			content,
-			"Earned",
-			2,
-			Fusion.Computed(this.scope, (use) => use(this.currentTab) === "Earned"),
-		);
-		const grid = addGrid(this.scope, pane, COLUMNS, MILESTONES.size());
-
-		MILESTONES.forEach((milestone, index) => {
-			const cosmetic: CosmeticDef | undefined = COSMETICS[milestone.cosmeticId];
-			const reward = cosmetic !== undefined ? cosmetic.name : milestone.cosmeticId;
-
-			const tile = addTile(this.scope, grid, theme, milestone.name, index, true);
-
-			// The name bar carries the achievement and the status line carries the reward *and* the goal,
-			// so a tile says what a player gets as well as what they have to do for it.
-			Fusion.Hydrate(this.scope, tile.statusLabel)({
-				Text: Fusion.Computed(this.scope, (use) =>
-					ownedCosmeticIdsOf(use(this.cosmetics)).has(milestone.cosmeticId)
-						? `${reward} · Earned`
-						: `${reward} · ${goalText(milestone)}`,
-				),
-				TextColor3: Fusion.Computed(this.scope, (use) =>
-					ownedCosmeticIdsOf(use(this.cosmetics)).has(milestone.cosmeticId)
-						? theme.colors.success
-						: theme.colors.textSecondary,
-				),
-			});
-		});
-	}
-
-	// ---------- tab 3: premium ----------
-
-	/**
-	 * The premium catalogue — and **nothing on this shelf can be bought, which the panel says.**
+	 * The cosmetics catalogue — and **nothing on this shelf can be bought, which the panel says.**
 	 *
 	 * **There is no purchase path in this project at all.** No `MarketplaceService`, no prompt, no
 	 * ownership check, no grant: a Buy button would take a player's Robux and hand back nothing, because
@@ -347,14 +286,25 @@ export class ShopController implements OnStart {
 	 * **Every `gamepassId` in the config is `0` today too**, so even a prompt could not be aimed: the ids
 	 * have to exist in the creator dashboard first. Those two facts together are why the status line is a
 	 * statement rather than an apology.
+	 *
+	 * **It renders `PREMIUM_COSMETICS` because that is the only buyable set that exists, not because the
+	 * tab is about a price tier.** The shelf is "cosmetics you could buy"; the set it draws from is called
+	 * premium because every entry in it carries a price, and the day something is bought a different way it
+	 * belongs here without this method being renamed a second time.
+	 *
+	 * **Owned entries are marked in the status line rather than by a border.** The Inventory's accent
+	 * outline means *equipped*, which is a state that does not exist in a shop — a tile here can be owned
+	 * and worn, owned and not worn, or not owned at all, and only the middle fact belongs to this panel. So
+	 * the marker is the word `Owned` in the success colour, next to the price it replaces: one text line that
+	 * already exists, and no second marker colour for a different kind of "on".
 	 */
-	private addPremiumPane(content: Frame, theme: HudTheme): void {
+	private addCosmeticsPane(content: Frame, theme: HudTheme): void {
 		const pane = addPane(
 			this.scope,
 			content,
-			"Premium",
-			3,
-			Fusion.Computed(this.scope, (use) => use(this.currentTab) === "Premium"),
+			"Cosmetics",
+			1,
+			Fusion.Computed(this.scope, (use) => use(this.currentTab) === "Cosmetics"),
 		);
 		const grid = addGrid(this.scope, pane, COLUMNS, PREMIUM_COSMETICS.size());
 
@@ -386,9 +336,9 @@ export class ShopController implements OnStart {
 	 * The one action the panel has, in the band the old layout kept for it.
 	 *
 	 * **The footer button is the chest, and its state is the whole of what this panel can do.** The mock
-	 * put `OPEN BOX` here and showed it only when a box was open; this shows the chest while the Powers
-	 * tab is up and there is still a power to win, and swaps itself for a line saying the roster is
-	 * complete when there is not.
+	 * put `OPEN BOX` here and showed it only when a box was open; this shows the chest while the Power &
+	 * Items tab is up and the pool still holds something this player does not own, and swaps itself for a
+	 * line saying so when it does not.
 	 *
 	 * **The outcome line lives here rather than on the shelf** because it is about the action, and
 	 * because a shelf of fixed tiles is the one place in this panel with no room for a sentence of
@@ -426,12 +376,12 @@ export class ShopController implements OnStart {
 
 		const complete = addMessageLine(this.scope, theme, footer, 2);
 		complete.Name = "ChestComplete";
-		complete.Text = "All powers collected.";
+		complete.Text = "Nothing left in the chest to win.";
 		complete.TextColor3 = theme.colors.success;
 		Fusion.Hydrate(this.scope, complete)({
 			Visible: Fusion.Computed(
 				this.scope,
-				(use) => use(this.currentTab) === "Powers" && this.unownedPowers(use(this.powers)).size() === 0,
+				(use) => use(this.currentTab) === "Power & Items" && this.unownedPowers(use(this.powers)).size() === 0,
 			),
 		});
 
@@ -449,7 +399,7 @@ export class ShopController implements OnStart {
 		Fusion.Hydrate(this.scope, open)({
 			Visible: Fusion.Computed(
 				this.scope,
-				(use) => use(this.currentTab) === "Powers" && this.unownedPowers(use(this.powers)).size() > 0,
+				(use) => use(this.currentTab) === "Power & Items" && this.unownedPowers(use(this.powers)).size() > 0,
 			),
 		});
 	}

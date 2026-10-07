@@ -16,6 +16,11 @@ import { EQUIPPED_ELIMINATION_ATTRIBUTE, EQUIPPED_TRAIL_ATTRIBUTE } from "./cons
  * {@link DELIMITER} on either the wire or the DataStore. {@link equippedAttributeOf} is the one table
  * that says which name belongs to which slot, so the server's publish and the client's read cannot
  * disagree about it.
+ *
+ * **The pool is the fourth, and it is the one that needs nothing new here.** It is a `Set<AbilityKind>`
+ * exactly like `powers`, so it reuses {@link joinPowers} and {@link ownedPowersOf} rather than growing a
+ * second packing convention for a second set of the same type — the only thing it adds to this file is a
+ * field and the one default that cannot be "nothing".
  */
 const DELIMITER = "|";
 
@@ -44,6 +49,24 @@ export function equippedAttributeOf(slot: string): string | undefined {
 export interface EconomyRecord {
 	coins: number;
 	powers: Set<AbilityKind>;
+	/**
+	 * The subset of {@link powers} the item box may grant: a pool, not a loadout.
+	 *
+	 * **A second set beside ownership rather than a flag on the first, because the two answer different
+	 * questions.** `powers` is "what this player has"; this is "what the box is allowed to give them". A
+	 * player owns a power forever and can take it out of the pool and put it back at will, so one set cannot
+	 * be the other: the moment a power is toggled off, ownership and pool membership genuinely differ.
+	 *
+	 * **Empty is a real state and the honest one.** Every power turned off means the box has nothing to give,
+	 * which the panel says out loud — see `POWER_POOL_ATTRIBUTE`. There is no "unset" spelling: a record
+	 * always has a pool, and {@link toEconomyRecord} is what guarantees it, defaulting a record that predates
+	 * the field to *everything owned* rather than to nothing.
+	 *
+	 * **No new packing helper is needed.** This is a `Set<AbilityKind>` like `powers`, so it travels as a
+	 * `|`-joined string through the same {@link joinPowers} and {@link ownedPowersOf} — a second convention
+	 * for the same data would be a second thing to keep in step.
+	 */
+	pool: Set<AbilityKind>;
 	cosmetics: Set<string>;
 	/**
 	 * What is worn, keyed by slot: `"trail" -> "trail.aurora"`.
@@ -68,6 +91,7 @@ export interface EconomyRecord {
 export interface SavedEconomy {
 	coins: number;
 	powers: string[];
+	pool: string[];
 	cosmetics: string[];
 	equipped: Record<string, string>;
 	matches: number;
@@ -76,7 +100,7 @@ export interface SavedEconomy {
 
 /** A fresh record, which is also what a corrupt or absent saved value decodes to. */
 export function blankEconomyRecord(): EconomyRecord {
-	return { coins: 0, powers: new Set(), cosmetics: new Set(), equipped: new Map(), matches: 0, wins: 0 };
+	return { coins: 0, powers: new Set(), pool: new Set(), cosmetics: new Set(), equipped: new Map(), matches: 0, wins: 0 };
 }
 
 /**
@@ -105,6 +129,22 @@ export function blankEconomyRecord(): EconomyRecord {
  * checked against the catalogue here, deliberately — this file imports no config, and an id this build
  * no longer knows is the client's problem to ignore, on the precedent {@link ownedCosmeticIdsOf} sets
  * for the owned set.
+ *
+ * **The pool is the one field that defaults to something other than nothing, and the reason is that the
+ * two candidate defaults are not equally bad.** A record written before the pool existed has no `pool`
+ * key; reading it as an *empty* pool would mean a box that gives nothing to a player who owns powers,
+ * with nothing on screen, in the log or in the attribute to say why — a silent feature failure that a
+ * player experiences as "the box is broken". Reading it as *everything they own* is what that player
+ * would have chosen anyway, because the pool only exists to let them narrow the box down. So the
+ * absent field is filled from the same entries that fill ownership — one loop, one filter, one order,
+ * so the two sets cannot disagree about which strings were real ability names.
+ *
+ * **An explicitly empty pool is respected, and that is the residual risk worth naming.** `[]` on a
+ * record means the player turned every power off and must stay empty; a partial write that lost the
+ * contents would be indistinguishable from that decision, and it is read as the decision. The
+ * alternative — treating an empty array as damage — would make "everything off" impossible to store,
+ * which is a state the panel is built to show. A corrupt value that is not a table at all takes the
+ * default, because there is no decision to respect in a number.
  */
 export function toEconomyRecord(value: unknown): EconomyRecord {
 	const record = blankEconomyRecord();
@@ -116,9 +156,23 @@ export function toEconomyRecord(value: unknown): EconomyRecord {
 	if (typeIs(saved.matches, "number")) record.matches = math.max(0, math.floor(saved.matches));
 	if (typeIs(saved.wins, "number")) record.wins = math.max(0, math.floor(saved.wins));
 
+	// **Read before the powers are, because the two loops are one decision.** `hasPool` says whether this
+	// record has ever been written by a build that knew about the pool, and the powers loop is where the
+	// default is applied — see the doc comment above for why the default is "owned" rather than "empty".
+	const hasPool = typeIs(saved.pool, "table");
+
 	if (typeIs(saved.powers, "table")) {
 		for (const entry of saved.powers as unknown[]) {
-			if (typeIs(entry, "string") && isAbilityKind(entry)) record.powers.add(entry);
+			if (!typeIs(entry, "string") || !isAbilityKind(entry)) continue;
+
+			record.powers.add(entry);
+			if (!hasPool) record.pool.add(entry);
+		}
+	}
+
+	if (hasPool) {
+		for (const entry of saved.pool as unknown[]) {
+			if (typeIs(entry, "string") && isAbilityKind(entry)) record.pool.add(entry);
 		}
 	}
 
@@ -145,6 +199,7 @@ export function toSavedEconomy(record: EconomyRecord): SavedEconomy {
 	return {
 		coins: record.coins,
 		powers: [...record.powers],
+		pool: [...record.pool],
 		cosmetics: [...record.cosmetics],
 		equipped,
 		matches: record.matches,

@@ -1095,3 +1095,44 @@ export function addCentredMessage(
 
 	return holder;
 }
+
+/**
+ * A wrapped explanatory line: the sentence a tab needs before a shelf of switches makes sense.
+ *
+ * **`AutomaticSize.Y` and a relative width, so it grows into however many lines the sentence takes.**
+ * That is the opposite trade from {@link addMessageLine}, and the difference is why this is a builder of
+ * its own rather than a flag on that one: a footer message must *not* grow, because a band that changes
+ * height when a sentence appears moves the band above it, while an explanation must not be clipped or
+ * scaled down to fit — a sentence shrunk to fit a narrow column is a sentence nobody reads. Two
+ * requirements pulling opposite ways on the same property is the signal the callers should stop sharing
+ * the builder, which is what this is.
+ *
+ * Left to the theme's own caption size rather than `TextScaled`, for the same reason: scaling is an answer
+ * to "this must fit", and the answer here is "this wraps".
+ */
+export function addNoteLine(
+	scope: Fusion.Scope<unknown>,
+	theme: HudTheme,
+	parent: Frame,
+	text: string,
+	order: number,
+): TextLabel {
+	// No size passed, deliberately: it is what makes `Text` set `AutomaticSize.Y` and a relative width in
+	// the first place, which is the whole of what this builder wants from it.
+	const label = Text(scope, { text, variant: "caption" });
+
+	label.TextColor3 = theme.colors.textSecondary;
+	label.TextXAlignment = Enum.TextXAlignment.Center;
+	label.TextYAlignment = Enum.TextYAlignment.Top;
+	// Scale padding, so the text never touches a column's edge on a narrow screen — the same relative-inset
+	// rule the bands follow, at the one size where a pixel inset would be most of the available width.
+	Fusion.New(scope, "UIPadding")({
+		Parent: label,
+		PaddingLeft: new UDim(0.04, 0),
+		PaddingRight: new UDim(0.04, 0),
+	});
+	label.LayoutOrder = order;
+	label.Parent = parent;
+
+	return label;
+}

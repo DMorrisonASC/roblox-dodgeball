@@ -211,4 +211,22 @@ export const events = Net.Definitions.Create({
 	 * same shape `toggleThrow` and `markHeldBall` use.
 	 */
 	equipCosmetic: Net.Definitions.ClientToServerEvent<[slot: string, id: string]>(),
+
+	/**
+	 * Client → server: this player wants the named power in or out of their item-box pool.
+	 *
+	 * **A toggle rather than a setter, on {@link toggleThrow}'s precedent and for its exact reason.** The
+	 * wire carries a request to *flip* one power, not a pool to install, so a client that has lost track
+	 * of what it has — which is any client that has just joined, or joined back — cannot assert a pool the
+	 * server disagrees with. Flipping what the server already holds is a change the server can make
+	 * correctly whatever the client believes, which is the property a setter does not have.
+	 *
+	 * **The pool is not ownership, and this cannot grant anything.** The named power must be one the player
+	 * already owns, checked against the record — so the worst a malicious client can do is put something it
+	 * owns into a pool nothing reads yet. See `EconomyService.togglePowerPool` for the order of the checks.
+	 *
+	 * No reply event, for the reason {@link equipCosmetic} gives: the acknowledgement is the attribute
+	 * changing, which replicates on its own.
+	 */
+	togglePowerPool: Net.Definitions.ClientToServerEvent<[power: string]>(),
 });

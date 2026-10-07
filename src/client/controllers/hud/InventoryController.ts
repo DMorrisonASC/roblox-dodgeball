@@ -3,10 +3,21 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Text } from "@rbxts/big-ui";
 import Net from "@rbxts/net";
 import { Players } from "@rbxts/services";
-import { OWNED_COSMETICS_ATTRIBUTE } from "shared/constants";
-import { COSMETICS, MILESTONES } from "shared/config/economy.config";
-import type { CosmeticDef } from "shared/config/economy.config";
-import { EQUIPPED_ATTRIBUTE, equippedIdOf, ownedCosmeticIdsOf } from "shared/economy";
+import { ABILITY_NAMES, AbilityKind } from "shared/ability";
+import {
+	OWNED_COSMETICS_ATTRIBUTE,
+	OWNED_POWERS_ATTRIBUTE,
+	POWER_POOL_ATTRIBUTE,
+} from "shared/constants";
+import { COSMETICS, MILESTONES, POWER_ROSTER } from "shared/config/economy.config";
+import type { CosmeticDef, MilestoneDef } from "shared/config/economy.config";
+import {
+	EQUIPPED_ATTRIBUTE,
+	equippedIdOf,
+	ownedCosmeticIdsOf,
+	ownedPowersOf,
+	ownsPower,
+} from "shared/economy";
 import { events } from "shared/networking";
 import { INTERMISSION, inventoryOpen, roundPhase } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
@@ -23,6 +34,7 @@ import {
 	addGlyph,
 	addHeaderBand,
 	addMessageLine,
+	addNoteLine,
 	addPanelFrame,
 	addPane,
 	addPill,
@@ -52,6 +64,11 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
 const SLOT_PRESENTATION: Record<string, { tab: string; colour: TabColour; heading: string }> = {
 	trail: { tab: "Trails", colour: "accent", heading: "Your Trails" },
 	elimination: { tab: "Eliminations", colour: "coin", heading: "Your Eliminations" },
+	// **The category that exists ahead of its content, and the whole point of the structure.** A ball slot
+	// is a promise — the appearance work is heading toward per-ball models — so its tab is offered now and
+	// its pane says what it is. Withholding the tab until a `CosmeticDef` existed would mean the structure
+	// could only be seen once it was no longer the thing being built, which is the opposite of useful.
+	ball: { tab: "Balls", colour: "warning", heading: "Your Balls" },
 };
 
 /**
@@ -64,13 +81,62 @@ const SLOT_PRESENTATION: Record<string, { tab: string; colour: TabColour; headin
  * sentence instead of the two columns. A second slot with no render path would need its own line here, and
  * that is honest: "which slots can be drawn" is a fact about the renderer, not about the catalogue.
  */
-const UNRENDERED_SLOT = "elimination";
+const UNRENDERED_SLOT = "ball";
+
+/**
+ * The gap between the two runs of a shelf's `LayoutOrder`: owned tiles from 2, locked tiles from 1000.
+ *
+ * **The shelf is ordered owned-first and this number is how that is said.** Every catalogued cosmetic gets
+ * both an owned tile and a locked one — two tiles, complementary `Visible`s, because the owned one carries
+ * the equip button and the locked one must carry none, and a button cannot be added or removed after
+ * construction. Order then decides which run a player reads first whenever both are present, and a thousand
+ * is simply a number no catalogued slot will reach: the alternative, interleaving them by catalogue order,
+ * would put a player's own items between rows of things they cannot press.
+ */
+const LOCKED_ORDER_BASE = 1000;
 
 /** What the unrendered slot says in place of its columns. */
 const COMING_SOON = "Coming Soon";
 
 /** The shelf entry that means "nothing equipped". Not a `COSMETICS` key — see {@link addDefaultTile}. */
 const DEFAULT_NAME = "Default";
+
+/**
+ * The tab that is not a cosmetic slot, and why it is a name here rather than a `SLOT_PRESENTATION` entry.
+ *
+ * **The pool is a different kind of thing from the three cosmetic slots, so it is not a slot.** A slot is
+ * somewhere a cosmetic is *worn*, and its value is one id chosen from a set of alternatives; the pool is
+ * which powers an item box may *give*, and its value is a set of its own. Modelling it as a slot would mean
+ * `CosmeticDef` growing a `"power"` — a def whose ownership is checked against a different attribute, whose
+ * id is an `AbilityKind` rather than a cosmetic id, and whose `gamepassId`, `priceRobux` and `colors` fields
+ * mean nothing at all. That is a type that lies to every reader of it, so the Powers tab is appended to the
+ * strip by name and its pane is built by a method of its own.
+ */
+const POWER_TAB = "Powers";
+
+/** The Powers tab's colour job — a third distinct one, so the strip reads as three kinds of thing. */
+const POWER_TAB_COLOUR: TabColour = "success";
+
+/**
+ * What the pool does, said above the switches.
+ *
+ * **A tab of toggles with no explanation is a puzzle rather than a setting**, and the wording is chosen to
+ * answer the one question the tiles raise — *in or out of what?* — without using the word "pool", which is
+ * the server's name for it and not a player's.
+ */
+const POOL_NOTE = "The item box grants one of these at random.";
+
+/** The tab's empty state, for a player who owns nothing to switch on. */
+const NO_POWERS_NOTE = "No powers yet — the Power Chest in the Shop is where they come from.";
+
+/**
+ * What an empty pool means, said plainly.
+ *
+ * **The same honesty problem as an empty shelf, and the same answer**: a player who turns every power off
+ * has made a real choice with a real consequence, and a screen that merely showed an empty pool would leave
+ * them to work out that the box now gives nothing. Naming it is the difference between a setting and a bug.
+ */
+const EMPTY_POOL_NOTE = "Every power is switched off, so the box will have nothing to give.";
 
 /** How wide the equipped column is, as a fraction of the band, and the pixel bounds it may not leave. */
 const EQUIPPED_COLUMN_SCALE = 0.34;
@@ -96,6 +162,12 @@ function catalogueSlots(): string[] {
 	for (const [, def] of pairs(COSMETICS)) {
 		if (!slots.includes(def.slot)) slots.push(def.slot);
 	}
+
+	// **And the placeholder slot is appended whether or not the catalogue has anything in it**, which is the
+	// one place this function is not purely a read of `COSMETICS`. A category with no content is exactly the
+	// state the structure exists to make visible; deriving the list strictly from the catalogue would make
+	// "Balls" invisible until a ball existed, which is the same as not having built the category at all.
+	if (!slots.includes(UNRENDERED_SLOT)) slots.push(UNRENDERED_SLOT);
 
 	return slots;
 }
@@ -130,12 +202,47 @@ function ownedTotal(ownedText: string): number {
 }
 
 /** The milestone that grants `def`, or nothing for a premium cosmetic. */
-function grantOf(def: CosmeticDef): string | undefined {
+function milestoneOf(def: CosmeticDef): MilestoneDef | undefined {
 	for (const milestone of MILESTONES) {
-		if (milestone.cosmeticId === def.id) return milestone.name;
+		if (milestone.cosmeticId === def.id) return milestone;
 	}
 
 	return undefined;
+}
+
+/** The name of the milestone that grants `def`, or nothing. */
+function grantOf(def: CosmeticDef): string | undefined {
+	return milestoneOf(def)?.name;
+}
+
+/**
+ * The condition on a locked tile, from the milestone's own `stat` and `threshold`.
+ *
+ * **Four phrases, one per counter, and each is a clause rather than a fragment.** The prefix "Unlock by" is
+ * fixed by the tile, so what follows has to read as its object: "Unlock by playing 25 matches", "Unlock by
+ * wearing the crown". A bare figure — "25 matches" — would be a compound noun with no verb, and the *crown*
+ * has no number to state at all, which is why this switches on `stat` rather than formatting a count.
+ *
+ * **Deliberately not the wording the shop's `goalText` uses.** That helper writes goals for a tile being
+ * *aimed at* ("Win 1 match", "Land 50 hits", "Wear the crown"), and these are conditions on something a
+ * player can already see in their own shelf and wants. Two audiences, two sentences; one shared helper would
+ * force one of them to say the wrong thing.
+ */
+function unlockText(milestone: MilestoneDef): string {
+	switch (milestone.stat) {
+		case "matches":
+			return milestone.threshold === 1
+				? "Unlock by playing 1 match"
+				: `Unlock by playing ${milestone.threshold} matches`;
+		case "wins":
+			return milestone.threshold === 1
+				? "Unlock by winning 1 match"
+				: `Unlock by winning ${milestone.threshold} matches`;
+		case "hits":
+			return `Unlock by landing ${milestone.threshold} hits`;
+		case "crown":
+			return "Unlock by wearing the crown";
+	}
 }
 
 /**
@@ -178,10 +285,31 @@ export class InventoryController implements OnStart {
 	/** One value per slot, holding that slot's equipped id or `""` for the default. */
 	private readonly equipped = new Map<string, Fusion.Value<string>>();
 
+	/**
+	 * The `OWNED_POWERS_ATTRIBUTE` string, verbatim.
+	 *
+	 * **The second reader of this attribute on this machine, not the first** — the prompt that asked for this
+	 * tab says nothing on the client reads it, and that is wrong: `ShopController` has read it since the shop
+	 * was built, to draw which powers a player still has to collect. Kept here as the raw string rather than a
+	 * parsed set, so both panels parse it when they draw with the same helper the server writes it with, and
+	 * neither has to know what the other is doing with it.
+	 */
+	private powers = Fusion.Value(this.scope, "");
+
+	/**
+	 * The `POWER_POOL_ATTRIBUTE` string, verbatim.
+	 *
+	 * **`""` is a real value and not "not published yet": it means the box has nothing to give.** So unlike
+	 * the equipped attributes, which fall back to "the default" for anything unreadable, this one is taken at
+	 * its word — see {@link POWER_POOL_ATTRIBUTE} and the panel's empty-pool line.
+	 */
+	private pool = Fusion.Value(this.scope, "");
+
 	/** The slots, read off the catalogue once in `mount` so nothing recomputes them per frame. */
 	private slots: string[] = [];
 
 	private equipRemote?: ClientRemotes["equipCosmetic"];
+	private poolRemote?: ClientRemotes["togglePowerPool"];
 
 	onStart(): void {
 		// Spawned rather than done inline, matching the other HUDs: mounting waits for `PlayerGui`, and the
@@ -215,23 +343,24 @@ export class InventoryController implements OnStart {
 		const right = addHeaderBand(this.scope, theme, panel, 1, "Inventory", () => inventoryOpen.set(false));
 		this.addOwnedPill(right, theme);
 
-		// **The tabs are the catalogue's own slots and nothing else**, so a tab that exists is a tab with a
-		// shelf behind it. That is the difference from the version before this one, which offered a fixed
-		// pair of tabs over two shelves that could both be empty.
-		addTabStrip(
-			this.scope,
-			theme,
-			panel,
-			2,
-			this.slots.map((slot) => ({ name: tabOf(slot), colour: SLOT_PRESENTATION[slot]?.colour ?? "accent" })),
-			this.currentTab,
-			(tab) => {
-				if (DEBUG) print(`[Inventory] tab: ${tab}`);
-			},
-		);
+		// **The slot tabs are derived from the catalogue and the Powers tab is appended to them.** The first half
+		// is what makes a tab mean a shelf — every tab that exists here has tiles behind it, because the slots
+		// come from the cosmetics themselves. The second half is the one exception and it is deliberate: the pool
+		// is not a cosmetic slot ({@link POWER_TAB}), so it cannot be derived from one, and it goes last so the
+		// three cosmetic tabs stay grouped. Order is the only thing that sentence is saying.
+		const tabs: Array<{ name: string; colour: TabColour }> = this.slots.map((slot) => ({
+			name: tabOf(slot),
+			colour: SLOT_PRESENTATION[slot]?.colour ?? "accent",
+		}));
+		tabs.push({ name: POWER_TAB, colour: POWER_TAB_COLOUR });
+
+		addTabStrip(this.scope, theme, panel, 2, tabs, this.currentTab, (tab) => {
+			if (DEBUG) print(`[Inventory] tab: ${tab}`);
+		});
 
 		const content = addContentBand(this.scope, panel, 3);
 		this.slots.forEach((slot, index) => this.addSlotPane(content, theme, slot, index + 1));
+		this.addPowerPane(content, theme, this.slots.size() + 1);
 
 		this.addFooter(panel, theme);
 
@@ -343,13 +472,80 @@ export class InventoryController implements OnStart {
 		this.addShelfTile(shelf, theme, slot, DEFAULT_NAME, "", "No cosmetic", 1);
 
 		let order = 2;
+		let lockedOrder = LOCKED_ORDER_BASE;
+
 		for (const [, def] of pairs(COSMETICS)) {
 			if (def.slot !== slot) continue;
 
+			// **Two tiles per cosmetic, with complementary `Visible`s, and that is forced rather than chosen.**
+			// The owned tile carries the equip button and the locked one must carry none — and `addTile` takes
+			// its activation at construction, because big-ui reads props once. A single tile whose button came
+			// and went would mean parameterising the builder on a state, which is the signal that the two callers
+			// should stop sharing it. The cost is one hidden tile per item, which is the trade this shelf already
+			// makes for ownership.
+			const milestone = milestoneOf(def);
+			if (milestone !== undefined) {
+				const owned = Fusion.Computed(this.scope, (use) =>
+					ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id),
+				);
+
+				this.addLockedTile(shelf, theme, def.name, unlockText(milestone), owned, lockedOrder);
+				lockedOrder += 1;
+			}
+
+			// **A cosmetic no milestone grants and that the player does not own gets no tile at all.** That is
+			// what makes a premium item "owned-or-absent": there is nothing to state as its condition, because
+			// its unlock is a purchase and no purchase path exists. A locked tile reading "Unlock by" with
+			// nothing after it would be a tile that says the game cannot tell you why — worse than the item
+			// simply not being in a list of what you have and what you are working toward.
 			const granted = grantOf(def);
-			this.addShelfTile(shelf, theme, slot, def.name, def.id, granted !== undefined ? `From ${granted}` : "Premium", order);
+			this.addShelfTile(
+				shelf,
+				theme,
+				slot,
+				def.name,
+				def.id,
+				granted !== undefined ? `From ${granted}` : "Premium",
+				order,
+			);
 			order += 1;
 		}
+	}
+
+	/**
+	 * One locked tile: the item's name, the condition it is waiting on, and **no way to click it**.
+	 *
+	 * **The absence of an activation is the whole of the "not clickable" requirement.** `addTile` only builds
+	 * its hit button when it is given a callback, so a locked tile has no button at all rather than a button
+	 * that decides to do nothing — and that distinction is the difference between a tile that is not yours yet
+	 * and a panel that looks broken, because a dead button swallows the click and answers with nothing.
+	 *
+	 * **Marked by a heavier outline in the theme's own "unavailable" colour.** No colour was added: this theme
+	 * already names one for *a thing that cannot be used* ({@link HudTheme.colors.textDisabled}), which is what
+	 * a locked tile is, and doubling the border thickness is what separates it from an ordinary tile's
+	 * hairline — the same marker language the equipped tile uses, read the other way. A badge was refused for
+	 * the reason it was refused there: it costs the tile a line of its own to repeat what the outline and the
+	 * status line already say.
+	 *
+	 * The name is left at the colour the name bar gives every tile, deliberately. Muting it as well was the
+	 * first attempt and it put disabled grey on the accent bar, which is a contrast problem dressed up as a
+	 * second marker — the outline and the status line are enough to say this one is not yours.
+	 */
+	private addLockedTile(
+		shelf: ScrollingFrame,
+		theme: HudTheme,
+		name: string,
+		text: string,
+		owned: Fusion.UsedAs<boolean>,
+		order: number,
+	): void {
+		const locked = Fusion.Computed(this.scope, (use) => !use(owned));
+		const tile = addTile(this.scope, shelf, theme, name, order, locked);
+
+		tile.statusLabel.Text = text;
+		tile.statusLabel.TextColor3 = theme.colors.textDisabled;
+
+		Fusion.Hydrate(this.scope, tile.stroke)({ Color: theme.colors.textDisabled, Thickness: 2 });
 	}
 
 	/**
@@ -384,10 +580,103 @@ export class InventoryController implements OnStart {
 		const state = this.equipped.get(slot);
 		const worn = Fusion.Computed(this.scope, (use) => (state !== undefined ? use(state) : "") === id);
 
-		Fusion.Hydrate(this.scope, tile.stroke)({
-			Color: Fusion.Computed(this.scope, (use) => (use(worn) ? theme.colors.accent : theme.colors.border)),
-			Thickness: Fusion.Computed(this.scope, (use) => (use(worn) ? 2 : 1)),
+		this.markWhen(tile.stroke, worn, theme);
+	}
+
+	/**
+	 * The panel's one marker: accent-coloured and a pixel thicker while `on`, hairline border otherwise.
+	 *
+	 * **One function because two shelves show an "on" state and the two must not drift apart.** An equipped
+	 * tile and a power tile mean different things — one is *worn*, the other is *in the box* — but the question
+	 * the marker answers is the same question, and two copies of these four lines would be two places a colour
+	 * or a thickness could be changed separately. What each call site's mark *means* is documented there; how
+	 * it looks is decided once, here. No second marker colour was introduced: "on" is one idea in this panel
+	 * and the theme already has a colour for drawing attention.
+	 */
+	private markWhen(stroke: UIStroke, on: Fusion.UsedAs<boolean>, theme: HudTheme): void {
+		Fusion.Hydrate(this.scope, stroke)({
+			Color: Fusion.Computed(this.scope, (use) => (use(on) ? theme.colors.accent : theme.colors.border)),
+			Thickness: Fusion.Computed(this.scope, (use) => (use(on) ? 2 : 1)),
 		});
+	}
+
+	/**
+	 * The Powers pane: the pool's switches, and no equipped column.
+	 *
+	 * **Built as one full-width column rather than as the two a slot gets, because there is nothing to show
+	 * beside a shelf of powers.** The pool has no "current" item — nothing is worn — so an equipped column here
+	 * would be an empty box implying that one power is the active one, which is the exact misunderstanding this
+	 * tab has to avoid. It reuses `addColumns` with a single fill column all the same, so the padding, the
+	 * layout and the flex behaviour are identical to the other tabs and the shelves line up across tabs even
+	 * though this pane draws half of one.
+	 */
+	private addPowerPane(content: Frame, theme: HudTheme, order: number): void {
+		const pane = addPane(
+			this.scope,
+			content,
+			"powers",
+			order,
+			Fusion.Computed(this.scope, (use) => use(this.currentTab) === POWER_TAB),
+		);
+
+		const columns = addColumns(this.scope, pane, "PowerColumns", 1);
+		const column = addFillColumn(this.scope, columns, "PowerColumn", 1);
+
+		// **One label with a computed sentence rather than two labels with complementary `Visible`s.** All
+		// three states put a sentence in the same place and only one is ever true, so choosing between them is
+		// one read on one label instead of a visibility rule each — and the label can never be blank, which is
+		// what a player would see if two `Visible`s were ever both false.
+		const note = addNoteLine(this.scope, theme, column, "", 1);
+		Fusion.Hydrate(this.scope, note)({
+			Text: Fusion.Computed(this.scope, (use) => {
+				// Both `use()` calls first and unconditionally — a read inside a branch is a subscription that
+				// only exists while that branch is taken, which is how the round-status HUD once hid its own
+				// result.
+				const owned = use(this.powers);
+				const pool = use(this.pool);
+
+				if (ownedPowersOf(owned).size() === 0) return NO_POWERS_NOTE;
+				if (ownedPowersOf(pool).size() === 0) return `${POOL_NOTE} ${EMPTY_POOL_NOTE}`;
+
+				return POOL_NOTE;
+			}),
+		});
+
+		const shelf = addShelf(this.scope, column, theme, "PowerShelf", 2);
+
+		// **A tile for every power in the roster, shown once it is owned** — the trade the cosmetic shelves
+		// make, for the same reason: the shelf's geometry comes from a list that never changes during a session,
+		// so a chest grant flips one tile's `Visible` rather than rebuilding the shelf around an item it had no
+		// cell for. `POWER_ROSTER` rather than `AbilityKind`, so the shelf shows what a chest can hand out and
+		// not the whole vocabulary.
+		POWER_ROSTER.forEach((kind, index) => this.addPowerTile(shelf, theme, kind, index + 1));
+	}
+
+	/**
+	 * One power tile: a switch on the pool, not a selection.
+	 *
+	 * **Ownership gates the tile and pool membership marks it, and they are deliberately two expressions.**
+	 * `owned` decides whether there is anything to press at all — a power you do not have is not a switch that
+	 * happens to be off, it is not a switch — while the marker shows the state of one you do have. Collapsing
+	 * the two would produce exactly the misunderstanding this tab has to avoid: an unowned power drawn as
+	 * something you switched off.
+	 *
+	 * **The status line is left empty, and that is a decision rather than an omission.** The cosmetic tiles use
+	 * it for provenance — which milestone granted the item — and every power in the roster has the same answer,
+	 * so there is nothing to distinguish one tile from another on that line. Writing the pool state there
+	 * instead would say the border's sentence a second time on a tile whose whole job is to be a switch.
+	 *
+	 * The click carries no value: it asks for a flip, so a client that is wrong about the current state still
+	 * asks for something the server can do correctly — see the remote's declaration.
+	 */
+	private addPowerTile(shelf: ScrollingFrame, theme: HudTheme, kind: AbilityKind, order: number): void {
+		const owned = Fusion.Computed(this.scope, (use) => ownsPower(use(this.powers), kind));
+		const tile = addTile(this.scope, shelf, theme, ABILITY_NAMES[kind], order, owned, () =>
+			this.requestTogglePower(kind),
+		);
+
+		const inPool = Fusion.Computed(this.scope, (use) => ownedPowersOf(use(this.pool)).has(kind));
+		this.markWhen(tile.stroke, inPool, theme);
 	}
 
 	/** The count of what is owned, in the header — the one figure this panel has. */
@@ -428,6 +717,12 @@ export class InventoryController implements OnStart {
 			const owned = use(this.cosmetics);
 			const tab = use(this.currentTab);
 
+			// **The Powers tab is answered first, because it is not a slot and the lookup below would simply miss
+			// on it.** Its state lives in the pane's own note — the pool is reported there, where the switches are,
+			// rather than under the panel — so there is nothing left for this line to add. The explicit return is
+			// what says that is deliberate rather than a lookup that quietly found nothing.
+			if (tab === POWER_TAB) return "";
+
 			const slot = this.slots.find((candidate) => tabOf(candidate) === tab);
 			if (slot === undefined) return "";
 
@@ -466,7 +761,23 @@ export class InventoryController implements OnStart {
 	}
 
 	/**
-	 * Bridges the owned-cosmetics attribute, and each slot's equipped attribute, into `Fusion` values.
+	 * Asks for `kind` to be flipped in or out of the box's pool.
+	 *
+	 * **No value travels, and that is the point of the remote being a toggle.** Sending "make it on" would be
+	 * the client asserting a state, and this panel only ever *reads* the pool — so a click on a tile whose
+	 * replicated state was stale would ask for the state it already had and change nothing, silently. Asking
+	 * for a flip is a request the server can honour correctly whatever this machine believes, which is the same
+	 * argument the equipped tiles' re-send makes from the other side.
+	 */
+	private requestTogglePower(kind: AbilityKind): void {
+		if (DEBUG) print(`[Inventory] pool toggle: ${kind}`);
+
+		this.poolRemote?.SendToServer(kind);
+	}
+
+	/**
+	 * Bridges four attributes into `Fusion` values: the owned cosmetics, each slot's equipped id, the owned
+	 * powers, and the box's pool.
 	 *
 	 * The opening reads are not redundant with the connections: a player who already owns something when this
 	 * mounts — which is every player after their first win — would otherwise see an empty shelf until
@@ -484,8 +795,27 @@ export class InventoryController implements OnStart {
 			this.cosmetics.set(typeIs(value, "string") ? value : "");
 		};
 
+		// The two power attributes, read the same way and for the same reason. **Neither is defaulted to
+		// anything**: `POWER_POOL_ATTRIBUTE`'s empty string is a real answer — the box has nothing to give — so a
+		// fallback here would quietly turn "the player switched everything off" into "the player owns nothing",
+		// which are different sentences on the tab.
+		const readPowers = () => {
+			const value = player.GetAttribute(OWNED_POWERS_ATTRIBUTE);
+			this.powers.set(typeIs(value, "string") ? value : "");
+		};
+
+		const readPool = () => {
+			const value = player.GetAttribute(POWER_POOL_ATTRIBUTE);
+			this.pool.set(typeIs(value, "string") ? value : "");
+		};
+
 		this.scope.push(player.GetAttributeChangedSignal(OWNED_COSMETICS_ATTRIBUTE).Connect(readCosmetics));
+		this.scope.push(player.GetAttributeChangedSignal(OWNED_POWERS_ATTRIBUTE).Connect(readPowers));
+		this.scope.push(player.GetAttributeChangedSignal(POWER_POOL_ATTRIBUTE).Connect(readPool));
+
 		readCosmetics();
+		readPowers();
+		readPool();
 
 		for (const slot of this.slots) {
 			const attribute = EQUIPPED_ATTRIBUTE[slot];
@@ -509,5 +839,6 @@ export class InventoryController implements OnStart {
 	 */
 	private watchEquip(): void {
 		this.equipRemote = events.Client.Get("equipCosmetic");
+		this.poolRemote = events.Client.Get("togglePowerPool");
 	}
 }
