@@ -61,7 +61,8 @@
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
 		"roblox-dodgeball:out/client/controllers/hud/DockController@DockController": "client/controllers/hud/DockController@DockController",
-		"roblox-dodgeball:out/client/controllers/hud/InventoryController@InventoryController": "client/controllers/hud/InventoryController@InventoryController"
+		"roblox-dodgeball:out/client/controllers/hud/InventoryController@InventoryController": "client/controllers/hud/InventoryController@InventoryController",
+		"roblox-dodgeball:out/client/controllers/hud/ScoreHudController@ScoreHudController": "client/controllers/hud/ScoreHudController@ScoreHudController"
 	},
 	"metadata": {}
 }

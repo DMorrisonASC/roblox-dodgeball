@@ -53,7 +53,7 @@ export const BALL_CONFIG = {
 	 * of a few seconds, raise it; a ball that looks like it hit a wall of treacle the moment
 	 * it lands, lower it.
 	 */
-	ROLL_RESISTANCE: 40,
+	ROLL_RESISTANCE: 80,
 
 	/**
 	 * How slowly a grounded ball may be moving before it is stopped outright, in studs per
@@ -80,7 +80,7 @@ export const BALL_CONFIG = {
 	 * Read by `BallService` as the ball's `CustomPhysicalProperties.friction`, whose engine
 	 * maximum this is.
 	 */
-	GROUND_FRICTION: 2,
+	GROUND_FRICTION: 10,
 
 	/**
 	 * How much of its approach speed a ball keeps when it bounces, as a fraction. Read
@@ -94,7 +94,7 @@ export const BALL_CONFIG = {
 	 * changes nothing about how far that ball travels — which is why taking it down to almost
 	 * no bounce left the roll exactly as it was. See {@link BALL_CONFIG.ROLL_RESISTANCE}.
 	 */
-	ELASTICITY: 0.3,
+	ELASTICITY: 0.5,
 
 	/**
 	 * The ball's mass per unit volume, in the engine's own units — roughly the density
@@ -253,6 +253,31 @@ export const BALL_CONFIG = {
 	THROW_SPEED: 0,
 
 	/**
+	 * The gravity the ball falls under, in studs per second squared — **not the world's**.
+	 *
+	 * **Placeholder.** The ball is an ordinary unanchored `Part`, so the engine pulls it down at
+	 * `Workspace.Gravity` like everything else, and Roblox has no per-part gravity property to set instead.
+	 * `BallFactory` therefore cancels the *difference* with a `VectorForce` on each ball: raise this number
+	 * towards the world's and the ball falls heavier, lower it and the ball hangs. The world is untouched, so
+	 * characters, corpses and loose parts keep falling at the arena's own gravity.
+	 *
+	 * **That force is only real if it is given an `Attachment0`.** A `VectorForce` pushes on the attachment it
+	 * is handed and on nothing else, so one with none is inert — no error, no warning, and the ball simply
+	 * falls at the world's gravity while every solve and every prediction in the game says otherwise. It is
+	 * worth knowing because the symptom is not "the ball is too heavy": it is a throw that lands short, and a
+	 * log full of plans that all look correct.
+	 *
+	 * **Both sides read this**, and that is the point of it being here rather than inline: the throw solve in
+	 * `shared/throw.ts` has to curve the ball under the same pull the engine will apply, or the aim guide draws
+	 * a path the ball does not fly — a trajectory that lies, which is worse than one that misses. A number
+	 * decided in two places is a number that will disagree.
+	 *
+	 * **Flight time is the knob, not speed.** Lowering this lengthens the ball's hang, which is what makes a
+	 * throw watchable and catchable; the speed that then covers the distance is `THROW_MAX_SPEED`'s business.
+	 */
+	BALL_GRAVITY: 80,
+
+	/**
 	 * How much faster than the bare minimum the arcing throw is launched, as a
 	 * multiplier.
 	 *
@@ -296,7 +321,7 @@ export const BALL_CONFIG = {
 	 * angle instead would slow the ball without costing range, but it would stop the throw being
 	 * flat — see `MIN_THROW_ANGLE` in `shared/Trajectory.ts`.
 	 */
-	THROW_MAX_SPEED: 200,
+	THROW_MAX_SPEED: 150,
 
 	/**
 	 * **A multiplier on the derived launch correction. It should stay at 1.**
@@ -309,8 +334,15 @@ export const BALL_CONFIG = {
 	 * ```
 	 *
 	 * which for the gravity-only arcs is the figure this field was written for,
-	 * `THROW_VERTICAL_BOOST_SCALE * Workspace.Gravity / (2 * Workspace:GetRealPhysicsFPS())`, aimed
-	 * straight up.
+	 * `THROW_VERTICAL_BOOST_SCALE * gravity / (2 * Workspace:GetRealPhysicsFPS())`, aimed straight up. That
+	 * `gravity` is now the ball's, taken from the plan, and no longer the world's.
+	 *
+	 * **The world's gravity in the shape this replaces is a fossil, and a telling one.** The fixed value this
+	 * field used to hold — `THROW_VERTICAL_BOOST: 2.5` — works out to a boost for `196.2`, and it was measured
+	 * as correct. It *was* correct: the ball's gravity force had no `Attachment0`, so it was inert and the
+	 * ball really did fall at `Workspace.Gravity` — at two and a half times everything else in the game
+	 * believed. A derived figure disagreeing with a hand-measured one is the finding, not the obstacle. See
+	 * {@link BALL_CONFIG.BALL_GRAVITY}.
 	 *
 	 * **Why that shape.** The engine's integrator advances a body by its current velocity and only
 	 * then bends it, so a step's worth of the pull is missing from the velocity that step acts on: the
@@ -388,7 +420,7 @@ export const BALL_CONFIG = {
 	 * **Zeroed, and it should stay zeroed.** A non-zero nudge is a fault in the plan being papered over.
 	 * Tune with it, write down what it took, fix the cause, and put it back to zero.
 	 */
-	THROW_LAUNCH_NUDGE: { forward: 0.5, left: 0.5, up: 0 },
+	THROW_LAUNCH_NUDGE: { forward: 1, left: 0.5, up: 0 },
 
 	/**
 	 * Launch angle of the curveball, in degrees.

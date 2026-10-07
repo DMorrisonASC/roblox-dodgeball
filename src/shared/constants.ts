@@ -284,6 +284,30 @@ export const ROUND_TIME_ATTRIBUTE = "TimeRemaining";
 export const ROUND_WINNER_ATTRIBUTE = "Winner";
 
 /**
+ * Attributes on the **`RoundStatus` folder** holding each side's points, as numbers.
+ *
+ * **The one thing about a Score Rush round the client was never told.** `RoundService.scores` has been a
+ * server-side `Map<TeamLabel, number>` since the mode was written — written on every hit and every catch,
+ * read only to `print` a line and by the mode itself, and never published. There was no scoreboard because
+ * there was nothing to draw one from.
+ *
+ * **Two attributes rather than one joined string or a folder of two children.** `ROUND_TIME_ATTRIBUTE` and
+ * `COINS_ATTRIBUTE` are both bare numbers, and a reader of this wants a number rather than a string to split;
+ * a folder would be a second instance to create, hold and clean up for two integers. The pair is written
+ * together on every change — see `RoundService.publishScores` — so no reader sees one side newer than the
+ * other.
+ *
+ * **`A` and `B` rather than a team name, because the sides are not teams.** A round is two arbitrary sides
+ * whose *names* change per mode (`MODE_SIDE_NAMES`) and whose colours come from `MODE_TEAM_COLORS`;
+ * `TEAM_A`/`TEAM_B` are the stable labels underneath both, and these names use them for the same reason the
+ * server's own map is keyed by them.
+ */
+export const ROUND_SCORE_A_ATTRIBUTE = "ScoreA";
+
+/** The other side's points. See {@link ROUND_SCORE_A_ATTRIBUTE}. */
+export const ROUND_SCORE_B_ATTRIBUTE = "ScoreB";
+
+/**
  * Attribute on {@link ROUND_STATUS_FOLDER}: **a count of the transitions the server has started**, bumped
  * the instant before it moves everybody.
  *
@@ -652,5 +676,5 @@ export const SUPER_MULTI_BALL_COUNT_ATTRIBUTE = "SuperMultiBallCount";
 export const SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE = "SuperMultiBallEndsAt";
 
 /** Diameter of the ball, in studs. */
-export const BALL_SIZE = 1.5;
+export const BALL_SIZE = 2;
 

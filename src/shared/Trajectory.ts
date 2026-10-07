@@ -89,12 +89,30 @@ export interface LaunchPlan {
 	/** Velocity to apply at that origin. */
 	velocity: Vector3;
 	/**
-	 * The arc that was actually used, which is not always the one asked for: a
-	 * `straight` or `curve` throw aimed above the launch line has no fall to solve
-	 * with and comes back as an `overhead` one. Read this, not your input, when
-	 * you want to know what happened.
+	 * The arc that was actually used.
+	 *
+	 * This is always the arc that was asked for. A `straight` or `curve` throw aimed
+	 * above the launch line used to come back as an `overhead` one when there was no
+	 * fall to solve with; that conversion is gone, because it fired on the shape of
+	 * an aim the player was still moving and changed the throw under them. A flat
+	 * throw that cannot reach now launches along the aim line at the cap speed and
+	 * arrives past or short of the marker. Read this, not your input, when you want
+	 * to know what happened.
 	 */
 	arc: ThrowArc;
+	/**
+	 * **The gravity this plan was solved against**, in studs per second squared.
+	 *
+	 * Carried on the plan rather than looked up by whoever simulates it, and that is the whole reason the
+	 * field exists: the drawn path, the throw probe and the server's own launch correction all have to
+	 * integrate the *same* pull the solve used. A consumer that reads the world's gravity instead — or reads
+	 * the config's because it remembered to, which is the same number with a weaker guarantee — draws a path
+	 * that misses by the ratio of the two, while every plan in the log looks correct.
+	 *
+	 * For the throws in this game it is `BALL_GRAVITY`, which is **not** `Workspace.Gravity`; see
+	 * `shared/config/ball.config.ts`.
+	 */
+	gravity: number;
 	/**
 	 * Constant world-space acceleration the flight runs under, on top of gravity.
 	 * Zero for every arc except the curve, which needs one: an initial velocity
@@ -330,6 +348,11 @@ export function planLaunch(
 		origin: from,
 		velocity,
 		arc,
+		// **Resolved once, here, so that no consumer ever has to make the same decision again.** This is the
+		// one place the fallback is allowed to apply: a plan made without a stated gravity reports the
+		// world's rather than silently leaving whoever draws it to guess, and every throw in this game
+		// states `BALL_GRAVITY` instead.
+		gravity: options.gravity ?? Workspace.Gravity,
 		acceleration: options.acceleration ?? new Vector3(),
 		flightTime: flightTimeTo(from, target, velocity),
 	};
@@ -354,10 +377,17 @@ export function minimumReachSpeed(origin: Vector3, target: Vector3, gravity = Wo
 	return math.sqrt(gravity * (height + math.sqrt(height * height + distance * distance)));
 }
 
-/** How to simulate the arc. All optional. */
+/** How to simulate the arc. All optional but {@link TrajectoryOptions.gravity}. */
 export interface TrajectoryOptions {
-	/** Gravity to integrate against. Defaults to `Workspace.Gravity`. */
-	gravity?: number;
+	/**
+	 * **Gravity to integrate against, in studs per second squared — required, and deliberately so.**
+	 *
+	 * It has no default, and it had one until this was fixed. A simulation that does not say what it falls
+	 * under is a simulation of a different ball, and the failure carries no error and no warning: the drawn
+	 * path simply misses by the ratio of the two gravities while the plan it came from is perfectly correct.
+	 * The value wanted is almost always {@link LaunchPlan.gravity}, read off the plan being simulated.
+	 */
+	gravity: number;
 	/**
 	 * Constant world acceleration on top of gravity, in studs per second squared.
 	 * This is what makes a curve — pass {@link LaunchPlan.acceleration} so the
@@ -428,7 +458,7 @@ const DEFAULT_MAX_TIME = 4;
  *
  * ```ts
  * const plan = planPlayerThrow(character, aimPoint);
- * const arc = new Trajectory(plan.origin, plan.velocity, { ignore: [character] });
+ * const arc = new Trajectory(plan.origin, plan.velocity, { gravity: plan.gravity, ignore: [character] });
  * print(arc.landing, arc.duration, arc.hit);
  * ```
  */
@@ -463,8 +493,10 @@ export class Trajectory {
 	/** Flight time to `landing`, in seconds. */
 	public readonly duration: number;
 
-	constructor(origin: Vector3, velocity: Vector3, options: TrajectoryOptions = {}) {
-		const gravity = options.gravity ?? Workspace.Gravity;
+	constructor(origin: Vector3, velocity: Vector3, options: TrajectoryOptions) {
+		// Taken as given rather than defaulted: see {@link TrajectoryOptions.gravity} for why there is no
+		// `?? Workspace.Gravity` on this line any more.
+		const gravity = options.gravity;
 		// Gravity and a constant acceleration are the same thing to an
 		// integrator, so they collapse into one pull vector. Keeping them
 		// separate in the options is for the reader, not the maths.

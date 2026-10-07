@@ -216,7 +216,7 @@ function launchCorrection(acceleration: Vector3): Vector3 {
 	// Up by half a step of gravity, and back along the throw's own pull by half a step of it. The
 	// second term is exactly zero for `straight` and `overhead` — `plan.acceleration` is the zero
 	// vector for both — so their launch is bit-for-bit what it was before this took a parameter.
-	return new Vector3(0, half * Workspace.Gravity, 0).sub(acceleration.mul(half));
+	return new Vector3(0, half * BALL_CONFIG.BALL_GRAVITY, 0).sub(acceleration.mul(half));
 }
 
 /**
@@ -538,7 +538,9 @@ export class BallService implements OnStart {
 		// would hurt whoever walked into it lying there.
 		ball.SetAttribute("Armed", false);
 		ball.Parent = Workspace;
-		ball.Massless = false;
+		// **Frees its weight along with its mass** — see `BallFactory.setHeld`, which will not write one
+		// without the other, and which is why this is not a bare `Massless = false` any more.
+		this.factory.setHeld(ball, false);
 		ball.CanCollide = true;
 		// **And answers queries again, which is the pair to the hand's `CanQuery = false`.** The ball is in
 		// the world now, so the aim preview is entitled to stop on it — and would, if it were not for the
@@ -705,7 +707,9 @@ export class BallService implements OnStart {
 		// the game that has business with a loose ball — the settle loop's ground probe, the drop
 		// reach — keeps it, because those only ever look at balls parented to `Workspace`.
 		ball.CanQuery = false;
-		ball.Massless = true;
+		// **Held: massless *and* without its own gravity**, because those are one fact — see
+		// `BallFactory.setHeld`. A force left on here would be lifting the character carrying the ball.
+		this.factory.setHeld(ball, true);
 		ball.Parent = model;
 
 		// And nobody's and nothing's — a caught ball is still armed and still named to the thrower it
@@ -1132,9 +1136,10 @@ export class BallService implements OnStart {
 		// `CanQuery = false`: from here the ball is a thing in the world, and a sweep is entitled to stop on
 		// it rather than passing through it because it used to be in somebody's hand.
 		ball.CanQuery = true;
-		ball.Massless = false;
-		// After `Massless`, never before: the force is sized from the ball's
-		// mass, and a massless ball reads zero and gets nothing.
+		// **This is what gives the ball its own weight back**, and it has to come before `applyAcceleration`
+		// for that function's own reason: both forces are `mass × something`, and a massless ball reads zero
+		// and gets nothing. One call sets `Massless` and sizes the ball's gravity together.
+		this.factory.setHeld(ball, false);
 		this.applyAcceleration(ball, plan.acceleration, plan.flightTime);
 
 		// How far the engine's flight actually is from the plan's, per throw.

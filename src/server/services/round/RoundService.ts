@@ -20,6 +20,10 @@ import {
     SPECTATING_ATTRIBUTE,
     TEAM_ATTRIBUTE,
 } from "shared/constants";
+// A second import from the same module rather than folding these into the block above, which is what the
+// next tidy-up should do: the block is long and alphabetically grouped, and adding two names to it means
+// re-reading it to find the right slot. Flagged rather than left silent.
+import { ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE } from "shared/constants";
 import { MATCH_MIN_PLAYERS, MATCH_SETTLE_SECONDS } from "../../config/match.config";
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
@@ -1192,6 +1196,30 @@ export class RoundService implements OnStart {
         if (scoring === undefined) return;
 
         this.scores.set(scoring, (this.scores.get(scoring) ?? 0) + award);
+        this.publishScores();
+    }
+
+    /**
+     * Publishes both sides' points, so the client can draw a scoreboard.
+     *
+     * **One writer, called wherever `scores` moves**, and that is the whole reason this is a method rather than
+     * a `SetAttribute` at each site: the map changes in three places — a hit award, a catch point, and the
+     * clear at the opening of a round — and two attributes written in three places is six chances for one side
+     * to be published without the other. A reader would then draw a scoreboard whose halves disagree, which is
+     * worse than drawing none.
+     *
+     * **Both sides are written on every change, including changes that move only one.** Writing an unchanged
+     * value is cheap and fires no changed-signal, so the redundant write costs nothing and buys the guarantee
+     * that the pair is never observable half-updated.
+     *
+     * **It is not gated on the mode**, deliberately. The two scoring paths are already guarded by
+     * `mode.scores`, so a scoreless mode never reaches them; the clear at a round's opening does reach here,
+     * and writes `0` for a mode that keeps no score — which is the truthful answer rather than a missing one,
+     * and it is what stops the previous round's numbers lingering into a mode that has none.
+     */
+    private publishScores(): void {
+        this.statusFolder.SetAttribute(ROUND_SCORE_A_ATTRIBUTE, this.scores.get(TEAM_A) ?? 0);
+        this.statusFolder.SetAttribute(ROUND_SCORE_B_ATTRIBUTE, this.scores.get(TEAM_B) ?? 0);
     }
 
     /**
@@ -1244,6 +1272,7 @@ export class RoundService implements OnStart {
         if (team === undefined) return;
 
         this.scores.set(team, (this.scores.get(team) ?? 0) + GAME_MODE_CONFIG.CATCH_POINTS);
+        this.publishScores();
     }
 
     /**
@@ -1959,6 +1988,7 @@ export class RoundService implements OnStart {
             // exactly the flag's lifetime — so a round ended early by a leaver cannot leave the next
             // one unable to finish at all.
             this.scores.clear();
+            this.publishScores();
 
             // **Both boards go with the scoreboard, and here rather than where the round ends.**
             // Cleared at `finishRound` they would empty the panel that reads them one frame before

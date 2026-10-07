@@ -117,14 +117,28 @@ function cameraSettings(): UserGameSettings | undefined {
  * tenth of a second the tick took to put it back, and the tick needed a second copy of the phase's rule
  * kept in step with the first. See {@link refresh}, which is where all of it is combined.
  *
- * **The engine's two user settings rather than the camera's `CFrame`.** `RotationType` is what makes the
- * character face where the camera looks instead of where it walks, and `MouseBehavior` is what holds the
- * mouse at the centre of the screen — and the second is what makes the aim *work*, because
- * `ThrowController` casts its ray from the mouse position: hold the mouse at the centre and the shot
- * follows the view. Writing the camera's own `CFrame` would be a fight with Roblox's camera scripts for
- * the same property; these two settings are the supported seam, they are what the built-in lock writes,
- * and they are why this does not fork the `PlayerModule` — which is the other way to build this, and a
- * permanent copy of Roblox's camera code to keep in step with.
+ * **The engine's two user settings rather than the camera's `CFrame`.** `MouseBehavior` is what holds the
+ * mouse at the centre of the screen — and *that* is what makes the aim work, because `ThrowController`
+ * casts its ray from the mouse position: hold the mouse at the centre and the shot follows the view.
+ * Writing the camera's own `CFrame` would be a fight with Roblox's camera scripts for the same property;
+ * `MouseBehavior` is the supported seam, it is what the built-in lock writes, and it is why this does not
+ * fork the `PlayerModule` — which is the other way to build this, and a permanent copy of Roblox's camera
+ * code to keep in step with.
+ *
+ * **`RotationType` is written to `MovementRelative` and never to `CameraRelative`, and that is a reversal.**
+ * The old line asked for `CameraRelative` while locked, on the argument that a locked view should turn the
+ * body with it. That made the character's facing a *consequence of the camera* rather than a fact of its
+ * own: a player could not look somewhere without their body following, so the body had no heading to speak
+ * of — it had whichever one the camera had. It is now `MovementRelative` in **both** states, which is the
+ * setting's own default meaning: the body turns to face the direction it is walking, and standing still it
+ * keeps the heading it last had. Looking around no longer turns anybody.
+ *
+ * **What that costs, stated plainly, because it is the whole trade.** The body no longer snaps to the view,
+ * so a player who wants to change which way they are facing has to *move* — there is no key for it, and
+ * adding one would be a new input binding this feature has no business introducing. It also means the
+ * camera can now be pointing anywhere while the body points somewhere else, which is the point, and which
+ * makes the *body's* facing the thing the throw reads rather than the camera's. See the note on
+ * `shared/throw.ts`'s `forward` — that dependency is real and was checked rather than assumed.
  *
  * **And the cursor, which is the fourth thing the lock controls.** While it is on, the mouse is a
  * crosshair — which is the point of the whole feature stated as a picture, since the throw goes where
@@ -650,7 +664,7 @@ export class ShiftLock implements OnStart {
 
 		if (settings) {
 			const [ok, problem] = pcall(() => {
-				settings.RotationType = on ? Enum.RotationType.CameraRelative : Enum.RotationType.MovementRelative;
+				settings.RotationType = Enum.RotationType.MovementRelative;
 			});
 
 			if (!ok) warn(`[ShiftLock] RotationType refused: ${tostring(problem)}`);

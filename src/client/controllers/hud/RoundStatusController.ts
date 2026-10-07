@@ -13,7 +13,13 @@ const DEBUG = true;
 
 /** How wide the HUD is, and how far below the top of the screen it sits. Its height is its content's. */
 const HUD_WIDTH = 360;
-const HUD_TOP_INSET = 0;
+/*
+ * **No longer `0`, because the score bar now occupies the top row.** The score is pinned at inset 4 and this
+ * band sits below it, which is the order a scoreboard is read in — the score changes, the clock counts down
+ * underneath it. This is the band's offset and nothing else: its width, its contents and its behaviour are
+ * untouched, and the clock itself did not move inside it.
+ */
+const HUD_TOP_INSET = 44;
 
 /**
  * The round HUD: which phase the round is in, and how long is left of it.

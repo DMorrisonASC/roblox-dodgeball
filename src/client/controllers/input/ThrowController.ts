@@ -81,7 +81,7 @@ const DEBUG = true;
  * smooth the quantity the throw actually uses, and let the lag be largest where
  * the points are furthest apart.
  */
-const AIM_SMOOTHING_SECONDS = 0.03;
+const AIM_SMOOTHING_SECONDS = 0.01;
 
 /**
  * The body a part belongs to, or nothing.
@@ -299,6 +299,12 @@ export class ThrowController implements OnStart {
 		const arc = new Trajectory(plan.origin, plan.velocity, {
 			ignore: [character, this.guide.instance, ...this.looseBalls()],
 			radius: BALL_SIZE / 2,
+			// **The plan's own gravity, read off the plan rather than from the config.** The solve above used
+			// it and the ball's `VectorForce` makes it the ball's real pull — see
+			// `BallFactory.applyBallGravity` — and the drawn path is only trustworthy while all three are the
+			// same number. Reading a constant here is how the arc of a heavier ball got drawn: it fell faster,
+			// marked the ground short of where the throw lands, and the marker moved as the aim did.
+			gravity: plan.gravity,
 			// The curve is a force, not a launch angle, so it has to be simulated
 			// as well as applied. Same vector as the server's, taken from the same
 			// plan, which is the only reason the drawn path can be trusted.

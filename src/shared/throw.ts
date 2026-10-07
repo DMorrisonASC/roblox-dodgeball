@@ -187,7 +187,11 @@ function centreAimPoint(character: Model, muzzle: Vector3, target: Vector3): Vec
  */
 function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve"): LaunchPlan | undefined {
 	if (arc === "straight" ) {
-		const wanted = flatLaunchSpeed(muzzle, aim);
+		// `undefined` for the angle keeps `flatLaunchSpeed`'s own default; the gravity is the ball's, not the
+		// world's — see `BALL_CONFIG.BALL_GRAVITY`. Passing it matters here more than anywhere else, because
+		// this is the function that decides how hard a flat throw is thrown: solved against the world's
+		// gravity it comes out too slow, and the ball drops short of its own marker.
+		const wanted = flatLaunchSpeed(muzzle, aim, undefined, BALL_CONFIG.BALL_GRAVITY);
 		if (wanted === undefined) return undefined;
 
 		return planLaunch(
@@ -195,10 +199,12 @@ function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve")
 			aim,
 			math.clamp(wanted, BALL_CONFIG.THROW_SPEED, BALL_CONFIG.THROW_MAX_SPEED),
 			"straight",
+			// The engine pulls the ball down at `BALL_GRAVITY`, not the world's — see `BallFactory`.
+			{ gravity: BALL_CONFIG.BALL_GRAVITY },
 		);
 	}
 
-	const wanted = flatLaunchSpeed(muzzle, aim, CURVE_ANGLE);
+	const wanted = flatLaunchSpeed(muzzle, aim, CURVE_ANGLE, BALL_CONFIG.BALL_GRAVITY);
 	if (wanted === undefined) return undefined;
 
 	// Deliberately no BALL_CONFIG.THROW_SPEED floor here. That floor is what keeps
@@ -209,6 +215,7 @@ function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve")
 		angle: CURVE_ANGLE,
 		acceleration: leftAxis(muzzle, aim).mul(BALL_CONFIG.CURVE_STRENGTH),
 		compensate: BALL_CONFIG.THROW_CURVE_COMPENSATED,
+		gravity: BALL_CONFIG.BALL_GRAVITY,
 	});
 }
 
@@ -263,12 +270,27 @@ export function planPlayerThrow(
 	if (arc === "straight" || arc === "curve") {
 		const flat = planFlatThrow(muzzle, aim, arc);
 		if (flat !== undefined) return flat;
+
+		// **No fallback to `overhead`, and that is a deliberate removal.** A `straight` or `curve` throw used
+		// to be converted into an arcing one whenever the flat solve had no answer — which happens when the
+		// aim sits above the launch line, so there is no fall to drop onto the mark. That made the arc the
+		// player chose unreliable: pick straight, get a lob, with nothing on screen saying why. The chosen arc
+		// is now honoured, and this case leaves the hand along the aim line at `THROW_MAX_SPEED`.
+		//
+		// **What that costs, stated rather than hidden:** this is the one case where the ball can pass the
+		// marker instead of arriving at it, because there is no fall shaped to land on it. Passing a mark
+		// you aimed above is the honest reading of that geometry; silently lobbing is not.
+		return planLaunch(muzzle, aim, BALL_CONFIG.THROW_MAX_SPEED, arc, {
+			angle: CURVE_ANGLE,
+			acceleration:
+				arc === "curve" ? leftAxis(muzzle, aim).mul(BALL_CONFIG.CURVE_STRENGTH) : Vector3.zero,
+			compensate: BALL_CONFIG.THROW_CURVE_COMPENSATED,
+			gravity: BALL_CONFIG.BALL_GRAVITY,
+		});
 	}
 
-	const needed = minimumReachSpeed(muzzle, aim) * BALL_CONFIG.THROW_ARC_SPREAD;
+	const needed = minimumReachSpeed(muzzle, aim, BALL_CONFIG.BALL_GRAVITY) * BALL_CONFIG.THROW_ARC_SPREAD;
 	const speed = math.clamp(needed, BALL_CONFIG.THROW_SPEED, BALL_CONFIG.THROW_MAX_SPEED);
 
-	// `overhead` for the fallback too: a straight throw with no solution would
-	// otherwise fire off at the geometry behind the target.
-	return planLaunch(muzzle, aim, speed, "overhead");
+	return planLaunch(muzzle, aim, speed, "overhead", { gravity: BALL_CONFIG.BALL_GRAVITY });
 }

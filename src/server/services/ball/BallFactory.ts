@@ -20,6 +20,9 @@ import { SphereService } from "./SphereService";
  */
 const BALL_TAG = "Ball";
 
+/** What the ball's per-ball gravity force is called, so a stray one can be told apart on a part. */
+const GRAVITY_FORCE_NAME = "BallGravity";
+
 /**
  * Makes balls.
  *
@@ -49,12 +52,16 @@ export class BallFactory {
 		const ball = this.create();
 
 		ball.CanCollide = true;
-		ball.Massless = false;
 		ball.Anchored = false;
 		ball.Position = position;
 		ball.Parent = Workspace;
 
 		this.finish(ball);
+
+		// **After `finish`, and that order is the point.** `finish` builds the gravity force and `setHeld`
+		// sizes it from the ball's mass — and `setHeld` sets `Massless` itself, so the line that used to sit
+		// above this would now be a second write to the same property from a different place.
+		this.setHeld(ball, false);
 
 		return ball;
 	}
@@ -155,5 +162,82 @@ export class BallFactory {
 		ball.Name = BALL_NAME;
 		ball.AddTag(BALL_TAG);
 		this.makeInert(ball);
+		this.applyBallGravity(ball);
+	}
+
+	/**
+	 * Cancels the part of the world's gravity the ball should not feel.
+	 *
+	 * **A `VectorForce` because Roblox has no per-part gravity.** `Workspace.Gravity` is global and the only
+	 * gravity there is, so a ball that falls under less of it has to push up against the difference itself —
+	 * `mass × (world − ball)` upward, which is exactly the force gravity would have applied if this part were
+	 * allowed its own. `RelativeTo = World` so the push is always straight up whatever the ball's orientation,
+	 * and `ApplyAtCenterOfMass` so it counteracts the pull *exactly* rather than adding a spin as a side
+	 * effect of where it pushes.
+	 *
+	 * **`Attachment0` is the whole of it, and leaving it out is the fault this comment exists to stop.** A
+	 * `VectorForce` pushes on the attachment it is given and on nothing else: one with no `Attachment0` is a
+	 * live instance that applies precisely no force, with no error and nothing in any log. Shipped that way,
+	 * the ball fell at `Workspace.Gravity` while the plan, the aim guide, the throw probe and the server's own
+	 * solve all assumed `BALL_GRAVITY` — and the only thing on screen was a throw that hit the floor short of
+	 * the wall it was aimed at, with the probe measuring the flight as roughly two-and-a-half times too heavy
+	 * at every sample. `BallService.applyAcceleration` builds the curve's force the same way, and is the
+	 * working example to copy from.
+	 *
+	 * **The mass is read by `setHeld`, not here.** Force in Roblox is mass × acceleration, and the mass that
+	 * matters is the ball's *own*: a held ball is `Massless` and welded into the character's assembly, so a
+	 * force sized against it pushes on the character instead. See {@link setHeld}, which is also the only
+	 * thing that turns the force on.
+	 *
+	 * **Nothing is added when the ball's gravity is at or above the world's**: a zero force would still be an
+	 * instance and a physical object's worth of bookkeeping for no effect, and a ball meant to fall *heavier*
+	 * than the world cannot be done this way at all — that needs mass, not a force. So the config can only
+	 * lower gravity, and a value above `Workspace.Gravity` silently means "the world's".
+	 */
+	private applyBallGravity(ball: BasePart): void {
+		if (Workspace.Gravity - BALL_CONFIG.BALL_GRAVITY <= 0) return;
+
+		// Parented to the ball, so it can never outlive the projectile it belongs to — the same trick
+		// `applyAcceleration` and `CollisionIgnore` use.
+		const anchor = new Instance("Attachment");
+		anchor.Parent = ball;
+
+		const force = new Instance("VectorForce");
+		force.Name = GRAVITY_FORCE_NAME;
+		force.Attachment0 = anchor;
+		force.RelativeTo = Enum.ActuatorRelativeTo.World;
+		force.ApplyAtCenterOfMass = true;
+		// **Disabled and unsized until `setHeld` says the ball is its own.** Disabled is the honest default:
+		// the first thing that happens to most balls is that they go into somebody's hand.
+		force.Force = new Vector3();
+		force.Enabled = false;
+		force.Parent = ball;
+	}
+
+	/**
+	 * Frees a ball from a hand, or takes it back — **the one place `Massless` and the ball's own gravity are
+	 * written together**, so that the two can never come apart.
+	 *
+	 * They are the same question, which is why one call answers both. A held ball is welded into the
+	 * character's assembly, so the gravity force — `ballMass × (world − ball)`, parented to the ball — would
+	 * otherwise push on the *character*: on this config that is a lift worth a noticeable fraction of the
+	 * ball's own weight, every time somebody is carrying one. And the force is `mass × cancelled`, a number
+	 * the ball only has once it is out of the hand; a massless one reads zero, exactly as `throwBall` warns
+	 * about its own force.
+	 *
+	 * **What this deliberately is not: a per-frame write.** It runs where a ball changes hands or changes
+	 * state, which is a handful of events in a ball's life, and the force between them is constant.
+	 */
+	public setHeld(ball: BasePart, held: boolean): void {
+		ball.Massless = held;
+
+		const cancelled = Workspace.Gravity - BALL_CONFIG.BALL_GRAVITY;
+		if (cancelled <= 0) return;
+
+		const force = ball.FindFirstChild(GRAVITY_FORCE_NAME);
+		if (!force || !force.IsA("VectorForce")) return;
+
+		if (!held) force.Force = new Vector3(0, ball.GetMass() * cancelled, 0);
+		force.Enabled = !held;
 	}
 }

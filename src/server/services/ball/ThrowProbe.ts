@@ -76,13 +76,17 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 	const predicted = new Trajectory(plan.origin, plan.velocity, {
 		acceleration: plan.acceleration,
 		radius: RADIUS,
+		// **The plan's own gravity, read off the plan.** The guide integrates the same number and the ball
+		// flies under it — see `BallFactory.applyBallGravity`. A probe that stepped at anything else would
+		// hold the ball against an arc nobody throws, and report it as wrong for matching its own plan.
+		gravity: plan.gravity,
 		ignore: [thrower, ball, ...otherBalls(ball)],
 	});
 
 	// Gravity and the curve's pull collapsed into one vector, exactly as
 	// `Trajectory` does internally — so the ideal below comes from the closed
 	// form rather than from stepping anything.
-	const pull = new Vector3(plan.acceleration.X, plan.acceleration.Y - Workspace.Gravity, plan.acceleration.Z);
+	const pull = new Vector3(plan.acceleration.X, plan.acceleration.Y - plan.gravity, plan.acceleration.Z);
 	const pullSquared = pull.Dot(pull);
 	const heading = horizontalHeading(plan.origin, predicted.landing);
 	const contact = predicted.contact ?? predicted.landing;
