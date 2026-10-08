@@ -13,10 +13,12 @@ const SUCCESS_SECONDS = 5;
 /**
  * Which slot of the bottom-centre column this toast occupies, counted from the bottom.
  *
- * **Slot 0, and the camera toast takes slot 1.** The two of them can be up at once — a player with
- * throwing switched off is free to press `~` — so they stack rather than share. See `ui/hudToast.ts`,
- * which owns the width, the gap from the screen edge and the height that stack is built from: those are
- * facts about the column rather than about this toast, and they used to live here.
+ * **Slot 0, and slot 1 is the mystery box's.** It used to be the camera toast's, and that controller is
+ * gone — both of its toasts *were* the `~` release, which no longer exists — so the slot was free until
+ * `MysteryToastController` took it. These two can be up at once — a player with throwing switched off is
+ * free to collect a box — so they stack rather than share. See `ui/hudToast.ts`, which owns the width, the
+ * gap from the screen edge and the height that stack is built from: those are facts about the column
+ * rather than about this toast, and they used to live here.
  */
 const SLOT = 0;
 

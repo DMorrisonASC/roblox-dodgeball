@@ -74,6 +74,24 @@ export const events = Net.Definitions.Create({
 	toggleThrow: Net.Definitions.ClientToServerEvent<[]>(),
 
 	/**
+	 * Client → server: this player wants to use whatever power the mystery box gave them.
+	 *
+	 * **Carries nothing on purpose, and unlike `markHeldBall` that is not merely a preference.** The mark
+	 * remote names an ability because the *player* is choosing it; here the box chose, and which one it
+	 * chose is a fact the server is holding in its own window. A client that sent the name it read off
+	 * `MYSTERY_POWER_ATTRIBUTE` would be sending a *replica* — so a window that had just closed, or a
+	 * collection that landed while the attribute was still catching up, would have a player mark a ball
+	 * with a power they were never given. The server answers this request out of the window it holds,
+	 * which is the same argument `catch` and `drop` make in one sentence each.
+	 *
+	 * **A request, not an instruction.** Whether there is a window at all, whether the ball in hand can
+	 * carry what it rolled, whether a round is being played and whether the window still has time on it
+	 * are four questions this machine cannot answer, and the server answers all four before spending
+	 * anything.
+	 */
+	useMysteryPower: Net.Definitions.ClientToServerEvent<[]>(),
+
+	/**
 	 * Client → server: this player is voting for this mode for the next round.
 	 *
 	 * Carries the mode's **id as a string**, not a `GameModeId`: the wire is not typed, so the

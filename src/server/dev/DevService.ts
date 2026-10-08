@@ -1,9 +1,18 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, TextChatService, RunService } from "@rbxts/services";
+import { IS_DEV_ATTRIBUTE } from "shared/constants";
 import { DEV_CONFIG } from "./dev.config";
 
-/** Marks a whitelisted player. Read as `=== true`, so an absent attribute means no. */
-const IS_DEV = "IsDev";
+/**
+ * Marks a whitelisted player. Read as `=== true`, so an absent attribute means no.
+ *
+ * **The value now lives in `shared/constants.ts`, because the client reads the same attribute.** It binds
+ * a developer's extra ability keys on the strength of it, so this is one of the few facts both machines
+ * have to agree on to the letter — and agreeing by copying a literal is precisely what a shared constant
+ * is for. This name is kept so that every line in this file still reads `IS_DEV`, and it is a reference
+ * rather than a second definition of the value.
+ */
+const IS_DEV = IS_DEV_ATTRIBUTE;
 
 /**
  * Flags are attributes too, under this prefix, so anything that can see the

@@ -353,12 +353,19 @@ export class BallService implements OnStart {
 		// ball — see {@link markHeldBall} for the line between the two.
 		events.Server.OnEvent("markHeldBall", (player, kind) => this.markHeldBall(player, kind));
 
-		// **The second ability key, and the other thing a press can mean.** A press of `4` marks nothing:
-		// it buys a *window* on the player, which is a fact with no ball to ride and therefore no kind to
-		// carry. See {@link activateMultiBall}, which is the whole of the handler — and note that it is
-		// here rather than in `SuperService` for the same split the mark handler above documents: this
-		// service owns hands and dev flags, that one counts charges and never touches a ball.
+		// **The dev's MultiBall key, and the other thing a press can mean.** It marks nothing: it buys a
+		// *window* on the player, which is a fact with no ball to ride and therefore no kind to carry. See
+		// {@link activateMultiBall}, which is the whole of the handler — and note that it is here rather
+		// than in `SuperService` for the same split the mark handler above documents: this service owns
+		// hands and dev flags, that one counts charges and never touches a ball.
 		events.Server.OnEvent("multiBall", (player) => this.activateMultiBall(player));
+
+		// **And the one key that is not a dev's.** Every player uses whatever power a mystery box gave
+		// them with a single press, so this is the general way in and the two above are the shortcuts. It
+		// decides nothing either — it asks the window which power it is paying for and hands the request to
+		// whichever of the two handlers that names. See {@link useMysteryPower}, which is short because
+		// both of its destinations already exist.
+		events.Server.OnEvent("useMysteryPower", (player) => this.useMysteryPower(player));
 
 		Players.PlayerRemoving.Connect((player) => {
 			const character = player.Character;
@@ -1260,13 +1267,19 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * The whole of the `4` key's server half: buys `player` a MultiBall window.
+	 * The server half of a MultiBall request: buys `player` a window.
 	 *
 	 * **The handler is here and the state is in `SuperService`**, which is {@link markHeldBall}'s split
 	 * for its reason — this service owns hands and holds the dev flags, and that service counts charges
 	 * and has never touched a ball. The two handlers are deliberately the same shape for a second
-	 * reason: two ability keys that behave differently when refused would be two rules about what a key
-	 * press means.
+	 * reason: two requests that behave differently when refused would be two rules about what a press
+	 * means.
+	 *
+	 * **Two ways in, and neither of them is spelled as a key in this file.** A dev's own MultiBall key
+	 * comes straight here, and a mystery box reaches it through {@link useMysteryPower}, which asks the
+	 * window which power it is paying for. Naming a key here would be a second copy of a binding that
+	 * lives in the controller which owns it — and a comment that says "press `4`" goes stale, silently,
+	 * on the day the binding moves. This one did.
 	 *
 	 * **Four questions, in the order that costs least to answer, and every refusal is a print** rather
 	 * than a thrown error, for `markHeldBall`'s reason: a key press is not a fault, and the log is where
@@ -1274,8 +1287,8 @@ export class BallService implements OnStart {
 	 *
 	 * **What a press commits the player to is the one place the two abilities part company.** A mark
 	 * waits for a ball and spends nothing; this spends the charge on the spot and starts the clock, so a
-	 * player who presses `4` and throws nothing has still paid for the ten seconds they did not use. See
-	 * `SuperService.activateMultiBall`, where that decision is argued.
+	 * player who asks for a window and throws nothing has still paid for the ten seconds they did not use.
+	 * See `SuperService.activateMultiBall`, where that decision is argued.
 	 */
 	private activateMultiBall(player: Player): void {
 		// **A living body**, the same test the mark makes and the throw makes in effect: there is no hand
@@ -1309,11 +1322,19 @@ export class BallService implements OnStart {
 			return;
 		}
 
-		// **The charge, or the dev bypass.** A dev opens a window holding no charge of their own, which is
-		// what makes this testable from a standing start — the mark handler's shortcut, on the other key.
-		const charged = this.abilities.hasCharge(player);
+		// **The charge, a mystery window, or the dev bypass.** A dev opens a window holding no charge of
+		// their own, which is what makes this testable from a standing start — the mark handler's shortcut,
+		// on the other key.
+		//
+		// **The second term is the whole of what the mystery box does to a game.** While its window is open
+		// the charge test is satisfied without a charge existing, so the power is paid for by the box. It is
+		// one `||` rather than a branch because there is nothing else about the request that changes:
+		// ownership above and the round gate above that are asked exactly as they were, which is what keeps
+		// a box from being a way to use a power outside a round or without owning it. See
+		// `SuperService.isMysteryActive`, and `markHeldBall` below for the mark's half of the same rule.
+		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
 		if (!charged && !dev) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no charge`);
+			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no charge and no mystery window`);
 
 			return;
 		}
@@ -1338,6 +1359,46 @@ export class BallService implements OnStart {
 		// opens a window on an empty hand cannot use the ten seconds they have just paid for. See
 		// {@link refillFromBuff}.
 		this.refillFromBuff(character, false);
+	}
+
+	/**
+	 * Uses whatever power a mystery box gave this player — the one key every player has.
+	 *
+	 * **A router, and the only place a box's power becomes an action.** The window knows *which* power it
+	 * is paying for, asked of `SuperService.mysteryPowerOf` and never sent by a client, and what "using"
+	 * it means depends on the kind: a ball ability is a mark on the ball in hand, and MultiBall is a
+	 * window of its own. Both of those already exist and are called exactly as the dev keys call them, so
+	 * the checks that matter — ownership, the round gate, whether there is a ball at all — are asked in
+	 * the one place that already asks them rather than being repeated here. The box pays through the same
+	 * `hasCharge || isMysteryActive` test it pays through at either site.
+	 *
+	 * **Nothing is spent when the roll cannot be used, and that is the value of routing rather than
+	 * letting the client name the power.** A ball ability pressed with no ball in hand is refused by the
+	 * mark handler before it touches the window, so the player still has their ten seconds when they pick
+	 * one up — where a client-chosen kind would have spent the box on a request the server could not
+	 * question.
+	 */
+	private useMysteryPower(player: Player): void {
+		const kind = this.abilities.mysteryPowerOf(player);
+
+		if (kind === undefined) {
+			if (DEBUG) print(`[Mystery] ${player.Name}: refused — no mystery window is open`);
+
+			return;
+		}
+
+		// **MultiBall is the one kind that is not a mark**, and this branch is the whole of the
+		// difference: it is a state of the *player* rather than a property of a ball, which is why it has
+		// its own handler on the dev keys. Asked by name rather than through `isBallAbility`, because the
+		// question here is "which of the two doors does this go through" and `isBallAbility` answers a
+		// different one — what a ball can carry.
+		if (kind === "MultiBall") {
+			this.activateMultiBall(player);
+
+			return;
+		}
+
+		this.markHeldBall(player, kind);
 	}
 
 	/**
@@ -1584,11 +1645,18 @@ export class BallService implements OnStart {
 			return;
 		}
 
-		// **The charge, or the dev bypass.** A dev marks a ball holding no charge of their own, which is
-		// what makes this testable without six hits in a row first.
-		const charged = this.abilities.hasCharge(player);
+		// **The charge, a mystery window, or the dev bypass.** A dev marks a ball holding no charge of their
+		// own, which is what makes this testable without six hits in a row first.
+		//
+		// **The second term is the mystery box, and it is the same `||` `activateMultiBall` makes above** —
+		// the box's window stands in for a charge, so a player who has just collected one may mark a ball
+		// without one. Written out at both sites rather than inside `SuperService` because the two sites
+		// differ in what they do next (a mark, a window) and agree only on this test; a single
+		// `mayUsePower` helper would hide that the round gate and the ownership check above are *not* part
+		// of it.
+		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
 		if (!charged && !dev) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no charge`);
+			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no charge and no mystery window`);
 
 			return;
 		}

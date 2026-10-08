@@ -93,6 +93,77 @@ export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
 export const PRACTICE_ZONE_TAG = "practiceZone";
 
 /**
+ * Tag marking a place a mystery box appears.
+ *
+ * **Read by `server/services/mystery/MysteryBoxService.ts` alone**, and it is the second tag in this file
+ * whose contract is "put it where you want the thing" — see {@link MATCH_SPAWNER_TAG}, which is the first.
+ * The part is a *placement decision* and nothing more: the service reads where it is and puts a box there,
+ * so a spawn point can be moved, regrouped or nested and it is still a spawn point.
+ *
+ * **`CanQuery = false` and `CanCollide = false` on the part, so a spawn point is not felt even though it is
+ * somewhere players walk.** The aim guide's cast must pass through one, and nothing should be able to stand
+ * on it. It needs no `CanTouch` — the *box* is what is touched, and the part itself never has to report
+ * anything.
+ *
+ * **Inside a `practiceZone` a tagged part behaves differently, and that is a rule about where the part is
+ * rather than about the part.** A spawn point in a zone is stocked continuously instead of rolled for, so
+ * the same tagged part is a rare thing on the field and a fixture on a practice floor. The service does the
+ * bounds test; nothing about the tag or the part changes.
+ */
+export const MYSTERY_SPAWN_TAG = "mysterySpawnPrize";
+
+/**
+ * Which power a collected mystery box is paying for, on the `Player`. Empty string for none.
+ *
+ * **Published by `SuperService`, which owns the window, and written with the rest of that readout** — see
+ * its `publish`, and `MYSTERY_POWER_ENDS_AT_ATTRIBUTE` below for why the pair is written as `""` and `0`
+ * rather than removed.
+ *
+ * **A string rather than the row itself, because a client cannot read a `Map`.** The kind is one of the
+ * words in `shared/ability.ts`, which is the same vocabulary the mark remote speaks — so a client that
+ * already knows how to name an ability does not need to learn a second one to say what a box gave.
+ */
+export const MYSTERY_POWER_ATTRIBUTE = "MysteryPower";
+
+/**
+ * When the power above stops being free, on the engine's shared clock. `0` for none.
+ *
+ * **`Workspace:GetServerTimeNow()` and not `os.clock()`**, which is the whole reason this is an attribute
+ * rather than a boolean: a countdown that a client can *recompute* stays right on its own, where a
+ * "seconds remaining" figure sent once would be a number that was already wrong when it arrived. This is
+ * the same clock `SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE` is stamped from, for the same reason.
+ *
+ * **Read by nothing yet, deliberately, and that is worth saying rather than implying a reader exists.**
+ * The toast that announces a box does not need it: `MYSTERY_POWER_ATTRIBUTE` is emptied when the window
+ * closes, so the toast's *visibility* is the window — and the countdown a reader would want in its text
+ * cannot be done at all, because big-ui's `Alert` reads its message once at construction and cannot be
+ * told to change its mind. A ticking number belongs on a HUD with a `Computed` label, and none is built.
+ * So this is published and read by nobody: the honest state of a clock that exists for the next consumer.
+ *
+ * **Nothing decides anything from it either** — the server asks `SuperService.isMysteryActive`, which reads
+ * the clock itself — so an attribute that failed to replicate would cost a HUD element and never a rule.
+ * That is the arrangement `SUPER_CHARGE_ATTRIBUTE` has as well, and it is why these are attributes rather
+ * than remotes.
+ */
+export const MYSTERY_POWER_ENDS_AT_ATTRIBUTE = "MysteryPowerEndsAt";
+
+/**
+ * Marks a whitelisted dev, on the `Player`. Read as `=== true`, so an absent attribute means no.
+ *
+ * **The string `DevService` has always written, in the shared file so the client can read it without
+ * spelling it a second time.** The client has to know *before* it binds a key, and one fact shared by two
+ * machines written out twice is the copy this arrangement exists to avoid — `DevService` now imports this
+ * name instead of defining its own. It is a `Player` attribute like the two above, read by anything that
+ * can see the `Player`, which is the property `DevService` chose it for in the first place.
+ *
+ * **What a client is allowed to believe it means: which keys to listen for, and nothing else.** A key
+ * bound on the strength of this attribute is a convenience for a developer. What any press actually does
+ * is decided on the server, which asks `DevService.isDev` — reading this same attribute for itself — and
+ * never trusts that this machine saw the flag at all.
+ */
+export const IS_DEV_ATTRIBUTE = "IsDev";
+
+/**
  * Tags marking the two parts a player walks into to pick a side for the next match.
  *
  * **One tag per side, and the split is the whole rule: the part you touch is the side you ask for.**

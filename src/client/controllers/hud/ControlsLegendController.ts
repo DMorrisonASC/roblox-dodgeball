@@ -77,9 +77,15 @@ interface LegendRow {
 /**
  * The legend, in the order it is drawn.
  *
- * Six abilities and the one of them that can be switched off. The lines here are the *only*
- * place these strings appear — no other file names a key or an ability — so this array is the
- * legend, and everything below it is layout.
+ * Seven rows: the six that were here before, and the power key. The lines here are the *only* place
+ * these strings appear — no other file names a key or an ability — so this array is the legend, and
+ * everything below it is layout.
+ *
+ * **The power row is one key and says so, because the box rolls the power rather than the player.**
+ * That is the whole reason it is one line: there is nothing about it to enumerate, and a row per
+ * ability would be telling a player to press keys that do nothing for them. See `SuperAbility`, where
+ * the per-ability keys do exist — bound for a dev only, and deliberately absent from this card, which
+ * every player reads.
  *
  * **Not listed:** the three throw shapes on `X`, `C` and `V`. They are real controls, and they
  * are absent because this list is what was asked for: one more entry here each puts them on the
@@ -101,6 +107,7 @@ const ROWS: LegendRow[] = [
 	{ label: "Catch |", keys: "E" },
 	{ label: "Drop |", keys: "1" },
 	{ label: "Throw Toggle |", keys: "2", toggleAttribute: THROW_ENABLED, invert: true },
+	{ label: "Power |", keys: "3" },
 ];
 
 /**

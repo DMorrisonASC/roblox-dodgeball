@@ -561,14 +561,63 @@ export class EconomyService implements OnStart {
 		return success;
 	}
 
-	/** Loads a record and, once it is in, publishes it and catches any milestone it has already passed. */
+	/** Loads a record and, once it is in, grants the default roster, publishes it, and catches any milestone it has already passed. */
 	private load(player: Player): void {
 		task.spawn(() => {
 			const record = toEconomyRecord(this.fetch(this.key(player)));
 			this.records.set(player, record);
+			this.grantDefaultRoster(player);
 			this.publish(player);
 			this.checkMilestones(player);
 		});
+	}
+
+	/**
+	 * Gives the player every power in {@link POWER_ROSTER} they are not already carrying.
+	 *
+	 * **Everyone owns every power, and this is where that is decided.** A power is not a reward for playing
+	 * — it is a thing the game is played *with* — and what was gating a player was never ownership. It was
+	 * the **charge**: nothing in the game grants one outside the dev bypass, so `markHeldBall` and
+	 * `activateMultiBall` refuse for every normal player and no power can be used in a round at all. The
+	 * mystery box is the mechanic that makes a charge reachable, and this is the half of it that says a
+	 * player has something for the box to open a window on.
+	 *
+	 * **Applied on every load rather than only to a new record, and that is the decision worth recording.**
+	 * Seeding the roster into {@link blankEconomyRecord} looks cheaper and is ruled out by that function's
+	 * own rule: `shared/economy.ts` deliberately imports no config, because it is the *shape* both ends
+	 * agree on rather than the catalogue — and the roster is a catalogue entry. What is left is a check
+	 * where the catalogue is already imported, and running it per load rather than per new record costs one
+	 * loop over three strings and buys the part that matters: **an account already in the store before this
+	 * shipped is granted on its next join**, so the mechanic works for every player rather than only for
+	 * the ones who arrive after the change. It cannot double-grant, because the test is membership.
+	 *
+	 * **Through {@link grantPower} rather than by writing the set here, and the pool is the reason.** That
+	 * method is the one door a power arrives through, and it also puts the power in the *pool* — which is
+	 * what keeps this consistent with a record that predates the pool, since such a record is read as
+	 * "everything owned". Writing `powers` alone would produce a state the parser itself never writes:
+	 * three powers owned, and a box that can grant none of them because its pool is empty.
+	 *
+	 * **Nothing is persisted here.** The autosave loop compares each record's serialized form against the
+	 * last value it wrote, so a granted roster reaches the store on the next pass without this function
+	 * knowing anything about storage — and a player who joins and leaves inside one autosave interval still
+	 * keeps it, because {@link saveAndForget} writes on the way out.
+	 */
+	private grantDefaultRoster(player: Player): void {
+		const record = this.records.get(player);
+		if (record === undefined) return;
+
+		const missing: AbilityKind[] = [];
+		for (const kind of POWER_ROSTER) {
+			if (!record.powers.has(kind)) missing.push(kind);
+		}
+
+		if (missing.size() === 0) return;
+
+		for (const kind of missing) this.grantPower(player, kind);
+
+		// Printed only when something was actually added, so the line means "this account needed the
+		// default" rather than appearing for every join for the rest of the game's life.
+		print(`[Economy] ${player.Name}: default roster granted — ${missing.join(", ")}`);
 	}
 
 	/** A leaver's write, then the in-memory rows go. Fire-and-forget: nothing waits for a leaver. */

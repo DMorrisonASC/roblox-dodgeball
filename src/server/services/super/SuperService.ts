@@ -1,8 +1,11 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
+import { AbilityKind } from "shared/ability";
 import { SUPER_CONFIG } from "shared/config/super.config";
 import {
 	CROWN_ATTRIBUTE,
+	MYSTERY_POWER_ATTRIBUTE,
+	MYSTERY_POWER_ENDS_AT_ATTRIBUTE,
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
 	SUPER_CHARGE_ATTRIBUTE,
@@ -42,6 +45,31 @@ interface MultiBallWindow {
 	endsAt: number;
 	/** Throws left to pay for. See `SUPER_CONFIG.MULTI_BALL_BALL_COUNT` for what is being counted. */
 	remaining: number;
+}
+
+/**
+ * A mystery-box window that is running: which power it pays for, and when it closes.
+ *
+ * **The kind is on the row, and that is the one thing this window has that a MultiBall window does not.**
+ * A MultiBall window always grants MultiBall, so its row has no reason to say so; a box rolls a power at
+ * the moment it is collected, and "which one" is the answer to the question the player asked by taking the
+ * box. Keeping it here is what lets {@link publish} put it on the player — which is what the toast that
+ * announces the box reads — and what lets a second box arriving mid-window be refused without anybody
+ * having to remember what the first one was.
+ *
+ * **No `remaining`, and its absence is deliberate.** MultiBall rations a *number of throws*; a mystery
+ * window rations *time*, and the power it pays for is spent through the paths that already exist — a mark
+ * on a ball, or a MultiBall window of its own — rather than through a counter here. A count would be a
+ * second way to run out, and one window with two ways to end is one more pair of states to keep in step.
+ *
+ * **`endsAt` on the shared clock, exactly as above and for the same reason**: a window *is* a clock, so the
+ * clock is the rule and the row is only where it is kept.
+ */
+interface MysteryWindow {
+	/** What the box rolled. See `shared/ability.ts` — the same union the mark remote speaks. */
+	kind: AbilityKind;
+	/** What `Workspace:GetServerTimeNow()` will read when the window closes. */
+	endsAt: number;
 }
 
 /**
@@ -104,6 +132,22 @@ export class SuperService implements OnStart {
 	 */
 	private readonly multiBalls = new Map<Player, MultiBallWindow>();
 
+	/**
+	 * Every player with a mystery-box window open, and what it rolled.
+	 *
+	 * **A second `Map` rather than another field on the rows of the first one**, because the two windows
+	 * are different things that happen to be shaped alike. This one is bought with a box rather than with
+	 * a charge, and it is asked about by the *charge test* rather than by the throw handler — see
+	 * `BallService.markHeldBall` and `BallService.activateMultiBall`, which both ask "may this player do
+	 * this" of two sources now. One container with two kinds of row in it would make every reader of
+	 * either decide which of the two it was holding.
+	 *
+	 * **Keyed on the `Player`**, for the reason above: a window is a state of the player, and a respawn
+	 * replaces the body it was opened in. It is also cleaned up on `PlayerRemoving` with the others, since
+	 * a row for somebody who has left is a row nothing will ever clear.
+	 */
+	private readonly mystery = new Map<Player, MysteryWindow>();
+
 	public onStart(): void {
 		// **The one leak this service can have.** Both containers are keyed on a `Player`, so a player
 		// who leaves would otherwise keep their row for the life of the server. The charge is
@@ -117,6 +161,11 @@ export class SuperService implements OnStart {
 			// nothing to clear — which is also what makes it safe for a death or a round ending to close a
 			// window the clock was still going to close.
 			this.multiBalls.delete(player);
+
+			// **And the box's window goes with them, by the same argument.** The timer a live window
+			// scheduled for this player will still fire, and `clearMysteryWindow` is silent when there is
+			// nothing to clear.
+			this.mystery.delete(player);
 
 			// **And the crown is recomputed, because the player who just left may have been the reason
 			// somebody else was not wearing it.** A team's highest hitter leaving hands the crown to
@@ -203,6 +252,15 @@ export class SuperService implements OnStart {
 	 */
 	public noteDeath(player: Player): void {
 		this.resetStreak(player, "died");
+
+		// **A death closes the box's window, and this method closes no MultiBall one.** Read the body
+		// above: it resets the streak and recomputes the crown, and nothing else. `clearMultiBall` is
+		// called from its own timer and from two places in `RoundService`, and a death reaches neither —
+		// so a player who dies with a MultiBall window open keeps it, despite that window's own comment
+		// saying a death closes one. Whether MultiBall should be closed here is its author's question and
+		// not this one's; for a box the answer is that it closes, because a fresh body in a fresh position
+		// is not the player who collected it. Divergence reported rather than copied either way.
+		this.clearMysteryWindow(player);
 
 		// **And a death can move a crown that is not this player's.** The count has just gone to nought,
 		// which changes the maximum it was measured against — so the answer is recomputed even though the
@@ -420,6 +478,107 @@ export class SuperService implements OnStart {
 
 		player.SetAttribute(SUPER_MULTI_BALL_COUNT_ATTRIBUTE, window?.remaining ?? 0);
 		player.SetAttribute(SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE, window?.endsAt ?? 0);
+
+		// **The box's two, written the same way and for the same reason.** A toast announces the power the
+		// moment it is granted, and the two facts it needs are which power and how long is left — so both go
+		// out with the rest of the readout, as `""` and `0` in the empty case rather than as an absent
+		// attribute. A client's watcher fires on a removal exactly as it fires on a change, so "absent" and
+		// "empty" would be two spellings of one state that the client would have to handle twice.
+		const mystery = this.isMysteryActive(player) ? this.mystery.get(player) : undefined;
+
+		player.SetAttribute(MYSTERY_POWER_ATTRIBUTE, mystery?.kind ?? "");
+		player.SetAttribute(MYSTERY_POWER_ENDS_AT_ATTRIBUTE, mystery?.endsAt ?? 0);
+	}
+
+	/**
+	 * Opens a window paying for one use of `kind`, or refuses because one is already running.
+	 *
+	 * **The caller decides both the power and the length**, and neither is an accident of this method being
+	 * lazy. What a box rolls is a question about a player's *roster* — `EconomyService` owns it and answers
+	 * `ownsPower` — and how long a box's window lasts is a number in the box's own config. This service has
+	 * no business knowing that either exists: it is handed a kind and a duration and it runs a clock, which
+	 * is the same division that lets {@link activateMultiBall} be about MultiBall while never touching a
+	 * ball.
+	 *
+	 * **Refused while one is already running, rather than restarted or queued.** A second box collected
+	 * during a live window is a box whose power the player already has; restarting would let a row of boxes
+	 * extend the window indefinitely without ever granting a second power, and a queue would need a second
+	 * container to hold windows nobody is using. "You already have one" is the answer the mark handler gives
+	 * a second mark, and it is the same answer here.
+	 *
+	 * **The box is consumed by the caller either way**, this refusal included. It was picked up, the roll
+	 * happened, and nothing in the game gives a collected box back.
+	 */
+	public openMysteryWindow(player: Player, kind: AbilityKind, seconds: number): boolean {
+		if (this.isMysteryActive(player)) return false;
+
+		this.mystery.set(player, { kind, endsAt: Workspace.GetServerTimeNow() + seconds });
+		this.publish(player);
+
+		// **Its own end, and again a convenience rather than the rule** — {@link isMysteryActive} decides
+		// from the clock, so a callback that arrives late costs a stale row and never a power that outlives
+		// the window it was sold in.
+		task.delay(seconds, () => this.clearMysteryWindow(player));
+
+		if (DEBUG) print(`[Super] ${player.Name}: mystery window open — ${kind} for ${seconds}s`);
+
+		return true;
+	}
+
+	/**
+	 * Whether `player` has a box's window open right now.
+	 *
+	 * **The clock is the rule, exactly as {@link isMultiBallActive} has it** and for the same reason: a row
+	 * whose deadline has passed reads as closed even if the timer meant to remove it has not run.
+	 *
+	 * **This is one of the two answers to "may this player use a power", and the charge is the other.** The
+	 * two call sites are `BallService.markHeldBall` and `BallService.activateMultiBall`, and each asks
+	 * `hasCharge(player) || isMysteryActive(player)`. That is the whole of what a box does to the game: it
+	 * does not grant a charge, it *stands in for one* for the length of its window. Ownership and the round
+	 * gate are untouched by it, which is what stops a box being a way to spend a power outside a round.
+	 */
+	public isMysteryActive(player: Player): boolean {
+		const window = this.mystery.get(player);
+		if (!window) return false;
+
+		return window.endsAt > Workspace.GetServerTimeNow();
+	}
+
+	/**
+	 * Which power the box gave, or `undefined` when no window is open.
+	 *
+	 * **The authority for "what may this window pay for", and the reason the key that uses a box sends no
+	 * argument.** A player presses one key for whatever the box rolled, and the server answers *which* one
+	 * that is from here — so the kind never travels from a client, and a stale copy of
+	 * `MYSTERY_POWER_ATTRIBUTE` on somebody's machine can never buy a power they were not given. See
+	 * `BallService.useMysteryPower`, the one caller.
+	 *
+	 * `undefined` covers both "no window" and "a row whose deadline has passed", because it asks
+	 * {@link isMysteryActive} rather than reading the row: a window is a clock, and the row is only where
+	 * the clock is kept.
+	 */
+	public mysteryPowerOf(player: Player): AbilityKind | undefined {
+		if (!this.isMysteryActive(player)) return undefined;
+
+		return this.mystery.get(player)?.kind;
+	}
+
+	/**
+	 * Closes `player`'s window and puts the two attributes back to their empty values.
+	 *
+	 * **Silent when there is no window**, like {@link clearMultiBall}: four things can close one — the
+	 * clock, a death, the intermission, the round's own boundary — and any of them can arrive first.
+	 *
+	 * **"Stops giving and never takes back", which is MultiBall's rule and not a coincidence.** A mark
+	 * already on a ball stays on it; a MultiBall window opened while this one was running keeps running on
+	 * its own clock. Nothing is revoked when a window ends, because nothing here lent anything out.
+	 */
+	public clearMysteryWindow(player: Player): void {
+		if (!this.mystery.delete(player)) return;
+
+		this.publish(player);
+
+		if (DEBUG) print(`[Super] ${player.Name}: mystery window closed`);
 	}
 
 	/**

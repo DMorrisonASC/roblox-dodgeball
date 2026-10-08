@@ -30,22 +30,31 @@ const DEBUG = true;
 const ZONE_TICK_INTERVAL = 0.1;
 
 /**
- * Whether `character` is standing inside a part tagged {@link PRACTICE_ZONE_TAG}.
+ * Whether `instance` overlaps any part tagged {@link PRACTICE_ZONE_TAG}.
  *
  * **The same test the client runs**, deliberately, down to the deprecated filter pair: the part's own
- * `CFrame` and `Size` are the zone, and the character is the only included instance so the answer is
- * about this body rather than about whatever else the lobby is holding. `roundZone.ts` carries the
- * argument for that; it is not repeated here because the two want to stay one test.
+ * `CFrame` and `Size` are the zone, and the instance is the only thing included so the answer is about
+ * *it* rather than about whatever else the lobby is holding. `roundZone.ts` carries the argument for that;
+ * it is not repeated here because the two want to stay one test.
  *
- * This is the last place in the game that asks the question directly. Everything else reads
- * {@link PRACTICE_ZONE_ATTRIBUTE}, so this function and its client twin are the only two copies of the
- * rule — and once the client stops needing its own answer for the camera's tick, this is the one to
- * keep.
+ * **Exported, and it takes an `Instance` rather than a `Model`, because it has two callers that ask about
+ * different kinds of thing.** This service asks it about a *character* on every tick, which is what
+ * {@link PRACTICE_ZONE_ATTRIBUTE} is built from. `MysteryBoxService` asks it about a *spawn point* — a
+ * loose part in the world — to decide whether that point is on a practice floor and therefore stocked
+ * differently.
+ *
+ * **One function rather than two, and the second caller is exactly why.** "Is this thing inside a zone" is
+ * the zone's definition, and a second copy of it living in the mystery box would be a second answer to the
+ * question the zone exists to be an answer to — the failure this whole module was written to avoid. What
+ * differs between the callers is *what they do* with the answer, and that lives with each of them.
+ *
+ * It also means the box inherits the rule the zones already have: a zone part outside `Workspace` is not a
+ * zone, and a spawn point near one is therefore not in a zone either.
  */
-function standingInZone(character: Model): boolean {
+export function insideZone(instance: Instance): boolean {
 	const params = new OverlapParams();
 	params.FilterType = Enum.RaycastFilterType.Include;
-	params.FilterDescendantsInstances = [character];
+	params.FilterDescendantsInstances = [instance];
 
 	for (const zone of taggedPartsInWorkspace(PRACTICE_ZONE_TAG)) {
 		if (Workspace.GetPartBoundsInBox(zone.CFrame, zone.Size, params).size() > 0) return true;
@@ -129,7 +138,7 @@ export class PracticeZoneService implements OnStart {
 		const character = player.Character;
 		if (!character) return;
 
-		const inside = standingInZone(character);
+		const inside = insideZone(character);
 		const wasInside = player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true;
 
 		// **The group is re-applied whether or not the answer changed**, and the comment above the class

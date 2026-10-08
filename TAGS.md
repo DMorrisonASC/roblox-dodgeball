@@ -38,6 +38,7 @@ a place file that no build touches.
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
 | `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `client/roundZone.ts` — the only tag read on the client, asked by `ShiftLock` and by the dodge input |
+| `mysterySpawnPrize` | `shared/constants.ts`, `MYSTERY_SPAWN_TAG` | *painted in Studio* | `MysteryBoxService.report`, `.tick` and `forgetLostSpawns` — **plus `PracticeZoneService.insideZone`, which decides whether the part is on a practice floor** |
 | `MatchJoinA` | `shared/constants.ts`, `MATCH_JOIN_A_TAG` | *painted in Studio* — the part's flags are then forced from code | `MatchService.mountSide` |
 | `MatchJoinB` | `shared/constants.ts`, `MATCH_JOIN_B_TAG` | as above | as above |
 | `MatchJoinTouched` | `MatchService`, `DEBOUNCE_TAG` | `MatchService.touched`, on a **character** | `MatchService.touched` |
@@ -47,9 +48,18 @@ a place file that no build touches.
 | `Behavior_Pickup` | `npc/Behavior.ts`, `BEHAVIOR_PICKUP` | as above | as above |
 | `Behavior_Respawn` | `npc/Behavior.ts`, `BEHAVIOR_RESPAWN` | as above | as above |
 
-Thirteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
+Fourteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
 in the world — and the rule is now enforced by the reader rather than repeated in each one: see the
 four sections below that say so.
+
+**`mysterySpawnPrize` is the one that is a fact about a *place* rather than about a part.** Nothing of
+the tagged part is used except where it is, and the same part in two different places means two
+different things: on the field it is a spawn point rolled for at `MYSTERY_CONFIG.SPAWN_CHANCE`, and
+inside a `practiceZone` it is a fixture restocked a couple of seconds after each collection. Which of
+the two it is is asked of the zone — `PracticeZoneService.insideZone`, the one function in the game
+that answers that question — so moving the part moves the rule with it, and there is deliberately no
+second tag for the zoned case. `MysteryBoxService.report` prints how many of the tagged parts are on a
+practice floor, which is the number that explains why nothing is happening on the field.
 
 **There is no player tag.** "Is this a person?" is `Players.GetPlayerFromCharacter`, which is a
 question about the player list rather than about the instance — so the player side of the game never

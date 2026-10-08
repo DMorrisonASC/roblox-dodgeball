@@ -1,69 +1,72 @@
 import { Controller, OnStart } from "@flamework/core";
 import Net from "@rbxts/net";
-import { UserInputService } from "@rbxts/services";
+import { Players, UserInputService } from "@rbxts/services";
 import { AbilityKind, ABILITY_NAMES } from "shared/ability";
+import { IS_DEV_ATTRIBUTE } from "shared/constants";
+import { POWER_ROSTER } from "shared/config/economy.config";
 import { events } from "shared/networking";
 
-/** Prints the binds once, and every press that went out. */
+/** Prints the binds once, every press that went out, and nothing else. */
 const DEBUG = true;
 
-/** The key that asks the server to mark the held ball. **`3`, and nothing else in the game binds it.** */
-const MARK_KEY = Enum.KeyCode.Three;
+/**
+ * The key that uses whatever power a mystery box gave you. **`3`, and nothing else in the game binds it.**
+ *
+ * **One key for every power, because the player does not choose the power — the box does.** What a press
+ * means is therefore not a fact this file knows: it is the *window's* kind, which the server reads for
+ * itself when the request arrives. So the press sends no argument at all, on the argument
+ * `useMysteryPower` gives in `shared/networking.ts` — a client naming the power would be sending a replica
+ * of a fact the server holds authoritatively, and a stale one could buy a power the player was never given.
+ *
+ * **This replaced a key per ability, and the mismatch it removes is worth recording.** `3` used to mark as
+ * Pierce, `4` bought a MultiBall window and `5` marked as Freeze: three keys a player had to remember, for
+ * a mechanic where the game decides which one applies. A box that rolled Freeze left its owner pressing
+ * keys that asked for something else, and the server had no way to say so — the charge test it reached was
+ * the same one either way. The per-ability keys survive for a dev, below, which is what they were always
+ * more useful for.
+ */
+const POWER_KEY = Enum.KeyCode.Three;
 
 /**
- * The key that asks the server to spend the charge on a MultiBall window. **`4`, and nothing else binds
- * it.**
+ * The keys that use one *named* power each — **and they are a dev's**, bound for a machine that has been
+ * marked as a developer's and not for anybody else.
  *
- * **A second key beside the mark rather than a mode the first one switches between**, because the two
- * presses ask for different *kinds* of thing: `3` marks a ball, which is a fact about the object in the
- * player's hand, and `4` buys a window, which is a fact about the player and needs no ball at all. A
- * player with a charge and no ball can use the second and not the first, and that is a difference a
- * shared key could not express.
+ * **`4`, `5` and `6`, in `POWER_ROSTER` order**, so that a power can be exercised without waiting for a box
+ * to roll it. The mystery box is the only source of a power in play, and a 5% roll every ten seconds is not
+ * a way to test one — the same reasoning every other dev shortcut in this game exists for, applied at the
+ * *binding* rather than at the ability. These keys send the requests that already existed, and the
+ * server-side bypasses they lean on were already there.
+ *
+ * **A `Record<AbilityKind, Enum.KeyCode>` rather than a list of pairs**, which is `ABILITY_NAMES`' shape
+ * and its reason: adding an ability to the union without choosing a key for it is a compile error rather
+ * than a key that silently does nothing. The lookup runs the other way at press time, through
+ * {@link abilityOf}, because a key is what arrives.
+ *
+ * **Not bound for a non-dev, and the client is the only machine that can decide that** — it is the one
+ * holding the keyboard. It reads `IS_DEV_ATTRIBUTE` off the player, so an ordinary player has exactly one
+ * power key and no dead ones. The server never takes a client's word for it: it asks `DevService.isDev` for
+ * itself before honouring a press, which is why a forged flag buys a player a refused request and nothing.
  */
-const MULTI_BALL_KEY = Enum.KeyCode.Four;
+const TEST_KEYS: Record<AbilityKind, Enum.KeyCode> = {
+	Pierce: Enum.KeyCode.Four,
+	MultiBall: Enum.KeyCode.Five,
+	Freeze: Enum.KeyCode.Six,
+};
 
-/**
- * The key that asks the server to mark the held ball as Freeze. **`5`, and nothing else binds it.**
- *
- * **A key of its own rather than a mode the marking keys switch between.** `3` and `5` send the same
- * remote with a different word in it, and the only thing this file has to know about an ability is its
- * name — what it *does* is the server's business, which is why a new ability costs one constant and one
- * branch here and nothing else on the client.
- */
-const FREEZE_KEY = Enum.KeyCode.Five;
-
-/**
- * The ability `3` marks.
- *
- * **A constant per key rather than something the player selects**, which is the honest shape of a
- * mechanic whose abilities are bound to letters: there is nothing to cycle through, so there is no
- * selection and no key to select with. The word still travels on the wire, because the server is being
- * asked to mark a ball *as* something — and it is written here rather than derived from the key, because
- * a mapping between keys and abilities on two machines is a mapping that can disagree with itself.
- *
- * This used to be called `ABILITY` and to be described as "the only one that exists". There are three
- * abilities now and two of them are marks, so a name that tells the two marking keys apart is worth the
- * four lines it costs.
- */
-const PIERCE: AbilityKind = "Pierce";
-
-/** What `5` marks, named for {@link PIERCE}'s reason: each key names what it is asking for. */
-const FREEZE: AbilityKind = "Freeze";
-
-/** The client half of the mark remote, as the declarations build it. */
+/** The client half of the remote declarations, as they are built. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
 
 /**
- * Presses `3` to ask the server to mark the ball in hand, or `4` to ask it to spend the charge on a
- * MultiBall window.
+ * The power key, and a developer's three.
  *
- * **Two keys that decide nothing**, together in one controller because they are one subject: a key that
- * spends a charge. Which press is legal is entirely the server's question — whether there is a ball in
- * the hand, whether the player holds a charge, whether they are a dev, whether a window is already
- * open — and it is the only machine that knows any of them. A client that refused to send a request
- * because *its* copy of the charge was wrong would be a second copy of the rule, which is the one thing
- * this codebase consistently refuses to write. So the press goes out and the answer arrives as an
- * attribute the HUD already reads: the mark on the ball, the window on the player.
+ * **One key that decides nothing**, which is the whole of the design: `3` asks the server to use whatever a
+ * mystery box gave this player, and the answer — whether it worked, what it marked, whether a window is
+ * open — comes back as attributes the HUD already reads. Which press is legal is entirely the server's
+ * question: whether there is a window at all, whether there is a ball in the hand, whether the power it
+ * rolled can ride one, whether a round is being played, whether they are a dev. It is the only machine that
+ * knows any of them, and a client that refused to send a request because *its* copy of the rules was wrong
+ * would be a second copy of the rule — the one thing this codebase consistently refuses to write. So the
+ * press goes out and the answer arrives as a fact: the mark on the ball, the window on the player.
  *
  * **Which is also why nothing is sent back.** The acknowledgement is the attribute appearing — a
  * replicated fact in this player's own hands — so a remote saying "done" would be a second channel
@@ -71,10 +74,11 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
  * unchanged window attributes a moment later, *is* the answer, and the server prints the reason where a
  * reader can find it.
  *
- * **The two presses are not two shapes of one thing.** One marks an object and the other buys a stretch
- * of time from a player who may be holding nothing at all, which is why the second one sends no
- * argument: there is nothing for a client to name. See `SuperAbility`'s server half in `BallService`,
- * where both handlers live and where that difference is spelled out.
+ * **The dev keys are a shortcut for testing rather than a second way to play, and they are bound
+ * accordingly.** They name one ability each, so a power can be tried without waiting for a box to roll it,
+ * and they are bound only on a machine marked as a developer's — which is why an ordinary player has one
+ * power key rather than four with three that do nothing. See {@link TEST_KEYS} for that decision, and for
+ * what the server does about a machine that lies about being one.
  *
  * A tap rather than a hold, so each key is built from the pair of signals a tap needs — the same shape
  * `SprintController` uses for its held key, and for the same reason.
@@ -84,8 +88,11 @@ export class SuperAbility implements OnStart {
 	/** Resolved on first use: `Client.Get` waits for the server's remote. */
 	private markRemote?: ClientRemotes["markHeldBall"];
 
-	/** The second key's remote, resolved the same way and for the same reason. */
+	/** The dev MultiBall key's remote, resolved the same way and for the same reason. */
 	private multiBallRemote?: ClientRemotes["multiBall"];
+
+	/** The power key's, which carries nothing — see `useMysteryPower` for why it has nothing to say. */
+	private powerRemote?: ClientRemotes["useMysteryPower"];
 
 	/**
 	 * Which ability keys are being reported as down.
@@ -97,9 +104,9 @@ export class SuperAbility implements OnStart {
 	 * abilities, but a key press is something a player does deliberately and it should go out once. The
 	 * same guard `SprintController` and `DodgeController` keep over their own keys.
 	 *
-	 * **A set rather than the boolean this used to be, because there are two keys now.** One flag for
-	 * both would swallow a press of `4` for as long as `3` happened to be held, which is a state a player
-	 * reaches by resting a finger on a key.
+	 * **A set rather than a boolean, because there is more than one key.** One flag for all of them would
+	 * swallow a press of the power key for as long as a dev happened to be sitting on `4`, which is a state
+	 * a player reaches by resting a finger on a key.
 	 */
 	private readonly holding = new Set<Enum.KeyCode>();
 
@@ -109,13 +116,21 @@ export class SuperAbility implements OnStart {
 		// client's boot — so this is the usual `task.spawn`, the same one every other sending
 		// controller opens with.
 		task.spawn(() => {
-			this.getRemote();
+			this.getMarkRemote();
 			this.getMultiBallRemote();
+			this.getPowerRemote();
 		});
 
 		UserInputService.InputBegan.Connect((input, gameProcessed) => {
 			const key = input.KeyCode;
-			if (key !== MARK_KEY && key !== FREEZE_KEY && key !== MULTI_BALL_KEY) return;
+
+			// **The dev keys are resolved per press rather than cached**, which is one attribute read on a
+			// key press and is what lets a flag granted mid-session start working with nothing watching for
+			// it. A non-dev gets `undefined` here for every key, so the guard below leaves them exactly one
+			// live key — which is the requirement, rather than four keys with three that do nothing.
+			const test = this.isDev() ? this.abilityOf(key) : undefined;
+
+			if (key !== POWER_KEY && test === undefined) return;
 
 			// Typing in chat, or a menu is open: the key belonged to whatever has focus, not to the game.
 			if (gameProcessed) return;
@@ -124,25 +139,39 @@ export class SuperAbility implements OnStart {
 			if (this.holding.has(key)) return;
 			this.holding.add(key);
 
-			// **The three presses, and the only place this file decides which is which.** Everything else
-			// about them is the server's: this asks, and reads the answer off an attribute.
-			if (key === MULTI_BALL_KEY) {
-				if (DEBUG) print(`[Super] ${MULTI_BALL_KEY.Name} — asking to spend the charge on a window`);
+			// **The power key, and the whole of what it sends: nothing.** The server reads the window it is
+			// holding to find out which power to use, so a client cannot name one — not to be polite, but
+			// because which power a box rolled is not this machine's to report. See `useMysteryPower` in
+			// `shared/networking.ts`, and the handler of the same name in `BallService`.
+			if (key === POWER_KEY) {
+				if (DEBUG) print(`[Super] ${POWER_KEY.Name} — asking to use the mystery box's power`);
+
+				this.getPowerRemote().SendToServer();
+
+				return;
+			}
+
+			// Unreachable without a kind, because the guard above is the only way past it.
+			if (test === undefined) return;
+
+			// **The one dev key that is not a mark**, asked by name because the question here is which of
+			// the two requests this press goes to — and the server's router asks the same question about
+			// the same word when a box is paying.
+			if (test === "MultiBall") {
+				if (DEBUG) print(`[Super] ${key.Name} — asking to buy a ${ABILITY_NAMES.MultiBall} window`);
 
 				this.getMultiBallRemote().SendToServer();
 
 				return;
 			}
 
-			// **One remote for both marking keys, and the word is the whole of the difference between
+			// **One remote for every marking key, and the word is the whole of the difference between
 			// them.** `"Pierce"` and `"Freeze"` are both abilities a *ball* can carry, and the server
 			// checks that the word names one rather than trusting it — see `isBallAbility`, which is also
 			// what refuses the word for a player-level buff arriving at this same remote.
-			const kind: AbilityKind = key === FREEZE_KEY ? FREEZE : PIERCE;
+			if (DEBUG) print(`[Super] ${key.Name} — asking to mark the held ball as ${ABILITY_NAMES[test]}`);
 
-			if (DEBUG) print(`[Super] ${key.Name} — asking to mark the held ball as ${ABILITY_NAMES[kind]}`);
-
-			this.getRemote().SendToServer(kind);
+			this.getMarkRemote().SendToServer(test);
 		});
 
 		// The key-up is taken however the engine labels it, exactly as `SprintController` takes its
@@ -155,7 +184,7 @@ export class SuperAbility implements OnStart {
 		// **Losing focus releases every key, because nothing else will.** The window that took focus
 		// receives the key-ups, so without this they would stay marked down and the next press of either
 		// would be swallowed — the same hazard `SprintController.clear`s its held keys for. Clearing the
-		// whole set rather than the one key, because focus can be lost with both keys down.
+		// whole set rather than the one key, because focus can be lost with every key still down.
 		UserInputService.WindowFocusReleased.Connect(() => {
 			this.holding.clear();
 		});
@@ -164,13 +193,26 @@ export class SuperAbility implements OnStart {
 		// key does nothing" has two completely different causes — the bind never happened, or the press
 		// never arrived — and this is the line that tells them apart.
 		if (DEBUG) {
-			print(`[Super] ${MARK_KEY.Name} bound — marks the held ball as ${ABILITY_NAMES[PIERCE]}`);
-			print(`[Super] ${FREEZE_KEY.Name} bound — marks the held ball as ${ABILITY_NAMES[FREEZE]}`);
-			print(`[Super] ${MULTI_BALL_KEY.Name} bound — buys a ${ABILITY_NAMES.MultiBall} window`);
+			print(`[Super] ${POWER_KEY.Name} bound — uses whatever power the mystery box gave`);
+
+			// **The dev binds are printed only for a dev, because for anybody else they are not bound** —
+			// and a startup line naming keys that do nothing is worse than no line at all. Read here rather
+			// than remembered: the *binding* is decided per press, so this can only be a snapshot of the
+			// flag as the client booted, and it reports which keys exist rather than which will work.
+			if (this.isDev()) {
+				for (const kind of POWER_ROSTER) {
+					const what =
+						kind === "MultiBall"
+							? `buys a ${ABILITY_NAMES[kind]} window`
+							: `marks the held ball as ${ABILITY_NAMES[kind]}`;
+
+					print(`[Super] ${TEST_KEYS[kind].Name} bound (dev) — ${what}`);
+				}
+			}
 		}
 	}
 
-	private getRemote(): ClientRemotes["markHeldBall"] {
+	private getMarkRemote(): ClientRemotes["markHeldBall"] {
 		if (!this.markRemote) {
 			this.markRemote = events.Client.Get("markHeldBall");
 		}
@@ -178,12 +220,47 @@ export class SuperAbility implements OnStart {
 		return this.markRemote;
 	}
 
-	/** The `4` key's remote, held for the same reason: `Client.Get` waits for the server's remote. */
+	/** The dev MultiBall key's, held for the same reason: `Client.Get` waits for the server's remote. */
 	private getMultiBallRemote(): ClientRemotes["multiBall"] {
 		if (!this.multiBallRemote) {
 			this.multiBallRemote = events.Client.Get("multiBall");
 		}
 
 		return this.multiBallRemote;
+	}
+
+	/** The power key's, resolved the same way. The one remote in this file sent with no argument at all. */
+	private getPowerRemote(): ClientRemotes["useMysteryPower"] {
+		if (!this.powerRemote) {
+			this.powerRemote = events.Client.Get("useMysteryPower");
+		}
+
+		return this.powerRemote;
+	}
+
+	/**
+	 * Whether this machine has been marked as a developer's.
+	 *
+	 * **Read per press rather than cached**, which costs one attribute read on a key press and buys two
+	 * things: a flag granted mid-session starts working with nothing watching for it, and there is no copy
+	 * of the answer to go stale. The server asks `DevService` the same question about the same attribute
+	 * before it honours anything, so this decides *which keys exist* and never what a press does.
+	 */
+	private isDev(): boolean {
+		return Players.LocalPlayer.GetAttribute(IS_DEV_ATTRIBUTE) === true;
+	}
+
+	/**
+	 * Which named power `key` asks for, or `undefined` when it asks for none.
+	 *
+	 * **A search over {@link POWER_ROSTER} rather than a second table keyed by key.** The table is keyed by
+	 * ability, which is the shape that makes the *union* complete — a new ability without a key is a
+	 * compile error — so the reverse question is asked of the roster rather than answered by a second
+	 * mapping that could disagree with the first. Three comparisons, on a key press.
+	 */
+	private abilityOf(key: Enum.KeyCode): AbilityKind | undefined {
+		for (const kind of POWER_ROSTER) if (TEST_KEYS[kind] === key) return kind;
+
+		return undefined;
 	}
 }

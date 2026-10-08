@@ -981,7 +981,7 @@ export class RoundService implements OnStart {
         // **And the MultiBall window closes with them, above the guards rather than beside the streak
         // below.** The streak is a fact about a *round*, which is why `noteDeath` sits under both returns
         // next to the mode's own decision — but a window is a clock on a *player*, and it does not care
-        // whether a round was being played when the body died. A dev who presses `4` in the lobby and then
+        // whether a round was being played when the body died. A dev who opens a MultiBall window in the lobby and then
         // resets is the case that makes the difference visible: their window is as finished as anybody's,
         // and leaving it running would carry a super through the respawn.
         this.abilities.clearMultiBall(player);

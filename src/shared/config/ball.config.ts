@@ -114,9 +114,15 @@ export const BALL_CONFIG = {
 	 * How long a thrown ball is left in the world before it is cleaned up, in
 	 * seconds.
 	 *
-	 * Measured from the throw, so it is the life of a *projectile* rather than of
-	 * a ball: a ball that has been caught since is somebody's, and is left alone —
-	 * this is what stops the map filling with the ones nobody fetched.
+	 * Measured from the throw, or from the drop, so it is the life of a *projectile*
+	 * rather than of a ball: a ball that has been caught since is somebody's, and is
+	 * left alone — this is what stops the map filling with the ones nobody fetched.
+	 *
+	 * **"From the last time it left a hand", exactly, and that half is enforced in
+	 * `scheduleBallExpiry` rather than here.** A ball picked up and thrown again gets the
+	 * whole of this again, and the clock it was on before is superseded rather than left
+	 * running — a second timer for one ball is what used to destroy balls mid-flight, and
+	 * the note in that file is where that is written down.
 	 *
 	 * Long enough that a ball is still there when you go back for it, short enough
 	 * that a field nobody is collecting does not become a carpet.
@@ -496,7 +502,7 @@ export const BALL_CONFIG = {
 	 * relative to the throw, so it stays correct whichever way you are facing — see
 	 * `leftAxis` in `shared/Trajectory.ts`.
 	 */
-	CURVE_STRENGTH: 300,
+	CURVE_STRENGTH: 200,
 
 	/**
 	 * Whether a curveball's launch cancels its own drift, so it lands on the mark.
@@ -534,7 +540,7 @@ export const BALL_CONFIG = {
 	 * further; at 1 no energy is lost at all and one throw crosses the arena, and low
 	 * enough and the ball dies in the player it hit and there is no chain to speak of.
 	 */
-	BOUNCE_FACTOR: 0.5,
+	BOUNCE_FACTOR: 0.9,
 
 
 	// -------------------------------------------------------------------- drop
