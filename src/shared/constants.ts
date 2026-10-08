@@ -115,37 +115,19 @@ export const MYSTERY_SPAWN_TAG = "mysterySpawnPrize";
 /**
  * Which power a collected mystery box is paying for, on the `Player`. Empty string for none.
  *
- * **Published by `SuperService`, which owns the window, and written with the rest of that readout** — see
- * its `publish`, and `MYSTERY_POWER_ENDS_AT_ATTRIBUTE` below for why the pair is written as `""` and `0`
- * rather than removed.
+ * **Published by `SuperService`, which holds the prize, and written with the rest of that readout** — see
+ * its `publish`. This is now the *whole* of the prize's publication: there is no clock behind it, because a
+ * box's power is held until it is used or lost rather than for a fixed ten seconds, so this attribute is a
+ * state rather than the start of a countdown. `MYSTERY_POWER_ENDS_AT_ATTRIBUTE` was the second half of the
+ * pair and is gone with the timer it described.
  *
  * **A string rather than the row itself, because a client cannot read a `Map`.** The kind is one of the
  * words in `shared/ability.ts`, which is the same vocabulary the mark remote speaks — so a client that
- * already knows how to name an ability does not need to learn a second one to say what a box gave.
+ * already knows how to name an ability does not need to learn a second one to say what a box gave. The HUD
+ * reads it for two things: what the power slot shows while a prize is held, and the moment the reveal flash
+ * has to run — a change to a non-empty value is a pickup, and it is the only thing that starts one.
  */
 export const MYSTERY_POWER_ATTRIBUTE = "MysteryPower";
-
-/**
- * When the power above stops being free, on the engine's shared clock. `0` for none.
- *
- * **`Workspace:GetServerTimeNow()` and not `os.clock()`**, which is the whole reason this is an attribute
- * rather than a boolean: a countdown that a client can *recompute* stays right on its own, where a
- * "seconds remaining" figure sent once would be a number that was already wrong when it arrived. This is
- * the same clock `SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE` is stamped from, for the same reason.
- *
- * **Read by nothing yet, deliberately, and that is worth saying rather than implying a reader exists.**
- * The toast that announces a box does not need it: `MYSTERY_POWER_ATTRIBUTE` is emptied when the window
- * closes, so the toast's *visibility* is the window — and the countdown a reader would want in its text
- * cannot be done at all, because big-ui's `Alert` reads its message once at construction and cannot be
- * told to change its mind. A ticking number belongs on a HUD with a `Computed` label, and none is built.
- * So this is published and read by nobody: the honest state of a clock that exists for the next consumer.
- *
- * **Nothing decides anything from it either** — the server asks `SuperService.isMysteryActive`, which reads
- * the clock itself — so an attribute that failed to replicate would cost a HUD element and never a rule.
- * That is the arrangement `SUPER_CHARGE_ATTRIBUTE` has as well, and it is why these are attributes rather
- * than remotes.
- */
-export const MYSTERY_POWER_ENDS_AT_ATTRIBUTE = "MysteryPowerEndsAt";
 
 /**
  * Marks a whitelisted dev, on the `Player`. Read as `=== true`, so an absent attribute means no.
@@ -550,7 +532,9 @@ export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
  *   a hand-out, so a mark cannot survive into a throw nobody asked for.
  * - **Read** by `abilityOn`, which is the only reader that decides anything; by `BallService`'s drop
  *   and throw paths, which are the two ways a marked ball can leave a hand and therefore the two that
- *   decide whether the charge is forfeited or spent; and by the HUD, which says which ability is
+ *   decide what the mark cost — the throw spends, the drop forfeits — and they are also why a box's
+ *   prize is spent on the *throw* and not on the press: `SuperService.spendMysteryPrize` is called from
+ *   the throw path, for a dev's throw as much as anybody's; and by the HUD, which says which ability is
  *   loaded.
  *
  * **On the ball rather than on the player, because the ability belongs to the *throw* and not to the

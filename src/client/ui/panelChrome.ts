@@ -524,6 +524,13 @@ export function addTabStrip<T extends string>(
 		// The picture slot, kept for its shape rather than its content — see the doc above. **It dims on the
 		// unselected tabs**, because a bright box on a near-black tab is the loudest thing in the strip and it
 		// would be competing with the one tab that is supposed to stand out.
+		//
+		// **The fill *is* the placeholder, and the day there is art it has to go.** This rectangle is what the
+		// slot is while nothing is in it — the light plate between the tab's edge and its label — so the colour
+		// and the two transparencies are the design rather than a leftover. But art dropped into this
+		// `ImageLabel` would sit *on top* of that plate, and a bright fill behind a picture is a box drawn
+		// around it. When an id arrives, this line becomes `BackgroundTransparency: 1` and the tab carries the
+		// picture alone; if the plate is still wanted behind it, it becomes a `Frame` underneath instead.
 		const image = Fusion.New(scope, "ImageLabel")({
 			Name: "Image",
 			Parent: button,
@@ -725,6 +732,11 @@ export function addTile(
 	// 4px on three sides, which left the tile's own lighter colour showing as a mat around the artwork — the
 	// frame that was removed. There is no inset and no corner radius now: the slot *is* the tile's face, and the
 	// name bar is simply drawn over its bottom edge.
+	//
+	// **And the art goes *on top* of this rather than turning this into the art.** The fill here is the tile's
+	// face — the thing the flattening pass exists to give every tile — so making this an `ImageLabel` with
+	// `BackgroundTransparency = 1` would delete the grey the tiles were built around and bring the mat back as a
+	// hole. A picture is a child of this frame, sized to it, transparent of its own.
 	const art = Fusion.New(scope, "Frame")({
 		Name: "Art",
 		Parent: tile,

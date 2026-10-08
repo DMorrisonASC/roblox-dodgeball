@@ -92,21 +92,6 @@ export const MYSTERY_CONFIG = {
 	MAX_TOTAL: 3,
 
 	/**
-	 * How long the power a box grants may be used for, in seconds. **Placeholder — 10.**
-	 *
-	 * **The same length as `SUPER_CONFIG.MULTI_BALL_DURATION_SECONDS`, and it is a second number rather than
-	 * a reference to that one.** The two are equal today because both are "long enough to do something with
-	 * and short enough to be a moment", and they are separately tunable because they are answers to different
-	 * questions: MultiBall's ten seconds is what a *charge* buys, and this is what a box buys. A shared
-	 * constant would make tuning one silently move the other.
-	 *
-	 * **Ten seconds is roughly one throw and one decision.** A window shorter than the reload between throws
-	 * would be a box that grants nothing; much longer and the box stops being a moment and starts being a
-	 * mode, which is what the caps above are protecting the field from.
-	 */
-	WINDOW_SECONDS: 10,
-
-	/**
 	 * The box's edge length in studs. **Placeholder — 3.**
 	 *
 	 * **Big enough to notice and to aim at, small enough not to be scenery.** A player has to be able to see

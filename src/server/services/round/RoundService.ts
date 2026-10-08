@@ -1673,6 +1673,17 @@ export class RoundService implements OnStart {
             // spectator who opened one is as finished with it as anybody, and the two are one list to
             // write over once a minute.
             //
+            // **And a mystery prize, in the same loop, because it is the same kind of thing.** A box
+            // collected in one round must not buy a power in the next, and unlike the window above the
+            // reason is not that a clock is running: it is that the round the player collected it in is
+            // over, and the boundary is where a round-scoped thing ends. This is one of the two ways a
+            // prize can be lost — the other is dying — and it is the half that makes "use it or lose it"
+            // mean something at the end of a round rather than a promise held indefinitely.
+            //
+            // Written unconditionally over every player, including ones who died into this boundary: the
+            // release is silent when there is nothing to release, so a death that already took the prize
+            // costs a call and no second publication.
+            //
             // **And every wait for a body, in the same loop because it is the same kind of thing.** A player
             // who died inside the round and was still counting down when it was decided has *no character at
             // all* — and the teleport to the lobby above moves bodies rather than making them, so a timer left
@@ -1682,6 +1693,7 @@ export class RoundService implements OnStart {
             // seconds. See `RespawnService.cancel`, whose flag exists for precisely this caller.
             for (const player of Players.GetPlayers()) {
                 this.abilities.clearMultiBall(player);
+                this.abilities.releaseMysteryPrize(player, "the round ended");
                 this.respawns.cancel(player, true);
             }
 

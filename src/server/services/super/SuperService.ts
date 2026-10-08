@@ -3,9 +3,9 @@ import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { AbilityKind } from "shared/ability";
 import { SUPER_CONFIG } from "shared/config/super.config";
 import {
+	ARMED_ABILITY_ATTRIBUTE,
 	CROWN_ATTRIBUTE,
 	MYSTERY_POWER_ATTRIBUTE,
-	MYSTERY_POWER_ENDS_AT_ATTRIBUTE,
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
 	SUPER_CHARGE_ATTRIBUTE,
@@ -48,28 +48,27 @@ interface MultiBallWindow {
 }
 
 /**
- * A mystery-box window that is running: which power it pays for, and when it closes.
+ * The mystery-box prize a player is holding: which power it is, and nothing else.
  *
- * **The kind is on the row, and that is the one thing this window has that a MultiBall window does not.**
- * A MultiBall window always grants MultiBall, so its row has no reason to say so; a box rolls a power at
- * the moment it is collected, and "which one" is the answer to the question the player asked by taking the
- * box. Keeping it here is what lets {@link publish} put it on the player — which is what the toast that
- * announces the box reads — and what lets a second box arriving mid-window be refused without anybody
- * having to remember what the first one was.
+ * **One field, and the field that used to be here is the change.** The row was `{ kind, endsAt }` and the
+ * window closed on a clock; it is a *prize* now, held until the player uses it, dies, or the round ends. So
+ * there is no deadline to keep, no `task.delay` to schedule, and no `MYSTERY_POWER_ENDS_AT_ATTRIBUTE` to
+ * publish — a countdown needs a clock, and there is deliberately no longer one to count.
  *
- * **No `remaining`, and its absence is deliberate.** MultiBall rations a *number of throws*; a mystery
- * window rations *time*, and the power it pays for is spent through the paths that already exist — a mark
- * on a ball, or a MultiBall window of its own — rather than through a counter here. A count would be a
- * second way to run out, and one window with two ways to end is one more pair of states to keep in step.
+ * **The kind is on the row, and that is the one thing this has that a MultiBall window does not.** A
+ * MultiBall window always grants MultiBall, so its row has no reason to say so; a box rolls a power at the
+ * moment it is collected, and "which one" is the answer to the question the player asked by taking the box.
+ * Keeping it here is what lets {@link publish} put it on the player — which is what the power slot reads —
+ * and what lets a second box arriving be refused without anybody having to remember what the first one was.
  *
- * **`endsAt` on the shared clock, exactly as above and for the same reason**: a window *is* a clock, so the
- * clock is the rule and the row is only where it is kept.
+ * **A row rather than a bare `AbilityKind` in the map, which is the smaller shape available.** It is one
+ * value today, and a `Map<Player, AbilityKind>` would say exactly the same thing — but it would say it in a
+ * shape that has to be rewritten the first time this prize grows a second fact, and the container beside it
+ * is already a map of rows. Named so that the two containers read as siblings.
  */
-interface MysteryWindow {
+interface MysteryPrize {
 	/** What the box rolled. See `shared/ability.ts` — the same union the mark remote speaks. */
 	kind: AbilityKind;
-	/** What `Workspace:GetServerTimeNow()` will read when the window closes. */
-	endsAt: number;
 }
 
 /**
@@ -133,20 +132,25 @@ export class SuperService implements OnStart {
 	private readonly multiBalls = new Map<Player, MultiBallWindow>();
 
 	/**
-	 * Every player with a mystery-box window open, and what it rolled.
+	 * Every player holding a mystery-box prize, and what it rolled.
 	 *
-	 * **A second `Map` rather than another field on the rows of the first one**, because the two windows
-	 * are different things that happen to be shaped alike. This one is bought with a box rather than with
-	 * a charge, and it is asked about by the *charge test* rather than by the throw handler — see
+	 * **A second `Map` rather than another field on the rows of the first one**, because the two are
+	 * different things that happen to be shaped alike. This one is bought with a box rather than with a
+	 * charge, and it is asked about by the *charge test* rather than by the throw handler — see
 	 * `BallService.markHeldBall` and `BallService.activateMultiBall`, which both ask "may this player do
 	 * this" of two sources now. One container with two kinds of row in it would make every reader of
 	 * either decide which of the two it was holding.
 	 *
-	 * **Keyed on the `Player`**, for the reason above: a window is a state of the player, and a respawn
-	 * replaces the body it was opened in. It is also cleaned up on `PlayerRemoving` with the others, since
-	 * a row for somebody who has left is a row nothing will ever clear.
+	 * **Keyed on the `Player`**, for the reason above: a prize is a state of the player, and a respawn
+	 * replaces the body it was collected in. It is also cleaned up on `PlayerRemoving` with the others,
+	 * since a row for somebody who has left is a row nothing will ever clear.
+	 *
+	 * **And unlike its sibling, this container has no clock in it at all.** A MultiBall window is a length
+	 * of time and has to be asked how much of it is left; a prize is held until something takes it away, so
+	 * the row's *presence* is the whole of the state — which is why there is no `endsAt` to compare and
+	 * nothing scheduled to close it.
 	 */
-	private readonly mystery = new Map<Player, MysteryWindow>();
+	private readonly mystery = new Map<Player, MysteryPrize>();
 
 	public onStart(): void {
 		// **The one leak this service can have.** Both containers are keyed on a `Player`, so a player
@@ -162,9 +166,12 @@ export class SuperService implements OnStart {
 			// window the clock was still going to close.
 			this.multiBalls.delete(player);
 
-			// **And the box's window goes with them, by the same argument.** The timer a live window
-			// scheduled for this player will still fire, and `clearMysteryWindow` is silent when there is
-			// nothing to clear.
+			// **And the box's prize goes with them, by the same argument, and with no tidy-up left behind.**
+			// This is the reason the row was deleted rather than released: a release would publish to a
+			// player who is no longer in the game, and no `task.delay` is waiting on this row any more, so
+			// there is nothing the deletion could strand. That last part is what changed when the window
+			// became a prize — the timer a live window used to schedule is gone, so the only thing that
+			// could ever have been left running for this player is a row, and the row is what this deletes.
 			this.mystery.delete(player);
 
 			// **And the crown is recomputed, because the player who just left may have been the reason
@@ -253,14 +260,18 @@ export class SuperService implements OnStart {
 	public noteDeath(player: Player): void {
 		this.resetStreak(player, "died");
 
-		// **A death closes the box's window, and this method closes no MultiBall one.** Read the body
+		// **A death loses the box's prize, and this method closes no MultiBall one.** Read the body
 		// above: it resets the streak and recomputes the crown, and nothing else. `clearMultiBall` is
 		// called from its own timer and from two places in `RoundService`, and a death reaches neither —
 		// so a player who dies with a MultiBall window open keeps it, despite that window's own comment
 		// saying a death closes one. Whether MultiBall should be closed here is its author's question and
-		// not this one's; for a box the answer is that it closes, because a fresh body in a fresh position
+		// not this one's; for a prize the answer is that it goes, because a fresh body in a fresh position
 		// is not the player who collected it. Divergence reported rather than copied either way.
-		this.clearMysteryWindow(player);
+		//
+		// **"Lose it" is what this half of use-it-or-lose-it means**, and it is the reason the prize has no
+		// clock: without one, the only way to lose it is to be killed, which is a thing the game is already
+		// about. See {@link releaseMysteryPrize} for the other endings.
+		this.releaseMysteryPrize(player, "died");
 
 		// **And a death can move a crown that is not this player's.** The count has just gone to nought,
 		// which changes the maximum it was measured against — so the answer is recomputed even though the
@@ -418,6 +429,16 @@ export class SuperService implements OnStart {
 	 * **Not called for a dev.** A dev marks a ball without a charge existing — the bypass
 	 * `BallService.markHeldBall` documents — so there is nothing of theirs to spend, and this is
 	 * guarded at the call site rather than here because only the caller knows who threw.
+	 *
+	 * **The box's prize is the one thing that does not follow this rule, and the difference is deliberate.**
+	 * A charge and a prize are both spent by a *thrown* marked ball — see {@link spendMysteryPrize}, which
+	 * is called at the same two sites — but only the charge is forfeited when the ball is *dropped*. A charge
+	 * is permission to place a power, so putting the ball down is the only way to lose it; a prize *is* the
+	 * power, the dropped ball delivered nothing, and the player is still holding what they walked into a box
+	 * for. **It is a real divergence and not an oversight:** a player can mark, put the ball down, and mark
+	 * again without spending anything. Nothing is delivered by that, which is why it is left as it is — but
+	 * if the box should be as strict as a charge, the line belongs beside the `forfeitCharge` call in
+	 * `BallService.dropBall`.
 	 */
 	public spendCharge(player: Player): void {
 		if (!this.charged.delete(player)) return;
@@ -428,11 +449,18 @@ export class SuperService implements OnStart {
 	}
 
 	/**
-	 * Clears the streak for a round that is opening. **The charge is left alone.**
+	 * Clears the streak for a round that is opening. **The charge is left alone, and so is the prize.**
 	 *
 	 * The two halves of this service have different lifetimes on purpose: a streak is a run *within* a
 	 * round, so it goes when the round does, and a charge is held until it is used, so it is carried
 	 * into the next round by a player who earned it and never spent it.
+	 *
+	 * **The prize is lost at the round's *end* rather than here, which is why it is not in this method.**
+	 * It is a round-scoped thing like the streak, but not a thing a new round clears: a player who collects
+	 * a box and then watches the round end has lost it in the moment the round ended, and the sweep for
+	 * that lives in `RoundService` beside the `clearMultiBall` one. Clearing it here as well would work and
+	 * would be a second place for the same rule — this runs when the *next* round opens, which is later than
+	 * the loss the line above describes.
 	 *
 	 * Called from the block in `RoundService` that opens a playing phase, beside `scores.clear()` and
 	 * the round's own two boards — and *not* at the intermission. The streak a round ended on is
@@ -464,8 +492,10 @@ export class SuperService implements OnStart {
 	 * a count beside the deadline of a window that had already closed, would be showing a state that
 	 * never existed.
 	 *
-	 * **The window's two are written as `0` and `0` when there is none**, which is the empty case rather
-	 * than an absent attribute — see `SUPER_MULTI_BALL_COUNT_ATTRIBUTE`.
+	 * **The window's count is written as `0` when there is none**, which is the empty case rather than an
+	 * absent attribute — see `SUPER_MULTI_BALL_COUNT_ATTRIBUTE`. Its deadline is written the same way, and
+	 * that pair is the *only* place a countdown is published: the box's prize has no deadline to write, so
+	 * where this method used to write two mystery attributes it now writes one.
 	 */
 	private publish(player: Player): void {
 		player.SetAttribute(SUPER_STREAK_ATTRIBUTE, this.streaks.get(player) ?? 0);
@@ -479,83 +509,133 @@ export class SuperService implements OnStart {
 		player.SetAttribute(SUPER_MULTI_BALL_COUNT_ATTRIBUTE, window?.remaining ?? 0);
 		player.SetAttribute(SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE, window?.endsAt ?? 0);
 
-		// **The box's two, written the same way and for the same reason.** A toast announces the power the
-		// moment it is granted, and the two facts it needs are which power and how long is left — so both go
-		// out with the rest of the readout, as `""` and `0` in the empty case rather than as an absent
-		// attribute. A client's watcher fires on a removal exactly as it fires on a change, so "absent" and
-		// "empty" would be two spellings of one state that the client would have to handle twice.
-		const mystery = this.isMysteryActive(player) ? this.mystery.get(player) : undefined;
-
-		player.SetAttribute(MYSTERY_POWER_ATTRIBUTE, mystery?.kind ?? "");
-		player.SetAttribute(MYSTERY_POWER_ENDS_AT_ATTRIBUTE, mystery?.endsAt ?? 0);
+		// **The box's one, written the same way and for the same reason.** The power slot reads it to know
+		// what to draw and when to run a reveal, so it goes out with the rest of the readout, as `""` in the
+		// empty case rather than as an absent attribute. A client's watcher fires on a removal exactly as it
+		// fires on a change, so "absent" and "empty" would be two spellings of one state that the client
+		// would have to handle twice.
+		//
+		// **There used to be a second one beside it** — the deadline of the window this prize replaced —
+		// and it is gone with the clock it described. A held prize has no end to publish.
+		player.SetAttribute(MYSTERY_POWER_ATTRIBUTE, this.mystery.get(player)?.kind ?? "");
 	}
 
 	/**
-	 * Opens a window paying for one use of `kind`, or refuses because one is already running.
+	 * Puts a prize in `player`'s hands, or refuses because they are already holding one.
 	 *
-	 * **The caller decides both the power and the length**, and neither is an accident of this method being
-	 * lazy. What a box rolls is a question about a player's *roster* — `EconomyService` owns it and answers
-	 * `ownsPower` — and how long a box's window lasts is a number in the box's own config. This service has
-	 * no business knowing that either exists: it is handed a kind and a duration and it runs a clock, which
-	 * is the same division that lets {@link activateMultiBall} be about MultiBall while never touching a
-	 * ball.
+	 * **The caller decides the power**, and that is not this method being lazy: what a box rolls is a
+	 * question about a player's *roster* — `EconomyService` owns it and answers `ownsPower` — and this
+	 * service has no business knowing that exists. It is handed a kind and it remembers it, which is the
+	 * same division that lets {@link activateMultiBall} be about MultiBall while never touching a ball.
 	 *
-	 * **Refused while one is already running, rather than restarted or queued.** A second box collected
-	 * during a live window is a box whose power the player already has; restarting would let a row of boxes
-	 * extend the window indefinitely without ever granting a second power, and a queue would need a second
-	 * container to hold windows nobody is using. "You already have one" is the answer the mark handler gives
-	 * a second mark, and it is the same answer here.
+	 * **It used to take a duration and run a clock, and the prize is the better rule.** A window measured in
+	 * seconds made the box a *timed* thing: a player who collected one and then spent eight of their ten
+	 * seconds walking back to a ball had bought nothing, and the power could expire in their hand while they
+	 * were looking for something to spend it on. Held until used, the box is a decision the player gets to
+	 * make when they are ready — "use it or lose it" is then a real choice about *when*, and the loss is the
+	 * two ways it can genuinely be lost: dying, and the round ending.
+	 *
+	 * **Refused while one is already held, rather than replaced or queued.** A second box collected by a
+	 * player who already holds one is a box whose power they have not used yet; replacing would let a player
+	 * walk over two boxes and keep the better roll, which is a reroll rather than a pickup, and a queue would
+	 * need a second container to hold prizes nobody is using. "You already have one" is the answer the mark
+	 * handler gives a second mark, and it is the same answer here.
 	 *
 	 * **The box is consumed by the caller either way**, this refusal included. It was picked up, the roll
 	 * happened, and nothing in the game gives a collected box back.
+	 *
+	 * **A prize displaces a dev's armed ability, and never the other way round.** The two are one slot in a
+	 * player's hands — both say "the power my next press uses" — so they cannot both be held. What decides
+	 * which one gives way is that a *pickup* costs something and a *key press* does not: a box is consumed
+	 * the moment it is walked into, so refusing to hold its prize would throw the power away, while an arm
+	 * can be asked for again a second later. So the arm is cleared here, and `BallService.markHeldBall`
+	 * refuses to arm while a prize is held — the same rule read from the cheap end.
 	 */
-	public openMysteryWindow(player: Player, kind: AbilityKind, seconds: number): boolean {
+	public holdMysteryPrize(player: Player, kind: AbilityKind): boolean {
 		if (this.isMysteryActive(player)) return false;
 
-		this.mystery.set(player, { kind, endsAt: Workspace.GetServerTimeNow() + seconds });
+		this.mystery.set(player, { kind });
+
+		// **The arm goes with it.** Written here rather than in `BallService` because this is where the
+		// collision happens, and a player who collected a box has just chosen what their next press does.
+		// Clearing it is the *permissive* half of the choice: a bare refusal would leave a dev with an arm
+		// set and a prize held, and the next press spending one of them without saying which.
+		player.SetAttribute(ARMED_ABILITY_ATTRIBUTE, "");
+
 		this.publish(player);
 
-		// **Its own end, and again a convenience rather than the rule** — {@link isMysteryActive} decides
-		// from the clock, so a callback that arrives late costs a stale row and never a power that outlives
-		// the window it was sold in.
-		task.delay(seconds, () => this.clearMysteryWindow(player));
-
-		if (DEBUG) print(`[Super] ${player.Name}: mystery window open — ${kind} for ${seconds}s`);
+		if (DEBUG) print(`[Super] ${player.Name}: mystery prize held — ${kind}, until it is used`);
 
 		return true;
 	}
 
 	/**
-	 * Whether `player` has a box's window open right now.
+	 * Spends the prize because the power it was paying for has just been used.
 	 *
-	 * **The clock is the rule, exactly as {@link isMultiBallActive} has it** and for the same reason: a row
-	 * whose deadline has passed reads as closed even if the timer meant to remove it has not run.
+	 * **Handed the kind that was used, and that argument is the fix rather than decoration.** A prize is not
+	 * a charge: a charge pays for whatever the player presses, while a box's prize pays for *the power the
+	 * box rolled*. So the question here is not "is a power being used" but "is the power the box gave being
+	 * used", and a press for a different kind leaves the prize alone. That distinction is invisible to an
+	 * ordinary player, whose one key always uses the kind it just read from here; it exists for the dev
+	 * keys, where a press for Freeze must not burn a box's Pierce.
+	 *
+	 * **A dev is not exempt, and that is the one place this parts company with the charge.** The dev bypass
+	 * exists because a dev holds no charge to spend — there is nothing of theirs to pay with. A box's prize
+	 * is not that: it is real state a player gets by walking into a box, and a dev gets it the same way. So
+	 * the prize pays for a dev's press exactly as it pays for anybody's, which is also what stops the box's
+	 * power being used over and over by the person most likely to notice it can be.
+	 *
+	 * **Called before the charge is spent, and that ordering is the rule for a player holding both.** A
+	 * charge pays for the press first, so the prize steps aside: with a charge held this returns before
+	 * touching the prize, and the call site then spends the charge. Called after, it would read "no charge"
+	 * and eat the prize on a press the charge had already paid for.
+	 *
+	 * **Nothing grants a charge today**, so that branch is dead — written anyway, because the alternative is
+	 * a rule that is right only while another feature is switched off.
+	 *
+	 * **A refused press never reaches here**, which is the other half of "use it or lose it": a press with no
+	 * ball in hand, or outside a round, returns before the charge is spent, so it returns before the prize is
+	 * too. Both call sites are written that way — see `BallService.throwForPlayer` and
+	 * `BallService.activateMultiBall`.
+	 */
+	public spendMysteryPrize(player: Player, kind: AbilityKind): void {
+		if (this.charged.has(player)) return;
+		if (this.mystery.get(player)?.kind !== kind) return;
+
+		this.releaseMysteryPrize(player, `the power was used — ${kind}`);
+	}
+
+	/**
+	 * Whether `player` is holding a box's prize right now.
+	 *
+	 * **Presence is the rule, where a clock used to be.** This asked whether a deadline had passed; there is
+	 * no deadline, so it asks whether the row exists. That is not a simplification of the same rule — it is
+	 * the different rule this feature now has: a prize ends when it is *used* or lost, never because time
+	 * went by, so nothing here has to be compared against `Workspace:GetServerTimeNow()` and no timer has to
+	 * be scheduled to make the answer come out right.
 	 *
 	 * **This is one of the two answers to "may this player use a power", and the charge is the other.** The
 	 * two call sites are `BallService.markHeldBall` and `BallService.activateMultiBall`, and each asks
 	 * `hasCharge(player) || isMysteryActive(player)`. That is the whole of what a box does to the game: it
-	 * does not grant a charge, it *stands in for one* for the length of its window. Ownership and the round
-	 * gate are untouched by it, which is what stops a box being a way to spend a power outside a round.
+	 * does not grant a charge, it *stands in for one* until the power is used. Ownership and the round gate
+	 * are untouched by it, which is what stops a box being a way to spend a power outside a round.
 	 */
 	public isMysteryActive(player: Player): boolean {
-		const window = this.mystery.get(player);
-		if (!window) return false;
-
-		return window.endsAt > Workspace.GetServerTimeNow();
+		return this.mystery.has(player);
 	}
 
 	/**
-	 * Which power the box gave, or `undefined` when no window is open.
+	 * Which power the box gave, or `undefined` when no prize is held.
 	 *
-	 * **The authority for "what may this window pay for", and the reason the key that uses a box sends no
+	 * **The authority for "what may this prize pay for", and the reason the key that uses a box sends no
 	 * argument.** A player presses one key for whatever the box rolled, and the server answers *which* one
 	 * that is from here — so the kind never travels from a client, and a stale copy of
 	 * `MYSTERY_POWER_ATTRIBUTE` on somebody's machine can never buy a power they were not given. See
 	 * `BallService.useMysteryPower`, the one caller.
 	 *
-	 * `undefined` covers both "no window" and "a row whose deadline has passed", because it asks
-	 * {@link isMysteryActive} rather than reading the row: a window is a clock, and the row is only where
-	 * the clock is kept.
+	 * It asks {@link isMysteryActive} rather than reading the row directly, which now costs a second lookup
+	 * for no difference in answer — kept because it is the same *rule* read from one place, and the day the
+	 * row's presence stops being the whole of the state this line follows it for free.
 	 */
 	public mysteryPowerOf(player: Player): AbilityKind | undefined {
 		if (!this.isMysteryActive(player)) return undefined;
@@ -564,21 +644,29 @@ export class SuperService implements OnStart {
 	}
 
 	/**
-	 * Closes `player`'s window and puts the two attributes back to their empty values.
+	 * Takes `player`'s prize away and puts the attribute back to its empty value.
 	 *
-	 * **Silent when there is no window**, like {@link clearMultiBall}: four things can close one — the
-	 * clock, a death, the intermission, the round's own boundary — and any of them can arrive first.
+	 * **Silent when there is no prize**, like {@link clearMultiBall}: four things can take one away — using
+	 * it, a death, the round ending, a player leaving — and any of them can arrive first. That is what makes
+	 * the round-end sweep safe to write unconditionally over every player, and what makes a death on the
+	 * last ball of a round cost one release rather than two.
+	 *
+	 * **`reason` is for the log**, and it is not decoration: the endings are indistinguishable from the
+	 * outside, and the one explanation that used to be available — the window running out — no longer
+	 * exists. A line reading "released" with no more to it would send a reader looking for a timer that is
+	 * not there.
 	 *
 	 * **"Stops giving and never takes back", which is MultiBall's rule and not a coincidence.** A mark
-	 * already on a ball stays on it; a MultiBall window opened while this one was running keeps running on
-	 * its own clock. Nothing is revoked when a window ends, because nothing here lent anything out.
+	 * already on a ball stays on it; a MultiBall window opened while this prize was held keeps running on its
+	 * own clock. Nothing is revoked when a prize is released, because nothing here lent anything out — the
+	 * prize *was* the permission, and it is gone.
 	 */
-	public clearMysteryWindow(player: Player): void {
+	public releaseMysteryPrize(player: Player, reason: string): void {
 		if (!this.mystery.delete(player)) return;
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: mystery window closed`);
+		if (DEBUG) print(`[Super] ${player.Name}: mystery prize released — ${reason}`);
 	}
 
 	/**

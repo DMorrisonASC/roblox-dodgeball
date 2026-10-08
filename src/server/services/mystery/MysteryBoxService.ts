@@ -65,11 +65,20 @@ interface LiveBox {
  * reason: it must not be an obstacle, must not catch the aim guide's cast, and must still report that a
  * body went through it. Collection is a `Touched` connection and nothing polls proximity.
  *
- * **What a box does, in one sentence: it stands in for a charge for ten seconds.** It does not grant a
- * charge, does not grant ownership, and does not lift the round gate — it makes
+ * **What a box does, in one sentence: it stands in for a charge until the power is used.** It does not grant
+ * a charge, does not grant ownership, and does not lift the round gate — it makes
  * `SuperService.isMysteryActive` true, and `BallService` asks `hasCharge(player) || isMysteryActive(player)`
  * at the two places a charge is spent. That is the whole of its effect on the game, which is why the
  * mechanic is one `||` in two files rather than a branch anywhere.
+ *
+ * **It used to stand in for a charge for ten seconds, and "until it is used" is the better promise.** A
+ * timed window could expire in a player's hand while they walked back to a ball, so the box was a deadline
+ * to beat rather than a decision to make — and it could not survive a round boundary without either being
+ * spent in a round it had nothing to do with or being thrown away unused. Held until used, the only two
+ * ways to lose it are dying and the round ending, both of which are moments the game is already about: see
+ * `SuperService.releaseMysteryPrize` for the first and the round-end sweep in `RoundService` for the second.
+ * **The box itself is unchanged by this** — the same roll, the same caps, the same spawn points — because
+ * what a box *is* turns out to be the half that does not care when the power is spent.
  *
  * **Two spawn rates, because a box means two different things.** On the field it is rolled for — 5% per
  * spawn point per ten seconds, capped by `MYSTERY_CONFIG.MAX_TOTAL` — so it stays a rare piece of luck a
@@ -149,10 +158,14 @@ export class MysteryBoxService implements OnStart {
 
 	constructor(
 		/**
-		 * Asked for two things and told one: whether a window is open, and to open one. The clock, the
-		 * publication and the ten seconds are all that service's — see `openMysteryWindow`, which takes the
-		 * duration from here rather than reading a config of its own, because how long a *box's* window
-		 * lasts is the box's number.
+		 * Told what was rolled, and whether it was taken. The prize, what is published about it and how long
+		 * it lasts are all that service's — see `holdMysteryPrize`, which is handed the kind rather than
+		 * being asked to roll one, because *what a box gives* is this file's decision and *what a player may
+		 * hold* is the roster's.
+		 *
+		 * **It used to be handed a duration as well** — `openMysteryWindow` took one and ran a clock — and
+		 * that argument is gone with the clock. A prize is held until it is used, so there is no length for
+		 * this file to name and no number of seconds for the two services to disagree about.
 		 */
 		private readonly windows: SuperService,
 
@@ -501,36 +514,41 @@ export class MysteryBoxService implements OnStart {
 			return;
 		}
 
-		// **The one call that changes the game**, and its refusal is not an error: a second box collected
-		// during a live window is a box whose power the player already has. See `openMysteryWindow`.
-		const opened = this.windows.openMysteryWindow(player, kind, MYSTERY_CONFIG.WINDOW_SECONDS);
+		// **The one call that changes the game**, and its refusal is not an error: a second box collected by a
+		// player who is already holding a prize is a box whose power they have not used yet. See
+		// `holdMysteryPrize`, which is also where a dev's armed ability gives way to a prize.
+		const held = this.windows.holdMysteryPrize(player, kind);
 
-		// **A practice floor's box comes back when it is *used*, not when it is *touched*.** Only a
+		// **A practice floor's box comes back when it is *taken*, not when it is *touched*.** Only a
 		// collection that actually paid for something restocks the point, and the thing that forces this is a
 		// loop: a box floats two studs above its spawn point, which is exactly where a standing player's
 		// torso is, so somebody standing on the spot overlaps the box the instant it is raised and collects it
-		// in the same frame. Restocking on every collection there would spend the session handing them boxes
-		// whose power they already have — one every two seconds, none of them usable, and a box visibly
-		// flickering in and out of existence beside them.
+		// in the same frame. Restocking on every collection there would spend the session handing boxes to a
+		// player who is still holding the last one — one every two seconds, none of them usable, and a box
+		// visibly flickering in and out of existence beside them.
+		//
+		// **And "taken" is now the right word where "used" was.** A collection is *used* only if the player
+		// then spends the prize on a power, which may be a minute later or never; what this line tests is
+		// whether the box was taken at all, which is the thing that has to be rate-limited.
 		//
 		// **It is also why the two rates are not enough by themselves.** The ten-second tick below stocks a
 		// zoned point unconditionally, so a refused collection costs at most one tick and the point is never
 		// left empty; what this line avoids is a *fast* loop on top of a rule that is already correct at the
-		// slow one. A player whose window has closed gets their next box from the tick, which is the field's
+		// slow one. A player who has spent their prize gets their next box from the tick, which is the field's
 		// rate and the right one for a point nobody useful is standing in.
-		if (live.inZone && opened) this.scheduleRestock(spawn);
+		if (live.inZone && held) this.scheduleRestock(spawn);
 
 		if (DEBUG) {
 			print(
-				opened
-					? `[Mystery] ${player.Name}: ${kind}, free for ${MYSTERY_CONFIG.WINDOW_SECONDS}s`
-					: `[Mystery] ${player.Name}: rolled ${kind} with a window already open — the box was spent`,
+				held
+					? `[Mystery] ${player.Name}: ${kind}, held until the power is used`
+					: `[Mystery] ${player.Name}: rolled ${kind} with a prize already held — the box was spent`,
 			);
 		}
 	}
 
 	/**
-	 * Puts a practice floor's box back a couple of seconds after one was **used**.
+	 * Puts a practice floor's box back a couple of seconds after one was **taken**.
 	 *
 	 * **A delayed raise rather than a shorter tick**, because the two rates are different rules: the tick is
 	 * "how often is the field asked", and this is "how long after *this* collection does *this* point
@@ -541,7 +559,7 @@ export class MysteryBoxService implements OnStart {
 	 * otherwise be built in, and for why the tick makes that safe rather than a gap.
 	 *
 	 * **The phase is not one of the guards**, and dropping it is part of the same fix as the round gate in
-	 * {@link tick}: a practice floor's box is due back two seconds after it is used, whatever the round is
+	 * {@link tick}: a practice floor's box is due back two seconds after it is taken, whatever the round is
 	 * doing — including on a server where no round will ever start. The guards that remain are the states the
 	 * player could have caused in those two seconds: somebody else took the box this scheduled, or the map
 	 * was rebuilt under it.
@@ -564,7 +582,7 @@ export class MysteryBoxService implements OnStart {
 	 * file knowing the shape of an economy record to answer a question the economy already answers.
 	 *
 	 * **Nothing owned means nothing granted**, and the caller consumes the box anyway: a player who owns no
-	 * powers gets no power, no window and no toast. The alternative — a fallback to the whole roster — would
+	 * powers gets no power and nothing announced. The alternative — a fallback to the whole roster — would
 	 * make a box a way to *obtain* a power rather than to use one, which is the mechanic the chest owns.
 	 */
 	private roll(player: Player): AbilityKind | undefined {
@@ -593,7 +611,7 @@ export class MysteryBoxService implements OnStart {
 	 * Every boxed prize of the round goes: the round ended.
 	 *
 	 * **Only the *rolled* boxes, and the practice floors keep theirs.** A box from a roll is meaningless once
-	 * the round is over — nobody can spend a window on a floor about to be cleared — where a zoned box belongs
+	 * the round is over — nobody can spend a prize on a floor about to be cleared — where a zoned box belongs
 	 * to the floor rather than to the round, and the floor is used most when no round is running. This used to
 	 * destroy both and was called `clearAll`; the name changed with the behaviour because "all" was the part
 	 * that was wrong.

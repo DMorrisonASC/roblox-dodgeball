@@ -1324,19 +1324,24 @@ export class BallService implements OnStart {
 			return;
 		}
 
-		// **The charge, a mystery window, or the dev bypass.** A dev opens a window holding no charge of
+		// **The charge, a mystery prize, or the dev bypass.** A dev opens a window holding no charge of
 		// their own, which is what makes this testable from a standing start — the mark handler's shortcut,
 		// on the other key.
 		//
-		// **The second term is the whole of what the mystery box does to a game.** While its window is open
-		// the charge test is satisfied without a charge existing, so the power is paid for by the box. It is
+		// **The second term is the whole of what the mystery box does to a game.** While a prize is held the
+		// charge test is satisfied without a charge existing, so the power is paid for by the box. It is
 		// one `||` rather than a branch because there is nothing else about the request that changes:
 		// ownership above and the round gate above that are asked exactly as they were, which is what keeps
 		// a box from being a way to use a power outside a round or without owning it. See
 		// `SuperService.isMysteryActive`, and `markHeldBall` below for the mark's half of the same rule.
+		//
+		// **And `isMysteryActive` no longer means "the clock is still running".** It means a prize is held,
+		// which is the difference between a power that is free *for ten seconds* and one that is free *until
+		// it is used*: the box's power is available from the moment it is collected until the player spends
+		// it, however long that takes. The spend is below.
 		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
 		if (!charged && !dev) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no charge and no mystery window`);
+			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no charge and no mystery prize`);
 
 			return;
 		}
@@ -1355,6 +1360,20 @@ export class BallService implements OnStart {
 		// bypass `throwForPlayer` applies to a mark, applied here to the same kind of press. Asked at the
 		// call site rather than inside `SuperService` for the reason that one gives: only the caller knows
 		// who pressed.
+		//
+		// **Both currencies are settled here, and only the charge is a dev's to bypass.** The box's prize is
+		// real state, so a dev spends it like anybody — exempting them is what let a box's power be used
+		// over and over, and the person who notices that is the person testing. See
+		// `SuperService.spendMysteryPrize` for the argument.
+		//
+		// **The kind is passed, so a press for a power the box did not roll leaves the prize alone.** A dev
+		// opening a MultiBall window while holding a Pierce does not spend the Pierce; a player using the
+		// box's own key always matches, because it uses the kind it just read from `mysteryPowerOf`.
+		//
+		// **The prize is asked about the charge before `spendCharge` takes it away**, which is the order
+		// that makes "a charge paid, so the box is kept" true. Called the other way round, the prize would
+		// read "no charge" and be eaten by a press the charge had already paid for.
+		this.abilities.spendMysteryPrize(player, "MultiBall");
 		if (!dev) this.abilities.spendCharge(player);
 
 		// **And the hand is filled on the way in**, which is one of the two free refills: a player who
@@ -1366,25 +1385,32 @@ export class BallService implements OnStart {
 	/**
 	 * Uses whatever power a mystery box gave this player — the one key every player has.
 	 *
-	 * **A router, and the only place a box's power becomes an action.** The window knows *which* power it
-	 * is paying for, asked of `SuperService.mysteryPowerOf` and never sent by a client, and what "using"
-	 * it means depends on the kind: a ball ability is a mark on the ball in hand, and MultiBall is a
-	 * window of its own. Both of those already exist and are called exactly as the dev keys call them, so
-	 * the checks that matter — ownership, the round gate, whether there is a ball at all — are asked in
-	 * the one place that already asks them rather than being repeated here. The box pays through the same
+	 * **A router, and the only place a box's power becomes an action.** `SuperService` knows *which* power
+	 * is being paid for, asked of `mysteryPowerOf` and never sent by a client, and what "using" it means
+	 * depends on the kind: a ball ability is a mark on the ball in hand, and MultiBall is a window of its
+	 * own. Both of those already exist and are called exactly as the dev keys call them, so the checks that
+	 * matter — ownership, the round gate, whether there is a ball at all — are asked in the one place that
+	 * already asks them rather than being repeated here. The box pays through the same
 	 * `hasCharge || isMysteryActive` test it pays through at either site.
 	 *
 	 * **Nothing is spent when the roll cannot be used, and that is the value of routing rather than
 	 * letting the client name the power.** A ball ability pressed with no ball in hand is refused by the
-	 * mark handler before it touches the window, so the player still has their ten seconds when they pick
-	 * one up — where a client-chosen kind would have spent the box on a request the server could not
-	 * question.
+	 * mark handler before it touches the prize, so the player is still holding it when they pick one up —
+	 * where a client-chosen kind would have spent the box on a request the server could not question. That
+	 * refusal is also why the spend sites sit *after* their own guards rather than before them: a press that
+	 * buys nothing must not cost anything.
+	 *
+	 * **And for a dev it is now true of the arm as well, which it was not.** The arm used to *replace* a
+	 * held prize, so pressing this key with an empty hand could cost a player the box while they were
+	 * watching the icon — and the arm that replaced it then put its own ability on the next ball, which is
+	 * how the second press of this key came to be refused as "already marked". See `markHeldBall`, which
+	 * refuses to arm while a prize is held.
 	 */
 	private useMysteryPower(player: Player): void {
 		const kind = this.abilities.mysteryPowerOf(player);
 
 		if (kind === undefined) {
-			if (DEBUG) print(`[Mystery] ${player.Name}: refused — no mystery window is open`);
+			if (DEBUG) print(`[Mystery] ${player.Name}: refused — no mystery prize is held`);
 
 			return;
 		}
@@ -1524,19 +1550,29 @@ export class BallService implements OnStart {
 		if (!character) return;
 
 		// **Read before the throw, because the throw empties the hand.** `throwBall` deletes the entry
-		// this asks for, so the marked ball has to be identified while it is still in the hand — and
-		// only the answer is kept: the marker rides the throw by itself, so nothing below needs the
-		// instance.
-		const marked = abilityOn(this.getHeldBall(character)) !== undefined;
+		// this asks for, so the marked ball has to be identified while it is still in the hand — and what
+		// is kept is the *kind* rather than the bare fact that something was marked: a box's prize only
+		// pays for the power the box rolled, so the spend below has to be able to name what it is spending.
+		// Nothing below needs the instance; the marker rides the throw by itself.
+		const markedKind = abilityOn(this.getHeldBall(character));
 
 		// A ball that did not go — an empty hand, or a body with no hand to take it from — spends
 		// nothing. `throwBall` answers whether anything left, and this is the only caller that cares.
 		if (!this.throwBall(character, target, arc, claimedLaunch)) return;
 
-		// **A dev marks a ball without earning it**, so there is nothing of theirs to spend — the bypass
+		// **A dev marks a ball without earning it**, so there is nothing of *theirs* to spend — the bypass
 		// {@link markHeldBall} documents. Asked here rather than inside `SuperService` because only the
 		// caller knows who threw: that service is told the outcome and never asks who the thrower was.
-		if (marked && !this.dev.isDev(player)) this.abilities.spendCharge(player);
+		//
+		// **But the dev bypass covers the charge and not the box**, which is the one asymmetry between the
+		// two currencies here: a charge is earned by a streak, so a dev has none and bypasses it, while a
+		// box's prize is state a dev collects exactly as a player does. So the prize is spent on a dev's
+		// throw too — see `SuperService.spendMysteryPrize`, and the MultiBall call site above for why the
+		// prize is asked about `spendCharge` first.
+		if (markedKind !== undefined) {
+			this.abilities.spendMysteryPrize(player, markedKind);
+			if (!this.dev.isDev(player)) this.abilities.spendCharge(player);
+		}
 	}
 
 	/**
@@ -1622,9 +1658,24 @@ export class BallService implements OnStart {
 		// **A non-dev is refused here exactly as before.** The arm is not a second way to mark a ball, it is
 		// the dev bypass's second shape — so the refusal below is unchanged, and the order of the two
 		// branches does not matter to anybody who cannot already use the shortcut.
+		//
+		// **And a mystery prize outranks the arm, which stands down rather than replacing it.** Both are the
+		// same slot in a player's hands — "the power my next press uses" — so they cannot both be held, and
+		// the tie goes to the one that cost something: a box is consumed the moment it is walked into, so
+		// destroying its prize to arm a shortcut would throw away a power the player went and collected,
+		// while the arm costs nothing and can be asked for again a second later. This is also what
+		// `useMysteryPower` promises for an empty hand: press the key early and the player is *still holding
+		// their power* when they pick a ball up. The prize itself clears any arm already set, from the other
+		// end — see `SuperService.holdMysteryPrize`.
 		if (!ball) {
 			if (!dev) {
 				if (DEBUG) print(`[Super] ${player.Name}: mark refused — no ball in hand`);
+
+				return;
+			}
+
+			if (this.abilities.isMysteryActive(player)) {
+				if (DEBUG) print(`[Super] ${player.Name}: mark refused — a mystery prize is waiting on a ball`);
 
 				return;
 			}
@@ -1647,28 +1698,31 @@ export class BallService implements OnStart {
 			return;
 		}
 
-		// **The charge, a mystery window, or the dev bypass.** A dev marks a ball holding no charge of their
+		// **The charge, a mystery prize, or the dev bypass.** A dev marks a ball holding no charge of their
 		// own, which is what makes this testable without six hits in a row first.
 		//
 		// **The second term is the mystery box, and it is the same `||` `activateMultiBall` makes above** —
-		// the box's window stands in for a charge, so a player who has just collected one may mark a ball
-		// without one. Written out at both sites rather than inside `SuperService` because the two sites
-		// differ in what they do next (a mark, a window) and agree only on this test; a single
-		// `mayUsePower` helper would hide that the round gate and the ownership check above are *not* part
-		// of it.
+		// a held prize stands in for a charge, so a player who has just collected one may mark a ball without
+		// one. Written out at both sites rather than inside `SuperService` because the two sites differ in
+		// what they do next (a mark, a window) and agree only on this test; a single `mayUsePower` helper
+		// would hide that the round gate and the ownership check above are *not* part of it.
 		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
 		if (!charged && !dev) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no charge and no mystery window`);
+			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no charge and no mystery prize`);
 
 			return;
 		}
 
 		this.setBallAbility(ball, kind);
 
+		// **The tag says which of the two paid, and it used to name only the charge.** Both are true of
+		// `charged` here, so a line that said "the charge is still held" about a player the *box* paid for
+		// would be a log asserting a charge that does not exist — and the spend below removes the box's
+		// prize and never a charge it never had.
 		if (DEBUG) {
 			print(
 				`[Super] ${player.Name}: ${ball.Name} marked as ${kind}` +
-					`${charged ? " — the charge is still held" : " — dev bypass, no charge held"}`,
+					`${charged ? " — paid for, and the charge or the prize will be spent" : " — dev bypass, nothing held"}`,
 			);
 		}
 	}

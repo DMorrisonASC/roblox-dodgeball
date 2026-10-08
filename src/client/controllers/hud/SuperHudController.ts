@@ -1,12 +1,15 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService } from "@rbxts/services";
-import { isAbilityKind } from "shared/ability";
+import { AbilityKind, isAbilityKind } from "shared/ability";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { IMAGES_CONFIG } from "shared/config/images.config";
-import { ARMED_ABILITY_ATTRIBUTE, STAMINA_ATTRIBUTE } from "shared/constants";
+import {
+	ARMED_ABILITY_ATTRIBUTE,
+	MYSTERY_POWER_ATTRIBUTE,
+	STAMINA_ATTRIBUTE,
+} from "shared/constants";
 import { sessionHudVisible } from "../../panels";
-import { addInset } from "../../ui/elevation";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
@@ -50,21 +53,57 @@ const STACK_Z_INDEX = 1;
 const ICON_SIZE = 56;
 
 /**
- * What the slot's background is drawn at when nothing is armed — the empty state, and the only state it has
- * that is not the art.
+ * What the slot's background is drawn at. **Placeholder — 0.9.**
  *
- * **A dimmed well rather than no well.** The frame is always there so the stack never moves when an arm is
- * set or spent, and this is what stops that empty frame reading as a *filled* slot whose image failed to
- * load: at full opacity it is a solid block of trough colour, which looks like a broken icon rather than an
- * empty one. At 0.8 it reads as a recess — something waiting for something. The armed state is fully
- * opaque, so the box filling in is the second half of the same signal, and the two states are told apart
- * by the recess rather than by the picture.
+ * **One value for both states, and that is the third arrangement this slot has had.** It began as a
+ * trough-coloured square whose *opacity* was the signal — dimmed to 0.8 when nothing was armed, fully opaque
+ * when something was — which is an opaque black square behind a transparent icon, and an opaque black square
+ * is what a broken image looks like. It then carried no background at all, which fixed that and left the icon
+ * floating with nothing to anchor it. It is now a faint plate that never changes: at 0.9 it says "this is
+ * where the slot is" without ever claiming to be *filled*, and **the arrival of the art is the whole of the
+ * answer** rather than one half of a pair.
  *
- * **Placeholder.** A starting guess, and the sort of number that is tuned by looking at it on a screen.
+ * **So the empty state has no signal of its own, deliberately.** One constant background and one fewer state
+ * for a player to notice is the trade this number makes — not an oversight. An arm being set, held, spent or
+ * lost all look the same on the plate, which is the point of a background: it is furniture, and what changes
+ * is the picture standing on it.
+ *
+ * **At 0.9 the world is visible through it**, which is worth knowing when reading the icon's own comment
+ * below: the plate is a tint rather than a backdrop, so the pixels the icon is drawn on are, for practical
+ * purposes, whatever is behind the player.
  */
-const EMPTY_SLOT_TRANSPARENCY = 0.8;
+const SLOT_TRANSPARENCY = 0.8;
 
-/** The corner on the icon's slot and on every stamina segment. One radius, so the stack looks like one thing. */
+/**
+ * How long the *reveal* runs after a mystery box is collected, in seconds. **Placeholder — 3.**
+ *
+ * **The tease has to be shorter than the attention it asks for.** This is not the length of anything the
+ * game does — the prize is held until it is used — it is the length of the animation that says a box was
+ * collected, and it is spent spinning the slot through every power in the game before settling on the one
+ * that was granted. Long enough that the eye can follow the spin, short enough that a player who wanted the
+ * power yesterday is not waiting for their own HUD: three seconds is about two breaths.
+ *
+ * **Placeholder in the `SLOT_TRANSPARENCY` sense** — a tuned-by-looking number, not a value with an
+ * argument behind it. What the number has to satisfy is that the spin reads as *deliberate* rather than as
+ * a slot that has lost its image, and that is a question for a screen.
+ */
+const FLASH_SECONDS = 3;
+
+/**
+ * How long each icon in the reveal is shown, in seconds. **Placeholder — 0.15.**
+ *
+ * **Six or seven times a second, which is fast enough to read as a shuffle and slow enough to see.** At
+ * `FLASH_SECONDS`/`FLASH_STEP_SECONDS` the reveal is twenty steps, so a three-icon build cycles just under
+ * seven times: enough repetition that the eye stops trying to read each one and waits for it to stop, which
+ * is what makes the settle legible as an *answer* rather than as the end of a list.
+ *
+ * **Stepped by elapsed time rather than by frame count.** A per-frame step would make the spin twice as fast
+ * on a 144Hz client as on a 60Hz one, so the speed of the animation would be a fact about the player's
+ * monitor — and the slot would be reading the machine rather than the game.
+ */
+const FLASH_STEP_SECONDS = 0.15;
+
+/** The corner on the icon's plate and on every stamina segment. One radius, so the stack looks like one thing. */
 const CORNER_RADIUS = 4;
 
 /**
@@ -101,11 +140,15 @@ const STACK_GAP = 10;
  * the ball, which is where a mark belongs. The arm exists precisely for the state where there is no ball to
  * look at, which is the state a slot under a crosshair is for.
  *
- * **The icon is `ARMED_ABILITY_ATTRIBUTE` and nothing else.** Not the mystery window, not the owned roster:
- * the arm is the power the player is about to use, the window is announced by its own toast, and ownership
- * is the shop's business. That also means **nothing here reads the character any more** — the old strip
- * looked up the ball in hand by name on every frame, and the icon has no reason to, which removes a
- * per-frame `FindFirstChild` from one of the client's busiest loops.
+ * **The icon is the mystery prize, the arm, or nothing — read in that order.** A prize held from a box
+ * outranks an armed ability because it is the newer decision and the one that can be *lost*: an arm waits
+ * indefinitely for a ball, while a prize ends when it is spent, when the player dies, or when the round
+ * does. **And the moment a box is collected, the slot reveals it** — spinning through every power in
+ * `IMAGES_CONFIG.ABILITY_ICONS` for {@link FLASH_SECONDS} before settling on the granted one, which is the
+ * announcement the deleted `MysteryToastController` used to make in words. Not the owned roster, which stays
+ * the shop's business. That also means **nothing here reads the character any more** — the old strip looked
+ * up the ball in hand by name on every frame, and the icon has no reason to, which removes a per-frame
+ * `FindFirstChild` from one of the client's busiest loops.
  *
  * **The stamina pool is drawn here rather than in the cooldown card**, and it is the split those two were
  * always owed: a pool is a *level* and a cooldown is a *deadline*, they read in opposite directions, and
@@ -120,20 +163,21 @@ const STACK_GAP = 10;
  * with it for the same reason: with the chest unable to grant powers and the mystery box standing in for a
  * charge rather than granting one, "READY" was a row almost nobody could ever light. The **MultiBall** row
  * went last and is the one worth arguing: the window is real and it is running, but its count is not
- * actionable — five throws left and one throw left are the same decision — the window's *existence* is
- * announced by the mystery toast for the only players who get one, and a row for it would have been the
- * second box this rebuild exists to remove. **That is a deliberate loss of information rather than an
- * oversight.** If the count comes back it belongs on the toast, because the toast is already the window's
- * announcement.
+ * actionable — five throws left and one throw left are the same decision — and a row for it would have been
+ * the second box this rebuild exists to remove. **That is a deliberate loss of information rather than an
+ * oversight.** If the count comes back it belongs on the reveal, which is now the only thing in the client
+ * that knows a box was collected.
  *
  * **Nothing here decides anything.** The arm is written by `BallService` on the dev shortcut and the pool
  * by `WalkSpeedService`; this file draws both, and the segment arithmetic is a division of a value the
- * server published rather than a second implementation of the rule that spends it.
+ * server published rather than a second implementation of the rule that spends it. The reveal is the same
+ * kind of thing: it runs on a *change* to `MYSTERY_POWER_ATTRIBUTE` and never decides whether the prize is
+ * real, because the server already answered that when it wrote the attribute.
  *
- * **One `RenderStepped` loop for both values**, which is `CooldownHudController`'s argument reached the
- * same way: a pool is sampled by the server at its own rate and would want a subscription, while a
- * fraction of a live clock wants a frame. One loop that reads both is one mechanism instead of two, and
- * its cost is two attribute reads per frame.
+ * **One `RenderStepped` loop for all three values**, which is `CooldownHudController`'s argument reached the
+ * same way: a pool is sampled by the server at its own rate and would want a subscription, while a fraction
+ * of a live clock wants a frame. One loop that reads all of them is one mechanism instead of three, and its
+ * cost is three attribute reads per frame.
  *
  * **It is shown only while a player can act**, through the shared predicate in `panels.ts` — in a round or
  * in a practice zone, never for a spectator. See that function for why the spectator half is an honest
@@ -213,17 +257,78 @@ export class SuperHudController implements OnStart {
 		// the element carries its own limit rather than trusting that the screen will be big enough.
 		addViewportConstraint(scope, column);
 
-		// The one connection in this file, reading both attributes. See the class doc for why this is a
-		// loop rather than two subscriptions.
+		// **The reveal's list, and why it is read from the config rather than from the roster.** Every icon in
+		// the game is spun through, including the ones this player does not own — that is what makes the reveal
+		// a tease rather than a confirmation, and `IMAGES_CONFIG.ABILITY_ICONS` is the only thing that knows the
+		// whole set. A power added there joins the reveal with no code change here; the roster would be the
+		// roster of *gameplay*, and "an icon for a power this player cannot use" is exactly the case a tease
+		// exists to show.
+		//
+		// **`pairs` and not a sequence**, because there is no sequence to have: the record is keyed by kind and
+		// the spin is a shuffle. What matters is only that the list is *stable* for the life of the mount,
+		// which it is — one rebuilt per frame could skip or repeat an entry, and that reads as a stutter
+		// rather than as a spin.
+		const revealIcons = new Array<string>();
+		for (const [kind] of pairs(IMAGES_CONFIG.ABILITY_ICONS)) {
+			revealIcons.push(IMAGES_CONFIG.ABILITY_ICONS[kind]);
+		}
+
+		// **Two locals, and both are the loop's memory rather than the state.** `previousPrize` is the edge
+		// detector for a pickup: the box is collected on the *server*, so the only way this loop can know one
+		// happened is by noticing a value that was empty and is not. It is seeded from a read taken before the
+		// loop starts, so a player who is already holding a prize the first time this runs — a rejoin
+		// mid-round, or a dev grant — sees the icon without a flash they did not earn.
+		//
+		// `flashStartedAt` is the flash's own clock, and `undefined` means "not flashing": one value for
+		// "nothing is happening", rather than a boolean beside a time that could disagree with it.
+		let previousPrize = this.prizeOf(player);
+		let flashStartedAt: number | undefined = undefined;
+
+		// The one connection in this file, reading all three values. See the class doc for why this is a loop
+		// rather than three subscriptions.
 		scope.push(
 			RunService.RenderStepped.Connect(() => {
-				// **The icon is the arm and the arm only.** The word off the attribute is validated as a
-				// kind before it is turned into a picture — the same rule `abilityOn` applies to a ball's
-				// mark — so an attribute from a newer build draws an empty slot rather than an empty frame.
+				const clock = time();
+
+				// **The arm and the prize, validated the same way** — the rule `abilityOn` applies to a ball's
+				// mark, so a word this build does not name reads as *nothing* rather than as a broken image.
 				const arm = player.GetAttribute(ARMED_ABILITY_ATTRIBUTE);
 				const armed = typeIs(arm, "string") && isAbilityKind(arm) ? arm : undefined;
+				const prize = this.prizeOf(player);
 
-				iconId.set(armed === undefined ? "" : IMAGES_CONFIG.ABILITY_ICONS[armed]);
+				// **The flash starts on the edge where a prize appears, and is abandoned when one goes away.**
+				// That is one rule with three cases: a prize arriving starts it, a prize staying starts nothing,
+				// and a prize *leaving* clears it. The last case is the one worth naming — the ways a prize
+				// leaves are using it and dying, both of which the player just did, so a spin that kept running
+				// would be celebrating a pickup while the slot already showed how it ended.
+				if (prize !== undefined && previousPrize === undefined) flashStartedAt = clock;
+				if (prize === undefined) flashStartedAt = undefined;
+
+				previousPrize = prize;
+
+				// **What the slot shows, in the order the three states outrank each other.** The flash while it
+				// runs, then a held prize, then an arm, then nothing. A prize outranks the arm because it is the
+				// power the box paid for and the only one of the two with an ending; the arm outranks nothing
+				// because it is still something the player is about to use.
+				//
+				// **The non-empty guard is not decoration**: `% 0` is a division by zero, and a config with every
+				// icon removed is a thing somebody could do.
+				const started = flashStartedAt;
+
+				let shown = "";
+
+				if (started !== undefined && revealIcons.size() > 0 && clock - started < FLASH_SECONDS) {
+					const step = math.floor((clock - started) / FLASH_STEP_SECONDS);
+					shown = revealIcons[step % revealIcons.size()];
+				} else if (prize !== undefined) {
+					// The settle, and it is written by this branch on every frame after the spin ends — so the
+					// answer is on screen from the frame the flash stops rather than at the end of a fade.
+					shown = IMAGES_CONFIG.ABILITY_ICONS[prize];
+				} else if (armed !== undefined) {
+					shown = IMAGES_CONFIG.ABILITY_ICONS[armed];
+				}
+
+				iconId.set(shown);
 
 				staminaUnits.set(staminaOf(player.GetAttribute(STAMINA_ATTRIBUTE)));
 			}),
@@ -234,25 +339,45 @@ export class SuperHudController implements OnStart {
 		if (DEBUG) {
 			print(
 				`[HUD] power slot up — ${ARMED_ABILITY_ATTRIBUTE} on the player, ${SEGMENT_COUNT} stamina` +
-					` segments over ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s`,
+					` segments over ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s, reveal over` +
+					` ${revealIcons.size()} icon(s)`,
 			);
 		}
 	}
 
 	/**
-	 * The power slot: a square well with the armed power's icon in it, or the well alone.
+	 * Which power this player is holding from a mystery box, or `undefined` when they are holding none.
 	 *
-	 * **The empty state is the well, not nothing, and that is why the frame is always there.** A slot that
-	 * vanished when nothing was armed would move the stamina lights up the screen and back again every time
-	 * an arm was set and then spent by a ball arriving — a stack that jumps is worse than a stack with an
-	 * empty box in it. So the frame never moves, and **two things** say whether it is holding anything: the
-	 * *image*, which is transparent when nothing is armed, and the well's own **background transparency**,
-	 * which is {@link EMPTY_SLOT_TRANSPARENCY} when it is empty and fully opaque when it is not.
+	 * **The read, the validation and the narrowing in one place**, because the loop asks twice — once for the
+	 * pickup edge and once for what to draw — and two copies of a three-clause test are two chances to fix
+	 * only one of them. It is the same shape the arm's read has, a few lines above it: the attribute is a
+	 * string from a server that could be a newer build, so a word this one does not name reads as *nothing
+	 * held* rather than as a missing icon.
 	 *
-	 * **Both are derived from the one id**, rather than from a second boolean saying "there is an icon". One
-	 * `Value` is one thing that can be wrong; a flag beside it is a thing that has to agree with it on every
-	 * frame, and the frame it would have to agree on is the one where a power is set and spent — which is
-	 * exactly when a player is looking at the slot.
+	 * **This never decides whether a prize is real.** The server owns that answer — it is what
+	 * `SuperService.isMysteryActive` is for — and this is a client reading what it was told, which is why
+	 * there is no clock, no count and no ownership check anywhere near it.
+	 */
+	private prizeOf(player: Player): AbilityKind | undefined {
+		const held = player.GetAttribute(MYSTERY_POWER_ATTRIBUTE);
+
+		return typeIs(held, "string") && isAbilityKind(held) ? held : undefined;
+	}
+
+	/**
+	 * The power slot: a faint plate with the current power's icon standing on it.
+	 *
+	 * **The plate never changes, and that is the whole of the design.** This slot has been three things: a
+	 * trough-coloured square whose opacity *was* the signal (dim when empty, opaque when loaded), no
+	 * background at all, and now one constant value in both states — {@link SLOT_TRANSPARENCY}. The middle
+	 * one fixed the black square and left the icon unanchored; the first one is what a broken image looks
+	 * like. **A background is furniture rather than a readout**: it says where the slot is and nothing about
+	 * what is on it, so a player learns one picture and one place rather than a picture and a pair of states.
+	 * See that constant for the trade it makes.
+	 *
+	 * **The frame was never about the colour anyway.** It is always there, 56px, and the first child of the
+	 * stack, because a slot that vanished when nothing was armed would move the stamina lights up the screen
+	 * and back every time an arm was set and then spent by a ball arriving.
 	 *
 	 * **`ScaleType.Fit` rather than the default `Stretch`**, so the art is never squashed to the slot's
 	 * square: three icons from whoever drew them will not all be square, and a stretched one is a bug that
@@ -267,24 +392,22 @@ export class SuperHudController implements OnStart {
 			Name: "PowerSlot",
 			Size: UDim2.fromOffset(ICON_SIZE, ICON_SIZE),
 			BackgroundColor3: theme.colors.trough,
-			// The well dims while it is empty and fills in when a power is loaded — see the doc above for why
-			// the recess is what tells the two states apart rather than the picture.
-			BackgroundTransparency: Fusion.Computed(scope, (use) =>
-				use(iconId) === "" ? EMPTY_SLOT_TRANSPARENCY : 0,
-			),
+			// One value in both states, and **not a `Computed`** — which is what makes "it stays" something
+			// this code says rather than something a reader has to check two branches to confirm.
+			BackgroundTransparency: SLOT_TRANSPARENCY,
 		});
 
-		// **The one element in this client that is *below* the surface rather than above it**, and the
-		// outline of the whole elevation hierarchy: a well is where the depth runs the other way, and
-		// `UIShadow.Inset` is what says so — a shadow cast on the inside of the top edge, which is where a
-		// real hole would be in shade. Nothing else here needs the treatment, and the stamina segments are
-		// deliberately left flat: they are 10px lights rather than surfaces, and an inner shadow on something
-		// that small is a smudge. See `ui/elevation.ts` for the numbers and for why the recess is not faked
-		// with a stroke or an inverted gradient.
-		addInset(scope, slot, theme);
-
+		// The corner the plate has always had, back with it: a hard-cornered square sitting above three
+		// rounded lights reads as a different kind of object rather than as the top of the same stack.
 		Fusion.New(scope, "UICorner")({ Parent: slot, CornerRadius: new UDim(0, CORNER_RADIUS) });
 
+		// **`BackgroundTransparency = 1` on the *image* is load-bearing, and it is the first thing to check if
+		// the art ever shows up inside a rectangle of its own colour.** An `ImageLabel` is a rectangle that
+		// *contains* a picture the way a `Frame` is a rectangle that contains nothing — the engine fills it
+		// with `BackgroundColor3` unless this line says otherwise, which is why the property exists on every
+		// `GuiObject` rather than on the ones that draw a fill. With the plate at 0.9 the icon is drawn on
+		// whatever is *behind* the player, and a fill here would put a second rectangle inside the slot that no
+		// amount of work on the asset could take away.
 		const icon = Fusion.New(scope, "ImageLabel")({
 			Name: "Icon",
 			Size: new UDim2(1, 0, 1, 0),

@@ -39,7 +39,9 @@ import { HudTheme } from "./hudTheme";
  * choice — see the typings for `UIShadow`. The offset is straight down because the light in every other
  * part of this UI comes from above.
  *
- * **`Placeholder.`** All four sets. Nothing here has been looked at on a screen.
+ * **`Placeholder.`** All three sets. Nothing here has been looked at on a screen — and **all three are
+ * *raised* surfaces now**: the fourth was the power slot's recess, and it went with the well it shaded. See
+ * the note in the table for what a well would need back.
  */
 export const ELEVATION = {
 	/** The modal panel: the highest thing in the client, over the world and over every other HUD. */
@@ -48,8 +50,12 @@ export const ELEVATION = {
 	CARD: { blur: 16, offsetY: 5, transparency: 0.65 },
 	/** A button: enough to say "press me", not enough to leave the surface it is on. */
 	BUTTON: { blur: 12, offsetY: 4, transparency: 0.5 },
-	/** A well's inner shade. Negative offset, because the light is still from above. */
-	WELL: { blur: 8, offsetY: 3, transparency: 0.7 },
+	// **There was a `WELL` here and a `addInset` beside it, and they went together.** The inner shade existed
+	// for one surface — the power slot's recess — and when that slot stopped drawing a well the shade had
+	// nothing left to sit on: a `UIShadow` renders relative to its parent's *shape* and not its fill, so
+	// leaving it in place would have drawn a floating dark inner edge around an otherwise empty frame. Both
+	// are deleted with their only caller rather than kept warm, which is this project's rule for a reversal.
+	// A well that comes back — a progress trough, a filled slot — wants the two back together.
 } as const;
 
 export type ElevationLevel = keyof typeof ELEVATION;
@@ -152,33 +158,13 @@ export function addElevation(
 	});
 }
 
-/**
- * Shades `parent` as a *recess* — the inverse of {@link addElevation}.
- *
- * **`Inset` is a real property and this is the whole of the treatment.** The brief that asked for this
- * work assumed a well had to be faked with a darker `UIStroke` or an inverted `UIGradient`, because a
- * shadow was understood to run one way only; the typings say otherwise — `UIShadow.Inset: boolean`, and
- * `Mode: Enum.ApplyShadowMode` for which *part* of the parent it applies to. An inset shadow is exactly
- * what a recess is: the ink inside the top edge, where a real hole would be in shade.
- *
- * **No `Enabled` toggling and nothing returns**, unlike the raised case: a well is not pressed, so there is
- * no state for a handler to reach. It is returned anyway so a future caller that *does* want to change it
- * — a well that fills, say — does not have to go looking for it.
- */
-export function addInset(scope: Fusion.Scope<unknown>, parent: GuiObject, theme: HudTheme): UIShadow {
-	const spec = ELEVATION.WELL;
-
-	return Fusion.New(scope, "UIShadow")({
-		Parent: parent,
-		Color: theme.colors.shadow,
-		Inset: true,
-		// Negative, because the parent's own top edge is where the shade belongs for an inset shadow.
-		Offset: new UDim2(0, 0, 0, -spec.offsetY),
-		BlurRadius: new UDim(0, spec.blur),
-		Spread: new UDim2(0, 0, 0, 0),
-		Transparency: spec.transparency,
-	});
-}
+// **`addInset` was here, and the block above it is where the argument for a recess lived.** The treatment
+// was real and is worth keeping the knowledge of: `UIShadow` has an `Inset: boolean` and a
+// `Mode: Enum.ApplyShadowMode`, so a recess is a shadow cast on the *inside* of the parent's top edge —
+// where a real hole would be in shade — and it needs no darker `UIStroke` and no inverted `UIGradient`,
+// which is what the brief that asked for it had assumed. It had exactly one caller,
+// `SuperHudController.addIconSlot`, and it was deleted with that caller's well. A well that comes back
+// wants this function, its `ELEVATION.WELL` numbers and that caller's fill — all three, together.
 
 /** What an interactive element needs beyond its button. */
 export interface InteractionOptions {
