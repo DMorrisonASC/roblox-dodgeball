@@ -13,6 +13,7 @@
 		"roblox-dodgeball:out/client/controllers/hud/InventoryController@InventoryController": "client/controllers/hud/InventoryController@InventoryController",
 		"roblox-dodgeball:out/client/controllers/hud/LoadingScreenController@LoadingScreenController": "client/controllers/hud/LoadingScreenController@LoadingScreenController",
 		"roblox-dodgeball:out/client/controllers/hud/ModeVoteController@ModeVoteController": "client/controllers/hud/ModeVoteController@ModeVoteController",
+		"roblox-dodgeball:out/client/controllers/hud/MysteryToastController@MysteryToastController": "client/controllers/hud/MysteryToastController@MysteryToastController",
 		"roblox-dodgeball:out/client/controllers/hud/RespawnHudController@RespawnHudController": "client/controllers/hud/RespawnHudController@RespawnHudController",
 		"roblox-dodgeball:out/client/controllers/hud/RoundResultController@RoundResultController": "client/controllers/hud/RoundResultController@RoundResultController",
 		"roblox-dodgeball:out/client/controllers/hud/RoundStatusController@RoundStatusController": "client/controllers/hud/RoundStatusController@RoundStatusController",
@@ -60,11 +61,10 @@
 		"roblox-dodgeball:out/server/services/ball/BallPickupService@BallPickupService": "server/services/ball/BallPickupService@BallPickupService",
 		"roblox-dodgeball:out/server/services/actions/ActionService@ActionService": "server/services/actions/ActionService@ActionService",
 		"roblox-dodgeball:out/server/services/ball/BallSpawnerService@BallSpawnerService": "server/services/ball/BallSpawnerService@BallSpawnerService",
-		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
-		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
 		"roblox-dodgeball:out/server/services/zone/PracticeZoneService@PracticeZoneService": "server/services/zone/PracticeZoneService@PracticeZoneService",
 		"roblox-dodgeball:out/server/services/mystery/MysteryBoxService@MysteryBoxService": "server/services/mystery/MysteryBoxService@MysteryBoxService",
-		"roblox-dodgeball:out/client/controllers/hud/MysteryToastController@MysteryToastController": "client/controllers/hud/MysteryToastController@MysteryToastController"
+		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
+		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService"
 	},
 	"metadata": {}
 }

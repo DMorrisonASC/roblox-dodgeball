@@ -64,13 +64,21 @@ const TILE_NAME_HEIGHT = 30;
 /** A tile's status line, in pixels. Sits just above the name bar, over the artwork. */
 const TILE_STATUS_HEIGHT = 20;
 
-/** The colour job a tab names. Kept as a key so the theme stays the only place a colour is chosen. */
-export type TabColour = keyof HudTheme["colors"];
-
-/** One tab: what it says, and which colour job it is. */
+/**
+ * One tab: what it says.
+ *
+ * **It used to carry a colour *job* as well, and that is gone — not deprecated, removed.** The job existed
+ * so a strip could tint its selected tab per slot, and it failed at the one thing it was for: two of the
+ * jobs it was handed (`coin` and `warning`) are the *same* palette value, so half the strip never had an
+ * identity to lose, and a saturated colour chosen to dress a shelf is not a colour that reads as a 2px line
+ * on a light tab. What is left is the signal that was always doing the work: **the fill inverts** — the
+ * selected tab is the light one — and a fill is visible at a glance where a hairline is not.
+ *
+ * A per-slot identity can come back the day there is art to put in a tab's picture slot, which is what that
+ * slot is waiting for; it cannot come back as a line.
+ */
 export interface TabDef {
 	readonly name: string;
-	readonly colour: TabColour;
 }
 
 /** What {@link addTile} hands back: the parts a caller writes to or restyles. */
@@ -82,15 +90,16 @@ export interface Tile {
 	/** The status line over the artwork — `Owned`/`Locked`, a goal, a price. */
 	readonly statusLabel: TextLabel;
 	/**
-	 * The tile's outline.
+	 * The name bar along the bottom of the tile.
 	 *
-	 * **Returned because the inventory marks the equipped item by colouring it and nothing else.** Every
-	 * tile in these panels is drawn with the same hairline, so the one that is worn says so by taking the
-	 * accent colour — which is a fact the border can carry for free. A badge was refused: it would cost the
-	 * tile a line of its own for something the outline already says, and a shelf of badges reads as a shelf
-	 * of *states* rather than as a shelf of things, which is the shop's framing and not this panel's.
+	 * **Returned because the inventory marks state by *filling* it, which is where the marker went when the
+	 * tile's outline was removed.** A tile has no border any more — see {@link addTile} — so the only solid
+	 * field of colour on one is its name bar, and state is a fill rather than an outline. That is also the
+	 * language the tab strip already speaks, where the selected tab is told apart by its fill and nothing is
+	 * drawn round it. The accent still means one thing and still appears on one tile at a time: `addTile` draws
+	 * every bar in `trough`, and a caller that wants to mark a tile writes the accent into this.
 	 */
-	readonly stroke: UIStroke;
+	readonly nameBar: Frame;
 }
 
 /**
@@ -218,8 +227,8 @@ export function addPanelFrame(
 	// **One shadow per panel, not one per tile**, and that is the answer to "how many instances is this"
 	// that the brief asks for: `addTile` is called once per item in the shop, so a shadow there would be
 	// dozens of instances in a grid, most of them behind a scrolled-out row and all of them in the tree
-	// whether the panel is visible or not. The tiles keep the `UIStroke` that `Card` already gives them,
-	// which is the medium step of the hierarchy and costs nothing.
+	// whether the panel is visible or not. The tiles carry no depth of their own at all — **not even an
+	// outline**, see `addTile` — so this is the only thing raised inside a panel.
 	addElevation(scope, panel, theme, "PANEL");
 
 	addViewportConstraint(scope, panel, { min: PANEL_MIN_PIXELS, max: SHOP_CONFIG.PANEL_MAX_SIZE });
@@ -425,7 +434,7 @@ export function addTabStrip<T extends string>(
 	theme: HudTheme,
 	parent: Frame,
 	order: number,
-	tabs: ReadonlyArray<{ readonly name: T; readonly colour: TabColour }>,
+	tabs: ReadonlyArray<{ readonly name: T }>,
 	current: Fusion.Value<T>,
 	onSelect?: (name: T) => void,
 ): Frame {
@@ -499,18 +508,17 @@ export function addTabStrip<T extends string>(
 		});
 		Fusion.New(scope, "UICorner")({ Parent: button, CornerRadius: new UDim(0, 5) });
 
-		// **The tab's own hue survives as the selected tab's outline**, which is the compromise the palette
-		// reduction lands on: the *fill* has to invert to be readable, but a tab that is the same colour as every
-		// other selected tab loses the identity the strip's data carries. A hue that appears only while selected
-		// is one hue on screen at a time, not four — which is the difference between the strip's old wall of
-		// colour and this.
+		// **One hairline for every tab, selected or not, and the selection is the fill.** The selected tab used
+		// to carry a 2px line in its slot's colour on top of the inversion, and that line was doing two jobs
+		// badly: it was the selection signal *and* the slot's identity, and the colours asked to be both were
+		// hard to see against the fills they sat on — `coin` and `warning` are the same amber, and two of the
+		// four tabs therefore had no identity to signal with. The inversion is the signal (a light tab among
+		// dark ones is unmissable at a glance) and the line is back to being what a line is for: an edge.
 		Fusion.New(scope, "UIStroke")({
 			Parent: button,
-			Color: Fusion.Computed(scope, (use) =>
-				use(selected) ? theme.colors[tab.colour] : theme.colors.border,
-			),
-			Thickness: Fusion.Computed(scope, (use) => (use(selected) ? 2 : 1)),
-			Transparency: Fusion.Computed(scope, (use) => (use(selected) ? 0 : 0.5)),
+			Color: theme.colors.border,
+			Thickness: 1,
+			Transparency: 0.5,
 		});
 
 		// The picture slot, kept for its shape rather than its content — see the doc above. **It dims on the
@@ -538,13 +546,14 @@ export function addTabStrip<T extends string>(
 		Fusion.New(scope, "UITextSizeConstraint")({ Parent: label, MinTextSize: 8, MaxTextSize: 14 });
 		label.Parent = button;
 
-		// **The text inverts with the fill, and it has to be reactive rather than set once.** `onAccent` is the
-		// palette's white, which is right on the near-black unselected tab and invisible on the light selected
-		// one; `textPrimary` is the near-black, which is the reverse. Written through `Hydrate` because a `Text`
-		// built by big-ui reads its props at construction — see `addTile` for the same move on the status line.
+		// **The text inverts with the fill, and it has to be reactive rather than set once.** `textSecondary` is
+		// the text colour for a light surface — which the selected tab is — and `onAccent` is its inverse, which
+		// is what the near-black unselected tabs take. The two are the theme's rule read straight across; see the
+		// pair's docs in `hudTheme`. Written through `Hydrate` because a `Text` built by big-ui reads its props at
+		// construction.
 		Fusion.Hydrate(scope, label)({
 			TextColor3: Fusion.Computed(scope, (use) =>
-				use(selected) ? theme.colors.textPrimary : theme.colors.onAccent,
+				use(selected) ? theme.colors.textSecondary : theme.colors.onAccent,
 			),
 		});
 
@@ -693,39 +702,37 @@ export function addTile(
 	const tile = Fusion.New(scope, "Frame")({
 		Name: name,
 		Parent: grid,
-		// **The body is the lightest surface the theme has, and that is the first step of the tile's family.**
-		// It used to be `card`, which is the *page* colour — a hair off white — so a tile and the panel behind
-		// it were within a shade of each other and the outline was doing all the work of saying where a tile
-		// began. `panel` is the palette's paper, which is genuinely lighter, so the tile now reads as a raised
-		// sheet on the band rather than as a hole in it.
-		BackgroundColor3: theme.colors.panel,
+		// **The tile is a box with no decoration of its own: no outline, no rounded corner, and no colour that
+		// shows.** It used to be a rounded `panel`-coloured sheet wearing a 1px `border` hairline with the
+		// artwork inset inside it — three nested rectangles for one item, which reads as a framed picture rather
+		// than as a thing on a shelf. The face of a tile is now the artwork slot below, the name bar is drawn
+		// over its bottom edge, and nothing is drawn around either.
+		//
+		// **The body is `card` so that it agrees with the artwork rather than peeking out from behind it.** The
+		// child covers it completely, so this line is only insurance against a seam at a fractional pixel — but a
+		// body colour that differed here would show as a bright edge exactly on the tile's boundary, which is the
+		// mat that was removed.
+		BackgroundColor3: theme.colors.card,
 		BorderSizePixel: 0,
 		LayoutOrder: order,
 		Visible: visible,
-	});
-	Fusion.New(scope, "UICorner")({ Parent: tile, CornerRadius: new UDim(0, 6) });
-	const stroke = Fusion.New(scope, "UIStroke")({
-		Parent: tile,
-		Color: theme.colors.border,
-		Thickness: 1,
-		ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
 	});
 
 	// The picture slot. A `Frame` today and an `ImageLabel` the day there is art — same size, same
 	// position, and nothing around it moves.
 	//
-	// **`card` now, where this used to be `panel`** — the two swapped places when the body moved up a step, and
-	// the swap is what keeps the artwork *inset* rather than indistinguishable from the tile it sits on. It is
-	// the middle of the family: a shade under the body, and a long way under the name bar.
+	// **It covers the whole tile, and that is what "the grey reaches the edges" means.** It used to be inset by
+	// 4px on three sides, which left the tile's own lighter colour showing as a mat around the artwork — the
+	// frame that was removed. There is no inset and no corner radius now: the slot *is* the tile's face, and the
+	// name bar is simply drawn over its bottom edge.
 	const art = Fusion.New(scope, "Frame")({
 		Name: "Art",
 		Parent: tile,
-		Position: UDim2.fromOffset(4, 4),
-		Size: new UDim2(1, -8, 1, -(TILE_NAME_HEIGHT + 4)),
+		Position: UDim2.fromOffset(0, 0),
+		Size: new UDim2(1, 0, 1, 0),
 		BackgroundColor3: theme.colors.card,
 		BorderSizePixel: 0,
 	});
-	Fusion.New(scope, "UICorner")({ Parent: art, CornerRadius: new UDim(0, 4) });
 
 	// The status line, sitting just above the name bar and over the artwork's lower edge — where the
 	// mock this replaces put its price chip.
@@ -754,16 +761,20 @@ export function addTile(
 		Size: new UDim2(1, 0, 0, TILE_NAME_HEIGHT),
 		// **The deepest step of the family, and the change that removes a hue from every shelf in the game.**
 		// This bar was `theme.colors.accent` — the vivid blue at the top of the palette — over a grey body, so
-		// every tile was two unrelated colours stacked, and a full shelf was a wall of blue on grey on white.
-		// `trough` is the theme's own near-black, the same value the progress wells are made of, so the tile is
-		// now three steps of one neutral: white body, near-black bar, hairline outline.
+		// every tile was two unrelated colours stacked, and a full shelf was a wall of blue on grey on white. The
+		// bar is the theme's own near-black now, the grey above it is the artwork slot, and there is nothing else
+		// on the tile at all — no outline, no mat, no radius.
 		//
-		// **The accent is not lost, it is *moved*** — it is now only the equipped marker, which is the one thing
-		// on a shelf that has to stand out. A colour used on every tile cannot also say "this one".
+		// **The accent is not lost, it is *moved*: it is the marker, and this bar is what carries it.** A caller
+		// that wants to mark a tile writes the accent into this frame's `BackgroundColor3` (see the `Tile`
+		// interface), so the colour the bar is given here is the *unmarked* state. A colour used on every tile
+		// cannot also say "this one", and one that only ever appears on the marked tile can.
 		BackgroundColor3: theme.colors.trough,
 		BorderSizePixel: 0,
 	});
-	Fusion.New(scope, "UICorner")({ Parent: nameBar, CornerRadius: new UDim(0, 6) });
+	// **No corner radius on the bar either.** A rounded bar sitting on a square grey face leaves a sliver of grey
+	// in each bottom corner — the same mat the artwork's radius produced at the top — and a tile of rounded
+	// pieces inside a square outline reads as a stack of cards rather than as one object.
 
 	const nameLabel = Text(scope, { text: name, variant: "subtitle2", wrap: false });
 	nameLabel.TextColor3 = theme.colors.onAccent;
@@ -779,12 +790,12 @@ export function addTile(
 	if (onActivate !== undefined) {
 		// **A transparent button over the whole tile, created last so it is the topmost child.** A `Frame`
 		// does not raise `Activated`, so a clickable tile needs a button — and laying it *over* the tile
-		// rather than turning the tile into one leaves the artwork, the name bar and the border exactly as
-		// the shop draws them, which is what keeps the two panels' tiles one family. `ZIndex` is left at the
+		// rather than turning the tile into one leaves the artwork and the name bar exactly as the shop draws
+		// them, which is what keeps the two panels' tiles one family. `ZIndex` is left at the
 		// default on purpose: `raiseZIndex` levels every descendant of a panel to the same number after the
 		// build, so what decides the hit target is child order within the tile, and this is the last child.
 		// `AutoButtonColor` is off because a shelf of tiles blinking under the mouse is noise on a panel
-		// where the click's whole answer is the border moving.
+		// where the click's whole answer is the tile's name bar changing colour.
 		const hit = Fusion.New(scope, "TextButton")({
 			Name: "Hit",
 			Parent: tile,
@@ -812,7 +823,7 @@ export function addTile(
 		wireInteraction(scope, hit, { visual: tile });
 	}
 
-	return { frame: tile, nameLabel, statusLabel, stroke };
+	return { frame: tile, nameLabel, statusLabel, nameBar };
 }
 
 /** The last band: whatever one panel has to say, above nothing else. */
@@ -1120,15 +1131,22 @@ export function addShelf(
  * attempted: it would have to invent geometry for a cosmetic whose def has none, and an empty viewport is
  * a worse lie than a big tile.
  *
+ * **It has no name bar, and that follows from what the marker became.** The preview is the same tile the
+ * shelf draws, minus the band: the item it is previewing is identified down in the shelf, where that item's
+ * bar carries the accent. Saying the name twice cost the preview a third of its height to repeat an answer
+ * the shelf had already given.
+ *
  * The size is constrained rather than fixed so it can breathe with the column, and it is centred so it
  * does not drift to a corner when the constraint clamps it — the same reasoning `addGrid` gives.
+ *
+ * Returns the holder, which is what a caller would write to if the preview ever had contents of its own.
  */
 export function addShowcase(
 	scope: Fusion.Scope<unknown>,
 	parent: Frame,
 	theme: HudTheme,
 	order: number,
-): { readonly holder: Frame; readonly nameLabel: TextLabel } {
+): Frame {
 	const holder = Fusion.New(scope, "Frame")({
 		Name: "ShowcaseHolder",
 		Parent: parent,
@@ -1144,10 +1162,10 @@ export function addShowcase(
 	Fusion.New(scope, "UIFlexItem")({ Parent: holder, FlexMode: Enum.UIFlexMode.Fill });
 
 	// **The inset is inside the clip, which is the whole point of putting it here rather than on the tile.**
-	// The tile below is a full-scale child of this frame, so its edges *are* the clip boundary — there is no
-	// gap for its outline to sit in, which is why a preview reads as touching the bottom of its slot. Padding
-	// on the holder moves the boundary outwards from the tile instead of shrinking the tile within it, so the
-	// tile still fills what it is given and the outline has somewhere to be.
+	// The tile below is a full-scale child of this frame, so its edges *are* the clip boundary — which is why a
+	// preview reads as jammed against the bottom of its slot, and why the tile's hover overscale has nowhere to
+	// go. Padding on the holder moves the boundary outwards from the tile instead of shrinking the tile within
+	// it, so the tile still fills what it is given and has room around it.
 	//
 	// **Symmetric, because nothing about the clip is one-sided.** The tile is centred in this frame, so all
 	// four of its edges meet the boundary at once — there is no axis where it is cut at one end and clear at
@@ -1166,10 +1184,11 @@ export function addShowcase(
 		AnchorPoint: new Vector2(0.5, 0.5),
 		Position: UDim2.fromScale(0.5, 0.5),
 		Size: UDim2.fromScale(1, 1),
-		// **The same family as `addTile`, in the same two colours.** The showcase is a shelf tile at a larger
-		// size — light body, near-black band, hairline border — so the equipped item and the items beside it
-		// read as one piece of furniture rather than as a preview and a shelf that happen to be adjacent.
-		BackgroundColor3: theme.colors.panel,
+		// **The same family as `addTile`, which now means the same absence of decoration.** The showcase is a
+		// shelf tile at a larger size — grey face, near-black band, nothing drawn round either — so the equipped
+		// item and the items beside it read as one piece of furniture rather than as a preview and a shelf that
+		// happen to be adjacent.
+		BackgroundColor3: theme.colors.card,
 		BorderSizePixel: 0,
 	});
 	Fusion.New(scope, "UISizeConstraint")({
@@ -1182,52 +1201,25 @@ export function addShowcase(
 		// four sides. The floor stays: it is what keeps the preview readable on a narrow panel, and it is the
 		// case the holder's `ClipsDescendants` is there for.
 	});
-	Fusion.New(scope, "UICorner")({ Parent: tile, CornerRadius: new UDim(0, 8) });
-	Fusion.New(scope, "UIStroke")({
-		Parent: tile,
-		Color: theme.colors.border,
-		Thickness: 1,
-		ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
-	});
-
 	// The picture slot, exactly as `addTile` has it — a `Frame` today, an `ImageLabel` the day there is
-	// art, and nothing around it moves when that happens. **Its fill is the darker of the two lights** so
-	// the slot reads as a recess in the tile rather than as a second white panel sitting on the first.
+	// art, and nothing around it moves when that happens. **Full bleed, like the shelf's**, and here it is the
+	// whole of the preview: with no name bar over it, the face is all there is to look at.
 	Fusion.New(scope, "Frame")({
 		Name: "Art",
 		Parent: tile,
-		Position: UDim2.fromOffset(6, 6),
-		Size: new UDim2(1, -12, 1, -(TILE_NAME_HEIGHT * 2 + 6)),
+		Position: UDim2.fromOffset(0, 0),
+		Size: new UDim2(1, 0, 1, 0),
 		BackgroundColor3: theme.colors.card,
 		BorderSizePixel: 0,
 	});
-	Fusion.New(scope, "UICorner")({ Parent: tile, CornerRadius: new UDim(0, 6) });
 
-	const nameBar = Fusion.New(scope, "Frame")({
-		Name: "NameBar",
-		Parent: tile,
-		Position: new UDim2(0, 0, 1, -TILE_NAME_HEIGHT * 2),
-		Size: new UDim2(1, 0, 0, TILE_NAME_HEIGHT * 2),
-		// **`trough` rather than `accent`**, matching `addTile`: the band is the theme's near-black on both,
-		// and this is where the panel's accent used to leak into every tile's furniture. The label on it is
-		// `onAccent` — the palette's white — which is the same text-on-near-black pair the tiles use.
-		BackgroundColor3: theme.colors.trough,
-		BorderSizePixel: 0,
-	});
-	Fusion.New(scope, "UICorner")({ Parent: nameBar, CornerRadius: new UDim(0, 8) });
+	// **And there is no name bar, which is the one place the showcase deliberately departs from `addTile`.** The
+	// bar's job on a shelf tile is to say *which* item the tile is; a preview has no need of it, because the item
+	// it is previewing is the one wearing the accent fill down in the shelf, and the column heading above already
+	// says the column is about the equipped one. What the bar cost was height — a third of the tile, on the one
+	// tile in the panel whose whole purpose is to be looked at — so it is gone and the face fills that space.
 
-	const nameLabel = Text(scope, { text: "", variant: "subtitle1", wrap: false });
-	nameLabel.TextColor3 = theme.colors.onAccent;
-	nameLabel.Size = new UDim2(1, -12, 1, 0);
-	nameLabel.Position = UDim2.fromOffset(6, 0);
-	nameLabel.AutomaticSize = Enum.AutomaticSize.None;
-	nameLabel.TextXAlignment = Enum.TextXAlignment.Center;
-	nameLabel.TextYAlignment = Enum.TextYAlignment.Center;
-	nameLabel.TextScaled = true;
-	Fusion.New(scope, "UITextSizeConstraint")({ Parent: nameLabel, MinTextSize: 9, MaxTextSize: 20 });
-	nameLabel.Parent = nameBar;
-
-	return { holder, nameLabel };
+	return holder;
 }
 
 /**

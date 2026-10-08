@@ -46,7 +46,6 @@ import {
 	raiseZIndex,
 	wrapLabels,
 } from "../../ui/panelChrome";
-import type { TabColour } from "../../ui/panelChrome";
 
 /** Prints the mount line, each tab change and each equip request. */
 const DEBUG = true;
@@ -55,20 +54,20 @@ const DEBUG = true;
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
 
 /**
- * What a slot is called, and which colour job its tab is offered in.
+ * What a slot is called, and the heading over its shelf.
  *
  * **Presentation only — the slots themselves are read off the catalogue.** A slot with no entry here
  * still gets a tab and a shelf, named after the slot; this table exists so `trail` and `elimination` read
  * as English rather than so the list of slots is written down twice. See {@link catalogueSlots}.
  */
-const SLOT_PRESENTATION: Record<string, { tab: string; colour: TabColour; heading: string }> = {
-	trail: { tab: "Trails", colour: "accent", heading: "Your Trails" },
-	elimination: { tab: "Eliminations", colour: "coin", heading: "Your Eliminations" },
+const SLOT_PRESENTATION: Record<string, { tab: string; heading: string }> = {
+	trail: { tab: "Trails", heading: "Your Trails" },
+	elimination: { tab: "Eliminations", heading: "Your Eliminations" },
 	// **The category that exists ahead of its content, and the whole point of the structure.** A ball slot
 	// is a promise — the appearance work is heading toward per-ball models — so its tab is offered now and
 	// its pane says what it is. Withholding the tab until a `CosmeticDef` existed would mean the structure
 	// could only be seen once it was no longer the thing being built, which is the opposite of useful.
-	ball: { tab: "Balls", colour: "warning", heading: "Your Balls" },
+	ball: { tab: "Balls", heading: "Your Balls" },
 };
 
 /**
@@ -113,9 +112,6 @@ const DEFAULT_NAME = "Default";
  * strip by name and its pane is built by a method of its own.
  */
 const POWER_TAB = "Powers";
-
-/** The Powers tab's colour job — a third distinct one, so the strip reads as three kinds of thing. */
-const POWER_TAB_COLOUR: TabColour = "success";
 
 /**
  * What the pool does, said above the switches.
@@ -348,11 +344,8 @@ export class InventoryController implements OnStart {
 		// come from the cosmetics themselves. The second half is the one exception and it is deliberate: the pool
 		// is not a cosmetic slot ({@link POWER_TAB}), so it cannot be derived from one, and it goes last so the
 		// three cosmetic tabs stay grouped. Order is the only thing that sentence is saying.
-		const tabs: Array<{ name: string; colour: TabColour }> = this.slots.map((slot) => ({
-			name: tabOf(slot),
-			colour: SLOT_PRESENTATION[slot]?.colour ?? "accent",
-		}));
-		tabs.push({ name: POWER_TAB, colour: POWER_TAB_COLOUR });
+		const tabs: Array<{ name: string }> = this.slots.map((slot) => ({ name: tabOf(slot) }));
+		tabs.push({ name: POWER_TAB });
 
 		addTabStrip(this.scope, theme, panel, 2, tabs, this.currentTab, (tab) => {
 			if (DEBUG) print(`[Inventory] tab: ${tab}`);
@@ -415,7 +408,7 @@ export class InventoryController implements OnStart {
 			EQUIPPED_COLUMN_MAX,
 		);
 		addColumnHeading(this.scope, theme, left, "Equipped", 1);
-		this.addEquippedShowcase(left, theme, slot, 2);
+		addShowcase(this.scope, left, theme, 2);
 
 		// Right: the shelf, which takes the remainder and scrolls on its own.
 		const right = addFillColumn(this.scope, columns, "ShelfColumn", 2);
@@ -423,34 +416,6 @@ export class InventoryController implements OnStart {
 
 		const shelf = addShelf(this.scope, right, theme, "Shelf", 2);
 		this.fillShelf(shelf, theme, slot);
-	}
-
-	/**
-	 * The equipped column: the current item's name, larger, with the panel's one marker on it.
-	 *
-	 * **A tile scaled up rather than a preview, and the difference is worth stating.** The reference for this
-	 * layout shows spheres because those are renders of the items; nothing in a `CosmeticDef` can be drawn —
-	 * no asset id, no model, no mesh — so a `ViewportFrame` would have to invent geometry and would render an
-	 * empty box for every cosmetic in the game. The honest version is the same tile treatment at a size you
-	 * can read across the panel, with the accent border the shelf also uses, so "this is the one" is one
-	 * marker in two places rather than a badge in one.
-	 */
-	private addEquippedShowcase(column: Frame, theme: HudTheme, slot: string, order: number): void {
-		const showcase = addShowcase(this.scope, column, theme, order);
-		const state = this.equipped.get(slot);
-
-		const label = Fusion.Computed(this.scope, (use) => {
-			// Every `use()` first and unconditionally — a read inside a branch is a subscription that only
-			// exists while that branch is taken, which is how the round-status HUD once hid its own result.
-			const worn = state !== undefined ? use(state) : "";
-
-			if (worn === "") return DEFAULT_NAME;
-
-			const def = COSMETICS[worn];
-			return def !== undefined ? def.name : DEFAULT_NAME;
-		});
-
-		Fusion.Hydrate(this.scope, showcase.nameLabel)({ Text: label });
 	}
 
 	/**
@@ -520,16 +485,17 @@ export class InventoryController implements OnStart {
 	 * that decides to do nothing — and that distinction is the difference between a tile that is not yours yet
 	 * and a panel that looks broken, because a dead button swallows the click and answers with nothing.
 	 *
-	 * **Marked by a heavier outline in the theme's own "unavailable" colour.** No colour was added: this theme
-	 * already names one for *a thing that cannot be used* ({@link HudTheme.colors.textDisabled}), which is what
-	 * a locked tile is, and doubling the border thickness is what separates it from an ordinary tile's
-	 * hairline — the same marker language the equipped tile uses, read the other way. A badge was refused for
-	 * the reason it was refused there: it costs the tile a line of its own to repeat what the outline and the
-	 * status line already say.
+	 * **Marked by its status line, which is now the whole of the signal.** The tile used to wear a heavier
+	 * `textDisabled` outline as well, and there is no longer any line on a tile to thicken (see `addTile`) — so
+	 * the condition itself, in the theme's own "unavailable" colour, is what says this one is not yours yet. That
+	 * is not a demotion: the line is the sentence a player actually needs — "Unlock by playing 25 matches" — and
+	 * it was always what made a locked tile read as locked rather than broken. A badge was refused for the reason
+	 * it was refused on the equipped tile: it would cost the tile a line of its own to repeat what is already
+	 * written there.
 	 *
-	 * The name is left at the colour the name bar gives every tile, deliberately. Muting it as well was the
-	 * first attempt and it put disabled grey on the accent bar, which is a contrast problem dressed up as a
-	 * second marker — the outline and the status line are enough to say this one is not yours.
+	 * The name bar keeps the colour every tile's bar has, deliberately. Filling it here was the first attempt,
+	 * and it put the *locked* state on the same element the accent uses for the *worn* state — one element
+	 * saying two different things, which is worse than saying one of them quietly.
 	 */
 	private addLockedTile(
 		shelf: ScrollingFrame,
@@ -543,9 +509,7 @@ export class InventoryController implements OnStart {
 		const tile = addTile(this.scope, shelf, theme, name, order, locked);
 
 		tile.statusLabel.Text = text;
-		tile.statusLabel.TextColor3 = theme.colors.textDisabled;
-
-		Fusion.Hydrate(this.scope, tile.stroke)({ Color: theme.colors.textDisabled, Thickness: 2 });
+		tile.statusLabel.TextColor3 = theme.colors.errorDark; // the theme's "unavailable" colour, which is what a locked tile is
 	}
 
 	/**
@@ -573,30 +537,38 @@ export class InventoryController implements OnStart {
 		tile.statusLabel.Text = status;
 		tile.statusLabel.TextColor3 = theme.colors.textSecondary;
 
-		// **The marker: the tile's own outline, in the accent colour.** One element, two properties, and the
-		// same treatment the equipped column's showcase wears — a badge would have been a second element on a
-		// tile that already has an artwork slot, a status line and a name bar, and the shelf would then read as
-		// a list of states rather than as a shelf of things.
+		// **The marker: the tile's own name bar, filled with the accent.** One element, one property, and it is
+		// the same treatment the power tiles wear — a badge would have been a second element on a tile that
+		// already has an artwork slot, a status line and a name bar, and the shelf would then read as a list of
+		// states rather than as a shelf of things.
 		const state = this.equipped.get(slot);
 		const worn = Fusion.Computed(this.scope, (use) => (state !== undefined ? use(state) : "") === id);
 
-		this.markWhen(tile.stroke, worn, theme);
+		this.markWhen(tile.nameBar, worn, theme);
 	}
 
 	/**
-	 * The panel's one marker: accent-coloured and a pixel thicker while `on`, hairline border otherwise.
+	 * The panel's one marker: the accent fill on the tile's name bar while `on`, the theme's near-black
+	 * otherwise.
+	 *
+	 * **It writes a fill rather than an outline, which is what removing the tile's border left it.** The marker
+	 * used to be the tile's `UIStroke` — accent, and a pixel thicker, while on — and that stroke is gone with
+	 * every other line on a tile (see `addTile`). What is left is the one solid field of colour a tile has: its
+	 * name bar. That is also the language the tab strip already uses, where the selected tab is told apart by
+	 * its fill and nothing is drawn round it, so "on" now reads the same way in both places.
 	 *
 	 * **One function because two shelves show an "on" state and the two must not drift apart.** An equipped
 	 * tile and a power tile mean different things — one is *worn*, the other is *in the box* — but the question
-	 * the marker answers is the same question, and two copies of these four lines would be two places a colour
-	 * or a thickness could be changed separately. What each call site's mark *means* is documented there; how
-	 * it looks is decided once, here. No second marker colour was introduced: "on" is one idea in this panel
-	 * and the theme already has a colour for drawing attention.
+	 * the marker answers is the same question, and two copies of these lines would be two places a colour could
+	 * be changed separately. What each call site's mark *means* is documented there; how it looks is decided
+	 * once, here. No second marker colour was introduced: "on" is one idea in this panel and the theme already
+	 * has a colour for drawing attention.
 	 */
-	private markWhen(stroke: UIStroke, on: Fusion.UsedAs<boolean>, theme: HudTheme): void {
-		Fusion.Hydrate(this.scope, stroke)({
-			Color: Fusion.Computed(this.scope, (use) => (use(on) ? theme.colors.accent : theme.colors.border)),
-			Thickness: Fusion.Computed(this.scope, (use) => (use(on) ? 2 : 1)),
+	private markWhen(bar: Frame, on: Fusion.UsedAs<boolean>, theme: HudTheme): void {
+		Fusion.Hydrate(this.scope, bar)({
+			BackgroundColor3: Fusion.Computed(this.scope, (use) =>
+				use(on) ? theme.colors.accent : theme.colors.trough,
+			),
 		});
 	}
 
@@ -676,7 +648,7 @@ export class InventoryController implements OnStart {
 		);
 
 		const inPool = Fusion.Computed(this.scope, (use) => ownedPowersOf(use(this.pool)).has(kind));
-		this.markWhen(tile.stroke, inPool, theme);
+		this.markWhen(tile.nameBar, inPool, theme);
 	}
 
 	/** The count of what is owned, in the header — the one figure this panel has. */

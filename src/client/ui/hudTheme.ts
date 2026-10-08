@@ -14,7 +14,17 @@ export interface HudTheme {
 	colors: {
 		/** Ordinary text on a light surface. */
 		textPrimary: Color3;
-		/** Supporting text that should sit back from the primary. */
+		/**
+		 * The text colour for a light surface — and the pair of {@link onAccent}, which is its inverse.
+		 *
+		 * **The rule the HUD follows, in one place: a light surface takes this, a dark surface takes
+		 * `onAccent`.** Every label in a panel sits on one or the other — a name bar is near-black so its
+		 * text is `onAccent`, a tile's face and the panel behind it are light so their text is this — and
+		 * naming the rule here is what stops the next label from picking a colour by eye and landing on the
+		 * wrong side of it. **It reads the same as {@link textPrimary} today**, because the panels are one
+		 * flat light surface and these two jobs differ by *where* the text sits rather than by how loud it
+		 * is. It used to be `Palette.error.dark`, which put a red on that surface — see the mapping below.
+		 */
 		textSecondary: Color3;
 		/** Text for something unavailable — including a control that has been switched off. */
 		textDisabled: Color3;
@@ -26,6 +36,7 @@ export interface HudTheme {
 		warning: Color3;
 		/** Failure and elimination. */
 		error: Color3;
+		errorDark: Color3;
 		/** The empty well a progress fill sits in. See {@link hudTheme} for why this reads oddly. */
 		trough: Color3;
 		/**
@@ -140,12 +151,21 @@ export function hudTheme(): HudTheme {
 	return {
 		colors: {
 			textPrimary: Palette.text.primary,
-			textSecondary: Palette.error.dark,
+			// **`text.primary` rather than `error.dark`, and that is a correction rather than a taste.**
+			// `text.secondary` is the natural name for "the text on a light surface", and it was pointing at
+			// the *error* red — so the panel's column headings, every tile's status line and the footer
+			// sentence were all quotation marks around an error that had not happened. The palette's own
+			// secondary text is a grey and was refused for the same reason it is refused as a border: half a
+			// black is a colour somebody chose, and this text is meant to be ordinary ink that happens to sit
+			// on a light surface. Same value as `textPrimary`, deliberately — see the interface entry for the
+			// rule that keeps them apart as names.
+			textSecondary: Palette.text.primary,
 			textDisabled: Palette.text.disabled,
 			accent: Palette.primary.main,
 			success: Palette.success.main,
 			warning: Palette.warning.main,
 			error: Palette.error.main,
+			errorDark: Palette.error.main,
 			// The one value picked by hand. The theme's backgrounds are both light — they are a
 			// daytime, light-palette theme — so neither will do for the well behind a progress
 			// bar, where the fill has to be the brighter of the two to read at all. The theme's

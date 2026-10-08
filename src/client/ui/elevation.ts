@@ -185,10 +185,10 @@ export interface InteractionOptions {
 	/**
 	 * The shadow to drop on press, when the surface could take one. See {@link addElevation}.
 	 *
-	 * Absent for a surface that has no shadow to drop — a shelf tile, whose depth is its `UIStroke` and
-	 * whose scale is the whole of the response. The helper reads the shadow's resting `Transparency` off the
-	 * instance rather than taking it separately, because a caller that had to know it could disagree with
-	 * the shadow it just made.
+	 * Absent for a surface that has no shadow to drop — a shelf tile, which has no depth of its own at all
+	 * (see `addTile`) and whose scale is the whole of the response. The helper reads the shadow's resting
+	 * `Transparency` off the instance rather than taking it separately, because a caller that had to know it
+	 * could disagree with the shadow it just made.
 	 */
 	shadow?: UIShadow;
 

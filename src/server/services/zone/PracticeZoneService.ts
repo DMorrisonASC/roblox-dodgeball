@@ -32,10 +32,11 @@ const ZONE_TICK_INTERVAL = 0.1;
 /**
  * Whether `instance` overlaps any part tagged {@link PRACTICE_ZONE_TAG}.
  *
- * **The same test the client runs**, deliberately, down to the deprecated filter pair: the part's own
- * `CFrame` and `Size` are the zone, and the instance is the only thing included so the answer is about
- * *it* rather than about whatever else the lobby is holding. `roundZone.ts` carries the argument for that;
- * it is not repeated here because the two want to stay one test.
+ * **The same test the client runs**, deliberately, line for line: the part's own `CFrame` and `Size` are
+ * the zone, and the instance is the only thing *included* so the answer is about *it* rather than about
+ * whatever else the lobby is holding. `roundZone.ts` carries the argument for that, and for why the filter
+ * is set with `IncludeInstances` rather than the deprecated `FilterType` pair — written once there because
+ * the two files' whole point is that this is one test; it is not repeated here.
  *
  * **Exported, and it takes an `Instance` rather than a `Model`, because it has two callers that ask about
  * different kinds of thing.** This service asks it about a *character* on every tick, which is what
@@ -43,21 +44,66 @@ const ZONE_TICK_INTERVAL = 0.1;
  * loose part in the world — to decide whether that point is on a practice floor and therefore stocked
  * differently.
  *
- * **One function rather than two, and the second caller is exactly why.** "Is this thing inside a zone" is
- * the zone's definition, and a second copy of it living in the mystery box would be a second answer to the
- * question the zone exists to be an answer to — the failure this whole module was written to avoid. What
- * differs between the callers is *what they do* with the answer, and that lives with each of them.
+ * **Two callers, asking two different questions, and the second question is why there is a second function
+ * below.** This one hands an *instance* to the engine and asks whether its bounds overlap a zone, which is
+ * the right question for a character — the whole body is the thing standing somewhere. `MysteryBoxService`
+ * asks about a `mysterySpawnPrize` *marker*, and a marker is a point in the floor: see {@link insideZoneAt},
+ * which answers that without a query, because a query cannot answer it at all.
  *
- * It also means the box inherits the rule the zones already have: a zone part outside `Workspace` is not a
- * zone, and a spawn point near one is therefore not in a zone either.
+ * What stays in one place is the *rule* — the tag, the zone part being its own box, and a zone outside
+ * `Workspace` not being a zone. A second copy of that living in the mystery box would be a second answer to
+ * the question this module exists to be an answer to, which is the failure the whole arrangement avoids.
+ * What differs between callers is *what they do* with the answer, and that lives with each of them.
  */
 export function insideZone(instance: Instance): boolean {
 	const params = new OverlapParams();
-	params.FilterType = Enum.RaycastFilterType.Include;
-	params.FilterDescendantsInstances = [instance];
+	// **`IncludeInstances`, which is the current spelling of "only this instance may answer".** The pair it
+	// replaces — `FilterType` and `FilterDescendantsInstances` — is marked deprecated in the installed
+	// typings in favour of this and `ExcludeInstances`, and every other filter in the project already uses
+	// them; the one-line migration is argued in `roundZone.ts`, next to the other half of this same test.
+	params.IncludeInstances = [instance];
 
 	for (const zone of taggedPartsInWorkspace(PRACTICE_ZONE_TAG)) {
 		if (Workspace.GetPartBoundsInBox(zone.CFrame, zone.Size, params).size() > 0) return true;
+	}
+
+	return false;
+}
+
+/**
+ * Whether `point` is inside any part tagged {@link PRACTICE_ZONE_TAG}.
+ *
+ * **This exists because the engine's queries cannot answer it, and the symptom of asking anyway was a
+ * practice floor with no box on it.** `CanQuery` is documented as "determines whether the part is considered
+ * during spatial query operations", and a `mysterySpawnPrize` marker is *required* to be non-queryable —
+ * `MysteryBoxService.report` warns by name about any marker left queryable, because a queryable one is a part
+ * the aim guide's cast stops at. So {@link insideZone} handed to a marker returns `false` for every marker in
+ * the place, for ever, and nothing anywhere reports it: the mystery box's own line said `0 on a practice
+ * floor` and read as a fact about the map.
+ *
+ * **The test is done by hand, and that is the whole point of it.** The zone part *is* the box — the same rule
+ * {@link insideZone} follows — so a point is inside it when its position, expressed in the zone's own frame,
+ * is within half the zone's `Size` on all three axes. `PointToObjectSpace` is what keeps that honest about
+ * rotation: a zone an artist has turned still contains the points it visually contains.
+ *
+ * **The point is the marker's centre rather than its bounds.** Testing bounds by hand would mean comparing
+ * two `Size`s in two rotated frames to answer a question no map should be asking — a spawn marker is a
+ * *place* in the floor, and one big enough for centre-versus-bounds to matter is one whose size is doing
+ * something the config does not describe.
+ *
+ * It walks the same tagged parts as {@link insideZone}, so a zone outside `Workspace` is not a zone here
+ * either — that rule is the module's, not the query's.
+ */
+export function insideZoneAt(point: Vector3): boolean {
+	for (const zone of taggedPartsInWorkspace(PRACTICE_ZONE_TAG)) {
+		// Not `local`, which is what this wants to be called: that is a Luau keyword, and roblox-ts refuses to
+		// emit it rather than mangling the name.
+		const offset = zone.CFrame.PointToObjectSpace(point);
+		const half = zone.Size.mul(0.5);
+
+		if (math.abs(offset.X) <= half.X && math.abs(offset.Y) <= half.Y && math.abs(offset.Z) <= half.Z) {
+			return true;
+		}
 	}
 
 	return false;
@@ -88,6 +134,8 @@ export function insideZone(instance: Instance): boolean {
 @Service()
 export class PracticeZoneService implements OnStart {
 	public onStart(): void {
+		this.report();
+
 		// **Every player is subscribed to, and the loop below is what covers the ones already here.**
 		// The same scan-and-subscribe shape `CollisionGroups.followCharacters` uses, and for its reason:
 		// a body that already exists fires no `CharacterAdded`, so the seed pass and the subscription
@@ -97,6 +145,43 @@ export class PracticeZoneService implements OnStart {
 		Players.PlayerAdded.Connect((player) => this.follow(player));
 
 		task.spawn(() => this.watch());
+	}
+
+	/**
+	 * The line that says what this service found, in `MysteryBoxService.report`'s shape.
+	 *
+	 * **A zone part left queryable is an invisible wall, and the symptom lands somewhere else entirely.** A
+	 * `practiceZone` is usually one large part covering a floor, so a queryable one is a surface that every
+	 * cast *inside* the practice area stops at — the aim guide, the trajectory probe, a throw's own probe —
+	 * and what a player sees is their aim misbehaving in a place with nothing visibly in the way. This is
+	 * the same failure `MysteryBoxService.report` warns about for its own markers, and the same answer:
+	 * nothing is written to the part, because it is the painter's property and a runtime write could be
+	 * saved back into the place file. It is named by full path instead, so somebody who did not know it had
+	 * to be changed can find out which part to change.
+	 *
+	 * **The count is printed for the reason `BallSpawnerService`'s is: it separates the two ways a zone
+	 * feature can do nothing.** No tagged parts at all is a map that never got the tag; tagged parts with
+	 * nobody inside them is a zone placed where nobody stands. Only the first is worth grepping the place
+	 * file for, and a line that states the number is what tells them apart without opening the map.
+	 *
+	 * **`CanQuery` is worth this line and no more, because the zone's own tests do not care about it.** A
+	 * character is what the bounds query is *looking for* — the zone part is the box being looked inside,
+	 * never a candidate — and {@link insideZoneAt} compares numbers in a `CFrame` rather than asking the
+	 * engine anything at all. So a queryable zone costs nothing here and everything to the casts that share
+	 * the floor with it.
+	 */
+	private report(): void {
+		const zones = taggedPartsInWorkspace(PRACTICE_ZONE_TAG);
+
+		print(`[Zone] up — ${PRACTICE_ZONE_TAG}: ${zones.size()} tagged part(s)`);
+
+		const queryable = zones.filter((zone) => zone.CanQuery);
+		if (!queryable.isEmpty()) {
+			warn(
+				`[Zone] ${queryable.size()} ${PRACTICE_ZONE_TAG} part(s) are CanQuery — every cast inside them ` +
+					`stops at an invisible wall: ${queryable.map((zone) => zone.GetFullName()).join(", ")}`,
+			);
+		}
 	}
 
 	/**

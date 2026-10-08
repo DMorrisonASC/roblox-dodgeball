@@ -116,17 +116,80 @@ export const MYSTERY_CONFIG = {
 	SIZE: 3,
 
 	/**
-	 * How far above the spawn point's own centre the box floats, in studs. **Placeholder — 2.**
+	 * Where the float bottoms out: how far above the spawn point's own centre the box sits, in studs.
+	 * **Placeholder — 2.**
 	 *
-	 * **A fixed height, and there is deliberately no bob.** A box that moves is a box whose `CFrame` is
-	 * written every frame — the property replicates every time it changes, so a gentle float costs sixty
-	 * writes a second per box across every client on the server, for something no player will ever aim at
-	 * more accurately for it. The box is anchored at this height when it is made and it stays there; what
-	 * moves is its *colour*, which is one write every third of a second and is the stronger signal anyway.
-	 * A `HingeConstraint` rig would float it for free, and that is the right tool and a far larger one: it
-	 * is not worth an assembly, two attachments and a constraint to move a cube two studs up and down.
+	 * **The low end of the float, not its middle.** The box is raised to this height and then rises from it
+	 * by {@link MYSTERY_CONFIG.HOVER_BOB_HEIGHT}, so a marker sitting in the floor puts the box's lowest
+	 * point two studs clear of it. That is what "floating" has to mean: a box that dips to the marker's own
+	 * centre reads as something bolted to the ground that is twitching.
+	 *
+	 * **This entry used to argue against moving the box at all, and it was overruled rather than
+	 * forgotten.** The old case was the right one as far as it went — the `CFrame` of a moving part
+	 * replicates on every client each time it is written, so a float is sixty writes a second per box, for
+	 * a cube nothing aims at — and it pointed at a `HingeConstraint` as the tool that would float it for
+	 * free. Two things changed under it:
+	 *
+	 * - **The box is now looked at.** Its motion is not decoration on a cube; a turning box with the `?`
+	 *   face coming round is the thing that says *prize* from across an arena, and "a cube nothing aims at"
+	 *   stopped being a description of it.
+	 * - **The hinge is not actually free.** A constraint holds a box up only if something holds the
+	 *   constraint, so it needs an invisible anchored part for the other end, two attachments, an assembly
+	 *   and a collision story — and it gives up `Anchored`, which is what makes the box's position this
+	 *   service's to decide at all. An unanchored box is a box players can nudge, that the physics step
+	 *   owns, and that a bug can send to `FallenPartsDestroyHeight`; the `CFrame` write keeps every one of
+	 *   those answers unchanged.
+	 *
+	 * **The cost, stated as a number rather than as a principle.** The map caps the field at
+	 * `MAX_TOTAL` (3) rolled boxes, so a full field is three `CFrame` writes per frame — 180 a second at
+	 * 60 Hz, about 9 KB a second of replication — plus one per *zoned* spawn point, which no cap bounds and
+	 * which is a practice floor's own furniture. That is the whole bill, and it is affordable for the only
+	 * thing in the arena that is meant to be noticed from the other side of it.
 	 */
 	HOVER_HEIGHT: 2,
+
+	/**
+	 * How far the float rises above {@link MYSTERY_CONFIG.HOVER_HEIGHT}, in studs. **Placeholder — 0.5.**
+	 *
+	 * **Half a stud, measured against the box rather than against the world.** A box is `SIZE` (3) studs
+	 * on a side, so this is a sixth of its own height: enough that the movement is legible from the range a
+	 * player decides whether to walk over, and small enough that the box never looks thrown. The range it
+	 * produces is **2.0 to 2.5 studs above the floor** — the two ends, not a centre and a radius.
+	 */
+	HOVER_BOB_HEIGHT: 0.5,
+
+	/**
+	 * One full float cycle, in seconds. **Placeholder — 3.**
+	 *
+	 * **Slow enough to read as drifting rather than as vibrating, which is the only thing this number
+	 * decides.** Peak vertical speed is `HOVER_BOB_HEIGHT / 2 * 2π / period`, which with these values is
+	 * about half a stud a second — roughly a thirtieth of a walking pace. A player walking past sees
+	 * something hanging in the air and moving, and cannot catch the instant it turns around. One second is
+	 * that same displacement three times as fast, which is a piston; ten is slow enough to read as a
+	 * rendering wobble rather than as a float.
+	 *
+	 * **A cosine, so the box starts at the bottom.** It is *placed* at `HOVER_HEIGHT` and rises from there,
+	 * so the pose a box is born in is the pose it returns to — and a cosine's endpoints are its extremes,
+	 * which is why the float settles at the top and the bottom of each cycle instead of reversing abruptly
+	 * at both.
+	 */
+	HOVER_BOB_PERIOD: 3,
+
+	/**
+	 * One full turn of the box, in seconds. **Placeholder — 12.**
+	 *
+	 * **Thirty degrees a second: continuous, and deliberately unhurried.** A pickup that spins quickly
+	 * reads as a coin in a platformer and pulls the eye off the ball. The job here is smaller than that —
+	 * a box a player is already walking towards should look alive on the way in — and twelve seconds is
+	 * also chosen against the `?`: six faces means a face comes round every two seconds, which is
+	 * roughly how long a player spends crossing the last stretch of floor to it.
+	 *
+	 * **About the box's own up, so the horizon stays level.** A turn about a horizontal axis makes the box
+	 * tumble, and a tumbling box reads as *falling*, which is the one thing a floating one must not look
+	 * like. Its own up rather than the world's, because a box's base pose is its spawn point's own
+	 * orientation — so a marker an artist has turned turns what it holds.
+	 */
+	HOVER_SPIN_PERIOD: 12,
 
 	/**
 	 * How many colours the rainbow cycle runs through, and how long the whole cycle takes.
@@ -142,11 +205,13 @@ export const MYSTERY_CONFIG = {
 	 * The asset id for the `?` that belongs on each of the box's faces. **Empty, and it must stay empty until
 	 * an artist makes one.**
 	 *
-	 * **Nothing here invents an id.** A `Decal` with a made-up `rbxassetid://` is not a placeholder — it is a
-	 * broken image that fails at runtime, in a place where nothing will tell you why, and which a later reader
-	 * has no way to distinguish from an id that was mistyped. The empty string is the honest form of "this
-	 * face has no art yet", and it is checked before a decal is made rather than after, so the box simply has
-	 * no faces until there is something to put on them.
+	 * **Nothing here invents an id, and empty no longer means blank.** A `Decal` with a made-up
+	 * `rbxassetid://` is not a placeholder — it is a broken image that fails at runtime, in a place where
+	 * nothing will tell you why, and which a later reader has no way to distinguish from an id that was
+	 * mistyped. So the empty string stays the honest form of "no texture yet" — and the box draws its `?` as
+	 * *text* on each face until an id arrives, because "no art yet" was never meant to mean "no `?` yet". Set
+	 * this and the text is not built at all; leaving it empty is what keeps the box a mystery box rather than
+	 * a plain cube in the meantime.
 	 *
 	 * **Cell shading is not here either, and cannot be.** It is a texture or a shader, and the nearest a part
 	 * can get without one is `Neon` — which is not cell shading, it is a different look with a different cost.

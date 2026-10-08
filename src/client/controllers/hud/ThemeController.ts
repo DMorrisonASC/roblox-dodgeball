@@ -109,9 +109,9 @@ const FOOD_PILLS_DARK = derive(FOOD_PILLS, { value: -0.2 });
  * so that the steps between them are even; the derivation is the same one either way, keep the
  * hue, take the saturation up and the brightness well down.
  */
-const TEXT_PRIMARY = Color3.fromRGB(35, 40, 30);
-const TEXT_SECONDARY = Color3.fromRGB(90, 95, 80);
-const TEXT_DISABLED = Color3.fromRGB(160, 165, 145);
+const TEXT_PRIMARY = Color3.fromRGB(0, 0, 0);
+const TEXT_SECONDARY = Color3.fromRGB(207, 207, 207);
+const TEXT_DISABLED = Color3.fromRGB(235, 237, 232);
 
 /**
  * The inverse of {@link TEXT_PRIMARY}: what the text scale's dark end becomes on a surface that
@@ -139,7 +139,7 @@ const TEXT_INVERSE = WHITE;
  * cream keeps it warm and keeps it clearly lighter than anything drawn on it, so it reads as a
  * panel behind panels rather than as a shadow or a hole.
  */
-const BACKGROUND_DEFAULT = derive(BEACH_STORM, { value: -0.3 });
+const BACKGROUND_DEFAULT = derive(BEACH_STORM, { value: -0.1 });
 
 /**
  * Puts the game's palette into big-ui, once, before anything is built.

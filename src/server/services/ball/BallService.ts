@@ -869,8 +869,10 @@ export class BallService implements OnStart {
 	 */
 	private dropReach(model: Model, ball: BasePart, origin: Vector3, direction: Vector3): number {
 		const params = new RaycastParams();
-		params.FilterType = Enum.RaycastFilterType.Exclude;
-		params.FilterDescendantsInstances = [model, ball];
+		// **`ExcludeInstances` rather than the deprecated `FilterType`/`FilterDescendantsInstances` pair**,
+		// which is how every other filter in the project is written — `shared/throw.ts` carries the
+		// argument, and `roundZone.ts` the one case where the old spelling was kept and why it no longer is.
+		params.ExcludeInstances = [model, ball];
 		params.IgnoreWater = true;
 
 		const hit = Workspace.Raycast(origin, direction.mul(BALL_CONFIG.DROP_DISTANCE), params);
@@ -1900,8 +1902,9 @@ export class BallService implements OnStart {
 	 */
 	private isOnGround(ball: BasePart): boolean {
 		const params = new RaycastParams();
-		params.FilterType = Enum.RaycastFilterType.Exclude;
-		params.FilterDescendantsInstances = [ball];
+		// **`ExcludeInstances`, as in `dropReach` above** — the pair it replaces is deprecated, and this is
+		// the last of them in the project.
+		params.ExcludeInstances = [ball];
 		params.IgnoreWater = true;
 
 		const probe = new Vector3(0, -GROUND_PROBE, 0);

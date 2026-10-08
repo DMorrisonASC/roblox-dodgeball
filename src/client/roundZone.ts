@@ -54,26 +54,33 @@ export function inRound(): boolean {
  * `taggedPartsInWorkspace`, so a folder of boxes tagged as a zone works like a single tagged box and a
  * zone outside the world is left alone.
  *
- * **`FilterType`/`FilterDescendantsInstances` is the deprecated pair, and it is left as it is here on
- * purpose.** The typings mark it in favour of `IncludeInstances`, and the rest of the throw path has
- * already moved; this one is not moved with it, because a filter the running engine does not recognise
- * fails *silently* — an empty filter includes nothing, so the zone would simply stop being detected with
- * no error anywhere. That is this function's worst failure and the one thing not worth risking in a
- * change whose subject is something else. Worth doing deliberately, with a test in the same session.
+ * **`FilterType`/`FilterDescendantsInstances` used to be here on purpose, and the pair is gone now — the
+ * argument that kept it was wrong in its premise.** It was kept while the rest of the project migrated,
+ * on the reasoning that a filter the running engine did not recognise would fail *silently*: the zone
+ * would stop being detected and nothing would report it. The typings do not support that reading. An
+ * unset `IncludeInstances` is `nil`, which is documented as the **most permissive** filter — it includes
+ * everything — so a silently-ignored assignment would not make the zone undetectable, it would make the
+ * answer "something is standing in this box" for **every** instance tested. Every player in the lobby
+ * would read as being on a practice floor the moment anybody's ball rolled into a zone: loud, absurd, and
+ * very easy to notice. `{}` is the restrictive value, and this function never sets it.
+ *
+ * So the migration is one line, and it is the same one the rest of the project already made — `throw.ts`,
+ * `Trajectory`, `AimGuide` and `ThrowController` all set `ExcludeInstances`, and the properties are in the
+ * engine's own API dump rather than being a typings-only invention. The version that guards against a
+ * silent failure is the *old* one; this is the one that fails visibly.
  */
 export function inTaggedZone(character: Model | undefined): boolean {
 	// A body that is not there is not inside anything. Stated rather than left to the loop, because
-	// `FilterDescendantsInstances` would take the `nil` and say nothing about it.
+	// `IncludeInstances` would take the `nil` and say nothing about it.
 	if (!character) return false;
 
 	const params = new OverlapParams();
-	// **`Include` with one instance in it, so the only thing that can answer is this player's own
-	// body.** `Exclude` would be a standing invitation to be wrong: the lobby has loose balls, rigs and
+	// **`IncludeInstances` with one instance in it, so the only thing that can answer is this player's own
+	// body.** An exclusion would be a standing invitation to be wrong: the lobby has loose balls, rigs and
 	// other players in it, and any of them standing in the box would answer for this one. The character
 	// *model* rather than its root part, so a player leaning over the edge with one arm inside the zone
 	// is inside it.
-	params.FilterType = Enum.RaycastFilterType.Include;
-	params.FilterDescendantsInstances = [character];
+	params.IncludeInstances = [character];
 
 	for (const zone of taggedPartsInWorkspace(PRACTICE_ZONE_TAG)) {
 		if (Workspace.GetPartBoundsInBox(zone.CFrame, zone.Size, params).size() > 0) return true;

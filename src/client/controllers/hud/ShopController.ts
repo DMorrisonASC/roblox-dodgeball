@@ -57,13 +57,13 @@ const COLUMNS = 3;
  * thing left to order is a shelf with nothing to press and a button that spends coins — and a player looking
  * for the chest should not have to read past a catalogue to find it.
  *
- * A tab carries a colour *job* rather than a colour, so the theme stays the only place a colour is chosen
- * from — `theme.colors[tab.colour]` is the whole lookup.
+ * **The filled tab is the selected one, and nothing else says so.** The strip used to hand each tab a colour
+ * *job* for its outline, and that is gone from the builder along with every other line on a tab: two of the
+ * jobs this shop asked for are the same palette value, and a saturated colour is the wrong tool for a 2px
+ * edge either way. What is left is the fill inverting, which is the one signal that reads across a row of
+ * five at a glance — see `addTabStrip`.
  */
-const TABS = [
-	{ name: "Cosmetics", colour: "coin" },
-	{ name: "Power & Items", colour: "accent" },
-] as const;
+const TABS = [{ name: "Cosmetics" }, { name: "Power & Items" }] as const;
 
 type TabName = (typeof TABS)[number]["name"];
 
