@@ -3,6 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { SPECTATING_ATTRIBUTE } from "shared/constants";
+import { spectating } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -40,10 +41,12 @@ export class SpectatorController implements OnStart {
 		const player = Players.LocalPlayer;
 		const scope = Fusion.scoped();
 
-		// Hidden is the state a player joins in — in the round, or between rounds, either way not
-		// a spectator — so nothing has to be worked out before the server has said anything.
-		const spectating = Fusion.Value(scope, false);
-
+		// **The value is `panels.ts`'s, and this controller writes it.** It was a local here while this
+		// label was the only thing that cared whether the player was out; the session HUDs now hide for a
+		// spectator too, so a local would be one subscription per reader for one fact. The controller keeps
+		// the connection because it had it first, and because this label is the element that exists
+		// *because* the player is out — the same one-writer arrangement `DockController` has with the
+		// practice-zone flag. The seed below is left exactly where it was, for its own reason.
 		scope.push(
 			player.GetAttributeChangedSignal(SPECTATING_ATTRIBUTE).Connect(() => {
 				spectating.set(player.GetAttribute(SPECTATING_ATTRIBUTE) === true);

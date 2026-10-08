@@ -1,6 +1,7 @@
 import { Button, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { SHOP_CONFIG } from "shared/config/shop.config";
+import { addElevation, wireInteraction } from "./elevation";
 import type { HudTheme } from "./hudTheme";
 import { addViewportConstraint } from "./viewportConstraint";
 
@@ -208,6 +209,18 @@ export function addPanelFrame(
 		Thickness: 1,
 		ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
 	});
+
+	// **The panel is the highest thing in the client, so it takes the deepest shadow.** It floats over
+	// the game world *and* over every HUD, including the toast column it covers when a player opens it —
+	// which is the job the shadow is doing rather than decoration: a panel with no shadow reads as
+	// another layer of the interface rather than as something laid on top of it.
+	//
+	// **One shadow per panel, not one per tile**, and that is the answer to "how many instances is this"
+	// that the brief asks for: `addTile` is called once per item in the shop, so a shadow there would be
+	// dozens of instances in a grid, most of them behind a scrolled-out row and all of them in the tree
+	// whether the panel is visible or not. The tiles keep the `UIStroke` that `Card` already gives them,
+	// which is the medium step of the hierarchy and costs nothing.
+	addElevation(scope, panel, theme, "PANEL");
 
 	addViewportConstraint(scope, panel, { min: PANEL_MIN_PIXELS, max: SHOP_CONFIG.PANEL_MAX_SIZE });
 
@@ -445,15 +458,38 @@ export function addTabStrip<T extends string>(
 	const width = (1 - (tabs.size() - 1) * TAB_GAP_SCALE) / tabs.size();
 
 	tabs.forEach((tab, index) => {
+		// **The selected tab is the light one and the rest are dark, which is the whole of the treatment.**
+		// Every tab used to be its own hue at full strength, with the selected one merely *less transparent*
+		// than the others — a 0.35 difference on four similar light colours, which is not a difference anybody
+		// can see. An inversion is the one signal that survives a glance at a strip of five, and it is what the
+		// reference does.
+		//
+		// **Light for selected rather than dark**, decided on what the strip sits on: the band behind it and the
+		// panel under that are both light surfaces, so a dark selected tab would be a hole in a light page while
+		// the light one reads as the tab being *raised* out of the row — the same direction the tiles' elevation
+		// runs in.
+		//
+		// **Two theme colours, both already there**: `panel` is the paper the panel is made of, and `trough` is
+		// the theme's near-black, already used for the tile name bars and the progress wells. No new colour was
+		// needed for the inversion, which is the point — a light theme has both ends of the scale in it already.
+		const selected = Fusion.Computed(scope, (use) => use(current) === tab.name);
+
 		const button = Fusion.New(scope, "TextButton")({
 			Name: `${tab.name}Tab`,
 			Parent: band,
 			// Width is a fraction of the row so the tabs track the panel; height is a touch target and
 			// stays in pixels on purpose — see `SHOP_CONFIG.TAB_HEIGHT`.
 			Size: new UDim2(width, 0, 0, SHOP_CONFIG.TAB_HEIGHT),
-			BackgroundColor3: theme.colors[tab.colour],
-			BackgroundTransparency: Fusion.Computed(scope, (use) => (use(current) === tab.name ? 0 : 0.35)),
-			AutoButtonColor: true,
+			BackgroundColor3: Fusion.Computed(scope, (use) => (use(selected) ? theme.colors.panel : theme.colors.trough)),
+			// The transparency step is gone: an inversion does not need to be softened as well, and leaving the
+			// old 0.35 on the unselected tabs would make them a dark *grey* on a dark page rather than a tab.
+			BackgroundTransparency: 0,
+			// **Off, and this is a real bug rather than tidiness.** These are hand-built `TextButton`s, not
+			// big-ui's, so the engine's own hover-and-press darkening was still on — and it fights the scale
+			// tween below over the same pixels, which reads as the tab flickering rather than as being pressed.
+			// The brief's context says `AutoButtonColor` is already false everywhere; that is true of big-ui's
+			// buttons and was not true here.
+			AutoButtonColor: false,
 			Text: "",
 			LayoutOrder: index + 1,
 			[Fusion.OnEvent("Activated")]: () => {
@@ -462,26 +498,36 @@ export function addTabStrip<T extends string>(
 			},
 		});
 		Fusion.New(scope, "UICorner")({ Parent: button, CornerRadius: new UDim(0, 5) });
+
+		// **The tab's own hue survives as the selected tab's outline**, which is the compromise the palette
+		// reduction lands on: the *fill* has to invert to be readable, but a tab that is the same colour as every
+		// other selected tab loses the identity the strip's data carries. A hue that appears only while selected
+		// is one hue on screen at a time, not four — which is the difference between the strip's old wall of
+		// colour and this.
 		Fusion.New(scope, "UIStroke")({
 			Parent: button,
-			Color: theme.colors.border,
-			Thickness: 1,
-			Transparency: 0.5,
+			Color: Fusion.Computed(scope, (use) =>
+				use(selected) ? theme.colors[tab.colour] : theme.colors.border,
+			),
+			Thickness: Fusion.Computed(scope, (use) => (use(selected) ? 2 : 1)),
+			Transparency: Fusion.Computed(scope, (use) => (use(selected) ? 0 : 0.5)),
 		});
 
+		// The picture slot, kept for its shape rather than its content — see the doc above. **It dims on the
+		// unselected tabs**, because a bright box on a near-black tab is the loudest thing in the strip and it
+		// would be competing with the one tab that is supposed to stand out.
 		const image = Fusion.New(scope, "ImageLabel")({
 			Name: "Image",
 			Parent: button,
 			Position: UDim2.fromOffset(3, 3),
 			Size: new UDim2(1, -6, 1, -6),
-			BackgroundColor3: theme.colors.panel,
-			BackgroundTransparency: 0.2,
+			BackgroundColor3: theme.colors.card,
+			BackgroundTransparency: Fusion.Computed(scope, (use) => (use(selected) ? 0.2 : 0.8)),
 			BorderSizePixel: 0,
 		});
 		Fusion.New(scope, "UICorner")({ Parent: image, CornerRadius: new UDim(0, 4) });
 
 		const label = Text(scope, { text: tab.name, variant: "subtitle2", wrap: false });
-		label.TextColor3 = theme.colors.onAccent;
 		label.Size = new UDim2(1, 0, 0, 18);
 		label.Position = new UDim2(0, 0, 1, -21);
 		label.AutomaticSize = Enum.AutomaticSize.None;
@@ -491,6 +537,22 @@ export function addTabStrip<T extends string>(
 		label.TextScaled = true;
 		Fusion.New(scope, "UITextSizeConstraint")({ Parent: label, MinTextSize: 8, MaxTextSize: 14 });
 		label.Parent = button;
+
+		// **The text inverts with the fill, and it has to be reactive rather than set once.** `onAccent` is the
+		// palette's white, which is right on the near-black unselected tab and invisible on the light selected
+		// one; `textPrimary` is the near-black, which is the reverse. Written through `Hydrate` because a `Text`
+		// built by big-ui reads its props at construction — see `addTile` for the same move on the status line.
+		Fusion.Hydrate(scope, label)({
+			TextColor3: Fusion.Computed(scope, (use) =>
+				use(selected) ? theme.colors.textPrimary : theme.colors.onAccent,
+			),
+		});
+
+		// **The tabs get the same response as everything else pressable**, which is what makes one shared helper
+		// worth having: the strip is a row of `TextButton`s that this module built, so it is exactly the case the
+		// helper's `AutoButtonColor` line exists for. `visual` is left out deliberately — the tab *is* the thing
+		// that is drawn and the thing that is clicked, so the button scales itself.
+		wireInteraction(scope, button);
 	});
 
 	return band;
@@ -631,7 +693,12 @@ export function addTile(
 	const tile = Fusion.New(scope, "Frame")({
 		Name: name,
 		Parent: grid,
-		BackgroundColor3: theme.colors.card,
+		// **The body is the lightest surface the theme has, and that is the first step of the tile's family.**
+		// It used to be `card`, which is the *page* colour — a hair off white — so a tile and the panel behind
+		// it were within a shade of each other and the outline was doing all the work of saying where a tile
+		// began. `panel` is the palette's paper, which is genuinely lighter, so the tile now reads as a raised
+		// sheet on the band rather than as a hole in it.
+		BackgroundColor3: theme.colors.panel,
 		BorderSizePixel: 0,
 		LayoutOrder: order,
 		Visible: visible,
@@ -646,12 +713,16 @@ export function addTile(
 
 	// The picture slot. A `Frame` today and an `ImageLabel` the day there is art — same size, same
 	// position, and nothing around it moves.
+	//
+	// **`card` now, where this used to be `panel`** — the two swapped places when the body moved up a step, and
+	// the swap is what keeps the artwork *inset* rather than indistinguishable from the tile it sits on. It is
+	// the middle of the family: a shade under the body, and a long way under the name bar.
 	const art = Fusion.New(scope, "Frame")({
 		Name: "Art",
 		Parent: tile,
 		Position: UDim2.fromOffset(4, 4),
 		Size: new UDim2(1, -8, 1, -(TILE_NAME_HEIGHT + 4)),
-		BackgroundColor3: theme.colors.panel,
+		BackgroundColor3: theme.colors.card,
 		BorderSizePixel: 0,
 	});
 	Fusion.New(scope, "UICorner")({ Parent: art, CornerRadius: new UDim(0, 4) });
@@ -681,7 +752,15 @@ export function addTile(
 		Parent: tile,
 		Position: new UDim2(0, 0, 1, -TILE_NAME_HEIGHT),
 		Size: new UDim2(1, 0, 0, TILE_NAME_HEIGHT),
-		BackgroundColor3: theme.colors.accent,
+		// **The deepest step of the family, and the change that removes a hue from every shelf in the game.**
+		// This bar was `theme.colors.accent` — the vivid blue at the top of the palette — over a grey body, so
+		// every tile was two unrelated colours stacked, and a full shelf was a wall of blue on grey on white.
+		// `trough` is the theme's own near-black, the same value the progress wells are made of, so the tile is
+		// now three steps of one neutral: white body, near-black bar, hairline outline.
+		//
+		// **The accent is not lost, it is *moved*** — it is now only the equipped marker, which is the one thing
+		// on a shelf that has to stand out. A colour used on every tile cannot also say "this one".
+		BackgroundColor3: theme.colors.trough,
 		BorderSizePixel: 0,
 	});
 	Fusion.New(scope, "UICorner")({ Parent: nameBar, CornerRadius: new UDim(0, 6) });
@@ -715,6 +794,22 @@ export function addTile(
 			AutoButtonColor: false,
 		});
 		scope.push(hit.Activated.Connect(onActivate));
+
+		// **The tile is what moves, not the button**, which is the whole reason `visual` exists on the
+		// interaction options: the `Hit` overlay is invisible, so a `UIScale` on it would scale a rectangle
+		// nobody can see. The events still come from the button, because the button is the only instance here
+		// that receives them.
+		//
+		// **No shadow, deliberately**, and that is the answer the brief's cost section asks for. A tile's depth
+		// is its outline; a cast shadow per tile would be dozens of instances in a grid — every one of them in
+		// the tree whether its row is scrolled into view or not — and the panel they sit on already floats above
+		// the game world with the deepest shadow in the client. The scale and the two tones are a complete
+		// response without one.
+		//
+		// **A locked tile never reaches this line**, because there is no `hit` button unless the caller gave an
+		// activation. That is how "this cannot be pressed" is said: by the absence of a thing to wire, rather
+		// than by a flag the helper has to check.
+		wireInteraction(scope, hit, { visual: tile });
 	}
 
 	return { frame: tile, nameLabel, statusLabel, stroke };
@@ -787,6 +882,32 @@ const SHELF_TILE_HEIGHT = 92;
 
 /** The gap between shelf tiles, in pixels. Matches the cell padding of a non-scrolling grid. */
 const SHELF_TILE_GAP = 8;
+
+/**
+ * The inset a clipping container gives its contents, in pixels — the shelf's own frame and the showcase's
+ * holder.
+ *
+ * **It is deliberately the same number as `SHELF_TILE_GAP`, and that is the whole argument for it.** A
+ * tile's distance from the edge of the box it sits in should be its distance from the tile beside it: the
+ * boundary of a shelf is not a special case, it is one more gap. That is also why this is a *pixel* inset
+ * rather than the scale one `SHOP_CONFIG.PAD_X` uses for the bands — a shelf's interior is made of pixel
+ * gaps, so a boundary inset in scale would drift out of line with them as the panel widens.
+ *
+ * **It goes on the `ScrollingFrame` itself, and it has to, because the padding and the grid layout must be on
+ * the same object — the object the tiles are parented to.** The first attempt at this put the inset on a holder
+ * frame inside the shelf so that the canvas would measure it, and it **deleted every item in every shelf**: a
+ * tile's box comes from its `CellSize` and `addTile` sets no `Size` of its own, so a tile whose parent has no
+ * `UIGridLayout` is a zero-by-zero frame at the corner. Moving the layout onto a holder therefore requires
+ * moving the *tiles* onto it too, which means `addShelf` handing back the holder rather than the scroller and
+ * every caller's `ScrollingFrame` parameter changing with it — a bigger change than an inset is entitled to
+ * make.
+ *
+ * **The cost of insetting the frame instead is at the far end of the scroll**: the canvas is measured from the
+ * frame's children, and the padding moves them without being one of them, so the bottom of the inset may not
+ * be reserved by the automatic canvas. A short-travelled 8px at the bottom of a shelf is affordable; a shelf
+ * whose first row is cut is not, and the top of the inset is where the padding acts.
+ */
+const TILE_INSET = SHELF_TILE_GAP;
 
 /**
  * The horizontal band a two-column panel lays out in: a fixed column on the left, a shelf on the right.
@@ -933,8 +1054,16 @@ export function addColumnHeading(
  *
  * `AutomaticCanvasSize` is on the vertical axis only, so the canvas grows downwards with the grid and the
  * scrollbar appears when it has to; `CanvasSize` is zero because the automatic size is what sets it, and
- * `ElasticBehavior` is off because a shelf that rubber-bands away from the mouse is a shelf that moves
- * under a click.
+ * `ElasticBehavior` is off because a shelf that rubber-bands away from the mouse is a shelf that moves under
+ * a click.
+ *
+ * **The inset and the layout are on the same frame, and that is forced rather than tidy.** A shelf clips — it
+ * has to, it scrolls — so a tile standing on the canvas's own corner is a tile with its outline, its corner and
+ * its hover overscale cut off by the frame's edge, which is what "sitting flush against the shelf" is. The
+ * inset therefore has to be inside that clip; but a tile's box comes from its `CellSize`, so the layout that
+ * gives it one has to be on the same object as the padding, which is the object the *tiles* are parented to.
+ * That rules out an inner holder frame and it rules out the tile growing its own margin; see
+ * {@link TILE_INSET}, which also records what went wrong when this was attempted with a holder.
  */
 export function addShelf(
 	scope: Fusion.Scope<unknown>,
@@ -958,6 +1087,19 @@ export function addShelf(
 		ElasticBehavior: Enum.ElasticBehavior.Never,
 	});
 	Fusion.New(scope, "UIFlexItem")({ Parent: shelf, FlexMode: Enum.UIFlexMode.Fill });
+
+	// **The inset, on this frame, because this is the frame the tiles are parented to and the grid layout below
+	// is what gives them a size.** Nothing here is a wrapper: a holder would take the layout with it and leave
+	// every tile a zero-by-zero frame, which is the failure {@link TILE_INSET} records. The padding moves the
+	// cells in from the clip on all four sides, and the wrap width follows it — a tile can no longer start on
+	// the boundary in either axis.
+	Fusion.New(scope, "UIPadding")({
+		Parent: shelf,
+		PaddingTop: new UDim(0, TILE_INSET),
+		PaddingBottom: new UDim(0, TILE_INSET),
+		PaddingLeft: new UDim(0, TILE_INSET),
+		PaddingRight: new UDim(0, TILE_INSET),
+	});
 	Fusion.New(scope, "UIGridLayout")({
 		Parent: shelf,
 		CellSize: UDim2.fromOffset(SHELF_TILE_WIDTH, SHELF_TILE_HEIGHT),
@@ -1001,19 +1143,44 @@ export function addShowcase(
 	});
 	Fusion.New(scope, "UIFlexItem")({ Parent: holder, FlexMode: Enum.UIFlexMode.Fill });
 
+	// **The inset is inside the clip, which is the whole point of putting it here rather than on the tile.**
+	// The tile below is a full-scale child of this frame, so its edges *are* the clip boundary — there is no
+	// gap for its outline to sit in, which is why a preview reads as touching the bottom of its slot. Padding
+	// on the holder moves the boundary outwards from the tile instead of shrinking the tile within it, so the
+	// tile still fills what it is given and the outline has somewhere to be.
+	//
+	// **Symmetric, because nothing about the clip is one-sided.** The tile is centred in this frame, so all
+	// four of its edges meet the boundary at once — there is no axis where it is cut at one end and clear at
+	// the other, so an asymmetric inset would be a guess dressed as a measurement.
+	Fusion.New(scope, "UIPadding")({
+		Parent: holder,
+		PaddingTop: new UDim(0, TILE_INSET),
+		PaddingBottom: new UDim(0, TILE_INSET),
+		PaddingLeft: new UDim(0, TILE_INSET),
+		PaddingRight: new UDim(0, TILE_INSET),
+	});
+
 	const tile = Fusion.New(scope, "Frame")({
 		Name: "Showcase",
 		Parent: holder,
 		AnchorPoint: new Vector2(0.5, 0.5),
 		Position: UDim2.fromScale(0.5, 0.5),
 		Size: UDim2.fromScale(1, 1),
-		BackgroundColor3: theme.colors.card,
+		// **The same family as `addTile`, in the same two colours.** The showcase is a shelf tile at a larger
+		// size — light body, near-black band, hairline border — so the equipped item and the items beside it
+		// read as one piece of furniture rather than as a preview and a shelf that happen to be adjacent.
+		BackgroundColor3: theme.colors.panel,
 		BorderSizePixel: 0,
 	});
 	Fusion.New(scope, "UISizeConstraint")({
 		Parent: tile,
 		MinSize: new Vector2(96, 96),
-		MaxSize: new Vector2(260, 260),
+		// **The `MaxSize` of 260 is gone, and it was the whole reason the preview sat in a small box in a
+		// large column.** The holder above is a flex item that fills whatever the panel leaves it, and this
+		// tile is a full-scale child of it — but a ceiling in pixels meant that on any panel wider than that
+		// the preview simply stopped growing and floated in the middle of its own column with a gap on all
+		// four sides. The floor stays: it is what keeps the preview readable on a narrow panel, and it is the
+		// case the holder's `ClipsDescendants` is there for.
 	});
 	Fusion.New(scope, "UICorner")({ Parent: tile, CornerRadius: new UDim(0, 8) });
 	Fusion.New(scope, "UIStroke")({
@@ -1024,13 +1191,14 @@ export function addShowcase(
 	});
 
 	// The picture slot, exactly as `addTile` has it — a `Frame` today, an `ImageLabel` the day there is
-	// art, and nothing around it moves when that happens.
+	// art, and nothing around it moves when that happens. **Its fill is the darker of the two lights** so
+	// the slot reads as a recess in the tile rather than as a second white panel sitting on the first.
 	Fusion.New(scope, "Frame")({
 		Name: "Art",
 		Parent: tile,
 		Position: UDim2.fromOffset(6, 6),
 		Size: new UDim2(1, -12, 1, -(TILE_NAME_HEIGHT * 2 + 6)),
-		BackgroundColor3: theme.colors.panel,
+		BackgroundColor3: theme.colors.card,
 		BorderSizePixel: 0,
 	});
 	Fusion.New(scope, "UICorner")({ Parent: tile, CornerRadius: new UDim(0, 6) });
@@ -1040,7 +1208,10 @@ export function addShowcase(
 		Parent: tile,
 		Position: new UDim2(0, 0, 1, -TILE_NAME_HEIGHT * 2),
 		Size: new UDim2(1, 0, 0, TILE_NAME_HEIGHT * 2),
-		BackgroundColor3: theme.colors.accent,
+		// **`trough` rather than `accent`**, matching `addTile`: the band is the theme's near-black on both,
+		// and this is where the panel's accent used to leak into every tile's furniture. The label on it is
+		// `onAccent` — the palette's white — which is the same text-on-near-black pair the tiles use.
+		BackgroundColor3: theme.colors.trough,
 		BorderSizePixel: 0,
 	});
 	Fusion.New(scope, "UICorner")({ Parent: nameBar, CornerRadius: new UDim(0, 8) });

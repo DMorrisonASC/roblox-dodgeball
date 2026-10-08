@@ -157,4 +157,37 @@ export const AUDIO_CONFIG = {
 
 	/** **Placeholder.** The whistle's level. A referee should be heard over everything. */
 	ROUND_WHISTLE_VOLUME: 0.6,
+
+	/**
+	 * The two sounds the *interface* makes: one when the pointer arrives on something pressable, one when
+	 * it is pressed.
+	 *
+	 * **Here rather than in `sound.config.ts`, for the reason that file gives about itself** — it is the six
+	 * ids a *server* hands to `SoundEmitter` and plays at a position in the world. These two are played by the
+	 * client, at the client, for the client: the same case as the four entries above them, which is why they
+	 * are in the same file rather than in a third one.
+	 *
+	 * **Two sounds and one pressable element is the whole design.** The hover tone is a *contact* noise — it
+	 * says the pointer has found something — and the select tone is the *commitment*, which is why they are
+	 * different pitches rather than the same clip at two volumes: a player who has learned the first one can
+	 * hear whether a press landed without looking at the border.
+	 *
+	 * **Neither id is a `Placeholder.` in the sense of being invented** — they were supplied — so what is
+	 * unverified about them is not their spelling but their *character*: whether two short UI tones are
+	 * distinguishable from each other and pleasant at the volumes below, which is a thing only a screen and a
+	 * pair of ears can answer.
+	 */
+	UI_HOVER: "rbxassetid://96431637382556",
+	UI_SELECT: "rbxassetid://132150186435903",
+
+	/**
+	 * **Placeholder.** Both UI volumes, against the music and the cues above.
+	 *
+	 * Quieter than every other entry in this file on purpose, and the reason is frequency rather than taste: a
+	 * hover tone fires every time the pointer crosses a tile, which on a shelf is several times a second, so
+	 * the same level that suits a once-a-round whistle would be a room full of clicks. Tune by ear, and tune
+	 * the *hover* one first — it is the one that will be wrong.
+	 */
+	UI_HOVER_VOLUME: 0.25,
+	UI_SELECT_VOLUME: 0.35,
 } as const;

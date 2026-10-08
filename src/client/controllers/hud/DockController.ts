@@ -3,7 +3,8 @@ import { Button } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
-import { INTERMISSION, roundPhase, togglePanel } from "../../panels";
+import { inPracticeZone, INTERMISSION, roundPhase, togglePanel } from "../../panels";
+import { addElevation, wireInteraction } from "../../ui/elevation";
 import { hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
@@ -134,11 +135,15 @@ export class DockController implements OnStart {
 		 * watching it costs a subscription and nothing per frame — and it is the *server's* answer, which
 		 * is the one that decides whether the player is really in there.
 		 *
+		 * **The value is `panels.ts`'s and this controller writes it.** It was a local here while the dock
+		 * was the only element that cared; the session HUDs now appear in the same place the dock
+		 * disappears, so a local would be one subscription per reader for one fact. The dock keeps the
+		 * connection because it had it first and because it is the element a zone *removes* — the same
+		 * one-writer arrangement `roundPhase` has with the panels.
+		 *
 		 * Seeded from the opening read, because a client that mounts while its player is already standing
 		 * in a zone will never hear a change to an attribute that was already true.
 		 */
-		const inPracticeZone = Fusion.Value(this.scope, false);
-
 		const player = Players.LocalPlayer;
 
 		this.scope.push(
@@ -207,6 +212,19 @@ export class DockController implements OnStart {
 	 * than expected grows its own button rather than being clipped; the `UISizeConstraint` is what makes
 	 * the two buttons the same width regardless, which is the part that matters for a stack. Setting an
 	 * explicit `Size` would have to be undone per button and would fix a width the label does not know.
+	 *
+	 * **And it is raised, which is this file's half of the elevation hierarchy.** A button with no shadow
+	 * reads as a label; Material rests a contained button at roughly 6dp and drops it to nothing on press,
+	 * and that is the right answer here for a concrete reason — the dock's two buttons are the only things
+	 * on screen during an intermission that want pressing, so they are exactly where the affordance has to
+	 * be visible before the mouse moves. See `ui/elevation.ts` for the level and for the press it wires.
+	 *
+	 * **`hudTheme()` is called here rather than threaded in from `addDock`**, which is a deliberate
+	 * exception to the "a HUD reads its colours exactly once" convention this codebase otherwise keeps.
+	 * That convention is about *capture* — a value read at module load would be Material's default rather
+	 * than the configured theme — and `hudTheme()` reads the live palette on every call, so a second call
+	 * cannot disagree with the first. Threading it would mean a fourth parameter on a method called twice,
+	 * to buy nothing.
 	 */
 	private addDockButton(
 		dock: Frame,
@@ -229,6 +247,20 @@ export class DockController implements OnStart {
 			Parent: button,
 			MinSize: new Vector2(BUTTON_MIN_WIDTH, 0),
 		});
+
+		// **`behindParent` off for the outlined variant, and it is not a preference.** big-ui builds an
+		// `outlined` button with `BackgroundTransparency = 1` at rest — it is an outline and nothing else —
+		// so a shadow allowed behind its parent would draw its whole dark silhouette *through* the button,
+		// reading as a grey rectangle rather than as depth. With the flag off, the shadow is drawn only
+		// outside the parent's own area: a fringe beneath an outline, which is the right amount of ink for
+		// a surface that is mostly hole, and the second of the two treatments this hierarchy needs.
+		const shadow = addElevation(this.scope, button, hudTheme(), "BUTTON", variant === "contained");
+
+		// **The button is its own visual here**, unlike a shelf tile: big-ui builds the thing that is drawn and
+		// the thing that is clicked as one instance, so there is nothing to point the scale at but the button
+		// itself. The option exists for the case where those two are different — see `InteractionOptions.visual`.
+		wireInteraction(this.scope, button, { shadow });
+
 		button.Parent = dock;
 	}
 }

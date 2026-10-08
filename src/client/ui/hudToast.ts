@@ -21,18 +21,32 @@ export const TOAST_WIDTH = 320;
 /**
  * How far the bottom toast's wrapper sits above the bottom of the screen.
  *
- * Measured against the two things already down there rather than guessed at. The spectator label
- * is anchored `(0.5, 1)` at a 12px inset and is about 21px tall, so it occupies y∈[687, 708] on a
- * 720px screen; the tallest a toast gets is {@link TOAST_HEIGHT}, about 61px, so at this offset the
- * bottom toast occupies y∈[579, 640]. That is 47px of clear air between them — needed, because the
- * assumption that they cannot co-occur is **false**: the spectator label shows while `Spectating` is
- * true and the throw toast shows while `ThrowEnabled` is false, and a player who is out of the round
- * with throwing switched off is both at once.
+ * **Raised from 10, because the bottom centre is now occupied by something permanent.** The Super HUD —
+ * the power slot over the three stamina segments — sits at the very bottom of the screen, and it is the
+ * readout a player looks at continuously rather than the alert they read once. A permanent thing owns the
+ * anchor and the transient column stacks above it; the alternative, leaving the toasts where they were,
+ * would have put a throw warning *behind* the icon.
  *
- * Sideways it is clear too: at 1280px a toast spans x∈[480, 800], while the cooldown bars are pinned
- * to the bottom-*left* (anchor `(0, 1)`, 12px in, ~144px wide) and reach nowhere near it.
+ * The arithmetic, so the next reader can check it rather than trust it: the stack's inset is 12px and its
+ * height is 56 (the icon slot) + 10 (the gap) + 10 (the segment row) = 76px, so it occupies y∈[12, 88].
+ * Plus {@link TOAST_GAP} puts the bottom toast's wrapper at 96, and the tallest a toast gets is
+ * {@link TOAST_HEIGHT} — so slot 0 occupies y∈[96, 157] and slot 1 y∈[165, 226].
+ *
+ * **This module still owns the number rather than the stack publishing its own height**, which is the same
+ * decision it already made about the spectator label and the cooldown bars: the column's placement is one
+ * fact with one owner, and two modules each holding half of it is how they come apart. The cost is that a
+ * taller stack needs this constant re-read — which is said in `SuperHudController` too, where somebody
+ * changing the icon's size will actually be looking.
+ *
+ * **The spectator label is clear for a different reason than it used to be.** It is anchored at the same
+ * bottom centre 12px in, which is now *inside* the stack's band — but the two cannot be up at once: the
+ * label shows while `Spectating` is true and the stack hides then, by the same predicate. Being unable to
+ * co-occur is a better guarantee than a gap.
+ *
+ * Sideways nothing changed: at 1280px a toast spans x∈[480, 800], while the cooldown bars are pinned to
+ * the bottom-*left* (anchor `(0, 1)`, 12px in, ~144px wide) and reach nowhere near it.
  */
-export const TOAST_BOTTOM_OFFSET = 10;
+export const TOAST_BOTTOM_OFFSET = 96;
 
 /**
  * The tallest a toast gets, in pixels: one title line, one message line, and the alert's own padding.

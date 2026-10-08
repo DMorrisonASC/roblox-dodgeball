@@ -88,6 +88,17 @@ export interface HudTheme {
 		 * when the accent colour is.
 		 */
 		onAccent: Color3;
+		/**
+		 * What a cast shadow is made of — the colour under a raised surface, and the tint at the top of a
+		 * recessed one.
+		 *
+		 * **The one colour here that is drawn *behind* something rather than on it**, which is why it gets
+		 * its own name rather than borrowing `trough`: a trough is a well and a shadow is the absence of
+		 * light, and the two want different opacities even where they want the same colour. The theme is
+		 * light, so this is black — softness comes from the `UIShadow`'s own `Transparency` and
+		 * `BlurRadius` rather than from an alpha channel, because a `Color3` does not have one.
+		 */
+		shadow: Color3;
 	};
 
 	/** The theme's spacing scale, in pixels. `Spacing(n)` is `n` eighths. */
@@ -163,6 +174,13 @@ export function hudTheme(): HudTheme {
 			// that is the near-white *page* colour, and a page colour used as a foreground is how a
 			// label ends up reading as a slightly dirty grey rather than as white.
 			onAccent: Palette.common.white,
+			// **The one value here that is the absence of light rather than a colour of its own.** The
+			// theme is light, so a cast shadow is black — softness comes from the `UIShadow`'s own
+			// `Transparency` and `BlurRadius` rather than from an alpha channel, because a `Color3` has
+			// none. Deliberately not `trough`: that is a well *inside* something and this is what is
+			// behind something, and the two want different opacities even where they want the same ink —
+			// the semantic drift the `coin` entry above argues against, caught before it happened.
+			shadow: Palette.common.black,
 		},
 
 		spacing: {
