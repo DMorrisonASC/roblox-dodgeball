@@ -1,8 +1,8 @@
 > local HttpService = game:GetService("HttpService")
 local StudioTestService = game:GetService("StudioTestService")
-local payload = HttpService:JSONDecode([=[{"pluginKey":"0.4.5-11eb784c","protocolVersion":9,"test":true,"config":{"configs":[{"testMatch":["**/*.spec","**/*.test"],"passWithNoTests":false,"silent":false,"testPathIgnorePatterns":["/node_modules/","/dist/","/out/"],"verbose":true,"outDir":"./out","injectGlobals":true,"projects":["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"],"snapshotFormat":{"printBasicPrototype":false},"jestPath":"ReplicatedStorage/rbxts_include/node_modules/@rbxts-js/Jest","runnerTimeoutMs":60000,"reporters":[]}]},"runtimeStubMounts":[["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"]]}]=])
-local URL = "ws://localhost:64981"
-local REQUEST_ID = [=[51e452a5-0e75-444d-8f10-893d6e49b778]=]
+local payload = HttpService:JSONDecode([=[{"pluginKey":"0.4.5-11eb784c","protocolVersion":9,"test":true,"config":{"configs":[{"testMatch":["**/*.spec","**/*.test"],"passWithNoTests":false,"silent":false,"testPathIgnorePatterns":["/node_modules/","/dist/","/out/"],"verbose":false,"outDir":"./out","injectGlobals":true,"projects":["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"],"snapshotFormat":{"printBasicPrototype":false},"jestPath":"ReplicatedStorage/rbxts_include/node_modules/@rbxts-js/Jest","runnerTimeoutMs":60000,"reporters":[]}]},"runtimeStubMounts":[["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"]]}]=])
+local URL = "ws://localhost:54432"
+local REQUEST_ID = [=[3eec8808-30bf-498b-a540-bf306aef28d4]=]
 local startedOpened, startedSocket = pcall(function()
 	return HttpService:CreateWebStreamClient(Enum.WebStreamClientType.WebSocket, { Url = URL })
 end)
@@ -73,20 +73,20 @@ Stack End
 [Collision] Barrier registered — service true, world true
 [Collision] Barrier/Default collides — service false, world false
 [Collision] Workspace knows: Default, Character, Barrier, Ball, PracticePlayer
+[Super] up — crowning at 3 hits, or the most on a side; nothing grants a charge but the dev bypass
+[Dev] listening for commands on both chat systems
+[Economy] up — 3 powers, 7 milestones, chest 50 coins
+[Mystery] up — watching RoundStatus.State, mysterySpawnPrize: 0 tagged thing(s), 0 on a practice floor
+[Sprint] up — LeftShift/M, 3s pool
+[Stats] up — PlayerStats, autosave every 180s
+[Zone] up — practiceZone: 0 tagged part(s)
 [Match] up — MatchJoinA: 0 part(s)
 [Match] up — MatchJoinB: 0 part(s)
-[Dev] listening for commands on both chat systems
-[Super] up — crowning at 3 hits, or the most on a side; nothing grants a charge but the dev bypass
-[Sprint] up — LeftShift/M, 3s pool
-[Economy] up — 3 powers, 7 milestones, chest 50 coins
-[Stats] up — PlayerStats, autosave every 180s
 Intermission started
 [Round] no usable lobby in "ArenaV2" — holding the intermission until there is one. Everybody is standing in the arena, and there is nowhere else to put them until "LobbySpawns" has parts in it. nothing in Workspace is a Model named "ArenaV2".
-[Spawner] up — watching RoundStatus.State, MatchSpawner: 0 tagged thing(s), 0 usable part(s)
-[Mystery] up — watching RoundStatus.State, mysterySpawnPrize: 0 tagged thing(s), 0 on a practice floor
-[Zone] up — practiceZone: 0 tagged part(s)
 [main] respawn — CharacterAutoLoads false, 3s in-round delay
 [main] ignited
+[Spawner] up — watching RoundStatus.State, MatchSpawner: 0 tagged thing(s), 0 usable part(s)
 [Stats] saved 0 players on shutdown
 studio-cli: start socket error: Failed ws recv - err: 0 "No error", curlErrBuf: ""
 studio-cli: result socket error: Failed ws recv - err: 0 "No error", curlErrBuf: ""

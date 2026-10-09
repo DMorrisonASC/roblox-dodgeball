@@ -654,25 +654,36 @@ export const CROWN_ATTRIBUTE = "Crown";
 export const COINS_ATTRIBUTE = "Coins";
 
 /**
- * Attribute on a **`Player`** holding the powers they own, as one `|`-joined string.
+ * Attribute on a **`Player`** holding everything they own that affects gameplay, as one `|`-joined string.
  *
- * **A packed string rather than one attribute per power**, so adding a power to the roster costs
- * nothing here and an unowned power is simply a word that is absent. The delimiter is private to
- * `shared/economy.ts`, which is the only reader and writer; the empty case is `""` — "owns none of
- * them" — rather than an absent attribute.
+ * **`OwnedPowers` until the record folded powers into items**, and that is a rename of the *fact* rather
+ * than a tidy-up: this attribute has always meant "what the server says you own", and the record field it
+ * is published from is now `items` — one set holding the three powers today and whatever else
+ * gameplay-affecting arrives, with no new attribute and no second packed string for it.
  *
- * **Ownership, not loadout.** What a player *owns* is permanent and decided by the server; which one
- * is on the ball in their hand is `BALL_ABILITY_ATTRIBUTE`, a different fact on a different instance.
+ * **Both sides ship together, so changing the wire name costs nothing worth protecting.** An older client
+ * is not a case to carry: it would ask for `OwnedPowers`, find no such attribute, and read its own
+ * collection as empty — which is the same answer it already gives for "not published yet".
+ *
+ * **A packed string rather than one attribute per item**, so adding an item costs nothing here and an
+ * unowned one is simply a word that is absent. The delimiter is private to `shared/economy.ts`, which is
+ * the only reader and writer; the empty case is `""` — "owns none of them" — rather than an absent
+ * attribute.
+ *
+ * **Ownership, not loadout.** What a player *owns* is permanent and decided by the server; which one is
+ * on the ball in their hand is `BALL_ABILITY_ATTRIBUTE`, a different fact on a different instance. A
+ * reader that means *powers* specifically asks for one by name — `shared/economy.ts`'s `ownsPower` is that
+ * question, and with this set wider than powers it is the only honest way to ask it.
  */
-export const OWNED_POWERS_ATTRIBUTE = "OwnedPowers";
+export const OWNED_ITEMS_ATTRIBUTE = "OwnedItems";
 
 /**
  * Attribute on a **`Player`** holding the subset of their powers the item box may grant, as one
  * `|`-joined string.
  *
- * **The same shape as {@link OWNED_POWERS_ATTRIBUTE}, and deliberately not the same attribute.** What a
+ * **The same shape as {@link OWNED_ITEMS_ATTRIBUTE}, and deliberately not the same attribute.** What a
  * player *owns* is permanent and decided by the server; what the *box may give them* is a choice they
- * make and can change — the distinction `OWNED_POWERS_ATTRIBUTE` already draws between ownership and the
+ * make and can change — the distinction `OWNED_ITEMS_ATTRIBUTE` already draws between ownership and the
  * ball in somebody's hand, applied to a second question. It is separate because the two facts have
  * different lifetimes and different authors: ownership only ever grows and only the server writes it,
  * while a pool shrinks and grows again and the player is the one deciding.
@@ -683,7 +694,7 @@ export const OWNED_POWERS_ATTRIBUTE = "OwnedPowers";
  * writes it from the record, so `""` on a player who has loaded is never "not published yet" — see
  * `EconomyService.publish`.
  *
- * Joined with the same helper the owned set uses, `joinPowers` in `shared/economy.ts`, because this is
+ * Joined with the same helper the owned set uses, `joinItems` in `shared/economy.ts`, because this is
  * the same *kind* of value: a set of `AbilityKind` packed into one attribute. A second packing convention
  * for the same data would be a second thing to keep in step for no gain.
  */
@@ -692,7 +703,7 @@ export const POWER_POOL_ATTRIBUTE = "PowerPool";
 /**
  * Attribute on a **`Player`** holding the cosmetic ids they own, as one `|`-joined string.
  *
- * The same shape as {@link OWNED_POWERS_ATTRIBUTE} and for its reason: one packed string means a new
+ * The same shape as {@link OWNED_ITEMS_ATTRIBUTE} and for its reason: one packed string means a new
  * cosmetic costs no new attribute, and the empty case is `""`. Earnable and premium items share the
  * one id space, so this says *which ids* without saying how each was obtained.
  */
@@ -715,7 +726,7 @@ export const OWNED_COSMETICS_ATTRIBUTE = "OwnedCosmetics";
  * ball's `ThrowerId` already use.
  *
  * **Published by `EconomyService`, read by the Inventory panel, written by nobody else.** The server is
- * the only writer for the reason `OWNED_POWERS_ATTRIBUTE` gives: what a player wears is decided by a
+ * the only writer for the reason `OWNED_ITEMS_ATTRIBUTE` gives: what a player wears is decided by the
  * record the client cannot reach.
  */
 export const EQUIPPED_TRAIL_ATTRIBUTE = "EquippedTrail";

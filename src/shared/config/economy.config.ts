@@ -64,14 +64,23 @@ export const POWER_ROSTER: readonly AbilityKind[] = ["Pierce", "MultiBall", "Fre
  * **`cosmetic` is a catalogue id rather than a `CosmeticDef`, and not a `CosmeticSlot` either.** The pool
  * names one *thing* — `"trail.verdant"` — while {@link COSMETICS} is the file that says what that thing is.
  * Storing the def here would put a second copy of the same object in one module and make the pool the place a
- * colour is written; storing the slot would describe a *class* of prizes rather than an item, and the chest
- * cannot grant a slot — a slot is somewhere a cosmetic is worn.
+ * colour is written; storing the slot would describe a *class* of things rather than one of them, and the
+ * chest cannot grant a slot — a slot is somewhere a cosmetic is worn.
+ *
+ * **"Item" is the umbrella here *and* the name a future sub-kind would take, and that is deliberate.** A
+ * chest entry is a thing you can win: today a power or a cosmetic, one day a power, a cosmetic or an item — a
+ * banana peel, something gameplay-affecting that is not an ability. So this type is `ChestItem` with those two
+ * arms, and the day a third arrives it will be called `"item"` beside them. **Do not "fix" that by renaming
+ * the umbrella**: a name that had to change when a member lands would take this type, `CHEST_POOL`,
+ * `EconomyService.ownsItem` and every reader with it, and the vocabulary it would buy — "chest entry" — says
+ * less about what the thing is than "item" does. The same recursion is why the record's field is `items`
+ * while its element type is still `AbilityKind`: see `EconomyRecord.items`.
  *
  * **The arm is generic and the pool is where the deliberate part lives.** Nothing in this type stops a ball or
  * elimination cosmetic being named; {@link CHEST_TRAILS} is the line that decides which ids the chest owns,
  * and the argument for the three that are there is written beside it.
  */
-export type ChestPrize =
+export type ChestItem =
 	| { readonly kind: "power"; readonly power: AbilityKind }
 	| { readonly kind: "cosmetic"; readonly cosmetic: string };
 
@@ -86,7 +95,7 @@ export type ChestPrize =
  *
  * **A filter could produce this list and was refused, which is the decision worth recording.** A derived pool
  * — trail slot, unpriced, not in `MILESTONES` — would be one fewer place to forget. It would also make
- * *unintended* items chest prizes: the day a trail is added for a giveaway, or an unpriced cosmetic arrives for
+ * *unintended* items chest items: the day a trail is added for a giveaway, or an unpriced cosmetic arrives for
  * any other reason, it would silently join the pool with nothing anywhere saying so. And it would put
  * membership in a rule nobody reads, where this file's own convention is that membership is deliberate — that
  * is what `POWER_ROSTER` is doing on the line below, and what its own comment says about adding a power "and
@@ -115,14 +124,14 @@ const CHEST_TRAILS: readonly string[] = ["trail.verdant", "trail.rose", "trail.s
  * the chance of a miss is derived, and it is exactly the fraction of this list the player already owns. See
  * `EconomyService.openChest`.
  *
- * **Cosmetics joined it as a second kind of prize, and the two paragraphs above are what made that one entry
+ * **Cosmetics joined it as a second arm, and the two paragraphs above are what made that one entry
  * rather than a mechanic change.** The roll is still one uniform draw over this array's length, so a player
  * who owns the whole roster rolls on three of six, and a miss is still the fraction they already own. Nothing
  * in `openChest` needed a second odds rule; the only thing that grew is the grant.
  */
-export const CHEST_POOL: readonly ChestPrize[] = [
-	...POWER_ROSTER.map((power): ChestPrize => ({ kind: "power", power })),
-	...CHEST_TRAILS.map((cosmetic): ChestPrize => ({ kind: "cosmetic", cosmetic })),
+export const CHEST_POOL: readonly ChestItem[] = [
+	...POWER_ROSTER.map((power): ChestItem => ({ kind: "power", power })),
+	...CHEST_TRAILS.map((cosmetic): ChestItem => ({ kind: "cosmetic", cosmetic })),
 ];
 
 /**
@@ -374,7 +383,7 @@ export const COSMETICS: Record<string, CosmeticDef> = {
 	// --- Coin shelf (bought with coins: the simple tier, distinct from the chest's own) ---
 
 	// **Priced at a flat `300`, and the number is the chest's rather than a guess.** The expected cost of
-	// landing one *specific* prize from the chest is `CHEST_COST × pool size` — 50 over six entries, 300 — so a
+	// landing one *specific* item from the chest is `CHEST_COST × pool size` — 50 over six entries, 300 — so a
 	// direct purchase at exactly that figure never undercuts the chest, and the chest never makes a purchase
 	// look overpriced. A buyer pays what the chest would average out to, and gets it *now* instead of after six
 	// rolls; a gambler pays 50 and may get it first try. Both are honest, neither is strictly better, and that

@@ -6,7 +6,7 @@ import { Players } from "@rbxts/services";
 import { ABILITY_NAMES, AbilityKind } from "shared/ability";
 import {
 	OWNED_COSMETICS_ATTRIBUTE,
-	OWNED_POWERS_ATTRIBUTE,
+	OWNED_ITEMS_ATTRIBUTE,
 	POWER_POOL_ATTRIBUTE,
 } from "shared/constants";
 import { COSMETICS, CHEST_POOL, MILESTONES, POWER_ROSTER } from "shared/config/economy.config";
@@ -15,7 +15,7 @@ import {
 	EQUIPPED_ATTRIBUTE,
 	equippedIdOf,
 	ownedCosmeticIdsOf,
-	ownedPowersOf,
+	ownedItemsOf,
 	ownsPower,
 } from "shared/economy";
 import { events } from "shared/networking";
@@ -217,8 +217,8 @@ function grantOf(def: CosmeticDef): string | undefined {
  *
  * **The chest is read from `CHEST_POOL` rather than inferred, and the inference is the trap this avoids.**
  * "Unpriced and un-granted" is true of a chest trail, and it was also true of every premium item before its
- * price was filled in — so a shelf that reasoned from those two facts would announce a chest prize on an item
- * no chest can give. The pool is the list that decides, so the pool is the list that is asked.
+ * price was filled in — so a shelf that reasoned from those two facts would name the chest as an item's source
+ * when no chest can give it. The pool is the list that decides, so the pool is the list that is asked.
  *
  * **`"Premium"` is the fallback rather than an error**, because a priced item is the only thing left once a
  * milestone and the chest are ruled out — and a priced item is the whole of what the shop's catalogue tab
@@ -228,8 +228,8 @@ function originOf(def: CosmeticDef): string {
 	const milestone = grantOf(def);
 	if (milestone !== undefined) return `From ${milestone}`;
 
-	for (const prize of CHEST_POOL) {
-		if (prize.kind === "cosmetic" && prize.cosmetic === def.id) return "From the chest";
+	for (const item of CHEST_POOL) {
+		if (item.kind === "cosmetic" && item.cosmetic === def.id) return "From the chest";
 	}
 
 	return "Premium";
@@ -306,13 +306,19 @@ export class InventoryController implements OnStart {
 	private readonly equipped = new Map<string, Fusion.Value<string>>();
 
 	/**
-	 * The `OWNED_POWERS_ATTRIBUTE` string, verbatim.
+	 * The `OWNED_ITEMS_ATTRIBUTE` string, verbatim — **everything the player owns, not only powers.**
 	 *
 	 * **The second reader of this attribute on this machine, not the first** — the prompt that asked for this
 	 * tab says nothing on the client reads it, and that is wrong: `ShopController` has read it since the shop
 	 * was built, to draw which powers a player still has to collect. Kept here as the raw string rather than a
 	 * parsed set, so both panels parse it when they draw with the same helper the server writes it with, and
 	 * neither has to know what the other is doing with it.
+	 *
+	 * **The field keeps the name `powers` while the attribute it holds is wider than powers**, and that is a
+	 * deliberate leaving-alone rather than an oversight: every question either panel asks of this value is a
+	 * question about a single power — `ownsPower` for the tiles and for the shop's list, and the roster loop
+	 * that decides whether the player has any powers at all. When something asks it a question that is not
+	 * about a power, the honest move is a new accessor rather than a rename that changes no behaviour.
 	 */
 	private powers = Fusion.Value(this.scope, "");
 
@@ -630,8 +636,13 @@ export class InventoryController implements OnStart {
 				const owned = use(this.powers);
 				const pool = use(this.pool);
 
-				if (ownedPowersOf(owned).size() === 0) return NO_POWERS_NOTE;
-				if (ownedPowersOf(pool).size() === 0) return `${POOL_NOTE} ${EMPTY_POOL_NOTE}`;
+				// **A roster test rather than a size test, now that the owned set is wider than powers.** The
+				// sentence this picks is about *powers*, while `ownedItemsOf` counts everything owned — the two
+				// coincide today and will not the day an item that is not a power lands, at which point a size test
+				// would say "no powers yet" correctly and "you have powers" wrongly. `ownsPower` is the power
+				// question, so this asks it once per roster entry rather than measuring the whole set.
+				if (!POWER_ROSTER.some((kind) => ownsPower(owned, kind))) return NO_POWERS_NOTE;
+				if (ownedItemsOf(pool).size() === 0) return `${POOL_NOTE} ${EMPTY_POOL_NOTE}`;
 
 				return POOL_NOTE;
 			}),
@@ -670,7 +681,7 @@ export class InventoryController implements OnStart {
 			this.requestTogglePower(kind),
 		);
 
-		const inPool = Fusion.Computed(this.scope, (use) => ownedPowersOf(use(this.pool)).has(kind));
+		const inPool = Fusion.Computed(this.scope, (use) => ownedItemsOf(use(this.pool)).has(kind));
 		this.markWhen(tile.nameBar, inPool, theme);
 	}
 
@@ -795,7 +806,7 @@ export class InventoryController implements OnStart {
 		// fallback here would quietly turn "the player switched everything off" into "the player owns nothing",
 		// which are different sentences on the tab.
 		const readPowers = () => {
-			const value = player.GetAttribute(OWNED_POWERS_ATTRIBUTE);
+			const value = player.GetAttribute(OWNED_ITEMS_ATTRIBUTE);
 			this.powers.set(typeIs(value, "string") ? value : "");
 		};
 
@@ -805,7 +816,7 @@ export class InventoryController implements OnStart {
 		};
 
 		this.scope.push(player.GetAttributeChangedSignal(OWNED_COSMETICS_ATTRIBUTE).Connect(readCosmetics));
-		this.scope.push(player.GetAttributeChangedSignal(OWNED_POWERS_ATTRIBUTE).Connect(readPowers));
+		this.scope.push(player.GetAttributeChangedSignal(OWNED_ITEMS_ATTRIBUTE).Connect(readPowers));
 		this.scope.push(player.GetAttributeChangedSignal(POWER_POOL_ATTRIBUTE).Connect(readPool));
 
 		readCosmetics();

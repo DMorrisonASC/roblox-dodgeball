@@ -1,7 +1,8 @@
 {
   "globIgnorePaths": [
     "**/package.json",
-    "**/tsconfig.json"
+    "**/tsconfig.json",
+    "**/RuntimeLib.lua"
   ],
   "name": "roblox-ts-game",
   "tree": {
@@ -19,6 +20,9 @@
       },
       "rbxts_include": {
         "$path": "../../include",
+        "RuntimeLib": {
+          "$path": "../../vendor/RuntimeLib.lua"
+        },
         "node_modules": {
           "$className": "Folder",
           "@flamework": {

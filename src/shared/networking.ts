@@ -202,7 +202,7 @@ export const events = Net.Definitions.Create({
 	/**
 	 * Server → client: what the chest the player just opened did.
 	 *
-	 * **`granted` is the prize's name on success and `""` on refusal**, and `reason` is the human
+	 * **`granted` is the item's name on success and `""` on refusal**, and `reason` is the human
 	 * sentence for the refusal (empty on success) — so a client draws the answer from one event rather
 	 * than inferring it from which attributes changed. Sent to the one player, not broadcast.
 	 *

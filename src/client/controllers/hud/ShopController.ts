@@ -4,10 +4,10 @@ import { Button, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { SoundService, ContentProvider, Players } from "@rbxts/services";
 import { ABILITY_NAMES, isAbilityKind } from "shared/ability";
-import { COINS_ATTRIBUTE, OWNED_COSMETICS_ATTRIBUTE, OWNED_POWERS_ATTRIBUTE } from "shared/constants";
+import { COINS_ATTRIBUTE, OWNED_COSMETICS_ATTRIBUTE, OWNED_ITEMS_ATTRIBUTE } from "shared/constants";
 import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { CHEST_POOL, ECONOMY_CONFIG, POWER_ROSTER, PREMIUM_COSMETICS, PURCHASE_COSMETICS } from "shared/config/economy.config";
-import type { ChestPrize, CosmeticDef } from "shared/config/economy.config";
+import type { ChestItem, CosmeticDef } from "shared/config/economy.config";
 import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
 import { INTERMISSION, roundPhase, shopOpen } from "../../panels";
@@ -141,7 +141,10 @@ export class ShopController implements OnStart {
 	 */
 	private coins = Fusion.Value(this.scope, 0);
 
-	/** The `OWNED_POWERS_ATTRIBUTE` string, verbatim. Read through `ownsPower`. */
+	/**
+	 * The `OWNED_ITEMS_ATTRIBUTE` string, verbatim. Read through `ownsPower`, which narrows it to the one
+	 * power a chest entry names — the attribute itself holds everything owned.
+	 */
 	private powers = Fusion.Value(this.scope, "");
 
 	/** The `OWNED_COSMETICS_ATTRIBUTE` string, verbatim. Read through `ownedCosmeticIdsOf`. */
@@ -449,7 +452,7 @@ export class ShopController implements OnStart {
 		 * `RoundStatusController`.
 		 */
 		const remaining = Fusion.Computed(this.scope, (use) =>
-			this.unclaimedPrizes(use(this.powers), use(this.cosmetics)).size(),
+			this.unclaimedItems(use(this.powers), use(this.cosmetics)).size(),
 		);
 
 		const complete = addMessageLine(this.scope, theme, footer, 2);
@@ -528,7 +531,7 @@ export class ShopController implements OnStart {
 	}
 
 	/**
-	 * Every prize in the chest this player does not have — **the whole pool, not just the powers.**
+	 * Every chest entry this player does not have — **the whole pool, not just the powers.**
 	 *
 	 * **The pool rather than the roster, because the panel's question is the chest's question.** The button and
 	 * the "nothing left" line are both asking the same thing the server asks before it takes the coins — "is
@@ -537,20 +540,27 @@ export class ShopController implements OnStart {
 	 * the chest gained a second kind: it would hide the button from every player who owns three powers, which is
 	 * every player, and the chest would be unreachable with nothing on screen to say why.
 	 *
+	 * **It is one predicate with `EconomyService.openChest`'s refusal, which is the point of keeping it.** That
+	 * one filters `CHEST_POOL` through the two arms of `ownsItem` over the *record*; this filters the same list
+	 * through the same two arms over the two owned *attributes*. Same list, same test — so the client cannot
+	 * offer a chest the server will refuse, which is the only reason a copy of the rule is allowed here.
+	 *
 	 * **Derived here rather than sent.** Nothing about the answer is secret — the two owned sets are attributes
 	 * this panel is already reading — and a remote reporting a count would be a second copy of a fact the client
 	 * can see for itself. It is the same reasoning that keeps the pool's *odds* off the wire: the list is the same
 	 * for everybody and the client owns it.
 	 *
-	 * The two arms are tested exactly as `EconomyService.ownsPrize` tests them, from the attributes rather than
-	 * from a record — `ownsPower` parses the power string and `ownedCosmeticIdsOf` the cosmetic one, both taking
-	 * the verbatim attribute text this panel already holds.
+	 * The two arms are tested exactly as `EconomyService.ownsItem` tests them, from the attributes rather than
+	 * from a record — `ownsPower` reads the power it is asked about out of the owned string, and
+	 * `ownedCosmeticIdsOf` parses the cosmetic one, both taking the verbatim attribute text this panel already
+	 * holds. **The first parameter is `OWNED_ITEMS_ATTRIBUTE`**, which holds everything owned rather than powers
+	 * alone; `ownsPower` is what narrows it back to the one power being asked about.
 	 */
-	private unclaimedPrizes(powers: string, cosmetics: string): ChestPrize[] {
+	private unclaimedItems(items: string, cosmetics: string): ChestItem[] {
 		const owned = ownedCosmeticIdsOf(cosmetics);
 
-		return CHEST_POOL.filter((prize) =>
-			prize.kind === "power" ? !ownsPower(powers, prize.power) : !owned.has(prize.cosmetic),
+		return CHEST_POOL.filter((item) =>
+			item.kind === "power" ? !ownsPower(items, item.power) : !owned.has(item.cosmetic),
 		);
 	}
 
@@ -575,7 +585,7 @@ export class ShopController implements OnStart {
 		};
 
 		const readPowers = () => {
-			const value = player.GetAttribute(OWNED_POWERS_ATTRIBUTE);
+			const value = player.GetAttribute(OWNED_ITEMS_ATTRIBUTE);
 			this.powers.set(typeIs(value, "string") ? value : "");
 		};
 
@@ -585,7 +595,7 @@ export class ShopController implements OnStart {
 		};
 
 		this.scope.push(player.GetAttributeChangedSignal(COINS_ATTRIBUTE).Connect(readCoins));
-		this.scope.push(player.GetAttributeChangedSignal(OWNED_POWERS_ATTRIBUTE).Connect(readPowers));
+		this.scope.push(player.GetAttributeChangedSignal(OWNED_ITEMS_ATTRIBUTE).Connect(readPowers));
 		this.scope.push(player.GetAttributeChangedSignal(OWNED_COSMETICS_ATTRIBUTE).Connect(readCosmetics));
 
 		readCoins();

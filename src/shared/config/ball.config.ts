@@ -327,7 +327,7 @@ export const BALL_CONFIG = {
 	 * angle instead would slow the ball without costing range, but it would stop the throw being
 	 * flat — see `MIN_THROW_ANGLE` in `shared/Trajectory.ts`.
 	 */
-	THROW_MAX_SPEED: 150,
+	THROW_MAX_SPEED: 125,
 
 	/**
 	 * **A multiplier on the derived launch correction. It should stay at 1.**

@@ -2,7 +2,8 @@
 	"name": "roblox-ts-game",
 	"globIgnorePaths": [
 		"**/package.json",
-		"**/tsconfig.json"
+		"**/tsconfig.json",
+		"**/RuntimeLib.lua"
 	],
 	"tree": {
 		"$className": "DataModel",
@@ -16,6 +17,9 @@
 			"$className": "ReplicatedStorage",
 			"rbxts_include": {
 				"$path": "include",
+				"RuntimeLib": {
+					"$path": "vendor/RuntimeLib.lua"
+				},
 				"node_modules": {
 					"$className": "Folder",
 					"@rbxts": {

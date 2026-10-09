@@ -31,9 +31,9 @@ import {
 	blankEconomyRecord,
 	equippedIdOf,
 	joinCosmeticIds,
-	joinPowers,
+	joinItems,
 	ownedCosmeticIdsOf,
-	ownedPowersOf,
+	ownedItemsOf,
 	ownsPower,
 	toEconomyRecord,
 	toSavedEconomy,
@@ -46,7 +46,7 @@ describe("toEconomyRecord", () => {
 		expect(record.coins).toBe(0);
 		expect(record.matches).toBe(0);
 		expect(record.wins).toBe(0);
-		expect(record.powers.size()).toBe(0);
+		expect(record.items.size()).toBe(0);
 		expect(record.cosmetics.size()).toBe(0);
 		expect(record.pool.size()).toBe(0);
 		expect(record.equipped.size()).toBe(0);
@@ -57,11 +57,11 @@ describe("toEconomyRecord", () => {
 		expect(toEconomyRecord({ coins: 12.9 }).coins).toBe(12);
 	});
 
-	it("defaults a record saved before equipped and pool existed, keeping everything else", () => {
-		// The shape a DataStore wrote before `equipped` and `pool` were fields: everything else is present,
-		// and the two new keys are simply absent. The whole point of the default is that this record must
-		// come back with its coins, powers and cosmetics intact — a player's wallet and collection are not
-		// evidence that the save is old.
+	it("reads the pre-fold `powers` field into `items`", () => {
+		// **The migration case, and the one that would cost a player everything.** Every record written before
+		// the fold says `powers` and has no `items` key at all — the shape a DataStore wrote before `equipped`
+		// and `pool` existed, with those two simply absent as well. A parser that read only `items` would hand
+		// this player an empty set, silently, on a store that has never been observed to round-trip a value.
 		const legacy = {
 			coins: 42,
 			powers: ["Pierce", "Freeze"],
@@ -72,12 +72,17 @@ describe("toEconomyRecord", () => {
 
 		const record = toEconomyRecord(legacy);
 
+		// Everything else survives the fold, which is the other half of the guarantee: a player's wallet and
+		// collection are not evidence that the save is old.
 		expect(record.coins).toBe(42);
 		expect(record.matches).toBe(7);
 		expect(record.wins).toBe(2);
-		expect(record.powers.has("Pierce")).toBe(true);
-		expect(record.powers.has("Freeze")).toBe(true);
 		expect(record.cosmetics.has("trail.victor")).toBe(true);
+
+		// The powers come back *in `items`* — the field the old record never had a name for.
+		expect(record.items.has("Pierce")).toBe(true);
+		expect(record.items.has("Freeze")).toBe(true);
+		expect(record.items.size()).toBe(2);
 
 		// The two fields the old build did not write: an empty equipped map, and a pool that defaults to
 		// "everything owned" — the box this player would have chosen, rather than an empty box with no
@@ -87,25 +92,60 @@ describe("toEconomyRecord", () => {
 		expect(record.pool.has("Freeze")).toBe(true);
 	});
 
+	it("reads an `items` record as it stands", () => {
+		const record = toEconomyRecord({ coins: 5, items: ["Pierce"] });
+
+		expect(record.items.has("Pierce")).toBe(true);
+		expect(record.items.size()).toBe(1);
+		expect(record.pool.has("Pierce")).toBe(true);
+	});
+
+	it("merges a record carrying both names, without duplicating", () => {
+		// A record that has been through both builds: `powers` from the old one and `items` from this one. The
+		// union is what the player owned all along, and an entry named in both fields is one element of a set —
+		// which is why the merge is a union rather than a preference for either name.
+		const record = toEconomyRecord({ items: ["Pierce", "Freeze"], powers: ["Freeze", "MultiBall"] });
+
+		expect(record.items.size()).toBe(3);
+		expect(record.items.has("Pierce")).toBe(true);
+		expect(record.items.has("Freeze")).toBe(true);
+		expect(record.items.has("MultiBall")).toBe(true);
+	});
+
+	it("reads a record with neither name as owning nothing, keeping everything else", () => {
+		const record = toEconomyRecord({ coins: 9, cosmetics: ["trail.ember"], matches: 4, wins: 1 });
+
+		expect(record.items.size()).toBe(0);
+		expect(record.coins).toBe(9);
+		expect(record.cosmetics.has("trail.ember")).toBe(true);
+		expect(record.matches).toBe(4);
+		expect(record.wins).toBe(1);
+	});
+
 	it("drops a corrupt equipped entry rather than a whole record", () => {
 		const record = toEconomyRecord({
 			coins: 5,
-			powers: ["Pierce"],
+			items: ["Pierce"],
 			equipped: { trail: "trail.aurora", bad: 42, empty: "" },
 		});
 
 		expect(record.coins).toBe(5);
+		expect(record.items.has("Pierce")).toBe(true);
 		expect(record.equipped.get("trail")).toBe("trail.aurora");
 		expect(record.equipped.size()).toBe(1);
 	});
 
-	it("round-trips through its saved form", () => {
+	it("round-trips through its saved form, under the new field name", () => {
+		// **The pairing test: the writer emits `items` and the parser reads it back.** It cannot fail for the
+		// *wrong* key — `toSavedEconomy` returns `SavedEconomy`, whose field is `items`, so a writer still
+		// emitting `powers` would not compile — which is why the legacy read is proved by the tests above and
+		// not by this one.
 		const record = blankEconomyRecord();
 		record.coins = 10;
 		record.matches = 3;
 		record.wins = 1;
-		record.powers.add("Pierce");
-		record.powers.add("Freeze");
+		record.items.add("Pierce");
+		record.items.add("Freeze");
 		record.pool.add("Freeze");
 		record.cosmetics.add("trail.aurora");
 		record.equipped.set("trail", "trail.aurora");
@@ -115,8 +155,9 @@ describe("toEconomyRecord", () => {
 		expect(back.coins).toBe(10);
 		expect(back.matches).toBe(3);
 		expect(back.wins).toBe(1);
-		expect(back.powers.has("Pierce")).toBe(true);
-		expect(back.powers.has("Freeze")).toBe(true);
+		expect(back.items.has("Pierce")).toBe(true);
+		expect(back.items.has("Freeze")).toBe(true);
+		expect(back.items.size()).toBe(2);
 		expect(back.pool.has("Freeze")).toBe(true);
 		expect(back.cosmetics.has("trail.aurora")).toBe(true);
 		expect(back.equipped.get("trail")).toBe("trail.aurora");
@@ -128,7 +169,7 @@ describe("blankEconomyRecord", () => {
 		const record = blankEconomyRecord();
 
 		expect(record.coins).toBe(0);
-		expect(record.powers.size()).toBe(0);
+		expect(record.items.size()).toBe(0);
 		expect(record.pool.size()).toBe(0);
 		expect(record.cosmetics.size()).toBe(0);
 		expect(record.equipped.size()).toBe(0);
@@ -139,13 +180,13 @@ describe("blankEconomyRecord", () => {
 
 describe("the string helpers", () => {
 	it("parses and joins powers, ignoring unknown words and empty entries", () => {
-		const parsed = ownedPowersOf("Pierce|Bogus|Freeze|");
+		const parsed = ownedItemsOf("Pierce|Bogus|Freeze|");
 
 		expect(parsed.has("Pierce")).toBe(true);
 		expect(parsed.has("Freeze")).toBe(true);
 		expect(parsed.size()).toBe(2);
 
-		expect(joinPowers(parsed)).toBe("Pierce|Freeze");
+		expect(joinItems(parsed)).toBe("Pierce|Freeze");
 	});
 
 	it("ownsPower answers from the parsed set, and nothing from junk", () => {

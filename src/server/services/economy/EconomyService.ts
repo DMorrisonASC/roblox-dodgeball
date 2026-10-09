@@ -5,7 +5,7 @@ import {
 	COINS_ATTRIBUTE,
 	CROWN_ATTRIBUTE,
 	OWNED_COSMETICS_ATTRIBUTE,
-	OWNED_POWERS_ATTRIBUTE,
+	OWNED_ITEMS_ATTRIBUTE,
 	POWER_POOL_ATTRIBUTE,
 	STAT_HITS,
 } from "shared/constants";
@@ -16,7 +16,7 @@ import {
 	POWER_ROSTER,
 	COSMETICS,
 	CosmeticDef,
-	ChestPrize,
+	ChestItem,
 	MilestoneDef,
 } from "shared/config/economy.config";
 import {
@@ -24,7 +24,7 @@ import {
 	blankEconomyRecord,
 	toEconomyRecord,
 	toSavedEconomy,
-	joinPowers,
+	joinItems,
 	joinCosmeticIds,
 	EQUIPPED_ATTRIBUTE,
 } from "shared/economy";
@@ -51,11 +51,11 @@ const DEBUG = true;
  * debt. The earn rules (base, win bonus, performance cap) live in {@link ECONOMY_CONFIG} and are applied
  * by {@link onRoundEnded}, which `RoundService` calls exactly once per finished round.
  *
- * **Powers and cosmetics are owned sets, packed into attributes.** What is owned is permanent and is
- * published on the player as two `|`-joined strings — see `OWNED_POWERS_ATTRIBUTE` — so the client
- * reads them with no remote, and the server is the only writer. A power a player does not own is a word
- * absent from the string, and that is the whole of the lock: `BallService` asks {@link ownsPower} before
- * it honours a key.
+ * **What a player owns is two sets, packed into two attributes.** `items` — the three powers today, and
+ * whatever else gameplay-affecting arrives — and `cosmetics`, each published as one `|`-joined string (see
+ * `OWNED_ITEMS_ATTRIBUTE`), so the client reads them with no remote and the server is the only writer. A
+ * power a player does not own is a word absent from the string, and that is the whole of the lock:
+ * `BallService` asks {@link ownsPower} before it honours a key.
  *
  * **Milestones are checked, not tracked separately.** The counters here are `matches` and `wins`; hits
  * come from `StatsService`'s lifetime `STAT_HITS`, and the crown milestone reads `CROWN_ATTRIBUTE`. One
@@ -175,9 +175,17 @@ export class EconomyService implements OnStart {
 		}
 	}
 
-	/** Whether `player` owns `kind`, the one fact `BallService` asks before honouring a key. */
+	/**
+	 * Whether `player` owns `kind` — the one fact `BallService` asks before honouring a key.
+	 *
+	 * **The name stays `ownsPower` now that the record's field is `items`, and that is the point of keeping
+	 * two vocabularies.** This answers a question about a *power*; where ownership is stored is `items`,
+	 * which holds powers and nothing else today. Calling this `ownsItem` would say less about what it checks
+	 * in exchange for repeating the field name, and the cascade through `BallService` and `SuperService`
+	 * would leave no reader better off.
+	 */
 	public ownsPower(player: Player, kind: AbilityKind): boolean {
-		return this.records.get(player)?.powers.has(kind) ?? false;
+		return this.records.get(player)?.items.has(kind) ?? false;
 	}
 
 	/**
@@ -330,11 +338,17 @@ export class EconomyService implements OnStart {
 		// thing is to say so before taking the money rather than after. It is also the only refusal here that
 		// describes a *finished* state rather than a failure: everything the chest can give has been given.
 		//
-		// The wording no longer says "powers", because the pool is not powers — it is every prize, and items
-		// join it the day they exist. A message naming one arm of a union is a message that goes stale the
-		// moment the union grows.
-		const prizes = CHEST_POOL.filter((prize) => !this.ownsPrize(record, prize));
-		if (prizes.size() === 0) {
+		// The wording no longer says "powers", because the pool is not powers — it is every entry the chest can
+		// give, cosmetics included, and new kinds join it the day they exist. A message naming one arm of a
+		// union is a message that goes stale the moment the union grows.
+		//
+		// **This is the same test the shop's button gate runs**, from the record here and from the two owned
+		// attributes there — see `ShopController.unclaimedItems`. They agree because they are one predicate over
+		// one list, which is worth knowing before either is edited: the client decides whether to *offer* the
+		// chest and the server decides whether to *take* the coins, so a disagreement would be a button that
+		// charges for a refusal.
+		const items = CHEST_POOL.filter((item) => !this.ownsItem(record, item));
+		if (items.size() === 0) {
 			this.sendChestResult(player, "", "nothing left in the chest to win");
 			return;
 		}
@@ -344,7 +358,7 @@ export class EconomyService implements OnStart {
 		// duplicate outcome entirely — the filter is not a defensive measure, it is the *only* thing that
 		// makes a miss possible. There is no miss-rate number anywhere in the config: the chance of getting
 		// nothing is exactly the fraction of `CHEST_POOL` this player already owns, derived on every roll.
-		const prize = CHEST_POOL[math.random(CHEST_POOL.size()) - 1];
+		const item = CHEST_POOL[math.random(CHEST_POOL.size()) - 1];
 
 		// **The coins go before the outcome is known, and the order is the mechanic rather than sloppiness.**
 		// A roll that only charged on success would be a free re-roll on every duplicate, which turns the
@@ -359,14 +373,14 @@ export class EconomyService implements OnStart {
 		//
 		// The message says what happened — *you already had that* — rather than "you failed", because nothing
 		// went wrong: the chest worked exactly as designed and the player got the commonest result.
-		if (this.ownsPrize(record, prize)) {
+		if (this.ownsItem(record, item)) {
 			this.publish(player);
 
 			if (DEBUG) {
 				// **Named by its own id rather than by the reply's string, and the difference is the point.** The reply
 				// carries a cosmetic's *display* name; this line is a log, and a reader of it wants the thing the pool
 				// and the record call it — the id for one arm, the ability name for the other.
-				const rolled = prize.kind === "power" ? prize.power : prize.cosmetic;
+				const rolled = item.kind === "power" ? item.power : item.cosmetic;
 
 				print(
 					`[Economy] ${player.Name}: chest rolled ${rolled} — already owned, ` +
@@ -403,12 +417,13 @@ export class EconomyService implements OnStart {
 		 */
 		let reply: string;
 
-		if (prize.kind === "power") {
+		if (item.kind === "power") {
 			// Kept as its own `AbilityKind` rather than funnelled through the string below, because the record's
-			// two sets are typed on the ability and not on `string`: the reply is a sentence, the record is data.
-			const power = prize.power;
+			// two ability-typed sets are typed on the ability and not on `string`: the reply is a sentence, the
+			// record is data.
+			const power = item.power;
 
-			record.powers.add(power);
+			record.items.add(power);
 			// **And the new power joins the pool, which is the difference between a setting and a broken box.**
 			// Without this a player who narrows their pool and then earns a power never sees it in the box — and the
 			// symptom is a box that ignores an item they demonstrably own, which reads as a bug in the box rather than
@@ -424,8 +439,8 @@ export class EconomyService implements OnStart {
 
 			reply = power;
 		} else {
-			record.cosmetics.add(prize.cosmetic);
-			reply = COSMETICS[prize.cosmetic]?.name ?? prize.cosmetic;
+			record.cosmetics.add(item.cosmetic);
+			reply = COSMETICS[item.cosmetic]?.name ?? item.cosmetic;
 		}
 
 		this.publish(player);
@@ -501,7 +516,7 @@ export class EconomyService implements OnStart {
 		const record = this.records.get(player);
 		if (record === undefined) return;
 
-		record.powers.add(kind);
+		record.items.add(kind);
 		record.pool.add(kind);
 		this.publish(player);
 	}
@@ -516,9 +531,9 @@ export class EconomyService implements OnStart {
 	 *    set, be joined into the attribute, and be read back by the panel as a power that cannot exist.
 	 * 3. **The record must be loaded.** A request arriving before the `GetAsync` answers is dropped rather
 	 *    than queued — {@link equipCosmetic}'s call, for its reason.
-	 * 4. **And the player must own it, read from `record.powers` and never from an attribute.** This is the
+	 * 4. **And the player must own it, read from `record.items` and never from an attribute.** This is the
 	 *    check that makes the remote safe rather than merely tidy: the pool is a *subset of what you own*, so a
-	 *    client cannot talk itself into a pool entry it has not earned. The client's `OWNED_POWERS_ATTRIBUTE`
+	 *    client cannot talk itself into a pool entry it has not earned. The client's `OWNED_ITEMS_ATTRIBUTE`
 	 *    is a copy it renders from; the record is the only set that decides.
 	 *
 	 * **A toggle rather than a setter, so a stale client is harmless rather than dangerous.** The wire asks
@@ -536,7 +551,10 @@ export class EconomyService implements OnStart {
 		const record = this.records.get(player);
 		if (record === undefined) return;
 
-		if (!record.powers.has(power)) return;
+		// **Ownership is `items`, which holds powers and nothing else today.** So this is the pool's subset test
+		// — the pool may only offer what the player owns — and the field name says where ownership is stored
+		// rather than what it holds. See `EconomyRecord.items`.
+		if (!record.items.has(power)) return;
 
 		if (record.pool.has(power)) {
 			record.pool.delete(power);
@@ -724,8 +742,8 @@ export class EconomyService implements OnStart {
 		if (record === undefined) return;
 
 		player.SetAttribute(COINS_ATTRIBUTE, record.coins);
-		player.SetAttribute(OWNED_POWERS_ATTRIBUTE, joinPowers(record.powers));
-		player.SetAttribute(POWER_POOL_ATTRIBUTE, joinPowers(record.pool));
+		player.SetAttribute(OWNED_ITEMS_ATTRIBUTE, joinItems(record.items));
+		player.SetAttribute(POWER_POOL_ATTRIBUTE, joinItems(record.pool));
 		player.SetAttribute(OWNED_COSMETICS_ATTRIBUTE, joinCosmeticIds(record.cosmetics));
 
 		for (const [slot, attribute] of pairs(EQUIPPED_ATTRIBUTE)) {
@@ -734,20 +752,24 @@ export class EconomyService implements OnStart {
 	}
 
 	/**
-	 * Whether `record` already has `prize` — the only question the chest asks about a roll.
+	 * Whether `record` already has `item` — the only question the chest asks about a roll.
 	 *
 	 * **One place, asked twice, and the two asks are not the same check.** The refusal asks it of every entry
 	 * in the pool to decide whether there is anything left to win; the roll asks it of the one entry that
 	 * came up. Writing the membership test inline in both would be two chances for one arm of the union to be
-	 * handled in one of them and forgotten in the other — which is exactly the bug the tagged {@link ChestPrize}
+	 * handled in one of them and forgotten in the other — which is exactly the bug the tagged {@link ChestItem}
 	 * exists to prevent, and it only pays off if the test lives in one function.
 	 *
-	 * **Both arms read the record, and neither reads an attribute.** `record.powers` and `record.cosmetics` are
+	 * **Both arms read the record, and neither reads an attribute.** `record.items` and `record.cosmetics` are
 	 * the two owned sets this service writes; the attributes are copies the client renders from, and a chest
 	 * that trusted one would be a chest a client could talk out of its own duplicate.
+	 *
+	 * **The power arm asks `items`, which holds powers and nothing else today** — the same subset test
+	 * `togglePowerPool` makes, read from the other direction. The method's name follows what the chest rolls;
+	 * the arm below is a power check because a power is what an entry of that arm is.
 	 */
-	private ownsPrize(record: EconomyRecord, prize: ChestPrize): boolean {
-		return prize.kind === "power" ? record.powers.has(prize.power) : record.cosmetics.has(prize.cosmetic);
+	private ownsItem(record: EconomyRecord, item: ChestItem): boolean {
+		return item.kind === "power" ? record.items.has(item.power) : record.cosmetics.has(item.cosmetic);
 	}
 
 	/** The chest's answer, to the player who asked. */
@@ -837,7 +859,7 @@ export class EconomyService implements OnStart {
 	 * **Through {@link grantPower} rather than by writing the set here, and the pool is the reason.** That
 	 * method is the one door a power arrives through, and it also puts the power in the *pool* — which is
 	 * what keeps this consistent with a record that predates the pool, since such a record is read as
-	 * "everything owned". Writing `powers` alone would produce a state the parser itself never writes:
+	 * "everything owned". Writing `items` alone would produce a state the parser itself never writes:
 	 * three powers owned, and a box that can grant none of them because its pool is empty.
 	 *
 	 * **Nothing is persisted here.** The autosave loop compares each record's serialized form against the
@@ -851,7 +873,7 @@ export class EconomyService implements OnStart {
 
 		const missing: AbilityKind[] = [];
 		for (const kind of POWER_ROSTER) {
-			if (!record.powers.has(kind)) missing.push(kind);
+			if (!record.items.has(kind)) missing.push(kind);
 		}
 
 		if (missing.size() === 0) return;

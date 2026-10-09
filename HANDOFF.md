@@ -170,7 +170,7 @@ codebase — match the existing style.
 src/shared/                      runs on both sides
   constants.ts                   attribute + folder + tag names — the HUD's vocabulary
                                  (ROUND_STATE_ATTRIBUTE, TEAM_ATTRIBUTE, SPECTATING_ATTRIBUTE,
-                                 RESPAWN_AT_ATTRIBUTE, COINS_ATTRIBUTE, OWNED_POWERS_ATTRIBUTE,
+                                 RESPAWN_AT_ATTRIBUTE, COINS_ATTRIBUTE, OWNED_ITEMS_ATTRIBUTE,
                                  CROWN_ATTRIBUTE, STAT_HITS, MATCH_JOIN_A_TAG, MATCH_SPAWNER_TAG,
                                  CHARACTER_BARRIER_TAG, SHIFT_LOCK_ZONE_TAG, …)
   ability.ts                     AbilityKind (Pierce | MultiBall | Freeze), ABILITY_NAMES,

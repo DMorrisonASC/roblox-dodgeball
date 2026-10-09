@@ -6,7 +6,7 @@ import { EQUIPPED_ELIMINATION_ATTRIBUTE, EQUIPPED_TRAIL_ATTRIBUTE } from "./cons
  *
  * **Separate from the config and the service** so that both sides of the wire and the DataStore
  * agree on one shape without any of them importing the other: the client parses the attribute with
- * {@link ownedPowersOf}, the server writes it with {@link joinPowers}, and the DataStore holds the
+ * {@link ownedItemsOf}, the server writes it with {@link joinItems}, and the DataStore holds the
  * same values as plain string arrays. The delimiter is private to this file, which is the one thing
  * that stops a reader splitting on a character that happens to be in a name.
  *
@@ -18,7 +18,7 @@ import { EQUIPPED_ELIMINATION_ATTRIBUTE, EQUIPPED_TRAIL_ATTRIBUTE } from "./cons
  * disagree about it.
  *
  * **The pool is the fourth, and it is the one that needs nothing new here.** It is a `Set<AbilityKind>`
- * exactly like `powers`, so it reuses {@link joinPowers} and {@link ownedPowersOf} rather than growing a
+ * exactly like `powers`, so it reuses {@link joinItems} and {@link ownedItemsOf} rather than growing a
  * second packing convention for a second set of the same type — the only thing it adds to this file is a
  * field and the one default that cannot be "nothing".
  */
@@ -48,7 +48,21 @@ export function equippedAttributeOf(slot: string): string | undefined {
 /** One player's economy, in memory. The persisted form is {@link SavedEconomy}. */
 export interface EconomyRecord {
 	coins: number;
-	powers: Set<AbilityKind>;
+	/**
+	 * Everything gameplay-affecting this player owns — **one set, whatever the thing is.**
+	 *
+	 * Today that is the three powers and nothing else, which is why the element type is still
+	 * `AbilityKind`: every item *is* a power. Widening it to `Set<string>` before a second kind of item
+	 * exists would be a type that accepts ids nothing in the game can produce, so it stays narrow and
+	 * widens when the first item lands — by which point this field is already the right shape, so there is
+	 * no second field and no second migration to write.
+	 *
+	 * **Powers keep their own vocabulary around it.** `POWER_ROSTER`, `AbilityKind` and `grantPower` are
+	 * all about powers and are unchanged; what moved is only where ownership is stored. See
+	 * `shared/config/economy.config.ts` for the union a chest entry is drawn from, and for why the umbrella
+	 * and a future sub-kind share the word "item".
+	 */
+	items: Set<AbilityKind>;
 	/**
 	 * The subset of {@link powers} the item box may grant: a pool, not a loadout.
 	 *
@@ -63,7 +77,7 @@ export interface EconomyRecord {
 	 * the field to *everything owned* rather than to nothing.
 	 *
 	 * **No new packing helper is needed.** This is a `Set<AbilityKind>` like `powers`, so it travels as a
-	 * `|`-joined string through the same {@link joinPowers} and {@link ownedPowersOf} — a second convention
+	 * `|`-joined string through the same {@link joinItems} and {@link ownedItemsOf} — a second convention
 	 * for the same data would be a second thing to keep in step.
 	 */
 	pool: Set<AbilityKind>;
@@ -82,7 +96,13 @@ export interface EconomyRecord {
 }
 
 /**
- * The DataStore shape: everything {@link EconomyRecord} holds, with the two sets as string arrays.
+ * The DataStore shape: everything {@link EconomyRecord} holds, with its sets as string arrays.
+ *
+ * **`items` and not `powers`, and a record written before the fold still says `powers`.** The reader
+ * accepts both — {@link toEconomyRecord} is where the legacy name is honoured — while this shape writes
+ * only the new one. Writing the old name as well would leave every record carrying a field nothing reads,
+ * to protect a rollback to the build before the fold; there is no such path, and that build's parser would
+ * find no `powers` in an `items`-shaped record whatever this commented on. One name is the honest shape.
  *
  * **`equipped` is a plain table rather than an array of pairs**, so the stored value reads as what it
  * is when a person opens the store in the dashboard — `{ trail = "trail.aurora" }` — which is worth
@@ -90,7 +110,7 @@ export interface EconomyRecord {
  */
 export interface SavedEconomy {
 	coins: number;
-	powers: string[];
+	items: string[];
 	pool: string[];
 	cosmetics: string[];
 	equipped: Record<string, string>;
@@ -100,7 +120,7 @@ export interface SavedEconomy {
 
 /** A fresh record, which is also what a corrupt or absent saved value decodes to. */
 export function blankEconomyRecord(): EconomyRecord {
-	return { coins: 0, powers: new Set(), pool: new Set(), cosmetics: new Set(), equipped: new Map(), matches: 0, wins: 0 };
+	return { coins: 0, items: new Set(), pool: new Set(), cosmetics: new Set(), equipped: new Map(), matches: 0, wins: 0 };
 }
 
 /**
@@ -130,6 +150,12 @@ export function blankEconomyRecord(): EconomyRecord {
  * no longer knows is the client's problem to ignore, on the precedent {@link ownedCosmeticIdsOf} sets
  * for the owned set.
  *
+ * **`items` is the second field to arrive by a rename rather than as an addition, and it is the first that is
+ * not additive.** `equipped` and `pool` were simply *absent* from older records; `powers` is *present* in
+ * every record written before the fold, under the name this build no longer uses. So this reader accepts two
+ * names for one field — see the body, where both are read into a single set — and that is the whole
+ * difference between a field that can be defaulted and a field that has to be found.
+ *
  * **The pool is the one field that defaults to something other than nothing, and the reason is that the
  * two candidate defaults are not equally bad.** A record written before the pool existed has no `pool`
  * key; reading it as an *empty* pool would mean a box that gives nothing to a player who owns powers,
@@ -156,16 +182,34 @@ export function toEconomyRecord(value: unknown): EconomyRecord {
 	if (typeIs(saved.matches, "number")) record.matches = math.max(0, math.floor(saved.matches));
 	if (typeIs(saved.wins, "number")) record.wins = math.max(0, math.floor(saved.wins));
 
-	// **Read before the powers are, because the two loops are one decision.** `hasPool` says whether this
-	// record has ever been written by a build that knew about the pool, and the powers loop is where the
+	// **Read before the items are, because the two loops are one decision.** `hasPool` says whether this
+	// record has ever been written by a build that knew about the pool, and the items loop below is where the
 	// default is applied — see the doc comment above for why the default is "owned" rather than "empty".
 	const hasPool = typeIs(saved.pool, "table");
 
-	if (typeIs(saved.powers, "table")) {
-		for (const entry of saved.powers as unknown[]) {
+	// **The one field this reader has to accept by a name its own type no longer declares.** `powers` is what
+	// every record written before the fold says; `items` is what this build writes. Reading only `items` would
+	// hand every existing player an empty set — their record has no such key — on a store that has never been
+	// observed to round-trip a value, and nothing would raise: the parser would return a record that merely
+	// looks new. So both are read, into one set.
+	//
+	// The cast is the price of naming a field the type has deliberately stopped declaring. `keyof SavedEconomy`
+	// is what makes a typo in `saved.coins` a compile error, and `powers` must not be in that union: a shape
+	// that still declared it would invite a future writer to fill it in again.
+	const legacyPowers = (value as Record<string, unknown>).powers;
+
+	// **A union rather than a preference, and the order of the two fields is therefore not a decision.** Each
+	// entry is validated on its own and added to the same `Set`, so an entry present in both fields lands once
+	// and a corrupt entry in either field is dropped the same way. A record that has been through both builds
+	// — `powers` from the old one, `items` from this one — merges to the union of the two, which is what the
+	// player owned all along.
+	for (const field of [saved.items, legacyPowers]) {
+		if (!typeIs(field, "table")) continue;
+
+		for (const entry of field as unknown[]) {
 			if (!typeIs(entry, "string") || !isAbilityKind(entry)) continue;
 
-			record.powers.add(entry);
+			record.items.add(entry);
 			if (!hasPool) record.pool.add(entry);
 		}
 	}
@@ -191,14 +235,22 @@ export function toEconomyRecord(value: unknown): EconomyRecord {
 	return record;
 }
 
-/** The persisted form of a record, for a `SetAsync` write. */
+/**
+ * The persisted form of a record, for a `SetAsync` write.
+ *
+ * **`items` alone, and deliberately not `powers` as well.** Writing both would leave every record carrying
+ * a field nothing reads, in order to protect a rollback to the build before the fold — and there is no such
+ * path, because that build's parser reads `powers` and would find none in a record this wrote: keeping the
+ * old name readable would mean writing it forever, not writing it once. The reader above is what makes the
+ * change survivable, and it is survivable in the direction that matters. See `SavedEconomy`.
+ */
 export function toSavedEconomy(record: EconomyRecord): SavedEconomy {
 	const equipped: Record<string, string> = {};
 	for (const [slot, id] of record.equipped) equipped[slot] = id;
 
 	return {
 		coins: record.coins,
-		powers: [...record.powers],
+		items: [...record.items],
 		pool: [...record.pool],
 		cosmetics: [...record.cosmetics],
 		equipped,
@@ -207,26 +259,53 @@ export function toSavedEconomy(record: EconomyRecord): SavedEconomy {
 	};
 }
 
-/** The powers named by an `OWNED_POWERS_ATTRIBUTE` value, or none. */
-export function ownedPowersOf(value: unknown): Set<AbilityKind> {
-	const powers = new Set<AbilityKind>();
-	if (!typeIs(value, "string") || value === "") return powers;
+/**
+ * The items named by an `OWNED_ITEMS_ATTRIBUTE` value, or none.
+ *
+ * **Two readers, one parser, which is why this is named for the value rather than for either of them.** The
+ * owned attribute is this shape, and so is `POWER_POOL_ATTRIBUTE` — a `|`-joined set of `AbilityKind`
+ * either way — so a second parser for the pool would be a second packing convention for the same data,
+ * which is what `EconomyRecord.pool`'s own note argues against. What differs between the two is which set
+ * the string came from, not how it is packed.
+ *
+ * **The `isAbilityKind` filter is what keeps an unknown word out of the set**, for the reason
+ * {@link toEconomyRecord} gives about stored strings: this is reached by an attribute a client can see and
+ * a dev can write, so a word that is not an ability is dropped rather than returned as one. Entries are
+ * `Set` members, so a word repeated in the string is one element.
+ */
+export function ownedItemsOf(value: unknown): Set<AbilityKind> {
+	const items = new Set<AbilityKind>();
+	if (!typeIs(value, "string") || value === "") return items;
 
 	for (const entry of value.split(DELIMITER)) {
-		if (isAbilityKind(entry)) powers.add(entry);
+		if (isAbilityKind(entry)) items.add(entry);
 	}
 
-	return powers;
+	return items;
 }
 
-/** The attribute string for a set of powers. */
-export function joinPowers(powers: Set<AbilityKind>): string {
-	return [...powers].join(DELIMITER);
+/**
+ * The attribute string for a set of `AbilityKind` — the owned set, or the box's pool.
+ *
+ * **{@link ownedItemsOf}'s mirror, and `EconomyService.publish` packs both its sets with it**: `record.items`
+ * as `OWNED_ITEMS_ATTRIBUTE` and `record.pool` as `POWER_POOL_ATTRIBUTE`, because the two are the same kind
+ * of value and one convention is what keeps them from drifting apart.
+ */
+export function joinItems(items: Set<AbilityKind>): string {
+	return [...items].join(DELIMITER);
 }
 
-/** Whether an `OWNED_POWERS_ATTRIBUTE` value names `kind` — the client's read of the roster. */
+/**
+ * Whether an `OWNED_ITEMS_ATTRIBUTE` value names `kind` — **the power-specific question, asked of a set that
+ * is wider than powers.**
+ *
+ * This is the client's read of the roster, and the reason it still says "power": it asks about one power by
+ * name. The day `items` holds something that is not a power this stays correct while {@link ownedItemsOf}
+ * grows, which is the whole of why a caller that means a power goes through here rather than counting the
+ * set for itself.
+ */
 export function ownsPower(value: unknown, kind: AbilityKind): boolean {
-	return ownedPowersOf(value).has(kind);
+	return ownedItemsOf(value).has(kind);
 }
 
 /** The cosmetic ids named by an `OWNED_COSMETICS_ATTRIBUTE` value, or none. */
