@@ -5,6 +5,7 @@ import { Players, ReplicatedStorage } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
 import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { GAME_MODE_NAMES, isGameModeId } from "shared/gameMode";
+import { PLAYING } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -22,7 +23,38 @@ const HUD_WIDTH = 360;
 const HUD_TOP_INSET = 44;
 
 /**
+ * How opaque the board behind the line is between rounds: the number this HUD has always used.
+ *
+ * **`0.3` was a literal at the one place it was set, and it is named now because it has a partner
+ * rather than because it was unclear.** The two below are the whole of the board's rule, and a rule
+ * with one half written inline is a rule a reader has to find.
+ */
+const BOARD_TRANSPARENCY_BETWEEN_ROUNDS = 0.3;
+
+/**
+ * How opaque the board behind the line is **while a round is in play: nothing at all.**
+ *
+ * **A name rather than a literal `1`, because what was asked for was the board *removed* rather than
+ * the number `1`.** If a board turns out to be wanted during play — faint, or as a trough rather than
+ * a slab — this is the one line to move, and the constant's name is what says which half of the rule
+ * is being changed. An inline `1` would leave a reader working out whether it meant "gone" or "a value
+ * somebody was halfway through tuning".
+ *
+ * **What this is not: a fade.** The board does not ease out as a round begins. Both phase changes in
+ * this game happen behind the transition cover — `TRANSITION_CONFIG.WIPE_AT_ROUND_END` sends one at
+ * the end of a round as well as the start — so there is nothing on screen for a fade to hide, and a
+ * fade would leave the board *partly* there for a third of a second, which is a third of a second of
+ * the exact thing being taken away. The switch is a hard one and invisible.
+ */
+const BOARD_TRANSPARENCY_IN_PLAY = 1;
+
+/**
  * The round HUD: which phase the round is in, and how long is left of it.
+ *
+ * **It has two appearances, and the phase decides which.** Between rounds the line sits on the usual card;
+ * once a round is playing the board comes off and the text floats over the arena. The argument for the split
+ * is written where the paint is decided — see {@link BOARD_TRANSPARENCY_IN_PLAY} — and it is the only thing
+ * about this HUD that ever differs between the two phases.
  *
  * **It reads nothing but the folder it was pointed at.** The phase and the clock are two
  * attributes on `RoundStatus` in `ReplicatedStorage`, written by the server and replicated by
@@ -203,7 +235,61 @@ export class RoundStatusController implements OnStart {
 		});
 
 		card.Parent = wrapper;
-		card.BackgroundTransparency = 0.3;
+
+		/**
+		 * **The board is dropped for the whole of a playing phase, and the argument is what is behind it.**
+		 *
+		 * During a round the screen is the arena: a player is watching the pitch, the balls and the other
+		 * team, and this line is a clock they glance at rather than read. A cream slab pinned over that view
+		 * is the loudest thing on screen for the least information on it — and a round in play is the one
+		 * moment the line has nothing left to introduce, because the phase is the thing that just happened
+		 * and the mode is already known.
+		 *
+		 * **Between rounds the board stays, and it is doing a different job there.** The line then carries
+		 * what a player is waiting on — `Waiting for players — 1/2`, or the mode a vote has just chosen —
+		 * and the lobby behind it is not the thing being watched. It is the same reason a card is right for
+		 * the rest of the HUD: a board is *information grouping*, and there is nothing left to group once
+		 * the round is running.
+		 *
+		 * **The card itself is not removed, only its paint, and the distinction matters.** The card is still
+		 * what pads the line and what sizes the wrapper to its content — see the note on the missing `size`
+		 * at its construction. Its padding does not move the text when the fill goes: the card's box is the
+		 * same box either way, so the line sits on exactly the same pixels before and after a phase change
+		 * and only the paint under it changes.
+		 *
+		 * **`Hydrate` rather than an assignment, and that part is forced rather than stylistic.** `Card`
+		 * builds its frame and hands it back, so a reactive value merely *assigned* to one of its properties
+		 * is never tracked as a property at all — the trap `CooldownHudController` documents at its own
+		 * container. The number that used to be set here directly is now the between-rounds half of the rule.
+		 */
+		Fusion.Hydrate(scope, card)({
+			BackgroundTransparency: Fusion.Computed(scope, (use) =>
+				use(state) === PLAYING ? BOARD_TRANSPARENCY_IN_PLAY : BOARD_TRANSPARENCY_BETWEEN_ROUNDS,
+			),
+		});
+
+		/**
+		 * **The border goes with the fill, because on its own it is the board's outline.**
+		 *
+		 * `Card` draws a one-pixel black `UIStroke` at big-ui's `Transparency.divider` — about a tenth
+		 * opaque, which is a hairline nobody sees around a filled cream card and a floating rectangle around
+		 * bare text. Leaving it would be the worst of both: the board gone, its edge still drawn.
+		 *
+		 * **Found by class rather than held by name, because `Card` does not return it** — it builds its
+		 * corner, padding and layout, adds a stroke when `elevation` is above zero, and hands back the frame.
+		 * The value it takes during an intermission is *read off the instance* rather than retyped from
+		 * big-ui's theme, so the two cannot drift apart the day that divider is restyled.
+		 */
+		const stroke = card.FindFirstChildOfClass("UIStroke");
+
+		if (stroke !== undefined) {
+			const boardStroke = stroke.Transparency;
+
+			Fusion.Hydrate(scope, stroke)({
+				Transparency: Fusion.Computed(scope, (use) => (use(state) === PLAYING ? 1 : boardStroke)),
+			});
+		}
+
 		// Shared with any other HUD, so `PlayerGui` does not collect a `ScreenGui` per feature — and
 		// so the settings that are about the screen rather than about this HUD are decided once.
 		// See `ui/screenGui.ts`.

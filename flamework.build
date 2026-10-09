@@ -63,7 +63,8 @@
 		"roblox-dodgeball:out/server/services/zone/PracticeZoneService@PracticeZoneService": "server/services/zone/PracticeZoneService@PracticeZoneService",
 		"roblox-dodgeball:out/server/services/mystery/MysteryBoxService@MysteryBoxService": "server/services/mystery/MysteryBoxService@MysteryBoxService",
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
-		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService"
+		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
+		"roblox-dodgeball:out/client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController": "client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController"
 	},
 	"metadata": {}
 }

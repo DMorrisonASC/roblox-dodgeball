@@ -120,6 +120,13 @@ function roundVolume(phase: string, time: number, fadeInProgress: number): numbe
 /**
  * The round's audio: two tracks, a countdown and a whistle, one `Sound` each per client.
  *
+ * **The whistle blows at both of a round's boundaries, and only one of them is blown here.** This file owns
+ * the end of a round, because the end is a phase edge and this is the file that watches phases. The start is
+ * blown by `ArenaFreezeCountdownController`, on the frame its count reaches "Start": the instant the arena
+ * freeze runs out is published nowhere, that controller derives it, and a cue sent from here would arrive a
+ * frame or more behind the word it belongs to. The clip and the volume are `AUDIO_CONFIG`'s either way, so
+ * the two blows cannot drift apart.
+ *
  * **Nothing here is sent anywhere.** Every client runs this controller, makes its own four `Sound`s, and
  * decides its own volumes from `ReplicatedStorage`'s two attributes — the same two the HUDs already read.
  * There is no remote, no server-side sound, and nothing to keep in step: the phase and the clock *are* the
@@ -356,9 +363,10 @@ export class MusicController implements OnStart {
 
 				if (lastPhase === PLAYING && value !== PLAYING) {
 					// **The two that must not survive the end go first, and the whistle goes last.** The
-					// order is not cosmetic: the whistle is the sound that says the round is over, and
-					// starting it before the others have stopped would put it over the top of the thing it
-					// is announcing.
+					// order is not cosmetic: the whistle is the sound that says a round has reached a
+					// boundary — this is the end of one, and the other is blown by
+					// `ArenaFreezeCountdownController` — and starting it before the others have stopped would
+					// put it over the top of the thing it is announcing.
 					//
 					// The beep is stopped rather than merely left un-triggerable because one may be *in
 					// flight*: the cue for the second the round died on could be a few hundred milliseconds

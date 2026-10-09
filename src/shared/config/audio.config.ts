@@ -148,14 +148,32 @@ export const AUDIO_CONFIG = {
 	/**
 	 * The referee's whistle, and the volume it blows at.
 	 *
-	 * **Fired on the phase edge and not on the clock**, which is what makes it work for a natural end and an
-	 * early one without a second path: an elimination and a disconnect both publish the same phase change
-	 * the clock running out does. See `MusicController` for the one case that would argue otherwise and why
-	 * it does not.
+	 * **The end of a round is fired on the phase edge and not on the clock**, which is what makes it work for a
+	 * natural end and an early one without a second path: an elimination and a disconnect both publish the same
+	 * phase change the clock running out does. See `MusicController` for the one case that would argue otherwise
+	 * and why it does not.
+	 *
+	 * **It blows at both boundaries of a round, and the second one is the exception to that rule.** The start
+	 * is fired by `ArenaFreezeCountdownController` on the frame the arena freeze runs out and the word "Start"
+	 * arrives on screen — which is *not* the phase edge and cannot be, because the instant the freeze ends is
+	 * not published anywhere; the countdown derives it, and it is the only thing on the client that knows it.
+	 *
+	 * **One clip for the two ends is the whole point of the pairing.** What a player hears is a round boundary,
+	 * and a boundary is the same event from either side, so a second clip invented for the start would be two
+	 * sounds to learn for one fact. It is also the vocabulary this game already uses: `MatchService` calls the
+	 * moment a round's teams are set "the opening whistle".
 	 */
 	ROUND_WHISTLE: "rbxassetid://121765271775197",
 
-	/** **Placeholder.** The whistle's level. A referee should be heard over everything. */
+	/**
+	 * **Placeholder.** The whistle's level. A referee should be heard over everything.
+	 *
+	 * **At the round's start it is competing with less than at its end**, which is worth knowing before this
+	 * number is moved: the ambience is only just beginning to rise from silence at that point and the freeze
+	 * behind it is a countdown with no sound of its own, so the start is the easy half of the job. An end that
+	 * happens while the round's track is still at full volume is the hard half, and this number is set for
+	 * that one.
+	 */
 	ROUND_WHISTLE_VOLUME: 0.6,
 
 	/**
