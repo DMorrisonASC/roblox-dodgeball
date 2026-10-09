@@ -9,17 +9,24 @@
  *    function. Calling it like JS Jest gives you a `LuaTuple` where a function was expected.
  * 3. **Only `false` and `nil` are falsy.** `0`, `""`, `{}` are all *truthy* in Luau, so a test written as
  *    `if (value)` will take the wrong branch for a zero, an empty string or an empty table.
- * 4. **The globals are *injected*, and these files must not import them.** `jest-roblox` runs with
- *    `injectGlobals` on by default, so `describe`, `it`, `expect` and `jest` are already in scope — and
- *    importing them from `@rbxts/jest-globals` is what *breaks the suite* on this toolchain rather than
- *    what makes it work. The plugin drives the run with its own embedded roblox-ts runtime, and
- *    `include/RuntimeLib.lua` errors when one module instance is loaded by a second runtime: "Invalid module
- *    access! Do you have multiple TS runtimes trying to import this?". The types come from
- *    `src/types/jestGlobals.d.ts`; see that file for the whole story.
+ * 4. **The globals must be *imported* from `@rbxts/jest-globals`.** This used to read the opposite — that
+ *    `jest-roblox` injects them, and that importing them is what breaks the suite. A real run proved the
+ *    first half false: with no import, `describe` is `nil` by the time the spec executes, and the suite dies
+ *    with `attempt to call a nil value` on the `describe(...)` line. `injectGlobals` *is* on — it appears in
+ *    the CLI's runtime payload and in the generated `jest.config.luau` — and the globals still do not
+ *    arrive, so the import is what supplies them. `@rbxts/jest-globals` is a real runtime package: it ships
+ *    `init.lua`, resolving to the Luau `JestGlobals` that `default.project.json` mounts at
+ *    `rbxts_include/node_modules/@rbxts-js/JestGlobals`. A genuine require, not a type-only import.
+ *
+ *    **The type shim that hid this is deleted.** The earlier version declared the globals in
+ *    `src/types/jestGlobals.d.ts`, which let a spec with no import *compile* while being dead at runtime —
+ *    the one arrangement where the compiler says fine and the runner says nil. Importing them is what makes
+ *    the two agree, so the declaration file is gone rather than kept as a fallback that would hide it again.
  *
  * `.each` uses table syntax rather than tagged template literals, and custom matchers take `self` as the
  * first parameter. Do not assume a JS Jest idiom works until it has run.
  */
+import { describe, expect, it } from "@rbxts/jest-globals";
 import {
 	blankEconomyRecord,
 	equippedIdOf,

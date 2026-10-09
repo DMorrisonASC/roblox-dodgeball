@@ -1,8 +1,8 @@
 local HttpService = game:GetService("HttpService")
 local StudioTestService = game:GetService("StudioTestService")
-local payload = HttpService:JSONDecode([=[{"pluginKey":"0.4.5-11eb784c","protocolVersion":9,"test":true,"config":{"configs":[{"testMatch":["**/*.spec","**/*.test"],"passWithNoTests":false,"silent":false,"testPathIgnorePatterns":["/node_modules/","/dist/","/out/"],"verbose":false,"outDir":"./out","injectGlobals":true,"projects":["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"],"snapshotFormat":{"printBasicPrototype":false},"jestPath":"ReplicatedStorage/rbxts_include/node_modules/@rbxts-js/Jest","runnerTimeoutMs":60000,"reporters":[]}]},"runtimeStubMounts":[["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"]]}]=])
-local URL = "ws://localhost:57636"
-local REQUEST_ID = [=[a5987246-67e2-467c-86d4-2c59289f5976]=]
+local payload = HttpService:JSONDecode([=[{"pluginKey":"0.4.5-11eb784c","protocolVersion":9,"test":true,"config":{"configs":[{"testMatch":["**/*.spec","**/*.test"],"passWithNoTests":false,"silent":false,"testPathIgnorePatterns":["/node_modules/","/dist/","/out/"],"verbose":true,"outDir":"./out","injectGlobals":true,"projects":["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"],"snapshotFormat":{"printBasicPrototype":false},"jestPath":"ReplicatedStorage/rbxts_include/node_modules/@rbxts-js/Jest","runnerTimeoutMs":60000,"reporters":[]}]},"runtimeStubMounts":[["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"]]}]=])
+local URL = "ws://localhost:64981"
+local REQUEST_ID = [=[51e452a5-0e75-444d-8f10-893d6e49b778]=]
 local startedOpened, startedSocket = pcall(function()
 	return HttpService:CreateWebStreamClient(Enum.WebStreamClientType.WebSocket, { Url = URL })
 end)

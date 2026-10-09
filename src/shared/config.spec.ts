@@ -1,3 +1,4 @@
+import { describe, expect, it } from "@rbxts/jest-globals";
 import { CHEST_POOL, COSMETICS, MILESTONES, PURCHASE_COSMETICS } from "./config/economy.config";
 
 /**

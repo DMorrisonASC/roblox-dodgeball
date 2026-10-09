@@ -1,3 +1,4 @@
+import { describe, expect, it } from "@rbxts/jest-globals";
 import { COSMETICS } from "./config/economy.config";
 import type { CosmeticDef } from "./config/economy.config";
 import { blankEconomyRecord } from "./economy";

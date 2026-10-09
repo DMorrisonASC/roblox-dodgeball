@@ -1,0 +1,320 @@
+
+[46m[30m[1m RUN [22m[39m[49m [36mv0.4.5[39m [90mC:\Users\morri\Documents\Coding\roblox-dodgeball[39m
+ [32m✓[39m instrument   [2m1ms[22m
+[1A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m0ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m60ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m152ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m246ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m339ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m431ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m523ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m616ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m710ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m801ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m893ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m987ms[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m1.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m1.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m1.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m1.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m1.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m1.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m1.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m1.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m1.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m1.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m2.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m2.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m2.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m2.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m2.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m2.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m2.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m2.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m2.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m2.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m2.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m3.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m3.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m3.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m3.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m3.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m3.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m3.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m3.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m3.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m4.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m4.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m4.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m4.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m4.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m4.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m4.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m4.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m4.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m5.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m5.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m5.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m5.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m5.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m5.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m5.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m5.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m5.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m5.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m5.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m6.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m6.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m6.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m6.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m6.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m6.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m6.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m6.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m6.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m8.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m8.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m8.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m8.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m8.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m8.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m8.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m8.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m8.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m9.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m9.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m9.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m9.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m9.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m9.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m9.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m9.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m9.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m10.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m10.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m10.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m10.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m10.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m10.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m10.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m10.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m10.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m10.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m10.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m11.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m11.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m11.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m11.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m11.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m11.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m11.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m11.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m11.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m11.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m11.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m12.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m12.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m12.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m12.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m12.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m12.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m12.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m12.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m12.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m12.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m13.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m13.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠸[39m run tests    [2m1 project[22m  [2m13.1s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠼[39m run tests    [2m1 project[22m  [2m13.2s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠴[39m run tests    [2m1 project[22m  [2m13.3s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠦[39m run tests    [2m1 project[22m  [2m13.4s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠧[39m run tests    [2m1 project[22m  [2m13.5s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠇[39m run tests    [2m1 project[22m  [2m13.6s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠏[39m run tests    [2m1 project[22m  [2m13.7s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠋[39m run tests    [2m1 project[22m  [2m13.8s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠙[39m run tests    [2m1 project[22m  [2m13.9s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [33m⠹[39m run tests    [2m1 project[22m  [2m14.0s[22m
+[2A[0J [32m✓[39m instrument   [2m1ms[22m
+ [32m✓[39m run tests    [2m1 project[22m  [2m14.1s[22m
+
+▶ [46m[30m roblox-dodgeball [39m[49m  [1m[31m2 failed[39m[22m | [1m[32m1 passed[39m[22m [2m(6 tests - 11ms)[22m
+ [32m✓[39m [2msrc/shared/[22m[1mconfig.spec.ts[22m [2m(6 tests[22m[2m -[22m[32m 11[2mms[22m[39m[2m)[22m
+[32m  ✓ the cosmetic catalogue holds together every COSMETICS key agrees with its own id[39m[32m 2[2mms[22m[39m
+[32m  ✓ the cosmetic catalogue holds together every milestone's cosmetic exists[39m[32m 2[2mms[22m[39m
+[32m  ✓ the cosmetic catalogue holds together no chest trail is granted by a milestone[39m[32m 1[2mms[22m[39m
+[32m  ✓ the cosmetic catalogue holds together no purchasable trail is also in the chest pool[39m[32m 3[2mms[22m[39m
+[32m  ✓ the cosmetic catalogue holds together every chest prize names a real trail[39m[32m 2[2mms[22m[39m
+[32m  ✓ the cosmetic catalogue holds together every purchasable trail has a positive coin price[39m[32m 1[2mms[22m[39m
+ [31m✗[39m [2msrc/shared/[22m[1meconomy.spec.ts[22m
+ [31m✗[39m [2msrc/shared/[22m[1mpurchase.spec.ts[22m
+  [41m[37m[1m FAIL [22m[39m[49m [31msrc/shared/economy.spec.ts[39m
+  [31mTest suite failed to run[39m
+
+  [31m[string "ReplicatedStorage.TS.economy.spec"]:33: roblox-ts: Invalid module access! Do you have multiple TS runtimes trying to import this? ReplicatedStorage.rbxts_include.node_modules.@rbxts.jest-globals.src[39m
+
+  [2m[31m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯[39m[22m
+  [41m[37m[1m FAIL [22m[39m[49m [31msrc/shared/purchase.spec.ts[39m
+  [31mTest suite failed to run[39m
+
+  [31m[string "ReplicatedStorage.TS.purchase.spec"]:3: roblox-ts: Invalid module access! Do you have multiple TS runtimes trying to import this? ReplicatedStorage.rbxts_include.node_modules.@rbxts.jest-globals.src[39m
+
+  [2m[31m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯[39m[22m
+  [2mGame output:[22m
+    [main] igniting
+    [Collision] Ball/PracticePlayer collides — service false, world false
+    [Collision] PracticePlayer/PracticePlayer collides — service false, world false
+    [Collision] Barrier registered — service true, world true
+    [Collision] Barrier/Default collides — service false, world false
+    [Collision] Workspace knows: Default, Character, Barrier, Ball, PracticePlayer
+    [Match] up — MatchJoinA: 0 part(s)
+    [Match] up — MatchJoinB: 0 part(s)
+    [Dev] listening for commands on both chat systems
+    [Super] up — crowning at 3 hits, or the most on a side; nothing grants a charge but the dev bypass
+    [Sprint] up — LeftShift/M, 3s pool
+    [Economy] up — 3 powers, 7 milestones, chest 50 coins
+    [Stats] up — PlayerStats, autosave every 180s
+    Intermission started
+    [33m[Round] no usable lobby in "ArenaV2" — holding the intermission until there is one. Everybody is standing in the arena, and there is nowhere else to put them until "LobbySpawns" has parts in it. nothing in Workspace is a Model named "ArenaV2".[39m
+    [Spawner] up — watching RoundStatus.State, MatchSpawner: 0 tagged thing(s), 0 usable part(s)
+    [Mystery] up — watching RoundStatus.State, mysterySpawnPrize: 0 tagged thing(s), 0 on a practice floor
+    [Zone] up — practiceZone: 0 tagged part(s)
+    [main] respawn — CharacterAutoLoads false, 3s in-round delay
+    [main] ignited
+
+[2m Test Files[22m  [1m[31m2 failed[39m[22m | [1m[32m1 passed[39m[22m [2m(3)[22m
+[2m      Tests[22m  [1m[32m6 passed[39m[22m [2m(6)[22m
+[2m   Start at[22m  00:18:39
+[2m   Duration[22m  14578ms [2m(environment 14045ms, tests 11ms, cli 517ms, staging 5ms)[22m
