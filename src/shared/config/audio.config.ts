@@ -208,4 +208,23 @@ export const AUDIO_CONFIG = {
 	 */
 	UI_HOVER_VOLUME: 0.25,
 	UI_SELECT_VOLUME: 0.35,
+
+	/**
+	 * The chest's award sound: what plays when a Power Chest hands something over.
+	 *
+	 * **Not part of the pair above, and it is the difference between feedback and an event.** The two UI tones
+	 * answer the pointer, and they are so frequent that their whole volume argument is about not being a room
+	 * full of clicks. This one fires when a player has just spent fifty coins and been given something, which
+	 * happens a few times an hour — so it is allowed to be an *event* rather than a detail, and it is the one
+	 * interface sound here that carries information rather than acknowledgement.
+	 *
+	 * **It fires on a grant and nothing else, so its absence is meaningful.** A duplicate and a refusal are both
+	 * "you got nothing", and a sound on those would be the panel telling the player something happened when
+	 * nothing did — the same argument the toast column makes about drawing a refusal it did not have a sentence
+	 * for.
+	 */
+	CHEST_GRANT: "rbxassetid://98790672104771",
+
+	/** **Placeholder.** The award's level, against the two UI tones above it. Tune by ear. */
+	CHEST_GRANT_VOLUME: 0.5,
 } as const;

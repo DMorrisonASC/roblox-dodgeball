@@ -9,7 +9,7 @@ import {
 	OWNED_POWERS_ATTRIBUTE,
 	POWER_POOL_ATTRIBUTE,
 } from "shared/constants";
-import { COSMETICS, MILESTONES, POWER_ROSTER } from "shared/config/economy.config";
+import { COSMETICS, CHEST_POOL, MILESTONES, POWER_ROSTER } from "shared/config/economy.config";
 import type { CosmeticDef, MilestoneDef } from "shared/config/economy.config";
 import {
 	EQUIPPED_ATTRIBUTE,
@@ -209,6 +209,30 @@ function milestoneOf(def: CosmeticDef): MilestoneDef | undefined {
 /** The name of the milestone that grants `def`, or nothing. */
 function grantOf(def: CosmeticDef): string | undefined {
 	return milestoneOf(def)?.name;
+}
+
+/**
+ * Where a cosmetic comes from, in the words the shelf shows — **three routes, and the chest is the one the
+ * shelf could not have known about until now.**
+ *
+ * **The chest is read from `CHEST_POOL` rather than inferred, and the inference is the trap this avoids.**
+ * "Unpriced and un-granted" is true of a chest trail, and it was also true of every premium item before its
+ * price was filled in — so a shelf that reasoned from those two facts would announce a chest prize on an item
+ * no chest can give. The pool is the list that decides, so the pool is the list that is asked.
+ *
+ * **`"Premium"` is the fallback rather than an error**, because a priced item is the only thing left once a
+ * milestone and the chest are ruled out — and a priced item is the whole of what the shop's catalogue tab
+ * draws.
+ */
+function originOf(def: CosmeticDef): string {
+	const milestone = grantOf(def);
+	if (milestone !== undefined) return `From ${milestone}`;
+
+	for (const prize of CHEST_POOL) {
+		if (prize.kind === "cosmetic" && prize.cosmetic === def.id) return "From the chest";
+	}
+
+	return "Premium";
 }
 
 /**
@@ -463,14 +487,13 @@ export class InventoryController implements OnStart {
 			// its unlock is a purchase and no purchase path exists. A locked tile reading "Unlock by" with
 			// nothing after it would be a tile that says the game cannot tell you why — worse than the item
 			// simply not being in a list of what you have and what you are working toward.
-			const granted = grantOf(def);
 			this.addShelfTile(
 				shelf,
 				theme,
 				slot,
 				def.name,
 				def.id,
-				granted !== undefined ? `From ${granted}` : "Premium",
+				originOf(def),
 				order,
 			);
 			order += 1;

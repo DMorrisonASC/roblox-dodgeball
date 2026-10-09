@@ -35,26 +35,50 @@ const MIN_SEGMENT = 0.1;
  * star and a streamer — and there is no version of that argument where the core is light and the haze
  * around it is fabric. What separates the layers is thickness and opacity, and both of those are config.
  *
- * At `1` the head saturates to white where the ribbons overlap and the red tail stays a dull ember,
- * which is the effect wanted; if the trail ever looks like a bright smear instead, this is the first
- * thing to take down and it is one edit.
+ * At `1` the head saturates where the ribbons overlap, which is the effect wanted; if the trail ever
+ * looks like a bright smear instead, this is the first thing to take down and it is one edit.
+ *
+ * **The saturation is a brightness effect and not a hue one, which is what the grey default turns on.** The
+ * head of every trail washes toward white whatever colour it was asked for, so a def whose core is already
+ * near white has nowhere left to show itself — the limit `economy.config.ts` keeps pointing at — while a
+ * flat grey loses nothing to it, having no hue to wash out. That asymmetry is the whole reason the default
+ * can sit at `1` while a cosmetic has to be saturated to read.
  */
 const LIGHT_EMISSION = 1;
 
 /**
- * The three colours a trail's core is drawn in, in the direction the eye reads it.
+ * The three the core is drawn in, in the direction the eye reads it.
  *
- * **Deliberately the shape `CosmeticDef.colors` already has**, which is the reason it is a named
- * interface here rather than three parameters: `COSMETICS`' def is structurally this, so the economy can
- * hand a def's colours straight to {@link BallTrail.attach} without either file importing the other.
- *
- * **And it is only the core.** The halo's two colours are not in this shape, which is a real limit and
- * not an oversight — see {@link BallTrail.attach} for what it costs and what the def would need.
+ * **The core alone, which is why it is a name rather than a shape written out twice.** Two things want
+ * exactly these three and nothing more: the default the config supplies when nobody has equipped anything,
+ * and {@link coreLook}, which builds the core's sequence from them. Only {@link TrailColors} has a haze.
  */
-export interface TrailColors {
+export interface CoreColors {
 	leading: Color3;
 	middle: Color3;
 	trailing: Color3;
+}
+
+/**
+ * Every colour a trail is drawn in, in the direction the eye reads it: the core's three, and the haze's pair.
+ *
+ * **Deliberately the shape `CosmeticDef.colors` has, field for field, which is the reason it is a named
+ * interface here rather than five parameters**: `COSMETICS`' def is structurally this, so the economy can
+ * hand a def's colours straight to {@link BallTrail.attach} without either file importing the other.
+ *
+ * **`halo` is required, and it is the field the whole interface exists for.** A cosmetic that stated only a
+ * core would be drawn as a coloured ribbon inside `BALL_CONFIG`'s orange haze — and the haze is the wider
+ * layer, the longer-lived one, and the one drawn *across* the core rather than behind it, so the ball would
+ * go on looking like nobody's. The type refuses the half-specified cosmetic rather than letting it be
+ * invisible, which is what it was until this field existed.
+ */
+export interface TrailColors extends CoreColors {
+	/**
+	 * The haze's two ends: where it leaves the ball, and where it is oldest. **There is no `middle` here and
+	 * that is not an omission** — the halo's own colour sequence has two keypoints because it is a haze and
+	 * not a second core, so a third colour would be one nothing ever reads. See `createRibbons`.
+	 */
+	halo: { leading: Color3; trailing: Color3 };
 }
 
 /**
@@ -66,8 +90,12 @@ export interface TrailColors {
  * the call is `nil`, which takes the whole module down at require time and surfaces as "nothing loads"
  * with no compile error. Three property reads off a table cannot fail that way; the sequence is built
  * inside `attach` instead. `ThemeController.derive` documents the same trap from the other side.
+ *
+ * **`CoreColors` and not `TrailColors`, which is what the two names are for**: this is the *core's* default,
+ * and the haze's is chosen by {@link haloLook} when the call is made. One object holding both would be a
+ * second place the default could be written, disagreeing with `BALL_CONFIG` the day either was tuned.
  */
-const DEFAULT_CORE_COLORS: TrailColors = {
+const DEFAULT_CORE_COLORS: CoreColors = {
 	leading: BALL_CONFIG.TRAIL_COLOR_LEADING,
 	middle: BALL_CONFIG.TRAIL_COLOR_MIDDLE,
 	trailing: BALL_CONFIG.TRAIL_COLOR_TRAILING,
@@ -115,7 +143,47 @@ const DEFAULT_CORE_COLORS: TrailColors = {
  * the engine recording where its attachments have been.
  */
 export class BallTrail {
-	private constructor(private readonly ribbons: Trail[]) {}
+	/**
+	 * Whether this trail was **found on the ball** rather than built by the {@link attach} that returned it.
+	 *
+	 * One fact, carried out of `attach` because there is nowhere else it can be known: an adopted trail that
+	 * has just been repainted is indistinguishable from a fresh one by looking at the ball, and the caller
+	 * that wants to say which happened is reading a log rather than a ball. Its one reader is the gated line
+	 * at `BallService.attachToHand`.
+	 */
+	public readonly adopted: boolean;
+
+	private constructor(private readonly ribbons: Trail[], adopted: boolean) {
+		this.adopted = adopted;
+	}
+
+	/**
+	 * Restates the trail's colours, both layers, or puts them back to the default when given nothing.
+	 *
+	 * **The second of the two moments a ball's colours are decided, and the later one.** {@link attach}
+	 * states them when a ball changes hands; this states them when it leaves one. They are separate moments
+	 * rather than one rule asked twice because a player can equip a trail *while already holding a ball*: the
+	 * hand-off that read the record happened before the choice did, so a throw that trusted what `attach`
+	 * stored would fly the colours the ball was picked up with. `BallService.throwBall` is the one caller, and
+	 * that is the one reason.
+	 *
+	 * **A repaint of the ribbons already on the ball, never a rebuild, which is what makes it safe to call
+	 * mid-throw.** That is not a nicety: the two layers' angles, their attachments and their count are one
+	 * construction, and building it again would double every ribbon rather than replace it — the failure
+	 * `attach`'s adopt branch exists to avoid. It is the same two writes that branch makes, through the same
+	 * {@link recolourLayer}.
+	 *
+	 * **Both layers, and the haze is the half that has to be right.** Painting the core alone is what this
+	 * method's own history is: the haze is wider, lives longer and is drawn *across* the core, so a recoloured
+	 * core inside `BALL_CONFIG`'s orange haze reads as the default ball — which is what an equipped trail
+	 * looked like until the defs carried a pair. Passing nothing is how a ball is *stripped* of somebody's
+	 * colours when it arrives in the hands of a body with no cosmetic, so the default travels the same path as
+	 * an override rather than being a special case.
+	 */
+	public setColors(colors?: TrailColors): void {
+		recolourLayer(this.ribbons, RIBBON_NAME, coreLook(colors ?? DEFAULT_CORE_COLORS));
+		recolourLayer(this.ribbons, HALO_NAME, haloLook(colors));
+	}
 
 	/**
 	 * Arms or disarms the whole set: the `Armed` transition, in the ball's own terms.
@@ -155,15 +223,19 @@ export class BallTrail {
 	 * applied through the same path — a ball picked up by a player wearing nothing has to *lose* the last
 	 * holder's colours, which only happens if the default is written as deliberately as an override is.
 	 *
-	 * **What does not recolour is the halo, and that is a fact about the def rather than an oversight.**
-	 * {@link TrailColors} has three fields because a `CosmeticDef.colors` has three; the halo draws from
-	 * {@link BALL_CONFIG.TRAIL_HALO_COLOR_LEADING} and its trailing partner, which nothing outside this
-	 * file can reach. So an equipped cosmetic moves the core and leaves the haze around it at its own
-	 * orange-to-ember, which is honestly half a trail changing. **Deriving the halo from the core was
-	 * refused rather than attempted**: the halo is tuned deliberately cooler than the core and is the layer
-	 * that has to stay a haze, so one computed from the other would be a change to every default ball's
-	 * look bought with a cosmetic. The fix belongs in the def — `CosmeticDef` would need a halo pair
-	 * (`haloLeading`, `haloTrailing`) and then one more `applyCore`-shaped write here.
+	 * **And this is the first of two moments rather than the only one.** The colours are stated again at the
+	 * throw, when the holder may have equipped something since the ball came into their hand — see
+	 * {@link setColors}, which is this rule asked a second time rather than a second rule.
+	 *
+	 * **What recolours is both layers, and the haze is the one that decides what a trail looks like.** A def's
+	 * `colors.halo` drives the haze's two ends and its `leading`/`middle`/`trailing` drive the core's, so an
+	 * equipped trail is that cosmetic's own effect rather than a coloured ribbon inside the default ball's
+	 * orange glow — which is what it was while the haze came only from config, and why an equipped trail used
+	 * to look like nobody's. **Deriving the haze from the core is still refused**, and for exactly the reason
+	 * it was refused before a def could carry one: a computed haze would replace `BALL_CONFIG`'s own tuning on
+	 * every ball in the game, including the ones nobody has equipped anything on, which is a change to every
+	 * default ball's look bought with a cosmetic. So the pair is *stated* per def instead — required by
+	 * {@link TrailColors}, so a def that omits it is a compile error rather than an invisible cosmetic.
 	 *
 	 * Returns nothing when the trail is switched off, which is the whole of what
 	 * {@link BALL_CONFIG.TRAIL_ENABLED} does: no ribbon is built, so "off" means the
@@ -173,21 +245,22 @@ export class BallTrail {
 		if (!BALL_CONFIG.TRAIL_ENABLED) return undefined;
 
 		const core = coreLook(colors ?? DEFAULT_CORE_COLORS);
+		const halo = haloLook(colors);
 
 		const existing = ribbonsOf(ball);
 		if (existing.size() > 0) {
-			const trail = new BallTrail(existing);
-			recolourCore(existing, core);
+			const trail = new BallTrail(existing, true);
+			trail.setColors(colors);
 			trail.setArmed(false);
 			return trail;
 		}
 
-		return new BallTrail(createRibbons(ball, core));
+		return new BallTrail(createRibbons(ball, core, halo), false);
 	}
 }
 
 /** The core's colour sequence for `colors`, at the same keypoint the default uses. */
-function coreLook(colors: TrailColors): ColorSequence {
+function coreLook(colors: CoreColors): ColorSequence {
 	return new ColorSequence([
 		new ColorSequenceKeypoint(0, colors.leading),
 		new ColorSequenceKeypoint(BALL_CONFIG.TRAIL_COLOR_MIDDLE_AT, colors.middle),
@@ -196,15 +269,35 @@ function coreLook(colors: TrailColors): ColorSequence {
 }
 
 /**
- * Repaints the core ribbons of a trail that is already built, leaving the halo alone.
+ * The haze's colour sequence for `colors`, or `BALL_CONFIG`'s own pair when nobody has equipped anything.
+ *
+ * **Two keypoints rather than the core's three**, because the haze is a haze and not a second core: it is
+ * never anything but a fade from the colour at the ball to the colour it dies as, and a middle keypoint
+ * would be one `createRibbons` never reads. `TrailColors.halo` is shaped to match.
+ *
+ * **The fallback is read here rather than kept in a prepared constant**, which is `DEFAULT_CORE_COLORS`'s
+ * rule seen from the other side: it has to be chosen when the call is made rather than when the module
+ * loads, because a top-level initializer naming a config field is the trap that doc describes.
+ */
+function haloLook(colors?: TrailColors): ColorSequence {
+	return new ColorSequence([
+		new ColorSequenceKeypoint(0, colors?.halo.leading ?? BALL_CONFIG.TRAIL_HALO_COLOR_LEADING),
+		new ColorSequenceKeypoint(1, colors?.halo.trailing ?? BALL_CONFIG.TRAIL_HALO_COLOR_TRAILING),
+	]);
+}
+
+/**
+ * Repaints one layer of a trail that is already built: every ribbon named `name`.
  *
  * **By name rather than by position**, because `createRibbons` builds the two layers interleaved and a
  * count would have to be kept in step with it; {@link RIBBON_NAME} and {@link HALO_NAME} already answer
- * "which layer is this" for `ribbonsOf`, and this is the same question.
+ * "which layer is this" for `ribbonsOf`, and this is the same question. The name is a parameter rather than
+ * two near-identical functions because which layer is meant is the only thing that ever differs between the
+ * callers — and two copies of one loop is how one of them comes to be fixed and the other not.
  */
-function recolourCore(ribbons: Trail[], color: ColorSequence): void {
+function recolourLayer(ribbons: Trail[], name: string, color: ColorSequence): void {
 	for (const ribbon of ribbons) {
-		if (ribbon.Name === RIBBON_NAME) ribbon.Color = color;
+		if (ribbon.Name === name) ribbon.Color = color;
 	}
 }
 
@@ -230,8 +323,9 @@ function ribbonsOf(ball: BasePart): Trail[] {
  * oldest. So they are written in the direction the eye reads the trail and none of them is reversed:
  * wide and opaque at the ball, narrow and invisible behind it. Those are keypoints on *age* and not on
  * distance, which is why a faster throw draws a longer trail from the same numbers. Same for the colour,
- * which cools from the hot end to the ember one on the way. The halo obeys the same rule, so its numbers
- * read backwards in exactly the same way.
+ * which runs from a def's leading end to its trailing one on the way — the default's three are one grey, so
+ * it carries no gradient to read in either direction. The halo obeys the same rule, so its numbers read
+ * backwards in exactly the same way.
  *
  * The angles are placed evenly around the ball's **local Z axis** rather than around
  * whatever axis the ball happens to be travelling along, which is a deliberate and invisible
@@ -252,8 +346,13 @@ function ribbonsOf(ball: BasePart): Trail[] {
  * One attachment of each pair sits at `+offset` and the other at `-offset` along its angle,
  * so all of them pass through the ball's centre: the pair is a diameter of the trail's
  * cross-section, and the gap between them is the ribbon's width.
+ *
+ * **`core` and `halo` are the holder's colours, resolved by the caller rather than read from config here.**
+ * That is the whole of what makes an equipped trail look like itself: this function is the only place the
+ * two layers' colours are set at construction, so both of them arrive as arguments. The default ball's pair
+ * travels through the same two parameters — `coreLook` and `haloLook` are where `BALL_CONFIG` is read.
  */
-function createRibbons(ball: BasePart, core: ColorSequence): Trail[] {
+function createRibbons(ball: BasePart, core: ColorSequence, halo: ColorSequence): Trail[] {
 	const ribbons: Trail[] = [];
 	const step = math.pi / BALL_CONFIG.TRAIL_COUNT;
 
@@ -284,10 +383,10 @@ function createRibbons(ball: BasePart, core: ColorSequence): Trail[] {
 				index * step + step / 2,
 				BALL_SIZE * BALL_CONFIG.TRAIL_HALO_SPREAD,
 				{
-					color: new ColorSequence([
-						new ColorSequenceKeypoint(0, BALL_CONFIG.TRAIL_HALO_COLOR_LEADING),
-						new ColorSequenceKeypoint(1, BALL_CONFIG.TRAIL_HALO_COLOR_TRAILING),
-					]),
+					// **The caller's haze, on the same footing as the core above.** Its two ends are the half of a
+					// trail cosmetic the eye actually reads — see `TrailColors` — so this line is where an equipped
+					// trail stops looking like a default one.
+					color: halo,
 					// Never opaque at the head, and always gone at the tail. The second end is not a knob:
 					// a haze with a visible edge is a ribbon again, which is what this layer is not.
 					transparency: new NumberSequence([

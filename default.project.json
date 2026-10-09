@@ -23,6 +23,16 @@
 					},
 					"@flamework": {
 						"$path": "node_modules/@flamework"
+					},
+					"@rbxts-js": {
+						"$className": "Folder",
+						"$path": "node_modules/@rbxts-js",
+						"Jest": {
+							"$path": "node_modules/@rbxts-js/jest/default.project.json"
+						},
+						"JestGlobals": {
+							"$path": "node_modules/@rbxts-js/jest-globals/default.project.json"
+						}
 					}
 				}
 			},

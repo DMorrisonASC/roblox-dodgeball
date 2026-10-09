@@ -31,5 +31,9 @@
 		"incremental": true,
 		"tsBuildInfoFile": "out/tsconfig.tsbuildinfo",
 		"ignoreDeprecations": "5.0"
-	}
+	},
+	// The test runner's config lives at the repo root, outside `rootDir`. It is consumed by the Jest
+	// Roblox CLI's own loader, never by this compiler, so it is excluded from the program rather than
+	// being folded into `src` — it is not game code.
+	"exclude": ["jest.config.ts"]
 }

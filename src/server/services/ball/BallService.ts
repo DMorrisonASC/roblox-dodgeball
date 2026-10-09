@@ -803,6 +803,28 @@ export class BallService implements OnStart {
 		// from somebody else change its trail to its new holder's rather than keeping the last one's.
 		const trail = BallTrail.attach(ball, this.economy.equippedTrailColors(owner));
 
+		// **The one line that says which trail this ball actually got**, and its three facts are the three the
+		// appearance depends on: who is holding it, what the *record* says they are wearing, and whether the
+		// ribbons were built for them or adopted from the last hand the ball was in. The last is what nothing
+		// else can report — an adopted trail that has just been repainted is indistinguishable from a fresh
+		// one by looking at the ball — and the middle is what separates "the record had nothing equipped" from
+		// "the record had a trail and the ribbons were given it". What the trail then looks like on screen is
+		// the one thing no log can settle, which is where this line stops.
+		//
+		// Gated like the throw probe's line, and one line per attach rather than per ribbon — a ball changes
+		// hands a few times a minute and wears `TRAIL_COUNT` of them per layer. `(default)` is the record's own
+		// word for the empty id, and the holder falls back to the body's name so that a rig — which has no
+		// `Player` and therefore never has an equipped trail — reads as itself rather than as an unnamed default.
+		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
+			const equipped = this.economy.equippedTrailId(owner);
+
+			print(
+				`[Ball] ${owner?.Name ?? model.Name}: trail ` +
+					`${trail === undefined ? "off" : trail.adopted ? "adopted" : "built"} — ` +
+					`${equipped === "" ? "(default)" : equipped}`,
+			);
+		}
+
 		this.setPromptEnabled(ball, false);
 
 		// The weld, and the one thing about a held ball the factory deliberately left alone: it is
@@ -983,6 +1005,15 @@ export class BallService implements OnStart {
 		this.setPromptEnabled(ball, true);
 		// Airborne now, so the rod can start drawing behind it. Absent when the trail is
 		// switched off in config, which is the whole of what that flag does at runtime.
+		//
+		// **And the colours are read again here rather than taken from what the hand-off stored.** The attach
+		// in `attachToHand` stated them when the ball arrived in this hand; a player who equips a trail *while
+		// already holding a ball* chose after that moment, and a throw that trusted the stored copy would fly
+		// the colours the ball was picked up with. The owner is resolved from the body because that is the only
+		// way it is resolvable here: `throwForPlayer` knows the `Player` and hands this method a character, and
+		// the hand's own record holds no owner. A rig answers `undefined`, which is the default, which is what
+		// a rig's ball should be. A repaint of the live trail, never a rebuild — see `BallTrail.setColors`.
+		held.trail?.setColors(this.economy.equippedTrailColors(Players.GetPlayerFromCharacter(model)));
 		held.trail?.setArmed(true);
 
 		// The client runs this exact same plan to draw its aim guide, so the throw

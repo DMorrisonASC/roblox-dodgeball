@@ -29,6 +29,7 @@ import {
 	EQUIPPED_ATTRIBUTE,
 } from "shared/economy";
 import { events } from "shared/networking";
+import { validatePurchase } from "shared/purchase";
 import { DevService } from "../../dev/DevService";
 import { DRAW, RoundOutcome, TeamLabel } from "../round/team";
 
@@ -97,6 +98,7 @@ export class EconomyService implements OnStart {
 		events.Server.OnEvent("openPowerChest", (player) => this.openChest(player));
 		events.Server.OnEvent("equipCosmetic", (player, slot, id) => this.equipCosmetic(player, slot, id));
 		events.Server.OnEvent("togglePowerPool", (player, power) => this.togglePowerPool(player, power));
+		events.Server.OnEvent("purchaseCosmetic", (player, id) => this.purchaseCosmetic(player, id));
 
 		// Dev shortcuts, so the loop can be exercised from a standing start.
 		this.dev.onCommand("coins", (player) => {
@@ -107,6 +109,15 @@ export class EconomyService implements OnStart {
 			for (const kind of POWER_ROSTER) this.grantPower(player, kind);
 			print(`[Economy] ${player.Name}: granted the full roster (dev)`);
 		});
+
+		// **`setMoney` is a second command rather than a replacement, and the two are different verbs.** `coins`
+		// above is the one-keystroke "+1000" a dev reaches for on the way to testing something else; this exists
+		// for the tests where the number *is* the subject — a chest costs 50, so 49 is how its refusal is reached,
+		// and "add 1000" cannot express that. `coins` keeps its name and its behaviour.
+		//
+		// The handler is a method where the other two are closures, because this is the one command with arguments
+		// to parse and the parsing is a paragraph of its own — see `devSetMoney`.
+		this.dev.onCommand("setmoney", (player, args) => this.devSetMoney(player, args));
 
 		if (DEBUG) {
 			print(
@@ -231,7 +242,7 @@ export class EconomyService implements OnStart {
 	}
 
 	/**
-	 * The trail colours `player` has equipped, or nothing for the default red.
+	 * The trail colours `player` has equipped, or nothing for the default grey.
 	 *
 	 * **The server answering a question the server asked.** `BallService.attachToHand` calls this on the
 	 * way to `BallTrail.attach`, and it reads the *record* rather than the attribute for
@@ -248,6 +259,36 @@ export class EconomyService implements OnStart {
 	 * rather than broken. See `COSMETICS` and the note there on the render hook.
 	 */
 	public equippedTrailColors(player: Player | undefined): CosmeticDef["colors"] {
+		return this.equippedTrail(player)?.colors;
+	}
+
+	/**
+	 * The *id* of the trail `player` has equipped, or `""` for the default.
+	 *
+	 * **`equippedTrailColors`'s sibling, and the two exist so that one lookup cannot have two answers.**
+	 * `BallService.attachToHand` prints this id beside the colours it has just handed to `BallTrail.attach`,
+	 * because that log line is the only thing that can tell "the record had nothing equipped" from "the
+	 * colours went on and the eye could not pick them out" — two situations with one symptom. The alternative
+	 * source is `EQUIPPED_TRAIL_ATTRIBUTE`, which is the *rendering* copy and is exactly the source
+	 * {@link equippedTrailColors} refuses to answer from, so the id comes off the record through the same
+	 * {@link equippedTrail} question the colours do rather than from a second reading of the same fact.
+	 *
+	 * **`""` rather than `undefined`** for the three situations {@link equippedTrailColors} lists — no player,
+	 * nothing equipped, an id this build no longer catalogues — because the empty string is already this
+	 * project's word for "the default", and a caller that has to print one has no use for a second one.
+	 */
+	public equippedTrailId(player: Player | undefined): string {
+		return this.equippedTrail(player)?.id ?? "";
+	}
+
+	/**
+	 * The trail def `player` has equipped, or nothing for the default — the single lookup behind
+	 * {@link equippedTrailColors} and {@link equippedTrailId}.
+	 *
+	 * Private, because "which def is this player wearing" is only ever asked in order to read one field of it,
+	 * and the two callers want one field each.
+	 */
+	private equippedTrail(player: Player | undefined): CosmeticDef | undefined {
 		if (player === undefined) return undefined;
 
 		const id = this.records.get(player)?.equipped.get("trail");
@@ -256,7 +297,7 @@ export class EconomyService implements OnStart {
 		const def = COSMETICS[id];
 		if (def === undefined || def.slot !== "trail") return undefined;
 
-		return def.colors;
+		return def;
 	}
 
 	/**
@@ -322,8 +363,13 @@ export class EconomyService implements OnStart {
 			this.publish(player);
 
 			if (DEBUG) {
+				// **Named by its own id rather than by the reply's string, and the difference is the point.** The reply
+				// carries a cosmetic's *display* name; this line is a log, and a reader of it wants the thing the pool
+				// and the record call it — the id for one arm, the ability name for the other.
+				const rolled = prize.kind === "power" ? prize.power : prize.cosmetic;
+
 				print(
-					`[Economy] ${player.Name}: chest rolled ${prize.power} — already owned, ` +
+					`[Economy] ${player.Name}: chest rolled ${rolled} — already owned, ` +
 						`${record.coins} coins left`,
 				);
 			}
@@ -332,27 +378,114 @@ export class EconomyService implements OnStart {
 			return;
 		}
 
-		const granted = prize.power;
-		record.powers.add(granted);
-		// **And the new power joins the pool, which is the difference between a setting and a broken box.**
-		// Without this a player who narrows their pool and then earns a power never sees it in the box — and the
-		// symptom is a box that ignores an item they demonstrably own, which reads as a bug in the box rather than
-		// as a pool that is out of date.
-		//
-		// **Unconditionally, including into a pool the player has emptied.** The alternative — leave the pool
-		// alone while it is empty — treats "everything off" as a decision about *future* powers, which is not what
-		// the tab says it is: it is where you narrow what the box may hand you, and it has to be visible to the
-		// player to be usable, so something just earned cannot go in invisibly. The cost is that an emptied pool
-		// gains one entry back, which is a small, visible, reversible surprise; cheaper than a power that
-		// silently never appears.
-		record.pool.add(granted);
+		/**
+		 * **The grant, in two arms, and the reply's string is the one thing they do not share.**
+		 *
+		 * A power travels as its **id** — `"Pierce"` — because the client owns the map from id to the words on the
+		 * tile (`ABILITY_NAMES`, which the shop already reads to name the roster). A cosmetic travels as its
+		 * **display name**, `"Verdant Trail"`, because the panel has no equivalent map: its footer is one line with
+		 * nowhere to look a cosmetic id up from, and the catalogue is this side of the wire. Sending the id and
+		 * making the client name it would be a second copy of the catalogue's vocabulary on the client for one
+		 * sentence.
+		 *
+		 * **The record is written with the *id* either way, because the record is what the shelf and the equip path
+		 * read** — the name is for the sentence and nothing else. Those two facts are the reason this branch has two
+		 * strings in it rather than one.
+		 *
+		 * **A pool entry naming an id this build no longer catalogues falls back to the id itself** rather than
+		 * refusing the roll: the player has already paid by the time this runs, and a chest that took the coins and
+		 * gave nothing would be worse than a sentence that reads as an id. The fallback is the same rule the owned
+		 * set follows — an id the client cannot resolve is the client's to ignore, not a reason to drop the grant.
+		 *
+		 * **Only the power arm touches `record.pool`.** That set is what the *item box* may grant, and it holds
+		 * ability kinds; a cosmetic joining it would be an entry the box could never use and the pool attribute
+		 * could never render.
+		 */
+		let reply: string;
+
+		if (prize.kind === "power") {
+			// Kept as its own `AbilityKind` rather than funnelled through the string below, because the record's
+			// two sets are typed on the ability and not on `string`: the reply is a sentence, the record is data.
+			const power = prize.power;
+
+			record.powers.add(power);
+			// **And the new power joins the pool, which is the difference between a setting and a broken box.**
+			// Without this a player who narrows their pool and then earns a power never sees it in the box — and the
+			// symptom is a box that ignores an item they demonstrably own, which reads as a bug in the box rather than
+			// as a pool that is out of date.
+			//
+			// **Unconditionally, including into a pool the player has emptied.** The alternative — leave the pool
+			// alone while it is empty — treats "everything off" as a decision about *future* powers, which is not what
+			// the tab says it is: it is where you narrow what the box may hand you, and it has to be visible to the
+			// player to be usable, so something just earned cannot go in invisibly. The cost is that an emptied pool
+			// gains one entry back, which is a small, visible, reversible surprise; cheaper than a power that
+			// silently never appears.
+			record.pool.add(power);
+
+			reply = power;
+		} else {
+			record.cosmetics.add(prize.cosmetic);
+			reply = COSMETICS[prize.cosmetic]?.name ?? prize.cosmetic;
+		}
+
 		this.publish(player);
 
 		if (DEBUG) {
-			print(`[Economy] ${player.Name}: chest granted ${granted} — ${record.coins} coins left`);
+			print(`[Economy] ${player.Name}: chest granted ${reply} — ${record.coins} coins left`);
 		}
 
-		this.sendChestResult(player, granted, "");
+		this.sendChestResult(player, reply, "");
+	}
+
+	/**
+	 * Spends coins on one catalogued cosmetic, if the catalogue, the record and the wallet all say yes.
+	 *
+	 * **The whole of the checking lives in {@link validatePurchase}, and this method is the two things no pure
+	 * function can own: the record lookup and the write.** The decision is a pure function of the record and
+	 * the catalogue, so it is what the test suite exercises — with no `Player`, no DataStore and no mock of
+	 * either — and this stays a thin caller that reaches for the record and then performs whatever the decision
+	 * said.
+	 *
+	 * **The record is read once and handed to the decision, then re-read for the write.** The second read is
+	 * the type's price for the validation's order: the decision is what keeps the wire discipline (string,
+	 * catalogue, record, ownership, balance) in one function, and a successful decision cannot be produced for
+	 * an unloaded record — so the guard below is unreachable. It is written anyway rather than cast away,
+	 * because a cast would be the one place in this file where a missing record was *asserted* instead of
+	 * checked.
+	 *
+	 * **The deduction precedes the grant, and the argument is the reverse of the chest's.** The chest spends
+	 * before the roll because the roll can miss, and spending first is what makes a miss a cost rather than a
+	 * free re-roll. A purchase cannot miss — {@link validatePurchase} has already answered every question —
+	 * so the order is a choice about the one failure left, a crash between the two writes: paying without
+	 * receiving is the recoverable failure (coins are cheap to restore), while receiving without paying is the
+	 * one the economy cannot undo. Deduct, then grant.
+	 *
+	 * **Silent on refusal, but not by the equip path's rule.** `equipCosmetic`'s refusals are all "that was not
+	 * a valid request" and a correct client never sends them; a purchase's are sentences a *correct* client
+	 * will hit — the wallet runs out, the player already owns the thing — so each is answered with
+	 * {@link sendPurchaseResult} and drawn on the panel. The strings are this event's own and never the
+	 * chest's, so the two never read alike on the one line they share.
+	 */
+	public purchaseCosmetic(player: Player, id: unknown): void {
+		const decision = validatePurchase(this.records.get(player), id, COSMETICS);
+
+		if (!decision.ok) {
+			this.sendPurchaseResult(player, "", decision.reason);
+			return;
+		}
+
+		const record = this.records.get(player);
+		if (record === undefined) return;
+
+		record.coins -= decision.price;
+		record.cosmetics.add(decision.id);
+		this.publish(player);
+
+		if (DEBUG) {
+			print(`[Economy] ${player.Name}: bought ${decision.id} — ${record.coins} coins left`);
+		}
+
+		this.sendPurchaseResult(player, decision.name, "");
 	}
 
 	/**
@@ -423,6 +556,107 @@ export class EconomyService implements OnStart {
 
 		record.coins = math.max(0, record.coins + amount);
 		this.publish(player);
+	}
+
+	/**
+	 * Sets a wallet outright — **`!dev setMoney`'s door, and the only absolute write in this file.**
+	 *
+	 * **`set` rather than `add`, which is the whole of the difference from `addCoins` above.** That one moves a
+	 * wallet by a delta, which is what a round's payout and `!dev coins` are; this replaces the number, which is
+	 * what a test needs when the wallet *is* the thing being tested — the chest costs 50, so 49 is how the "not
+	 * enough coins" refusal is reached on purpose, and no sequence of additions reliably gets you there.
+	 *
+	 * **The clamp and the flooring are here rather than at the command**, so that no door into this field can
+	 * produce a debt or a fraction: the economy's rule is that coins are whole and never read as negative, and a
+	 * rule kept at a call site is a rule the next call site can miss.
+	 */
+	public setCoins(player: Player, amount: number): void {
+		const record = this.records.get(player);
+		if (record === undefined) return;
+
+		record.coins = math.max(0, math.floor(amount));
+		this.publish(player);
+	}
+
+	/**
+	 * `!dev setMoney <amount> [player]` — **the wallet set outright, for a target rather than necessarily the
+	 * caller.**
+	 *
+	 * **Positional arguments, taken from what the chat parser already split.** `DevService.handleChat` hands over
+	 * the words that followed the verb, lower-cased, and this is where the command's shape is decided — here
+	 * rather than in `DevService`, which owns no records and must not learn to (see `onCommand`'s note about the
+	 * dependency cycle, and this service's own helper on why it is the machine that writes coins).
+	 *
+	 * **Every refusal prints rather than acting.** A dev command's answer belongs in the output window, beside the
+	 * `[Dev] … <message>` line that shows the command arriving, which is where `!dev coins` confirms itself. There
+	 * is no remote back to the asker and there should not be one: a refusal a dev cannot see in the log is a
+	 * refusal that reads as a command that did nothing.
+	 *
+	 * **Four refusals, and each names the thing that was wrong**: the amount missing, the amount not being a
+	 * positive whole number, a named player not in the server, and a target whose record has not loaded. The first
+	 * is the only one that has to print a usage line, because a missing argument is the one case with no offending
+	 * value to quote.
+	 *
+	 * **The record check is a refusal rather than a wait**, which is `equipCosmetic`'s and `openChest`'s call for
+	 * the same reason: a waiting state would have to be resolved later by something that remembers what was asked,
+	 * and a store that has not answered inside a dev command is already the worse failure. Setting a wallet on a
+	 * record that lands a moment later would also be *silently* discarded, which is the worst of the options.
+	 */
+	private devSetMoney(asker: Player, args: readonly string[]): void {
+		const raw = args[0];
+		if (raw === undefined) {
+			print(`[Economy] ${asker.Name}: setMoney needs an amount — !dev setMoney <amount> [player]`);
+			return;
+		}
+
+		// **One test for four ways of being wrong, because they are one fact**: what was typed is not a number of
+		// coins. `tonumber` answers `undefined` for anything that is not a number at all; `!(amount > 0)` is the
+		// nought and the negative *and* the `NaN` that comparison would otherwise let through; `>= math.huge` is
+		// the two infinities, which pass the whole-number test (`math.floor(math.huge) === math.huge`); and the
+		// floor test is the fraction. Written as one condition so that the message below can be one sentence.
+		const amount = tonumber(raw);
+
+		if (amount === undefined || !(amount > 0) || amount >= math.huge || math.floor(amount) !== amount) {
+			print(`[Economy] ${asker.Name}: setMoney refused — "${raw}" is not a positive whole number of coins`);
+			return;
+		}
+
+		const wanted = args[1];
+		const target = wanted === undefined ? asker : this.findPlayerByName(wanted);
+
+		if (target === undefined) {
+			print(`[Economy] ${asker.Name}: setMoney refused — no player named "${wanted}" is in this server`);
+			return;
+		}
+
+		if (this.records.get(target) === undefined) {
+			print(`[Economy] ${asker.Name}: setMoney refused — ${target.Name}'s record is still loading`);
+			return;
+		}
+
+		this.setCoins(target, amount);
+
+		print(
+			`[Economy] ${target.Name}: wallet set to ${amount} (dev` +
+				`${target === asker ? "" : ` by ${asker.Name}`})`,
+		);
+	}
+
+	/**
+	 * The player whose name matches `lowered`, or nothing.
+	 *
+	 * **Compared lower case on both sides, because the parser lowered the argument.** `DevService` splits a
+	 * message from `message.lower()` so that a command is case-insensitive, and its arguments inherit that: a
+	 * player named `Morri` arrives here as `morri` (see `onCommand`, which states it as a property of the split
+	 * rather than of this command). Comparing the two lowered is therefore the only comparison that can succeed,
+	 * and it is safe because two accounts cannot differ by case alone — Roblox names are unique.
+	 */
+	private findPlayerByName(lowered: string): Player | undefined {
+		for (const player of Players.GetPlayers()) {
+			if (player.Name.lower() === lowered) return player;
+		}
+
+		return undefined;
 	}
 
 	/**
@@ -504,17 +738,26 @@ export class EconomyService implements OnStart {
 	 *
 	 * **One place, asked twice, and the two asks are not the same check.** The refusal asks it of every entry
 	 * in the pool to decide whether there is anything left to win; the roll asks it of the one entry that
-	 * came up. Writing the membership test inline in both would be two chances for the item arm to be
-	 * handled in one of them and forgotten in the other — which is exactly the bug the tagged
-	 * {@link ChestPrize} exists to prevent, and it only pays off if the test lives in one function.
+	 * came up. Writing the membership test inline in both would be two chances for one arm of the union to be
+	 * handled in one of them and forgotten in the other — which is exactly the bug the tagged {@link ChestPrize}
+	 * exists to prevent, and it only pays off if the test lives in one function.
+	 *
+	 * **Both arms read the record, and neither reads an attribute.** `record.powers` and `record.cosmetics` are
+	 * the two owned sets this service writes; the attributes are copies the client renders from, and a chest
+	 * that trusted one would be a chest a client could talk out of its own duplicate.
 	 */
 	private ownsPrize(record: EconomyRecord, prize: ChestPrize): boolean {
-		return prize.kind === "power" && record.powers.has(prize.power);
+		return prize.kind === "power" ? record.powers.has(prize.power) : record.cosmetics.has(prize.cosmetic);
 	}
 
 	/** The chest's answer, to the player who asked. */
 	private sendChestResult(player: Player, granted: string, reason: string): void {
 		events.Server.Get("chestResult").SendToPlayer(player, granted, reason);
+	}
+
+	/** The purchase's answer, to the player who asked. */
+	private sendPurchaseResult(player: Player, granted: string, reason: string): void {
+		events.Server.Get("purchaseResult").SendToPlayer(player, granted, reason);
 	}
 
 	// --- persistence -------------------------------------------------------

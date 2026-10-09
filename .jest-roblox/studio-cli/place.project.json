@@ -1,0 +1,74 @@
+{
+  "globIgnorePaths": [
+    "**/package.json",
+    "**/tsconfig.json"
+  ],
+  "name": "roblox-ts-game",
+  "tree": {
+    "$className": "DataModel",
+    "HttpService": {
+      "$className": "HttpService",
+      "$properties": {
+        "HttpEnabled": true
+      }
+    },
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "TS": {
+        "$path": "../../out/shared"
+      },
+      "rbxts_include": {
+        "$path": "../../include",
+        "node_modules": {
+          "$className": "Folder",
+          "@flamework": {
+            "$path": "../../node_modules/@flamework"
+          },
+          "@rbxts": {
+            "$path": "../../node_modules/@rbxts"
+          },
+          "@rbxts-js": {
+            "$className": "Folder",
+            "$path": "../../node_modules/@rbxts-js",
+            "Jest": {
+              "$path": "../../node_modules/@rbxts-js/jest/src"
+            },
+            "JestGlobals": {
+              "$path": "../../node_modules/@rbxts-js/jest-globals/src"
+            }
+          }
+        }
+      }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$properties": {
+        "LoadStringEnabled": true
+      },
+      "TS": {
+        "$path": "../../out/server"
+      }
+    },
+    "SoundService": {
+      "$className": "SoundService",
+      "$properties": {
+        "RespectFilteringEnabled": true
+      }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "$properties": {
+        "EnableMouseLockOption": false
+      },
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "TS": {
+          "$path": "../../out/client"
+        }
+      }
+    },
+    "Workspace": {
+      "$className": "Workspace"
+    }
+  }
+}

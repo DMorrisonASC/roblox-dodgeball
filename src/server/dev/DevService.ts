@@ -109,9 +109,10 @@ export class DevService implements OnStart {
 	 * system that can serve a verb register it keeps the arrow pointing one way, and keeps this file what
 	 * it has always been: a chat parser that knows which words exist and nothing about what they do.
 	 *
-	 * The handler is called with the player who asked, and it runs protected — see `handleChat`.
+	 * The handler is called with the player who asked and the arguments that followed the verb, and it runs
+	 * protected — see `handleChat` for the slice and `onCommand` for what the arguments are.
 	 */
-	private readonly commands = new Map<string, (player: Player) => void>();
+	private readonly commands = new Map<string, (player: Player, args: readonly string[]) => void>();
 
 	public onStart() {
 		Players.PlayerAdded.Connect((player) => this.welcome(player));
@@ -175,8 +176,19 @@ export class DevService implements OnStart {
 	 *
 	 * Called once per system that owns a verb, from that system's own `onStart` — see {@link commands} for
 	 * why it is registered from there rather than dispatched in here.
+	 *
+	 * **`args` is what followed the verb: whole words, lower case, and nothing else.** A command that needs a
+	 * value takes it from here rather than from the raw line, because the split that produced the words is the
+	 * only place the shape of a message is decided — a second reader of the raw text would be a second parser,
+	 * with its own opinions about spacing and quotes, for a dev-only command.
+	 *
+	 * **The lower case is the split's property rather than a decision made for arguments.** `words` is built
+	 * from `message.lower()` so that `!DEV MATCH` and `!dev match` are one command, and arguments inherit it: a
+	 * player named `Morri` arrives as `morri`. That is why the one handler that takes arguments today compares
+	 * a name case-insensitively, and the first argument that ever needs its own spelling will have to change
+	 * where the words are built rather than here.
 	 */
-	public onCommand(name: string, handler: (player: Player) => void): void {
+	public onCommand(name: string, handler: (player: Player, args: readonly string[]) => void): void {
 		this.commands.set(name.lower(), handler);
 	}
 
@@ -302,7 +314,20 @@ export class DevService implements OnStart {
 		const handler = verb !== undefined ? this.commands.get(verb) : undefined;
 
 		if (handler !== undefined) {
-			const [ok, err] = pcall(() => handler(player));
+			// **The words after the verb are the command's arguments**, gathered as a list rather than taken one
+			// at a time: a handler that wants three of them should not have to ask for each, and "no arguments" is
+			// `[]` rather than a case the handler has to handle separately. See `onCommand` for why they are lower
+			// case and what that means for anything spelling-sensitive.
+			//
+			// **The loop rather than `words.slice`, and that is the shim's answer rather than a style choice.**
+			// roblox-ts builds against `noLib`, and the array shim in `include/` does not carry `slice` — so the
+			// obvious one-liner does not compile. It is also the shape the `words` list above is built with.
+			const args: string[] = [];
+			for (let index = at + 2; index < words.size(); index++) {
+				args.push(words[index]);
+			}
+
+			const [ok, err] = pcall(() => handler(player, args));
 			if (!ok) warn(`[Dev] the ${verb} command failed: ${tostring(err)}`);
 
 			return;

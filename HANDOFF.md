@@ -601,6 +601,13 @@ as a *lit tube* was the halo's half-step offset, and the colour step through amb
 white-to-grey fade (which washed out). `BallTrail`'s class doc carries the whole argument, including
 why it is deliberately not a `PointLight` or a particle emitter.
 
+**Reversed (2026-10-08):** the *default* trail — what an un-equipped ball flies — is now flat grey
+`(128, 128, 128)`, core and haze alike. The amber progression survives only inside the cosmetics, where
+`coreLook` puts each def's own three colours and `haloLook` its own pair. The wash-out the amber step was
+added to fix is a property of a *coloured* trail; the default's job is to read as "nobody's", and grey is
+the one value the head's white-out cannot take away from it. The reasoning is in
+`BALL_CONFIG.TRAIL_COLOR_LEADING`, which now argues for neutral rather than warm.
+
 ### Completed since the last handoff
 
 Roughly in commit order (`git log` from 2026-09-28):

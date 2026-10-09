@@ -6,6 +6,7 @@
 		"roblox-dodgeball:out/client/controllers/camera/ShiftLock@ShiftLock": "client/controllers/camera/ShiftLock@ShiftLock",
 		"roblox-dodgeball:out/client/controllers/character/LocomotionAnimationController@LocomotionAnimationController": "client/controllers/character/LocomotionAnimationController@LocomotionAnimationController",
 		"roblox-dodgeball:out/client/controllers/character/TeamRingController@TeamRingController": "client/controllers/character/TeamRingController@TeamRingController",
+		"roblox-dodgeball:out/client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController": "client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController",
 		"roblox-dodgeball:out/client/controllers/hud/ControlsLegendController@ControlsLegendController": "client/controllers/hud/ControlsLegendController@ControlsLegendController",
 		"roblox-dodgeball:out/client/controllers/hud/CooldownHudController@CooldownHudController": "client/controllers/hud/CooldownHudController@CooldownHudController",
 		"roblox-dodgeball:out/client/controllers/hud/CurrencyHudController@CurrencyHudController": "client/controllers/hud/CurrencyHudController@CurrencyHudController",
@@ -63,8 +64,7 @@
 		"roblox-dodgeball:out/server/services/zone/PracticeZoneService@PracticeZoneService": "server/services/zone/PracticeZoneService@PracticeZoneService",
 		"roblox-dodgeball:out/server/services/mystery/MysteryBoxService@MysteryBoxService": "server/services/mystery/MysteryBoxService@MysteryBoxService",
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
-		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
-		"roblox-dodgeball:out/client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController": "client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController"
+		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService"
 	},
 	"metadata": {}
 }

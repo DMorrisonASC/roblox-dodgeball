@@ -757,39 +757,52 @@ export const BALL_CONFIG = {
 	/**
 	 * The trail's colour where it leaves the ball.
 	 *
-	 * Warm white rather than pure white, so the head reads as the hot end of something
-	 * rather than as a plain painted line. Paired with {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE} and
-	 * {@link BALL_CONFIG.TRAIL_COLOR_TRAILING} for the fade behind it — a `Trail` takes its colour as a
-	 * sequence, so unlike a single part it can carry the whole gradient on its own and needs no second
-	 * instance to do it. Three keypoints rather than two, for the reason the middle one gives.
+	 * **Flat neutral grey, and all five of this block's trail colours are that same grey on purpose** — see
+	 * {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE} for why the pair is flat rather than a gradient, and
+	 * {@link BALL_CONFIG.TRAIL_HALO_COLOR_LEADING} for why the haze shares the core's colour. A trail is what
+	 * tells a player *whose* throw is in the air, so the default has to read as "nobody's": a saturated
+	 * default competes with the cosmetics that are the point of the economy, and the warm white-to-ember
+	 * progression this used to be read as the ball being on fire behind every un-equipped throw.
+	 *
+	 * Paired with {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE} and {@link BALL_CONFIG.TRAIL_COLOR_TRAILING} for
+	 * the fade behind it — a `Trail` takes its colour as a sequence, so unlike a single part it can carry
+	 * the whole gradient on its own and needs no second instance to do it. Three keypoints rather than two,
+	 * for the reason the middle one gives.
 	 */
-	TRAIL_COLOR_LEADING: Color3.fromRGB(255, 255, 240),
+	TRAIL_COLOR_LEADING: Color3.fromRGB(128, 128, 128),
 
 	/**
-	 * The colour a third of the way down the trail, and **the one that makes it fire rather than
-	 * ribbon.**
+	 * The colour a third of the way down the trail, and **the keypoint that now exists for the cosmetics
+	 * rather than for the default.**
 	 *
-	 * A `ColorSequence` interpolates between its keypoints in a straight line through the colour, and
-	 * white to dull red is a straight line through *grey*: with the two ends this block used to have,
-	 * the middle of every trail was a pale washed-out pink that read as a faded strip rather than as
-	 * something cooling. An amber keypoint puts a saturated step in the way — the trail goes white-hot,
-	 * then orange, then embers — and the eye reads that as heat rather than as a gradient. It costs one
-	 * keypoint.
+	 * A `ColorSequence` interpolates between its keypoints in a straight line through the colour, so the
+	 * obvious two-end version of a hot trail — a bright head fading to a dull tail — is a straight line
+	 * through *grey*, and the middle of the trail washed out. That is what this keypoint was added for: an
+	 * amber step made the middle saturated instead of grey. It still does exactly that for a cosmetic, and
+	 * `coreLook` puts each def's own middle colour here.
+	 *
+	 * **The default is flat grey, so for the default this keypoint is inert** — all three colours of the
+	 * sequence are `128, 128, 128`, and interpolating between a colour and itself is that colour. Keeping it
+	 * written down rather than dropping to two keypoints is what preserves one shape for the default and the
+	 * cosmetics: `coreLook` builds three keypoints either way, and a default with its own sequence length
+	 * would be the one case that has to be reasoned about separately. It is also the honest form of the
+	 * decision — the un-equipped ball is deliberately neutral, so there is nothing for a gradient to say.
 	 *
 	 * See {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE_AT} for where it sits.
 	 */
-	TRAIL_COLOR_MIDDLE: Color3.fromRGB(255, 166, 48),
+	TRAIL_COLOR_MIDDLE: Color3.fromRGB(128, 128, 128),
 
 	/**
 	 * How far along the trail the middle colour sits, from `0` (at the ball) to `1` (the oldest end).
 	 *
-	 * **Early, and a little behind the neck.** The hot end of a thrown ball is short and the cooling tail
-	 * is long, so the amber belongs near the ball where the eye is anyway; push this past the halfway
-	 * point and the trail starts to look like it is on fire at the back and cold at the front, which is
-	 * the one thing a cooling trail must not say. It is deliberately *not* the same figure as
-	 * {@link BALL_CONFIG.TRAIL_WIDTH_NECK_AT}, though it sits close to it: a width break and a colour
-	 * break at the same point read as a joint in a manufactured thing, so the silhouette gets there first
-	 * and the colour follows it.
+	 * **A cosmetic's colour break rather than the default's**, since the default's three colours are the same
+	 * grey and this moves nothing about an un-equipped ball. It is early and a little behind the neck because
+	 * the head of a thrown ball is short and the cooling tail is long, so a def's saturated colour belongs
+	 * near the ball where the eye already is; push this past the halfway point and the trail starts to look
+	 * like it is coloured at the back and plain at the front, which is the one thing a fading trail must not
+	 * say. It is deliberately *not* the same figure as {@link BALL_CONFIG.TRAIL_WIDTH_NECK_AT}, though it sits
+	 * close to it: a width break and a colour break at the same point read as a joint in a manufactured
+	 * thing, so the silhouette gets there first and the colour follows it.
 	 */
 	TRAIL_COLOR_MIDDLE_AT: 0.3,
 
@@ -797,12 +810,13 @@ export const BALL_CONFIG = {
 	 * The trail's colour at its oldest end, on the same scale as
 	 * {@link BALL_CONFIG.TRAIL_COLOR_LEADING}.
 	 *
-	 * A dull red, so the trail cools as it recedes: white-hot at the ball, embers behind it,
-	 * and gone. This runs alongside the transparency fade rather than instead of it, which is
-	 * what stops the tail reading as a solid red rod — it is dark *and* see-through by the
-	 * time the lifetime is up.
+	 * The same grey as the other two, so the default does not *cool* — it **fades**, which is the whole of
+	 * what the transparency sequence beside it does and the only thing a neutral trail has to say. It runs
+	 * alongside that fade rather than instead of it, which is what stops the tail reading as a solid grey
+	 * rod: it is see-through by the time the lifetime is up. A cosmetics def is where a trail cools, and
+	 * each one cools on its own scale — see `CosmeticDef.colors`.
 	 */
-	TRAIL_COLOR_TRAILING: Color3.fromRGB(140, 41, 20),
+	TRAIL_COLOR_TRAILING: Color3.fromRGB(128, 128, 128),
 
 	/**
 	 * How far each ribbon's two attachment points sit from the ball's centre, as a fraction
@@ -944,22 +958,29 @@ export const BALL_CONFIG = {
 	TRAIL_HALO_WIDTH_TRAILING: 0.04,
 
 	/**
-	 * The halo's colour where it leaves the ball — {@link BALL_CONFIG.TRAIL_COLOR_LEADING}'s terms, and
-	 * it sits a step further into orange on purpose.
+	 * The halo's colour where it leaves the ball — {@link BALL_CONFIG.TRAIL_COLOR_LEADING}'s terms, and the
+	 * same grey as the other four.
 	 *
-	 * The haze is the part of the effect the eye reads as *heat* rather than as light, so it is the part
-	 * that should be the least white: a halo the colour of the core would just be the core, wider. The
-	 * two fades also mean the trail reads as white, then orange, then a dark red residue — see
-	 * {@link BALL_CONFIG.TRAIL_COLOR_MIDDLE} for why the middle of that matters.
+	 * **The default's haze and the default's core are one colour, which is a deliberate consequence of the
+	 * default being flat.** The haze is wider than the core, outlives it, and is drawn *across* it rather
+	 * than behind it — see {@link BALL_CONFIG.TRAIL_HALO_TRANSPARENCY_LEADING} — so a haze that differs from
+	 * its core reads as a glow around a hot line, and a haze the same colour reads as one wider streak. One
+	 * wider streak is the neutral answer, which is what an un-equipped ball should give; a def states its own
+	 * pair for the other effect, and every def does.
+	 *
+	 * **This is the default ball's haze and not the only haze there can be.** A trail cosmetic states its
+	 * own pair in `CosmeticDef.colors.halo`, and what is here is what a ball wears when nobody has
+	 * equipped anything — see `BallTrail.haloLook`, which is the one place either is chosen. Tuning these
+	 * still moves every un-equipped ball, and only those.
 	 */
-	TRAIL_HALO_COLOR_LEADING: Color3.fromRGB(255, 116, 20),
+	TRAIL_HALO_COLOR_LEADING: Color3.fromRGB(128, 128, 128),
 
 	/**
-	 * The halo's colour at its oldest end, on the same scale as
-	 * {@link BALL_CONFIG.TRAIL_HALO_COLOR_LEADING} — a dark red, cooler than the core's ember because it
-	 * outlives it.
+	 * The haze's colour at its oldest end, on the same scale as
+	 * {@link BALL_CONFIG.TRAIL_HALO_COLOR_LEADING} — the same grey again. The haze outlives the core, so a
+	 * tail that darkened would be the default cooling after all, which is the one thing it does not do.
 	 */
-	TRAIL_HALO_COLOR_TRAILING: Color3.fromRGB(120, 24, 8),
+	TRAIL_HALO_COLOR_TRAILING: Color3.fromRGB(128, 128, 128),
 
 	/**
 	 * How opaque the halo is where it leaves the ball, `0` being solid and `1` invisible. **It always

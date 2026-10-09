@@ -202,11 +202,52 @@ export const events = Net.Definitions.Create({
 	/**
 	 * Server → client: what the chest the player just opened did.
 	 *
-	 * **`granted` is the power's id on success and `""` on refusal**, and `reason` is the human
+	 * **`granted` is the prize's name on success and `""` on refusal**, and `reason` is the human
 	 * sentence for the refusal (empty on success) — so a client draws the answer from one event rather
 	 * than inferring it from which attributes changed. Sent to the one player, not broadcast.
+	 *
+	 * **What a name is depends on the arm, and the two differ on purpose.** A power arrives as its *id* —
+	 * `"Pierce"` — because the client already owns the id→words map the roster is drawn from
+	 * (`ABILITY_NAMES`), and sending the name would be a second copy of that vocabulary on the server. A
+	 * cosmetic arrives as its *display name* — `"Verdant Trail"` — because this panel has no such map: its
+	 * footer is one line with nowhere to look a cosmetic id up from, and `COSMETICS` is the server's file. A
+	 * client tells them apart with the same test it uses everywhere else (`isAbilityKind`) and draws
+	 * anything that is not an ability id verbatim.
 	 */
 	chestResult: Net.Definitions.ServerToClientEvent<[granted: string, reason: string]>(),
+
+	/**
+	 * Client → server: this player wants to spend coins on one catalogued cosmetic.
+	 *
+	 * **Carries the cosmetic's id as a string**, not a `CosmeticDef` and not a slot: the wire is not typed, so
+	 * the server treats what arrives as an arbitrary string and checks it against the catalogue — the
+	 * arrangement `castVote` and `equipCosmetic` both describe, and for the same reason. There is no second
+	 * argument naming a slot, because the catalogue alone says what the thing is; a purchase never has to say
+	 * *where* something is worn, only what it wants.
+	 *
+	 * **The answer is {@link purchaseResult}, for the reason the chest gets one**: a purchase has refusals a
+	 * player cannot tell apart by watching nothing happen — "not enough coins" and "already own it" are
+	 * different situations, and the wallet is the one attribute that is allowed to stay unchanged by a
+	 * successful action's opposite. It is a *separate* event from {@link chestResult} rather than a reuse,
+	 * because the two vocabularies must not collide: the refusal strings are deliberately different sentences,
+	 * and the client can then draw both on one line without a flag saying which action it was answering.
+	 */
+	purchaseCosmetic: Net.Definitions.ClientToServerEvent<[id: string]>(),
+
+	/**
+	 * Server → client: what the purchase the player just asked for did.
+	 *
+	 * **Same shape as {@link chestResult} — `granted` is the cosmetic's display name on success and `""` on
+	 * refusal, `reason` is the human sentence for the refusal.** It is a distinct event rather than a reuse of
+	 * the chest's because the two refusals must be able to say different things: the chest's reasons are its
+	 * own ("you already had that one", "nothing left in the chest to win") and a purchase's are this event's
+	 * ("you already own that trail", "that trail isn't for sale"). Two events, one shared line on the panel,
+	 * and the client knows which sentence it is reading because the event that carried it says so.
+	 *
+	 * **`granted` is the name, not the id, for the reason {@link chestResult} now gives about its own cosmetic
+	 * arm**: the panel has one line with nowhere to look an id up from, and `COSMETICS` is the server's file.
+	 */
+	purchaseResult: Net.Definitions.ServerToClientEvent<[granted: string, reason: string]>(),
 
 	/**
 	 * Client → server: this player wants to wear this cosmetic in this slot.

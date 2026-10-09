@@ -2,12 +2,12 @@ import { Controller, OnStart } from "@flamework/core";
 import Net from "@rbxts/net";
 import { Button, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players } from "@rbxts/services";
+import { SoundService, ContentProvider, Players } from "@rbxts/services";
 import { ABILITY_NAMES, isAbilityKind } from "shared/ability";
-import type { AbilityKind } from "shared/ability";
 import { COINS_ATTRIBUTE, OWNED_COSMETICS_ATTRIBUTE, OWNED_POWERS_ATTRIBUTE } from "shared/constants";
-import { ECONOMY_CONFIG, POWER_ROSTER, PREMIUM_COSMETICS } from "shared/config/economy.config";
-import type { CosmeticDef } from "shared/config/economy.config";
+import { AUDIO_CONFIG } from "shared/config/audio.config";
+import { CHEST_POOL, ECONOMY_CONFIG, POWER_ROSTER, PREMIUM_COSMETICS, PURCHASE_COSMETICS } from "shared/config/economy.config";
+import type { ChestPrize, CosmeticDef } from "shared/config/economy.config";
 import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
 import { INTERMISSION, roundPhase, shopOpen } from "../../panels";
@@ -170,6 +170,30 @@ export class ShopController implements OnStart {
 	 */
 	private chestRemote?: ClientRemotes["openPowerChest"];
 
+	/**
+	 * The purchase request, resolved once at mount — `chestRemote`'s sibling, and its `Get` yields for the
+	 * same reason the chest's does, which is why it too is resolved from a watcher inside `mount`'s spawn.
+	 */
+	private purchaseRemote?: ClientRemotes["purchaseCosmetic"];
+
+	/**
+	 * The chest's award sound, one instance for the whole session.
+	 *
+	 * **One `Sound`, made once and reused, in `SoundService`** — the three decisions `elevation.ts` makes about
+	 * the two interface tones, for the reasons written there: a `Sound` per award is an instance per press with
+	 * an owner, and a `Sound` parented to a `BasePart` or an `Attachment` is *positional*, which a chest opening
+	 * inside a panel is not. `PlayerGui` would be non-positional too and is the worse of the two, because it is
+	 * torn down and rebuilt on every respawn — an instance made once for the session must not be sitting inside
+	 * something that gets replaced.
+	 *
+	 * **Built with the panel rather than lazily on the first award**, which is where this deliberately differs
+	 * from those two tones: hover feedback fires a few hundred milliseconds after the pointer arrives, on a shelf
+	 * that may never be looked at, so lazy is right there. This one fires when a server round trip has *already*
+	 * been waited for, and a clip that only began loading at that moment would arrive after the sentence it
+	 * belongs to. The cost is one `Sound` in `SoundService` for every client, whether or not they open a chest.
+	 */
+	private awardSound?: Sound;
+
 	onStart(): void {
 		// Spawned rather than done inline, matching the other HUDs: mounting waits for `PlayerGui`, and
 		// a controller's `onStart` is the wrong place to hold up the rest of the client's boot.
@@ -214,6 +238,7 @@ export class ShopController implements OnStart {
 		// see, rather than a detail they would not.
 		this.watchPlayer();
 		this.watchChest();
+		this.watchPurchase();
 	}
 
 	/**
@@ -276,27 +301,30 @@ export class ShopController implements OnStart {
 	// ---------- tab 1: cosmetics ----------
 
 	/**
-	 * The cosmetics catalogue — and **nothing on this shelf can be bought, which the panel says.**
+	 * The cosmetics catalogue — **two shelves in one grid: the coin trails, and the Robux items.**
 	 *
-	 * **There is no purchase path in this project at all.** No `MarketplaceService`, no prompt, no
-	 * ownership check, no grant: a Buy button would take a player's Robux and hand back nothing, because
-	 * no server code is listening for the answer. A half-path that charges is worse than a shelf
-	 * labelled "not yet", so the tiles carry their price and their state and nothing here is clickable.
+	 * **The coin shelf is buyable and the Robux shelf is not, and the difference is the *absence* of a
+	 * button rather than a label.** A coin trail gets an activation — a tap sends `purchaseCosmetic` — and a
+	 * Robux item gets none, which is the whole of "no Robux path": a tile without an activation has no hit
+	 * button at all (see `addTile`), so there is nothing to click and nothing to explain. The status line says
+	 * the rest: `Buy · 300 coins` on one, `Trail · 99 R$ · Not yet purchasable` on the other.
 	 *
-	 * **Every `gamepassId` in the config is `0` today too**, so even a prompt could not be aimed: the ids
-	 * have to exist in the creator dashboard first. Those two facts together are why the status line is a
-	 * statement rather than an apology.
+	 * **The Robux half is still a shelf of statements rather than actions**, for the reason it has always been
+	 * one: no `MarketplaceService`, no prompt, and every `gamepassId` is `0`, so a Buy button there would take
+	 * a player's Robux and hand back nothing. The coin shelf is the opposite case and is wired end to end — a
+	 * player who taps it has already spent by the time the server says no, and the refusal comes back verbatim.
 	 *
-	 * **It renders `PREMIUM_COSMETICS` because that is the only buyable set that exists, not because the
-	 * tab is about a price tier.** The shelf is "cosmetics you could buy"; the set it draws from is called
-	 * premium because every entry in it carries a price, and the day something is bought a different way it
-	 * belongs here without this method being renamed a second time.
+	 * **One grid, two shelves, and that is deliberate.** The tiles are the same family, the reading order is
+	 * the catalogue's, and the only thing that differs between a coin trail and a Robux trail is what a tap
+	 * does — which is exactly what the status line and the button's presence say. Splitting them into two
+	 * grids would put a seam between two items that differ only in their price's currency.
 	 *
-	 * **Owned entries are marked in the status line rather than by a border.** The Inventory's accent
-	 * outline means *equipped*, which is a state that does not exist in a shop — a tile here can be owned
-	 * and worn, owned and not worn, or not owned at all, and only the middle fact belongs to this panel. So
-	 * the marker is the word `Owned` in the success colour, next to the price it replaces: one text line that
-	 * already exists, and no second marker colour for a different kind of "on".
+	 * **Owned entries are marked in the status line rather than by a border**, which the previous version of
+	 * this pane argued at length and which is still right: the accent outline means *equipped*, a state that
+	 * does not exist in a shop, so the marker is the word `Owned` in the success colour. An owned coin trail
+	 * shows `Owned` and its tap is a no-op (see `requestPurchase`), an unaffordable one shows its price and its
+	 * tap surfaces the server's "not enough coins" — the price is never hidden, because a greyed-out price is
+	 * a price the player has to be *told* they cannot reach, and the refusal is the sentence that tells them.
 	 */
 	private addCosmeticsPane(content: Frame, theme: HudTheme): void {
 		const pane = addPane(
@@ -306,10 +334,33 @@ export class ShopController implements OnStart {
 			1,
 			Fusion.Computed(this.scope, (use) => use(this.currentTab) === "Cosmetics"),
 		);
-		const grid = addGrid(this.scope, pane, COLUMNS, PREMIUM_COSMETICS.size());
+		const grid = addGrid(this.scope, pane, COLUMNS, PURCHASE_COSMETICS.size() + PREMIUM_COSMETICS.size());
 
-		PREMIUM_COSMETICS.forEach((def, index) => {
-			const tile = addTile(this.scope, grid, theme, def.name, index, true);
+		let order = 0;
+
+		for (const def of PURCHASE_COSMETICS) {
+			// The coin shelf, first — the things the panel can actually act on, in the same spirit the opening
+			// tab puts the chest up: the clickable half comes before the one that is only there to be looked at.
+			const tile = addTile(this.scope, grid, theme, def.name, order, true, () => this.requestPurchase(def));
+			order += 1;
+
+			Fusion.Hydrate(this.scope, tile.statusLabel)({
+				Text: Fusion.Computed(this.scope, (use) =>
+					ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id)
+						? "Owned"
+						: `Buy · ${withCommas(def.coinPrice ?? 0)} coins`,
+				),
+				TextColor3: Fusion.Computed(this.scope, (use) =>
+					ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id)
+						? theme.colors.success
+						: theme.colors.textPrimary,
+				),
+			});
+		}
+
+		for (const def of PREMIUM_COSMETICS) {
+			const tile = addTile(this.scope, grid, theme, def.name, order, true);
+			order += 1;
 
 			Fusion.Hydrate(this.scope, tile.statusLabel)({
 				// Owned wins over the not-yet notice: once a grant path exists, an item a player already
@@ -327,7 +378,7 @@ export class ShopController implements OnStart {
 						: theme.colors.textDisabled,
 				),
 			});
-		});
+		}
 	}
 
 	// ---------- footer ----------
@@ -362,8 +413,17 @@ export class ShopController implements OnStart {
 				const reason = use(this.chestReason);
 
 				if (reason !== "") return reason;
-				if (granted !== "" && isAbilityKind(granted)) return `You unlocked ${ABILITY_NAMES[granted]}!`;
-				return "";
+				if (granted === "") return "";
+
+				// **An ability id goes through the roster's own vocabulary; anything else is already a name.** The
+				// two arms of the chest's pool travel differently on purpose — see `networking.ts` on
+				// `chestResult` — and this is the one line that reads both: a power arrives as `"Pierce"` and is
+				// named from `ABILITY_NAMES`, a cosmetic arrives as `"Verdant Trail"` and has no map to go
+				// through. The test is `isAbilityKind` rather than a bare non-empty check so that an ability id
+				// this build does not know would still be drawn verbatim rather than blanked.
+				return isAbilityKind(granted)
+					? `You unlocked ${ABILITY_NAMES[granted]}!`
+					: `You unlocked ${granted}!`;
 			}),
 			TextColor3: Fusion.Computed(this.scope, (use) =>
 				use(this.chestReason) !== "" ? theme.colors.warning : theme.colors.success,
@@ -374,15 +434,35 @@ export class ShopController implements OnStart {
 			),
 		});
 
+		/**
+		 * How much of the chest this player has left to win, as the one number the button and the line share.
+		 *
+		 * **One `Computed` for the pair, because they are two halves of one question.** The button is shown while
+		 * this is above zero and the sentence is shown while it is at zero, so two `Computed`s would be two
+		 * subscriptions deriving the same count — two things to keep in step where one will do, and the kind of pair
+		 * that drifts the day one of them is changed.
+		 *
+		 * **Neither attribute is read after a branch.** This pair used to: `use(this.powers)` sat behind an `&&` that
+		 * was false whenever the catalogue tab was up, so those subscriptions existed only while the other tab was
+		 * showing. It was invisible — the footer is hidden on that tab too — and it is fixed here because a
+		 * `Computed` that reads a value conditionally is the documented trap rather than a style question. See
+		 * `RoundStatusController`.
+		 */
+		const remaining = Fusion.Computed(this.scope, (use) =>
+			this.unclaimedPrizes(use(this.powers), use(this.cosmetics)).size(),
+		);
+
 		const complete = addMessageLine(this.scope, theme, footer, 2);
 		complete.Name = "ChestComplete";
 		complete.Text = "Nothing left in the chest to win.";
 		complete.TextColor3 = theme.colors.success;
 		Fusion.Hydrate(this.scope, complete)({
-			Visible: Fusion.Computed(
-				this.scope,
-				(use) => use(this.currentTab) === "Power & Items" && this.unownedPowers(use(this.powers)).size() === 0,
-			),
+			Visible: Fusion.Computed(this.scope, (use) => {
+				const onPowerTab = use(this.currentTab) === "Power & Items";
+				const left = use(remaining);
+
+				return onPowerTab && left === 0;
+			}),
 		});
 
 		const open = Button(this.scope, {
@@ -397,10 +477,12 @@ export class ShopController implements OnStart {
 		open.Name = "OpenChestButton";
 		open.Parent = footer;
 		Fusion.Hydrate(this.scope, open)({
-			Visible: Fusion.Computed(
-				this.scope,
-				(use) => use(this.currentTab) === "Power & Items" && this.unownedPowers(use(this.powers)).size() > 0,
-			),
+			Visible: Fusion.Computed(this.scope, (use) => {
+				const onPowerTab = use(this.currentTab) === "Power & Items";
+				const left = use(remaining);
+
+				return onPowerTab && left > 0;
+			}),
 		});
 	}
 
@@ -419,9 +501,57 @@ export class ShopController implements OnStart {
 		this.chestRemote?.SendToServer();
 	}
 
-	/** The powers this player does not own, from an `OWNED_POWERS_ATTRIBUTE` string. */
-	private unownedPowers(owned: string): AbilityKind[] {
-		return POWER_ROSTER.filter((kind) => !ownsPower(owned, kind));
+	/**
+	 * Asks to buy one coin-priced cosmetic, guarded by the one fact the tile already shows.
+	 *
+	 * **An owned tile is a no-op rather than a round trip**, and the guard is the reactive read the tile
+	 * cannot make a button out of: `addTile` builds its hit button once, from whether an activation was given,
+	 * so "clickable only while unowned" cannot be a state the button enters and leaves. The guard here is the
+	 * next best thing and the honest one — the tile says `Owned`, a tap on it does nothing, and the server
+	 * refuses the request independently either way (`validatePurchase`'s ownership branch), so nothing about
+	 * the economy trusts this check.
+	 *
+	 * **The refusal is not surfaced here.** A tap on an owned tile is not a mistake the panel needs to
+	 * explain — the word `Owned` is on the tile the player tapped — and printing a sentence would be the panel
+	 * scolding a player for something it had already told them.
+	 */
+	private requestPurchase(def: CosmeticDef): void {
+		if (ownedCosmeticIdsOf(Fusion.peek(this.cosmetics)).has(def.id)) return;
+
+		if (DEBUG) print(`[Shop] asked to buy ${def.id}`);
+
+		// Cleared for `requestChest`'s reason: a reply must not be readable as the answer to an earlier ask.
+		this.chestGranted.set("");
+		this.chestReason.set("");
+
+		this.purchaseRemote?.SendToServer(def.id);
+	}
+
+	/**
+	 * Every prize in the chest this player does not have — **the whole pool, not just the powers.**
+	 *
+	 * **The pool rather than the roster, because the panel's question is the chest's question.** The button and
+	 * the "nothing left" line are both asking the same thing the server asks before it takes the coins — "is
+	 * there anything in the pool this player does not have?" — and the server answers it from `CHEST_POOL`. A gate
+	 * derived from `POWER_ROSTER` alone was correct while powers were the whole pool and became wrong the moment
+	 * the chest gained a second kind: it would hide the button from every player who owns three powers, which is
+	 * every player, and the chest would be unreachable with nothing on screen to say why.
+	 *
+	 * **Derived here rather than sent.** Nothing about the answer is secret — the two owned sets are attributes
+	 * this panel is already reading — and a remote reporting a count would be a second copy of a fact the client
+	 * can see for itself. It is the same reasoning that keeps the pool's *odds* off the wire: the list is the same
+	 * for everybody and the client owns it.
+	 *
+	 * The two arms are tested exactly as `EconomyService.ownsPrize` tests them, from the attributes rather than
+	 * from a record — `ownsPower` parses the power string and `ownedCosmeticIdsOf` the cosmetic one, both taking
+	 * the verbatim attribute text this panel already holds.
+	 */
+	private unclaimedPrizes(powers: string, cosmetics: string): ChestPrize[] {
+		const owned = ownedCosmeticIdsOf(cosmetics);
+
+		return CHEST_POOL.filter((prize) =>
+			prize.kind === "power" ? !ownsPower(powers, prize.power) : !owned.has(prize.cosmetic),
+		);
 	}
 
 	/**
@@ -477,6 +607,23 @@ export class ShopController implements OnStart {
 	private watchChest(): void {
 		this.chestRemote = events.Client.Get("openPowerChest");
 
+		// **The award sound, built here because this is the method that owns the event it answers.** Preloaded
+		// for the reason given with the field: the moment it is needed is a reply that has already cost a round
+		// trip, and the clip should not be starting then as well.
+		const award = new Instance("Sound");
+		award.Name = "ChestAward";
+		award.SoundId = AUDIO_CONFIG.CHEST_GRANT;
+		award.Volume = AUDIO_CONFIG.CHEST_GRANT_VOLUME;
+		award.Parent = SoundService;
+
+		this.awardSound = award;
+
+		ContentProvider.PreloadAsync([award], (contentId, fetchStatus) => {
+			if (fetchStatus !== Enum.AssetFetchStatus.Success) {
+				warn(`[Shop] chest award sound did not load — ${contentId} (${fetchStatus.Name})`);
+			}
+		});
+
 		this.scope.push(
 			events.Client.Get("chestResult").Connect((granted, reason) => {
 				// The wire is not typed, so what arrives is checked rather than trusted — the treatment
@@ -487,11 +634,61 @@ export class ShopController implements OnStart {
 				this.chestGranted.set(grantedText);
 				this.chestReason.set(reasonText);
 
+				/**
+				 * **`granted` being non-empty is the whole of the success signal, and there is no second one to
+				 * invent.** The server sends `""` for a refusal *and* `""` for a duplicate, and a name for a grant —
+				 * so the same string the footer draws its sentence from is the test, and the sound cannot disagree
+				 * with the words about whether anything happened. A duplicate and a refusal are the same outcome to
+				 * a player; a sound on either would be the panel announcing something that did not take place. See
+				 * `networking.ts` on `chestResult`.
+				 *
+				 * **Played after the values are written rather than before.** Both land in this frame, so this is
+				 * about intent rather than latency: the line is the record of what happened and the sound is the
+				 * notice that goes with it, and if the two ever *were* pulled apart the line is the one that must
+				 * not wait.
+				 */
+				if (grantedText !== "") this.awardSound?.Play();
+
 				if (DEBUG) {
 					print(
 						`[Shop] chest replied — granted "${grantedText}", reason "${reasonText}"` +
 							` (coins now ${Fusion.peek(this.coins)})`,
 					);
+				}
+			}),
+		);
+	}
+
+	/**
+	 * Takes the purchase's answer, on `watchChest`'s shape and the same outcome line.
+	 *
+	 * **A separate event and a separate watcher, but one line.** `purchaseResult` and `chestResult` carry the
+	 * same two strings and land on the same footer line, because a player reads one sentence about the last
+	 * economy action, not two. What separates them is the vocabulary — the purchase's reasons are its own —
+	 * and the *event* that carried the sentence, which is the only thing the client needs to know which of the
+	 * two actions refused. Both write the same two values, so a purchase's answer replaces a chest's the way a
+	 * second chest would.
+	 *
+	 * **The success signal is `granted` being non-empty, exactly as it is for the chest**, and the award sound
+	 * is the same reused instance for the same reason: a grant is a grant, whether the coins went into a chest
+	 * or onto a shelf, and a second `Sound` for the same id and the same moment would be a second thing to
+	 * keep in step. Played after the values are written, in the same frame.
+	 */
+	private watchPurchase(): void {
+		this.purchaseRemote = events.Client.Get("purchaseCosmetic");
+
+		this.scope.push(
+			events.Client.Get("purchaseResult").Connect((granted, reason) => {
+				const grantedText = typeIs(granted, "string") ? granted : "";
+				const reasonText = typeIs(reason, "string") ? reason : "";
+
+				this.chestGranted.set(grantedText);
+				this.chestReason.set(reasonText);
+
+				if (grantedText !== "") this.awardSound?.Play();
+
+				if (DEBUG) {
+					print(`[Shop] purchase replied — granted "${grantedText}", reason "${reasonText}"`);
 				}
 			}),
 		);
