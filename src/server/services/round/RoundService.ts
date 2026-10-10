@@ -1351,21 +1351,22 @@ export class RoundService implements OnStart {
 
         if (this.roundHitLog.size() > HIT_LOG_CAP) this.roundHitLog.pop();
 
-        // **And the two people in it are told, on the line after the record rather than at the call site.**
-        // The alternative was for `registerHit` to send after calling in here, which is the same event
+        // **And everybody is told, on the line after the record rather than at the call site.** The
+        // alternative was for `registerHit` to send after calling in here, which is the same event
         // written in two places: a hit that was logged and not sent, or sent and not logged, would be a
         // defect nobody could see in either file alone.
         //
         // **Names rather than the `Player`s themselves**, because a `Player` reference does not survive the
         // trip and a name is what a row draws — see `RoundResultRow` for the same conversion for the same
-        // reason. **To the two of them and to nobody else**: this is a fact about two people, and every
-        // other client could only discard it. See `networking.ts` on `roundHit` for the payload, and
-        // `HitLogController` for what each end does with it.
+        // reason.
         //
-        // **A hit between two people who have both since left is not a problem here**: the log is the
-        // record for the round, and this send is the part that has a recipient list, so a pair that is no
-        // longer connected simply stops receiving. The entry above is unaffected.
-        events.Server.Get("roundHit").SendToPlayers([hitter, victim], hitter.Name, victim.Name, direction);
+        // **To everyone, which is the change this made when the HUD stopped being a pair of personal lists
+        // and became the round's feed.** It was a `SendToPlayers` over the two of them, which read as the
+        // natural shape for a fact about two people — and it was, while each client was shown only its own
+        // exchanges. A feed is one list for the whole server, so sending it to the pair would leave every
+        // client watching a feed that showed only the hits it was in, which is the thing the feed was
+        // changed away from. See `networking.ts` on `roundHit`, which carries the cost of the broadcast.
+        events.Server.Get("roundHit").SendToAllPlayers(hitter.Name, victim.Name, direction);
     }
 
     /**

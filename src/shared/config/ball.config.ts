@@ -37,8 +37,11 @@ export const BALL_CONFIG = {
 	 * It has to be here because the engine does not model rolling resistance. A ball
 	 * rolling without slipping has no relative motion at the point of contact, so friction
 	 * has nothing to push against and almost none of the ball's energy leaves it — which is
-	 * why raising {@link BALL_CONFIG.GROUND_FRICTION} barely changed how long a ball rolled.
-	 * Nothing in the engine stops a roll; this does.
+	 * why raising {@link BALL_CONFIG.GROUND_FRICTION} never changed how long a ball rolled at
+	 * all. **It could not have**: every value above the engine's maximum of `2` was clamped
+	 * back to `2` on every ball, so that experiment was not measuring what it looked like it
+	 * was measuring. See that constant for the clamp. Nothing in the engine stops a roll;
+	 * this does.
 	 *
 	 * Applied by `BallService`'s settle loop to any loose ball that is on the floor, as a
 	 * **constant deceleration** rather than a proportional one, because that is what rolling
@@ -77,10 +80,26 @@ export const BALL_CONFIG = {
 	 * roll. Measured here rather than reasoned about — see
 	 * {@link BALL_CONFIG.ROLL_RESISTANCE} for the number that does the work.
 	 *
-	 * Read by `BallService` as the ball's `CustomPhysicalProperties.friction`, whose engine
-	 * maximum this is.
+	 * Read by `BallFactory.create` as the ball's `CustomPhysicalProperties.friction` — **and `2` is the
+	 * engine's maximum, which `10` was not.**
+	 *
+	 * **The value was `10` and the engine silently rewrote it to `2` on every ball.** The range for this
+	 * field is `0`–`2`, and a value outside it is not refused: the engine writes the nearest legal value
+	 * and says so from the log,
+	 *
+	 *     Clamped specified Friction value of 10 to 2. Acceptable range is 0 to 2
+	 *
+	 * — a warning that reads as noise, and is in fact the only statement anywhere that the number above
+	 * was a fiction. It printed once per ball, so it dominated the output of a session for something that
+	 * was never doing anything.
+	 *
+	 * **Setting it to `2` changes no physics at all, and that is why it is the fix rather than a
+	 * retune.** With `10` in the file, every ball this game has ever thrown was already using `2`; so
+	 * this makes the file say what the engine was doing, and any value tried here between `2` and `10`
+	 * can now be seen to have been identical to `2` the whole time. A tuning session that had settled on
+	 * anything in that range would have been tuning nothing.
 	 */
-	GROUND_FRICTION: 10,
+	GROUND_FRICTION: 2,
 
 	/**
 	 * How much of its approach speed a ball keeps when it bounces, as a fraction. Read

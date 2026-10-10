@@ -1,6 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import {
+	CollectionService,
 	Players,
 	ReplicatedStorage,
 	RunService,
@@ -199,6 +200,15 @@ export class ShiftLock implements OnStart {
 	 */
 	private humanoid?: Humanoid;
 
+	/**
+	 * How many zone parts this controller has already reported, or `undefined` before the first report.
+	 *
+	 * **The memory is the whole of the fix rather than bookkeeping for its own sake**: the count is
+	 * reported *when it changes*, so something has to remember what was said last. See
+	 * {@link reportZoneParts} for the log that made a one-time count untenable.
+	 */
+	private reportedZoneParts?: number;
+
 	public onStart(): void {
 		// **The first line is printed here, before anything else below it can fail, and that is not
 		// decoration.** "Nothing happens" has two causes that look identical from the outside — the module
@@ -318,22 +328,60 @@ export class ShiftLock implements OnStart {
 
 		task.spawn(() => this.watchZones());
 
-		// **The count is the answer to "is the tag there at all", and it is printed rather than worked out
-		// later.** Tags replicate, so a part tagged in the place file is visible from here — which makes a
-		// zero the difference between "the box is in the wrong place" and "nothing is tagged". `NpcService`
-		// prints the same kind of line at startup for the same reason, and it is the first thing to grep for
-		// when a tag-driven feature does nothing.
-		//
-		// **The parts come from `taggedParts`, so the tag can go on the box or on a folder holding it.** The
-		// warning that used to stand here — telling the reader the tag belonged on the part rather than on a
-		// model around it — is gone because the case it described now works.
-		const parts = taggedParts(PRACTICE_ZONE_TAG);
+		// **The count is subscribed to before it is taken, so a tag that lands between the two is not
+		// missed.** The signals are the tag's own, which is the point: a part joining or leaving the tag is
+		// precisely the event that changes the answer, so this costs nothing between times and needs no
+		// poll. Counting on the zone's own tick was the alternative, and ten `GetTagged` walks a second for
+		// the life of the session to notice something that happens once is the cost {@link checkZone}
+		// refuses when it explains why the zone test reads a published attribute rather than a walk.
+		scope.push(
+			CollectionService.GetInstanceAddedSignal(PRACTICE_ZONE_TAG).Connect(() => this.reportZoneParts()),
+		);
+		scope.push(
+			CollectionService.GetInstanceRemovedSignal(PRACTICE_ZONE_TAG).Connect(() => this.reportZoneParts()),
+		);
 
-		if (DEBUG) {
+		this.reportZoneParts();
+	}
+
+	/**
+	 * Prints how many `practiceZone` parts this client can see — **and prints it again whenever that
+	 * number changes, rather than once.**
+	 *
+	 * **The failure this fixes is one a session's log shows, not one imagined.** The boot line read `0
+	 * practiceZone part(s)` while the *server's* own `[Zone] up` line read `1 tagged part(s)` in the same
+	 * second — and the lock then engaged on that zone four seconds later, so the parts were there all
+	 * along and the zero was a fact about replication rather than about the tag. A client mounts when the
+	 * GUI does and the map streams in behind it; a count taken at that moment reads `0` for "nothing is
+	 * tagged" and for "nothing has arrived yet" alike, and it is the second of those the reader used to be
+	 * sent looking for in the place file. **A line that cannot tell those two apart is worse than no
+	 * line.**
+	 *
+	 * **The first line keeps its wording exactly**, so it stays the line to grep for a controller that
+	 * mounted at all; what arrives later is a second line in its own words rather than a rewrite of the
+	 * first — and a removal says so too, because a tag taken off the box in Studio is the same fact
+	 * arriving from the other side.
+	 *
+	 * **`taggedParts` rather than a count of the raw tag members**, so the number matches what the zone
+	 * rules actually read: the tag may go on the box or on a folder holding it, and this is the helper
+	 * that says those two are the same parts. See `shared/taggedParts.ts`.
+	 */
+	private reportZoneParts(): void {
+		const count = taggedParts(PRACTICE_ZONE_TAG).size();
+		if (count === this.reportedZoneParts) return;
+
+		const first = this.reportedZoneParts === undefined;
+		this.reportedZoneParts = count;
+
+		if (!DEBUG) return;
+
+		if (first) {
 			print(
-				`[ShiftLock] up — ${parts.size()} ${PRACTICE_ZONE_TAG} part(s), ` +
+				`[ShiftLock] up — ${count} ${PRACTICE_ZONE_TAG} part(s), ` +
 					`watching during ${INTERMISSION}, no key bound`,
 			);
+		} else {
+			print(`[ShiftLock] ${PRACTICE_ZONE_TAG}: now ${count} part(s)`);
 		}
 	}
 

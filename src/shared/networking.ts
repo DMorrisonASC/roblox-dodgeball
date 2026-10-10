@@ -220,17 +220,22 @@ export const events = Net.Definitions.Create({
 	 * colours, because a side's colour is a property of the side rather than of the person — and
 	 * {@link HitDirection} is also where the guarantee that the two names differ comes from.
 	 *
-	 * **Sent to the two players in it and to nobody else.** {@link roundResult} is broadcast because a
-	 * board belongs to a whole side; this belongs to two people, and a third client could do nothing with
-	 * it but discard it. One `SendToPlayers` call rather than two `SendToPlayer` calls, because the
-	 * payload is identical for both ends — what differs is which of the two lists a client files it under,
-	 * and each client answers that for itself from the two names.
+	 * **Broadcast, to everybody — and this is a reversal, so the argument it replaces is worth stating.**
+	 * It used to go to the two people in the hit and to nobody else, on the reasoning that a third client
+	 * could do nothing with it but discard it. That was true while the reader was a pair of *personal*
+	 * lists ("who I hit", "who hit me"): a client was only ever shown its own exchanges. It stopped being
+	 * true when the reader became the round's feed, because a feed is one list for the whole server — the
+	 * hits you are in and the hits you are not are the same list, read the same way — so a client that is
+	 * in nobody's hits still has every reason to watch other people's. One `SendToAllPlayers` rather than a
+	 * `SendToPlayers` over the pair. **The cost is stated rather than hidden**: every client receives every
+	 * hit of the round in a server of N, and N−2 of them are hits it does not appear in. What that buys is
+	 * that the feed is the same list on every machine with no filtering anywhere — not on the server, and
+	 * not on the client, which no longer has to ask whether one of the two names is its own.
 	 *
 	 * **Not validated on arrival beyond the direction.** The wire is not typed, so the direction arrives
 	 * as an arbitrary string and only two values are meaningful; a client that reads a third drops the
-	 * message rather than inventing a colour for it. The names are checked against nothing — the only
-	 * thing a client compares them to is its own `Name`, and a message naming neither end is one that was
-	 * not meant for it.
+	 * message rather than inventing a colour for it. **Nothing about *who* is checked at all any more** —
+	 * the two names are drawn and never compared.
 	 */
 	roundHit: Net.Definitions.ServerToClientEvent<[hitter: string, victim: string, direction: string]>(),
 
