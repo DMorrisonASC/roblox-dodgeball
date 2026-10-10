@@ -34,6 +34,29 @@ export interface RoundResultRow {
 	readonly outs: number;
 }
 
+/**
+ * Which way a hit went, as the two sides in it — **`"AtoB"` is team A's throw landing on a B body, and
+ * `"BtoA"` is the reverse.**
+ *
+ * **Two values, because friendly fire is refused before any hit is recorded.** `BallComponent` vetoes a
+ * same-side contact ahead of the damage, so every logged hit has one end on each side and there is no
+ * same-side case for a third value to describe. That is exactly what makes this usable as a *colour
+ * rule*: a reader that knows the two sides' colours can draw both names of a hit from this one string,
+ * and can be certain the two do not match.
+ *
+ * **Declared here, beside the event that carries it, rather than in `RoundService` where the log that
+ * fills it lives.** It is the vocabulary of the *wire* — the server writes it, and every client reads it
+ * and derives colours from it — and a literal union spelled out in two files is two places for the two
+ * strings to drift apart. That is the argument `voteCountAttribute` makes about a shared key, and the
+ * same one `RoundResultRow` makes about living here rather than next to the service that sends it. The
+ * server's entry type still uses it; only its home moved.
+ *
+ * **A value rather than something the far side works out.** A client cannot derive which way a hit went
+ * from the pair of names: that takes both players' *sides*, and the sides a later reader would look up
+ * are not necessarily the sides that were in force when the throw landed.
+ */
+export type HitDirection = "AtoB" | "BtoA";
+
 export const events = Net.Definitions.Create({
 	/**
 	 * Client → server: this character wants to dodge in this direction.
@@ -186,6 +209,30 @@ export const events = Net.Definitions.Create({
 	 * and there is nothing on the folder for it to catch up from.
 	 */
 	roundResult: Net.Definitions.ServerToClientEvent<[mode: string, winner: string, rows: RoundResultRow[]]>(),
+
+	/**
+	 * Server → client: **one hit, as the two people in it** — the third entry here that travels this way,
+	 * and the second that is about the round rather than an answer to a request.
+	 *
+	 * **Two names and a direction, and nothing else needs to travel.** A hit is a *pair*, which is why
+	 * this is an event rather than an attribute: the folder the rest of the HUD reads carries scalars, and
+	 * no scalar says "Alice hit Bob". The names are what a row draws; the direction is what decides both
+	 * colours, because a side's colour is a property of the side rather than of the person — and
+	 * {@link HitDirection} is also where the guarantee that the two names differ comes from.
+	 *
+	 * **Sent to the two players in it and to nobody else.** {@link roundResult} is broadcast because a
+	 * board belongs to a whole side; this belongs to two people, and a third client could do nothing with
+	 * it but discard it. One `SendToPlayers` call rather than two `SendToPlayer` calls, because the
+	 * payload is identical for both ends — what differs is which of the two lists a client files it under,
+	 * and each client answers that for itself from the two names.
+	 *
+	 * **Not validated on arrival beyond the direction.** The wire is not typed, so the direction arrives
+	 * as an arbitrary string and only two values are meaningful; a client that reads a third drops the
+	 * message rather than inventing a colour for it. The names are checked against nothing — the only
+	 * thing a client compares them to is its own `Name`, and a message naming neither end is one that was
+	 * not meant for it.
+	 */
+	roundHit: Net.Definitions.ServerToClientEvent<[hitter: string, victim: string, direction: string]>(),
 
 	/**
 	 * Client → server: this player wants to spend coins on a Power Chest.

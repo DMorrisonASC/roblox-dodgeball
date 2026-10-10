@@ -48,15 +48,22 @@ function remainingOf(at: unknown, now: number): number {
  * delay it — which means there is a gap a player has to be told about. Without this label that gap is
  * a dead screen with no explanation, and the honest reading of a dead screen is "the game has broken".
  *
- * **It reads one attribute and nothing else**, the same shape as `SpectatorController`: `RespawnService`
- * writes the instant the next body is due on the *player* — not the character, because the character is
- * precisely what is missing — so there is no remote here, no service, and no knowledge of why the wait
- * was scheduled. Everything shown is derived from that one number, so the readout cannot disagree with
- * the timer that will actually fire.
+ * **It reads one attribute and nothing else**: `RespawnService` writes the instant the next body is due on
+ * the *player* — not the character, because the character is precisely what is missing — so there is no
+ * remote here, no service, and no knowledge of why the wait was scheduled. Everything shown is derived from
+ * that one number, so the readout cannot disagree with the timer that will actually fire.
  *
- * **`RespawnAt` is also what `SpectatorController` is not:** that label is about being out of the round,
- * this one is about being between bodies, and a player who is eliminated while waiting will have both
- * cleared and this one hidden in the same frame.
+ * **This is now the only readout that says anything about a player who is out of the round**, which is the
+ * half of its job that used to be shared with someone else. `SpectatorController` said "you're out —
+ * spectating" for the whole time a player was out of a round; that controller and its attribute are gone,
+ * so being out of a round is now visible here or not at all.
+ *
+ * **The two were never the same fact, and this one never covered the other.** This is about being *between
+ * bodies*: `RESPAWN_AT_ATTRIBUTE` is cleared the moment the body arrives, and a death inside a round hands
+ * one back after `ARENA_CONFIG.RESPAWN_DELAY_SECONDS`, so the wait is short and ends on its own. What has
+ * changed is the other case — an elimination that lasts the rest of the round — which no longer has a
+ * label, because the label that covered it was the state that was removed. Team Elimination is the only
+ * mode that reaches that case and it is unreachable today; see `RoundService.eliminate`.
  */
 @Controller()
 export class RespawnHudController implements OnStart {
@@ -90,7 +97,9 @@ export class RespawnHudController implements OnStart {
 
 		// A frame around the label rather than the label itself, because `Visible` is what is reactive and a
 		// `TextLabel` built by big-ui's `Text` takes no reactive properties. One of the two has to carry the
-		// state; this way the label keeps the typography. The same division as `SpectatorController`.
+		// state; this way the label keeps the typography. The division was `SpectatorController`'s first, and
+		// it outlived that controller because the reason for it is a fact about big-ui rather than about the
+		// label that used to be drawn there.
 		const wrapper = Fusion.New(scope, "Frame")({
 			Name: "RespawnCountdown",
 			Size: new UDim2(0, LABEL_WIDTH, 0, 0),

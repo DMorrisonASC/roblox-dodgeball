@@ -377,9 +377,16 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// goes off on the line after this, so the second contact of an arrival is refused at the
 			// top of `handleTouch` like any other spent ball. A ball that is destroyed while still
 			// armed is the one case that ends without this line, and it has its own.
+			// **And the ball's ability, for the same reason the tag line above carries it.** A Freeze ball
+			// that misses is the case where the *miss* splash below should fire, and whether it did is
+			// otherwise a question about a line that says only where the ball stopped. Read once, here,
+			// rather than at the branch below, so the line and the branch cannot disagree about it.
+			const ability = abilityOn(this.instance);
+			const labelled = ability === undefined ? "" : ` [${ability}]`;
+
 			print(
 				`[Ball] ${this.instance.Name} #${this.identity}: ended on ${otherPart.Name} — ` +
-					`${this.hitModels.size()} tag(s)`,
+					`${this.hitModels.size()} tag(s)${labelled}`,
 			);
 
 			// The thrower is still readable here: the world branch never made the ball inert, so
@@ -402,7 +409,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			//
 			// The radius is the *miss* radius and the position is the ball's own, both of which are the
 			// difference between a free hit and a throw that went somewhere it was not aimed.
-			if (!taggedAny && abilityOn(this.instance) === "Freeze") {
+			if (!taggedAny && ability === "Freeze") {
 				// Where the ball stopped, which is where the burst is fired. See the tag branch above for why
 				// it is the ball's own position rather than the position of whatever it came to rest on.
 				this.freezes.freezeInRadius(
@@ -553,7 +560,18 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// touched anybody — which is exactly the confusion this pair exists to end. Ungated for
 		// `landHit`'s reason and on the same terms: it fires once per tagged body per throw, and the
 		// two lines are meant to be read against each other.
-		print(`${character.Name} was tagged by ${this.instance.Name} on ${struck.Name}`);
+		//
+		// **The ball's ability is named on the line, and that is a third fact the same sentence has to
+		// carry.** A ball-carried ability is read off the ball *at this moment* — it survives the throw,
+		// see `BallService.throwBall` — so "the ball was a Freeze ball when it landed" is a fact about
+		// this contact and not about the mark somebody saw while holding it. Without it here, a splash
+		// that did not fire has two possible causes and no way to tell them apart: the ball carried no
+		// ability by the time it arrived, or it carried one and the splash itself did nothing. The
+		// bracket is empty for an ordinary ball, which is what most throws are.
+		const ability = abilityOn(this.instance);
+		const labelled = ability === undefined ? "" : ` [${ability}]`;
+
+		print(`${character.Name} was tagged by ${this.instance.Name} on ${struck.Name}${labelled}`);
 
 		// **The splash, and it fires here rather than at the landing — which is the whole of what this
 		// ability is.** The tag above is the direct hit, and it is deliberately nothing special: that body
@@ -572,7 +590,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// be exactly the "special handling for the direct hit" this ability does not have, and it changes
 		// nothing about the outcome: that body is already tagged, and a tagged body dies when the ball lands
 		// whether or not it was frozen on the way there.
-		if (abilityOn(this.instance) === "Freeze") {
+		if (ability === "Freeze") {
 			// **The ball's own position rather than the struck part's.** The splash's radius is eight studs,
 			// so where its centre sits inside that sphere changes nothing about who is caught — but this is
 			// also the point the burst is fired from, and a limb's centre is inside the limb, which would

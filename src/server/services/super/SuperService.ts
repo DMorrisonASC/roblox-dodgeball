@@ -831,10 +831,10 @@ function playerOf(throwerToken: unknown): Player | undefined {
  *
  * **Read from the attribute rather than from the round's own table**, which is the whole of the
  * dependency this service has on sides: the round publishes a side per player and this compares them,
- * and nothing here has to know what a side *is* or when it is assigned. It also means a player who is
- * not in the round — a spectator holding a stale label, a joiner yet to be given one — is compared
- * among the ones like them, which is a group with no hits in it in every case the crown can be earned
- * in, and the floor of `1` is what keeps it from crowning anybody.
+ * and nothing here has to know what a side *is* or when it is assigned. It also means a player with no
+ * side — a joiner yet to be given one, somebody standing in the lobby between rounds — is compared among
+ * the ones like them, which is a group with no hits in it in every case the crown can be earned in, and
+ * the floor of `1` is what keeps it from crowning anybody.
  *
  * **A plain `string` and not a `TeamLabel`, deliberately.** This is an attribute read, so the honest
  * type is "whatever was written there", and the two-line body is the answer to "which of those is

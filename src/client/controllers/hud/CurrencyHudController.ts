@@ -11,7 +11,7 @@ const DEBUG = true;
 /**
  * The coin readout: one line under the shop button, showing the wallet the server owns.
  *
- * **It reads one attribute and nothing else**, the same shape as the spectator label: `EconomyService`
+ * **It reads one attribute and nothing else**, the same shape as the respawn countdown: `EconomyService`
  * writes `Coins` on the *player* — not the character, because the wallet outlives every body it was
  * filled in — so there is no remote here, no polling, and no second copy of the earn rules. The
  * readout changes when the attribute changes, which is exactly when the wallet changes.

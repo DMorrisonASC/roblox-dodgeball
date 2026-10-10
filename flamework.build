@@ -20,7 +20,6 @@
 		"roblox-dodgeball:out/client/controllers/hud/RoundTransitionController@RoundTransitionController": "client/controllers/hud/RoundTransitionController@RoundTransitionController",
 		"roblox-dodgeball:out/client/controllers/hud/ScoreHudController@ScoreHudController": "client/controllers/hud/ScoreHudController@ScoreHudController",
 		"roblox-dodgeball:out/client/controllers/hud/ShopController@ShopController": "client/controllers/hud/ShopController@ShopController",
-		"roblox-dodgeball:out/client/controllers/hud/SpectatorController@SpectatorController": "client/controllers/hud/SpectatorController@SpectatorController",
 		"roblox-dodgeball:out/client/controllers/hud/StatsBillboardController@StatsBillboardController": "client/controllers/hud/StatsBillboardController@StatsBillboardController",
 		"roblox-dodgeball:out/client/controllers/hud/SuperHudController@SuperHudController": "client/controllers/hud/SuperHudController@SuperHudController",
 		"roblox-dodgeball:out/client/controllers/hud/ThemeController@ThemeController": "client/controllers/hud/ThemeController@ThemeController",
@@ -66,7 +65,8 @@
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
 		"roblox-dodgeball:out/client/controllers/character/AfterimageController@AfterimageController": "client/controllers/character/AfterimageController@AfterimageController",
-		"roblox-dodgeball:out/client/controllers/CoreGuiController@CoreGuiController": "client/controllers/CoreGuiController@CoreGuiController"
+		"roblox-dodgeball:out/client/controllers/CoreGuiController@CoreGuiController": "client/controllers/CoreGuiController@CoreGuiController",
+		"roblox-dodgeball:out/client/controllers/hud/HitLogController@HitLogController": "client/controllers/hud/HitLogController@HitLogController"
 	},
 	"metadata": {}
 }

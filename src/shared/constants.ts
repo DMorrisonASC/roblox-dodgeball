@@ -464,17 +464,21 @@ export function voteCountAttribute(id: string): string {
 }
 
 /**
- * Attribute on a **`Player`** saying they are out of the round in progress and watching it.
+ * There used to be a `SPECTATING_ATTRIBUTE` here — "`Spectating`", on the `Player` — and it is worth a
+ * line of its own to say why there is not one now, because its absence is a decision rather than a gap.
  *
- * Written by `RoundService`: set for a player whose character dies during a round, and for one
- * who joins while a round is already under way — both are spectators of a round they are not in.
- * Cleared for everybody when the next round opens and they are in it, which is what makes the
- * indicator disappear at the start of a round rather than at any moment of its own.
+ * **Spectating was removed, not renamed or moved.** `RoundService` set it for a player whose character
+ * died during a round and for one who joined while a round was already under way, and the client's only
+ * use of it was to hide the ability readouts and show "You're out — spectating". Score Rush respawns, so
+ * a dead player re-enters rather than sitting the round out, and the flag was the reason a player could
+ * idle instead of play. The two remaining facts it stood for are both already published elsewhere and
+ * neither needs an attribute: *who is in the round* is `RoundService`'s `activePlayers` (server-side,
+ * never replicated) and *a round is being played* is `ROUND_STATE_ATTRIBUTE` on the status folder.
  *
- * On the player rather than the character for the reason every other player attribute is: a
- * character is replaced on respawn, and being out of a round outlives the body it happened to.
+ * **So a client can no longer tell "a round is on" from "I am in it", and that is the accepted cost.**
+ * See `panels.ts`'s `sessionHudVisible`, which now gates on the phase or a practice zone and nothing
+ * else, and says what that means for a player who is out of the round.
  */
-export const SPECTATING_ATTRIBUTE = "Spectating";
 
 /**
  * Attribute on a **`Player`** saying their body is standing inside a practice zone right now.

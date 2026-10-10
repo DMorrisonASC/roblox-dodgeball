@@ -6,7 +6,7 @@ import { ARENA_CONFIG } from "shared/config/arena.config";
 import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
-import { PLAYING, spectating } from "../../panels";
+import { PLAYING } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
@@ -18,7 +18,7 @@ const DEBUG = true;
  * Where the countdown sits in the `ZIndex` order: **above every HUD label, below every panel.**
  *
  * The ladder as the rest of the client writes it down: the ordinary HUDs leave `ZIndex` at its default of
- * `1` — this stack, the score bar, the coin readout, the cooldown card, the spectator label, both toasts —
+ * `1` — this stack, the score bar, the coin readout, the cooldown card, the respawn countdown, both toasts —
  * the dock is `5` (`DockController`), the shop and inventory panels are `SHOP_CONFIG.PANEL_Z_INDEX` (`10`),
  * the round-result panel is `20`, and the loading overlay is `30`. The two full-screen GUIs, the join splash
  * and the transition grid, are not on the ladder at all: they order whole `ScreenGui`s by `DisplayOrder`,
@@ -101,7 +101,7 @@ const CARD_WIDTH = 220;
  * units and the box is multiplied with everything else, so they are deliberately left alone — a reader who
  * wanted the on-screen size multiplies by this, and a reader who wanted the layout reads them.
  */
-const NUMBER_SCALE = 2;
+const NUMBER_SCALE = 6;
 
 /**
  * How long the outgoing number takes to leave, in seconds. **Placeholder — 0.15.**
@@ -151,7 +151,7 @@ const OUT_SCALE = 1.85;
  * change to a sequential crossing, and it is the reason it is a scale at all: `1` here would make the arrival
  * a plain fade, with the depth of the motion only ever happening on the departing half.
  */
-const IN_SCALE = 0.6;
+const IN_SCALE = 6;
 
 /**
  * How long "Start" holds before it fades, in seconds. **Placeholder — 0.6.**
@@ -192,7 +192,7 @@ const START_FADE_SECONDS = 0.25;
  * sequence was counting towards. The sequence is `N, N-1, …, 1, Start`: for a three-second freeze that is
  * **`3`, `2`, `1`, `Start`.**
  */
-const START_TEXT = "Start";
+const START_TEXT = "Start!";
 
 /**
  * The arena-freeze countdown: one number in the middle of the screen, at the largest type the theme has and
@@ -327,26 +327,35 @@ export class ArenaFreezeCountdownController implements OnStart {
 		this.counting = counting;
 
 		/**
-		 * Whether the countdown should be on screen, as a function of three facts rather than four connections.
+		 * Whether the countdown should be on screen, as a function of two facts rather than four connections.
 		 *
-		 * **The spectator flag is the second half of the exclusion, and it covers two of the three cases the
-		 * brief names.** `RoundService` sets `SPECTATING_ATTRIBUTE` for a player whose character dies during a
-		 * round *and* for one who joins while a round is already under way — so "dead" and "watching" are the
-		 * same fact as far as a client is concerned, and `panels.ts` already holds the mirror of it for exactly
-		 * this kind of reader. "Not in the arena" is the team attribute above. A player who dies mid-count
-		 * therefore loses the countdown on the frame the server says so, and keeps the *respawn* countdown, which
-		 * is the readout that is actually true about them by then.
+		 * **The two facts are "a count is running" and "this player has a side", and there used to be a
+		 * third.** That third was the client's mirror of the spectator flag, which the server set for a player
+		 * whose character died during a round and for one who joined while a round was already under way — so
+		 * a player who died mid-count lost the countdown on the frame the server said so, and kept the
+		 * *respawn* countdown, which is the readout that is actually true about them by then. The flag is gone
+		 * with the spectator state, so what its absence costs here is one case rather than a rule: a player who
+		 * dies during the arena freeze keeps the number up while their body is being replaced, because a death
+		 * does not clear `TEAM_ATTRIBUTE` and the phase is still `Playing`. In Score Rush that lasts the
+		 * respawn delay, and the number above a missing body is the same number the round's clock is running on
+		 * for everybody else.
 		 *
-		 * **Reactive rather than sampled once when a run starts**, which is the difference between a player who
-		 * dies seeing a number for a body they do not have and one who does not. Both `use()` calls are hoisted
-		 * to the top, as every `use()` must be: a `use()` after an early return is a subscription that exists
-		 * only while that branch is taken.
+		 * **The team attribute is the half that survived, and it is the right half for this element.** The
+		 * countdown is about the arena a *side* was teleported into, so "on a side" is the fact that says
+		 * whether this player was moved into it — and a mid-round joiner has no side and is left in the lobby,
+		 * so they get no number. Nothing else here changes: see `begin`, which is driven by the transition the
+		 * round publishes rather than by anything about a body.
+		 *
+		 * **Reactive rather than sampled once when a run starts**, which is what keeps the team half honest —
+		 * a player who somehow gains a side mid-count gets the number, and one who loses it drops it. Both
+		 * `use()` calls are hoisted to the top, as every `use()` must be: a `use()` after an early return is a
+		 * subscription that exists only while that branch is taken.
 		 */
 		const visible = Fusion.Computed(scope, (use) => {
 			const countingNow = use(counting);
 			const onTeamNow = use(onTeam);
 
-			return countingNow && onTeamNow && !use(spectating);
+			return countingNow && onTeamNow;
 		});
 
 		// **The two labels are built before the card**, because `Card` takes its children at construction and
@@ -756,7 +765,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 		// labels start hidden, so this arrives now rather than a tenth of a second from now. That is also what puts
 		// the first number up on the frame the freeze starts rather than a frame later.
 		if (!leaving.Visible) {
-			this.arrive(arriving, text, isStart);
+			this.arrive(arriving, text);
 
 			return;
 		}
@@ -776,7 +785,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 			// real departure to wait for rather than a stale one.
 			leaving.Visible = false;
 
-			this.arrive(arriving, text, isStart);
+			this.arrive(arriving, text);
 		});
 	}
 
@@ -792,22 +801,29 @@ export class ArenaFreezeCountdownController implements OnStart {
 	 * accelerates away, which is what something passing the camera does. Swapping them would make a number arrive
 	 * with a snap and leave gently, i.e. exactly backwards.
 	 *
-	 * **"Start" arrives at rest scale rather than from behind.** It is the end of the sequence, so nothing is
-	 * crossing *through* it: the last number still zooms out — that is the departure and it belongs to the number —
-	 * but the word appears at the size it will hold. Anything else would promise a fourth number that is not
-	 * coming.
+	 * **The word arrives on the same axis as the numbers, which is a reversal.** It used to be the exception:
+	 * "Start" appeared at rest scale, on the argument that nothing is crossing *through* the end of a sequence, so
+	 * arriving from behind would promise a fourth number that was not coming. That argument is sound about the
+	 * *promise* and wrong about the *size* — a word and a number never have to match, so there is no reason for the
+	 * last arrival to be the one that cannot move. It now comes in exactly as a number does: from `IN_SCALE`,
+	 * settling to rest, on the same `Out` easing over the same `IN_SECONDS`.
+	 *
+	 * **What that costs, said rather than discovered.** The word is the one arrival with nothing behind it, so the
+	 * motion is an arrival with no successor — which is what it is. If it ever reads as a promise rather than as an
+	 * ending, the way back is one branch on the line below: giving "Start" a starting scale of its own, which the
+	 * rest of the crossing does not care about either way.
 	 *
 	 * **One tween per property per label, so four per crossing and none per frame**, which is the shape this
 	 * element wants and the only one that reads as motion: a tween started every frame would restart sixty times a
 	 * second and the numbers would never appear to move at all.
 	 */
-	private arrive(arriving: TextLabel, text: string, isStart: boolean): void {
+	private arrive(arriving: TextLabel, text: string): void {
 		arriving.Text = text;
 		arriving.Visible = true;
 		arriving.TextTransparency = 1;
 
 		const arrivingScale = this.scales[this.labels.indexOf(arriving)];
-		arrivingScale.Scale = isStart ? 1 : IN_SCALE;
+		arrivingScale.Scale = IN_SCALE;
 
 		const into = new TweenInfo(IN_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
 

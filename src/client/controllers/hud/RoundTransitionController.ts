@@ -76,8 +76,8 @@ type TransitionStage = "grow" | "hold" | "reveal";
  * GUI, not to a frame, so a child of `HudGui` inherits its safe region and *cannot* paint the strip
  * under Roblox's topbar — the grid would leave a band of the game showing along two edges. And
  * `DisplayOrder` orders whole GUIs and wins outright over any `ZIndex` inside either tree, so one value
- * on a new GUI covers the eleven HUD controllers, the shop, the result panel and the spectator label at
- * once. See `getTransitionScreenGui` for the value and for why it sits one rung above the join splash.
+ * on a new GUI covers the eleven HUD controllers, the shop, the result panel and the respawn countdown
+ * at once. See `getTransitionScreenGui` for the value and for why it sits one rung above the join splash.
  *
  * **Why the cover is shrunk away rather than taken off in one frame, and why the shrink runs backwards.**
  * The first version of this destroyed the grid the moment the hold ended, and the reversal is worth

@@ -31,9 +31,11 @@ const DEBUG = true;
  * above it, so the number that moved is the *toasts'*, in `hudToast.ts`, whose doc now carries the
  * arithmetic. **If the icon's slot grows, that number is what has to be re-read** — this constant stays 12.
  *
- * **The one thing it now shares a band with is the spectator label**, anchored at the same bottom centre
- * 12px in. They cannot be up at once — the label shows while spectating and this stack hides then, by the
- * same predicate — so nothing has to be arranged around it.
+ * **The one thing it used to share a band with was the spectator label**, anchored at the same bottom centre
+ * 12px in — and the two could not be up at once, because the label showed while spectating and this stack
+ * hid then, by the same predicate. **That label is gone** with the spectator state, so the bottom centre of
+ * the screen is this stack's alone: nothing else the client draws is anchored there, which means there is
+ * still nothing to arrange around. See `panels.ts` for the removal and for what the predicate says now.
  */
 const STACK_BOTTOM_OFFSET = 12;
 
@@ -180,9 +182,12 @@ const STACK_GAP = 10;
  * cost is three attribute reads per frame.
  *
  * **It is shown only while a player can act**, through the shared predicate in `panels.ts` — in a round or
- * in a practice zone, never for a spectator. See that function for why the spectator half is an honest
- * exception rather than an obvious one: a spectator can still walk and sprint, so the pool behind these
- * lights is still theirs.
+ * in a practice zone. It used to say "never for a spectator" as well, and the loss of that term is worth a
+ * sentence here because this stack is where it reads worst: **the stamina segments are the honest
+ * exception**, since a player who is out of the round can still walk and sprint, so the pool behind those
+ * lights is still theirs and still being spent. The stack is shown or hidden as one thing, though, and a
+ * dead player seeing their own stamina for the length of the respawn delay is a smaller fault than half a
+ * stack — which is the trade `sessionHudVisible` now makes.
  */
 @Controller()
 export class SuperHudController implements OnStart {

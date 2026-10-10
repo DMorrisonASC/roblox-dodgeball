@@ -93,13 +93,15 @@ export function inTaggedZone(character: Model | undefined): boolean {
 /**
  * The rule both features are asking about: **a round is being played, or the body is in a tagged zone.**
  *
- * **`SPECTATING_ATTRIBUTE` is deliberately not read here, and that is an open question rather than a
- * decision.** The practice-zone task describes this rule as "in a round (not spectating) or in a practice
- * zone", and nothing in this codebase has ever consulted spectating for either feature: the camera holds
- * on the phase alone, and the dodge's other checks already require a living humanoid, which a spectator
- * has nothing to stand with. Folding the check in here would change what every spectator's camera does,
- * and that is a rule change rather than the shared predicate this module exists to be. Left out and
- * reported, so it is a line somebody chooses to add rather than one that arrived unnoticed.
+ * **A note that used to sit here named the spectator attribute as an open question, and the question has
+ * been closed by removing the state rather than by answering it.** The practice-zone task described this
+ * rule as "in a round (not spectating) or in a practice zone", and nothing in this codebase ever consulted
+ * spectating for either feature — the camera holds on the phase alone, and the dodge's other checks already
+ * require a living humanoid. So there was never a line here to delete rather than keep: the open question
+ * was whether to *add* one, and there is nothing left to add, because a player who is out of a round is a
+ * player the client cannot tell apart from one standing in the lobby. That is the same trade
+ * `panels.ts`'s `sessionHudVisible` made for the readouts, and the fact behind it — `activePlayers`, inside
+ * `RoundService` — has never been replicated to a client and is not going to be.
  */
 export function inRoundOrZone(character: Model | undefined): boolean {
 	return inRound() || inTaggedZone(character);

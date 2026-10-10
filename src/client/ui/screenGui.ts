@@ -160,7 +160,7 @@ export function getSplashScreenGui(): ScreenGui {
  *
  * **It is also what puts the wipe over the HUDs rather than behind them.** `DisplayOrder` orders whole
  * `ScreenGui`s and beats any `ZIndex` inside either tree, so the eleven HUD controllers' panels, the
- * shop, the result screen and the spectator label are all covered by one value on this GUI — see
+ * shop, the result screen and the respawn countdown are all covered by one value on this GUI — see
  * {@link TRANSITION_DISPLAY_ORDER} for the value and for why it is one above the splash rather than far
  * above it.
  *

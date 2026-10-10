@@ -329,8 +329,8 @@ export class TeamRingController implements OnStart {
 	 * Puts a ring under `player`, or repaints the one they already have.
 	 *
 	 * **The whole of the lifetime rule is in the first two lines**: no ring unless a round is on, and none for
-	 * a body with no side — a spectator, a rig on nobody's team, a player whose label this build does not
-	 * recognise. `teamColourOf` answering `undefined` is the same answer the outline falls back to the default
+	 * a body with no side — a mid-round joiner, a rig on nobody's team, a player whose label this build does
+	 * not recognise. `teamColourOf` answering `undefined` is the same answer the outline falls back to the default
 	 * colour on, and here it is "no ring", because a ring is a claim about which side somebody is on and there
 	 * is no honest colour to draw that claim in.
 	 *

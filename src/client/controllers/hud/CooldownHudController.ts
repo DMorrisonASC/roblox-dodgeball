@@ -83,10 +83,14 @@ function addCorner(frame: Frame): void {
  * nothing but a row.
  *
  * **It is shown only while a player can act**, and that is the shared predicate in `panels.ts` rather
- * than a rule written here: in a round, or in a practice zone, and never for a spectator. The predicate
- * being shared is the point — the Super HUD and its stamina segments show and hide at exactly the same
- * moments, and three copies of the rule is how three elements come to disagree about when a player is
- * playing.
+ * than a rule written here: in a round, or in a practice zone. The predicate being shared is the point —
+ * the Super HUD and its stamina segments show and hide at exactly the same moments, and three copies of
+ * the rule is how three elements come to disagree about when a player is playing.
+ *
+ * **It used to have a third term — "and never for a spectator" — and losing it is the one place this
+ * readout changes.** A player who is out of the round but still inside one, which in Score Rush means the
+ * length of the respawn delay, now sees this card over a body that is not there. See `sessionHudVisible`
+ * for the whole argument, and for why re-adding the term would mean re-adding the state that was removed.
  *
  * That predicate is applied with `Hydrate` rather than in the `Card`'s own props, and it is forced rather
  * than stylistic: `Card` builds its frame and hands it back, so a reactive property *assigned* to the
@@ -160,9 +164,12 @@ export class CooldownHudController implements OnStart {
 		container.Name = "CooldownHud";
 
 		// **Shown only while a player can act**, through the shared predicate rather than a rule of this
-		// file's own: in a round, or in a practice zone, and never for a spectator. Assigned with
-		// `Hydrate` because `Card` hands back a finished instance — see the class doc for why a plain
-		// assignment here would silently never be tracked as a property.
+		// file's own: in a round, or in a practice zone. The "and never for a spectator" term this comment
+		// used to carry is gone with the spectator state, and the class doc says what losing it costs.
+		//
+		// Assigned with `Hydrate` rather than in the card's own props, and that is forced rather than
+		// stylistic: `Card` hands back a finished instance, so a reactive property *assigned* to the result
+		// would never be tracked as one — see the class doc for the silent failure that produces.
 		Fusion.Hydrate(scope, container)({ Visible: sessionHudVisible(scope) });
 
 		// The readout's width is its content's — `BAR_WIDTH` and the labels — and it is pinned to the

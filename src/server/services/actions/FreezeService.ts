@@ -677,6 +677,11 @@ export class FreezeService {
 		const caught: Array<Model> = [];
 		const seen = new Set<Model>();
 
+		// **The three numbers this method is asked about when it does nothing**, kept apart rather than
+		// derived, because each one names a different fault. See the report below for which is which.
+		let found = 0;
+		let spared = 0;
+
 		// **First, before a single body is looked at.** The freeze is the ability and the burst is only
 		// the picture of it, so this is not precedence — it is that the burst fires whether or not anybody
 		// is in range, and the point of that is the splash that caught nobody: a charge spent, with
@@ -691,16 +696,52 @@ export class FreezeService {
 			// Marked seen before the tests, so a body is examined once however many of its parts are in
 			// the sphere — a torso, two arms and a head are four answers to one question.
 			seen.add(model);
+			found += 1;
 
-			if (isExcluded(model)) continue;
+			if (isExcluded(model)) {
+				spared += 1;
+				continue;
+			}
+
 			if (!model.FindFirstChildWhichIsA("Humanoid")) continue;
 
 			if (this.freeze(model, SUPER_CONFIG.FREEZE_DURATION_SECONDS)) caught.push(model);
 		}
 
-		if (DEBUG && caught.size() > 0) {
-			print(`[Freeze] splash at ${origin} — caught ${caught.size()} bod(ies)`);
-		}
+		/**
+		 * **The splash reports itself, always, including when it found nothing — and this line is the fix
+		 * for a report that could not be answered without it.**
+		 *
+		 * It used to be gated twice: behind `DEBUG`, and behind `caught.size() > 0`. So the *only* state it
+		 * ever printed was the one that needed no explanation, and the two states worth asking about were
+		 * identical in the output — a splash that examined every body and refused them all, and a splash
+		 * that never ran at all. Both read as "the ice power does nothing", which is exactly the report
+		 * this was written for. It is the same argument `BallComponent.noteDecidedNothing` makes about a
+		 * refused contact, and the reason the tag line and `landHit` are ungated: a diagnostic that has to
+		 * be switched on cannot explain a log somebody already has.
+		 *
+		 * **Three counts rather than one, because they are the three different faults.** `found` is the
+		 * bodies the sphere touched at all; `spared` is the ones the caller's predicate refused; `caught`
+		 * is the ones actually held. So:
+		 *
+		 * - **`found 0`** — the sphere is in the wrong place or is nothing: a ball that landed away from
+		 *   everybody, or a radius that reached no part. Nothing below this line can be at fault.
+		 * - **`found n, spared n`** — the rule refused every body in range. That is `splashSpares`
+		 *   answering for the thrower, for a teammate (`RoundService.isFriendlyFire`), or for a player
+		 *   standing in a practice zone — and the last of those is by design, see that method.
+		 * - **`found n, spared m, caught 0`** with `n > m` — the bodies in range had no *living* humanoid
+		 *   to hold: a corpse, a piece of scenery with a humanoid in it, or a body already dead. That is
+		 *   the difference `freeze` refuses on, and it is why `freeze` returns a boolean rather than
+		 *   storing and answering later.
+		 *
+		 * The radius is named too, because a splash with the wrong radius is indistinguishable from a
+		 * splash with the right one that found nobody — and the two are set in `super.config.ts`, where
+		 * somebody tuning the ability will be looking.
+		 */
+		print(
+			`[Freeze] splash at ${origin} — radius ${radius}, found ${found} bod(ies), ` +
+				`spared ${spared}, caught ${caught.size()}`,
+		);
 
 		return caught;
 	}

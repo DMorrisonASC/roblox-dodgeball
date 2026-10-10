@@ -1642,8 +1642,10 @@ export class BallService implements OnStart {
 		}
 
 		// **A living body**, which is the same test the throw makes in effect: a player with no character
-		// has no hand to be holding anything in. Not `SPECTATING_ATTRIBUTE` and not a health poll — a
-		// spectator has a dead body or none, and the ball is a child of the body either way.
+		// has no hand to be holding anything in. Not a poll of the *round's* roster either — a player who is
+		// out of the round has a dead body or none, and the ball is a child of the body either way, so the
+		// body is the honest question and the roster would be a second answer to it. (This used to name the
+		// spectator attribute to say the same thing; that state is gone and the test is unchanged.)
 		const character = player.Character;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		if (!character || !humanoid || humanoid.Health <= 0) {

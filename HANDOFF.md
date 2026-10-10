@@ -169,7 +169,7 @@ codebase — match the existing style.
 ```
 src/shared/                      runs on both sides
   constants.ts                   attribute + folder + tag names — the HUD's vocabulary
-                                 (ROUND_STATE_ATTRIBUTE, TEAM_ATTRIBUTE, SPECTATING_ATTRIBUTE,
+                                 (ROUND_STATE_ATTRIBUTE, TEAM_ATTRIBUTE,
                                  RESPAWN_AT_ATTRIBUTE, COINS_ATTRIBUTE, OWNED_ITEMS_ATTRIBUTE,
                                  CROWN_ATTRIBUTE, STAT_HITS, MATCH_JOIN_A_TAG, MATCH_SPAWNER_TAG,
                                  CHARACTER_BARRIER_TAG, SHIFT_LOCK_ZONE_TAG, …)
@@ -218,7 +218,7 @@ src/client/
   ui/                            screenGui.ts (HudGui / SplashGui / TransitionGui), hudTheme.ts,
                                  viewportConstraint.ts, hudToast.ts
   controllers/hud/               RoundStatus, RoundResult, RoundTransition, LoadingScreen,
-                                 RespawnHud, CurrencyHud, SuperHud, StatsBillboard, Spectator,
+                                 RespawnHud, CurrencyHud, SuperHud, StatsBillboard,
                                  CooldownHud, ThrowStateToast, ControlsLegend, ModeVote,
                                  CameraToast, Theme, Shop (still the mock — see §11)
   controllers/input/             Action, Catch, Dodge, Throw, AimTarget, SuperAbility,
@@ -298,10 +298,16 @@ wins, because the settle branch is only reachable while `pendingMatch` is unset.
    this as a side effect of placing the clone; with nothing placed, the pass has to be called, and
    once a round rather than once at boot because place files are edited while a server is running.
 7. `state = Playing`, `mode = requested ?? SCORE_RUSH`, publish `ROUND_MODE_ATTRIBUTE`.
-8. `scores.clear()`, `roundHits.clear()`, `roundOuts.clear()`, `finished = false`.
+8. `scores.clear()`, `roundHits.clear()`, `roundOuts.clear()`, `roundHitLog.clear()`,
+   `finished = false`. **The hit log keeps the two boards' lifetime exactly** — newest first, capped
+   at `HIT_LOG_CAP` (5, **placeholder**), and appended from `logHit`, which `registerHit` calls. **The
+   same call tells the two people in the hit**, through the `roundHit` event — see `networking.ts`;
+   the HUD builds its own per-player windows from that stream and never reads this log.
 9. `assignTeams()` from `matches.roster()` — writes `teams` and `TEAM_ATTRIBUTE`, then
-   `refreshCrowns()`. Then per player: `abilities.resetForRound(player)`, spectators get
-   `SPECTATING_ATTRIBUTE = true`, participants go into `activePlayers`.
+   `refreshCrowns()`. Then per player: `abilities.resetForRound(player)`, and everybody the roster
+   has a side for goes into `activePlayers`; anybody without one is simply left out of it. **There is
+   no spectator attribute any more** — nothing is published for the players left out. See the note at
+   the end of this section.
 10. Print `[Round] started`/arena-resolved, set `timeRemaining = ROUND_SECONDS` (150), publish
     `"Playing"` + the clock, clear `ROUND_WINNER_ATTRIBUTE`.
 11. `await this.transitionAround(() => this.teleportTeamsToArena(), { holdEveryoneFor:
@@ -324,7 +330,7 @@ Then `await this.waitWhilePaused();` and back to the intermission.
   and outranks the mode**: if one side has nobody left *connected to the server*, the other side has
   won. Both sides empty → `DRAW`.
 - `rosterOutcome()` counts `Players.GetPlayers()` against `teams`. A mid-round joiner is in `teams`
-  for neither side, so a spectator cannot rescue a side that just emptied.
+  for neither side, so a joiner cannot rescue a side that just emptied.
 - **A departing player can end a round** and does so from the `PlayerRemoving` handler the moment
   they leave rather than on the next tick — measured in a live log at **27 ms** from disconnect to
   `[Round] Team A won`.
@@ -343,15 +349,42 @@ Then `await this.waitWhilePaused();` and back to the intermission.
    freeze comes off while the body is unambiguously still there.
 2. `if (this.state !== RoundState.Playing) { this.respawns.loadNow(player, "outside a round");
    return; }` — a death in the lobby is not an elimination, **but a body is still owed**.
-3. `if (!this.activePlayers.has(player)) { player.SetAttribute(SPECTATING_ATTRIBUTE, true);
-   this.respawns.loadNow(player, "outside a round"); return; }` — a spectator dying again.
+3. `if (!this.activePlayers.has(player)) { this.respawns.loadNow(player, "outside a round");
+   return; }` — somebody already out of the round dying again. **The branch stays now that the
+   spectator attribute is gone**, because the body is the reason for it: without it, Score Rush would
+   *schedule* a three-second respawn for a player who is only watching, and Team Elimination would
+   run `eliminate` a second time and record a second out for one death.
 4. `abilities.noteDeath(player)` then `const decision = this.mode.onDeath({ player }, this)`.
 5. `eliminate` → `this.eliminate(player); return;` — otherwise `setTeam` if the mode named a side,
    and **`this.respawns.schedule(player, ARENA_CONFIG.RESPAWN_DELAY_SECONDS)`** — the only delayed
    respawn in the game.
 
-`eliminate(player)`: `activePlayers.delete`, `SPECTATING_ATTRIBUTE = true`, `stats.recordOut`,
-`roundOuts` += 1, and `this.respawns.loadNow(player, "eliminated")` — instant, never delayed.
+`eliminate(player)`: `activePlayers.delete`, `stats.recordOut`, `roundOuts` += 1, and
+`this.respawns.loadNow(player, "eliminated")` — instant, never delayed.
+
+### Spectating was removed
+
+**There is no spectator state any more.** `SPECTATING_ATTRIBUTE` is gone from `shared/constants.ts`,
+`SpectatorController` is deleted, and `panels.ts`'s `sessionHudVisible` has lost its third term — so
+"can this player act" is now "a round is on, or you are in a practice zone". The cost is written out
+there in full: a player who dies inside a round (Score Rush, `RESPAWN_DELAY_SECONDS`) and a player who
+joins mid-round both see the ability readouts over a body that cannot use them.
+
+**What did not change.** `activePlayers` is still the roster. `MatchService.optIn` still refuses to add
+anybody to a side while the phase is `Playing`, so a mid-round joiner cannot join the round they
+arrived in. They still spawn in the lobby (via `handlePlayerJoined`) and can still walk around in it.
+The only thing they lost is being told, in words, that they are out of the round.
+
+**Why it went.** Score Rush respawns, so a dead player re-enters rather than sitting the round out, and
+the label was an invitation to idle instead of play.
+
+**Team Elimination and Dodge and Seek.** Neither is reachable today (both start paths fix the mode at
+Score Rush — see `startMatch`/`VOTE_ENABLED`). Dodge and Seek is unaffected: every death converts and
+respawns, and nothing about it read the attribute. **Team Elimination needs one thing re-thought before
+it is switched on**: an eliminated player is out for the rest of the round with no readout saying so,
+and no HUD gate can tell them apart from anybody else — the state that did that is the one that was
+removed. Fixing that means publishing a per-player "in the round" fact again, which is the same
+attribute under a different name, so it is a deliberate decision rather than a patch.
 
 ### `DeathEvent` has no cause field
 
@@ -524,7 +557,7 @@ wrong:
 | `CurrencyHudController` | `Coins: N`, under the shop button | `COINS_ATTRIBUTE` |
 | `SuperHudController` | streak / charge / armed ability / MultiBall window | the four `SUPER_*` attributes + the held ball's mark |
 | `StatsBillboardController` | per-head hit/out record, and the crown | `STAT_HITS`, `STAT_OUTS`, `CROWN_ATTRIBUTE` |
-| `SpectatorController` | "You're out — spectating" | `SPECTATING_ATTRIBUTE` |
+| `HitLogController` | who you hit / who hit you, top left, during a round | the `roundHit` event |
 | `CooldownHudController` | dodge / catch / stamina bars | `DODGE_READY_AT`, `CATCH_READY_AT`, `STAMINA_ATTRIBUTE` |
 | `ThrowStateToastController` | throwing on/off toast | `THROW_ENABLED` |
 | `ControlsLegendController` | the control legend | `THROW_ENABLED` |

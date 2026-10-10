@@ -2,28 +2,34 @@ import Fusion from "@rbxts/fusion-3.0";
 
 /**
  * The facts the client's HUDs have to agree on: which panel is open, what phase the round is in, and
- * whether the local player is in a practice zone or out of the round.
+ * whether the local player is in a practice zone.
  *
  * **A module rather than a wire between controllers.** The dock's buttons open the panels and the
  * panels read whether they are open, so if either held the other there would be a construction-order
  * dependency between two controllers — which is precisely what `aiming.ts` argues against at length,
  * and the same shape `client/ui/screenGui.ts` uses so that two HUDs can share one `ScreenGui` without
- * either of them owning it. Here it is several controllers and four values, so the state lives in
+ * either of them owning it. Here it is several controllers and three values, so the state lives in
  * nobody's file.
  *
  * **Each value has exactly one writer, which is the rule that keeps this from being a dumping ground.**
  * `roundPhase` is written by `DockController` and read by both panels; `inPracticeZone` is written by
- * `DockController` too, because it was already watching that attribute for its own visibility; and
- * `spectating` is written by `SpectatorController`, whose whole reason to exist is that attribute. Every
- * one of them is a connection that had to exist anyway, moved so that its answer can be *read* rather
- * than recomputed. The alternative — each HUD holding its own connection to the same attribute — is one
+ * `DockController` too, because it was already watching that attribute for its own visibility. Each of
+ * them is a connection that had to exist anyway, moved so that its answer can be *read* rather than
+ * recomputed. The alternative — each HUD holding its own connection to the same attribute — is one
  * subscription per reader for one fact, which is the thing this module exists to prevent.
  *
+ * **There used to be a fourth value here, `spectating`, and its removal is the spectator removal on
+ * this side of the wire.** It was a mirror of `SPECTATING_ATTRIBUTE`, written by `SpectatorController`
+ * and read by every HUD that hid itself for a player who was out of the round. There is no spectator
+ * state any more, so there is nothing to mirror and nothing to hide for — see
+ * {@link sessionHudVisible}, which is where the consequence is written down rather than merely
+ * applied.
+ *
  * **The file is now "the facts the HUDs share" wearing the name of the two panels it started with.** It
- * began as the dock and the panels agreeing about modals, and it grew the phase, the zone flag and the
- * spectator flag as more than one HUD needed them. That is a fair description of a *session state*
- * module, and if a fifth fact arrives this should be renamed rather than stretched further — the name is
- * currently a reader's first wrong idea about what belongs here.
+ * began as the dock and the panels agreeing about modals, and it grew the phase and the zone flag as more
+ * than one HUD needed them. That is a fair description of a *session state* module, and if a fourth fact
+ * arrives this should be renamed rather than stretched further — the name is currently a reader's first
+ * wrong idea about what belongs here.
  *
  * **The two `open` values are separate rather than one "current panel"**, even though exactly one can
  * be open at a time. A single value would have to name a panel with a string, and every reader would
@@ -71,41 +77,44 @@ export const roundPhase = Fusion.Value(scope, INTERMISSION);
 export const inPracticeZone = Fusion.Value(scope, false);
 
 /**
- * Whether the local player is out of the round in progress, as the server publishes it.
- *
- * Written by `SpectatorController` for `inPracticeZone`'s reason — it already watches the attribute to
- * show its own label — and read by the session HUDs, which hide for a spectator. See
- * {@link sessionHudVisible}.
- */
-export const spectating = Fusion.Value(scope, false);
-
-/**
- * Whether the round's own HUDs should be on screen: **in a round or in a practice zone, and not while
- * spectating.**
+ * Whether the round's own HUDs should be on screen: **in a round, or in a practice zone.**
  *
  * **One expression, in one place, because four elements have to agree about it.** The Super HUD, its
  * stamina segments and the cooldown readout hide and show together, and a copy of this rule in each of
  * them is how they would come to disagree — the same argument `hudToast.ts` makes for owning the toast
  * column's numbers.
  *
- * **The two halves of the first term are the two ways a player can act.** A round is the game, and a
+ * **The two halves of the term are the two ways a player can act.** A round is the game, and a
  * practice zone is the place the game has decided a player may practise in — the zone's own rules are
  * what `PracticeZoneService` publishes, and the *dock* hides in exactly the place these HUDs appear.
  * The two conditions are deliberately not "not an intermission": a client that has not yet heard a phase
  * would then be showing a readout for a round that may not exist, which is the mistake `roundPhase`'s
  * seeding note says is the safe one for a *dock* and the wrong one for a player's own readouts.
  *
- * **A spectator sees neither HUD, and the argument is the abilities rather than the body.** Being out of
- * a round takes the powers with it — `BallService.markHeldBall` refuses without an active round — so
- * there is no armed ability to draw and no charge to hold. **The stamina segments are the honest
- * exception and the reason this is worth stating**: a spectator's body still walks and sprints, so the
- * pool behind those three lights is still theirs and still being spent. They are hidden anyway, because
- * the elements are one stack and half a stack is worse than neither — and because a player who is out is
- * being told to watch, not to read their own controls.
+ * **There used to be a third term, `!spectating`, and removing it is the one place this removal is
+ * visible rather than merely tidy.** The predicate asked "can this player act", and being out of the
+ * round is the one way to be *in* a round and unable to act — so with the spectator flag gone the
+ * predicate is now "a round is on, or a zone is", which is a question about the *world* rather than
+ * about the player. Two kinds of player are affected, and both are the accepted cost of removing the
+ * state rather than a surprise:
+ *
+ * - **A player who dies inside a round** — Score Rush respawns, so they are out for
+ *   `ARENA_CONFIG.RESPAWN_DELAY_SECONDS` and then back. For those seconds the ability readouts are up
+ *   over a body that does not exist yet. The respawn countdown is the readout that is true about them
+ *   by then, and it is drawn in the middle of the screen rather than at the bottom, so the two do not
+ *   collide — it just means a dead player sees a stack of readouts they cannot use for three seconds.
+ * - **A player who joined mid-round**, who is not on a side and cannot opt in while the phase is
+ *   `Playing`. They see the same stack, in the lobby, with nothing armed and nothing to arm.
+ *
+ * **What replaced it is not a flag and deliberately is not one.** The honest predicate would be "am I
+ * in the round", and nothing on the client publishes that any more — `activePlayers` is the server's
+ * and has never been replicated. Re-publishing it as an attribute is exactly the state that was
+ * removed, so it is not re-added here; a client-side rule that could tell the two apart would need a
+ * new fact, and inventing one was not part of this change.
  *
  * **A `Computed` factory rather than a `Value`**, because there is nothing to write: the answer is a
- * function of three values, and a fourth `Value` kept in step by a fourth connection would be a way to
- * get it wrong. It is per-scope rather than module-level because a `Computed` belongs to whoever will
+ * function of two values, and a third `Value` kept in step by a third connection would be a way to get
+ * it wrong. It is per-scope rather than module-level because a `Computed` belongs to whoever will
  * dispose it — the same reason `addViewportConstraint` builds one inside the caller's scope.
  */
 export function sessionHudVisible(scope: Fusion.Scope<unknown>): Fusion.Computed<boolean> {
@@ -116,9 +125,6 @@ export function sessionHudVisible(scope: Fusion.Scope<unknown>): Fusion.Computed
 		// names about its own two values.
 		const phase = use(roundPhase);
 		const zone = use(inPracticeZone);
-		const out = use(spectating);
-
-		if (out) return false;
 
 		return phase === PLAYING || zone;
 	});

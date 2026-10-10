@@ -33,15 +33,16 @@ export const TOAST_WIDTH = 320;
  * {@link TOAST_HEIGHT} — so slot 0 occupies y∈[96, 157] and slot 1 y∈[165, 226].
  *
  * **This module still owns the number rather than the stack publishing its own height**, which is the same
- * decision it already made about the spectator label and the cooldown bars: the column's placement is one
- * fact with one owner, and two modules each holding half of it is how they come apart. The cost is that a
- * taller stack needs this constant re-read — which is said in `SuperHudController` too, where somebody
- * changing the icon's size will actually be looking.
+ * decision it already made about the cooldown bars: the column's placement is one fact with one owner, and
+ * two modules each holding half of it is how they come apart. The cost is that a taller stack needs this
+ * constant re-read — which is said in `SuperHudController` too, where somebody changing the icon's size
+ * will actually be looking.
  *
- * **The spectator label is clear for a different reason than it used to be.** It is anchored at the same
- * bottom centre 12px in, which is now *inside* the stack's band — but the two cannot be up at once: the
- * label shows while `Spectating` is true and the stack hides then, by the same predicate. Being unable to
- * co-occur is a better guarantee than a gap.
+ * **The bottom centre of the screen is now this column's alone.** A spectator label used to be anchored
+ * there, 12px in — *inside* the stack's band — and the two could not be up at once, because the label
+ * showed while `Spectating` was true and the stack hid then, by the same predicate. That label and its
+ * attribute are gone with the spectator state, which turns "these two cannot co-occur" into "one of them
+ * does not exist": the collision the predicate ruled out can no longer be arranged even by mistake.
  *
  * Sideways nothing changed: at 1280px a toast spans x∈[480, 800], while the cooldown bars are pinned to
  * the bottom-*left* (anchor `(0, 1)`, 12px in, ~144px wide) and reach nowhere near it.
