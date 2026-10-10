@@ -99,9 +99,12 @@ export class RespawnService implements OnStart {
 	 * **The instant and not the countdown, so the client subtracts against the same clock the server wrote
 	 * with.** `RESPAWN_AT_ATTRIBUTE` is `Workspace:GetServerTimeNow() + seconds` — the engine's shared clock,
 	 * not this machine's — which is what lets the client draw a smooth countdown with no remote and no second
-	 * timer of its own. It is the arrangement `SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE` and the two action cooldowns
-	 * already use, and it is used here for the same reason: a client that ran its own countdown would be a
-	 * second implementation of "how long is the wait", free to disagree with the one that decides it.
+	 * timer of its own. It is the arrangement the two action cooldowns already use, and it is used here for the
+	 * same reason: a client that ran its own countdown would be a second implementation of "how long is the
+	 * wait", free to disagree with the one that decides it. **A MultiBall window used to be the third example
+	 * here and is deliberately no longer one** — it has no deadline to publish since the count became the whole
+	 * of the window, so the example is gone with the attribute rather than left as a reference to something a
+	 * reader cannot find.
 	 *
 	 * **Cancel first, always.** A player who dies again inside the wait gets the *second* death's delay and one
 	 * body, which is the only reading of "died again" that does not hand somebody two respawns at once.

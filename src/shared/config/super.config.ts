@@ -23,21 +23,6 @@ export const SUPER_CONFIG = {
 	CROWN_STREAK_THRESHOLD: 3,
 
 	/**
-	 * How long a MultiBall window lasts, in seconds. **Placeholder — 10 is the ask.**
-	 *
-	 * **The window is a clock rather than a count of throws, and that is the whole shape of the
-	 * ability.** A charge buys a stretch of *time* in which throwing is answered; how the player spends
-	 * it is theirs, and throwing nothing is a legal way to spend it. That is also why the charge goes
-	 * at the press for this ability and at the throw for Pierce — see `SuperService.activateMultiBall`.
-	 *
-	 * Ten seconds is a guess at "long enough for a handful of throws, short enough that it is over
-	 * before the round moves on" rather than a measured number, and it is the one to move when the
-	 * window turns out to be too generous or too brief. Nothing else has to change with it: the count
-	 * below is spent by throwing, and this is only how long the chance lasts.
-	 */
-	MULTI_BALL_DURATION_SECONDS: 10,
-
-	/**
 	 * How many throws a MultiBall window pays for. **Placeholder — 5 is the ask.**
 	 *
 	 * **A count of *throws*, not of balls on the field.** The window replaces the ball a player throws
@@ -47,9 +32,21 @@ export const SUPER_CONFIG = {
 	 * why a window opened on an empty hand hands over its first ball without charging for it. See
 	 * `BallService.refillFromBuff`, where "answer this throw" and "fill this hand" are one rule.
 	 *
-	 * **Running out does not close the window.** With the count at nought the clock runs on and the
-	 * player can still fetch a ball off the floor and throw it; the ability stops supplying balls, and
-	 * nothing about it stops the player playing.
+	 * **This is now the whole of the window, and that is the change.** `MULTI_BALL_DURATION_SECONDS` used
+	 * to sit above it and the window closed on whichever ran out first; the clock is gone and **the count
+	 * is the only limit.** Spending the fifth throw is what closes the window — see
+	 * `SuperService.consumeMultiBallBall`, which is where the row is dropped — and there is no deadline
+	 * left to publish, no attribute carrying one, and no timer scheduled to clear the row afterwards.
+	 *
+	 * **What that buys, and what it costs.** It buys a promise the old version could not make: the
+	 * ability can no longer expire in a player's hand, so five throws are five throws whether they are
+	 * taken in four seconds or spaced out across a round. **It costs the ability its shape** — MultiBall
+	 * is a *stock* now rather than a burst, and a player who opens a window early and dribbles it out
+	 * holds a super for most of the round. That is the honest description of "no timer, count only".
+	 * **If a burst is wanted after all, the middle is a long duration rather than this number** — a
+	 * minute, say, which keeps the throws counting down and puts back an upper bound without making the
+	 * window something a player can lose by walking to a ball. The ten seconds that used to be here is
+	 * not that middle: it was short enough to expire mid-decision, which is why it was removed.
 	 */
 	MULTI_BALL_BALL_COUNT: 5,
 

@@ -1,4 +1,5 @@
 import { Controller, OnStart } from "@flamework/core";
+import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService } from "@rbxts/services";
 import { AbilityKind, isAbilityKind } from "shared/ability";
@@ -8,6 +9,7 @@ import {
 	ARMED_ABILITY_ATTRIBUTE,
 	MYSTERY_POWER_ATTRIBUTE,
 	STAMINA_ATTRIBUTE,
+	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
 } from "shared/constants";
 import { sessionHudVisible } from "../../panels";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
@@ -134,6 +136,35 @@ const SEGMENT_GAP = 4;
 const STACK_GAP = 10;
 
 /**
+ * How far left of the slot the uses count sits, in pixels. **Placeholder — `6` is the ask.**
+ *
+ * **A gap rather than a width, and the count is deliberately not a child of the stack's own column.** The
+ * number is anchored to the slot's *left edge* and grows leftwards from there, so this is the space between
+ * the two and nothing about either one's size. The alternative — a row holding the count and the icon as
+ * siblings — was rejected because the column centres its children: an icon with something beside it is an
+ * icon that has *moved*, sitting left of the stamina lights it is supposed to be centred over. Anchoring the
+ * number outside the slot keeps the icon exactly where it has always been.
+ */
+const COUNT_GAP = 6;
+
+/**
+ * The one ability this file names by hand, because it is the one that has a number on it.
+ *
+ * **Everything else here works in ids and in whatever the server published.** The slot's icon is an id out of
+ * `IMAGES_CONFIG`, the prize is a kind the server rolled, the arm is a kind the server set — none of which
+ * this file has any business comparing against a name. The uses count is the exception, and the reason is
+ * that **the number and the power it belongs to are published separately**: the count is the MultiBall
+ * window's, and nothing on the player says *which* power that count is about. So the match has to be made
+ * somewhere, and it is made here rather than by publishing a second attribute that said it twice.
+ *
+ * **What would change it.** If a second power ever gains a count, the honest shape is a count published
+ * *with* the power it belongs to — then no client has to know which powers are countable at all. That is one
+ * ability further away than today, and this comment is where to start from rather than a wrapper to write
+ * now.
+ */
+const MULTI_BALL_KIND: AbilityKind = "MultiBall";
+
+/**
  * The power slot and the stamina pool, bottom centre: an icon with three lights under it.
  *
  * **One slot, not two, and the second box in the reference is gone.** The old readout had an "ability"
@@ -164,11 +195,13 @@ const STACK_GAP = 10;
  * count decides is drawn on the player's head, which is where that answer belongs. The **charge** row went
  * with it for the same reason: with the chest unable to grant powers and the mystery box standing in for a
  * charge rather than granting one, "READY" was a row almost nobody could ever light. The **MultiBall** row
- * went last and is the one worth arguing: the window is real and it is running, but its count is not
- * actionable — five throws left and one throw left are the same decision — and a row for it would have been
- * the second box this rebuild exists to remove. **That is a deliberate loss of information rather than an
- * oversight.** If the count comes back it belongs on the reveal, which is now the only thing in the client
- * that knows a box was collected.
+ * went last, and **it has come back — as a number beside the icon rather than as a row**, which is the
+ * reversal worth reading because the argument for removing it is now the argument for having it. That
+ * argument was: the window is real and it is running, but its count is not actionable, since five throws
+ * left and one throw left are the same decision. **The window has no clock any more**, so its count *is* the
+ * whole of the ability — it is how much of the power is left, and the only things that end it early are
+ * dying and the round. It comes back attached to the icon of the power it belongs to, in
+ * {@link addCount}, rather than as a fifth row in the column, which would have said the same thing twice.
  *
  * **Nothing here decides anything.** The arm is written by `BallService` on the dev shortcut and the pool
  * by `WalkSpeedService`; this file draws both, and the segment arithmetic is a division of a value the
@@ -213,13 +246,31 @@ export class SuperHudController implements OnStart {
 		// image, which is the safe direction to be wrong in.
 		const iconId = Fusion.Value(scope, "");
 
+		/**
+		 * **The uses left in whatever the slot is showing, or nothing.** A `Value<number | undefined>` and not
+		 * a number beside a boolean: `undefined` is "there is no count to draw", and that single fact is what
+		 * the label's text *and* its visibility are both derived from, so the two cannot come apart. The pair
+		 * this deliberately is not — a flag and a number — is the shape `client/throwing.ts` argues against for
+		 * the same reason: two values for one question is two chances to disagree.
+		 *
+		 * It is set by the loop below, from the power the slot settled on, and `undefined` is the ordinary case
+		 * — every power except a running MultiBall window.
+		 */
+		const usesLeft = Fusion.Value<number | undefined>(scope, undefined);
+
 		// **The pool as one number in segments**, with the three fills computed from it rather than tracked
 		// separately. One `Value` for the reading and three `Computed`s for the drawing is one source of
 		// truth; three `Value`s would be three things to keep in step with one attribute, which is the
 		// mistake `panels.ts` describes about its own pair of booleans.
 		const staminaUnits = Fusion.Value(scope, SEGMENT_COUNT);
 
-		const icon = this.addIconSlot(scope, theme, iconId);
+		const icon = this.addIconSlot(scope, theme, iconId, usesLeft);
+
+		// Built *after* the slot and given it as a parent, because it is anchored to the slot's own left edge
+		// — see {@link addCount}. No value is kept: the label is wired to `usesLeft` and needs nothing further
+		// from this method, so a local holding it would be a name nothing reads.
+		this.addCount(scope, theme, icon, usesLeft);
+
 		const segments = this.addSegments(scope, theme, staminaUnits);
 
 		const column = Fusion.New(scope, "Frame")({
@@ -301,6 +352,12 @@ export class SuperHudController implements OnStart {
 				const armed = typeIs(arm, "string") && isAbilityKind(arm) ? arm : undefined;
 				const prize = this.prizeOf(player);
 
+				// **The MultiBall window, read as a count rather than as "is one open".** Since the window lost
+				// its clock, a non-zero count *is* an active window — see `SuperService.isMultiBallActive` — so
+				// this one read answers both questions the slot has about it: whether to draw the icon, and what
+				// number goes beside it.
+				const multiBall = this.multiBallLeftOf(player);
+
 				// **The flash starts on the edge where a prize appears, and is abandoned when one goes away.**
 				// That is one rule with three cases: a prize arriving starts it, a prize staying starts nothing,
 				// and a prize *leaving* clears it. The last case is the one worth naming — the ways a prize
@@ -311,16 +368,25 @@ export class SuperHudController implements OnStart {
 
 				previousPrize = prize;
 
-				// **What the slot shows, in the order the three states outrank each other.** The flash while it
-				// runs, then a held prize, then an arm, then nothing. A prize outranks the arm because it is the
-				// power the box paid for and the only one of the two with an ending; the arm outranks nothing
-				// because it is still something the player is about to use.
+				// **What the slot shows, in the order the four states outrank each other.** The flash while it
+				// runs, then a held prize, then an arm, then a running MultiBall window, then nothing. A prize
+				// outranks the arm because it is the power the box paid for and the only one of the two with an
+				// ending; the arm outranks nothing because it is still something the player is about to use.
+				// **The window is last**, because it is the only one of the four that is a *state* rather than
+				// something pending — an arm is a decision waiting on a ball, and a window is a supply that will
+				// still be there in a second. It is also the only one that can be arrived at with nothing else
+				// held, which is the ordinary case: using a MultiBall prize spends the prize, so the slot is
+				// empty for the whole life of the window unless the player collects another box.
 				//
 				// **The non-empty guard is not decoration**: `% 0` is a division by zero, and a config with every
 				// icon removed is a thing somebody could do.
 				const started = flashStartedAt;
 
 				let shown = "";
+				// Which power the slot settled on, kept beside the id rather than recovered from it: the id is
+				// what the `ImageLabel` wants and the *kind* is what the uses count has to be matched against,
+				// and the flash deliberately sets one without the other.
+				let shownKind: AbilityKind | undefined;
 
 				if (started !== undefined && revealIcons.size() > 0 && clock - started < FLASH_SECONDS) {
 					const step = math.floor((clock - started) / FLASH_STEP_SECONDS);
@@ -329,11 +395,26 @@ export class SuperHudController implements OnStart {
 					// The settle, and it is written by this branch on every frame after the spin ends — so the
 					// answer is on screen from the frame the flash stops rather than at the end of a fade.
 					shown = IMAGES_CONFIG.ABILITY_ICONS[prize];
+					shownKind = prize;
 				} else if (armed !== undefined) {
 					shown = IMAGES_CONFIG.ABILITY_ICONS[armed];
+					shownKind = armed;
+				} else if (multiBall > 0) {
+					shown = IMAGES_CONFIG.ABILITY_ICONS[MULTI_BALL_KIND];
+					shownKind = MULTI_BALL_KIND;
 				}
 
 				iconId.set(shown);
+
+				// **The number belongs to the power the slot is *showing*, not to the player**, and that is the
+				// whole of the single-use decision. A power with one use has nothing to say here, so Pierce and
+				// Freeze draw no number at all — rather than a permanent `1`, which is a figure that never
+				// changes and would teach a player that this label is decoration. MultiBall draws its count
+				// whenever it is what the slot is showing, **including on the last throw**, which is the moment
+				// a player most wants to see it. And because the two are matched rather than assumed, a player
+				// holding a box's Pierce while a MultiBall window runs gets the Pierce icon with no number
+				// beside it, which is the honest answer to "how many pierces do you have left".
+				usesLeft.set(shownKind === MULTI_BALL_KIND ? multiBall : undefined);
 
 				staminaUnits.set(staminaOf(player.GetAttribute(STAMINA_ATTRIBUTE)));
 			}),
@@ -370,6 +451,29 @@ export class SuperHudController implements OnStart {
 	}
 
 	/**
+	 * How many throws the player's MultiBall window has left, or `0` when there is no window.
+	 *
+	 * **`0` is both "no window" and "spent", which is one empty case rather than two** — the convention the
+	 * attribute itself carries, and the reason this does not return `undefined` where its sibling above does.
+	 * Everything that reads it wants a number: the icon is drawn when it is above nought, and the count is
+	 * drawn from it directly once the slot has settled on MultiBall.
+	 *
+	 * **The read is validated rather than trusted**, exactly like the arm's and the prize's beside it: the
+	 * attribute comes from a server that could be a newer build with something else on it, and `0` is the
+	 * answer that draws nothing rather than the answer that breaks a label.
+	 *
+	 * **This is the source of the count, and no new publish was needed for it.** `SuperService.publish`
+	 * already wrote it as part of the readout; what changed is what it *means* — with the window's clock gone
+	 * the count is the whole of the ability rather than the half that ran alongside a deadline, so a non-zero
+	 * count is now the only signal that a window is running.
+	 */
+	private multiBallLeftOf(player: Player): number {
+		const count = player.GetAttribute(SUPER_MULTI_BALL_COUNT_ATTRIBUTE);
+
+		return typeIs(count, "number") && count > 0 ? count : 0;
+	}
+
+	/**
 	 * The power slot: a faint plate with the current power's icon standing on it.
 	 *
 	 * **The plate never changes, and that is the whole of the design.** This slot has been three things: a
@@ -387,11 +491,24 @@ export class SuperHudController implements OnStart {
 	 * **`ScaleType.Fit` rather than the default `Stretch`**, so the art is never squashed to the slot's
 	 * square: three icons from whoever drew them will not all be square, and a stretched one is a bug that
 	 * only shows on the power nobody was testing.
+	 *
+	 * **The uses count is a child of the slot rather than a sibling in the column, and that is the layout
+	 * decision.** The stack's column is a `UIListLayout` that centres its children, so a row holding the
+	 * number and the icon side by side would be a row whose *centre* is the column's centre — which moves the
+	 * icon to the right by half the number's width, off the line the stamina lights below it are on. Anchored
+	 * to the slot's own left edge instead, the count grows leftwards into empty screen and **the icon does not
+	 * move at all**. No arithmetic is involved on either side: the anchor is relative, so the number never has
+	 * to know how wide the slot is and the slot never has to know how wide the number is.
+	 *
+	 * **It is `undefined` rather than `0` when there is nothing to count**, and that is the state the whole
+	 * label is drawn from — a `Value<number | undefined>` where `undefined` means "no count", so the number
+	 * and its visibility cannot disagree. See {@link addCount} for the rule that decides which powers get one.
 	 */
 	private addIconSlot(
 		scope: Fusion.Scope<unknown>,
 		theme: HudTheme,
 		iconId: Fusion.Value<string>,
+		usesLeft: Fusion.Value<number | undefined>,
 	): Frame {
 		const slot = Fusion.New(scope, "Frame")({
 			Name: "PowerSlot",
@@ -425,6 +542,78 @@ export class SuperHudController implements OnStart {
 		icon.Parent = slot;
 
 		return slot;
+	}
+
+	/**
+	 * The number of uses left in the power the slot is showing, to the **left** of the icon.
+	 *
+	 * **A number and not a word, and it is only there when there is something to count.** The decision the
+	 * brief leaves open is what a single-use power shows, and the answer taken is *nothing at all* — see the
+	 * rule at the call site rather than a rule here, because the count is drawn from one value that is
+	 * `undefined` when there is nothing to say. The two alternatives were both worse: **showing `1` for Pierce
+	 * and Freeze** is a number that never changes, on the two powers the count was not added for, and it
+	 * teaches a player that the number is decoration; **hiding it at exactly one** would be worse still,
+	 * because it would take the number away from MultiBall on the last throw — the one moment a player most
+	 * wants it.
+	 *
+	 * **Anchored to the slot's left edge, so it cannot move the icon.** See {@link addIconSlot} for why that
+	 * is a `Position`-and-`AnchorPoint` decision rather than a row, and {@link COUNT_GAP} for the one number
+	 * involved.
+	 *
+	 * **`AutomaticSize.XY` with a zero size**, which is `ScoreHudController.addScore`'s rule and the trap it
+	 * documents: big-ui's `Text` defaults to a *scale-1* width, and a scale-1 label inside a parent that is
+	 * sized by its contents is a measurement cycle Roblox resolves by making the parent huge. A zero-offset
+	 * size plus `AutomaticSize` makes the label exactly as wide as the number it holds, which here also means
+	 * the number grows *leftwards* from a fixed right edge as it changes from `5` to `4`.
+	 *
+	 * **The colour is `textPrimary` and there is no plate behind it**, which is `SLOT_TRANSPARENCY`'s
+	 * consequence rather than a choice: the slot behind the icon is 80% transparent, so this number is drawn
+	 * on the world. Dark text on a light arena floor is right, and if a map ever makes it disappear the lever
+	 * is a `UIStroke` in `theme.colors.shadow` rather than a different colour — the theme's palette is a
+	 * light-surface language and there is no darker entry to reach for.
+	 */
+	private addCount(
+		scope: Fusion.Scope<unknown>,
+		theme: HudTheme,
+		slot: Frame,
+		usesLeft: Fusion.Value<number | undefined>,
+	): TextLabel {
+		const label = Text(scope, {
+			text: Fusion.Computed(scope, (use) => {
+				const left = use(usesLeft);
+
+				return left === undefined ? "" : tostring(left);
+			}),
+			variant: "subtitle1",
+			wrap: false,
+		});
+
+		label.Name = "UsesLeft";
+		label.TextColor3 = theme.colors.textPrimary;
+		label.Size = UDim2.fromOffset(0, 0);
+		label.AutomaticSize = Enum.AutomaticSize.XY;
+		// Right edge at the slot's left edge, less the gap; vertically centred on the slot. Relative in both
+		// axes, so nothing here is derived from either element's size.
+		label.AnchorPoint = new Vector2(1, 0.5);
+		label.Position = new UDim2(0, -COUNT_GAP, 0.5, 0);
+		label.Parent = slot;
+
+		// **`Hydrate` rather than an assignment, and that part is forced rather than stylistic.** `Text` builds
+		// its label and hands it back, so a reactive value merely *assigned* to one of its properties afterwards
+		// is never tracked as a property at all — the trap `BallService`'s user-facing twin records in
+		// `viewportConstraint.ts` ("a graph object has to be part of a `New` to be tracked as a property") and
+		// that `RoundStatusController` documents at its own card. The `text` above is computed inside the
+		// `Text` call and is tracked for free; this one has nowhere to go but here.
+		//
+		// **The empty state is the icon's empty state, from the same `undefined`.** `Visible` is not a second
+		// flag to keep in step: the count is hidden exactly when there is no count to draw, and the icon is
+		// hidden exactly when `iconId` is `""` — the same situation, because one branch of the loop below sets
+		// both.
+		Fusion.Hydrate(scope, label)({
+			Visible: Fusion.Computed(scope, (use) => use(usesLeft) !== undefined),
+		});
+
+		return label;
 	}
 
 	/**

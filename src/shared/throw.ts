@@ -1,12 +1,32 @@
 import { Workspace } from "@rbxts/services";
 import { BALL_SIZE } from "shared/constants";
 import { BALL_CONFIG } from "shared/config/ball.config";
-import { LaunchPlan, flatLaunchSpeed, leftAxis, minimumReachSpeed, planLaunch, ThrowArc } from "shared/Trajectory";
+import {
+	compensateLateral,
+	flatLaunchSpeed,
+	LaunchPlan,
+	leftAxis,
+	minimumReachSpeed,
+	planLaunch,
+	ThrowArc,
+	velocityAtAngle,
+} from "shared/Trajectory";
 
 /**
- * How a player's throw is planned. This is the game's rulebook, kept in one
+ * How a throw is planned. This is the game's rulebook, kept in one
  * place so the server (which applies the throw for real) and the client (which
  * predicts it for the aim guide) can never disagree.
+ *
+ * **Two kinds of throw live here now, and telling them apart is the first thing to do in this file.** A
+ * **charged** throw is what a player makes: a heading, a hold and whether the ball bends, with no target
+ * anywhere in it — see {@link planChargedThrow}. An **aimed** throw is what a rig makes: a point to land on
+ * and a discrete arc, which is what every throw in the game used to be — see {@link planAimedThrow}.
+ *
+ * **Each kind keeps the rule above on its own, and neither can borrow the other's.** The charged throw is
+ * planned here and called by *both* the client's preview and the server's launch, from the same three
+ * inputs, so the drawn line and the flown line cannot come from different arithmetic. The aimed throw has
+ * one caller — `BallService.throwBall` invoked by a rig's behavior — because a rig draws no preview, so
+ * there is nothing on the other side for it to disagree with.
  */
 
 /**
@@ -220,7 +240,14 @@ function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve")
 }
 
 /**
- * Plans a player's throw at `target` by solving the arc from the muzzle.
+ * Plans an **aimed** throw — the rig's solve, and what every throw in this game used to be.
+ *
+ * **The name says "aimed" rather than "player" because a player does not make one any more.** A player's
+ * throw is charged — a heading and a hold, with no point to land on anywhere in it — and lives in
+ * {@link planChargedThrow} below. What is left here is the solve for a thrower that *has* a point in mind,
+ * which means a rig: `ThrowBehavior` picks a body and asks for a ball at it, and this is the arithmetic that
+ * gets one there. It is still the game's rulebook in the sense that matters — one function, one answer —
+ * it simply has one caller now instead of two, because a rig has no preview to draw.
  *
  * The modes get their speed from different places, because they are answering
  * different questions:
@@ -258,7 +285,7 @@ function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve")
  * interval behind, and while the thrower is walking or turning that is a stud or
  * two of hand.
  */
-export function planPlayerThrow(
+export function planAimedThrow(
 	character: Model,
 	target: Vector3,
 	arc: ThrowArc,
@@ -293,4 +320,251 @@ export function planPlayerThrow(
 	const speed = math.clamp(needed, BALL_CONFIG.THROW_SPEED, BALL_CONFIG.THROW_MAX_SPEED);
 
 	return planLaunch(muzzle, aim, speed, "overhead", { gravity: BALL_CONFIG.BALL_GRAVITY });
+}
+
+// ------------------------------------------------------------------ charged
+
+/**
+ * What the player's input produces: **where they are pointing, how long they held, and whether the ball
+ * bends.**
+ *
+ * **The absence of a target is the design and not a simplification.** The model this replaces asked the
+ * player *where the ball should land* and solved a throw that got there. That has two failures built into
+ * it rather than bolted on: a moving target has to be clicked where the body *will* be, which is guesswork,
+ * and a click that goes past a target lands in the sky — a legitimate thing to aim at, and a solve that
+ * dutifully reaches it — so the throw goes as far as the ball allows. Both of those come from range being a
+ * *place* the player nominates and cannot see. Here range is a length of time they hold, the maximum is one
+ * number they can learn, and the landing marker says where it lands.
+ *
+ * **Three fields, and each is exactly one input.** `heading` is the aim ray, still carrying the camera's
+ * pitch, because both sides flatten it in `velocityAtAngle` and the same number therefore means the same
+ * compass direction on both. `charge` is the hold as a fraction. `curve` is the lateral shape, which is the
+ * one arc that survives the change because it is not on the charge's axis — see {@link planChargedThrow}.
+ */
+export interface ChargeRequest {
+	readonly heading: Vector3;
+	/**
+	 * How far the hold got, from `0` (a tap) to `1` (held to the end of its run).
+	 *
+	 * **The one number that has to cross the wire unchanged, because it is the one number both sides act
+	 * on.** The client draws its preview from the charge it computes at the instant it releases, and sends
+	 * that same value; the server has no clock for this and never re-derives one. So this is not two
+	 * measurements of one hold that have to be kept close — it is one value used twice, which is why the
+	 * preview cannot drift from the throw as the charge grows.
+	 */
+	readonly charge: number;
+	/** Whether the ball bends to the thrower's left. See {@link BALL_CONFIG.CURVE_STRENGTH}. */
+	readonly curve: boolean;
+}
+
+/** What a rig's behavior produces: a point to land on, and one of the three named arcs. */
+export interface AimedRequest {
+	readonly target: Vector3;
+	readonly arc: ThrowArc;
+}
+
+/**
+ * A throw as its caller states it — **and the tag is load-bearing rather than decorative.**
+ *
+ * The two kinds take different arguments and answer to different rules, and mixing them would be *wrong*
+ * rather than merely odd: a charge handed to the aimed solve is a number it would read as a distance, and a
+ * target handed to the charged solve is a point with no meaning. `BallService.throwBall` branches on this
+ * tag at the single line where a solve happens, so the two arms sit two lines apart and each names the
+ * function it calls — which is what keeps "one solve, both sides" a thing a reader can check rather than a
+ * thing this comment claims.
+ */
+export type ThrowRequest =
+	| ({ readonly kind: "charged" } & ChargeRequest)
+	| ({ readonly kind: "aimed" } & AimedRequest);
+
+/**
+ * `sin 45°`, the largest fraction of a launch speed that may go upwards before the throw stops being one —
+ * the clamp {@link peakAngle} falls back to. See that function for when it is reached and why 45° rather than
+ * anything steeper.
+ */
+const MAX_VERTICAL_FRACTION = 1 / math.sqrt(2);
+
+/**
+ * The launch angle that arcs to {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT} at `speed`, in radians.
+ *
+ * **One line of physics and one clamp, and the line is the whole of the shape.** A projectile's apex is
+ * `v_y² / 2g`, so reaching a peak of `h` needs a vertical launch of `v_y = sqrt(2·g·h)` and nothing else.
+ * Everything else about the throw is already decided by the charge — the speed is the hold, and the heading is
+ * where the player is pointing — so the angle is `asin(v_y / v)`, and **the flattening is now a consequence
+ * rather than a second thing being lerped**: as the hold fills, `v` climbs, `v_y / v` falls, and the throw
+ * flattens on its own. That is the change this replaced a two-angle lerp with, and it is why a tap and a full
+ * hold can peak at the same height while leaving the hand at 29° and 10°.
+ *
+ * **One solution, not two — and this is worth being exact about, because the opposite is true one function
+ * away.** A conventional solve fixes the *target* and the speed, and there are then two launch angles that
+ * reach it: the steep one and the shallow one, which is the choice {@link solveLaunchVelocity} makes for a
+ * rig. Fixing the *peak* is a different constraint — it pins the vertical component outright — so there is no
+ * second angle that reaches the same height at the same speed. `asin`'s other root is `180° − θ`, a throw
+ * pointed backwards, which is not a solution to anything.
+ *
+ * **The clamp is the unreachable-peak case.** `v_y > v` means this speed cannot lift the ball to the
+ * configured peak at all, and the answer is a 45° launch: the longest throw the speed allows, at the highest
+ * peak available *while still going somewhere*. Steeper would buy height and cost the throw — 90° reaches the
+ * peak and lands on the thrower's own head — and anything below 45° would fail at a much shorter distance
+ * without getting any closer to the peak. So 45° is the one launch that is not a lie about either half of
+ * "throw it as far as you can to that height".
+ *
+ * **It is unreachable in the shipped numbers, and deliberately so.** The demand is
+ * `sqrt(2·g·CHARGE_PEAK_HEIGHT)` = 21.9 studs/s and the floor is `CHARGE_MIN_SPEED` = 45, so this branch needs
+ * a peak of about 12 studs or a floor under 22 before it can run. **Whichever of the two is ever tuned, the
+ * invariant is that the demand stays under the floor** — and if it does not, the visible symptom is not a
+ * broken throw but a *flatter* one that lands closer than the charge promised, which is exactly what the
+ * fallback is for and exactly why it is a clamp rather than a refusal.
+ */
+function peakAngle(speed: number): number {
+	const vertical = math.sqrt(2 * BALL_CONFIG.BALL_GRAVITY * BALL_CONFIG.CHARGE_PEAK_HEIGHT);
+
+	// A speed of zero would divide by it; the clamp answers that case with the same 45° it answers an
+	// unreachable peak with, which is the honest reading of "this throw has no speed to shape".
+	return math.asin(math.clamp(vertical / speed, 0, MAX_VERTICAL_FRACTION));
+}
+
+/**
+ * The launch speed a hold of `charge` uses, in studs per second.
+ *
+ * The top of the climb is {@link BALL_CONFIG.THROW_MAX_SPEED} rather than a number of its own, so the cap on
+ * a throw and the top of the range are one figure — there is nothing here that could be raised past the cap
+ * and quietly stop capping.
+ */
+function chargeSpeed(charge: number): number {
+	const floor = BALL_CONFIG.CHARGE_MIN_SPEED;
+
+	return floor + (BALL_CONFIG.THROW_MAX_SPEED - floor) * charge;
+}
+
+/**
+ * How long a projectile launched at `speed` and `angle` stays up, if it lands at the height it left from:
+ * `2·v·sin θ / g`.
+ *
+ * **The only flight time a charged throw can honestly state**, because it has no target and so no distance
+ * to divide by. It is exact over level ground, short for a landing below the launch height and long for one
+ * above. It has exactly one consumer — the sideways force of a curve, which the server removes this long
+ * after the throw, see `BallService.applyAcceleration` — and being a little early or late with that costs
+ * part of a bow on sloping ground, where being absent would leave a constant force pushing a ball that had
+ * already stopped.
+ *
+ * **With the peak setting the angle, this is the same number at every charge** — `v·sin θ` is the fixed
+ * vertical component, so a hold changes how far the ball travels and never how long it hangs. That is worth
+ * knowing before the peak is tuned: it is the figure a curve's force is timed to, and moving the peak moves
+ * it.
+ */
+function ballisticFlight(speed: number, angle: number): number {
+	return (2 * speed * math.sin(angle)) / BALL_CONFIG.BALL_GRAVITY;
+}
+
+/**
+ * Plans a **charged** throw: a direction, a hold and nothing else. **The player's solve, and the one both
+ * the preview and the ball come from.**
+ *
+ * **What the hold decides is the speed, and the speed decides the rest.** The charge climbs the launch speed
+ * from {@link BALL_CONFIG.CHARGE_MIN_SPEED} to {@link BALL_CONFIG.THROW_MAX_SPEED}; the angle is derived from
+ * that speed so the arc peaks at {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT} — see {@link peakAngle} — and the
+ * range is what those two produce. So the sentence a player learns is still *hold longer, further*, and it is
+ * now true of one number rather than of two moving together: **nothing but the speed changes with the hold**,
+ * and the flattening is a consequence of it rather than a second dial.
+ *
+ * **On level ground that gives 21.5 studs at a tap, 33.5 at a quarter, 45 at a half, 56 at three quarters and
+ * 67 at a full hold** — monotone, and far shorter than the lob it replaces (22 / 52 / 90 / 127 / 150).
+ * **That loss is the price of the shape and it is a real one**, so the numbers that would restore it are
+ * written down here rather than found by tuning later. Reach rises with both the speed and the peak, and at
+ * full charge it is about `2·v·sqrt(2·g·h)/g` for a small peak: 150 studs needs roughly
+ * `THROW_MAX_SPEED = 275`, which is more than twice anything this game has thrown, or a peak near 7 studs,
+ * which puts the apex two character-heights up and is the lob this change exists to remove. **Neither was
+ * moved.** The table above is what the current numbers do, and the honest reading of it is that a real
+ * trajectory at a 125 studs/s ceiling reaches about 67 studs — which is the same shape and about the same
+ * distance as a baseball pitch at that speed.
+ *
+ * **Every charge is in the air for the same 0.55 s, and that is a consequence rather than a coincidence.** A
+ * fixed apex from a fixed hand means a fixed *vertical* flight — `2·v_y/g`, and `v_y` is the same number for
+ * every hold — so only the horizontal distance covered changes. Two things follow, and both are changes to how
+ * the game plays rather than to how it looks. The ball arrives at a target in about half the time the lob took
+ * (0.97 s at a tap and 1.4 s at full, before), so it needs less leading; and it arrives *flat* rather than
+ * dropping onto the mark, which is the shape the change was asked for and does mean a hit reads differently as
+ * well as a throw.
+ *
+ * **With no target there is nothing to land on and nothing to be wrong about.** No `centreAimPoint`, no
+ * `flatLaunchSpeed`, no arc to choose: the launch is a velocity the charge names outright, and the preview
+ * integrates the identical vector under the identical pull. The one thing that used to be *solved* is now
+ * *measured*: the guide places the landing marker where the ball's edge actually touches, and the player
+ * judges the shot by that.
+ *
+ * **The curve survives, and it survives because it is not on this axis.** `overhead` and `straight` named two
+ * ways of *reaching a point*, which is the thing the hold replaced, so neither is part of a player's throw
+ * any more. `curve` names a lateral shape — a sideways force rather than an elevation — and folding it in
+ * would be folding two axes into one number, so a charged throw carries it separately: the same launch, with
+ * a constant pull to the thrower's left and the launch slung wide to cancel it, which leaves the bend as a
+ * shape and the landing where the unbent version of the same charge would have put it. The cancellation is
+ * calibrated at {@link ballisticFlight}, so on ground that is not level the ball rejoins its own line a
+ * little early or late — and the preview draws exactly that, which is what keeps even this honest.
+ *
+ * **`arc` is `undefined` for the plain version and `"curve"` for the bent one.** A charged throw's shape is a
+ * number rather than a name, and calling a 40° hold "straight" would invent a member this game does not have;
+ * the name is kept only where it is still true. See {@link LaunchPlan.arc}.
+ */
+export function planChargedThrow(
+	character: Model,
+	request: ChargeRequest,
+	launchFrom?: Vector3,
+): LaunchPlan {
+	const muzzle = launchFrom ?? getThrowMuzzle(character);
+
+	// **Clamped rather than refused, because this function's contract is to return a plan.** An impossible
+	// charge is refused at the wire — see `BallService`'s handler — and this clamp is what makes the function
+	// total for every other caller: a hold of exactly one second can produce `1.0000000001` in floating
+	// point, and that must draw the same preview as `1` rather than put a `NaN` into a velocity and take the
+	// arc off the screen.
+	const charge = math.clamp(request.charge, 0, 1);
+
+	// **The speed first, because the angle is derived from it.** The order is the model: the hold picks one
+	// number, and the shape of the arc is a function of that number rather than a parallel input. See
+	// `peakAngle` for the derivation and this function's doc for what the pair produces.
+	const speed = chargeSpeed(charge);
+	const angle = peakAngle(speed);
+
+	// **The heading is flattened here, and both sides flatten the same number.** What crosses the wire is the
+	// aim ray's own direction, which carries the camera's pitch because that is the vector there is; the only
+	// part a heading can use is the compass direction, so it is projected once, here, rather than by each
+	// caller. Looking straight down has no heading at all, and the fallback is due north — the same fallback
+	// `horizontalDirection` makes, so a degenerate aim behaves identically in both files.
+	const along = new Vector3(request.heading.X, 0, request.heading.Z);
+	const heading = along.Magnitude > 0.001 ? along.Unit : new Vector3(0, 0, -1);
+
+	// A point one stud along the heading, because a horizontal direction is the only thing
+	// `velocityAtAngle` reads of a target. Naming the heading as a point beside the muzzle keeps one reader
+	// of "target" in the shared maths instead of two.
+	const nominal = muzzle.add(heading);
+
+	const flat = velocityAtAngle(muzzle, nominal, speed, angle);
+	const flight = ballisticFlight(speed, angle);
+
+	if (!request.curve) {
+		return {
+			origin: muzzle,
+			velocity: flat,
+			arc: undefined,
+			gravity: BALL_CONFIG.BALL_GRAVITY,
+			// Zero, and so there is nothing for the server to apply — `applyAcceleration` returns at once on
+			// a pull of nothing. A plain charged throw is pure ballistics.
+			acceleration: Vector3.zero,
+			// Stated even though nothing reads it for a plain throw, so that the field means the same thing
+			// on every plan rather than something that depends on the shape.
+			flightTime: flight,
+		};
+	}
+
+	const pull = leftAxis(muzzle, nominal).mul(BALL_CONFIG.CURVE_STRENGTH);
+
+	return {
+		origin: muzzle,
+		velocity: BALL_CONFIG.THROW_CURVE_COMPENSATED ? compensateLateral(flat, pull, flight) : flat,
+		arc: "curve",
+		gravity: BALL_CONFIG.BALL_GRAVITY,
+		acceleration: pull,
+		flightTime: flight,
+	};
 }

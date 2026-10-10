@@ -12,13 +12,24 @@ import { addViewportConstraint } from "../../ui/viewportConstraint";
 /** Prints once, when the HUD is up — the line that says the controller ran at all. */
 const DEBUG = true;
 
-/** How wide the HUD is, and how far below the top of the screen it sits. Its height is its content's. */
+/** How wide the HUD is, and how far below the top of the safe region it sits. Its height is its content's. */
 const HUD_WIDTH = 360;
 /*
- * **No longer `0`, because the score bar now occupies the top row.** The score is pinned at inset 4 and this
- * band sits below it, which is the order a scoreboard is read in — the score changes, the clock counts down
- * underneath it. This is the band's offset and nothing else: its width, its contents and its behaviour are
- * untouched, and the clock itself did not move inside it.
+ * **This is the number that moves this band, and three revisions of `ScreenInsets` are why it is worth saying
+ * so plainly.** The band spent three revisions in a `ScreenGui` of its own — `None`, then `DeviceSafeInsets`,
+ * then `TopbarSafeInsets` — and each traded one problem for a worse one: the first two put it *under* Roblox's
+ * chrome, and the third put it *inside* the chrome's own row, where the available area is a topbar tall and
+ * the band is therefore flush with the top of the screen with no room to be anything else. **`ScreenInsets`
+ * chooses the region a GUI draws in; only an offset moves something within it.** So the band is back in the
+ * shared GUI, and this is the knob: `0` is the topmost row the band may occupy — the first pixel below the
+ * topbar — and every pixel this grows by moves the band that much further down the screen.
+ *
+ * **It is half of a pair, and the other half is `SCORE_TOP_INSET` in `ScoreHudController`.** That one is an
+ * offset from the same origin in the same GUI, so the two are the rows of one column and moving either without
+ * the other is how two opaque plates end up drawn over each other. The score plate is about forty pixels tall,
+ * so this wants to be roughly forty more than that one — `44` against `4` is the pair that fits, and it is the
+ * order a scoreboard is read in, the score changing with the clock counting down underneath it. A larger
+ * number is simply the band lower down.
  */
 const HUD_TOP_INSET = 44;
 
@@ -290,11 +301,18 @@ export class RoundStatusController implements OnStart {
 			});
 		}
 
-		// Shared with any other HUD, so `PlayerGui` does not collect a `ScreenGui` per feature — and
-		// so the settings that are about the screen rather than about this HUD are decided once.
-		// See `ui/screenGui.ts`.
+		// **Back in the shared GUI, which is where a panel belongs.** Every HUD here shares one `ScreenGui` so
+		// that the settings which are about the *screen* rather than about one HUD are decided once. The band
+		// had a GUI of its own for three revisions, trying to get out from under Roblox's chrome; the note at
+		// the end of `ui/screenGui.ts` records what each attempt did instead, and why the property that was
+		// reached for cannot do this job. `HUD_TOP_INSET` moves this band, and it always did.
 		wrapper.Parent = getHudScreenGui();
 
-		if (DEBUG) print(`[HUD] round status up — reading ${ROUND_STATUS_FOLDER} in ReplicatedStorage`);
+		if (DEBUG) {
+			print(
+				`[HUD] round status up — ${HUD_TOP_INSET}px below the safe region, ` +
+					`reading ${ROUND_STATUS_FOLDER} in ReplicatedStorage`,
+			);
+		}
 	}
 }

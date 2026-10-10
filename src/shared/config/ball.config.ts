@@ -274,6 +274,12 @@ export const BALL_CONFIG = {
 	 * arcing. The solve is the honest answer at every distance — and it is what the aim guide
 	 * draws, so a floor above it is what makes the drawn line a different line from the one the
 	 * ball flies. Raise it again if a close throw ever wants more authority than accuracy.
+	 *
+	 * **A charged player throw does not read this at all, and has nothing for it to do.** There is no solve
+	 * for it to floor, because there is no target: the hold climbs from
+	 * {@link BALL_CONFIG.CHARGE_MIN_SPEED}, which is a *launch speed* rather than a minimum anything has to
+	 * clear. So this is the floor of the **aimed** throw — the one a rig makes — and the two kinds no
+	 * longer share a speed rule.
 	 */
 	THROW_SPEED: 0,
 
@@ -324,6 +330,11 @@ export const BALL_CONFIG = {
 	 * A side effect worth knowing: the furthest reachable target is
 	 * `(THROW_MAX_SPEED / THROW_ARC_SPREAD)² / gravity`, so raising this eats into
 	 * range unless {@link BALL_CONFIG.THROW_MAX_SPEED} comes up with it.
+	 *
+	 * **Read by the aimed solve and by nothing else.** A charged throw has nothing to spread — its speed is
+	 * the hold, and there is no distance in it to derive a multiplier from — so the reach figure above is
+	 * the *rig's* maximum and the player's comes from {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT}. The two kinds
+	 * of throw no longer share a speed rule, which is the whole of what that change did.
 	 */
 	THROW_ARC_SPREAD: 1.4,
 
@@ -342,11 +353,83 @@ export const BALL_CONFIG = {
 	 * instead of the solve.
 	 *
 	 * The price is reach, and it is steep: at that same flat angle range goes as `v²·sin(10°)/g`,
-	 * so this figure at 200 reaches roughly 35 studs where 280 reached about 70. Lowering the
-	 * angle instead would slow the ball without costing range, but it would stop the throw being
-	 * flat — see `MIN_THROW_ANGLE` in `shared/Trajectory.ts`.
+	 * so this figure's own reach is about 34 studs, and easing it to 200 would buy about 87 at the
+	 * cost of a ball nobody can dodge. Lowering the angle instead would slow the ball without
+	 * costing range, but it would stop the throw being flat — see `MIN_THROW_ANGLE` in
+	 * `shared/Trajectory.ts`.
+	 *
+	 * **It is also the ceiling of the charged player throw, which is what keeps this number from being a
+	 * dial for the rigs alone.** A player's speed is no longer solved from a distance: the hold climbs from
+	 * {@link BALL_CONFIG.CHARGE_MIN_SPEED} to *this*, and the angle is derived from the speed so the arc peaks
+	 * at {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT}. So the furthest a player can throw is decided by these two
+	 * figures together, and neither can be moved without moving the reach — see that constant for which one
+	 * buys what.
+	 *
+	 * **And it is lower than what a click past the target used to do.** That case had no solution at all —
+	 * a target beyond the ball's reach at this speed — so the solve fell back to a 45° lob, whose range is
+	 * `v²/g`: about 195 studs, which is what "aim at the sky and it flies as far as the ball allows" was.
+	 * A full hold reaches about 67, and it is something the player does deliberately rather than something
+	 * that happens when they miss.
 	 */
 	THROW_MAX_SPEED: 125,
+
+	// ------------------------------------------------ the charged player throw
+
+	/**
+	 * How long a hold takes to reach full charge, in seconds. **Placeholder.**
+	 *
+	 * **Read by the client and by nothing else, because the charge is a *length of time* and the server
+	 * never sees one.** What crosses the wire is the charge itself — a number in `0..1` — so this constant
+	 * only decides how fast a player's own hold fills up. The server's half of the rule is the four numbers
+	 * below, which are what turn that number into a launch.
+	 *
+	 * **One second, and the choice is a competition between two failures.** Too short and the middle of the
+	 * range is unreachable: a power you cannot hold is a power you cannot learn, and learning the lengths is
+	 * the whole point of replacing "click the sky" with a known maximum. Too long and the throw stops being
+	 * a throw — a full-power shot costs a second of standing with a ball in hand and, until the release, no
+	 * ball in the air. One second is about the longest hold that still reads as drawing an arm back rather
+	 * than as hesitating.
+	 *
+	 * It is not a rate: nothing accumulates, and the mapping is one division. See `ChargeRequest`.
+	 */
+	CHARGE_SECONDS: 1,
+
+	/**
+	 * How high above the thrower's hand a charged throw arcs, in studs. **A peak rather than an angle, and it
+	 * is now the whole of what a throw's shape is.**
+	 *
+	 * **Placeholder, and the value is a real throw rather than a round number.** The log's own figures put the
+	 * launch point about four and a half studs above the floor (`launch … y 210.96` against a landing at
+	 * `y 206.5`), so a peak of three above the hand puts the apex at roughly seven and a half studs — a little
+	 * over a character's head, which is where a thrown ball goes.
+	 *
+	 * **What this replaces, measured.** The arc used to be built by *lerping between two launch angles*, and
+	 * the peak heights that produced, from the same solve, were **9.5 studs at a tap, 21 at mid charge and 17
+	 * at full** — peaking near 21.4 around three-quarters charge, which is where the reported `0.72 …
+	 * 102.7 studs/s at 35.2deg` lands. Four to five times a player's height is a lob, and no choice of the two
+	 * angles fixes it: the shape was being picked as a *direction* when what a person controls is how high
+	 * they release into. Both of those angles are gone; nothing else read them.
+	 *
+	 * **This is also the reach knob now, and it is a bigger one than it looks.** A throw that peaks low covers
+	 * ground with speed, and one that peaks high trades speed for hang — so range rises with *both* values, and
+	 * the two are not interchangeable: at full charge the reach is about `2·v·sqrt(2·g·h)/g`, which is linear in
+	 * the speed and only in the *root* of the peak. See `planChargedThrow` for the table this produces and for
+	 * the arithmetic behind "restore the old range".
+	 */
+	CHARGE_PEAK_HEIGHT: 3,
+
+	/**
+	 * The launch speed at zero charge, in studs per second. **Placeholder.**
+	 *
+	 * **This is what makes a tap a throw rather than a release.** At the loft angle a speed of zero would be
+	 * a ball let go of from the hand, which is a different feature; this is the smallest launch that still
+	 * reads as one, and it is what a tap — a press and release inside one frame — puts in the air.
+	 *
+	 * **It is deliberately not {@link BALL_CONFIG.THROW_SPEED}**, which is the *solve's* floor and is `0`
+	 * for the reasons written up there. A charged throw has no solve to floor: its speed is this number and
+	 * the climb to the cap, and nothing else in the game can raise it.
+	 */
+	CHARGE_MIN_SPEED: 45,
 
 	/**
 	 * **A multiplier on the derived launch correction. It should stay at 1.**
@@ -542,6 +625,14 @@ export const BALL_CONFIG = {
 	 * **Flipping this changes what {@link BALL_CONFIG.CURVE_STRENGTH} looks like by
 	 * 4×.** To keep the same visible bend across the flip, divide it by 4 — and read
 	 * that entry's comment for where the factor comes from.
+	 *
+	 * **Two solves read this, and they hand it a flight time for different reasons.** The aimed throw
+	 * passes the time to its target, which is a distance it solved for. A charged throw has no target, so it
+	 * passes the *ballistic* flight time, `2·v·sinθ/g` — how long the ball would stay up if it came back to
+	 * the height it left from. So `true` keeps its meaning for both: the bow is a shape and not a shortcut,
+	 * and a charged curve lands where the same charge would have landed without the pull. What it gives up
+	 * on this side is exactness: land on ground above or below the launch height and the real flight is
+	 * shorter or longer than the figure it was given, so the bow returns slightly early or slightly late.
 	 */
 	THROW_CURVE_COMPENSATED: true,
 

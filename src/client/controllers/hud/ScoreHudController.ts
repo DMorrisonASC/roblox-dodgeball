@@ -32,12 +32,18 @@ const SCORE_Z_INDEX = 4;
 /**
  * How far below the top of the safe region the bar sits, in pixels.
  *
- * **Above the round status band, which is the order a scoreboard is read in**: the score is the thing that
- * changes and the clock is the thing counting down under it. That swap is why `HUD_TOP_INSET` in
- * `RoundStatusController` is no longer `0` — the band moved down one row rather than the score moving into
- * its way. Four rather than nought so the plate does not touch Roblox's topbar.
+ * **The upper half of one stack, and the lower half is `HUD_TOP_INSET` in `RoundStatusController`.** Both are
+ * offsets from the same origin in the same GUI, so these are the two rows of one column and they have to be
+ * moved together: the band below is a card as tall as its line of text, so its offset wants to be around
+ * forty more than this one. Four and forty-four is the pair that fits, and it is the order a scoreboard is
+ * read in — the score is the thing that changes and the clock is the thing counting down underneath it.
+ *
+ * **`20` was tried and it is a colliding number rather than a lower bar.** Moving this one on its own walks
+ * the plate down into the row the band occupies, and because both plates are opaque — and the band sits at a
+ * rung below every other GUI, so it loses the overlap rather than winning it — the score plate ends up drawn
+ * across the clock. If this bar should sit lower, this number and the band's are raised together.
  */
-const SCORE_TOP_INSET = 4;
+const SCORE_TOP_INSET = 0;
 
 /** The circle's diameter, in pixels. Big enough to read as a side, small enough not to be a button. */
 const CIRCLE_SIZE = 14;

@@ -12,16 +12,25 @@ import type { BallService } from "../../services/ball/BallService";
  */
 const THROW_RANGE = 60;
 
-/** Which arc an NPC throws. Straight is the plain default; a real aim is what would choose. */
+/**
+ * Which arc an NPC throws. Straight is the plain default; a real aim is what would choose.
+ *
+ * **A rig is the only thing in the game that still names an arc.** A player's throw is charged — a heading
+ * and a hold, with no point in it at all — so `overhead`, `straight` and `curve` survive here, where there
+ * really is a target and a choice of how to reach it. This constant is therefore the whole of what selects
+ * between them, which makes it the line to change if a rig should arc a ball instead of driving it.
+ */
 const THROW_ARC: ThrowArc = "straight";
 
 /**
  * Throwing, for an NPC.
  *
  * The ball leaves the hand through `BallService.throwBall` and nothing else, so
- * an NPC's throw *is* a player's throw with a different direction in it: the
- * same solve, the same plan, the same weld release and the same token stamped at
- * release.
+ * an NPC's throw *is* a throw with a different direction in it: the same weld release,
+ * the same token stamped at release and the same hand of gates — with one difference that
+ * is worth knowing at this call site, which is that the *solve* is a different function from a player's.
+ * A rig has a point to reach and asks for a throw at it; a player has a heading and a hold and asks for a
+ * throw along it. Both are in `shared/throw.ts`, and the request below says which one this is.
  *
  * `tickInterval` is what paces the throws. It is deliberately slower than the
  * catching behavior's, so a rig that both catches and throws has time to be hit
@@ -56,7 +65,11 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 
 			const target = root.Position.add(root.CFrame.LookVector.mul(THROW_RANGE));
 
-			balls.throwBall(model, target, THROW_ARC);
+			// **The `aimed` kind, which is the one a caller with a point in mind uses.** It is tagged rather
+			// than inferred because `BallService.throwBall` accepts both kinds and a target handed to the
+			// charged solve would be a distance — see `ThrowRequest` in `shared/throw.ts`, which is where that
+			// argument lives in full.
+			balls.throwBall(model, { kind: "aimed", target: target, arc: THROW_ARC });
 		},
 	};
 }

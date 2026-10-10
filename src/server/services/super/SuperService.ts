@@ -1,5 +1,8 @@
 import { OnStart, Service } from "@flamework/core";
-import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
+// **`Workspace` was imported for one thing: `GetServerTimeNow()`, stamped into a MultiBall window's
+// deadline.** The deadline is gone and so is the import — if it comes back for a clock, it comes back with
+// the clock rather than sitting here unused. `ReplicatedStorage` is still the round's status folder.
+import { Players, ReplicatedStorage } from "@rbxts/services";
 import { AbilityKind } from "shared/ability";
 import { SUPER_CONFIG } from "shared/config/super.config";
 import {
@@ -11,7 +14,6 @@ import {
 	ROUND_STATUS_FOLDER,
 	SUPER_CHARGE_ATTRIBUTE,
 	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
-	SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE,
 	SUPER_STREAK_ATTRIBUTE,
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
@@ -31,19 +33,20 @@ const DEBUG = true;
 const PLAYING = "Playing";
 
 /**
- * A MultiBall window that is running: when it closes, and how many throws it has left.
+ * A MultiBall window that is running, and how many throws it has left.
  *
  * **A row in a `Map` rather than attributes treated as the state**, which is this service's own rule:
  * the `Map` is the truth and the attributes are published for the client. A `Player` attribute is not a
- * place to keep a decision, and this one would need two of them kept in step by hand.
+ * place to keep a decision.
  *
- * **`endsAt` is on the engine's shared clock**, stamped from `Workspace:GetServerTimeNow()` and never
- * `os.clock()` — see `SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE` for why that is the difference between a HUD
- * that can count down and a HUD that cannot.
+ * **One field, and the field that used to be here is the change.** The row was `{ endsAt, remaining }` and
+ * the window closed when either ran out; it is **the count alone** now. There is no deadline to compare
+ * against `Workspace:GetServerTimeNow()`, no `task.delay` scheduled to clear the row when one passed, and
+ * nothing published that a countdown could be drawn from. A window lasts until its last throw is spent,
+ * wherever in a round that happens to be — see {@link consumeMultiBallBall}, which is where the final
+ * throw closes it, and `SUPER_CONFIG.MULTI_BALL_BALL_COUNT` for what that makes this ability.
  */
 interface MultiBallWindow {
-	/** What `Workspace:GetServerTimeNow()` will read when the window closes. */
-	endsAt: number;
 	/** Throws left to pay for. See `SUPER_CONFIG.MULTI_BALL_BALL_COUNT` for what is being counted. */
 	remaining: number;
 }
@@ -127,8 +130,13 @@ export class SuperService implements OnStart {
 	 * opened in. Whether a death should close one is a separate decision, and it is made where deaths are
 	 * handled rather than here — this service is told about states and never about bodies.
 	 *
-	 * It is also the one container here that has a *clock* attached to its rows, which is why the rows
-	 * carry their own deadline rather than this service asking anything how long it has been.
+	 * **It used to be the one container here with a *clock* on its rows, and the sentence that said so is
+	 * replaced rather than deleted because the reversal is the part worth reading.** The rows carried a
+	 * deadline so a window could be closed by time alone; they carry nothing but a count now, and the
+	 * consequence that matters when reading the rest of this file is that **a window can outlive a round** —
+	 * nothing about it is measured in seconds. That is why the two callers that close one anyway, a death and
+	 * the end of a round, are load-bearing rather than tidy-up: they are now the only endings the ability has
+	 * other than a player spending all five throws.
 	 */
 	private readonly multiBalls = new Map<Player, MultiBallWindow>();
 
@@ -146,10 +154,11 @@ export class SuperService implements OnStart {
 	 * replaces the body it was collected in. It is also cleaned up on `PlayerRemoving` with the others,
 	 * since a row for somebody who has left is a row nothing will ever clear.
 	 *
-	 * **And unlike its sibling, this container has no clock in it at all.** A MultiBall window is a length
-	 * of time and has to be asked how much of it is left; a prize is held until something takes it away, so
-	 * the row's *presence* is the whole of the state — which is why there is no `endsAt` to compare and
-	 * nothing scheduled to close it.
+	 * **Neither container has a clock in it now, and this one never did.** A prize is held until something
+	 * takes it away, so the row's *presence* is the whole of the state — which is why there is no `endsAt` to
+	 * compare and nothing scheduled to close it. **Its sibling has since joined it**: a MultiBall window is a
+	 * count of throws rather than a length of time, so neither of the two things a player can hold here
+	 * expires on its own, and both are ended by something a player or a round does.
 	 */
 	private readonly mystery = new Map<Player, MysteryPrize>();
 
@@ -161,10 +170,10 @@ export class SuperService implements OnStart {
 			this.streaks.delete(player);
 			this.charged.delete(player);
 
-			// **The window goes with them, and the timer it left behind is harmless.** That timer was
-			// scheduled for a player who is no longer here, and `clearMultiBall` is silent when there is
-			// nothing to clear — which is also what makes it safe for a death or a round ending to close a
-			// window the clock was still going to close.
+			// **The window goes with them, and nothing is left scheduled for it.** The deletion is all of it:
+			// where a live window used to have a `task.delay` waiting to close it, `clearMultiBall` is only
+			// ever called by a throw, a death or the round's end now — so there is no callback that could
+			// arrive for a player who has gone, and no timer to be harmless about.
 			this.multiBalls.delete(player);
 
 			// **And the box's prize goes with them, by the same argument, and with no tidy-up left behind.**
@@ -316,10 +325,14 @@ export class SuperService implements OnStart {
 	 *
 	 * **The charge is spent at the press for this ability and at the throw for Pierce, and the two are
 	 * not inconsistent.** A mark commits a player to nothing — the charge follows the ball, so marking
-	 * one and changing your mind costs nothing — where this *is* the commitment: the window starts
-	 * running the moment it is asked for, and it runs whether or not anything is thrown in it. That is
-	 * what buying a mark means, and what buying ten seconds means. See `BallService.activateMultiBall`,
-	 * which is the handler that spends the charge.
+	 * one and changing your mind costs nothing — where this *is* the commitment: the window starts the
+	 * moment it is asked for, and **it runs until five throws have been spent on it, whether or not the
+	 * player is doing anything with them.** That is what buying a mark means, and what buying a stock of
+	 * throws means. **It used to be ten seconds and it is not a length of time at all now** — the count is
+	 * the only limit — so the commitment reads differently from how it used to: a window opened and never
+	 * thrown in is five throws the player never took, and it ends when they die or the round does rather
+	 * than when a clock they were racing runs out. See `BallService.activateMultiBall`, which is the
+	 * handler that spends the charge.
 	 *
 	 * Returns whether a window was opened, so the caller can tell an accepted press from a refused
 	 * second one.
@@ -327,22 +340,19 @@ export class SuperService implements OnStart {
 	public activateMultiBall(player: Player): boolean {
 		if (this.multiBalls.has(player)) return false;
 
-		this.multiBalls.set(player, {
-			endsAt: Workspace.GetServerTimeNow() + SUPER_CONFIG.MULTI_BALL_DURATION_SECONDS,
-			remaining: SUPER_CONFIG.MULTI_BALL_BALL_COUNT,
-		});
+		this.multiBalls.set(player, { remaining: SUPER_CONFIG.MULTI_BALL_BALL_COUNT });
 		this.publish(player);
 
-		// **The window's own end, and this timer is a convenience rather than the rule.** Whether a window
-		// is open is decided by the clock in {@link isMultiBallActive}, so a callback that arrives late
-		// costs a stale row in a `Map` and never an ability that outlives the time it was sold for. What
-		// this does is take the row away, and it is scheduled for the exact length of the window it closes.
-		task.delay(SUPER_CONFIG.MULTI_BALL_DURATION_SECONDS, () => this.clearMultiBall(player));
-
+		// **There is no timer here any more, and its absence is the change.** A `task.delay` used to be
+		// scheduled for the length of the window, so the row went away when the clock did — the row was the
+		// convenience and the clock in {@link isMultiBallActive} was the rule. **The count is the rule now**,
+		// and what closes the window is the throw that spends the last of it: see
+		// {@link consumeMultiBallBall}, which is where the row is dropped. Nothing has to run later, which
+		// also means nothing can be left scheduled for a player who has since died or left the game.
 		if (DEBUG) {
 			print(
 				`[Super] ${player.Name}: MultiBall window open — ` +
-					`${SUPER_CONFIG.MULTI_BALL_BALL_COUNT} throws in ${SUPER_CONFIG.MULTI_BALL_DURATION_SECONDS}s`,
+					`${SUPER_CONFIG.MULTI_BALL_BALL_COUNT} throws, until they are spent`,
 			);
 		}
 
@@ -350,39 +360,46 @@ export class SuperService implements OnStart {
 	}
 
 	/**
-	 * Whether `player` has a window open right now.
+	 * Whether `player` has a window open right now — **which is now the same question as whether they have a
+	 * throw left.**
 	 *
-	 * **The clock is the rule and the `Map` is only where the row is kept**, which is the opposite of how
-	 * the charge works — and deliberately. A charge is a fact with no clock attached; a window *is* a
-	 * clock, so a row whose deadline has passed reads as closed even if the timer meant to remove it has
-	 * not run yet, and the ability can never outlive the ten seconds it was sold for.
+	 * **The count is the rule and the `Map` is only where the row is kept.** There is no clock to compare
+	 * against any more: a window is open while `remaining` is above nought and closed at nought, so it can
+	 * neither outlive what it was sold for nor end while throws are still on it. `Workspace:GetServerTimeNow()`
+	 * is not read here at all, and that absence is the whole of the change.
+	 *
+	 * **That is also why this and `hasMultiBallBalls` became one method.** They asked different questions
+	 * while a deadline existed — "is the window open" and "is there a throw in it" — and with the deadline gone
+	 * they are one test written twice, which is the kind of pair this codebase deletes rather than keeps in
+	 * step by hand. The name kept is this one, because it is what the published count now means: **a non-zero
+	 * count *is* an active window**, which is what lets the HUD draw the MultiBall icon from the count alone.
+	 * See `SuperHudController`.
 	 */
 	public isMultiBallActive(player: Player): boolean {
 		const window = this.multiBalls.get(player);
 		if (!window) return false;
 
-		return window.endsAt > Workspace.GetServerTimeNow();
-	}
-
-	/** Whether that window still has throws left in it. An absent, closed or spent window has none. */
-	public hasMultiBallBalls(player: Player): boolean {
-		const window = this.multiBalls.get(player);
-		if (!window) return false;
-		if (!this.isMultiBallActive(player)) return false;
-
 		return window.remaining > 0;
 	}
 
 	/**
-	 * Spends one throw of the window, and answers whether there was one to spend.
+	 * Spends one throw of the window, answers whether there was one to spend, **and closes the window when
+	 * that was the last one.**
 	 *
-	 * **The count is a number of throws rather than of balls**, which is why the caller asks this
-	 * *before* deciding whether to hand a ball over: the last throw of a window is deliberately not
-	 * answered, so the caller asks again after this has answered yes. See `BallService.refillFromBuff`,
-	 * which is the only caller and where that rule is written down with the reason for it.
+	 * **The count is a number of throws rather than of balls**, which is why the caller asks this *before*
+	 * deciding whether to hand a ball over: the last throw of a window is deliberately not answered, so the
+	 * caller asks again after this has answered yes. See `BallService.refillFromBuff`, which is the only
+	 * caller and where that rule is written down with the reason for it.
+	 *
+	 * **Dropping the row on the way out is the window's new ending.** The fifth throw is spent here, so the
+	 * row goes here: that publishes the count as `0`, which is the empty case the HUD reads as "no window" and
+	 * which stops the MultiBall icon being drawn — and it is what makes "the count is the only limit" true in
+	 * one place rather than a rule the reader has to assemble from three separate tests. The order matters in
+	 * one direction only: the row is deleted *after* the decrement and the publish, so the log line above is
+	 * the last thing that ever sees the count at nought.
 	 */
 	public consumeMultiBallBall(player: Player): boolean {
-		if (!this.hasMultiBallBalls(player)) return false;
+		if (!this.isMultiBallActive(player)) return false;
 
 		const window = this.multiBalls.get(player);
 		if (!window) return false;
@@ -392,21 +409,26 @@ export class SuperService implements OnStart {
 
 		if (DEBUG) print(`[Super] ${player.Name}: MultiBall throw spent — ${window.remaining} left`);
 
+		if (window.remaining <= 0) this.clearMultiBall(player);
+
 		return true;
 	}
 
 	/**
-	 * Closes `player`'s window: the clock ran out, they died, or the round ended.
+	 * Closes `player`'s window: **the last throw was spent**, they died, or the round ended.
 	 *
 	 * **Nothing outside this service is touched, and "the ball in the hand stays" is a rule rather than
 	 * an omission.** Closing a window takes the *supply* away — no more balls are handed over — and
 	 * leaves whatever the player is holding exactly where it is, because a ball in a hand when the
-	 * window ends was not lent to them by the window. It is the same shape as the count running out, one
-	 * step further along: the ability stops giving, and never takes back.
+	 * window ends was not lent to them by the window. **The new ending makes that visible rather than
+	 * theoretical**: spending the fifth throw closes the window on the same frame, and that throw still
+	 * flies — the ball left the hand as the count reached nought, and nothing here takes a ball back.
 	 *
-	 * **Silent when there is no window**, which is the ordinary case for the timer: it fires for every
-	 * player who ever opened one, including those who have since died, left the server, or had their
-	 * window closed by the round ending. Three things can close a window and any of them can be first.
+	 * **Silent when there is no window**, which is the ordinary case for two of the three callers: a death
+	 * and a round ending both fire for every player in the game, including the ones with no window at all.
+	 * The third caller — the throw that empties one — reaches this once per window and never twice. Three
+	 * things can close a window and any of them can arrive first, which is why the guard is a `delete` that
+	 * reports whether it deleted rather than a test followed by a delete.
 	 */
 	public clearMultiBall(player: Player): void {
 		if (!this.multiBalls.delete(player)) return;
@@ -494,21 +516,23 @@ export class SuperService implements OnStart {
 	 * never existed.
 	 *
 	 * **The window's count is written as `0` when there is none**, which is the empty case rather than an
-	 * absent attribute — see `SUPER_MULTI_BALL_COUNT_ATTRIBUTE`. Its deadline is written the same way, and
-	 * that pair is the *only* place a countdown is published: the box's prize has no deadline to write, so
-	 * where this method used to write two mystery attributes it now writes one.
+	 * absent attribute — see `SUPER_MULTI_BALL_COUNT_ATTRIBUTE`. **It is now the only thing published about a
+	 * MultiBall window**, and that is worth a line because it used to be one of a pair: a deadline went out
+	 * beside it so a HUD could count down to the moment the window closed, and the window has no deadline to
+	 * send. The consequence for a reader is that a non-zero count is the whole of "a window is running" —
+	 * which is what `SuperHudController` draws the MultiBall icon from.
 	 */
 	private publish(player: Player): void {
 		player.SetAttribute(SUPER_STREAK_ATTRIBUTE, this.streaks.get(player) ?? 0);
 		player.SetAttribute(SUPER_CHARGE_ATTRIBUTE, this.charged.has(player));
 
-		// **"Is there a row" is not the test, and the difference is the whole point of {@link
-		// isMultiBallActive}.** A row whose deadline has passed is a closed window whose timer has not run
-		// yet, and publishing it would put a count on the HUD beside a deadline already in the past.
+		// **"Is there a row" is still not the test, and the difference is still the point of {@link
+		// isMultiBallActive}.** The test itself has changed — it is the count now, not a deadline — but the
+		// reason for asking it *through* the method has not: a row can exist while the window is over, and
+		// publishing that row would put a count on the HUD for an ability that has ended.
 		const window = this.isMultiBallActive(player) ? this.multiBalls.get(player) : undefined;
 
 		player.SetAttribute(SUPER_MULTI_BALL_COUNT_ATTRIBUTE, window?.remaining ?? 0);
-		player.SetAttribute(SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE, window?.endsAt ?? 0);
 
 		// **The box's one, written the same way and for the same reason.** The power slot reads it to know
 		// what to draw and when to run a reveal, so it goes out with the rest of the readout, as `""` in the
@@ -519,6 +543,31 @@ export class SuperService implements OnStart {
 		// **There used to be a second one beside it** — the deadline of the window this prize replaced —
 		// and it is gone with the clock it described. A held prize has no end to publish.
 		player.SetAttribute(MYSTERY_POWER_ATTRIBUTE, this.mystery.get(player)?.kind ?? "");
+	}
+
+	/**
+	 * Whether `player` may take a prize right now — **the one statement of the rule {@link holdMysteryPrize}
+	 * enforces, asked separately because the mystery box needs the answer without acting on it.**
+	 *
+	 * **Two reasons to say no, and they are the two things a player can be holding.** A prize already held is
+	 * the original one: a second box walked into by somebody who has not spent the first is a box whose power
+	 * they have not used yet. **A MultiBall window is the new one, and it is a consequence of the window losing
+	 * its clock**: with no deadline a window can now last a whole round, and letting a player hold a box's
+	 * power on top of one would make MultiBall a stock *and* a second ability at the same time — two powers for
+	 * one price, for as long as the throws last. Refusing is the cheap half of that: the box is not consumed
+	 * (see `MysteryBoxService.collect`), so the prize is still standing there for them the moment the window
+	 * closes or they spend it.
+	 *
+	 * **`MysteryBoxService` asks this and not `holdMysteryPrize`**, because its question is "should this box be
+	 * taken" and that has to be answered *before* the box is. Asking the acting method instead would mean
+	 * taking a prize and then trying to hand it back. Both go through this test, so the rule is written once —
+	 * which is also why `holdMysteryPrize` calls it rather than testing the two containers itself.
+	 */
+	public canHoldMysteryPrize(player: Player): boolean {
+		if (this.isMysteryActive(player)) return false;
+		if (this.multiBalls.has(player)) return false;
+
+		return true;
 	}
 
 	/**
@@ -540,10 +589,14 @@ export class SuperService implements OnStart {
 	 * player who already holds one is a box whose power they have not used yet; replacing would let a player
 	 * walk over two boxes and keep the better roll, which is a reroll rather than a pickup, and a queue would
 	 * need a second container to hold prizes nobody is using. "You already have one" is the answer the mark
-	 * handler gives a second mark, and it is the same answer here.
+	 * handler gives a second mark, and it is the same answer here. **The rule is
+	 * {@link canHoldMysteryPrize}'s now**, which is also where "a running MultiBall window refuses a box"
+	 * lives — the same refusal, one reason further along.
 	 *
-	 * **The box is consumed by the caller either way**, this refusal included. It was picked up, the roll
-	 * happened, and nothing in the game gives a collected box back.
+	 * **The box's fate is no longer this refusal's**, and that is the change. The sentence here used to read
+	 * *"the box is consumed by the caller either way, this refusal included"*; a refusal now means the box
+	 * stays in the world for the player to come back to. See `MysteryBoxService.collect`, which asks
+	 * {@link canHoldMysteryPrize} before it rolls and takes nothing unless something was granted.
 	 *
 	 * **A prize displaces a dev's armed ability, and never the other way round.** The two are one slot in a
 	 * player's hands — both say "the power my next press uses" — so they cannot both be held. What decides
@@ -553,7 +606,7 @@ export class SuperService implements OnStart {
 	 * refuses to arm while a prize is held — the same rule read from the cheap end.
 	 */
 	public holdMysteryPrize(player: Player, kind: AbilityKind): boolean {
-		if (this.isMysteryActive(player)) return false;
+		if (!this.canHoldMysteryPrize(player)) return false;
 
 		this.mystery.set(player, { kind });
 

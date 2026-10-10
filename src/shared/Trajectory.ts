@@ -24,7 +24,7 @@ const MIN_THROW_ANGLE = math.rad(5);
 const MAX_THROW_ANGLE = math.rad(85);
 
 /**
- * The ways to reach a point.
+ * The ways to reach a point — **the aimed throw's vocabulary, and now only its.**
  *
  * `overhead` is a real thrown arc: lofted off the hand, carried by its own
  * velocity, and dropping onto the target.
@@ -37,8 +37,13 @@ const MAX_THROW_ANGLE = math.rad(85);
  * launch and the same fall, plus a constant lateral acceleration that bows the
  * path out and then brings it back. See {@link solveLaunchVelocity}.
  *
- * All of them land on the target exactly, which is what makes it safe to let
- * the player choose.
+ * **All of them land on the target exactly, which is what makes them safe to choose between — and a player
+ * no longer chooses one.** These three name ways of *reaching a point*, and a player's throw has no point in
+ * it any more: its elevation is the charge and its lateral shape is a separate switch, so `overhead` and
+ * `straight` have no player input behind them at all and only a rig's behavior passes them (it passes
+ * `straight`). `curve` is the one member that is still *reached* by a player, and not through this type —
+ * see `ChargeRequest.curve`, which decides a lateral pull rather than an arc, and `planChargedThrow`, which
+ * labels its plan `"curve"` when that switch is on because the name is still true of the shape.
  */
 export type ThrowArc = "overhead" | "straight" | "curve";
 
@@ -59,8 +64,20 @@ function horizontalDistance(origin: Vector3, target: Vector3): number {
 	return new Vector3(target.X - origin.X, 0, target.Z - origin.Z).Magnitude;
 }
 
-/** Builds a velocity of `speed` from a launch angle toward `target`. */
-function velocityAtAngle(origin: Vector3, target: Vector3, speed: number, angle: number): Vector3 {
+/**
+ * Builds a velocity of `speed` from a launch angle toward `target`.
+ *
+ * **`target` is read for its horizontal direction and nothing else.** The elevation is the caller's
+ * `angle`, so the vertical part of the difference between the two points is ignored — which means a caller
+ * that has a *direction* rather than a point can pass any point along it, and that is how the charged throw
+ * states its heading. `horizontalDirection` also projects and normalises, so a heading that still carries
+ * the camera's pitch arrives here as a compass direction, on both sides of the wire, from the same number.
+ *
+ * Exported for the charged solve in `shared/throw.ts`: it is the same primitive the aimed solve is built
+ * from, and a second copy of `speed·cosθ / speed·sinθ` is exactly the kind of duplicate that would let the
+ * drawn path and the thrown ball leave at different angles.
+ */
+export function velocityAtAngle(origin: Vector3, target: Vector3, speed: number, angle: number): Vector3 {
 	const direction = horizontalDirection(origin, target);
 
 	return direction.mul(speed * math.cos(angle)).add(new Vector3(0, speed * math.sin(angle), 0));
@@ -89,7 +106,7 @@ export interface LaunchPlan {
 	/** Velocity to apply at that origin. */
 	velocity: Vector3;
 	/**
-	 * The arc that was actually used.
+	 * The arc that was actually used, or `undefined` for a throw whose shape is not one of the named ones.
 	 *
 	 * This is always the arc that was asked for. A `straight` or `curve` throw aimed
 	 * above the launch line used to come back as an `overhead` one when there was no
@@ -98,8 +115,17 @@ export interface LaunchPlan {
 	 * throw that cannot reach now launches along the aim line at the cap speed and
 	 * arrives past or short of the marker. Read this, not your input, when you want
 	 * to know what happened.
+	 *
+	 * **And it is absent for a charged throw, which is not one of these three shapes and cannot honestly
+	 * be labelled as one.** `overhead` and `straight` name two ways of *reaching a point*, and a charged
+	 * throw is not aimed at a point: its shape is a launch angle that varies continuously with how long the
+	 * button was held, and calling a 40° hold "straight" would be a name for a thing this game no longer
+	 * has. What a reader wants for one of those is the angle itself, which is on the velocity — and
+	 * `describeThrow` prints it for exactly that reason. **A charged *curve* is the exception and is
+	 * labelled**: `curve` names a lateral shape, which is a different axis from the elevation the charge
+	 * controls, so a charged curve really is a curve and says so.
 	 */
-	arc: ThrowArc;
+	arc: ThrowArc | undefined;
 	/**
 	 * **The gravity this plan was solved against**, in studs per second squared.
 	 *
@@ -273,6 +299,28 @@ function withLateralCompensation(
 	if (alongSpeed < 0.001) return flat;
 
 	const flight = horizontalDistance(origin, target) / alongSpeed;
+	return compensateLateral(flat, lateral, flight);
+}
+
+/**
+ * The compensated launch for an explicit flight time: `flat`, plus the sideways velocity that cancels
+ * `lateral`'s drift over `flight` seconds.
+ *
+ * **This is the one copy of the arithmetic {@link withLateralCompensation} is built on**, extracted because
+ * a throw with no target needs the same formula with a different flight time. A charged curve has no mark to
+ * measure one to, so it passes the ballistic figure — how long the ball would stay up if it came back to
+ * the height it left from — and the launch that brings the ball back onto its own line is the same
+ * expression either way. Written out twice it would be two chances to disagree about the factor of two, in
+ * the one arrangement where a disagreement is a preview that bends differently from the ball.
+ *
+ * The pull is constant, so the offset it accumulates is a parabola, `offset(t) = ½·a·t² + v_lat·t`. Forcing
+ * `offset(T) = 0` gives `v_lat = -½·a·T`, which is the line below. A lateral pull of nothing returns the
+ * launch untouched, so a caller can hand this the perpendicular part of any acceleration and not care
+ * whether there is one.
+ */
+export function compensateLateral(flat: Vector3, lateral: Vector3, flight: number): Vector3 {
+	if (lateral.Magnitude < 0.001) return flat;
+
 	return flat.add(lateral.mul(-0.5 * flight));
 }
 
@@ -457,10 +505,14 @@ const DEFAULT_MAX_TIME = 4;
  * A simulated flight path.
  *
  * ```ts
- * const plan = planPlayerThrow(character, aimPoint);
+ * const plan = planChargedThrow(character, { heading, charge, curve: false });
  * const arc = new Trajectory(plan.origin, plan.velocity, { gravity: plan.gravity, ignore: [character] });
  * print(arc.landing, arc.duration, arc.hit);
  * ```
+ *
+ * **`acceleration` is omitted above and is not optional in practice**: a plan that carries a pull has to be
+ * simulated under it as well as launched with it, or the drawn path bends differently from the ball. See
+ * `shared/throw.ts` for the plan and `AimGuide` for the drawing side.
  */
 export class Trajectory {
 	/** Where the simulation started. */

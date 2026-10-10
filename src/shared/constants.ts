@@ -747,31 +747,21 @@ export const EQUIPPED_ELIMINATION_ATTRIBUTE = "EquippedElimination";
 /**
  * Attribute on a **`Player`** holding the balls left in their MultiBall window, or `0` for no window.
  *
- * **The third and fourth of the same readout, and they are a pair for that reason.** `0` here and `0`
- * in {@link SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE} mean "no window", which is one empty case for a reader
- * rather than an absent attribute beside a present one — the convention `BALL_ABILITY_ATTRIBUTE` and
- * `ARMED_ABILITY_ATTRIBUTE` already use.
+ * **`0` means "no window", which is one empty case rather than an absent attribute beside a present
+ * one** — the convention `BALL_ABILITY_ATTRIBUTE` and `ARMED_ABILITY_ATTRIBUTE` already use.
  *
  * **On the player, because a MultiBall window is the player's rather than any ball's.** Nothing a ball
- * carries can say whether its thrower still has a window open, so the two facts a player can read
- * about themselves are the two facts the ability has.
+ * carries can say whether its thrower still has a window open, so this is the only thing a player can
+ * read about the ability — and now it is the *whole* of what there is to read.
+ *
+ * **It used to be published beside a deadline**, `SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE`, which carried the
+ * `Workspace:GetServerTimeNow()` instant the window closed so a HUD could count down to it. The window
+ * has no clock any more — it lasts until the count is spent, whatever that takes — so that attribute is
+ * gone and this one is no longer half of a pair. **The consequence for a reader is that a non-zero count
+ * is now the only signal that a window is running**, which is why the power slot draws the MultiBall
+ * icon from this number rather than from anything about a prize: see `SuperHudController`.
  */
 export const SUPER_MULTI_BALL_COUNT_ATTRIBUTE = "SuperMultiBallCount";
-
-/**
- * Attribute on a **`Player`** holding the moment their MultiBall window closes, or `0` for no window.
- *
- * **On the engine's server clock and not `os.clock`, and that is what makes a countdown possible at
- * all.** `os.clock` counts each machine's own uptime, so a time stamped on the server means nothing
- * subtracted from a value on a client — two different clocks. `Workspace:GetServerTimeNow()` is the
- * one clock both ends of the wire share, so the server stamps the deadline with it and the HUD reads
- * it with the same call. The alternative was the server pushing "seconds remaining" on a heartbeat,
- * which is the same fact retold once a second and a rule the client could have worked out.
- *
- * Beside {@link SUPER_MULTI_BALL_COUNT_ATTRIBUTE} and written with it every time: a count beside a
- * stale deadline would describe a window that never existed.
- */
-export const SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE = "SuperMultiBallEndsAt";
 
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 2;

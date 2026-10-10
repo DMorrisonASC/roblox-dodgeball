@@ -16,11 +16,18 @@ import { abilityOn, isBallAbility, AbilityKind } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { REMOTES } from "shared/remotes";
 import { events } from "shared/networking";
-import { planPlayerThrow, getThrowMuzzle, describeMuzzle } from "shared/throw";
-import { LaunchPlan, ThrowArc, leftAxis } from "shared/Trajectory";
+import {
+	describeMuzzle,
+	getThrowMuzzle,
+	planAimedThrow,
+	planChargedThrow,
+	ThrowRequest,
+} from "shared/throw";
+import { LaunchPlan, leftAxis } from "shared/Trajectory";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
+import { emitWindBurst } from "./WindBurst";
 import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
 import { EconomyService } from "../economy/EconomyService";
@@ -301,7 +308,7 @@ export class BallService implements OnStart {
 
 	onStart() {
 		this.throwRemote = this.createThrowRemote();
-		this.throwRemote.OnServerEvent.Connect((player, target, arc, claim) => {
+		this.throwRemote.OnServerEvent.Connect((player, heading, charge, curve, claim) => {
 			// Whether this player throws at all, asked before anything else in here: a click that
 			// is not meant to throw should not reach the part of this that reads a direction and
 			// solves an arc. Only an explicit `false` blocks — a player who has never pressed the
@@ -311,40 +318,43 @@ export class BallService implements OnStart {
 				return;
 			}
 
-			if (!typeIs(target, "Vector3")) return;
+			// **The heading: a vector, and otherwise any vector at all.** This is the one argument that
+			// cannot be *wrong*, because a player may aim wherever they like and the solve answers a heading by
+			// flattening it and taking its compass direction — a lexicographic "valid range" here would be a
+			// second copy of that rule, in the file least able to keep it in step. What is checked is the
+			// *type*, because the wire is untyped: a string or a table would reach the solve as a non-vector
+			// and throw inside it. A heading with no horizontal part is not refused either — `planChargedThrow`
+			// has a fallback for it, which is the same fallback the client's own preview just used.
+			if (!typeIs(heading, "Vector3")) return;
 
-			// **The client's arc, whitelisted — and all three shapes have to be in this list.**
+			// **The charge, and this is the argument that *is* range-checked: it is the whole mechanic.** A
+			// client claiming past full would be given reach the game does not publish, and one claiming `NaN`
+			// would put `NaN` into a velocity and take the ball out of the world — both reachable by anybody
+			// with an executor, so this is a gate rather than a formality. There is no clamp here on purpose:
+			// out of range is refused, and the clamp inside `planChargedThrow` is what keeps that function
+			// total for the callers the wire never sees.
 			//
-			// This is where the arcing throw was being lost. `overhead` was missing, so the one arc
-			// the player has a key for — X — arrived as a word this did not recognise and was quietly
-			// replaced with `straight`. The reasoning this list was originally written on was that a
-			// fallback costs nothing, because all three arcs reach the same point — and that half
-			// holds: the ball still landed on the mark. It flew a flat line to get there instead of
-			// the arc the guide was drawing, which is the single failure this whole arrangement exists
-			// to prevent — `planPlayerThrow` is called by both sides so their plans cannot differ, and
-			// this branch defeated it upstream of the solve. The tell was a log with `overhead` on the
-			// client's line and `straight` on the server's, describing one throw.
-			//
-			// Anything genuinely unrecognised still falls back to `straight`, which is what a fresh
-			// client starts on — see `ThrowController.arc` — so a race or a malformed value gets the
-			// shape the player's own guide is already drawing, rather than one it is not.
-			//
-			// That case now says so instead of passing silently. A shape replaced without a word is
-			// exactly how the missing branch above stayed hidden, and this is a line only this side
-			// of the wire can report on: the client's own report of its arc is correct and always
-			// will be, because the fault is here.
-			let chosen: ThrowArc = "straight";
-			if (arc === "straight") {
-				chosen = "straight";
-			} else if (arc === "overhead") {
-				chosen = "overhead";
-			} else if (arc === "curve") {
-				chosen = "curve";
-			} else {
-				warn(`[Ball] ${player.Name}: threw with an unknown arc (${tostring(arc)}) — used ${chosen}`);
+			// **`!(charge >= 0)` rather than `charge < 0`, and the difference is `NaN`** — it compares false
+			// against every bound, so the naive pair of comparisons waves it through. The same idiom
+			// `EconomyService.devSetMoney` uses on its amount, for the same reason.
+			if (!typeIs(charge, "number") || !(charge >= 0) || charge > 1) {
+				warn(`[Ball] ${player.Name}: throw refused — charge ${tostring(charge)} is not within 0..1`);
+				return;
 			}
 
-			this.throwForPlayer(player, target, chosen, typeIs(claim, "Vector3") ? claim : undefined);
+			// **The bend, and anything that is not a literal `true` is the plain throw.** That is the same
+			// answer a client that has never pressed the key gives, and the same shape the arc whitelist used
+			// to take: a value this side cannot read has to fall back to the throw the player's own guide is
+			// drawing, and `false` is what an untouched client holds. It is deliberately not a warning —
+			// `false`, `nil` and a missing argument are one question rather than three, and a bent ball carries
+			// no advantage worth lying about, so there is nothing here for a reader to chase.
+			const bending = curve === true;
+
+			this.throwForPlayer(
+				player,
+				{ kind: "charged", heading, charge, curve: bending },
+				typeIs(claim, "Vector3") ? claim : undefined,
+			);
 		});
 
 		// **The ability key, and the whole of its server half.** Both of the questions this handler asks
@@ -946,14 +956,21 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * Throws whatever `model` is holding, at `target`.
+	 * Throws whatever `model` is holding, **as `request` states it** — charged for a player, aimed at a point
+	 * for a rig.
 	 *
-	 * Keyed on the **model**, so an NPC's throw is this function with a different
-	 * model and target in it rather than a second copy of the throw. A `Player` is
-	 * still around, but never as the thing being thrown from: the remote handlers in
-	 * {@link onStart}, the charge and MultiBall bookkeeping — which belongs to a
-	 * player rather than to a body — and the dev check that lets a flagged dev throw
-	 * with an empty hand.
+	 * Keyed on the **model**, so an NPC's throw is this function with a different model and target in
+	 * it rather than a second copy of the throw. A `Player` is still around, but never as the thing
+	 * being thrown from: the remote handlers in {@link onStart}, the charge and MultiBall
+	 * bookkeeping — which belongs to a player rather than to a body — and the dev check that lets a
+	 * flagged dev throw with an empty hand.
+	 *
+	 * **The two kinds of throw meet here and part again two lines later**, which is where the "one solve,
+	 * both sides" property is easiest to check: the request is branched on at the single line that solves a
+	 * plan, and each arm names the function it calls. Everything around that line — the freeze gate, the
+	 * hand, the release of the ball, the correction, the nudge, the colours, the acceleration — is common to
+	 * both, because those are facts about *this* thrower and *this* ball rather than about how the throw was
+	 * aimed.
 	 *
 	 * **Throwing empties the hand.** A ball comes from a pickup, from a catch, or from
 	 * a MultiBall window's refill — and, for a dev with `InfiniteBalls`, from the
@@ -963,7 +980,7 @@ export class BallService implements OnStart {
 	 * Returns whether a ball went. An empty hand is not an error: a behavior may
 	 * ask while there is nothing to throw.
 	 */
-	public throwBall(model: Model, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3): boolean {
+	public throwBall(model: Model, request: ThrowRequest, claimedLaunch?: Vector3): boolean {
 		// **A frozen body does not throw, and the gate is here rather than on the remote.** `throwBall` is
 		// the only thing in the game that throws — a player's click and a rig's behavior both arrive here,
 		// which is `ActionService`'s own note about where a throw gate belongs — so a check in the remote
@@ -1018,11 +1035,21 @@ export class BallService implements OnStart {
 
 		// The client runs this exact same plan to draw its aim guide, so the throw
 		// and the predicted arc can never disagree — which only holds while both
-		// sides solve from the same launch point, see `planPlayerThrow`.
+		// sides solve from the same launch point, see `acceptLaunch` and, for the charged arm,
+		// `planChargedThrow` itself.
+		//
+		// **The one branch in the whole throw, and it is deliberately two lines wide.** A charged throw is
+		// solved from a heading and a power, which is everything the wire carried; an aimed one is solved from
+		// a point and one of the three named arcs, which is what a rig's behavior has. See `ThrowRequest` for
+		// why they are tagged rather than guessed at, and `shared/throw.ts` for why there are two solves at
+		// all.
 		const releasePosition = ball.Position;
 		const ownLaunch = getThrowMuzzle(model);
 		const launch = this.acceptLaunch(ownLaunch, claimedLaunch);
-		const plan = planPlayerThrow(model, target, arc, launch);
+		const plan =
+			request.kind === "charged"
+				? planChargedThrow(model, request, launch)
+				: planAimedThrow(model, request.target, request.arc, launch);
 
 		// What actually goes on the ball: the solve, plus the correction that covers the engine's own
 		// loss. It is derived from this machine's gravity, physics rate and — for a curve — the pull
@@ -1035,18 +1062,38 @@ export class BallService implements OnStart {
 
 		// **The one tune that does not also move the aim guide.** See `THROW_LAUNCH_NUDGE`: it is applied
 		// to the ball's starting point and nothing else, in the throw's own frame, because that is the
-		// frame a miss is measured in — `forward` is the line to the mark, `left` is the axis a curve
-		// bows on, `up` is world up. Untouched when all three are zero, so the zero case is the launch
+		// frame a miss is measured in — `forward` is the line the ball is thrown along, `left` is the axis a
+		// curve bows on, `up` is world up. Untouched when all three are zero, so the zero case is the launch
 		// the plan asked for, exactly.
+		//
+		// **The frame is taken from the throw rather than from a mark, and the charged throw is why.** It used
+		// to be `leftAxis(origin, target)`, which needs a target; a charged throw has none, and inventing one
+		// here to keep the old expression would have been a point with no meaning feeding a dial nobody has to
+		// touch. The line the ball actually leaves along is the honest axis for both kinds — and for a charged
+		// *curve* it is strictly better, because `left` is meant to be the axis the bend is on and the
+		// slung-wide launch is where that axis really lies.
 		const nudge = launchNudge();
 		const nudged = nudge.forward !== 0 || nudge.left !== 0 || nudge.up !== 0;
 
+		const line = new Vector3(plan.velocity.X, 0, plan.velocity.Z);
+		const forward = line.Magnitude > 0.001 ? line.Unit : new Vector3(0, 0, -1);
+		const mark = plan.origin.add(forward);
+
 		const placement = nudged
 			? plan.origin
-					.add(new Vector3(plan.velocity.X, 0, plan.velocity.Z).Unit.mul(nudge.forward))
-					.add(leftAxis(plan.origin, target).mul(nudge.left))
+					.add(forward.mul(nudge.forward))
+					.add(leftAxis(plan.origin, mark).mul(nudge.left))
 					.add(new Vector3(0, nudge.up, 0))
 			: plan.origin;
+
+		// **What the log calls this throw.** A rig's throw is named by its arc, which is still what a reader
+		// greps for; a player's is named by the charge, because that *is* its shape — a charged throw has no
+		// arc to name (see `LaunchPlan.arc`) and the power is the number worth comparing between two throws.
+		// The angle and the speed are two fields along, in `describeThrow`.
+		const label =
+			request.kind === "charged"
+				? `charged ${string.format("%.2f", request.charge)}${request.curve ? " bend" : ""}`
+				: `${request.arc}`;
 
 		if (DEBUG) {
 			// Both halves of the correction, and only the second one is ever zero for a reason: a
@@ -1070,7 +1117,7 @@ export class BallService implements OnStart {
 				: "";
 
 			print(
-				`[Ball] ${model.Name}: ${plan.arc} ${this.describeThrow(plan, commanded)}, ` +
+				`[Ball] ${model.Name}: ${label} ${this.describeThrow(plan, commanded)}, ` +
 					`release ${releasePosition} -> launch ${plan.origin}` +
 					` (${string.format("%.2f", launch.sub(ownLaunch).Magnitude)} studs from our own)` +
 					` | muzzle ${describeMuzzle(model)}` +
@@ -1170,6 +1217,23 @@ export class BallService implements OnStart {
 		// the sound. The emitter tidies itself away on the helper's timer, which is the whole of what
 		// this call site owes it.
 		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.THROW, THROW_EMITTER_NAME);
+
+		// **And the gust of air the throw leaves, at the same point and for the same reason.** The line above
+		// is where the throw is *heard*; this is where it is *seen*, and both are the ball at the instant it
+		// was given velocity — one moment, two senses, which is why they are adjacent rather than fired from
+		// two places that would have to agree about when a throw happens.
+		//
+		// **Built by the server, so everybody sees it**, which is the same choice the sound makes: a burst
+		// built on the thrower's own machine would be a gust only the thrower was standing in. Nothing is
+		// sent and no client is asked, so this adds no wire and no validation — the server is already the one
+		// deciding that this throw happened, because this line is inside that decision.
+		//
+		// **A rig's throw comes through this same line**, because `ThrowBehavior` calls `throwBall` like any
+		// other thrower. That is deliberate rather than overlooked: a rig displaces air when it throws for the
+		// same reason a player does, and the alternative would be a per-caller flag whose only purpose is to
+		// make one thrower's throws look different from another's. See `WindBurst.ts`, which tidies itself
+		// away on its own timer and is owed nothing by this call site.
+		emitWindBurst(ball.CFrame, model.Name);
 
 		ball.CanCollide = true;
 		// **And the query half comes back with it**, which is the other end of `attachToHand`'s
@@ -1498,7 +1562,11 @@ export class BallService implements OnStart {
 
 		// Asked after the spend: the throw is paid for either way, and what the window still holds decides
 		// whether this ball is replaced. See this method's doc for why `5` has to mean five throws.
-		if (!this.abilities.hasMultiBallBalls(player)) return false;
+		//
+		// **`isMultiBallActive` rather than a separate "has it balls left" test**, which is the rename that
+		// followed the window losing its clock: an open window and a window with a throw in it are the same
+		// condition now, so the second name was one test written twice. See `SuperService.isMultiBallActive`.
+		if (!this.abilities.isMultiBallActive(player)) return false;
 
 		this.giveBall(model);
 
@@ -1578,7 +1646,7 @@ export class BallService implements OnStart {
 	 * handler's* path: that remote fires on `Enum.UserInputState.Begin` and on nothing else, so this
 	 * runs once per click rather than once per frame, and one throw cannot spend two charges.
 	 */
-	private throwForPlayer(player: Player, target: Vector3, arc: ThrowArc, claimedLaunch?: Vector3) {
+	private throwForPlayer(player: Player, request: ThrowRequest, claimedLaunch?: Vector3) {
 		const character = player.Character;
 		if (!character) return;
 
@@ -1591,7 +1659,12 @@ export class BallService implements OnStart {
 
 		// A ball that did not go — an empty hand, or a body with no hand to take it from — spends
 		// nothing. `throwBall` answers whether anything left, and this is the only caller that cares.
-		if (!this.throwBall(character, target, arc, claimedLaunch)) return;
+		//
+		// **The request is passed through untouched, because everything that could be checked about it was
+		// checked by the handler that built it** — the charge's range, the heading's type, the bend. This
+		// method's whole job is the charge bookkeeping below, and a second set of checks here would be a second
+		// opinion about the same arguments with the same answer, in the one place that cannot report on it.
+		if (!this.throwBall(character, request, claimedLaunch)) return;
 
 		// **A dev marks a ball without earning it**, so there is nothing of *theirs* to spend — the bypass
 		// {@link markHeldBall} documents. Asked here rather than inside `SuperService` because only the
@@ -1871,10 +1944,17 @@ export class BallService implements OnStart {
 	 * straight line is a ball travelling in a straight line, however hard it is
 	 * thrown; bending it takes a force acting *during* the flight. The plan solved
 	 * the launch so the drift this force accumulates is cancelled by the time the
-	 * ball arrives, which is why the throw still lands on the mark the guide drew.
+	 * ball arrives, which is why the throw still lands where the thrower was told it
+	 * would — on the gap the guide drew, for a rig; on the marker, for a player.
 	 *
-	 * A no-op for every other arc, and for a curve that unfurled into an overhead
-	 * throw because the aim had no fall to solve with.
+	 * **A removal timed from a flight the plan states rather than one this side measures**, and the two kinds
+	 * of throw state it differently: an aimed one has a distance to the target and divides it by its own
+	 * along-aim speed, while a charged one has no target and uses the ballistic figure, `2·v·sin θ / g`. Both
+	 * are exact over level ground and both are approximations over ground that slopes — see
+	 * `planChargedThrow` for what the second one gives up and why there is nothing better available without
+	 * knowing where the ground is.
+	 *
+	 * A no-op for a throw with no bend in it, which is every throw but a curve.
 	 */
 	private applyAcceleration(ball: BasePart, acceleration: Vector3, flightTime: number) {
 		if (acceleration.Magnitude < 0.001) return;

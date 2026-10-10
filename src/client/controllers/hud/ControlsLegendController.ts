@@ -61,9 +61,9 @@ interface LegendRow {
 /**
  * The legend, in the order it is drawn.
  *
- * Seven rows: the six that were here before, and the power key. The lines here are the *only* place
- * these strings appear — no other file names a key or an ability — so this array is the legend, and
- * everything below it is layout.
+ * Eight rows: the six that were here before, the power key, and the two the throw needs now — see the
+ * paragraph below for why that one is two. The lines here are the *only* place these strings appear — no
+ * other file names a key or an ability — so this array is the legend, and everything below it is layout.
  *
  * **The power row is one key and says so, because the box rolls the power rather than the player.**
  * That is the whole reason it is one line: there is nothing about it to enumerate, and a row per
@@ -71,9 +71,14 @@ interface LegendRow {
  * the per-ability keys do exist — bound for a dev only, and deliberately absent from this card, which
  * every player reads.
  *
- * **Not listed:** the three throw shapes on `X`, `C` and `V`. They are real controls, and they
- * are absent because this list is what was asked for: one more entry here each puts them on the
- * card, and nothing else would have to change.
+ * **The throw is two rows because the input is two things, and this card was wrong about it.** It said
+ * `X, C, V` — three keys choosing a shape — and that is no longer what the game does: a throw is
+ * *charged*, so its arc comes from how long the button is held rather than from a key, and `X` and `C`
+ * went with the shapes they named. What is left is one hold and one switch: the hold is the throw, and
+ * `V` bends it sideways without touching the arc. They are two rows rather than one line with a comma in
+ * it because they are not alternatives — a player who reads them as alternatives presses `X` and gets
+ * nothing, which is the confusion this card exists to prevent and which it caused for a whole session
+ * before anybody noticed.
  *
  * **Sprint carries no `toggleAttribute`, and that is a fact about sprint rather than an omission.**
  * A row mirrors an attribute only when its control is *switched*; sprint is *held*, and what it has
@@ -85,7 +90,8 @@ interface LegendRow {
  * movement controls read together, and the three that are about the ball follow.
  */
 const ROWS: LegendRow[] = [
-	{ label: "Throw |", keys: "X, C, V" },
+	{ label: "Throw |", keys: "Left Click (hold)" },
+	{ label: "Curve |", keys: "V" },
 	{ label: "Dodge |", keys: "W A S D + Right Click" },
 	{ label: "Sprint |", keys: "Left Shift, M" },
 	{ label: "Catch |", keys: "E" },

@@ -227,4 +227,41 @@ export const AUDIO_CONFIG = {
 
 	/** **Placeholder.** The award's level, against the two UI tones above it. Tune by ear. */
 	CHEST_GRANT_VOLUME: 0.5,
+
+	/**
+	 * The charge sound: the build-up a player hears while holding the throw, with the click that ends it
+	 * landing exactly when the charge completes.
+	 *
+	 * **The one id in this file whose *duration* is part of the mechanic.** Every other clip here could be
+	 * swapped for one of any length and only the ear would notice. This one is played at
+	 * `TimeLength / BALL_CONFIG.CHARGE_SECONDS`, so how long it is against the charge is what decides how fast
+	 * it plays and how far its pitch moves. See `ThrowController.chargePlaybackSpeed`, which derives that speed
+	 * rather than being told it: the consequence worth knowing on this line is that **swapping the file is
+	 * safe** — the speed follows whatever arrives — but a *longer* clip is a more shifted one, and a clip cut
+	 * to `CHARGE_SECONDS` long is the only one that plays unshifted, because a ratio of one resamples nothing.
+	 * A clip appreciably longer than the charge will be heard as a sped-up version of itself rather than as
+	 * itself, which is a decision about the file and not about any number here.
+	 *
+	 * **The click is the end of the sound, and that is what makes it a charge sound.** What it tells the player
+	 * is "the throw is ready", so a clip that builds towards something other than a payoff — or that puts the
+	 * payoff somewhere before the end — would be this sound saying the wrong thing. Nothing in the code can
+	 * check that, so it is written here for whoever replaces the id.
+	 *
+	 * **Supplied rather than invented**, so what is unverified about it is not the spelling but the character:
+	 * whether a build-up compressed to fit a one-second charge reads as a charge or as a gulp. That is an ear
+	 * judgement, and it is the reason the derived speed is printed whenever `DEBUG` is on in `ThrowController`.
+	 */
+	THROW_CHARGE: "rbxassetid://134302747911283",
+
+	/**
+	 * **Placeholder.** The charge sound's level, against the round's bed underneath it.
+	 *
+	 * **Louder than the bed, quieter than the whistle**, which is the shape every volume in this file has: the
+	 * round's track sits at its own level for the whole round, so a charge *under* that would be a sound the
+	 * player has to strain for while holding a button. But this is not a cue either — it fires on every throw
+	 * anybody charges, which inside one round is several times — so it is set as feedback rather than as an
+	 * event. **Expect it to want to be quieter than it first seems**: it is the only sound here a player can
+	 * make happen deliberately, repeatedly, and at a moment of their own choosing.
+	 */
+	THROW_CHARGE_VOLUME: 0.4,
 } as const;

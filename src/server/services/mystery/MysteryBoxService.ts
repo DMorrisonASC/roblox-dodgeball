@@ -55,6 +55,26 @@ interface LiveBox {
 	 * from the clock cannot.
 	 */
 	base: CFrame;
+	/**
+	 * The players this box has already refused — **the guard against a repeated `Touched`, and the only
+	 * thing in this service that is per-player rather than per-box.**
+	 *
+	 * **A box that survives fires `Touched` again**, on every arm swing and every step through it, and
+	 * without this the roll and the refusal would run again each time: a player standing in a box while
+	 * holding a prize would roll a power a second, print a refusal a second, and be told a second time that
+	 * they are already holding one. So a refusal is *remembered* here.
+	 *
+	 * **On the row rather than in a container of the service's own, so it dies with the box.** A record of
+	 * "this box refused this player" is only meaningful while that box is on that spawn point, and a box
+	 * that is removed takes every reason to remember anyone with it — which is what keeps this out of the
+	 * business of being swept on a timer, at a round boundary and on a disconnect separately.
+	 *
+	 * **What is in here is *who*, never *why*.** The reason is re-asked of the world when the guard runs
+	 * rather than remembered, and that is the difference between a player being locked out of a box until
+	 * they walk out of it and a player being handed it the moment they use the power they were holding. See
+	 * {@link collect} for the guard itself.
+	 */
+	refused: Set<Player>;
 }
 
 /**
@@ -176,6 +196,16 @@ export class MysteryBoxService implements OnStart {
 	public onStart(): void {
 		this.report();
 		this.watchPhase();
+
+		// **A refusal is remembered against a *player*, so a player who leaves leaves one behind.** The
+		// records live on the rows rather than in a container of their own — see `LiveBox.refused` for why —
+		// so there is nothing to sweep on a timer; what there is, is a `Set` holding a `Player`, which is a
+		// reference that keeps them alive on the server for as long as the box stands. A zoned box can stand
+		// for a whole session, so this is the one line that has to know it. It is here rather than inside
+		// `remove` because a player leaving the game is not the box's business.
+		Players.PlayerRemoving.Connect((player) => {
+			this.boxes.forEach((live) => live.refused.delete(player));
+		});
 
 		// **The practice floors are stocked now rather than on the first tick.** A practice box is furniture
 		// of the floor, so a player who joins an empty server — where no round will ever start — should find
@@ -461,7 +491,7 @@ export class MysteryBoxService implements OnStart {
 			}
 		}
 
-		this.boxes.set(spawn, { spawn, box, inZone, base });
+		this.boxes.set(spawn, { spawn, box, inZone, base, refused: new Set() });
 
 		// Closed over the spawn point, because the row is keyed by it — see {@link LiveBox}.
 		box.Touched.Connect((otherPart) => this.collect(spawn, otherPart));
@@ -480,13 +510,32 @@ export class MysteryBoxService implements OnStart {
 	 * Somebody walked into a box.
 	 *
 	 * **A `Touched` connection and no proximity poll**, because a non-colliding part still reports touches
-	 * — the property was added for exactly this. There is no debounce, and none is needed: the first call
-	 * removes the row, so the arm, the leg and the torso that all passed through in the same frame find
-	 * nothing on the second call, and the handler is silent rather than a second prize.
+	 * — the property was added for exactly this.
 	 *
-	 * **A dead body collects nothing**, and the test is on the `Humanoid` rather than on the round: a body
-	 * at nought health is one whose round is over, and a prize handed to it would be spent on the ten
-	 * seconds after the respawn.
+	 * **The box is taken only when something was granted, and that is the change.** It used to go before the
+	 * roll — *"Consumed before the roll, so a collection that grants nothing still costs the box. The box was
+	 * picked up; nothing in the game gives one back."* — which made a player who already held a power lose a
+	 * box to a refusal they had no way to avoid. The order is now roll, ask, and remove only on a yes.
+	 *
+	 * **The roll happens first and is allowed to be wasted.** It has to, because *which* power a box gives is
+	 * what `holdMysteryPrize` is asked about and it cannot be asked before it is rolled. What that costs is a
+	 * `math.random` and nothing else — the roll has no side effects — and since the box survives a refusal,
+	 * the next player who walks in rolls it afresh.
+	 *
+	 * **Both ways of granting nothing leave the box standing**, and the second is a correction rather than
+	 * something the brief asked for: a player who owns no powers rolled into nothing and lost a box for it,
+	 * which is the same fault as the refusal one line up. The rule is one sentence — *a box that paid out
+	 * nothing is not taken* — and it has two cases only because {@link roll} and the hold can each say no.
+	 *
+	 * **A repeated `Touched` is answered from {@link LiveBox.refused} rather than by the box being gone.**
+	 * The note here used to say no debounce was needed *because* the first call removed the row; with the box
+	 * surviving, the arm and the leg that passed through in the same frame arrive as further calls, so the
+	 * guard is what makes the second one silent. It is deliberately not a timeout — see that field for why
+	 * the reason is re-tested against the world instead of being allowed to expire on a clock.
+	 *
+	 * **A dead body collects nothing**, and the test is on the `Humanoid` rather than on the round: a body at
+	 * nought health is one whose round is over, and a prize handed to it would be spent in the seconds after
+	 * the respawn.
 	 */
 	private collect(spawn: BasePart, otherPart: BasePart): void {
 		const live = this.boxes.get(spawn);
@@ -503,21 +552,39 @@ export class MysteryBoxService implements OnStart {
 		const humanoid = character.FindFirstChildOfClass("Humanoid");
 		if (!humanoid || humanoid.Health <= 0) return;
 
-		// **Consumed before the roll**, so a collection that grants nothing still costs the box. The box
-		// was picked up; nothing in the game gives one back.
-		this.remove(spawn);
+		// **Already refused, and refused for a reason that still holds.** The question is asked of the world
+		// rather than read off the record: `refused` remembers *who*, and this line asks whether what was true
+		// when they were refused is still true. So a player who uses the power they were holding while
+		// standing in the box gets it on their next touch, without having to walk out and back in first —
+		// which is the case a practice floor is built around.
+		if (live.refused.has(player) && !this.windows.canHoldMysteryPrize(player)) return;
 
 		const kind = this.roll(player);
+
 		if (kind === undefined) {
-			if (DEBUG) print(`[Mystery] ${player.Name}: collected a box owning no powers — nothing to grant`);
+			live.refused.add(player);
+
+			if (DEBUG) print(`[Mystery] ${player.Name}: owns no powers — nothing to grant, box left standing`);
 
 			return;
 		}
 
-		// **The one call that changes the game**, and its refusal is not an error: a second box collected by a
+		// **The one call that changes the game**, and its refusal is not an error: a box walked into by a
 		// player who is already holding a prize is a box whose power they have not used yet. See
 		// `holdMysteryPrize`, which is also where a dev's armed ability gives way to a prize.
-		const held = this.windows.holdMysteryPrize(player, kind);
+		if (!this.windows.holdMysteryPrize(player, kind)) {
+			live.refused.add(player);
+
+			if (DEBUG) {
+				print(`[Mystery] ${player.Name}: rolled ${kind} with a prize already held — the box stays`);
+			}
+
+			return;
+		}
+
+		// **Granted, so the box goes — and the record of refusals goes with the row.** This is the only path
+		// that takes a box, which is the whole of "a box that paid out is spent".
+		this.remove(spawn);
 
 		// **A practice floor's box comes back when it is *taken*, not when it is *touched*.** Only a
 		// collection that actually paid for something restocks the point, and the thing that forces this is a
@@ -532,19 +599,11 @@ export class MysteryBoxService implements OnStart {
 		// whether the box was taken at all, which is the thing that has to be rate-limited.
 		//
 		// **It is also why the two rates are not enough by themselves.** The ten-second tick below stocks a
-		// zoned point unconditionally, so a refused collection costs at most one tick and the point is never
-		// left empty; what this line avoids is a *fast* loop on top of a rule that is already correct at the
-		// slow one. A player who has spent their prize gets their next box from the tick, which is the field's
-		// rate and the right one for a point nobody useful is standing in.
-		if (live.inZone && held) this.scheduleRestock(spawn);
+		// zoned point unconditionally, so the point is never left bare whatever happens here; what this line
+		// avoids is a *fast* loop on top of a rule that is already correct at the slow one.
+		if (live.inZone) this.scheduleRestock(spawn);
 
-		if (DEBUG) {
-			print(
-				held
-					? `[Mystery] ${player.Name}: ${kind}, held until the power is used`
-					: `[Mystery] ${player.Name}: rolled ${kind} with a prize already held — the box was spent`,
-			);
-		}
+		if (DEBUG) print(`[Mystery] ${player.Name}: ${kind}, held until the power is used`);
 	}
 
 	/**
@@ -581,9 +640,12 @@ export class MysteryBoxService implements OnStart {
 	 * this is the join between them. The alternative, reading the player's record directly, would mean this
 	 * file knowing the shape of an economy record to answer a question the economy already answers.
 	 *
-	 * **Nothing owned means nothing granted**, and the caller consumes the box anyway: a player who owns no
-	 * powers gets no power and nothing announced. The alternative — a fallback to the whole roster — would
-	 * make a box a way to *obtain* a power rather than to use one, which is the mechanic the chest owns.
+	 * **Nothing owned means nothing granted, and the box stays where it is.** The alternative — a fallback
+	 * to the whole roster — would make a box a way to *obtain* a power rather than to use one, which is the
+	 * mechanic the chest owns. What changed is the box's fate: `collect` used to take the box *before* this
+	 * ran, so a player who owned nothing lost a box for a roll that could not pay out. The box is now taken
+	 * only when something was granted, and this returning `undefined` is one of the two ways that does not
+	 * happen — see {@link collect}, which is where the decision moved to.
 	 */
 	private roll(player: Player): AbilityKind | undefined {
 		const owned = new Array<AbilityKind>();

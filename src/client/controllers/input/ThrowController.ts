@@ -1,87 +1,60 @@
 import { Controller, OnStart } from "@flamework/core";
+import Fusion from "@rbxts/fusion-3.0";
 import {
 	ContextActionService,
+	ContentProvider,
 	Players,
 	ReplicatedStorage,
 	RunService,
+	SoundService,
 	UserInputService,
 	Workspace,
 } from "@rbxts/services";
 import { AimGuide } from "shared/AimGuide";
+import { AUDIO_CONFIG } from "shared/config/audio.config";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { REMOTES } from "shared/remotes";
 import { abilityOn } from "shared/ability";
-import { getThrowMuzzle, planPlayerThrow } from "shared/throw";
-import { LaunchPlan, Trajectory, ThrowArc } from "shared/Trajectory";
+import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
+import { Trajectory } from "shared/Trajectory";
 import { aiming, predictedTargets } from "../../aiming";
+import { shakeCamera } from "../../cameraShake";
+import { chargeStartedAt } from "../../throwing";
 
 const ACTION_NAME = "ThrowDodgeball";
-const ARC_ACTION_NAME = "SelectThrowArc";
-const AIM_DISTANCE = 500; // how far to project the aim ray when nothing is hit
+const CURVE_ACTION_NAME = "BendThrow";
 
 /**
- * Console diagnostics: which throw was fired, and a per-frame report on aim
- * stability. Flip to `true` when chasing an aiming or landing problem — the
- * jitter report is rate limited so it won't flood the output.
+ * Console diagnostics: which throw was fired, and the marker-jitter report — that one is rate limited so
+ * it will not flood the output, and sits behind `DEBUG_CONFIG.VERBOSE_LOGS` as well. Flip this to `true`
+ * when chasing a charging or a landing problem.
  */
 const DEBUG = true;
 
 /**
- * How long the aim point takes to close most of the distance to the live mouse
- * position — an exponential time constant in seconds, not a threshold and not a
- * duration.
+ * **The charge has no smoothing constant, and the one that used to sit here is worth understanding before
+ * another is added back.**
  *
- * Each frame takes `1 - e^(-dt / tau)` of what is left, so the aim point
- * converges on the cursor rather than stopping near it. That is the whole of the
- * difference between this and the ratchet that used to sit here. The old
- * constant (`AIM_DEADZONE`, 0.50 studs) held a target until the live one drifted
- * that far away and then jumped to it, and it never converged: after any aim
- * movement the point sat wherever the last jump had left it, up to half a stud
- * from where the mouse actually pointed, *in whichever direction the mouse had
- * last moved* — near on the way out, far on the way in. Because the guide and
- * the throw both read that same held point they agreed with each other while
- * both being wrong, so a ratchet fault could only ever be seen as a landing
- * problem and never as a preview disagreeing with a ball.
+ * An aim *point* used to be read every frame and eased toward the live one on a clock, because the solve
+ * turned a point into a landing mark: a stud of jitter in the point was a stud of jitter in the marker, and
+ * the raycast that produced the point could switch between two nearby surfaces from one frame to the next,
+ * so a player standing perfectly still watched the marker twitch. That constant, its filter, its state and
+ * its whole apparatus are gone.
  *
- * **Why frame-rate independent.** `dt` comes from the clock, so `alpha` shrinks
- * as frames shorten and the per-second rate stays put at 30, 60 or 240 Hz. A
- * fixed fraction *per frame* would smooth four times as much on a 240 Hz client
- * as on a 60 Hz one — the class of bug that only one machine can reproduce.
+ * **The direction does not have the problem the point had.** A charged throw aims with the *vector* from the
+ * camera through the mouse, and a mouse that is not moving gives the same vector every frame — there is no
+ * cast to land somewhere different and no triangulation to flip. While charging, the marker moves because
+ * the charge is growing, which is the one motion that is supposed to be there. So nothing here is filtered,
+ * and a filter added back "for safety" would reintroduce exactly the ratchet the old comment was written
+ * about: a point held a little behind the cursor, thrown at, and landing where the player had already moved
+ * off.
  *
- * **Why 0.08 s.** At 60 Hz that is `alpha ≈ 0.19`: about a fifth of the
- * remaining gap per frame, which is a trailing flick rather than a rubber band.
- * A step is 63% closed in one time constant, 95% in three (0.24 s) and 99% in
- * five (0.4 s), so the point is visually settled well inside the time it takes
- * to aim and click. The failure on the other side is worse: a time constant
- * anywhere near human reaction time would reintroduce the ratchet's symptom by a
- * different route, with the throw reading a point the player had already moved
- * off. 0.06 passes noticeably more jitter through, 0.10 trails more; 0.08 sits
- * between them. The jitter figure is checkable arithmetic rather than a
- * measurement — a first-order filter scales a noisy input's *variance* by
- * `alpha / (2 - alpha)`, which at 60 Hz is about 0.10, so roughly a third of the
- * amplitude survives.
- *
- * **Why world space, and what that costs.** The throw consumes a world point, so
- * that is the quantity worth smoothing; and the pixel-to-world mapping is not
- * linear, so smoothing screen pixels would move the world target by a different
- * amount depending on where on the screen the mouse was — worst near the horizon,
- * where one pixel is the most studs and where the jitter this exists to suppress
- * is at its largest.
- *
- * The cost is that the residual is a world-space *distance*, about `tau ×` how
- * fast the aim point is travelling. For a given rate of pointing that speed rises
- * with the distance to the aim point, so a given time constant costs a bigger lag
- * in studs — and therefore a bigger landing error — the further away the aim is.
- * The offset the *player sees* between cursor and marker does not grow the same
- * way: the pixels-per-stud scale falls at roughly the rate the lag rises, so on a
- * surface facing the camera the two cancel and the visible lag is set by `tau`
- * alone. Where they stop cancelling is near the horizon, where the surface turns
- * tangent and the mapping stops being linear. That is the trade this file makes:
- * smooth the quantity the throw actually uses, and let the lag be largest where
- * the points are furthest apart.
+ * **What can still jitter is still watched** — the launch point rides the body's own animation, and the path
+ * is a per-frame simulation — and both of those are the subject of {@link reportMarkerJitter}, which is
+ * where the question "what moved the arc" lives now.
  */
-const AIM_SMOOTHING_SECONDS = 0.01;
 
 /**
  * The body a part belongs to, or nothing.
@@ -129,15 +102,45 @@ function passesThroughBodies(part: BasePart): boolean {
 	return bodyOf(part) !== undefined;
 }
 
+/**
+ * The playback speed that makes `sound` last exactly as long as a full charge, in seconds.
+ *
+ * **Derived from the clip's own length, because `PlaybackSpeed` scales the *rate* and nothing else.** A sound
+ * lasts `TimeLength / PlaybackSpeed` seconds, so `TimeLength / CHARGE_SECONDS` is the one speed that puts the
+ * end of the clip — the click — at the instant the charge completes, and it does so for any clip and any
+ * charge time. That is the whole reason this is arithmetic rather than a number: a literal would be right for
+ * exactly one pair of values, and `CHARGE_SECONDS` is a `**Placeholder.**` that is expected to move. The day
+ * somebody shortens the charge, a written-down speed would have the click landing after the ball had already
+ * gone; derived, the two cannot come apart.
+ *
+ * **`0` is the one input this cannot use, and it is not an edge case to shrug at.** `TimeLength` reads `0`
+ * until the clip has loaded — it is the engine's way of saying "no idea yet" rather than "instant" — and
+ * dividing by it would be a `nan` speed, which is a `Sound` that plays at the engine's mercy rather than at
+ * ours. The fallback is `1`: the identity, the one value that needs no knowledge of the file at all, so a
+ * charge that beats the load plays the clip as its artist made it rather than at an invented rate of a length
+ * nobody has. It is a degraded case and it is reported as one — see `playChargeSound`, which prints that the
+ * clip was not loaded. `ContentProvider.PreloadAsync` at startup is what keeps the case from happening: the
+ * clip cannot be asked for before the player is holding a ball in a round, and the load begins at client boot.
+ *
+ * Module-level rather than a method because two callers want the same arithmetic: the press that plays the
+ * sound, and the preload's report, which prints the ratio the moment the length is known so the real numbers
+ * are in the log without anybody having to charge a throw to find them.
+ */
+function chargePlaybackSpeed(sound: Sound): number {
+	const length = sound.TimeLength;
+	if (length <= 0) return 1;
+
+	return length / BALL_CONFIG.CHARGE_SECONDS;
+}
+
 @Controller()
 export class ThrowController implements OnStart {
 	private readonly player = Players.LocalPlayer;
 	private throwRemote?: RemoteEvent;
 	private readonly guide = new AimGuide();
 
-	// Scaffolding for tracking down jittery aim — see `reportJitter`.
+	// Scaffolding for tracking down a marker that moves when it should not — see `reportMarkerJitter`.
 	private lastMouse: Vector2 | undefined;
-	private lastTarget: Vector3 | undefined;
 	private lastMuzzle: Vector3 | undefined;
 	private lastLanding: Vector3 | undefined;
 	private lastMid: Vector3 | undefined;
@@ -146,107 +149,247 @@ export class ThrowController implements OnStart {
 	/** The last arc report, so only a change at either end of it is printed. See {@link reportArc}. */
 	private lastArcReport = "";
 
-	/**
-	 * The last `selected -> effective` arc pair. See {@link reportArcChoice} — this is the one
-	 * diagnostic that distinguishes "the player changed throw" from "the game changed throw".
-	 */
-	private lastPlanArc = "";
+	// **The charge's own state is not here, and that is a consequence of the catch key cancelling a throw.**
+	// It lives in `client/throwing.ts` — a module, so that `CatchController` can clear it without this
+	// controller being reached into — and every use of it below reads or writes that value. See that file for
+	// the argument, and for the one case that decided its shape: a press of `E` and a release of the mouse can
+	// land inside a single frame, so the cancellation has to be a write the release handler can already see
+	// rather than a request something consumes later.
 
 	/**
-	 * The smoothed aim point, and the clock reading it was last advanced from.
+	 * The charge the preview drew with on the most recent frame.
 	 *
-	 * The pair is the whole state of the smoothing: an exponential moving average
-	 * needs the time since its previous sample in order to pick the step it takes
-	 * now, and an absent {@link steadyTarget} is what says "there is nothing to
-	 * average yet, snap". See {@link AIM_SMOOTHING_SECONDS}.
+	 * **A record rather than an input**, and it exists because the two moments the charge matters fall at
+	 * different times: the drawing happens in the frame loop, and the sending happens in the release handler,
+	 * which lands between two frames. {@link releaseThrow} recomputes from the clock rather than reading
+	 * this, and prints both, so the one-frame gap between what was drawn and what was thrown is a number in
+	 * the log rather than something assumed away.
 	 */
-	private steadyTarget: Vector3 | undefined;
-	private lastAimSample = 0;
+	private lastCharge = 0;
 
 	/**
-	 * Which of the three throws the next click uses.
+	 * The charge's sound: **one instance, made once at startup and reused for every hold.**
 	 *
-	 * X is the arcing throw: lofted off the hand and dropped onto the mark.
-	 * C is the straight one: barely thrown at all, with gravity alone curving it
-	 * down onto the same mark. V is the curveball: a straight throw with a
-	 * sideways force on it, so it bows out to the left and swings back onto the
-	 * same mark again. Different shapes, different flight times, same landing.
+	 * **On the controller rather than in a module beside `elevation.ts`'s two tones**, and what separates the
+	 * two cases is *when* the sound is needed rather than what it is. Those two are created lazily because a
+	 * hover tone is asked for by a pointer that may never arrive on a shelf that may never be opened, so
+	 * building them up front is paying for nothing. This one is wanted the instant the throw button goes down —
+	 * which can be the first second of the first round, with no warning at all — and a clip that only began
+	 * loading at that moment arrives after the thing it is describing. So it is built with the controller and
+	 * preloaded, which is exactly the trade `ShopController` makes for the chest's award sound and for the same
+	 * reason. The cost is the same one it accepted: a single `Sound` in `SoundService` for every client, whether
+	 * or not they ever charge a throw.
 	 *
-	 * **Starts on `straight`, and the server's fallback starts on the same word.** The guide is drawn
-	 * from this on the first frame a ball is in the hand, before any arc key has been pressed, so a
-	 * default that disagreed with the shape the throw would actually take would be a guide drawing a
-	 * line the ball does not fly. The two are one decision in two places, and are kept in step by hand
-	 * because they are on opposite sides of the wire.
+	 * **`SoundService` rather than `PlayerGui`**, which is `MusicController`'s and `elevation.ts`'s decision
+	 * written out in both places: a `Sound` is positional only when it hangs off a `BasePart` or an
+	 * `Attachment`, and is heard at one volume from anywhere otherwise — which is what a sound the player makes
+	 * with their own hand is — while `PlayerGui` is torn down and rebuilt on a respawn, which an instance made
+	 * once for the session must not be sitting inside. **Client-side by construction and not by convention**:
+	 * this instance exists in this client's `SoundService` and nowhere else, so nobody hears anybody else's
+	 * charge, and nothing is sent to the server to make that true.
+	 *
+	 * **`Looped = false`, stated rather than left to the default.** The click is the *end* of this sound, so a
+	 * loop would replay the click as a stutter at the exact moment the clip has finished saying something. The
+	 * default is already `false`; this is the line that stops a reader having to go and find that out.
 	 */
-	private arc: ThrowArc = "straight";
+	private chargeSound?: Sound;
+
+	/**
+	 * Whether the ball bends — `V`, and the only lateral choice a charged throw has.
+	 *
+	 * **Starts off, and the server's own default is the same answer**: `BallService` treats anything that is
+	 * not a literal `true` as a plain throw. That agreement is the same one the old arc default needed, for
+	 * the same reason — a client that never pressed the key and a server that never heard one have to arrive
+	 * at the same throw without having discussed it, and the value that does that is the one a fresh client
+	 * holds.
+	 */
+	private curve = false;
 
 	onStart() {
+		// **The sound is made before the remote is resolved, and the order is the point.** `Get` yields until
+		// the server's remote exists, and this clip should be loading from the first frame this client can
+		// start loading anything — the charge it belongs to needs no remote to begin, and the throw that
+		// follows it cannot be aimed until the remote has arrived anyway. So the preload gets the head start.
+		const charge = new Instance("Sound");
+		charge.Name = "ThrowCharge";
+		charge.SoundId = AUDIO_CONFIG.THROW_CHARGE;
+		charge.Volume = AUDIO_CONFIG.THROW_CHARGE_VOLUME;
+		charge.Looped = false;
+		charge.Parent = SoundService;
+
+		this.chargeSound = charge;
+
+		// **Preloaded so that `TimeLength` is known before the first charge rather than during it.** The speed
+		// is derived from that length — see {@link chargePlaybackSpeed} — and the load cannot be waited for at
+		// the press, because "starts on the frame the charge begins" is the whole behaviour. The window here is
+		// enormous by comparison: a player has to be in a round, holding a ball, and press the button, and this
+		// starts at client boot. The report below is the only place the real ratio is recorded, which is what
+		// makes the pitch shift a number in the log rather than something somebody has to work out.
+		ContentProvider.PreloadAsync([charge], (contentId, fetchStatus) => {
+			if (fetchStatus !== Enum.AssetFetchStatus.Success) {
+				warn(`[Throw] charge sound did not load — ${contentId} (${fetchStatus.Name})`);
+			} else if (DEBUG) {
+				print(
+					`[Throw] charge sound loaded — ${string.format("%.2f", charge.TimeLength)}s clip, ` +
+						`${string.format("%.2f", BALL_CONFIG.CHARGE_SECONDS)}s charge, speed ` +
+						`${string.format("%.2f", chargePlaybackSpeed(charge))}`,
+				);
+			}
+		});
+
 		this.throwRemote = this.getThrowRemote();
 
+		/**
+		 * The throw input: **hold to charge, release to throw.**
+		 *
+		 * **What changed is the number of states it answers to.** This used to fire on `Begin` and nothing
+		 * else — the press *was* the throw — which is why it needed no state at all, and why the aim could be
+		 * read at the instant of the click. A charged throw needs both ends of the press: `Begin` starts a
+		 * hold, `End` throws what the hold built, and `Cancel` — the engine's word for an input that ended
+		 * without completing, which is how a window that goes away arrives here — drops it.
+		 *
+		 * **`Pass` is still what an empty hand gets and `Sink` is still what a throw gets**, so the button
+		 * means one thing at a time and a press that did nothing has not been used up. `Begin` is the only
+		 * branch that can refuse the whole gesture: once a charge has begun, a release always resolves it one
+		 * way or the other, which is what stops the state machine having an exit that neither throws nor
+		 * cancels.
+		 *
+		 * **A `Begin` that arrives while already charging is swallowed rather than restarting the hold.** One
+		 * mouse button cannot produce it, and both of the answers available are wrong for a case that does not
+		 * exist: restarting would quietly take the player's hold away, and treating it as a release would be
+		 * two throws from one press. Swallowing it is the one answer that can do neither — and it is what the
+		 * old `Begin`-only binding got for free.
+		 */
 		ContextActionService.BindAction(
 			ACTION_NAME,
 			(_actionName, inputState) => {
-				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
+				if (inputState === Enum.UserInputState.Begin) {
+					// **A ball in the hand is what makes a press a throw.** The click is not shared with
+					// anything — `CatchController` binds `E`, `DodgeController` the right button — so this is
+					// not one half of a contest over a button, just the plain test for whether there is
+					// anything to throw. `Pass` rather than `Sink`, because a press that threw nothing has not
+					// been used up.
+					const character = this.player.Character;
+					if (!character?.FindFirstChild(BALL_NAME)) return Enum.ContextActionResult.Pass;
 
-				// **A ball in the hand is what makes a click a throw.** The click is not shared with
-				// anything any more — `CatchController` is `E` only — so this is no longer one half of a
-				// contest over a button, just the plain test for whether there is anything to throw.
-				// `Pass` rather than `Sink`, because a click that threw nothing has not been used up.
-				const character = this.player.Character;
-				if (!character?.FindFirstChild(BALL_NAME)) {
-					return Enum.ContextActionResult.Pass;
+					if (Fusion.peek(chargeStartedAt) !== undefined) return Enum.ContextActionResult.Sink;
+
+					this.beginCharge();
+					return Enum.ContextActionResult.Sink;
 				}
 
-				const target = this.getSteadyAimTarget(character);
-				if (DEBUG) print(`[Throw] throwing at ${target}`);
-				// The launch point goes with the throw. The server's copy of the
-				// character is a replication interval behind ours, and a plan solved
-				// from a different launch point is a different curve — it still lands
-				// on the mark, but it is not the line this client just drew.
-				this.throwRemote?.FireServer(target, this.arc, getThrowMuzzle(character));
-				return Enum.ContextActionResult.Sink;
+				if (inputState === Enum.UserInputState.End) {
+					if (Fusion.peek(chargeStartedAt) === undefined) return Enum.ContextActionResult.Pass;
+
+					const character = this.player.Character;
+					if (!character) {
+						this.cancelCharge("the body went between the press and the release");
+						return Enum.ContextActionResult.Sink;
+					}
+
+					this.releaseThrow(character);
+					return Enum.ContextActionResult.Sink;
+				}
+
+				if (inputState === Enum.UserInputState.Cancel) {
+					this.cancelCharge("the input was cancelled");
+					return Enum.ContextActionResult.Sink;
+				}
+
+				return Enum.ContextActionResult.Pass;
 			},
 			false,
 			Enum.UserInputType.MouseButton1,
 		);
 
+		/**
+		 * **A second net under the engine's own `Cancel`.** A window that goes away mid-hold is the one way a
+		 * charge could outlive the player's attention — holding the button down and alt-tabbing is the
+		 * obvious way to find out what the engine does with it — and whether a lost window arrives here as
+		 * `Cancel`, as `End`, or as nothing at all is not something the typings can answer. So the signal
+		 * cancels too: a second cancellation of one charge is free ({@link cancelCharge} returns at once once
+		 * the charge is gone), and what it buys is that the button coming back cannot complete a gesture the
+		 * player walked away from. `AlternativeMovementController` watches the same signal for the same class
+		 * of reason.
+		 */
+		UserInputService.WindowFocusReleased.Connect(() => this.cancelCharge("the window lost focus"));
+
 		RunService.RenderStepped.Connect(() => this.updateGuide());
 
-		// X for the arcing throw, C for the straight one, V for the curveball. The
-		// guide redraws with the new shape immediately, which is the only feedback
-		// needed — the landing marker deliberately does not move.
+		/**
+		 * `V`: **whether the ball bends.**
+		 *
+		 * **A toggle rather than one of three shapes, because two of the three are gone.** `overhead` and
+		 * `straight` were vertical ways of reaching a point, which is the axis the charge now controls
+		 * continuously; a curve is a *lateral* shape — a different axis — so it survives as a switch on top of
+		 * the hold. `V` chose the curveball before this change and chooses it now, so this is a surviving key
+		 * rather than a new binding, and `X` and `C` are gone with the shapes they chose.
+		 *
+		 * **It can be flipped mid-hold, deliberately.** The preview is rebuilt every frame from the current
+		 * charge *and* the current curve, so a toggle during a hold is one more input that same loop reads: the
+		 * arc redraws bending, there is no state to keep in step, and nothing has to be undone if the player
+		 * changes their mind. What is sent is read at the release, so the shape thrown is the shape drawn on
+		 * the last frame — see {@link releaseThrow}.
+		 */
 		ContextActionService.BindAction(
-			ARC_ACTION_NAME,
-			(_actionName, inputState, input) => {
+			CURVE_ACTION_NAME,
+			(_actionName, inputState) => {
 				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
 
-				const key = input.KeyCode;
-				if (key === Enum.KeyCode.C) {
-					this.arc = "straight";
-				} else if (key === Enum.KeyCode.V) {
-					this.arc = "curve";
-				} else {
-					this.arc = "overhead";
-				}
+				this.curve = !this.curve;
+				if (DEBUG) print(`[Throw] curve ${this.curve ? "on" : "off"}`);
 
-				if (DEBUG) print(`[Throw] arc: ${this.arc}`);
+				// Redrawn on this frame rather than the next, for the reason the press redraws: the curve is
+				// half of what the drawn shape *is*, and a frame of the old shape after a key press is a frame
+				// of a throw the player has already changed.
+				this.updateGuide();
 				return Enum.ContextActionResult.Sink;
 			},
 			false,
-			Enum.KeyCode.X,
-			Enum.KeyCode.C,
 			Enum.KeyCode.V,
 		);
+
+		// The line that says this controller ran at all, in the shape every other controller here uses:
+		// "nothing happens" has two causes — this never started, or it started and found nothing to do — and
+		// the charge adds a third, which is whether the press bound at all. Missing, and the question is
+		// whether the file is in `StarterPlayerScripts`; present, and the question moves to what the press did.
+		if (DEBUG) {
+			print(
+				`[Throw] up — hold to charge (${BALL_CONFIG.CHARGE_SECONDS}s to full), release to throw, ` +
+					`${Enum.KeyCode.V.Name} bends it (${this.curve ? "on" : "off"})`,
+			);
+		}
 	}
 
 	/**
-	 * Redraws the predicted arc every frame while a ball is in hand, so you can
-	 * see exactly where the throw is going before committing to it.
+	 * One frame: **the charge, the preview, and the two ways a charge can end by itself.**
+	 *
+	 * **This is the only place the arc is built, and it now does nothing on most frames.** It used to be
+	 * rebuilt every frame a ball was in hand — which is most of a round — whether or not anybody was aiming
+	 * at anything. Since the button is now what puts the preview up, the solve, the sweep and the drawing all
+	 * happen only during a hold, and every other frame is one `FindFirstChild` and a return. The cost of the
+	 * preview went *down* with this change, not up.
+	 *
+	 * **It cannot be driven by a signal, and that is worth stating rather than assumed.** The thing that
+	 * changes between frames while charging is *time*: the charge is a function of how long the button has
+	 * been held, so there is no event to listen for and a per-frame redraw is the only shape that can show a
+	 * hold lengthening. Everything else in this controller *is* signal-driven — the press, the release, the
+	 * focus, the bend key — so this loop's whole job is the one part that has no signal.
 	 */
 	private updateGuide() {
 		const character = this.player.Character;
 		const ball = character?.FindFirstChild(BALL_NAME);
-		const isAiming = character !== undefined && ball !== undefined && ball.IsA("BasePart");
+
+		// **A ball that is no longer in the hand cancels the charge, and this is the only cancellation this
+		// file owns.** A drop, a death, a round boundary that destroyed the ball, and a throw made by some
+		// other path all arrive here as one fact a frame later — and none of them is visible from the input
+		// handler, which is why the check lives in the loop that already looks at the hand. See
+		// `cancelCharge` for the rest of the list, which is the engine's own.
+		if (Fusion.peek(chargeStartedAt) !== undefined && (!character || !ball || !ball.IsA("BasePart"))) {
+			this.cancelCharge("the ball left the hand");
+		}
+
+		const charging = Fusion.peek(chargeStartedAt) !== undefined;
 
 		// **The glow's flag is the guide's own visibility, published rather than worked out twice.**
 		// It is set from the same expression that decides whether to draw, so the guide and the aim
@@ -254,11 +397,35 @@ export class ThrowController implements OnStart {
 		// whole reason it is published from here instead of `AimTargetController` deriving it for
 		// itself. See `client/aiming.ts`. Set unconditionally, because a Fusion `Value` given the
 		// value it already holds does nothing.
-		aiming.set(isAiming);
+		//
+		// **The flag now includes the charge, and that is a consequence rather than a preference.** What a
+		// throw reaches is a function of how long the button was held, so a glow lit while nothing is being
+		// charged would be naming the body a *different* throw would hit — the same disagreement between the
+		// glow and the guide this file exists to prevent, with the charge as the thing that moves. It follows
+		// that an idle player sees no glow; see the class doc for what that costs.
+		aiming.set(charging);
 
-		if (!character || !ball || !ball.IsA("BasePart")) {
+		// **The charge's sound stops from the state rather than from a list of call sites, and that is the whole
+		// of its stopping story.** Every way a charge can end already funnels through `chargeStartedAt`: the
+		// release and the four cancellations clear it inside this file, and the `E` cancel clears it from
+		// `CatchController`. Asking the state whether a charge exists therefore covers all of them — including
+		// the `E` cancel, which this controller has no way of being told about, and including any sixth way that
+		// is added later without anybody remembering this line exists. A second list of "places to stop the
+		// sound" beside the list of "places to cancel the charge" would be two things to keep in step, which is
+		// the failure mode this whole arrangement was built to avoid.
+		//
+		// **What it costs is one property read per frame while nothing is charged**, and the ordering above
+		// matters for the same reason it is cheap: `charging` has already been read for the glow, so this is a
+		// comparison against a value in hand rather than a second look at the shared state.
+		//
+		// **The one case it handles a frame late is the `E` cancel** — the charge is cleared in another file, and
+		// this loop is what notices — so that cut lands up to a frame after the press, which at sixty frames a
+		// second is inside the sound rather than beside it. Every other path stops the sound on its own frame,
+		// because `releaseThrow` and `cancelCharge` both end by calling this method.
+		if (!charging) this.stopChargeSound();
+
+		if (!charging || !character || !ball || !ball.IsA("BasePart")) {
 			this.guide.hide();
-			this.steadyTarget = undefined; // next ball starts aiming fresh
 
 			// Nothing is being aimed, so nothing is predicted. Cleared rather than left alone for the
 			// same reason the guide is hidden: the glow is driven by the flag those two share, and a
@@ -267,15 +434,20 @@ export class ThrowController implements OnStart {
 			return;
 		}
 
-		// This is not an approximation of the arc — it is the same plan the
-		// server will run when the click arrives, from the same origin.
-		const target = this.getSteadyAimTarget(character);
-		const plan = planPlayerThrow(character, target, this.arc);
+		const charge = this.currentCharge();
+		this.lastCharge = charge;
 
-		// Printed here rather than beside the landing report, because this is a fact about the plan
-		// and nothing below it can change it. See `reportArcChoice` — a fallback is the whole of the
-		// "the curve changed shape while I was aiming" fault.
-		this.reportArcChoice(plan);
+		// This is not an approximation of the arc — it is the same plan the
+		// server will run when the release arrives, from the same heading and
+		// the same charge. See `planChargedThrow`, which both sides call.
+		const plan = planChargedThrow(character, this.chargeRequest(charge));
+
+		// **Whether this throw is a Pierce ball, which changes what the arc is allowed to stop at.**
+		//
+		// Read from the ball in the hand rather than from anything the server said, because the guide is
+		// drawn before the throw exists: the attribute is already on the ball this client is holding, so
+		// this is the same fact the server will act on rather than a copy of it that could disagree.
+		const pierce = abilityOn(ball) === "Pierce";
 
 		// The guide itself is ignored as well as the thrower. Its own parts sit
 		// right along this arc, and an arc that can hit the line drawn to
@@ -283,42 +455,33 @@ export class ThrowController implements OnStart {
 		//
 		// The radius matters: the ball bounces when its edge touches a surface, a
 		// full half-diameter before its centre gets there. Tracing the centre
-		// alone always marked the impact too far along.
-		// The radius matters twice over: the guide sweeps a sphere the size of the
-		// ball, and the solve above aimed the ball's *centre* a radius out so its
-		// *surface* is what arrives on the mark.
-
-		// **Whether this throw is a Pierce ball, which changes what the arc is allowed to stop at.**
-		//
-		// Read from the ball in the hand rather than from anything the server said, because the guide is
-		// drawn before the throw exists: the attribute is already on the ball this client is holding, so
-		// this is the same fact the server will act on rather than a copy of it that could disagree.
-		const held = character.FindFirstChild(BALL_NAME);
-		const pierce = abilityOn(held) === "Pierce";
-
+		// alone always marked the impact too far along. The guide sweeps a sphere
+		// the size of the ball, and the solve aimed the ball's *centre* out from
+		// the surface so its *edge* is what arrives on it.
 		const arc = new Trajectory(plan.origin, plan.velocity, {
 			ignore: [character, this.guide.instance, ...this.looseBalls()],
 			radius: BALL_SIZE / 2,
-			// **The plan's own gravity, read off the plan rather than from the config.** The solve above used
+			// **The plan's own gravity, read off the plan rather than from the config.** The solve used
 			// it and the ball's `VectorForce` makes it the ball's real pull — see
 			// `BallFactory.applyBallGravity` — and the drawn path is only trustworthy while all three are the
 			// same number. Reading a constant here is how the arc of a heavier ball got drawn: it fell faster,
 			// marked the ground short of where the throw lands, and the marker moved as the aim did.
 			gravity: plan.gravity,
-			// The curve is a force, not a launch angle, so it has to be simulated
-			// as well as applied. Same vector as the server's, taken from the same
-			// plan, which is the only reason the drawn path can be trusted.
+			// **The curve's pull, from the same plan the server will apply it from.** A curve is a force
+			// rather than a launch angle, so the drawn path has to be simulated under it as well as launched
+			// with it, and the only reason the preview can be believed is that this vector is the same one
+			// `applyAcceleration` turns into a `VectorForce`. It is zero for a throw with no bend, which is
+			// how one code path covers both shapes.
 			acceleration: plan.acceleration,
 			// **And the one line that makes the preview honest for Pierce.** Omitted for every other throw,
-			// which is what keeps a normal ball's arc exactly what it was — see {@link passesThroughBodies}
+			// which is what keeps an ordinary ball's arc exactly what it was — see {@link passesThroughBodies}
 			// for what the predicate answers, and why it is the server's rule rather than a second one.
 			passable: pierce ? passesThroughBodies : undefined,
 		});
 
-		// The jitter report is the noisiest thing in the game: it is built to fire whenever the drawn
-		// path moves, and while somebody is aiming that is every frame. See
-		// `shared/config/debug.config.ts`.
-		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) this.reportJitter(target, getThrowMuzzle(character), arc);
+		// The marker report is the noisiest thing in the game, and it is rate limited and behind
+		// `DEBUG_CONFIG.VERBOSE_LOGS` for that reason — see `shared/config/debug.config.ts`.
+		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) this.reportMarkerJitter(arc, getThrowMuzzle(character));
 
 		// **What the arc would reach, published for the glow.** The glow answers "what is my aim on",
 		// and the honest answer is where this throw goes rather than what is under the crosshair —
@@ -335,7 +498,256 @@ export class ThrowController implements OnStart {
 		predictedTargets.set(arcTargets);
 		this.reportArc(arc, arcTargets);
 
+		// **Both ends of the preview, and the placement is why the marker is honest.** The path ends where
+		// the ball's *centre* stopped, one radius clear of the surface; the marker lies flat on the surface
+		// its edge touched. Passing the contact point is what puts the disc where the ball will actually
+		// arrive rather than a radius past it — see `AimGuide.MarkerPlacement`.
 		this.guide.update(arc.points, { position: arc.contact ?? arc.landing, normal: arc.normal });
+	}
+
+	/**
+	 * How much of a charge the current hold has built, from `0` to `1`.
+	 *
+	 * **One division off the clock, and therefore the same number for the preview and for the send.** That is
+	 * the whole reason this is a method rather than a value kept up to date: the frame that draws and the
+	 * release that sends ask the same question of the same clock, so they agree by construction instead of
+	 * being two things to keep aligned. `ChargeRequest.charge` is where that matters.
+	 *
+	 * **`os.clock` is the clock this file already timed with** — the aim smoothing this replaces used it for
+	 * the same job, and `CatchService`, `DodgeService` and `WalkSpeedService` all time their windows with it
+	 * on the other side. A hold measured against something else would be the one duration in the game that
+	 * disagreed about how long a second is.
+	 *
+	 * A hold still running when the ceiling is reached stays there — the value clamps, so holding past full
+	 * is a full charge and nothing else. **Nothing auto-throws**, deliberately: the player decides when the
+	 * ball leaves, and the alternative would take a throw away from somebody who was still aiming it.
+	 */
+	private currentCharge(): number {
+		const began = Fusion.peek(chargeStartedAt);
+		if (began === undefined) return 0;
+
+		return math.clamp((os.clock() - began) / BALL_CONFIG.CHARGE_SECONDS, 0, 1);
+	}
+
+	/**
+	 * **The request the preview and the throw are both built from** — one object, so the two cannot be handed
+	 * different inputs by accident.
+	 *
+	 * It is built here rather than at each call site for exactly that reason: the frame loop builds one per
+	 * frame to draw with, and the release builds one to send, and if those two constructions were written
+	 * out separately a change to one of the three fields would reach the preview and not the wire — which is
+	 * the one class of bug this whole arrangement exists to make impossible.
+	 */
+	private chargeRequest(charge: number): ChargeRequest {
+		return { heading: this.getThrowDirection(), charge: charge, curve: this.curve };
+	}
+
+	/**
+	 * Starts a charge: **the press.**
+	 *
+	 * **The clock starts and the arc appears on this frame, not the next.** The arc matters: a player who
+	 * taps to lob would otherwise throw before they had seen any preview at all, and the touchiest part of
+	 * this mechanic — judging the hold — is judged from a drawing that a one-frame delay would have withheld
+	 * from exactly the shortest throws.
+	 *
+	 * **The sound starts here too, and only here**, which is the half of its life that cannot be derived from
+	 * the charge's state: at full charge the clip has already ended, so "nothing is playing" is not evidence
+	 * that nothing is being charged, and a `Play` keyed off the state would restart the clip on every frame
+	 * after the click. Starting it as a *transition* and stopping it as a *state* — see {@link updateGuide} for
+	 * the other half — is what makes a hold past full silence until the next press, which is the intent: the
+	 * sound is the build-up to being ready, and once it has said so there is nothing left to say.
+	 *
+	 * Nothing else is set up: there is no timer, no accumulator and no state beyond the instant, because the
+	 * charge is derived from elapsed time whenever it is asked for. See {@link currentCharge}.
+	 */
+	private beginCharge(): void {
+		chargeStartedAt.set(os.clock());
+		this.lastCharge = 0;
+		this.playChargeSound();
+
+		if (DEBUG) {
+			print(`[Throw] charging — ${BALL_CONFIG.CHARGE_SECONDS}s to full${this.curve ? ", bending" : ""}`);
+		}
+
+		this.updateGuide();
+	}
+
+	/**
+	 * Starts the charge's sound: **the build-up, sped to fit the hold, with its click landing on full charge.**
+	 *
+	 * **The speed is derived from the clip rather than written down**, which is the point of the whole entry:
+	 * `PlaybackSpeed` scales the playback *rate*, so the sound lasts `TimeLength / PlaybackSpeed` seconds, and
+	 * `TimeLength / CHARGE_SECONDS` is therefore the one speed that puts the end of the clip exactly where the
+	 * charge completes — for any clip, and for any value of `CHARGE_SECONDS`. See
+	 * {@link chargePlaybackSpeed}, which is that arithmetic and its argument; the short version is that
+	 * `CHARGE_SECONDS` is a `**Placeholder.**` and a written-down speed would drift out of step with it the
+	 * moment it is tuned, leaving a click that lands after the ball has gone.
+	 *
+	 * **The price of the derivation is pitch, and it is stated rather than discovered.** Faster playback is
+	 * higher pitch — that is what resampling is — so a clip twice as long as the charge plays an octave up, and
+	 * the click a player hears is not quite the click in the file. The alternative was to leave the speed at
+	 * `1×` and start the sound at `TimeLength − CHARGE_SECONDS`, which preserves pitch exactly because nothing
+	 * is resampled, and it was rejected: that keeps only the *end* of the clip, and the end of a build-up is
+	 * the payoff with nothing leading into it. A charge sound is a rise and a click, the rise is the part that
+	 * tells the player the throw is getting stronger, and a fragment of the ending arriving from nowhere is not
+	 * that. So the build-up is kept whole and the pitch is the price — and the price is visible in the log,
+	 * printed below as the ratio it actually is. **If the shifted click stops sounding like a click, the fix
+	 * is on the file and not in this method**: a re-export pitched for the speed it plays at, or a clip cut to
+	 * `CHARGE_SECONDS` long, which needs no resampling at all.
+	 *
+	 * **`TimePosition` is reset explicitly rather than assumed.** This one instance is deliberately allowed to
+	 * run to its natural end when a player holds to full, so the next charge starts from a `Sound` sitting at
+	 * the end of its clip rather than at the beginning of one. Rewinding is a property write that costs
+	 * nothing, and relying on `Play()` to imply it would be relying on behaviour the typings do not state.
+	 *
+	 * **Not looped, and that is a property of the instance** — see {@link chargeSound} for why the click being
+	 * the end of the sound makes a loop the wrong answer.
+	 */
+	private playChargeSound(): void {
+		const sound = this.chargeSound;
+		if (sound === undefined) return;
+
+		const speed = chargePlaybackSpeed(sound);
+		const loaded = sound.TimeLength > 0;
+
+		sound.PlaybackSpeed = speed;
+		sound.TimePosition = 0;
+		sound.Play();
+
+		if (DEBUG) {
+			print(
+				`[Throw] charge sound — ${string.format("%.2f", sound.TimeLength)}s clip at speed ` +
+					`${string.format("%.2f", speed)}` +
+					(loaded ? "" : " (clip not loaded — playing at 1×, so the click will not land on time)"),
+			);
+		}
+	}
+
+	/**
+	 * Cuts the charge's sound: **the release, and every cancellation, and the `E` cancel one frame later.**
+	 *
+	 * **Reached from {@link updateGuide} and nowhere else**, which is the design rather than a coincidence: the
+	 * frame loop is the one place that already asks whether a charge exists, and every path that ends one —
+	 * including the one `CatchController` performs without telling this file — ends with the answer being no.
+	 * See that method for the argument and for the frame of latency the `E` cancel pays.
+	 *
+	 * **`IsPlaying` rather than a flag of this controller's own.** The engine keeps that flag, and a copy here
+	 * would be a second thing to be wrong about the same question. It also answers the only case that needs an
+	 * answer: a sound that has already run to its end — which is the normal state of affairs at full charge,
+	 * where the click has just landed — has nothing to stop and must not be restarted, and `Stop()` on a
+	 * finished `Sound` is a no-op either way.
+	 *
+	 * **The typings carry two spellings of that flag and this is deliberately the read-only one.** `IsPlaying`
+	 * is declared `readonly`; its sibling `Playing` — the one the Creator Hub page is named after — is declared
+	 * writable, which is a shape that invites a caller to believe it can start a sound by assigning to it. A
+	 * property this line only ever *asks* is better off being the one that cannot be written to by mistake.
+	 *
+	 * **The cut is abrupt, on purpose.** A release before full charge kills the clip where it stands rather
+	 * than fading it, which is the mechanic's shape rather than an oversight: the sound is a countdown to being
+	 * ready, and a countdown that fades out when you stop listening to it stops meaning anything. It also
+	 * means the click is only ever heard by a player who held to full, which is exactly the information the
+	 * sound exists to carry.
+	 */
+	private stopChargeSound(): void {
+		const sound = this.chargeSound;
+		if (sound !== undefined && sound.IsPlaying) sound.Stop();
+	}
+
+	/**
+	 * Ends a charge by throwing: **the release, and the only place a player's throw is sent.**
+	 *
+	 * **The charge is recomputed here rather than taken from the frame loop**, so what goes on the wire is the
+	 * hold as it actually ended — a release that lands between two frames is a release that happened, and a
+	 * value up to a frame old is a value the player did not let go at. What that costs is stated rather than
+	 * hidden: the *drawn* arc is at most one frame behind the charge that is sent (the last frame's number is
+	 * {@link lastCharge}, and this line prints both). At sixty frames a second that is 1.7% of a full hold —
+	 * a couple of studs of range at the very top of the range, and the reason the preview redraws every frame
+	 * rather than only when something asks it to.
+	 *
+	 * **The heading is asked for again for the same reason**, so a throw made mid-turn goes where the player's
+	 * aim was when they let go rather than where it was on the previous frame.
+	 *
+	 * The launch point goes with the throw, unchanged from the click model and for the same reason: the
+	 * server's copy of the character is a replication interval behind this one, and a plan solved from a
+	 * different launch point is a different arc. It matters *more* now that the server has no target to solve
+	 * back to — see `BallService.acceptLaunch` for what the other side does with the claim.
+	 */
+	private releaseThrow(character: Model): void {
+		const charge = this.currentCharge();
+		const drawn = this.lastCharge;
+		chargeStartedAt.set(undefined);
+
+		// Drawn once more before the send, so the log's order is the order the player lived — hold, arc,
+		// release — and so the preview comes down on this frame rather than hanging over a ball that has
+		// already left. With the charge cleared, this draw is the one that hides everything.
+		this.updateGuide();
+
+		// **The camera kick, on the release rather than on the reply, and sized by the hold.** The throw the
+		// player made is the event being marked, and this is the frame it happened on; waiting for the server
+		// would put the feedback after a round trip and, worse, would make it a fact about the server's answer
+		// instead of about the player's action. What that costs is stated rather than hidden: a throw the
+		// server *refuses* — a frozen body, a stale charge — kicks the camera anyway, because the client has no
+		// frozen flag to read and no reply to wait for. That is the same refusal `cancelCharge`'s doc already
+		// describes from the other side, one shake further along.
+		//
+		// **`charge` rather than the ball, and this is the number the wire is about to carry.** It is the hold
+		// as a fraction of the full one, which is exactly what the shake is meant to follow: retune
+		// `CHARGE_MIN_SPEED` or `THROW_MAX_SPEED` and a throw at this hold still kicks the same camera, because
+		// none of them are involved. See `cameraShake.ts` for the argument.
+		//
+		// Nothing about the throw depends on it: the shake is `client/cameraShake.ts`'s and reaches the
+		// wire not at all.
+		shakeCamera(charge);
+
+		this.throwRemote?.FireServer(
+			this.getThrowDirection(),
+			charge,
+			this.curve,
+			getThrowMuzzle(character),
+		);
+
+		if (DEBUG) {
+			print(
+				`[Throw] released at charge ${string.format("%.2f", charge)}` +
+					` (drawn ${string.format("%.2f", drawn)})${this.curve ? " — bending" : ""}`,
+			);
+		}
+	}
+
+	/**
+	 * Drops a charge without throwing it.
+	 *
+	 * **Every cancellation site reaches this one method**, and the list is the whole answer to "what could
+	 * still throw after the player stopped wanting it":
+	 *
+	 * - **the engine's own `Cancel`** for the mouse button, which is how an input that ends without
+	 *   completing — an interruption, a window that goes away — arrives at a bound action;
+	 * - **`WindowFocusReleased`**, as a second net under that, because whether a lost window produces
+	 *   `Cancel`, `End` or nothing is not something the typings state;
+	 * - **a body that is not there between the press and the release**, which is a death mid-hold;
+	 * - **the ball leaving the hand**, checked once a frame in {@link updateGuide}, which covers a drop, a
+	 *   death, a round boundary that destroys held balls, and any other path that empties the hand.
+	 *
+	 * **What is *not* on the list is worth stating too**, because a reader would expect it: the round ending
+	 * and the phase changing cancel nothing here, because nothing in this file ever gated a throw on either —
+	 * a ball may be thrown in the lobby and always could be. Freeze is the other one: a frozen body's throw is
+	 * refused by the server (`BallService.throwBall`) and the client has no frozen flag to read, so a frozen
+	 * player's press charges, previews and releases into a refusal. That is the same throw the game already
+	 * refused before this change, one refusal further along.
+	 *
+	 * **A cancelled charge throws nothing at all**, which is what separates it from a release at zero charge: a
+	 * tap is a throw the player made, and this is one they did not.
+	 *
+	 * The reason is a parameter rather than each call site printing its own line, because "which one was it"
+	 * is the question a log like this is read to answer.
+	 */
+	private cancelCharge(reason: string): void {
+		if (Fusion.peek(chargeStartedAt) === undefined) return;
+
+		chargeStartedAt.set(undefined);
+		this.updateGuide();
+
+		if (DEBUG) print(`[Throw] charge cancelled — ${reason}`);
 	}
 
 	/**
@@ -428,88 +840,79 @@ export class ThrowController implements OnStart {
 	}
 
 	/**
-	 * Reports when the plan's arc is not the arc the player selected.
+	 * Watches the marker for motion the charge does not explain. Diagnostic scaffolding, behind
+	 * `DEBUG_CONFIG.VERBOSE_LOGS` like the report it replaces.
 	 *
-	 * **The one fault in the preview that nothing on screen can show you, and the one nothing else
-	 * here prints.** `straight` and `curve` both quietly become an `overhead` throw when the aim
-	 * point sits above the flat launch line: `flatLaunchSpeed` has no fall to solve with, so
-	 * `planPlayerThrow` swaps the entire throw rather than miss. Nothing in the guide's drawing
-	 * knows — it draws whatever plan came back — so from the player's seat the curve changes shape
-	 * mid-aim as though the throwing style had changed underneath them. It has, and this line is
-	 * where that is visible.
+	 * **Read it as a bisection, and note which branch has gone.** The tool this replaces asked what moved the
+	 * drawn arc while the player held still, and it had three candidates: the aim ray landing somewhere
+	 * different each frame, the launch point drifting underneath it, or the simulation itself. The first is
+	 * structurally gone — the direction is the mouse ray's own vector, so a mouse that is not moving is a
+	 * heading that is not changing — and the other two remain.
 	 *
-	 * **Both halves of the pair, because the two fallbacks are different faults.** `straight ->
-	 * overhead` is a flat throw replaced by a lob. `curve -> overhead` is worse: the curve carries
-	 * its bow as an *acceleration*, and a throw that is no longer flat arrives with that left at
-	 * zero, so the bend disappears as well as the shape. Printing the pair rather than the effective
-	 * arc alone is what keeps those two apart in the log.
+	 * **What is new is that the arc is *supposed* to move every frame.** The charge is a clock, so the marker
+	 * travels outward by design, and a tool that fired on motion would fire constantly and say nothing. So the
+	 * question is no longer "did it move" but **"did it move sideways"**: the marker's travel is split against
+	 * the throw's own line, the part along it is the charge and is expected, and the part across it is the
+	 * fault — a wobble in the solve, a launch point sliding, or a sweep resolved differently from one frame to
+	 * the next. A hold that fills fast therefore reports nothing, which is the whole point of measuring it this
+	 * way.
 	 *
-	 * On change rather than per frame: the plan is rebuilt every frame and its mode is steady across
-	 * a whole sweep of the aim. Diagnostic scaffolding — delete once the fallback is fixed or
-	 * trusted.
+	 * **The mouse must be still, and that gate is what makes the test mean anything.** A player steering
+	 * mid-hold moves the whole arc sideways legitimately, so across-motion is only a fault when the heading
+	 * was not being touched — the same premise the old tool had, kept because it is still the right one.
+	 *
+	 * **`muzzle` is reported rather than folded into the verdict** because a launch point that has slid
+	 * *underneath* a stationary aim is one of the two remaining causes: if the marker wanders and this number
+	 * is moving too, the body is what did it, and if it is steady, the simulation is.
+	 *
+	 * **The report that used to sit beside this one is gone with its subject.** It watched for the plan's arc
+	 * differing from the arc the player selected — `straight` and `curve` quietly becoming an `overhead` throw
+	 * when the aim had no fall to solve with. A charged throw has no shape to fall back from: its angle is the
+	 * hold, and no input can produce a plan that disagrees with the one the preview drew. Diagnostic
+	 * scaffolding — delete once a charging throw is trusted to move only when it should.
 	 */
-	private reportArcChoice(plan: LaunchPlan): void {
-		const report = `${this.arc} -> ${plan.arc}`;
-		if (report === this.lastPlanArc) return;
-
-		this.lastPlanArc = report;
-		if (DEBUG) print(`[Throw] plan: ${report}${plan.arc === this.arc ? "" : " — FELL BACK"}`);
-	}
-
-	/**
-	 * Scaffolding for tracking down jittery aim. Only fires when the mouse is
-	 * still, so anything it reports is genuine jitter rather than you aiming.
-	 *
-	 * Read it as a bisection.
-	 *
-	 * - `target` moving means the aim raycast is landing somewhere different each
-	 *   frame. That is mouse-side, and it is what `AIM_SMOOTHING_SECONDS` exists to
-	 *   absorb — note this reports the *smoothed* point, so whatever still moves
-	 *   here is exactly what a throw at this instant would be aimed at.
-	 * - A steady `target` with a moving `muzzle` means the launch point is
-	 *   drifting underneath it. The solve absorbs that, so the landing stays put
-	 *   while the arc swings — which is exactly the whole-line wobble, and why
-	 *   `mid` exists: a point in the middle of the path catches a line that is
-	 *   moving without its ends moving.
-	 * - Steady `target` and `muzzle` with a moving `landing` means the arc
-	 *   simulation itself is at fault, and then `points` and `hit` matter — an arc
-	 *   that never collides runs to `maxTime` and reports mid-air as its landing.
-	 */
-	private reportJitter(target: Vector3, muzzle: Vector3, arc: Trajectory) {
+	private reportMarkerJitter(arc: Trajectory, muzzle: Vector3) {
 		const mouse = UserInputService.GetMouseLocation();
 		const still = this.lastMouse !== undefined && mouse.sub(this.lastMouse).Magnitude < 0.5;
 
-		// The middle of the path: the honest test for "the whole line moved".
+		// The middle of the path: the honest test for "the whole line moved", and it catches a line that
+		// swings without either of its ends moving.
 		const mid = arc.points[math.floor(arc.points.size() / 2)];
 
-		// Rate limited. This fires every frame the path moves, and printing
-		// thousands of lines a second costs real frame time in Studio — which
-		// would make the very stutter it is trying to measure worse.
+		// Rate limited. This is read against a marker that is moving every frame by design, and printing
+		// thousands of lines a second costs real frame time in Studio — which would make the very stutter it
+		// is trying to measure worse.
 		const now = os.clock();
-		if (
-			still &&
-			this.lastTarget &&
-			this.lastMuzzle &&
-			this.lastLanding &&
-			this.lastMid &&
-			now >= this.nextReport
-		) {
-			const landingJump = arc.landing.sub(this.lastLanding).Magnitude;
-			const midJump = mid.sub(this.lastMid).Magnitude;
-			if (math.max(landingJump, midJump) > 0.2) {
-				this.nextReport = now + 0.5;
-				const jump = (to: Vector3, from: Vector3) => string.format("%.2f", to.sub(from).Magnitude);
-				print(
-					`[Aim] landing +${jump(arc.landing, this.lastLanding)}` +
-						` | mid +${jump(mid, this.lastMid)} | target +${jump(target, this.lastTarget)}` +
-						` | muzzle +${jump(muzzle, this.lastMuzzle)} | points ${arc.points.size()}` +
-						` | hit ${ThrowController.describeHit(arc)}`,
-				);
+		if (still && this.lastLanding && this.lastMid && now >= this.nextReport) {
+			// The line the charge is extending along, taken from the arc rather than from the aim: it is the
+			// axis the expected motion is on, and a throw that reaches nothing has none.
+			const reach = new Vector3(arc.landing.X - arc.origin.X, 0, arc.landing.Z - arc.origin.Z);
+
+			if (reach.Magnitude > 0.001) {
+				const axis = reach.Unit;
+				// The component of `to - from` that is not along the charge's own direction.
+				const across = (from: Vector3, to: Vector3) => {
+					const moved = to.sub(from);
+					return moved.sub(axis.mul(moved.Dot(axis))).Magnitude;
+				};
+
+				const landingAcross = across(this.lastLanding, arc.landing);
+				const midAcross = across(this.lastMid, mid);
+
+				if (math.max(landingAcross, midAcross) > 0.2) {
+					this.nextReport = now + 0.5;
+					const jump = (value: number) => string.format("%.2f", value);
+
+					print(
+						`[Aim] marker sideways +${jump(landingAcross)} | mid +${jump(midAcross)}` +
+							` | muzzle +${jump(muzzle.sub(this.lastMuzzle ?? muzzle).Magnitude)}` +
+							` | points ${arc.points.size()} | hit ${ThrowController.describeHit(arc)}`,
+					);
+				}
 			}
 		}
 
 		this.lastMouse = mouse;
-		this.lastTarget = target;
 		this.lastMuzzle = muzzle;
 		this.lastLanding = arc.landing;
 		this.lastMid = mid;
@@ -560,71 +963,36 @@ export class ThrowController implements OnStart {
 	}
 
 	/**
-	 * The aim point, smoothed toward the live one on a clock rather than held
-	 * near it on a threshold.
+	 * The aim direction: **the ray the crosshair is on**, as a vector.
 	 *
-	 * Used by both the guide and the throw itself, so what you see is what you
-	 * get — if the click read a fresh raycast while the guide showed a smoothed
-	 * one, the ball would land somewhere other than the marker.
+	 * **The same line the old aim point came from, so where the player points has not moved** — only what is
+	 * done with it. The click model cast this ray to find a *point* to land on and solved a throw that
+	 * reached it; a charged throw needs the ray's direction and nothing else, so the cast is gone and the
+	 * vector it was cast along is the answer. That is the whole of this method: one line, one fewer raycast
+	 * per frame, and the reason there is no smoothing constant left in this file (see the note at the top).
 	 *
-	 * **The throw reads this, so its residual is a landing error.** The value kept
-	 * here is the one the solve is run against, which is why
-	 * {@link AIM_SMOOTHING_SECONDS} is short: whatever the point has not caught up
-	 * with by the time the click arrives is thrown at, not merely drawn at.
+	 * **Why the camera's ray and not the body's heading.** "Aim by turning" is the other candidate and it is
+	 * refused because the camera is *already* decoupled from the body here: `ShiftLock` turns the character
+	 * with the view during a round, but a player may also walk one way while looking another, and a throw
+	 * that followed the *body* would go somewhere they are not looking. What the player believes they are
+	 * aiming is what the crosshair — the cursor this game draws while the lock is on — is sitting on, and
+	 * this is the line that goes through it.
 	 *
-	 * The first sample after there is nothing to average from snaps rather than
-	 * easing in. `updateGuide` clears {@link steadyTarget} whenever there is no
-	 * ball in hand, so this includes picking a new ball up, and starting from a
-	 * guessed origin instead would show as the marker flying in from wherever the
-	 * previous ball was thrown.
+	 * **The pitch is deliberately kept and then thrown away one layer down.** What comes back from here is
+	 * the ray's own direction, unflattened, because that is the vector there is; `planChargedThrow` projects
+	 * it, on both sides of the wire, so exactly one function in the game decides what "horizontal" means for
+	 * a throw. A client that flattened here and a server that flattened there would be two answers to one
+	 * question, which is the class of bug this whole arrangement exists to prevent.
+	 *
+	 * A camera that does not exist yet is not an error — there is no aim before there is one, and due north is
+	 * the same fallback the solve makes for a heading with no horizontal part at all.
 	 */
-	private getSteadyAimTarget(character: Model | undefined): Vector3 {
-		const fresh = this.getAimTarget(character);
-		const held = this.steadyTarget;
-
-		if (held === undefined) {
-			this.steadyTarget = fresh;
-			this.lastAimSample = os.clock();
-			return fresh;
-		}
-
-		const now = os.clock();
-		// The interval has to be read *before* the clock is moved on, or `dt` is
-		// always zero and the filter never advances. A zero-length interval is two
-		// calls inside one frame — the guide's and the click's — and gives `alpha`
-		// 0, returning the point unchanged, which is the right answer: no time
-		// passed, so nothing moved.
-		const dt = now - this.lastAimSample;
-		this.lastAimSample = now;
-
-		const alpha = 1 - math.exp(-dt / AIM_SMOOTHING_SECONDS);
-		const smoothed = held.Lerp(fresh, alpha);
-
-		this.steadyTarget = smoothed;
-		return smoothed;
-	}
-
-	private getAimTarget(character: Model | undefined): Vector3 {
+	private getThrowDirection(): Vector3 {
 		const camera = Workspace.CurrentCamera;
-		if (!camera) {
-			return character
-				? character.GetPivot().Position.add(new Vector3(0, 0, -AIM_DISTANCE))
-				: new Vector3(0, 0, -AIM_DISTANCE);
-		}
+		if (!camera) return new Vector3(0, 0, -1);
 
 		const mouse = UserInputService.GetMouseLocation();
-		const ray = camera.ViewportPointToRay(mouse.X, mouse.Y);
 
-		// Ignore the thrower, so aiming over your own body doesn't put the
-		// target at your feet.
-		//
-		// `ExcludeInstances` rather than the deprecated `FilterType`/`FilterDescendantsInstances` pair —
-		// see `shared/throw.ts` for the note, which covers every ray and overlap the throw uses.
-		const params = new RaycastParams();
-		params.ExcludeInstances = character ? [character] : [];
-		params.IgnoreWater = true;
-
-		const hit = Workspace.Raycast(ray.Origin, ray.Direction.mul(AIM_DISTANCE), params);
-		return hit ? hit.Position : ray.Origin.add(ray.Direction.mul(AIM_DISTANCE));
+		return camera.ViewportPointToRay(mouse.X, mouse.Y).Direction;
 	}
 }

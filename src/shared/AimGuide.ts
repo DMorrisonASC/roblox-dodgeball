@@ -65,24 +65,31 @@ const DASH_SPEED = 0.5;
 const PATH_SAMPLES = 48;
 
 /**
- * Whether the preview ends in a landing disc at all. **Currently off, and turning it back on is this
- * one line.**
+ * Whether the preview ends in a landing disc at all — **`true`, which is a reversal, so here is why.**
  *
- * **A creation switch rather than a visibility one**, which is the shape `BALL_CONFIG.TRAIL_ENABLED`
- * uses and for the same reason: with this off there is no disc to build, so nothing has to be moved,
- * tinted or pulsed every frame, and nothing can conjure one back by writing to a property. It is also
- * the cheaper half of the two — the disc's colour comes from an overlap query against the whole landing
- * area, once a frame, for a part that is not being drawn.
+ * **It was off, and the argument for that was sound for the mechanic it belonged to.** The old throw was
+ * aimed at a *clicked point*, so the player had already said where the ball should go and the dashes were
+ * enough to say how it would get there: the disc repeated a decision the player had just made with their own
+ * cursor. What it cost was real — the disc's colour comes from an overlap query against the landing area,
+ * once a frame — and that is the check that a *guide* which is already a guide does not need to pay.
  *
- * **The path is untouched either way.** The dashes are the part of the preview that says where the throw
- * *goes*; this is the disc that says where it *stops*, and the guide is still a guide without it.
+ * **Charging reverses the premise.** Nothing is nominated any more: the player holds a button and the ball's
+ * reach is something they are choosing in the dark, from an arc they can see but cannot measure — and the
+ * arc's *shape* is a bad readout of its *length*, because a 30° drive and a 45° lob look far more alike on
+ * screen than they fly. The disc is where that becomes a number: its distance from the player is the shot's
+ * range, it slides out as the hold builds, and it is the only thing on the screen that answers "how far is
+ * this one going". That makes it the preview's *primary* element rather than a confirmation of a click, and
+ * the one frame of overlap query behind its colour is cheap next to a player who cannot tell three of their
+ * five charge positions apart.
  *
- * **Nothing has been removed.** The disc's radius, thickness, pulse and both of its colours are still
- * here below, `AimGuide.createMarker` is still written and still called when this is true, and the
- * placement the controller hands `AimGuide.update` is still passed — it is simply not read while there
- * is no disc to put anywhere.
+ * **A creation switch rather than a visibility one**, which is the shape `BALL_CONFIG.TRAIL_ENABLED` uses and
+ * for the same reason: with this off there is no disc to build, so nothing has to be moved, tinted or pulsed
+ * every frame, and nothing can conjure one back by writing to a property.
+ *
+ * **The path is unaffected either way.** The dashes say where the throw *goes*; the disc says where it
+ * *stops*. Both are now load-bearing, which is why both are drawn.
  */
-const MARKER_ENABLED = false;
+const MARKER_ENABLED = true;
 
 /**
  * Radius of the marker in studs, and its thickness.

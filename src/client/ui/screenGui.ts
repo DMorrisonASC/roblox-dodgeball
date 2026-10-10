@@ -190,3 +190,26 @@ export function getTransitionScreenGui(): ScreenGui {
 
 	return gui;
 }
+
+/**
+ * **There was a fourth GUI here — a `ScreenGui` of the round status board's own — and it is deleted with its
+ * only caller.** It existed to give one panel a `ScreenInsets` of its own, and three values were tried across
+ * three revisions. All three failed the same way, and that is the thing worth keeping:
+ *
+ * - **`None` and `DeviceSafeInsets` both *drop* the topbar inset rather than moving anything into it.** On a
+ *   desktop, where there are no device cutouts, the two are the same area: `y = 0` becomes the true top of the
+ *   viewport, so any panel that had been positioned just under the topbar is now drawn *underneath* Roblox's
+ *   own chrome instead. The typings say it in as many words for `DeviceSafeInsets` — "no inset is added for
+ *   Roblox core UI elements like the top bar buttons".
+ * - **`TopbarSafeInsets` moves the panel *into* that chrome's row, and there is nothing to tune there.** The
+ *   area is a top bar tall by definition — "limited to the space available within the top bar area itself" —
+ *   so a panel inside it is flush with the top of the screen by construction, and no offset in any file can
+ *   give it room to sit lower. "Too close to the top" is not a value to adjust; it is the ceiling.
+ *
+ * **The distinction to carry forward is region versus offset.** `ScreenInsets` decides *which region* a GUI
+ * draws in — the safe area, the top bar's row, the whole screen — and it cannot move anything *within* the
+ * region it picks. A panel that wants to be some distance down the screen wants an **offset**, in the shared
+ * GUI, where every other HUD already is; `RoundStatusController`'s `HUD_TOP_INSET` is that number and always
+ * was. **A second `ScreenGui` earns its name only when a panel has to draw where the nine others must not** —
+ * whole-screen covers, which is exactly the three remaining here — never to reposition one of them.
+ */
