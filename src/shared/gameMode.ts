@@ -78,43 +78,61 @@ export function sideNameOf(mode: GameModeId, label: string): string {
 }
 
 /**
- * The colour each mode draws its two sides in.
+ * The colour each side is drawn in, and there is **one pair for the whole game**.
  *
- * **Per mode, and fixed — not randomised per round.** A side's colour is part of how a mode reads:
- * red against blue is the shape of a symmetric two-team game, and a round of Dodge and Seek that
- * happened to come out red and blue would look like a different mode. Randomising the pairs is a
- * follow-up; what matters first is that the same mode always looks the same.
+ * **A is red and B is blue, because the arena is red and blue.** That is the whole of the argument, and it
+ * is the rule everything else here follows: a side's colour is not a property of a mode, it is a property
+ * of the *place* the mode is played in. The map has a red half and a blue half, so a side drawn in any
+ * third colour is a side the map disagrees with — and the modes are all played on that same map.
+ *
+ * **This was per mode, and the argument it replaces is kept here because it is worth knowing what it
+ * missed.** `MODE_TEAM_COLORS` held a pair per mode — green against purple for Score Rush, orange against
+ * teal for Dodge and Seek — on the reasoning that a side's colour is part of how a *mode* reads, so the
+ * same side should not look like a different mode. True as far as it goes, and it looked at the wrong
+ * thing: what a player compares the colour against is not the last round's palette, it is the floor they
+ * are standing on and the spawn they came out of, and those are red and blue in every mode. Read that way
+ * the old table was not four modes that each looked like themselves, it was *three* modes whose colour
+ * contradicted the map. **The name went with the change** — `MODE_TEAM_COLORS` described a table keyed by
+ * mode, which is not what a team colour is; the pair below is keyed by team, and
+ * `TEAM_COLORS` is what it is.
+ *
+ * **The names are still per mode, and the two are not inconsistent.** See {@link MODE_SIDE_NAMES}: a mode
+ * calls its sides whatever it likes, because a name is read in a sentence — the round-result line — where
+ * the mode is the whole context. A colour is read against the arena, where the mode is not. So a Dodge and
+ * Seek round is still fought by Seekers and Dodgers in red and blue, which is the mode's words on the
+ * map's colours.
  *
  * **Dark and desaturated, deliberately.** These are *edges* — see `OUTLINE_CONFIG` — not fills, so
  * each one is drawn as a line around a silhouette rather than over it, and a saturated colour at
  * that weight reads as neon rather than as a team. These are values chosen to survive being an
- * outline.
+ * outline, and the pair is the one Team Elimination already shipped, kept verbatim rather than
+ * re-picked in a change that was about *which* colours, not about their weight.
  *
- * The keys are `A` and `B` for the same reason {@link MODE_SIDE_NAMES} uses them: those are
- * literally the values `TEAM_ATTRIBUTE` holds. Which side gets which colour is a convention of this
- * table and nothing else depends on it — but note that a mode being *asymmetric* does not change
- * the shape, so Dodge and Seek's seekers are `A` and its dodgers are `B`, in colour as on the
- * player.
+ * The keys are `A` and `B` because those are literally the values `TEAM_ATTRIBUTE` holds, and which
+ * key gets which colour is now the only thing about a team's appearance that is a convention of this
+ * file rather than of the map.
  */
-export const MODE_TEAM_COLORS: Record<GameModeId, { readonly A: Color3; readonly B: Color3 }> = {
-	TeamElimination: { A: Color3.fromRGB(158, 58, 52), B: Color3.fromRGB(56, 92, 152) },
-	ScoreRush: { A: Color3.fromRGB(74, 124, 70), B: Color3.fromRGB(112, 74, 148) },
-	DodgeAndSeek: { A: Color3.fromRGB(178, 104, 46), B: Color3.fromRGB(52, 122, 120) },
+export const TEAM_COLORS: { readonly A: Color3; readonly B: Color3 } = {
+	A: Color3.fromRGB(158, 58, 52),
+	B: Color3.fromRGB(56, 92, 152),
 };
 
 /**
- * The colour `mode` draws the side `label` in, or `undefined` if there is no such side.
+ * The colour the side `label` is drawn in, or `undefined` if there is no such side.
  *
  * The counterpart to {@link sideNameOf}, and loose in the same way for the same reason: `label`
  * arrives as a plain string off an attribute, so an unrecognised one answers `undefined` rather
  * than throwing. The caller decides what "no side" should look like — for the outline it is the
  * default colour, which is also what the lobby is drawn in.
+ *
+ * **No mode, which is the difference from the version before this.** It took one and looked the
+ * colour up per mode; the colour is now the same in every mode, so a parameter that is ignored at
+ * every call site would be a lie told at three of them. Callers still read the mode for their own
+ * reasons — the score bar hides itself outside a scoring mode — but not for this.
  */
-export function teamColourOf(mode: GameModeId, label: string): Color3 | undefined {
-	const colors = MODE_TEAM_COLORS[mode];
-
-	if (label === "A") return colors.A;
-	if (label === "B") return colors.B;
+export function teamColourOf(label: string): Color3 | undefined {
+	if (label === "A") return TEAM_COLORS.A;
+	if (label === "B") return TEAM_COLORS.B;
 
 	return undefined;
 }

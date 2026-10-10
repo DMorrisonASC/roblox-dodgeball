@@ -8,7 +8,7 @@ import {
 	ROUND_STATUS_FOLDER,
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
-import { isGameModeId, teamColourOf } from "shared/gameMode";
+import { teamColourOf } from "shared/gameMode";
 import { paintHalo, paintRing } from "shared/ringPattern";
 
 /** Prints a line per ring made and per ring taken away, which is how one-per-player is confirmed. */
@@ -207,8 +207,10 @@ export class TeamRingController implements OnStart {
 	 * Starts following the round, so that a phase changing makes the rings appear or go.
 	 *
 	 * **The phase and the mode are both watched, and the clock is not.** A phase decides whether there should
-	 * be a ring at all; a mode decides what colour it is, because the same label is a different colour in a
-	 * different mode — see `MODE_TEAM_COLORS`. `ROUND_TIME_ATTRIBUTE` changes once a second and would be a
+	 * be a ring at all; a mode change is watched because it is the moment the server assigns teams, which is the
+	 * moment the labels a ring is coloured by are written. It is **not** watched for the colour itself any more —
+	 * `TEAM_COLORS` is one pair for every mode, so a mode change cannot change a ring's colour — and the
+	 * connection is kept for the label edge alone. `ROUND_TIME_ATTRIBUTE` changes once a second and would be a
 	 * repaint per second that arrives at the colour it already had.
 	 *
 	 * **The two are handled apart, because only one of them has a body to wait for.** A phase needs the delay in
@@ -817,21 +819,21 @@ export class TeamRingController implements OnStart {
 	 * is drawn in the colour of a side, and a colour whose label this build cannot name is exactly the case
 	 * that must produce no ring rather than a default-coloured one.
 	 *
-	 * **The mode is read live rather than remembered**, which is what makes a mode change repaint correctly:
-	 * the same label is a different colour in a different mode, and the table it comes from is the shared
-	 * `MODE_TEAM_COLORS` — the same one the outline paints from, so a player's ring and their outline cannot be
-	 * two different colours.
+	 * **The label is read live rather than remembered**, which is what makes a reassignment repaint correctly:
+	 * the colour comes from the shared `TEAM_COLORS` — the same one the outline paints from, so a player's ring
+	 * and their outline cannot be two different colours. **The mode is not read here at all**, which is the
+	 * change from the version before this: the colour is the same in every mode now. A round starting still
+	 * repaints, through the `ROUND_MODE_ATTRIBUTE` connection in `followRound` — and that is the edge that
+	 * matters, because it is the moment the labels are written.
 	 */
 	private sideOf(player: Player): { label: string; colour: Color3 } | undefined {
-		const mode = this.status?.GetAttribute(ROUND_MODE_ATTRIBUTE);
 		const label = player.GetAttribute(TEAM_ATTRIBUTE);
 
-		// Read off attributes written by a server that may be a version away, so both are checked rather than
+		// Read off an attribute written by a server that may be a version away, so it is checked rather than
 		// trusted — the same looseness `teamColourOf` and `sideNameOf` allow for.
-		if (!typeIs(mode, "string") || !isGameModeId(mode)) return undefined;
 		if (!typeIs(label, "string")) return undefined;
 
-		const colour = teamColourOf(mode, label);
+		const colour = teamColourOf(label);
 		if (colour === undefined) return undefined;
 
 		return { label, colour };

@@ -1338,19 +1338,21 @@ export class BallService implements OnStart {
 
 		// **MultiBall has to be owned too**, which is the same lock the marks carry: the window is a power
 		// unlocked by the chest, and this is where an unowned one is refused. A dev bypasses it as they
-		// bypass the round gate and the charge below.
+		// bypass the round-or-zone gate and the charge below.
 		if (!dev && !this.economy.ownsPower(player, "MultiBall")) {
 			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — not owned`);
 
 			return;
 		}
 
-		// **A dev is exempt from the round gate, and that exemption is the shortcut's whole point** — a
-		// standing start in Studio is usually an intermission with no round running at all. Asked of
-		// `SuperService` rather than read from the status folder here, so the rule that grants a charge
-		// and the rule that lets one be spent stay one line in one file, exactly as the mark does it.
-		if (!dev && !this.abilities.isRoundActive()) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no round is being played`);
+		// **A dev is exempt from the round-or-zone gate, and that exemption is the shortcut's whole point**
+		// — a standing start in Studio is usually an intermission in the lobby, where a power has nothing to
+		// act on. Asked of `SuperService` rather than read from the status folder here, so the rule that
+		// grants a charge and the rule that lets one be spent stay one line in one file, exactly as the mark
+		// does it — and see `SuperService.inRoundOrZone` for why that one line is now a round *or a practice
+		// zone* rather than a round alone.
+		if (!dev && !this.abilities.inRoundOrZone(player)) {
+			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no round and no practice zone`);
 
 			return;
 		}
@@ -1362,8 +1364,8 @@ export class BallService implements OnStart {
 		// **The second term is the whole of what the mystery box does to a game.** While a prize is held the
 		// charge test is satisfied without a charge existing, so the power is paid for by the box. It is
 		// one `||` rather than a branch because there is nothing else about the request that changes:
-		// ownership above and the round gate above that are asked exactly as they were, which is what keeps
-		// a box from being a way to use a power outside a round or without owning it. See
+		// ownership above, and the round-or-zone gate above that, are asked exactly as they were, which is
+		// what keeps a box from being a way to use a power in the lobby or without owning it. See
 		// `SuperService.isMysteryActive`, and `markHeldBall` below for the mark's half of the same rule.
 		//
 		// **And `isMysteryActive` no longer means "the clock is still running".** It means a prize is held,
@@ -1420,8 +1422,8 @@ export class BallService implements OnStart {
 	 * is being paid for, asked of `mysteryPowerOf` and never sent by a client, and what "using" it means
 	 * depends on the kind: a ball ability is a mark on the ball in hand, and MultiBall is a window of its
 	 * own. Both of those already exist and are called exactly as the dev keys call them, so the checks that
-	 * matter — ownership, the round gate, whether there is a ball at all — are asked in the one place that
-	 * already asks them rather than being repeated here. The box pays through the same
+	 * matter — ownership, the round-or-zone gate, whether there is a ball at all — are asked in the one
+	 * place that already asks them rather than being repeated here. The box pays through the same
 	 * `hasCharge || isMysteryActive` test it pays through at either site.
 	 *
 	 * **Nothing is spent when the roll cannot be used, and that is the value of routing rather than
@@ -1650,26 +1652,30 @@ export class BallService implements OnStart {
 			return;
 		}
 
-		// **A dev is exempt from the round gate, and that exemption is the point of the shortcut.** The
-		// rule the key exists for is "a dev can exercise this from a standing start", and a standing start
-		// in Studio is usually an intermission with no round running at all.
+		// **A dev is exempt from the round-or-zone gate, and that exemption is the point of the shortcut.**
+		// The rule the key exists for is "a dev can exercise this from a standing start", and a standing
+		// start in Studio is usually an intermission in the lobby — where a power has nothing to act on,
+		// which is the same reason the gate itself refuses there.
 		const dev = this.dev.isDev(player);
 
 		// **The power has to be owned, which is the newest gate and sits before the round's.** A key that
 		// marks a ball is a request to use a power the player may not have unlocked yet: the chest grants
 		// powers, and this is the lock the chest opens. Asked of `EconomyService`, which owns the roster —
-		// the dev bypass skips it exactly as it skips the round gate and the charge.
+		// the dev bypass skips it exactly as it skips the round-or-zone gate and the charge.
 		if (!dev && !this.economy.ownsPower(player, kind)) {
 			if (DEBUG) print(`[Super] ${player.Name}: mark refused — ${kind} not owned`);
 
 			return;
 		}
 
-		// **Otherwise, only during a round.** Asked of `SuperService` rather than read from the status
-		// folder here, so the rule that grants a charge and the rule that lets one be spent stay one line
-		// in one file — a second copy could let a charge be earned in a round a ball could not be marked in.
-		if (!dev && !this.abilities.isRoundActive()) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no round is being played`);
+		// **Otherwise, only where a power can do anything: a round is being played, or this body is standing
+		// in a practice zone.** Asked of `SuperService` rather than read from the status folder here, so the
+		// rule that grants a charge and the rule that lets one be spent stay one line in one file — a second
+		// copy could let a charge be earned in a round a ball could not be marked in. The zone half is
+		// `DodgeService.requestDodge`'s rule; see `SuperService.inRoundOrZone` for why the two actions share
+		// it, and for the bug that came of this one half being missing here.
+		if (!dev && !this.abilities.inRoundOrZone(player)) {
+			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no round and no practice zone`);
 
 			return;
 		}
@@ -1732,11 +1738,12 @@ export class BallService implements OnStart {
 		// **The charge, a mystery prize, or the dev bypass.** A dev marks a ball holding no charge of their
 		// own, which is what makes this testable without six hits in a row first.
 		//
-		// **The second term is the mystery box, and it is the same `||` `activateMultiBall` makes above** —
-		// a held prize stands in for a charge, so a player who has just collected one may mark a ball without
-		// one. Written out at both sites rather than inside `SuperService` because the two sites differ in
-		// what they do next (a mark, a window) and agree only on this test; a single `mayUsePower` helper
-		// would hide that the round gate and the ownership check above are *not* part of it.
+		// **Written out at both sites rather than inside `SuperService`, and the line it draws is worth the
+		// repetition.** The two sites differ in what they do next (a mark, a window) and agree only on this
+		// test — and this test is not the whole gate either: ownership and `inRoundOrZone` above are asked
+		// before it, so a helper named for the question a caller has ("may this player use a power") would
+		// read as the whole of it while being one term of it. What *is* shared is the part that is one rule
+		// rather than one sentence — see `SuperService.inRoundOrZone`.
 		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
 		if (!charged && !dev) {
 			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no charge and no mystery prize`);

@@ -359,9 +359,9 @@ export const ROUND_WINNER_ATTRIBUTE = "Winner";
  * other.
  *
  * **`A` and `B` rather than a team name, because the sides are not teams.** A round is two arbitrary sides
- * whose *names* change per mode (`MODE_SIDE_NAMES`) and whose colours come from `MODE_TEAM_COLORS`;
- * `TEAM_A`/`TEAM_B` are the stable labels underneath both, and these names use them for the same reason the
- * server's own map is keyed by them.
+ * whose *names* change per mode (`MODE_SIDE_NAMES`) and whose colours do not (`TEAM_COLORS`: A is red and B is
+ * blue in every mode); `TEAM_A`/`TEAM_B` are the stable labels underneath both, and these names use them for
+ * the same reason the server's own map is keyed by them.
  */
 export const ROUND_SCORE_A_ATTRIBUTE = "ScoreA";
 
@@ -771,4 +771,40 @@ export const SUPER_MULTI_BALL_ENDS_AT_ATTRIBUTE = "SuperMultiBallEndsAt";
 
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 2;
+
+/**
+ * Attribute on a **character `Model`** saying that the server has a dodge or catch window open on it.
+ *
+ * **The one thing a client cannot work out for itself, which is why it is published at all.** A window is
+ * opened and closed by `DodgeService` and `CatchService` — a dash's `DURATION`, a catch's window, and the
+ * early exits from both — and none of it reaches a client as state. A client that wanted to know would have
+ * to re-derive those rules from its own input and from the cooldown stamps, which is the second copy of a
+ * server rule this project does not keep. So the server says so instead, from `afterimage.ts` — the one
+ * function that already knows a window has opened. See `startAfterimage` and `publishWindow`.
+ *
+ * **On the character rather than on the player**, which is the opposite of `THROW_ENABLED`'s choice and for
+ * the opposite reason: a throw preference has to survive a death, and a window must not. An attribute on the
+ * body dies with the body it describes, so there is no state to clear on a respawn and none a new body could
+ * inherit from an old one.
+ *
+ * **Absent means "no window", and only a body a player owns is ever given one** — a rig has no client
+ * watching it, and a catching rig opens a window every tick. Written `false` when a window closes rather than
+ * removed, so a reader compares against a value instead of interpreting a nil.
+ */
+export const AFTERIMAGE_WINDOW_ATTRIBUTE = "AfterimageWindow";
+
+/**
+ * Attribute on a **ghost `Model`** naming the player whose body it was copied from, by `UserId`.
+ *
+ * **How a client finds the server's copies of its own trail so it can hide them.** The trail of a player's
+ * own body exists twice — built on their client for their screen, built on the server for everybody else's —
+ * and both arrive on the dodger's own screen, so one of them has to be hidden there. This is the only thing a
+ * ghost carries that says whose it is, and it is a `UserId` rather than a name because a rig and a player can
+ * share a name. See `AfterimageController`.
+ *
+ * **Absent means "no player's body"**, which covers every rig's ghost and every player's ghost during the
+ * frames before this has replicated — both of which read as "not mine", so no client ever hides a rig's
+ * trail and a late attribute hides rather than doubles.
+ */
+export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
 

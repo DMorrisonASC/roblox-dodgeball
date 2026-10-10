@@ -148,7 +148,7 @@ export class AlternativeMovementController implements OnStart {
 		//
 		// It drives nothing — it is a print and nothing else — so it is not a second movement path, and
 		// it goes when the question does. `gameProcessed` is worth its place here for a reason beyond
-		// this file: `DodgeController` drops a tap whose input reports it, so a `true` on `U` would
+		// this file: `DodgeController` drops a press whose input reports it, so a `true` on `U` would
 		// explain a missing forward dodge as well as a missing step forward.
 		//
 		// **It watches every key rather than this file's four, and that is the point of it.** A log

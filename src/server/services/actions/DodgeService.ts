@@ -1,5 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage } from "@rbxts/services";
+import { startAfterimage, stopAfterimage } from "shared/afterimage";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
@@ -614,6 +615,25 @@ export class DodgeService implements OnStart {
 
 		this.dashes.set(model, record);
 
+		// **The trail opens exactly here, which is where `isDodging` starts answering yes.** The dashes table
+		// *is* the window — see {@link isDodging} — so the ghosts and the state they stand for begin in the
+		// same instant by construction rather than by two places agreeing to write at the same time. It
+		// cannot be anywhere later in the method and still mean that: the timer below and the flourish at the
+		// end are both still to come, and a trail started after either of them would begin emitting against
+		// a dash that had already finished.
+		//
+		// **And the trail has already emitted by the time this returns**, which is the reversal recorded in
+		// `afterimage.ts`: the version before this waited a whole interval first, on the argument that a copy
+		// laid down here would sit inside the body that was still standing — true, and the wrong thing to
+		// optimise, because that is the position the eye expects a smear to start from. So a dash is its
+		// opening position *plus* the positions it travels, and the queueing is the trail's business rather
+		// than this method's. See `emitGhost`.
+		//
+		// Above the death connection on purpose. A model that dies later has already fired this, and the stop
+		// in {@link endDash} is what ends it; a trail *below* the connection would be one a death in the same
+		// frame could outrun.
+		startAfterimage(model);
+
 		// Dying is the one thing that must not leave the character standing: a
 		// `PlatformStand` left on is a player who cannot walk after respawning.
 		diedConnection = humanoid?.Died.Connect(() => this.endDash(model));
@@ -646,6 +666,14 @@ export class DodgeService implements OnStart {
 	 *
 	 * Safe to call at any time: a dash that has already finished is no longer in
 	 * the table, so this either does the work or does nothing.
+	 *
+	 * **Every way a dash can end arrives here**, which is why this is also the whole of how the trail is
+	 * stopped: its own timer, a newer dodge replacing it ({@link startDash} ends the old one first), and its
+	 * dasher dying. There is deliberately no second path that ends the emission — a stop written into the
+	 * timer would leave a death mid-dash emitting for as long as the corpse existed, and one written into
+	 * the death connection would leave an ordinary dash emitting for the rest of its life. Both of those are
+	 * the same fault seen from opposite ends, and both are avoided by asking the question this method already
+	 * asks: is this dash still the one in flight.
 	 */
 	private endDash(model: Model): void {
 		const record = this.dashes.get(model);
@@ -657,6 +685,17 @@ export class DodgeService implements OnStart {
 		// its own timer, a newer dodge replacing it, or its dasher dying. Stamped before the
 		// cleanup so that anything the cleanup wakes sees the dash as already over.
 		this.lastDodgeEndAt.set(model, os.clock());
+
+		// **The trail stops beside the clock, and before the cleanup**, for the reason above and in that
+		// order: the entry has already left the table, so `isDodging` is false from this line onwards and the
+		// emitting has to have stopped with it. The ghosts already in the world are deliberately *not* this
+		// line's business — each fades and destroys itself on its own timer, so a trail's tail outlives the
+		// window by exactly as long as one ghost takes to fade and not a frame longer.
+		//
+		// Stopping an emission that was never started is the ordinary case rather than a fault: a dash that
+		// ends by being replaced had its predecessor's trail stopped when that one ended a moment ago, and
+		// `stopAfterimage` is a map delete either way.
+		stopAfterimage(model);
 
 		record.finish();
 	}

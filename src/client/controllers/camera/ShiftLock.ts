@@ -436,8 +436,9 @@ export class ShiftLock implements OnStart {
 		// is what is the camera's own: the tick, and the change detection below.
 		//
 		// **The split is worth having because of the rates.** This runs ten times a second and is the whole
-		// reason a zone is noticed at all; the dodge asks once per double-tap, which is a handful of times
-		// a second at most. Neither of them caches, and both are reading the same function.
+		// reason a zone is noticed at all; the dodge asks once per press — a movement key plus a right-click —
+		// which is a handful of times a second at most. Neither of them caches, and both are reading the same
+		// function.
 		this.inZone = inTaggedZone(character);
 
 		// Only when the answer changed, which is what keeps the loop's ten-a-second silence: nothing here

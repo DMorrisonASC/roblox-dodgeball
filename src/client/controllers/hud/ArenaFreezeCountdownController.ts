@@ -34,36 +34,103 @@ const DEBUG = true;
 const COUNTDOWN_Z_INDEX = 2;
 
 /**
- * The height of the box one number is drawn in: **one cell, and it is the only fixed size in the element.**
+ * The height of the box one number is drawn in, and of the element itself: **the only fixed height here.**
  *
- * **It exists so that the two labels can occupy one cell.** The card lays its children out with a
- * `UIListLayout`, and a list is a *sequence* — while a cross is two numbers in the same place. What a list does
- * let you choose is the gap between cells, so the gap is set to minus this height: the second cell is pulled
- * back by exactly the height of the first and the two land on top of each other. Everything else about the
- * element's box is derived — its width is the widest number's, its height is this plus the card's padding.
+ * **What it is for has changed, and the constant survived the change.** It used to be the *cell* a
+ * `UIListLayout` was told to collapse by: the layout pulled the second cell back by exactly this height so two
+ * labels could share one place. There is no layout any more — see the card in {@link mount} — so this is now
+ * simply the box a number is centred in: the label is this tall, its text is centred inside that, and the
+ * label's own `AnchorPoint` is what puts it on the screen's centre. Nothing measures it, which is why it can
+ * afford to be generous.
  *
  * **`60` rather than the type scale's own line height, and the argument is the coupling rather than the
- * number.** The tallest variant big-ui has is `h4` at `42`, so every variant fits inside this cell — which
- * means the variant can be changed at the label without anybody having to remember that this number is tied to
- * it. A cell of `28`, the `h6` line height, would be exactly right today and wrong the first time a bigger
- * number is asked for.
+ * number.** The numbers are drawn at `h4`, which is the **tallest variant big-ui has** — checked rather than
+ * assumed: `TypographyVariant` in the installed typings is `"h4" | "h5" | "h6" | "subtitle1" | …`, so `h4` is
+ * the top of the scale and there is nothing bigger to grow into. Its line height is `42`, which leaves this box
+ * room above and below; that is deliberate at both ends — the incoming number arrives from `IN_SCALE` and the
+ * outgoing one leaves at `OUT_SCALE`, and a box that hugged the line would show the difference as clipping
+ * rather than as depth.
  *
  * **What this is not: a box the text is confined to.** `ClipsDescendants` is off and the outgoing number
- * finishes at `OUT_SCALE` — well past this height — deliberately, because it is leaving the *screen* rather
- * than the box.
+ * finishes at `OUT_SCALE` — well past this height — deliberately, because it is leaving past the camera rather
+ * than past the box.
  */
 const LABEL_HEIGHT = 60;
 
 /**
- * How long one number takes to cross into the next, in seconds. **Placeholder — 0.35.**
+ * The width of the element, in pixels. **A frame around the numbers rather than a limit on them.**
  *
- * **The motion has to finish inside the second it belongs to, with room left to read.** The number changes on
- * the second's boundary, so anything at or above `1` would have two numbers overlapping permanently — the
- * cross would become the state rather than the transition between two states. At 0.35 the number is moving
- * for the first third of its second and standing still for the remaining two thirds, and that split is what
- * makes a countdown readable: the movement draws the eye to the tick, the stillness lets the tick be read.
+ * The numbers are `AutomaticSize.X` and centred on the element's own centre, so this number decides nothing
+ * about how a number is drawn. It exists because a `GuiObject` needs a size, because the viewport rule wants a
+ * box it can bound, and because an element that grew to fit the widest thing in the sequence would grow when
+ * "Start" arrived — a jump on the last step of every count, and one the player would see even though nothing
+ * visible had changed size. Fixed, the element cannot move at all, at any point in the sequence.
+ *
+ * The widest thing it ever holds is `Start` at `h4`, and `220` is that with room either side; the outgoing copy
+ * is allowed to leave the frame, because nothing clips.
+ *
+ * **It stays in the type scale's own units, because the size on screen is {@link NUMBER_SCALE}.** This number
+ * and {@link LABEL_HEIGHT} are multiplied by that scale together with everything else, so they describe the
+ * *box* rather than what a player sees; a reader looking for the latter reads the scale and multiplies.
  */
-const CROSS_SECONDS = 0.35;
+const CARD_WIDTH = 220;
+
+/**
+ * How much larger than its own numbers the element is drawn: **one multiplier on everything inside it.**
+ * **Placeholder — 2.**
+ *
+ * **It is a scale rather than a bigger box, and that is forced.** `h4` is the top of `TypographyVariant` — the
+ * largest type big-ui has — so there is no variant left to reach for, and the box was already built around it.
+ * Growing the box instead would mean a taller `LABEL_HEIGHT`, a hand-set `TextSize` and a wider `CARD_WIDTH`,
+ * which is three numbers that have to agree plus a text size that has to be sourced from outside the variant.
+ * One `UIScale` on the card is the same change as one number: it multiplies the box, both labels, each label's
+ * own crossing scale and the padding together, so the composition is untouched and the only thing that moves is
+ * how much of the screen the whole thing covers.
+ *
+ * **`2` — twice the linear size, four times the area.** `h4`'s 34px text is drawn at **68**, its 42px line box
+ * at **84**, and the 60px box at **120**. That is the step from a label to a headline, which is what this readout
+ * is: it is the one thing on the HUD a player has to take in at a glance while they cannot move, and at the type
+ * scale's own largest size it was the same weight as the score bar.
+ *
+ * **Why the crossing scales need no retuning at this size.** `OUT_SCALE` and `IN_SCALE` are multipliers of the
+ * same composition, so the *shape* of the motion is identical at any value here — what grows is the distance it
+ * travels, which is the thing being asked for. Nothing clips it on the way: `Card` is a plain `Frame` and does
+ * not clip its descendants, so the outgoing copy is free to leave the box.
+ *
+ * **What this is not: a change to `LABEL_HEIGHT` or `CARD_WIDTH`.** Those describe the box in the type scale's
+ * units and the box is multiplied with everything else, so they are deliberately left alone — a reader who
+ * wanted the on-screen size multiplies by this, and a reader who wanted the layout reads them.
+ */
+const NUMBER_SCALE = 2;
+
+/**
+ * How long the outgoing number takes to leave, in seconds. **Placeholder — 0.15.**
+ *
+ * **The two halves of the crossing are sequential now, and this pair is the fix for what that was.** They used
+ * to run together: the new number was put on screen on the boundary while the old one spent the whole crossing
+ * fading out over it, so for the first third of every second there were two numbers in the same place. That is
+ * what "the numbers appear before the next one disappears" was, and it is not a matter of tuning — a crossing
+ * that overlaps *is* two numbers. So the old number leaves first, entirely, and the new one arrives after it:
+ * **one number on screen at a time**, which is the property to keep if these are ever retuned.
+ *
+ * **`0.15` and `0.2` together are the `0.35` the crossing used to take**, so the whole motion still finishes
+ * inside the first third of the second it belongs to and the number is still standing still for the remaining
+ * two thirds — the split that makes a countdown readable, because the movement draws the eye to the tick and
+ * the stillness lets the tick be read. The leaving half is the shorter one: the eye has already read that
+ * number and it is being removed, where the arriving one is the one that has to be legible.
+ *
+ * **The argument that was made against exactly this is kept, because it was right about the cost and wrong
+ * about which side of it was worse.** A gap between the two numbers was rejected as "a blink with a gap" — the
+ * gap is real, and it is one frame rather than half the motion, because the two tweens meet end to end instead
+ * of overlapping. Two numbers at once was the larger fault, and it was the one on screen thirty times a round.
+ */
+const OUT_SECONDS = 0.15;
+
+/**
+ * How long the incoming number takes to arrive, in seconds. **Placeholder — 0.2.** See {@link OUT_SECONDS} for
+ * the split, which is the whole of why there are two numbers here rather than one.
+ */
+const IN_SECONDS = 0.2;
 
 /**
  * How far the outgoing number has travelled when it has crossed. **Placeholder — 1.85.**
@@ -78,9 +145,11 @@ const OUT_SCALE = 1.85;
 /**
  * Where the incoming number starts. **Placeholder — 0.6.**
  *
- * **The far end of the same axis, so the two numbers read as one motion through the screen.** The outgoing
- * one is coming at the viewer and the incoming one is behind it and still on its way; a `1` here would put
- * the new number at full size immediately and the cross would be a fade with a zoom on one side of it.
+ * **The far end of the same axis, so the two halves of a crossing read as one motion through the screen.**
+ * The outgoing number grew on its way out towards the viewer; the incoming one starts small and settles, which
+ * is the same axis read backwards — a number that was *behind* and has arrived. That reading survives the
+ * change to a sequential crossing, and it is the reason it is a scale at all: `1` here would make the arrival
+ * a plain fade, with the depth of the motion only ever happening on the departing half.
  */
 const IN_SCALE = 0.6;
 
@@ -89,10 +158,18 @@ const IN_SCALE = 0.6;
  *
  * **It appears at the exact moment the freeze lifts, so it is competing with the player's own ability to
  * move** — the one word in this sequence that is *in the way* rather than informative. Long enough to be read
- * at a glance (one short word at the size `h6` gives it, and a word is recognised in well under a quarter of
+ * at a glance (one short word at the size `h4` gives it, and a word is recognised in well under a quarter of
  * a second), short enough that a player already running is not still looking at it. Under half a second would
  * be a flash on the one state that matters most; much over a second would put it in front of a round that has
  * already begun.
+ *
+ * **What the hold is measured from, said plainly, because the sequential crossing moved it.** The timer starts
+ * on the crossing — the instant the freeze ends, which is the instant this word stands for — and the word does
+ * not arrive until `OUT_SECONDS` later, with `IN_SECONDS` of that spent fading up. So it is legible for roughly
+ * half a second rather than the whole of this. That is deliberate: the alternative is either a word that waits
+ * for a number to leave (a cue that is late for the round it announces) or a word that arrives on top of that
+ * number (the fault this crossing was changed to remove). **The lever if it reads too briefly is this number,
+ * not the crossing.**
  */
 const START_HOLD_SECONDS = 0.6;
 
@@ -118,8 +195,8 @@ const START_FADE_SECONDS = 0.25;
 const START_TEXT = "Start";
 
 /**
- * The arena-freeze countdown: one number in the middle of the screen, each crossing into the next, ending on
- * "Start".
+ * The arena-freeze countdown: one number in the middle of the screen, at the largest type the theme has and
+ * then scaled up past it, each one replacing the last, ending on "Start".
  *
  * **What it is counting.** A round begins by moving every player in it from the lobby to a spawn and then
  * holding them where they land for `ARENA_CONFIG.ARENA_FREEZE_SECONDS`, so a round's opening seconds are for
@@ -279,25 +356,32 @@ export class ArenaFreezeCountdownController implements OnStart {
 		this.labels.push(this.addLabel(scope, theme));
 
 		/**
-		 * **The countdown is a card, transparent, and every number about its box is derived.**
+		 * **The countdown is a card, transparent, fixed in size, and it lays nothing out.**
 		 *
-		 * A `Card` is what the rest of this screen is made of — it brings the padding, the corner and the
-		 * `UIListLayout` that the HUD's boxes are built from — and this is that same box with its fill switched
-		 * off: `BackgroundTransparency = 1`, and `elevation: 0` so the library does not draw the hairline it
-		 * would otherwise put round it. **A transparent card with a border is an outline with nothing inside
-		 * it**, which is the shape `RoundStatusController` argues against at its own stroke — the board there is
-		 * taken off during play, and leaving its edge behind was the thing not to do.
+		 * A `Card` is what the rest of this screen is made of — it brings the padding and the corner — and this is
+		 * that same box with its fill switched off: `BackgroundTransparency = 1`, and `elevation: 0` so the library
+		 * does not draw the hairline it would otherwise put round it. **A transparent card with a border is an
+		 * outline with nothing inside it**, which is the shape `RoundStatusController` argues against at its own
+		 * stroke — the board there is taken off during play, and leaving its edge behind was the thing not to do.
 		 *
-		 * **No child of the card is placed by hand.** The width is the widest number's, the height is
-		 * {@link LABEL_HEIGHT} plus the padding, and the layout is what centres both inside the content box. The
-		 * only two sizes written by hand are on the element itself: the sizing pair below, which is the same
-		 * correction `CooldownHudController` makes to its container, because a `Card` given no `size` is built
-		 * full-width with an automatic height and this element wants both axes automatic.
+		 * **Both labels are placed by hand, and the layout the library brings is destroyed.** That is a reversal,
+		 * and the argument it replaces is kept because it is the argument that made the layout look necessary:
+		 * "anchoring each label at the centre of a parent that auto-sizes around them is a circle — the box would
+		 * be derived from children whose position is a fraction of that box". True, and it stops being true the
+		 * moment the box is **not** derived from its children. This card has a fixed size, so a child at
+		 * `Position = (0.5, 0.5)` with its own `AnchorPoint` at `(0.5, 0.5)` is a statement about the card rather
+		 * than an equation about the child, and the circle is gone.
+		 *
+		 * **What the layout was costing, which is what forced the reversal.** A `UIListLayout` measures its
+		 * children, and these children are *scaled*: a `UIScale` changes what a label occupies, the layout reflows
+		 * around that, and the card's own `AutomaticSize` follows the layout — so the element changed size and
+		 * re-centred itself for the third of every second a number was moving. That is the jitter, and it is also
+		 * why a number read as off-centre: a `UIScale` with no `AnchorPoint` to scale about grows out of the
+		 * label's top-left corner. With the layout gone, each number is anchored at its own centre and the box
+		 * they sit in cannot move at all.
 		 *
 		 * **`Position` and `AnchorPoint` on the card are the element's place on the screen and nothing else's.**
-		 * They are stated once, on the outermost thing, and nothing inside reads them: the number does not move
-		 * relative to the card when the card's size changes, which is what makes the two of them a *placement*
-		 * rather than a layout.
+		 * Which, with a fixed size, is now the only placement in the element.
 		 */
 		const card = Card(scope, {
 			padding: theme.spacing.sm,
@@ -307,46 +391,48 @@ export class ArenaFreezeCountdownController implements OnStart {
 		});
 
 		card.Name = "ArenaFreezeCountdown";
-		card.Size = UDim2.fromOffset(0, 0);
-		card.AutomaticSize = Enum.AutomaticSize.XY;
+		// **A size written on the element rather than derived from the numbers**, which is the whole of why the
+		// element cannot move: see `CARD_WIDTH` and `LABEL_HEIGHT`. `Card` builds itself full-width with an
+		// automatic height, so both axes have to be stated and `AutomaticSize` has to be turned back off.
+		card.Size = UDim2.fromOffset(CARD_WIDTH, LABEL_HEIGHT);
+		card.AutomaticSize = Enum.AutomaticSize.None;
 		card.Position = UDim2.fromScale(0.5, 0.5);
 		card.AnchorPoint = new Vector2(0.5, 0.5);
 		card.BackgroundTransparency = 1;
+
+		/**
+		 * **The size a player actually sees, and it is one multiplier rather than a bigger box.**
+		 *
+		 * `h4` is the top of big-ui's type scale, so the extra size has to come from outside it — see
+		 * {@link NUMBER_SCALE} for why a `UIScale` here is smaller than the alternatives rather than merely
+		 * easier. It multiplies everything under the card: both labels, each label's own crossing scale, and the
+		 * padding.
+		 *
+		 * **`AnchorPoint` is what keeps that multiplication centred, and this is the same pairing the previous
+		 * size change landed on.** The card's anchor is `(0.5, 0.5)`, so it grows about the point it is placed
+		 * at — the screen's centre — rather than about a corner; each label's anchor is its own centre, so a
+		 * number grows about itself. Because both are already stated, this is one line rather than a second
+		 * correction of the placement.
+		 *
+		 * **Parented to the card rather than to the labels**, which is the difference between scaling the element
+		 * and scaling each number separately: a label's own `UIScale` is the *crossing's*, and it has to stay a
+		 * relative value for the crossing to read the same at any size. One scale on the card leaves those two
+		 * meaning what they always meant.
+		 */
+		Fusion.New(scope, "UIScale")({ Parent: card, Scale: NUMBER_SCALE });
+
 		// **Carried on the card as well as on the labels**, which is not tidiness: Roblox draws a child above its
 		// parent only when the child's `ZIndex` is at least the parent's, so labels left at the default under a
 		// card at `2` would be drawn behind the card's own corner and padding. See `raiseZIndex` in
 		// `panelChrome.ts` for the rule and what it costs when it is missed.
 		card.ZIndex = COUNTDOWN_Z_INDEX;
 
-		/**
-		 * **The one thing a layout cannot do by itself, written as a layout anyway.**
-		 *
-		 * A `UIListLayout` is a *sequence*: each child is placed after the last, which is the one arrangement a
-		 * cross cannot use — the two numbers have to occupy the same cell, one leaving while the other arrives.
-		 * No `FillDirection` will do that and a grid has no z-axis either. **What a list does let you choose is
-		 * the gap between cells, so the gap here is the cell itself**: the second one is pulled back by exactly
-		 * its own height, and two cells become one. With both labels at {@link LABEL_HEIGHT} that lands the
-		 * second on the first to the pixel.
-		 *
-		 * **The alternatives were worse, and this is why the shape is worth stating.** Anchoring each label at
-		 * the centre of a parent that auto-sizes around them is a circle — the box would be derived from children
-		 * whose position is a fraction of that box. Hand-placing them is what this change is a correction to. And
-		 * the gap is a number either way; this one is stated *once*, on the layout, where the other two spell it
-		 * out on every child.
-		 *
-		 * **Nothing here depends on what the layout does with a hidden child.** One cell is visible at rest and
-		 * two during a cross, and because the second cell costs the content box nothing, the card is one cell
-		 * tall in both states either way.
-		 */
-		const layout = card.FindFirstChildOfClass("UIListLayout");
-
-		if (layout !== undefined) {
-			// `Card` has already made this vertical and sorted it by `LayoutOrder`; what it is told here is how
-			// to centre what it lays out, and that the second cell is the first.
-			layout.HorizontalAlignment = Enum.HorizontalAlignment.Center;
-			layout.VerticalAlignment = Enum.VerticalAlignment.Center;
-			layout.Padding = new UDim(0, -LABEL_HEIGHT);
-		}
+		// **The library's own layout, removed.** `Card` brings a `UIListLayout` for the ordinary case of a column
+		// of children, and it is exactly wrong here: it would stack the two numbers instead of putting them in the
+		// same place, and it would measure them while they were being scaled. Both labels are placed by their own
+		// `AnchorPoint` instead — see `addLabel` — so something laying them out is not merely redundant, it is a
+		// second placement fighting the first.
+		card.FindFirstChildOfClass("UIListLayout")?.Destroy();
 
 		// **Shown only while a count is running**, through the same `Computed` that decides it — one value, read
 		// by the one element rather than a connection per reader. It is `Hydrate` because `Card` hands back a
@@ -444,17 +530,27 @@ export class ArenaFreezeCountdownController implements OnStart {
 	}
 
 	/**
-	 * One number's box, with its own scale and its own cell, invisible until it is used.
+	 * One number's box, with its own scale, invisible until it is used, **placed on the element's centre.**
 	 *
-	 * **Nothing here is positioned, and that is the whole of this file's placement rule.** The width is the
-	 * text's (`AutomaticSize.X`), the height is {@link LABEL_HEIGHT}, and the card's layout is what puts the box
-	 * in the middle of the element. The two labels are the same box in the same cell, which is what a cross is.
+	 * **The placement is three lines, and it is the whole of why a number is centred.** `AnchorPoint` is `(0.5,
+	 * 0.5)` — the box's own centre — and `Position` is `(0.5, 0.5)` of the card, so the box's centre sits on the
+	 * card's centre, which sits on the screen's centre. Both axes are the same statement because both are the same
+	 * fraction, and neither depends on how wide the text is or how large it is being scaled: `AutomaticSize.X`
+	 * moves the box's edges and the anchor moves with them, which is exactly what a `UIScale` needs in order to
+	 * grow *about* the number rather than out of one of its corners.
 	 *
-	 * **`AutomaticSize.X` and not `XY`, because the height is load-bearing.** `AutomaticSize` is one value for
-	 * both axes rather than a pair — see `panelChrome.ts` — so an automatic height would make `LABEL_HEIGHT` a
-	 * fiction, and the gap that collapses the two cells into one is measured against that height. The text hugs
-	 * its width, the cell is a fixed height, and the text is centred in it both ways: `align` across, and
-	 * `TextYAlignment` down.
+	 * **`h4`, which is the largest variant big-ui has** — the first member of `TypographyVariant` in the installed
+	 * typings, checked rather than assumed, and there is nothing above it to move to. What was here before was
+	 * `h6`: the size this screen's small print uses, so the largest element on the HUD was drawing smaller than
+	 * the score bar's numbers. **The size above `h4` comes from the card's own scale rather than from a variant**,
+	 * because no variant is that large — see `NUMBER_SCALE`, which is where a reader asking how big this is drawn
+	 * should end up.
+	 *
+	 * **`AutomaticSize.X` and not `XY`, because the height is load-bearing either way.** `AutomaticSize` is one
+	 * value for both axes rather than a pair — see `panelChrome.ts` — so an automatic height would drop
+	 * `LABEL_HEIGHT` altogether: the box would hug the line, and the vertical centring would become the font's own
+	 * asymmetry rather than a decision. The text hugs its width, the box is a fixed height, and the text is centred
+	 * in it both ways: `align` across, and `TextYAlignment` down.
 	 *
 	 * **Both text properties are set imperatively rather than through a `Value`**, and that is the state
 	 * machine's shape rather than a shortcut: the text changes on a *clock* boundary rather than in response to
@@ -475,15 +571,18 @@ export class ArenaFreezeCountdownController implements OnStart {
 	private addLabel(scope: Fusion.Scope<unknown>, theme: HudTheme): TextLabel {
 		const label = Text(scope, {
 			text: "",
-			variant: "h6",
+			variant: "h4",
 			align: Enum.TextXAlignment.Center,
 		});
 
 		label.Name = "Number";
 		label.Size = UDim2.fromOffset(0, LABEL_HEIGHT);
 		label.AutomaticSize = Enum.AutomaticSize.X;
-		// **The default, written down because it is now load-bearing.** The cell is taller than the text, so it is
-		// this that puts the number on the screen's centre line rather than above it — see `LABEL_HEIGHT`.
+		label.AnchorPoint = new Vector2(0.5, 0.5);
+		label.Position = UDim2.fromScale(0.5, 0.5);
+		// **Written down because the box is taller than the text.** With a fixed `LABEL_HEIGHT` and a `UIScale`
+		// that carries the outgoing number past it, this is what keeps the *text* on the centre line rather than
+		// above it — see `LABEL_HEIGHT`.
 		label.TextYAlignment = Enum.TextYAlignment.Center;
 		label.TextColor3 = theme.colors.onAccent;
 		label.TextTransparency = 1;
@@ -591,69 +690,33 @@ export class ArenaFreezeCountdownController implements OnStart {
 	}
 
 	/**
-	 * Crosses into `text`: the number in front zooms out and fades, and `text` fades in from behind it.
+	 * Leaves `text`: the number in front zooms out and fades away, and then `text` arrives in its place.
 	 *
-	 * **Two labels rather than one resetting, which is the difference between a cross and a pop.** One label
-	 * cannot be in two states at once, so a single label would have to finish fading out before it could start
-	 * fading in — a blink with a gap, and the gap would have to be half the animation for the motion to fit
-	 * inside the second. Two labels overlap by construction: one is leaving while the other arrives, which is what
-	 * "the number coming toward the viewer and passing" actually looks like.
+	 * **One number at a time, and that is the change this crossing went through.** The two halves used to run
+	 * together — the word was put on screen on the boundary while the number before it spent the whole crossing
+	 * fading out over it — so every tick had two numbers in the same place for a third of a second. It read as the
+	 * next number arriving before the last had gone, which is what it was. Now the departure is waited out and the
+	 * arrival happens after it: the screen is empty for the frame between the two tweens and never for longer.
 	 *
-	 * **`Out` on the arrival and `In` on the departure, and the split is the physics rather than taste.** The
-	 * incoming label decelerates into its size — it is settling where it belongs — while the outgoing one
-	 * accelerates away, which is what something passing the camera does. Swapping them would make the number
-	 * arrive with a snap and leave gently, i.e. exactly backwards.
+	 * **Two labels rather than one resetting, and the reason survives the change.** One label cannot be in two
+	 * states at once, so a single label would have to finish fading out before it could start fading in — which is
+	 * now *exactly* what is wanted, but a single label also has no way to hold a text change and a fade on
+	 * separate clocks, and every retune of the two halves would be a fight with the label that is still carrying
+	 * the old text. Two labels keep the sequence two statements: this one leaves, that one arrives.
 	 *
-	 * **"Start" arrives at rest scale rather than from behind.** It is the end of the sequence, so nothing is
-	 * crossing *through* it: the last number still zooms out — that is the cross, and it belongs to the number —
-	 * but the word fades in at the size it will hold. Anything else would promise a fourth number that is not
-	 * coming.
-	 *
-	 * **One tween per property per label, so four per crossing and none per frame**, which is the shape the
-	 * brief asks for and the only one that reads as motion: a tween started every frame would restart sixty times
-	 * a second and the numbers would never appear to move at all.
+	 * **The delay is what makes the order true, and the guard on it is the ordinary one.** A run that ended inside
+	 * those milliseconds must not have its arrival run into the next round, so the callback checks the run token
+	 * and the text it was scheduled for.
 	 */
 	private cross(text: string, isStart: boolean): void {
 		this.showing = text;
 
-		const leaving = this.labels[this.front];
-		const arriving = this.labels[1 - this.front];
-		const leavingScale = this.scales[this.front];
-		const arrivingScale = this.scales[1 - this.front];
-
-		this.front = 1 - this.front;
-
-		// **The departing number is drawn over the arriving one, which is the near-ness the zoom is pretending
-		// at.** Both labels share a cell now, so this is the only thing that decides which of the two is in
-		// front: without it they tie, and the engine breaks a tie on child order — which never changes while the
-		// pair's roles swap every crossing. Stated here, on the crossing, because that is when it changes.
-		leaving.ZIndex = COUNTDOWN_Z_INDEX + 1;
-		arriving.ZIndex = COUNTDOWN_Z_INDEX;
-
-		// The outgoing number, if there is one: the first number of a count has nothing behind it, and both labels
-		// start hidden.
-		if (leaving.Visible) {
-			const away = new TweenInfo(CROSS_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In);
-
-			TweenService.Create(leavingScale, away, { Scale: OUT_SCALE }).Play();
-			TweenService.Create(leaving, away, { TextTransparency: 1 }).Play();
-		}
-
-		arriving.Text = text;
-		arriving.Visible = true;
-		arriving.TextTransparency = 1;
-		arrivingScale.Scale = isStart ? 1 : IN_SCALE;
-
-		const into = new TweenInfo(CROSS_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
-
-		TweenService.Create(arrivingScale, into, { Scale: 1 }).Play();
-		TweenService.Create(arriving, into, { TextTransparency: 0 }).Play();
-
 		/**
-		 * **The cue, on the frame the word arrives and nowhere else.** The `Start` crossing *is* the round's
-		 * opening whistle: the freeze has just run out, which is the instant the round's clock begins, and this
-		 * is the same frame the word appears on. Firing it from a clock instead would be a second derivation of
-		 * an instant this class already owns, and two derivations are two things that can disagree.
+		 * **The cue, on the crossing into `Start` and nowhere else.** That crossing *is* the round's opening
+		 * whistle: the freeze has just run out, which is the instant the round's clock begins, and this is the
+		 * frame that happens on. **The word itself arrives `OUT_SECONDS` later**, because the last number has to
+		 * leave first like every other number — and the cue deliberately does not wait for it. The round begins
+		 * when the player can move, not when the label catches up.
 		 *
 		 * **It fires whether or not the countdown is visible**, because the cue belongs to the round rather than
 		 * to the body: a player who died during the freeze still hears the round begin, which is the honest thing
@@ -673,6 +736,83 @@ export class ArenaFreezeCountdownController implements OnStart {
 			// about the timing that cannot be checked from the source alone.
 			if (DEBUG) print(`[HUD] start — round whistle at ${string.format("%.2f", time() - this.startedAt)}s`);
 		}
+
+		const leaving = this.labels[this.front];
+		const arriving = this.labels[1 - this.front];
+		const leavingScale = this.scales[this.front];
+
+		this.front = 1 - this.front;
+
+		// **The departing number is drawn over the arriving one, which is the near-ness the zoom is pretending
+		// at.** Both labels are in the same place, so this is the only thing that decides which of the two is in
+		// front: without it they tie, and the engine breaks a tie on child order — which never changes while the
+		// pair's roles swap every crossing. Stated here, on the crossing, because that is when it changes.
+		leaving.ZIndex = COUNTDOWN_Z_INDEX + 1;
+		arriving.ZIndex = COUNTDOWN_Z_INDEX;
+
+		const token = this.runId;
+
+		// **The first number of a count has nothing to wait for**, because there is nothing on screen to leave: both
+		// labels start hidden, so this arrives now rather than a tenth of a second from now. That is also what puts
+		// the first number up on the frame the freeze starts rather than a frame later.
+		if (!leaving.Visible) {
+			this.arrive(arriving, text, isStart);
+
+			return;
+		}
+
+		const away = new TweenInfo(OUT_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In);
+
+		TweenService.Create(leavingScale, away, { Scale: OUT_SCALE }).Play();
+		TweenService.Create(leaving, away, { TextTransparency: 1 }).Play();
+
+		task.delay(OUT_SECONDS, () => {
+			// A run that ended inside the delay, or a later crossing that somehow overtook this one: neither can
+			// happen at these durations, and one comparison is cheaper than being wrong if either ever did.
+			if (token !== this.runId || this.showing !== text) return;
+
+			// **Taken off the screen, which is not a visible change**: the tween that has just finished left it at
+			// full transparency. What it does is end this label's turn, so that the next crossing knows it has a
+			// real departure to wait for rather than a stale one.
+			leaving.Visible = false;
+
+			this.arrive(arriving, text, isStart);
+		});
+	}
+
+	/**
+	 * Brings one number on: visible, at its starting scale, tweened to rest.
+	 *
+	 * **Split out of {@link cross} because it can now run on the far side of a delay**, and a delay's callback is
+	 * the one place in this file where "which run is this" has to be asked. It also reads as the sequence does: a
+	 * crossing is a departure and then an arrival, and this is the arrival.
+	 *
+	 * **`Out` on the arrival and `In` on the departure, and the split is the physics rather than taste.** The
+	 * incoming number decelerates into its size — it is settling where it belongs — while the outgoing one
+	 * accelerates away, which is what something passing the camera does. Swapping them would make a number arrive
+	 * with a snap and leave gently, i.e. exactly backwards.
+	 *
+	 * **"Start" arrives at rest scale rather than from behind.** It is the end of the sequence, so nothing is
+	 * crossing *through* it: the last number still zooms out — that is the departure and it belongs to the number —
+	 * but the word appears at the size it will hold. Anything else would promise a fourth number that is not
+	 * coming.
+	 *
+	 * **One tween per property per label, so four per crossing and none per frame**, which is the shape this
+	 * element wants and the only one that reads as motion: a tween started every frame would restart sixty times a
+	 * second and the numbers would never appear to move at all.
+	 */
+	private arrive(arriving: TextLabel, text: string, isStart: boolean): void {
+		arriving.Text = text;
+		arriving.Visible = true;
+		arriving.TextTransparency = 1;
+
+		const arrivingScale = this.scales[this.labels.indexOf(arriving)];
+		arrivingScale.Scale = isStart ? 1 : IN_SCALE;
+
+		const into = new TweenInfo(IN_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+
+		TweenService.Create(arrivingScale, into, { Scale: 1 }).Play();
+		TweenService.Create(arriving, into, { TextTransparency: 0 }).Play();
 	}
 
 	/**

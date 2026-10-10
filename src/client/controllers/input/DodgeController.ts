@@ -1,12 +1,11 @@
 import { Controller, OnStart } from "@flamework/core";
 import Net from "@rbxts/net";
 import { Players, UserInputService, Workspace } from "@rbxts/services";
-import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { flattenToGround } from "shared/dodge";
 import { events } from "shared/networking";
 import { inRoundOrZone } from "../../roundZone";
 
-/** Prints which key completed a double-tap, and whether the request went out. */
+/** Prints each completed combination, every refusal, and whether the request went out. */
 const DEBUG = true;
 
 /**
@@ -21,9 +20,11 @@ const DEBUG = true;
  * checked for. Each diagonal is written as the sum of the two keys it is made of, so there is
  * nothing here that can drift from the singles.
  *
- * A key is named by `Enum.KeyCode.Name` and a gesture by its keys sorted and joined — see
- * {@link comboOf} — so `W` then `A` and `A` then `W` are both the row `"AW"` and pair with each
- * other as they should.
+ * A key is named by `Enum.KeyCode.Name`, and the keys held are named by sorting them and joining
+ * them — see {@link comboOf} — so `W` with `A` and `A` with `W` are both the row `"AW"`. **The order
+ * the player pressed them in is not part of any of this**, which is the same reason the input was
+ * spelled this way before: what is being named is a *set* of keys down at one moment, and two orders
+ * of arriving at one set are one direction.
  */
 const COMBO_AXES: Record<string, Vector3 | undefined> = {
 	W: new Vector3(0, 0, 1),
@@ -41,18 +42,16 @@ const COMBO_AXES: Record<string, Vector3 | undefined> = {
 	// which keys count as movement. `W` and `U` are one step of heading, `H` and `A` one step of
 	// -right; a player who has learned one set has learned the other.
 	//
-	// **The rows are keyed by the *sorted* join of the keys — see {@link comboOf} — so the key is not
-	// the pair written the way it is read.** `U` with `H` is the row `"HU"` and `U` with `K` is
-	// `"KU"`, because `H` and `K` sort before `U`. That ordering is the table's own rule and not a
-	// detail of these rows: writing `UH` here would be a row nothing ever looks up, and the diagonal
-	// it was meant to describe would silently stop being a dodge input at all — the failure
-	// `evaluateGesture` describes, where an absent pair does not merely fail to fire but clears a
-	// pending tap on the way past.
+	// **Rows are keyed by the *sorted* join of the keys — see {@link comboOf} — so the key is not the
+	// pair written the way it is read.** `U` with `H` is the row `"HU"` and `U` with `K` is `"KU"`,
+	// because `H` and `K` sort before `U`. That ordering is the table's own rule and not a detail of
+	// these rows: writing `UH` here would be a row nothing ever looks up, and the diagonal it was
+	// meant to describe would silently become a combination that dodges nothing at all.
 	//
 	// The diagonals are here for the reason the WASD ones are, which is not symmetry for its own
-	// sake: a pair that is *absent* from this table is not merely "not a dodge input", it is an input
-	// that **clears a pending tap** — see `evaluateGesture`. Leaving `U+K` out would not make it dodge
-	// differently from `D+W`, it would make it quietly worse.
+	// sake: a player holding `W` and `A` and clicking is asking for a diagonal, and it is the
+	// direction they are already moving in. Leaving `U+K` out would not make it dodge differently
+	// from `D+W`, it would make it a press that does nothing.
 	U: new Vector3(0, 0, 1),
 	J: new Vector3(0, 0, -1),
 	K: new Vector3(1, 0, 0),
@@ -64,17 +63,23 @@ const COMBO_AXES: Record<string, Vector3 | undefined> = {
 };
 
 /**
- * How long a second key may follow the first and still count as part of the same press, in seconds.
+ * The button that completes a dodge, with a movement key.
  *
- * See {@link DODGE_CONFIG.GESTURE_WINDOW_MS}. Seconds, because every clock in this class is.
+ * **The right one, and it is free — verified, not assumed.** Nothing in this game binds
+ * `MouseButton2`: the throw and everything that aims use the *left* button (`ThrowController`), and
+ * the only other mouse handlers in the project are UI buttons. Right-click-drag does rotate the
+ * engine's camera, and that is the one thing to know about this binding: **a dodge is *read* off the
+ * press, never taken from it**, because nothing here sinks or rebinds the button. The camera keeps
+ * every press it ever had, and this gets one alongside it.
  */
-const GESTURE_WINDOW = DODGE_CONFIG.GESTURE_WINDOW_MS / 1000;
+const DODGE_BUTTON = Enum.UserInputType.MouseButton2;
 
 /**
- * `keys` as the canonical name of the gesture they make.
+ * `keys` as the canonical name of the input they make.
  *
- * Sorted, so the order the player pressed them in cannot matter: `W` then `A` and `A` then `W` are
- * one input and have to produce one string, or two presses of the same diagonal could never pair.
+ * Sorted, so the order the player pressed them in cannot matter: `W` with `A` and `A` with `W` are
+ * one direction and have to produce one string, or the diagonal could be dodged in by one finger
+ * order and not the other.
  */
 function comboOf(keys: Set<Enum.KeyCode>): string {
 	const names: string[] = [];
@@ -88,119 +93,132 @@ function comboOf(keys: Set<Enum.KeyCode>): string {
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
 
 /**
- * Turns double-taps on the movement keys into dodge requests. Decides nothing
+ * Turns a movement key plus a right-click into a dodge request. Decides nothing
  * else.
  *
- * No prediction on purpose: the server owns the dash and replication brings the
- * character along with it, so this class has no idea whether the dodge happened
- * and does not need one. When an animation exists, `AnimationTrack:Play()` belongs
- * right after the `SendToServer` below — a throwaway is a local flourish, so it
- * would live here rather than on the server.
+ * **The binding, and what it replaced.** A dodge used to be a *double-tap* of a movement key: two
+ * presses of the same input within `DOUBLE_TAP_WINDOW` (0.5s), with `GESTURE_WINDOW_MS` (100ms)
+ * deciding whether a second key was the other half of one press or a turn — both deleted from
+ * `dodge.config.ts` along with this binding, because nothing in the tree reads them now. What is
+ * left is a *combination*: the right mouse button plus a movement key, held or tapped, in either
+ * order. A combination has no rhythm to measure, so this class no longer owns a clock at all; what
+ * it owns is which keys are down and whether the button is.
+ *
+ * **Why the click is the trigger and the keys are the direction.** The click is the thing the player
+ * *does* — an event, with a moment — and the keys are a state that is already down for movement. So
+ * the direction is read off the keys at the instant the combination completes, which is what makes
+ * the same code answer both orders: a key that is already down when the click lands, and a click
+ * that is already down when the key lands.
+ *
+ * **No prediction on purpose:** the server owns the dash and replication brings the character along
+ * with it, so this class has no idea whether the dodge happened and does not need one. **And the
+ * flourish is the server's, not this one's** — `DodgeService.playDodgeAnimation` starts it there, on
+ * purpose, so that every client sees somebody else's dodge rather than only the dodger seeing their
+ * own. A track played here would be a private flourish, which is the one thing a dodge cue must not
+ * be.
  */
 @Controller()
 export class DodgeController implements OnStart {
 	private readonly player = Players.LocalPlayer;
 
 	/**
-	 * The last tap made, while it is still young enough to pair with the next one.
-	 *
-	 * One tap, not one per key: a pair is two taps *in a row*, so a tap that is not the very
-	 * next one to arrive can never pair with anything and there is no reason to remember it.
-	 *
-	 * The combo is the gesture's name — its keys sorted and joined, see {@link comboOf} — so two
-	 * presses of `W+A` pair with each other whichever order the keys went down in.
-	 */
-	private lastTap?: { combo: string; at: number };
-
-	/**
-	 * What was pending before the current gesture touched it.
-	 *
-	 * **A gesture is evaluated more than once**, because every key that joins it inside
-	 * {@link GESTURE_WINDOW} re-evaluates it, and each evaluation commits a tap. Without this
-	 * snapshot the second evaluation would be judged against the tap *of the same gesture*, which
-	 * breaks a gesture in two opposite ways:
-	 *
-	 * - Re-pressing one key of a held diagonal would read as a double-tap of the whole diagonal —
-	 *   the same combo, twice, milliseconds apart. Releasing and re-pressing a key is a gesture that
-	 *   carries on, and it must not fire.
-	 * - The second tap of `W A` / `W A` would be compared against the `W` the new gesture committed
-	 *   instead of against the `A W` the first gesture actually left behind, so the diagonal could
-	 *   never pair with itself.
-	 *
-	 * So every re-evaluation first puts the pending tap back exactly as this gesture found it, and
-	 * decides afresh against that.
-	 */
-	private tapBeforeGesture?: { combo: string; at: number };
-
-	/**
-	 * The keys this gesture is made of, which is not the same as the keys held.
-	 *
-	 * Held keys come and go; a gesture is the set that arrived together, and it stops growing
-	 * {@link GESTURE_WINDOW} after it started. Adding a key later is a change of direction, not a
-	 * bigger gesture — see {@link onDown}.
-	 */
-	private gestureKeys = new Set<Enum.KeyCode>();
-
-	/** When the current gesture began, as `os.clock` seconds. Only meaningful while one is running. */
-	private gestureStart = 0;
-
-	/**
 	 * The keys currently held down.
 	 *
 	 * `InputBegan` does not mean "the player pressed this key once". The engine re-sends it
 	 * for a key that never came up — while a held key repeats, when the window regains focus,
-	 * when a chat box closes and the key state is handed back to the game. Counted as taps,
-	 * any two of those inside the window are a dodge nobody asked for, which is what holding
-	 * `W` and getting a dash is. A key already in here is not a tap.
+	 * when a chat box closes and the key state is handed back to the game. Counted as presses,
+	 * any two of those would be a dodge nobody asked for. A key already in here is not a press.
+	 *
+	 * **This is also the whole of what decides the direction.** A dodge points the way the keys that
+	 * are down point, read through {@link COMBO_AXES} by {@link comboOf} — so the set is not
+	 * bookkeeping kept beside the input, it *is* the input, and its whole contents are read at once.
 	 */
 	private readonly heldKeys = new Set<Enum.KeyCode>();
+
+	/**
+	 * Whether the dodge button is down, and the reason a held click is one dodge rather than many.
+	 *
+	 * **The same guard the keys get, for the same reason.** `InputBegan` is not "the player pressed
+	 * this once": the engine re-sends it for a button that never came up, when the window regains
+	 * focus or a menu closes. Read as a fresh press every time, a held right-click would dodge again
+	 * on each of those — and, worse, the whole combination would become a *state* that dodges on
+	 * every cooldown expiry for as long as both halves were held. Only the button coming up clears
+	 * this, so **one press is one dodge** however long the player keeps holding.
+	 *
+	 * **Not the same question as `IsMouseButtonPressed`**, which is asked for the other order and is
+	 * the engine's answer about *now*. This is this controller's answer about *events*, and the two
+	 * are deliberately not shared: the engine does not know which presses this class has already
+	 * acted on, and a latch is the only thing that can.
+	 */
+	private rightDown = false;
 
 	/** Resolved on first use: `Client.Get` waits for the server's remote. */
 	private dodgeRemote?: ClientRemotes["dodge"];
 
 	public onStart(): void {
 		UserInputService.InputBegan.Connect((input, gameProcessed) => {
-			// Typing in chat, or a menu is open: not a movement key, whatever it was.
+			// Typing in chat, or a menu is open: not a movement key and not a dodge click, whatever
+			// it was. Honoured for the button as well as for the keys, which is a decision worth
+			// naming — the engine's camera rotates on a right-drag, and whether that arrives
+			// *processed* is not something this file can find out from here. If a right-click turns
+			// out to be swallowed in practice, this branch is the one to change: dropping the check
+			// for the button alone would also make a click in a menu a dodge nobody asked for.
 			if (gameProcessed) return;
+
+			if (input.UserInputType === DODGE_BUTTON) {
+				this.onRightDown();
+				return;
+			}
 
 			this.onDown(input.KeyCode);
 		});
 
-		// The key-ups are what make a *tap* out of a press, so they are taken however the
-		// engine labels them: a release is unambiguous, and one delivered while a menu has
-		// focus is still a release.
-		UserInputService.InputEnded.Connect((input) => this.heldKeys.delete(input.KeyCode));
+		// The releases are what make a press out of a hold, so they are taken however the engine
+		// labels them: a release is unambiguous, and one delivered while a menu has focus is still
+		// a release. The button's release is as load-bearing as the keys' — see `rightDown`.
+		UserInputService.InputEnded.Connect((input) => {
+			if (input.UserInputType === DODGE_BUTTON) {
+				this.rightDown = false;
+				return;
+			}
 
-		// Losing focus hands the key-ups to whatever took it, so a key held at that moment
-		// would sit in the set for the rest of the session and that direction could never
-		// dodge again. Nothing is more certain than the window not having the key.
-		UserInputService.WindowFocusReleased.Connect(() => this.heldKeys.clear());
+			this.heldKeys.delete(input.KeyCode);
+		});
 
-		// Printed once at startup, for the same reason as the catch's bind line: it
-		// separates "no double-tap ever arrived" from "a double-tap arrived and did
-		// nothing". A tap is dropped *silently* while the chat box has focus — that is
-		// what `gameProcessed` means — and having just typed a dev command is exactly
-		// how a player ends up in that state, so this line is also how that shows up as
-		// the cause rather than as a broken dodge.
-		if (DEBUG) print(`[Dodge] listening for double-taps`);
+		// Losing focus hands the releases to whatever took it, so a key or a button held at that
+		// moment would keep its entry for the rest of the session and that input could never fire
+		// again. Nothing is more certain than the window not having the key.
+		UserInputService.WindowFocusReleased.Connect(() => {
+			this.heldKeys.clear();
+			this.rightDown = false;
+		});
+
+		// Printed once at startup, for the same reason as the catch's bind line: it separates "no
+		// combination ever arrived" from "a combination arrived and did nothing". A press is dropped
+		// *silently* while the chat box has focus — that is what `gameProcessed` means — and having
+		// just typed a dev command is exactly how a player ends up in that state, so this line is
+		// also how that shows up as the cause rather than as a broken dodge.
+		if (DEBUG) print(`[Dodge] bound: a movement key plus right-click`);
 	}
 
 	/**
-	 * Registers a press of `key`, and decides whether it is a tap or part of one.
+	 * Registers a press of `key`, and asks for a dodge if the button is already down.
 	 *
-	 * The gate that makes a dodge two *presses* rather than one press held: whatever the engine's
-	 * reason for announcing the same held key twice, the second announcement is not something the
-	 * player did, and only a release can clear the way for a new press.
+	 * The gate that makes a press real: whatever the engine's reason for announcing a held key
+	 * twice, the second announcement is not something the player did, and only a release can clear
+	 * the way for a new press. A key already held is added to nothing and fires nothing.
 	 *
-	 * What the press *means* depends on what was already held, and there are three cases:
+	 * **The second order lives here.** A click that arrives with no key down has nothing to point
+	 * at, so it does nothing on its own; the key that follows is what completes the combination and
+	 * this is the line that catches it. The engine is asked about the button rather than a second
+	 * copy of its state being kept, which is what keeps the two orders from needing two pieces of
+	 * state to agree with each other.
 	 *
-	 * - **Nothing was.** This press opens a gesture, and the gesture is evaluated straight away.
-	 * - **Something was, and it is younger than {@link GESTURE_WINDOW}.** The press is the second
-	 *   half of the same gesture — `W` and `A` landing together as one diagonal rather than two
-	 *   directions — so the gesture grows by this key and is evaluated again.
-	 * - **Something was, and it is older.** The player was already moving and has turned. That is
-	 *   not a tap of anything, so nothing is counted and `lastTap` is deliberately left alone:
-	 *   a turn neither starts nor interrupts a double-tap.
+	 * **A key pressed while the button is held is a new press of the combination**, so holding the
+	 * button and tapping `W`, `A`, `S`, `D` in turn is four presses and up to four dodges — bounded
+	 * by the server's cooldown, and each one a deliberate thing the player did. What cannot happen is
+	 * a dodge from keys that are *merely held*: nothing here runs on a clock, and every dodge is
+	 * caused by a press.
 	 */
 	private onDown(key: Enum.KeyCode): void {
 		if (!isMovementKey(key)) return;
@@ -209,70 +227,60 @@ export class DodgeController implements OnStart {
 
 		this.heldKeys.add(key);
 
-		const now = os.clock();
-
-		if (this.heldKeys.size() === 1) {
-			this.gestureStart = now;
-			this.gestureKeys = new Set([key]);
-			this.tapBeforeGesture = this.lastTap;
-
-			this.evaluateGesture(now);
-			return;
-		}
-
-		if (now - this.gestureStart <= GESTURE_WINDOW) {
-			this.gestureKeys.add(key);
-
-			// Back to how this gesture found it, so the gesture is judged against the tap *before*
-			// it rather than against its own earlier evaluation. See `tapBeforeGesture`.
-			this.lastTap = this.tapBeforeGesture;
-
-			this.evaluateGesture(now);
-		}
+		if (UserInputService.IsMouseButtonPressed(DODGE_BUTTON)) this.tryDodge();
 	}
 
 	/**
-	 * Counts the current gesture as one tap, and asks for a dodge if it completes a pair.
+	 * Registers a press of the dodge button, and asks for a dodge if a movement key is down.
 	 *
-	 * Called on every press that opens or grows a gesture, so it runs more than once for a diagonal.
-	 * That is what {@link tapBeforeGesture} is for: each call starts from the state the gesture
-	 * began in, so one gesture is one tap however many times it was looked at.
-	 *
-	 * The pair is the **last two taps in a row**, so the input you hit twice has to be the only thing
-	 * you hit. Strafing `A` `D` `A` puts a tap of another input between the two `A`s, so each of
-	 * those is a first tap and none of them is a dodge. The same holds for `A` `D` `A` `D`.
+	 * **The one-per-press guard is the first line, and it is the whole difference between a binding
+	 * and a bug.** Everything else here is an event handler: this fires when the button goes down,
+	 * `tryDodge` reads the keys and sends at most one request, and nothing resends. Without this
+	 * latch the second announcement of a held button would be a second dodge, and — because the
+	 * direction comes from a state rather than from the event — holding `W` and the button would
+	 * dodge again every time the server's cooldown expired, which is a stutter that makes the
+	 * cooldown meaningless. See {@link rightDown}.
 	 */
-	private evaluateGesture(now: number): void {
-		// Taps are only counted while there is something to move, and a death clears
-		// what was counted: half a pair held across a respawn should not become a
-		// dodge the moment the player is back on their feet.
-		if (this.findHumanoid() === undefined) {
-			this.lastTap = undefined;
+	private onRightDown(): void {
+		if (this.rightDown) return;
+
+		this.rightDown = true;
+
+		this.tryDodge();
+	}
+
+	/**
+	 * Sends a dodge in the direction the held keys point, if that is a direction at all.
+	 *
+	 * Reached from both orders, which is why the direction is worked out here rather than at either
+	 * call site: all the two events decide between them is *when* the combination became complete.
+	 * The combo is the held keys sorted and joined — {@link comboOf} — which is the same string the
+	 * double-tap binding built for its gesture, and for the same reason: the order the keys went
+	 * down in cannot be part of what the input means.
+	 */
+	private tryDodge(): void {
+		const combo = comboOf(this.heldKeys);
+
+		// **Right-click alone is nothing.** Every direction in this game is a key, so a click with no
+		// key down has no direction to dodge in: the combination is the input, and half of it is not
+		// an input. This is also the ordinary case rather than a mistake — a player dragging the
+		// camera with the button down and no hand on the movement keys — so it is not a refusal worth
+		// shouting about, only worth a line when the logs are being read.
+		if (combo === "") {
+			if (DEBUG) print(`[Dodge] right-click with no movement key held`);
 			return;
 		}
 
-		const combo = comboOf(this.gestureKeys);
-
-		// Not a dodge input — `W+S`, `A+D`, three keys at once. Whatever was pending is dropped
-		// rather than kept: a pair has to be two of the *same* input in a row, and an input that
-		// cannot dodge at all is the strongest possible interruption of one.
+		// Not a dodge input — `W`+`S`, three keys at once. **The table is the rule and an absent row
+		// is the whole of it**: there is no fallback to "the most recently pressed key", because a
+		// player asking for two opposite directions has not asked for a direction, and picking one of
+		// the two would be inventing an answer. See `COMBO_AXES`.
 		if (!isDodgeCombo(combo)) {
-			this.lastTap = undefined;
+			if (DEBUG) print(`[Dodge] ${combo} is not a direction to dodge in`);
 			return;
 		}
 
-		const last = this.lastTap;
-
-		// Whatever was pending is spent either way: this tap either completes the pair or replaces
-		// the one it interrupted, so there is never a third tap waiting behind it.
-		this.lastTap = undefined;
-
-		if (last !== undefined && last.combo === combo && now - last.at <= DODGE_CONFIG.DOUBLE_TAP_WINDOW) {
-			this.requestDodge(combo);
-			return;
-		}
-
-		this.lastTap = { combo, at: now };
+		this.requestDodge(combo);
 	}
 
 	/**
@@ -280,6 +288,10 @@ export class DodgeController implements OnStart {
 	 *
 	 * Only the direction is decided here, and only because this is the one machine
 	 * that can see a key: distance, duration and cooldown all belong to the server.
+	 *
+	 * `combo` is passed in rather than read off {@link heldKeys} here, so that the one caller which
+	 * has already decided the held keys are a direction is the one that says which — this method's
+	 * question is "may this go out", not "is this an input".
 	 */
 	private requestDodge(combo: string): void {
 		// **The state first, because it is not a clock.** `DodgeService.requestDodge` asks the same question
@@ -287,12 +299,12 @@ export class DodgeController implements OnStart {
 		// there is nothing left for the rest of this method to decide. Asked here so that a press in the
 		// lobby does not go out on the wire and come back a refusal a round trip later.
 		if (!inRoundOrZone(this.player.Character)) {
-			if (DEBUG) print(`[Dodge] ${combo} double-tapped outside a round and outside a zone`);
+			if (DEBUG) print(`[Dodge] ${combo} + right-click outside a round and outside a zone`);
 			return;
 		}
 
 		if (this.findHumanoid() === undefined) {
-			if (DEBUG) print(`[Dodge] ${combo} double-tapped with nothing to move`);
+			if (DEBUG) print(`[Dodge] ${combo} + right-click with nothing to move`);
 			return;
 		}
 
@@ -318,7 +330,7 @@ export class DodgeController implements OnStart {
 
 		if (DEBUG) {
 			print(
-				`[Dodge] ${combo} double-tapped → (${string.format("%.2f", direction.X)}, ` +
+				`[Dodge] ${combo} + right-click → (${string.format("%.2f", direction.X)}, ` +
 					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)})`,
 			);
 		}
@@ -343,7 +355,7 @@ export class DodgeController implements OnStart {
 	}
 }
 
-/** Whether `key` is one of the movement keys, and so may open or grow a gesture. */
+/** Whether `key` is one of the movement keys, and so is half of a dodge when the button is down. */
 function isMovementKey(key: Enum.KeyCode): boolean {
 	return COMBO_AXES[key.Name] !== undefined;
 }

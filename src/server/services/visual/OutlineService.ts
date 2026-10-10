@@ -6,7 +6,7 @@ import {
 	ROUND_STATUS_FOLDER,
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
-import { GameModeId, isGameModeId, teamColourOf } from "shared/gameMode";
+import { teamColourOf } from "shared/gameMode";
 import { OUTLINE_CONFIG } from "../../config/outline.config";
 import { NPC_TAG } from "../../npc/Behavior";
 
@@ -117,6 +117,10 @@ export class OutlineService implements OnStart {
 		};
 
 		status.GetAttributeChangedSignal(ROUND_STATE_ATTRIBUTE).Connect(repaintAll);
+		// **The mode is watched for the assignment edge, not for the colour.** The colour no longer depends on
+		// the mode — see `TEAM_COLORS` — but a round starting is what writes the mode, and that is the moment the
+		// labels this paints from are written. It costs one repaint per round on a handful of highlights, which
+		// is why it is kept rather than reasoned away.
 		status.GetAttributeChangedSignal(ROUND_MODE_ATTRIBUTE).Connect(repaintAll);
 
 		repaintAll();
@@ -307,10 +311,7 @@ function outlineColourFor(player: Player): Color3 {
 	const label = player.GetAttribute(TEAM_ATTRIBUTE);
 	if (!typeIs(label, "string")) return OUTLINE_CONFIG.COLOR;
 
-	const mode = currentMode();
-	if (mode === undefined) return OUTLINE_CONFIG.COLOR;
-
-	return teamColourOf(mode, label) ?? OUTLINE_CONFIG.COLOR;
+	return teamColourOf(label) ?? OUTLINE_CONFIG.COLOR;
 }
 
 /** The round's status folder, or nothing before `RoundService` has made it. */
@@ -327,18 +328,4 @@ function statusFolder(): Instance | undefined {
  */
 function isPlaying(): boolean {
 	return statusFolder()?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
-}
-
-/**
- * Which mode the round is being played as, or nothing if no vote has named one yet.
- *
- * The attribute holds a mode **id**, so this doubles as the check that it names a mode this build
- * has — see `ROUND_MODE_ATTRIBUTE`. `undefined` is the ordinary answer for the first round of a
- * server's life, and it lands on the default colour like everything else that cannot name a side.
- */
-function currentMode(): GameModeId | undefined {
-	const value = statusFolder()?.GetAttribute(ROUND_MODE_ATTRIBUTE);
-	if (!typeIs(value, "string") || !isGameModeId(value)) return undefined;
-
-	return value;
 }

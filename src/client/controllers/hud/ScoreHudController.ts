@@ -8,7 +8,7 @@ import {
 	ROUND_SCORE_B_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
 } from "shared/constants";
-import { isGameModeId, teamColourOf } from "shared/gameMode";
+import { teamColourOf } from "shared/gameMode";
 import type { GameModeId } from "shared/gameMode";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { hudTheme } from "../../ui/hudTheme";
@@ -197,11 +197,11 @@ export class ScoreHudController implements OnStart {
 			PaddingRight: new UDim(0, 24),
 		});
 
-		this.addCircle(row, 1, theme, mode, "A");
+		this.addCircle(row, 1, theme, "A");
 		this.addScore(row, 2, theme, scoreA);
 		this.addSeparator(row, 3, theme);
 		this.addScore(row, 4, theme, scoreB);
-		this.addCircle(row, 5, theme, mode, "B");
+		this.addCircle(row, 5, theme, "B");
 
 		// The brackets, on the plate's own corners and outside the row.
 		this.addBracket(bar, theme, 0, 0);
@@ -271,19 +271,23 @@ export class ScoreHudController implements OnStart {
 	 * their side off the scoreboard and off their own character as the same colour. The theme's palette is a
 	 * UI language and has no vocabulary for sides, and inventing one here would be a second answer to a
 	 * question the game has already answered.
+	 *
+	 * **Painted once rather than recomputed, which is what the colour change bought.** This used to be a
+	 * `Computed` over the mode, because the same label was a different colour in a different mode and a mode
+	 * change had to repaint both discs. The colour is now the same in every mode, so the only thing left that
+	 * could change it is the label — and a circle is built with one and never re-labelled. **The fallback has
+	 * become a type guard rather than a live case**: the two labels here are literals, so `teamColourOf` cannot
+	 * answer nothing, and `?? theme.colors.border` exists to turn its `Color3 | undefined` into a `Color3`. The
+	 * two world readers still have the live version of that case — their labels come off an attribute — and
+	 * they keep the same fallback for it.
 	 */
-	private addCircle(
-		parent: Frame,
-		order: number,
-		theme: HudTheme,
-		mode: Fusion.Value<string>,
-		label: "A" | "B",
-	): void {
+	private addCircle(parent: Frame, order: number, theme: HudTheme, label: "A" | "B"): void {
 		const circle = Fusion.New(this.scope, "Frame")({
 			Name: `Side${label}`,
 			Parent: parent,
 			Size: UDim2.fromOffset(CIRCLE_SIZE, CIRCLE_SIZE),
 			LayoutOrder: order,
+			BackgroundColor3: teamColourOf(label) ?? theme.colors.border,
 			BackgroundTransparency: 0,
 			BorderSizePixel: 0,
 		});
@@ -295,19 +299,6 @@ export class ScoreHudController implements OnStart {
 			Color: theme.colors.panel,
 			Thickness: 2,
 			ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
-		});
-
-		// **Resolved from the mode at the moment it draws rather than captured once**, so a mode change
-		// repaints the circles. `teamColourOf` answers nothing for a mode with no colour pair, and the
-		// fallback is the theme's own border colour rather than a guess at a side.
-		Fusion.Hydrate(this.scope, circle)({
-			BackgroundColor3: Fusion.Computed(this.scope, (use) => {
-				const current = use(mode);
-				// The theme's own hairline is the fallback rather than a guessed side colour: a mode with no colour
-				// pair leaves an outline-coloured dot, which reads as "no side" rather than as somebody's.
-				if (!isGameModeId(current)) return theme.colors.border;
-				return teamColourOf(current, label) ?? theme.colors.border;
-			}),
 		});
 	}
 

@@ -24,7 +24,7 @@ export const OUTLINE_CONFIG = {
 	 * — the fill is transparent, so this never tints the character itself.
 	 *
 	 * **A player in a round does not wear this.** `OutlineService` overpaints their outline with
-	 * their side's colour from `MODE_TEAM_COLORS`, and this is what they fall back to between
+	 * their side's colour from `TEAM_COLORS`, and this is what they fall back to between
 	 * rounds. It is also what every NPC rig and every ball wears, which is what tells them apart
 	 * from somebody who is playing.
 	 */

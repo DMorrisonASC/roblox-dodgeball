@@ -12,10 +12,11 @@ import { taggedPartsInWorkspace } from "shared/taggedParts";
  * second answer to it, which is the one thing that rule cannot survive.
  *
  * **Nothing here caches, and every caller decides how often to ask.** The camera asks on its own tick,
- * because it needs the answer on a clock; the dodge input asks on the input that needs it, because a
- * keypress is not a frame. That is deliberately the shape with the fewest moving parts while the answer
- * still has to be computed at all — see {@link inTaggedZone}, which is the body the practice-zone work
- * replaces with a read of a fact somebody else publishes.
+ * because it needs the answer on a clock; the dodge input asks on the press that completes a dodge — a
+ * movement key plus the dodge button — because a press is not a frame. That is deliberately the shape
+ * with the fewest moving parts while the answer still has to be computed at all — see
+ * {@link inTaggedZone}, which is the body the practice-zone work replaces with a read of a fact
+ * somebody else publishes.
  */
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. A word between two files. */

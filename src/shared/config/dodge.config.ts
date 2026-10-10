@@ -1,10 +1,18 @@
 /**
- * Everything about the dodge: how far it goes, how long it takes, how often it
- * can be used, and how long the client gives you to ask for one.
+ * Everything about the dodge: how far it goes, how long it takes, and how often it
+ * can be used.
  *
- * Imports nothing. Read by `DodgeService` for the move itself and by
- * `DodgeController` for the double-tap — the tab window is a *timing*, not a
- * rule, and the server never sees a key press.
+ * Imports nothing. **Read by `DodgeService` and by nothing else** — the server never sees a key press,
+ * and there is no longer any client-side timing to configure here: a dodge is a movement key plus a
+ * right-click, which is a combination rather than a rhythm, so nothing left in this file is measured
+ * in taps.
+ *
+ * **`DOUBLE_TAP_WINDOW` and `GESTURE_WINDOW_MS` used to live here and are deleted
+ * rather than left standing.** They were the whole of the old binding — how long a
+ * second tap had to follow the first, and how long two keys landing together still
+ * counted as one press — and when the binding became a combination the only reader
+ * of either one went away. A config value with no reader is a value that lies about
+ * what the game does, so they are gone.
  */
 export const DODGE_CONFIG = {
 	/**
@@ -33,29 +41,6 @@ export const DODGE_CONFIG = {
 
 	/** How long a model must wait before it can dodge again, in seconds. */
 	COOLDOWN: 1.5,
-
-	/**
-	 * How long the client gives you to double-tap a movement key, in seconds.
-	 *
-	 * Client-side only, and a *timing* rather than a rule: the server never sees a
-	 * key press and does not care how the direction was chosen. Two taps of the same
-	 * key inside this window are one dodge request, sent once.
-	 */
-	DOUBLE_TAP_WINDOW: 0.5,
-
-	/**
-	 * How long a second movement key may follow the first and still count as part of the same press,
-	 * in milliseconds.
-	 *
-	 * **The difference between a diagonal and a change of direction.** Pressing `W` and `A` together
-	 * means one input pointing between them; pressing `W`, walking, and *then* adding `A` means the
-	 * player has turned, and a turn is not a fresh tap — it is the same movement still going. This
-	 * window is what separates the two, and it is deliberately short: it only has to cover the
-	 * stagger between two fingers landing, and anything longer would swallow a genuine turn.
-	 *
-	 * Client-side only, like {@link DODGE_CONFIG.DOUBLE_TAP_WINDOW} — the server never sees a key.
-	 */
-	GESTURE_WINDOW_MS: 100,
 
 	/**
 	 * The dodge flourish for an R6 rig, as an asset id.

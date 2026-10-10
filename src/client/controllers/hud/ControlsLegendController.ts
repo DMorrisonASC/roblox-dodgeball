@@ -19,22 +19,6 @@ const LABEL_GAP = 8;
 const DIMMED_TRANSPARENCY = 0.5;
 
 /**
- * U+26A1, the bolt beside the dodge's double-tap.
- *
- * A constant of its own because it is the one character in here whose drawing is not guaranteed.
- * big-ui sets its type in the Gotham family, which has no bolt in it, so whether this renders as
- * a bolt or as an empty box comes down to the engine's fallback for a glyph the font is missing.
- * It is kept because that fallback is broad on desktop and because a bolt is the clearest way to
- * say "twice, in quick succession" in a single character.
- *
- * **If it comes out as a box, or as a gap, this is the only line to change.** Read
- * {@link ROWS} as though it were not here — `WASD ×2` is still correct and costs nothing — and
- * do not swap in a second glyph, an image or a coloured frame, so that every row stays plain
- * text and the fallback is one edit rather than a different layout.
- */
-const LIGHTNING = "⚡";
-
-/**
  * One line of the legend: what an ability is, and how it is asked for.
  *
  * Everything the legend draws comes from these, and nothing else in the file names an ability.
@@ -102,7 +86,7 @@ interface LegendRow {
  */
 const ROWS: LegendRow[] = [
 	{ label: "Throw |", keys: "X, C, V" },
-	{ label: "Dodge |", keys: `Double tap W A S D ${LIGHTNING}` },
+	{ label: "Dodge |", keys: "W A S D + Right Click" },
 	{ label: "Sprint |", keys: "Left Shift, M" },
 	{ label: "Catch |", keys: "E" },
 	{ label: "Drop |", keys: "1" },

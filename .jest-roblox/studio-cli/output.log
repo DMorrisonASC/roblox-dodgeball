@@ -1,8 +1,8 @@
 > local HttpService = game:GetService("HttpService")
 local StudioTestService = game:GetService("StudioTestService")
 local payload = HttpService:JSONDecode([=[{"pluginKey":"0.4.5-11eb784c","protocolVersion":9,"test":true,"config":{"configs":[{"testMatch":["**/*.spec","**/*.test"],"passWithNoTests":false,"silent":false,"testPathIgnorePatterns":["/node_modules/","/dist/","/out/"],"verbose":false,"outDir":"./out","injectGlobals":true,"projects":["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"],"snapshotFormat":{"printBasicPrototype":false},"jestPath":"ReplicatedStorage/rbxts_include/node_modules/@rbxts-js/Jest","runnerTimeoutMs":60000,"reporters":[]}]},"runtimeStubMounts":[["ServerScriptService/TS","ReplicatedStorage/TS","StarterPlayer/StarterPlayerScripts/TS"]]}]=])
-local URL = "ws://localhost:54432"
-local REQUEST_ID = [=[3eec8808-30bf-498b-a540-bf306aef28d4]=]
+local URL = "ws://localhost:53393"
+local REQUEST_ID = [=[93b26067-0604-4c6d-a99c-343d2b611445]=]
 local startedOpened, startedSocket = pcall(function()
 	return HttpService:CreateWebStreamClient(Enum.WebStreamClientType.WebSocket, { Url = URL })
 end)
@@ -51,37 +51,21 @@ while not finished and os.clock() - start < 30 do
 	task.wait(0.05)
 end
 
-debug.profileEnd() - No active profile annotation. At: Stack Begin
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.RobloxReactProfiling', Line 65 - function profileend
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.RobloxReactProfiling', Line 168 - function profileRootAfterYielding
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.ReactFiberWorkLoop.new', Line 841
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.SchedulerWithReactIntegration.new', Line 237
-Script 'MaterialManager.MaterialManager.Packages._Index.Scheduler.Scheduler.Scheduler', Line 377 - function unstable_runWithPriority
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.SchedulerWithReactIntegration.new', Line 165 - function runWithPriority
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.SchedulerWithReactIntegration.new', Line 227
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.SchedulerWithReactIntegration.new', Line 208 - function flushSyncCallbackQueue
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.ReactFiberWorkLoop.new', Line 697
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactReconciler.ReactReconciler.ReactFiberReconciler.new', Line 379
-Script 'MaterialManager.MaterialManager.Packages._Index.ReactRoblox.ReactRoblox.client.ReactRobloxRoot', Line 110 - function render
-Script 'MaterialManager.MaterialManager.Packages._Index.RoactCompat.RoactCompat.RoactTree', Line 86 - function mount
-Script 'MaterialManager.MaterialManager.Bin.main', Line 42 - function init
-Script 'MaterialManager.MaterialManager.Bin.main', Line 60
-Stack End
 [main] igniting
 [Collision] Ball/PracticePlayer collides — service false, world false
 [Collision] PracticePlayer/PracticePlayer collides — service false, world false
 [Collision] Barrier registered — service true, world true
 [Collision] Barrier/Default collides — service false, world false
 [Collision] Workspace knows: Default, Character, Barrier, Ball, PracticePlayer
-[Super] up — crowning at 3 hits, or the most on a side; nothing grants a charge but the dev bypass
 [Dev] listening for commands on both chat systems
-[Economy] up — 3 powers, 7 milestones, chest 50 coins
-[Mystery] up — watching RoundStatus.State, mysterySpawnPrize: 0 tagged thing(s), 0 on a practice floor
+[Super] up — crowning at 3 hits, or the most on a side; nothing grants a charge but the dev bypass
 [Sprint] up — LeftShift/M, 3s pool
-[Stats] up — PlayerStats, autosave every 180s
+[Economy] up — 3 powers, 7 milestones, chest 50 coins
 [Zone] up — practiceZone: 0 tagged part(s)
 [Match] up — MatchJoinA: 0 part(s)
 [Match] up — MatchJoinB: 0 part(s)
+[Mystery] up — watching RoundStatus.State, mysterySpawnPrize: 0 tagged thing(s), 0 on a practice floor
+[Stats] up — PlayerStats, autosave every 180s
 Intermission started
 [Round] no usable lobby in "ArenaV2" — holding the intermission until there is one. Everybody is standing in the arena, and there is nowhere else to put them until "LobbySpawns" has parts in it. nothing in Workspace is a Model named "ArenaV2".
 [main] respawn — CharacterAutoLoads false, 3s in-round delay

@@ -6,6 +6,7 @@ import {
 	ARMED_ABILITY_ATTRIBUTE,
 	CROWN_ATTRIBUTE,
 	MYSTERY_POWER_ATTRIBUTE,
+	PRACTICE_ZONE_ATTRIBUTE,
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
 	SUPER_CHARGE_ATTRIBUTE,
@@ -594,9 +595,9 @@ export class SuperService implements OnStart {
 	 * a rule that is right only while another feature is switched off.
 	 *
 	 * **A refused press never reaches here**, which is the other half of "use it or lose it": a press with no
-	 * ball in hand, or outside a round, returns before the charge is spent, so it returns before the prize is
-	 * too. Both call sites are written that way — see `BallService.throwForPlayer` and
-	 * `BallService.activateMultiBall`.
+	 * ball in hand, or with no round running and no practice zone to stand in, returns before the charge is
+	 * spent, so it returns before the prize is too. Both call sites are written that way — see
+	 * `BallService.throwForPlayer` and `BallService.activateMultiBall`.
 	 */
 	public spendMysteryPrize(player: Player, kind: AbilityKind): void {
 		if (this.charged.has(player)) return;
@@ -617,8 +618,10 @@ export class SuperService implements OnStart {
 	 * **This is one of the two answers to "may this player use a power", and the charge is the other.** The
 	 * two call sites are `BallService.markHeldBall` and `BallService.activateMultiBall`, and each asks
 	 * `hasCharge(player) || isMysteryActive(player)`. That is the whole of what a box does to the game: it
-	 * does not grant a charge, it *stands in for one* until the power is used. Ownership and the round gate
-	 * are untouched by it, which is what stops a box being a way to spend a power outside a round.
+	 * does not grant a charge, it *stands in for one* until the power is used. Ownership and the
+	 * round-or-zone gate are untouched by it — see {@link inRoundOrZone}, which is where "may a power be
+	 * used here at all" is answered — and keeping the two apart is what stops a box being a way to spend a
+	 * power in the lobby.
 	 */
 	public isMysteryActive(player: Player): boolean {
 		return this.mystery.has(player);
@@ -743,22 +746,58 @@ export class SuperService implements OnStart {
 	 * ordering to get wrong at boot. A folder that does not exist yet — the first moments of a server's
 	 * life — is not a round either.
 	 *
-	 * **Public because the mark handler needs the same answer, and two copies of this rule in two files
-	 * would be two chances for a charge to be earnable in a round the ball could not be marked in.**
-	 * `BallService` asks this rather than reading the folder itself, which is why that file has no
-	 * `PLAYING` of its own. `SuperService` remains the only thing that decides what a *streak* does, and
-	 * this is the one rule it lends out.
+	 * **Private, and it became so when the loan grew.** `BallService` used to ask this directly, twice —
+	 * once for each of the two power keys — which made it the one rule this service lent out. It now asks
+	 * {@link mayUsePower}, because a press that was legal in a round and nowhere else is legal in a round
+	 * **or a practice zone**, and the round half on its own was the wrong question to hand to a caller that
+	 * already has the player in its hand. Nothing outside this file asks this any more; the round question
+	 * has one other home, and `StatsService` keeps its own four lines for the reason its note gives.
 	 *
 	 * **The Pierce set-up used to be a second caller, and is not any more.** Now that a Pierce ball
-	 * passes through every body, there is no side to test at the throw — so the mark handler is the only
-	 * thing outside this file that needs the answer, and the loan is smaller than it was rather than
-	 * closed. (`isRoundActive` was briefly made private on the strength of the Pierce caller being gone;
-	 * the build found the mark handler, which is the whole reason this note is here.)
+	 * passes through every body, there is no side to test at the throw. (`isRoundActive` was briefly made
+	 * private once before, on the strength of the Pierce caller being gone, and the build found the mark
+	 * handler; this note is the record of the second time, when the mark handler moved to `mayUsePower`.)
 	 */
-	public isRoundActive(): boolean {
+	private isRoundActive(): boolean {
 		const folder = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
 
 		return folder?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
+	}
+
+	/**
+	 * Whether `player` is somewhere a power may be used at all: a round is being played, **or they are
+	 * standing in a practice zone**.
+	 *
+	 * **Named for the rule it applies rather than for the question a caller has**, which is not pedantry:
+	 * a power key also has to clear ownership, a ball in the hand and a charge, and a method called
+	 * `mayUsePower` would read as the whole of that test while being one line of it. `BallService` says the
+	 * same thing in its own words where it keeps the charge test written out at both sites — see the note
+	 * beside `charged` in `markHeldBall`. What this answers is *where you are allowed to act*, which is
+	 * `client/roundZone.ts`'s question on the other side of the wire.
+	 *
+	 * **And this is `DodgeService.requestDodge`'s rule rather than a second one.** A dodge is allowed in a
+	 * round or in a practice zone, and the comment there is where the argument lives — the zone used to be
+	 * a per-press world query, and it stopped being one when `PracticeZoneService` began publishing
+	 * {@link PRACTICE_ZONE_ATTRIBUTE} on the player, so what is left is an attribute read. This is the
+	 * second reader of that fact and it deliberates nothing: "where am I allowed to act" is one question,
+	 * and `client/roundZone.ts` exists because two answers to it is the thing that rule cannot survive.
+	 *
+	 * **What was wrong without it, which is the bug this was written for.** A box can be collected in a
+	 * practice zone — it spawns on the practice floor by design — and the prize it leaves can be held
+	 * there, drawn on the HUD and kept across a death. It just could not be *spent*: every press of the
+	 * power key answered "no round is being played" while the player stood in the zone the game puts boxes
+	 * in, with a ball in hand and a rig to throw at. The two halves of one mechanic disagreed about where
+	 * the mechanic works, which is what a player notices as "the key does nothing".
+	 *
+	 * **What it does not reopen.** A box still cannot be spent in the lobby. Outside a round and outside a
+	 * zone there is nothing for a power to do — no target that can be hit, no rig to freeze — and that is
+	 * the whole reason the round half exists. Ownership, the charge, the ball in the hand and the freeze
+	 * all still gate the press; this decides only *where*.
+	 */
+	public inRoundOrZone(player: Player): boolean {
+		if (this.isRoundActive()) return true;
+
+		return player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true;
 	}
 }
 

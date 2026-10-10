@@ -9,7 +9,7 @@
  * from the same interpolated body it is already drawing.
  *
  * **The colours are not here, and that is deliberate.** The ring and its pattern are drawn in the player's side
- * colour, and the side colours are `MODE_TEAM_COLORS` in `shared/gameMode.ts` — one entry per team per mode, read
+ * colour, and the side colours are `TEAM_COLORS` in `shared/gameMode.ts` — one pair for the whole game, read
  * through `teamColourOf`, which is the same source the character outline paints from. A second table here would
  * be a second answer to "what colour is team A", and the ring and the outline either side of it would be free to
  * disagree. The one exception is {@link RING_CONFIG.HALO_COLOR}, which is not a team colour at all.

@@ -66,7 +66,7 @@ interface LiveBox {
  * body went through it. Collection is a `Touched` connection and nothing polls proximity.
  *
  * **What a box does, in one sentence: it stands in for a charge until the power is used.** It does not grant
- * a charge, does not grant ownership, and does not lift the round gate — it makes
+ * a charge, does not grant ownership, and does not change *where* a power may be used — it makes
  * `SuperService.isMysteryActive` true, and `BallService` asks `hasCharge(player) || isMysteryActive(player)`
  * at the two places a charge is spent. That is the whole of its effect on the game, which is why the
  * mechanic is one `||` in two files rather than a branch anywhere.
