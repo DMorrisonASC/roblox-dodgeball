@@ -228,25 +228,44 @@ export class MatchService implements OnStart {
 	}
 
 	/**
-	 * Whether a match could start right now: enough players, and a side that is not over its cap.
+	 * Whether a match could start right now: enough participants, and a side that is not over its cap.
 	 *
 	 * **Three questions, and each of them is a different refusal to explain.** The total is
-	 * {@link MATCH_MIN_PLAYERS}, then one player a side — because a match with one side in it is not a
+	 * {@link MATCH_MIN_PLAYERS}, then one participant a side — because a match with one side in it is not a
 	 * match — and then the cap, which cannot currently be exceeded (a side refuses a player rather than
 	 * growing) and is checked anyway because this is the method a caller asks "may a match start", and an
 	 * answer that assumed its own caller's bookkeeping would be the wrong place to save a comparison.
 	 *
+	 * **The stand-ins count toward the first two questions and not the third, and that asymmetry is the whole
+	 * point of the argument.** A rig standing on a join pad is a *participant*: it makes a side look occupied,
+	 * and it is what turns a one-human server from a freeze into a game. So the caller passes how many are
+	 * standing on each pad and the minimum accepts them. The **cap is a limit on people** — a team is full
+	 * when it has `MATCH_MAX_PER_TEAM` *players*, so a rig never fills a slot a person could take and a real
+	 * player can always walk in and replace one. The two rules are opposites about the same object on purpose;
+	 * see `RIG_TEAM_ATTRIBUTE` and the spawner for the other side of it.
+	 *
+	 * **The stand-ins are handed in rather than looked up here, and that is this service's design asserting
+	 * itself.** It owns the roster and knows nothing about rigs: `opted` is `Map<Player, TeamLabel>`, a rig has
+	 * no `Player`, and `touched` returns on `GetPlayerFromCharacter` *before* `optIn` runs — so a rig can never
+	 * be *in* the roster, and `countsFor` cannot ever grow a rig row. The rig-side fact is read by the round,
+	 * which is the thing that gates a round on participants, and handed over as two numbers. This method stays
+	 * a pure question about sizes, and the two numbers arriving as plain parameters is what keeps the minimum
+	 * and the cap written in one place rather than split across two services.
+	 *
 	 * **Two callers, and they want different things from the same answer.** `RoundService.requestMatch`
 	 * asks it in order to refuse a dev with a sentence naming what was missing, and the intermission's
-	 * settle window asks it once a tick to decide whether the roster is ready to start a match on its own.
-	 * Neither is told *why* the answer was no, which is deliberate: the refusal a player reads is written
-	 * by the caller that has a player to name.
+	 * settle window asks it once a tick to decide whether the field is ready to start a match on its own —
+	 * both through `RoundService.canStartMatch`, which is what supplies the stand-in counts. Neither is told
+	 * *why* the answer was no, which is deliberate: the refusal a player reads is written by the caller that
+	 * has a player to name.
 	 */
-	public canStart(): boolean {
+	public canStart(standInsA = 0, standInsB = 0): boolean {
 		const counts = this.countsFor();
+		const a = counts.a + standInsA;
+		const b = counts.b + standInsB;
 
-		if (counts.a + counts.b < MATCH_MIN_PLAYERS) return false;
-		if (counts.a < 1 || counts.b < 1) return false;
+		if (a + b < MATCH_MIN_PLAYERS) return false;
+		if (a < 1 || b < 1) return false;
 
 		return counts.a <= MATCH_MAX_PER_TEAM && counts.b <= MATCH_MAX_PER_TEAM;
 	}

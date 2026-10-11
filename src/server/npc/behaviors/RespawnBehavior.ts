@@ -1,5 +1,5 @@
 import { CollectionService, Workspace } from "@rbxts/services";
-import { BALL_NAME } from "shared/constants";
+import { BALL_NAME, RIG_TEAM_ATTRIBUTE } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
 import type { BallService } from "../../services/ball/BallService";
@@ -167,6 +167,14 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// since have had tags added to it.
 				const tags = CollectionService.GetTags(model);
 
+				// **And the side, read off the corpse for the same reason and one more.** The template this
+				// behavior clones was taken at the *start* of the life, and a rig gets a side later than that:
+				// `GatherBehavior` writes `RIG_TEAM_ATTRIBUTE` during an intermission, which is long after the
+				// template was taken, and a rig a caller introduced with a side carries it in the template only
+				// if `spawn` set it before the first tick. So the copy cannot be trusted for this one attribute,
+				// and the corpse is the last thing that knows what the rig was fighting for.
+				const rigTeam = model.GetAttribute(RIG_TEAM_ATTRIBUTE);
+
 				// **Read off the corpse beside the tags, and for the same reason: this is the last moment
 				// it can be read at all.** The corpse's own parent is the *fallback* rather than the first
 				// choice — a rig that was unparented when it was first seen has no file to go back to, and
@@ -229,6 +237,12 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 
 					rig.Parent = Workspace;
 				}
+
+				// **The side goes back on the model before the tags do**, and it goes on the *model* rather than
+				// through the tag scheme, so it is present whichever tag arrives first. Written before `NPC`
+				// for the reason every behavior tag is: the loop the entry point starts reads the rig on its
+				// very first turn, and a rig with no side throws at nobody until this line has run.
+				if (rigTeam !== undefined) rig.SetAttribute(RIG_TEAM_ATTRIBUTE, rigTeam);
 
 				for (const tag of tags) {
 					if (tag !== NPC_TAG) rig.AddTag(tag);
