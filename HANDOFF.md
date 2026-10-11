@@ -1,8 +1,17 @@
 # Handoff — roblox-dodgeball
 
 A guide for a fresh session. Written 2026-09-28 against a green build (`npm run build` → exit 0);
-**brought up to date 2026-10-06** against a green build at commit `5bcc374` with the economy work
-sitting uncommitted (see §15).
+**brought up to date 2026-10-11** against a green build at commit `9e2e971`. The previous revision
+was dated 2026-10-06 at commit `5bcc374` with the economy work uncommitted; the economy, the shop
+wiring, the practice zone, the mystery boxes, the throw rework and the NPC dodge/seek behaviours have
+all landed since, so where this file and the source disagree the source wins — and the tag count in
+§7 is deliberately no longer quoted here (it is `TAGS.md`'s own table, which is the count).
+
+**What "brought up to date" was checked against, so a reader can tell its scope.** Tags, constants and
+attribute names, file paths, config values, the named services and methods, and the claims that
+something has been deleted were checked against the source at that commit. It is **not** a claim that
+every sentence was re-derived: §16's live-log lines come from Studio and are unchanged, and anything
+this file describes as a place-file or Studio fact is unverifiable from here and stands as it was.
 
 **Read this file, then read the actual source.** This document describes *where* things are and *why*
 the shape is what it is; it deliberately does not reproduce code, because code copied into prose
@@ -43,8 +52,10 @@ down anywhere before this revision of the handoff.
 - **Loose coupling, strict ownership.** Each subsystem owns its state and exposes narrow,
   intent-named queries and commands — `hasCharge(player)`, not `getStreakMap()`. Direct calls
   between services are fine when the call is small; the rule is **no *unnecessary* direct calls**,
-  not "no calls". See `SuperService.isRoundActive`, which is deliberately *lent out* to `BallService`
-  rather than copied, with the argument for the loan in its doc.
+  not "no calls". See `SuperService.inRoundOrZone`, which is deliberately *lent out* to `BallService`
+  rather than copied, with the argument for the loan in its doc. (The private `isRoundActive` that
+  `inRoundOrZone` wraps is not shared — its own copy of the same read of the round folder also lives
+  in `StatsService`, which is the one place the rule is duplicated.)
 - **One service per domain.** A domain owns everything about its state. The sprint merge proved what
   happens otherwise: `SprintService` and `WalkSpeedService` both wrote one property, and the fix was
   to make one service own the speed as a *sum of named contributions* (`Base`, `Sprint`, `Frozen`,
@@ -172,11 +183,13 @@ src/shared/                      runs on both sides
                                  (ROUND_STATE_ATTRIBUTE, TEAM_ATTRIBUTE,
                                  RESPAWN_AT_ATTRIBUTE, COINS_ATTRIBUTE, OWNED_ITEMS_ATTRIBUTE,
                                  CROWN_ATTRIBUTE, STAT_HITS, MATCH_JOIN_A_TAG, MATCH_SPAWNER_TAG,
-                                 CHARACTER_BARRIER_TAG, SHIFT_LOCK_ZONE_TAG, …)
+                                 CHARACTER_BARRIER_TAG, PRACTICE_ZONE_TAG, MYSTERY_SPAWN_TAG, …)
   ability.ts                     AbilityKind (Pierce | MultiBall | Freeze), ABILITY_NAMES,
                                  isAbilityKind, isBallAbility, abilityOn(ball)
   economy.ts                     EconomyRecord / SavedEconomy, blank + shape-check, and the
                                  string <-> Set helpers for the two attribute-backed sets
+  purchase.ts                    validatePurchase / PurchaseDecision — the pure checks behind the
+                                 shop's cosmetic purchase (with `purchase.spec.ts` beside it)
   gameMode.ts                    GameModeId, GAME_MODE_NAMES, MODE_SIDE_NAMES, sideNameOf,
                                  MODE_TEAM_COLORS, teamColourOf, encodeModeIds/decodeModeIds, isGameModeId
   networking.ts / remotes.ts     @rbxts/net event declarations; the throw RemoteEvent's names
@@ -188,24 +201,27 @@ src/shared/                      runs on both sides
   Trajectory.ts / AimGuide.ts / TrailEffect.ts / CollisionIgnore.ts
   ringPattern.ts                 the white RGBA halo/band/rosette maths for the team rings
   config/*.ts                    arena, ball, catch, dodge, gameMode, npc, action, aim,
-                                 character, debug, economy, images, ring, shiftLock, shop, sound,
-                                 stats, super, transition, ui
+                                 character, debug, economy, images, mystery, ring, shiftLock, shop,
+                                 sound, stats, super, throwFeedback, transition, ui
 
 src/server/
   main.server.ts                 boot: collision groups, ignite, CharacterAutoLoads = false, shield
   collision/CollisionGroups.ts   PhysicsService + Workspace groups; applyBarrierGroups()
-  services/round/                RoundService, VoteService (dormant), roundStatus.ts, team.ts,
-                                 modes/{GameMode,TeamEliminationMode,ScoreRushMode,DodgeAndSeekMode,registry}
+  services/round/                RoundService, JoinService, VoteService (dormant), roundStatus.ts,
+                                 team.ts, modes/{GameMode,TeamEliminationMode,ScoreRushMode,DodgeAndSeekMode,registry}
   services/match/MatchService.ts opt-in roster, the two join parts, the counts signs
   services/economy/EconomyService.ts  coins, powers, cosmetics, milestones, the chest
   services/character/            RespawnService, WalkSpeedService, SpawnShield
   services/ball/                 BallService, BallFactory, BallSpawnerService, BallPickupService,
-                                 BallTrail, ballExpiry, SphereService, ThrowProbe, SoundEmitter
+                                 BallTrail, ballExpiry, SphereService, ThrowProbe, SoundEmitter,
+                                 WindBurst
   services/actions/              ActionService, CatchService, DodgeService, FreezeService,
                                  actionLock, readyAt
   services/super/SuperService.ts streak, charge (dev-only), MultiBall window, crowns
   services/stats/StatsService.ts hits + outs, DataStore "PlayerStats", autosave
   services/visual/OutlineService.ts   per-body Highlight, team colours, freeze override
+  services/mystery/MysteryBoxService.ts  the tagged spawn points, the box, the chest prize
+  services/zone/PracticeZoneService.ts   zone membership -> PRACTICE_ZONE_ATTRIBUTE
   services/npc/NpcService.ts     + npc/Behavior.ts, npc/behaviors/*
   components/BallComponent.ts    the throw -> hit path (friendly-fire guard, tag deferral, splash)
   dev/                           DevService + dev.config (chat commands and flags)
@@ -213,18 +229,22 @@ src/server/
 
 src/client/
   main.client.ts
-  aiming.ts / freeLook.ts / sprinting.ts   tiny Fusion Values shared between two controllers
+  aiming.ts / sprinting.ts / throwing.ts / cameraShake.ts   tiny Fusion Values shared between
+                                 controllers; panels.ts is the same shape for session state
+  roundZone.ts                   "in a round or in a practice zone" — the client's one rule
   IasTest.ts                     finished input test, DEBUG = false, meant to be deleted
   ui/                            screenGui.ts (HudGui / SplashGui / TransitionGui), hudTheme.ts,
-                                 viewportConstraint.ts, hudToast.ts
+                                 viewportConstraint.ts, hudToast.ts, elevation.ts, panelChrome.ts
+  controllers/                   CoreGuiController.ts (shared core-GUI wiring)
   controllers/hud/               RoundStatus, RoundResult, RoundTransition, LoadingScreen,
-                                 RespawnHud, CurrencyHud, SuperHud, StatsBillboard,
+                                 RespawnHud, CurrencyHud, SuperHud, StatsBillboard, ScoreHud,
                                  CooldownHud, ThrowStateToast, ControlsLegend, ModeVote,
-                                 CameraToast, Theme, Shop (still the mock — see §11)
+                                 ArenaFreezeCountdown, Dock, Shop, Inventory, Theme
   controllers/input/             Action, Catch, Dodge, Throw, AimTarget, SuperAbility,
                                  AlternativeMovement, Sprint
   controllers/camera/ShiftLock.ts
-  controllers/character/         LocomotionAnimationController, TeamRingController
+  controllers/character/         LocomotionAnimationController, TeamRingController,
+                                 RigAnimationController, AfterimageController
   controllers/audio/MusicController.ts
 ```
 
@@ -461,10 +481,12 @@ comments are gone with it, and the only thing worth keeping is the one-line hist
     removed from a live character and the `heldBalls` row is cleaned up properly.
 - **Tags:** `"Ball"` on every ball (must match `BallComponent`'s decorator literal — Flamework reads
   it at build time, so it is a copy, not an import); `"RoundBall"` only on balls the spawner created;
-  `"MatchSpawner"` painted in Studio on the parts the spawner reads. **`TAGS.md` is the register**, and
-  it is current: thirteen tags, including the four it was missing — `MatchJoinA`, `MatchJoinB`,
-  `ShiftLockZone`, and the `MatchJoinTouched` debounce, which is the one tag that is state rather than
-  a label.
+  `"MatchSpawner"` painted in Studio on the parts the spawner reads. **`TAGS.md` is the register, and
+  its table is the count.** This file deliberately quotes no number, because the last one it quoted
+  (thirteen) was already stale by the time `Behavior_Seeking` and `Behavior_Dodging` landed. The
+  register names the ones this file used to miss — `MatchJoinA`,
+  `MatchJoinB`, `practiceZone` (renamed from `ShiftLockZone`), the `MatchJoinTouched` debounce, which
+  is the one tag that is state rather than a label, and the two new `Behavior_*` tags.
 - **`BallSpawnerService`** — still so named, but it reads `MATCH_SPAWNER_TAG`. **One ball per tagged
   part** (not the old `BALLS_PER_SPAWNER = 3`), under a total budget of `MATCH_BALL_COUNT = 8`
   counted from the `RoundBall`-tagged balls that exist each tick. It spawns **only while
@@ -541,8 +563,9 @@ falls out of that same rule. `VoteService` warns once at startup if the derived 
 The test to apply: **"If the screen resizes to a phone or an ultrawide monitor, will this leak or
 overlap?"** `src/client/ui/viewportConstraint.ts` exports an `addViewportConstraint` helper used by the
 HUDs. Theme is **LIGHT** big-ui; `hudTheme.ts` centralises it, and a HUD that has been migrated is
-not allowed to write `Color3.fromRGB` itself — the shop predates that seam and still uses its own
-palette from `shared/config/shop.config.ts`.
+not allowed to write `Color3.fromRGB` itself. The shop was migrated onto that seam (and onto
+`ui/panelChrome.ts`) by the economy work, so it no longer keeps a palette of its own; the geometry in
+`shared/config/shop.config.ts` is still the shop's.
 
 **The HUD inventory** (`src/client/controllers/hud/`), which is the list to check when the screen is
 wrong:
@@ -562,14 +585,16 @@ wrong:
 | `ThrowStateToastController` | throwing on/off toast | `THROW_ENABLED` |
 | `ControlsLegendController` | the control legend | `THROW_ENABLED` |
 | `ModeVoteController` | the vote row — **dormant**, nothing opens a vote | the `ROUND_VOTE_*` attributes |
-| `CameraToastController` | "camera locked/unlocked" | the `freeLook` module |
+| `ScoreHudController` | each side's points during a scoring round | `ROUND_SCORE_A_ATTRIBUTE` / `ROUND_SCORE_B_ATTRIBUTE` |
+| `ArenaFreezeCountdownController` | the arena-entry freeze countdown | `ROUND_STATE_ATTRIBUTE`, `TEAM_ATTRIBUTE` (derives its clock from `ARENA_FREEZE_SECONDS`) |
+| `DockController` | the Shop / Inventory dock, shown or hidden by phase and zone | `ROUND_STATE_ATTRIBUTE`, `PRACTICE_ZONE_ATTRIBUTE` |
+| `ShopController` | the economy: the chest, the power roster, the premium catalogue | `COINS_ATTRIBUTE`, `OWNED_ITEMS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE` + the `chestResult` / `purchaseResult` events |
+| `InventoryController` | owned cosmetics, equip buttons, milestone conditions | `OWNED_COSMETICS_ATTRIBUTE`, `EQUIPPED_TRAIL_ATTRIBUTE`, `EQUIPPED_ELIMINATION_ATTRIBUTE` |
 | `ThemeController` | configures the big-ui theme | — |
-| `ShopController` | **a static mock** — no remotes, no purchase logic | — |
 
 Two shared pieces worth knowing about: `ui/hudToast.ts` (the bottom-centre toast column, used by the
-throw toast and the camera toast) and the three small module-scoped Fusion values
-(`freeLook.ts`, `aiming.ts`, `sprinting.ts`) that carry one fact between two controllers without
-either depending on the other.
+throw toast) and the small module-scoped Fusion values (`aiming.ts`, `sprinting.ts`, `throwing.ts`,
+`cameraShake.ts`) that carry one fact between two controllers without either depending on the other.
 
 ---
 
@@ -705,11 +730,14 @@ its place is `CROWN_STREAK_THRESHOLD = 3`, read as a threshold for something **v
 (a window bought is a window paid for), Pierce and Freeze at the *throw* (the charge follows the
 ball, so marking a ball and changing your mind costs nothing).
 
-**MultiBall** — `SUPER_CONFIG.MULTI_BALL_DURATION_SECONDS = 10`, `MULTI_BALL_BALL_COUNT = 5`
-(counted in **throws**, not balls on the field). It refills the hand at the moment the window opens
-and after each throw (`BallService.refillFromBuff`), the count running out does **not** close the
-window, and the ball already in hand when the window closes stays there — "the ability stops giving,
-and never takes back". Closed by its own clock, by death, by the intermission and by the round end.
+**MultiBall** — `SUPER_CONFIG.MULTI_BALL_BALL_COUNT = 5` (counted in **throws**, not balls on the
+field). **There is no duration any more**: `MULTI_BALL_DURATION_SECONDS` was removed and the count is
+the whole limit — spending the fifth throw is what closes the window (`SuperService.consumeMultiBallBall`
+drops the row). It refills the hand at the moment the window opens and after each throw
+(`BallService.refillFromBuff`), and the ball already in hand when the window opens is *on top* of the
+count. The window is a **stock rather than a burst** now, and the cost of that is written out in
+`super.config.ts`. Closed by spending the last throw, by death, by the intermission and by the round
+end.
 
 **Freeze** — the splash numbers are two because they are two promises: `FREEZE_HIT_RADIUS = 8` from
 the body part a Freeze ball *struck*, `FREEZE_MISS_RADIUS = 5` from where a ball *stopped* having
@@ -756,12 +784,13 @@ DataStore record per player**.
   contributing, then clamped to `MATCH_COIN_CAP = 17`. A draw pays base + performance and no win.
   Coins are clamped to >= 0 on every write — the one number in the game that must never read as a
   debt. All of these are **Placeholders**.
-- **The Power Chest** costs `CHEST_COST = 50` and grants **one random power the player does not
-  own** — duplicates are impossible by construction (uniform over the unowned remainder), which means
-  the last one is a guarantee and the anticlimax is accepted deliberately. Three distinct refusals
-  are sent back on `chestResult`: "your record is still loading", "not enough coins", "all powers
-  collected". The design acknowledges the whole system is a **tutorial at three powers** — the roster
-  is `POWER_ROSTER`, and its length is the chest's lifespan.
+- **The Power Chest** costs `CHEST_COST = 50` and rolls **over the whole of `CHEST_POOL` — unowned
+  entries included** — so a duplicate is possible and is the commonest outcome, deliberately
+  (`EconomyService.openChest`; the pool is the powers plus three chest-only trails). The 50 coins go
+  before the outcome is known, and `chestResult` carries four outcomes, not three: "your record is
+  still loading", "not enough coins", "nothing left in the chest to win", and "you already had that
+  one" — the duplicate, which is the mechanic rather than an error. The design still calls the whole
+  thing a **tutorial at three powers**: `POWER_ROSTER` is the powers half of the pool.
 - **Milestones** grant free cosmetics and are **never purchasable**. Seven of them over `matches`,
   `wins`, `hits` (read from `StatsService`'s lifetime `STAT_HITS`) and `crown`. `checkMilestones` runs
   after a load, at every round end, and when `CROWN_ATTRIBUTE` changes; it skips what is already
@@ -776,13 +805,14 @@ DataStore record per player**.
   shutdown. Every call is `pcall`-wrapped, and a corrupt or absent record decodes to blank rather
   than to a crash (`shared/economy.ts` shape-checks it).
 - **Dev commands registered here:** `!dev coins` (+1000) and `!dev powers` (grant the full roster).
-- **What is *not* wired: the shop GUI.** `ShopController` is still the static mock — no remotes, its
-  own catalogue from `shared/config/shop.config.ts`, and a mount line that prints
-  `[Shop] button and panel up — no purchase logic, no remotes`. The `openPowerChest` remote exists
-  server-side and **nothing on the client sends it**. Cosmetic application is likewise ownership-only:
-  a trail cosmetic carries `colors` in the config, and the render hook that would read
-  `BallTrail.attach`'s colours is a later step. `SHOP-PANEL-BRIEFING.md` is the accompanying brief for
-  the shop's rendering problem.
+- **The shop GUI is wired now, and the briefing about its old mock is not.** `ShopController` *was*
+  the static mock and is not any more: it has two tabs ("Cosmetics", "Power & Items"), sends
+  `openPowerChest` and `purchaseCosmetic`, and reads `chestResult` / `purchaseResult` back; the
+  inventory's equip and pool toggles go through `equipCosmetic` / `togglePowerPool`. Trail cosmetics
+  **do** render — `BallService` reads `EconomyService.equippedTrailColors` / `equippedTrailId` and
+  hands them to `BallTrail.attach`. Elimination cosmetics are still ownership-only (nothing reads
+  `EQUIPPED_ELIMINATION_ATTRIBUTE`). `SHOP-PANEL-BRIEFING.md` still describes the retired mock; it is
+  kept as a record of it, not as a description of the current panel.
 
 ---
 
@@ -857,24 +887,35 @@ part — and the roster is forgotten at the end of every match, so they choose a
 
 Carried over from the previous handoff where still live, plus what this revision found.
 
-1. **The economy is built and type-checked but never run.** Nothing in it has a Studio confirmation:
-   not the DataStore round-trip, not `!dev coins`/`!dev powers`, not the chest reply
-   (`events.Server.Get("chestResult").SendToPlayer`), not the round-end payout, not the milestone
-   grants. It is also **uncommitted** as of this writing.
+1. **The economy is committed and wired but has no Studio confirmation recorded here.** Nothing in it
+   is confirmed in a live log: not the DataStore round-trip, not `!dev coins`/`!dev powers`, not the
+   chest reply (`events.Server.Get("chestResult").SendToPlayer`), not the round-end payout, not the
+   milestone grants, not the shop's own chest/inventory buttons. (It is no longer *"uncommitted as of
+   this writing"* — that line described the previous revision at `5bcc374`; the economy landed in
+   `879d374` and onward.)
 2. **The power lock means a brand-new player has no abilities at all.** Keys `3`/`4`/`5` refuse with
-   `[Super] … not owned` until a chest grants one. That is the design working, but nothing in the UI
-   says so yet — `SuperHudController` shows the streak/charge strip regardless, and there is no
-   "locked" state and no "you don't own this" toast.
-3. **The shop GUI is still the mock** (§12), and `SHOP-PANEL-BRIEFING.md` documents it rendering
-   almost empty. The mock also contradicts the economy's design: it sells random *boxes* with odds,
-   which is the one thing the economy deliberately does not do.
-4. **Cosmetics are ownership-only.** Nothing renders an owned trail or elimination effect. The trail
-   is the cheap one (the colours are config and `BallTrail.attach` takes no parameters today, so the
-   override has to be threaded through `createRibbons` *and* the adopt-existing branch).
+   `[Super] … not owned` until a chest grants one. **The Shop now renders the roster as `Owned` /
+   `Locked`** (`ShopController`), so the state is at least visible in the panel; what is still missing
+   is a reaction at the key — `SuperHudController` shows the streak/charge strip regardless, and there
+   is no "you don't own this" toast when a key is refused.
+3. **The shop GUI is wired, and `SHOP-PANEL-BRIEFING.md` is stale** (§12). The briefing documents the
+   retired mock (five tabs, a box picture with odds) rendering almost empty; the current panel is two
+   tabs and asks the server for the chest, so the briefing is a record rather than a description. Two
+   of its claims are wrong against the source as it stands: §6 says `getHudScreenGui()` uses `None`
+   insets (it uses `CoreUISafeInsets`), and §7's layout arithmetic rests on that.
+4. **Trails render; elimination effects do not.** `BallService` passes the equipped trail's colours to
+   `BallTrail.attach`, so an owned trail is worn on the ball. Nothing reads
+   `EQUIPPED_ELIMINATION_ATTRIBUTE`, so an owned elimination cosmetic is ownership-only still.
 5. **Every premium `gamepassId` is `0`.** No Game Pass exists yet, so the catalog is unbuildable as
    a purchasable thing until the developer creates them in the dashboard.
-6. **The aim preview still lies about Pierce** (recorded in `BallComponent`/`ThrowController` as
-   known). The held-ball `CanQuery` half of that bug is fixed; the Pierce half is not.
+6. **The Pierce preview gap is now server-side only** — this item was stale until this pass and is
+   corrected here. The *client* preview no longer lies about Pierce: `ThrowController` passes
+   `passable: passesThroughBodies` into `Trajectory`, which lets the drawn arc fly through bodies
+   exactly as the ball does, so the arc, the landing marker and the glow agree. What is still not
+   Pierce-aware is the **server-side diagnostic** `ThrowProbe`, whose own comment says so ("built with
+   no `passable` predicate … the ball keeps going past the contact this predicts"). The held-ball
+   `CanQuery` half was fixed earlier. The `BallComponent` comment this item used to quote as current is
+   now itself stale — see item 12.
 7. **Only Score Rush is playable** (§8) — the other two modes are unreachable, and re-enabling them
    means deciding whether the vote comes back or the mode is chosen some other way.
 8. **The `+3` stud lift** in the spawn lookup was kept against the user's own snippet and is still
@@ -883,6 +924,31 @@ Carried over from the previous handoff where still live, plus what this revision
 10. **`shared/module.ts` is a stub** (`makeHello`) and `src/shared/config/ui.fon` is an empty file.
     Both are dead weight.
 11. **`rojo serve` exits 1** (§1). Cause unknown, not investigated.
+12. **Stale comments found while reconciling the docs — comments that argue for a design the code has
+    stopped making.** Each is a claim the code contradicts, so a reader who trusts the comment believes
+    a false thing. None is fixed here; each wants its own small pass, and they are grouped because they
+    share that cause (a one-line comment correction, not a behaviour change):
+    - **`src/client/ui/screenGui.ts`** — "nine HUD controllers parent into it … a decision nine files
+      depend on". Fourteen controllers call `getHudScreenGui()` now, plus `ui/hudToast.ts`. The count
+      has drifted more than once and is a candidate for a description rather than a number (§10).
+    - **`src/client/ui/panelChrome.ts`** — "there are nine builders that each do exactly what the shop's
+      own private method did before". The file exports about twenty builders.
+    - **`src/shared/config/economy.config.ts`** — "The launch milestone table — six achievements,
+      deliberately few." `MILESTONES` has seven entries.
+    - **`src/client/roundZone.ts`** — `inTaggedZone`'s doc says "This is the one place the tag is read".
+      `ShiftLock.reportZoneParts` reads `PRACTICE_ZONE_TAG` too (for its own count), so the exclusive
+      claim is false — though the *rule* is still roundZone's, and the client-side register row now says
+      so in `TAGS.md`.
+    - **`src/server/components/BallComponent.ts`** — "The preview lies about Pierce, and it is known to.
+      That fix belongs in `Trajectory`". `Trajectory` grew the `passable` hook and the client uses it, so
+      this describes a gap that is closed; see the corrected item 6.
+13. **`isRoundActive` is duplicated, and it is a decision waiting rather than a bug.** `SuperService.isRoundActive`
+    is `private`; the public `SuperService.inRoundOrZone` wraps it, and that is what `BallService` calls.
+    `StatsService` keeps its **own** private `isRoundActive`, reading the round folder the same way. §0's
+    "a query is lent out, not copied" example was corrected to name `inRoundOrZone`, so item and principle
+    do not describe the same state — but the principle's *older* example (`isRoundActive`) is now a copy
+    in two files. Whether to collapse them into one shared read is a decision for a later task; recorded
+    here, not fixed.
 
 ---
 
@@ -927,8 +993,8 @@ right, but for a different reason than was stated.
 
 | Document | What it is | State |
 |---|---|---|
-| `HANDOFF.md` | this file | current as of 2026-10-06 |
-| `TAGS.md` | the register of every `CollectionService` tag (thirteen), with why the strings cannot be imported from each other | current as of 2026-10-06. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
-| `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | current, and still the best description of the mock's structure. The layout tree in it is the *mock's*; the economy's shop does not exist yet |
+| `HANDOFF.md` | this file | current as of 2026-10-11, against commit `9e2e971` |
+| `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of 2026-10-11. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
+| `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **stale.** It documents the retired mock; the panel was rewritten onto the economy and `ui/panelChrome.ts`. Kept as a record of the mock, not of the current shop |
 | `README.md` | upstream roblox-ts boilerplate | says nothing about this project; ignore it |
 | `tools/pattern/` | the Node renderer and PNG output used to design the ring pattern (`shared/ringPattern.ts`) | one-off design tooling, not part of the build |

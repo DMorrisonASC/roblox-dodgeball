@@ -8,10 +8,18 @@ across files, no compiler check, and no runtime warning: a renamed tag does not 
 matching*, and the code that reads it goes quiet in exactly the way a working path also looks quiet.
 This file is the list.
 
-**Re-verified against the source 2026-10-06** (commit `5bcc374`, with the economy work uncommitted).
-The previous revision was three tags short — `MatchJoinA`, `MatchJoinB` and `ShiftLockZone` (now
-`practiceZone`) — and
-described `CharacterBarrier` and `MatchSpawner` in terms of a map that is no longer cloned.
+**Register re-verified against the source 2026-10-11** (commit `9e2e971`): every row below was
+re-derived — the tag string, its source of truth, and at least one reader — and the prose that
+describes those rows was corrected where it disagreed. What "re-verified" does **not** cover is the
+place file: whether a part actually wears a tag is a Studio fact, marked *painted in Studio* row by
+row, and no read of `src/` can confirm it.
+
+**Earlier revisions, for the record.** The revision *before* 2026-10-06 was three tags short —
+`MatchJoinA`, `MatchJoinB` and `ShiftLockZone` (now `practiceZone`) — and described `CharacterBarrier`
+and `MatchSpawner` in terms of a map that is no longer cloned. The 2026-10-06 revision (commit
+`5bcc374`) was itself three tags short of this register: `mysterySpawnPrize`, whose service landed
+after it, and the two behaviours for seeking and dodging. Those three are what the register below
+grew by.
 
 ## Why there are copies at all
 
@@ -37,8 +45,8 @@ a place file that no build touches.
 | `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.roundBallCount` (the budget) and `cleanupRoundBalls` (the sweep) |
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
-| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` on the server — the tracker that publishes the attribute, `MysteryBoxService` through its point test `insideZoneAt`, and the dodge gate for a body with no player — plus `client/roundZone.ts` for `ShiftLock` and the dodge input, one of the two tags a client reads |
-| `mysterySpawnPrize` | `shared/constants.ts`, `MYSTERY_SPAWN_TAG` | *painted in Studio* | `MysteryBoxService.report`, `.tick` and `forgetLostSpawns` — **plus `PracticeZoneService.insideZone`, which decides whether the part is on a practice floor** |
+| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` / `.insideZoneAt` on the server — the tracker that publishes the attribute; `MysteryBoxService` calls `insideZoneAt` to ask whether a spawn point is on a practice floor. **On the client** the rule is `client/roundZone.ts` (`inTaggedZone`), which the camera (`ShiftLock.checkZone`) and the dodge input (`DodgeController`) both ask — plus `ShiftLock.reportZoneParts`, which reads the tag a second time for its own count. One of the two tags a client reads |
+| `mysterySpawnPrize` | `shared/constants.ts`, `MYSTERY_SPAWN_TAG` | *painted in Studio* | `MysteryBoxService.report`, `.tick` and `forgetLostSpawns`. It also asks `PracticeZoneService.insideZoneAt(spawn.Position)` whether a spawn point is on a practice floor — **a question about the spawn, asked of the zone, not a second reader of this tag** |
 | `MatchJoinA` | `shared/constants.ts`, `MATCH_JOIN_A_TAG` | *painted in Studio* — the part's flags are then forced from code | `MatchService.mountSide` |
 | `MatchJoinB` | `shared/constants.ts`, `MATCH_JOIN_B_TAG` | as above | as above |
 | `MatchJoinTouched` | `MatchService`, `DEBOUNCE_TAG` | `MatchService.touched`, on a **character** | `MatchService.touched` |
@@ -92,8 +100,9 @@ appears in this file.
   the name is what a ball is called in the log and a hand-built part with one and not the other
   should be treated as a ball. Being wrong in that direction costs a throw; the other direction
   costs a body.
-- **The in-code comments already disagree about the count**, which is the clearest argument for this
-  file: `OutlineService` says "three files have to agree", `BallSpawnerService` and `BallComponent`
+- **The in-code comments disagree about the count, and each is a different number**, which is the
+  clearest argument for this file: `OutlineService` deliberately names no number at all ("every file
+  that has to find a ball"), `BallSpawnerService` and `BallComponent`
   each name three others, and `CollisionGroups` names five — none of them names `BallComponent`
   itself. The real number is **eight occurrences of the string** — seven `const`s in seven files plus
   the decorator — and none of the comments says that.
@@ -345,11 +354,11 @@ duplicated — the source of truth is the file named.
 
 | String | Source of truth | Also spelled out in |
 | --- | --- | --- |
-| `"Armed"` | `BallFactory` sets the first value; `BallService` sets it on a hand-out and a throw | `BallComponent`, `BallPickupService`, `BallSpawnerService`, `CatchBehavior`, `CatchService` |
+| `"Armed"` | `BallFactory` sets the first value; `BallService` sets it on a hand-out and a throw | `BallComponent`, `BallPickupService`, `BallSpawnerService`, `CatchBehavior`, `CatchService`, `DodgeBehavior` (its own `ARMED_ATTRIBUTE` copy) |
 | `"ThrowerId"` | `BallService.throwBall` | `BallComponent`, `BallFactory` (cleared to `""`) |
 | `"StatsRecorded"` | `BallComponent` | — (one file, and read nowhere else; it exists so a ball cannot score twice) |
 | `"ObjectOutline"` | `OutlineService` (`OUTLINE_NAME`) | `AimTargetController` |
-| `"Playing"` / `"Intermission"` | `RoundService` publishes them as the phase name | **server:** `BallSpawnerService`, `MatchService`, `StatsService`, `SuperService`, `OutlineService`. **client:** `RoundStatusController`, `RoundResultController`, `StatsBillboardController`, `TeamRingController`, `MusicController`, `ShiftLock` |
+| `"Playing"` / `"Intermission"` | `RoundService` publishes them as the phase name | **server:** `BallSpawnerService`, `MatchService`, `StatsService`, `SuperService`, `OutlineService`, `MysteryBoxService`, `DodgeService`. **client:** `RoundStatusController`, `RoundResultController`, `StatsBillboardController`, `TeamRingController`, `MusicController`, `ShiftLock`, `roundZone.ts`, and `panels.ts` (which spells both and is what `DockController` and `ArenaFreezeCountdownController` read them through) |
 | `"LobbySpawn"` | `shared/config/arena.config.ts` (`LOBBY_SPAWN_NAME`) | `RoundService`, in the `DescendantRemoving` watcher that traces the part's disappearance. **Nothing reads this name as a spawn any more** — the lobby is a folder of `LobbySpawns` parts — so the only reason the string still exists is that watcher, which is scaffolding worth deleting once the part is traced |
 | `DodgeballBall` | `shared/constants.ts` (`BALL_NAME`) | **imported, not copied** |
 | `THROWER_TOKEN`, `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE`, `TEAM_ATTRIBUTE`, `RESPAWN_AT_ATTRIBUTE`, `COINS_ATTRIBUTE`, `OWNED_ITEMS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE`, `CROWN_ATTRIBUTE`, `STAT_HITS` / `STAT_OUTS` / `STAT_RATIO`, `BALL_ABILITY_ATTRIBUTE`, `ARMED_ABILITY_ATTRIBUTE`, `CHARACTER_BARRIER_TAG`, `MATCH_JOIN_A_TAG` / `MATCH_JOIN_B_TAG`, `MATCH_SPAWNER_TAG`, `PRACTICE_ZONE_TAG` | `shared/constants.ts` | **imported, not copied.** This is the list to check first: every one of them is read by two files or more, and every one of them is a *string* that a typo would silently break |
