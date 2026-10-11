@@ -1,14 +1,26 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, HttpService, Workspace } from "@rbxts/services";
-import { THROWER_TOKEN } from "shared/constants";
+import { ANIMATION_SPEED_BAND } from "shared/animation";
+import {
+	NPC_ANIM_FROZEN_ATTRIBUTE,
+	NPC_ANIM_GROUNDED_ATTRIBUTE,
+	NPC_ANIM_SPEED_ATTRIBUTE,
+	NPC_ANIM_THROWING_ATTRIBUTE,
+	THROWER_TOKEN,
+} from "shared/constants";
+import { NPC_CONFIG } from "shared/config/npc.config";
+import { resolveDodgeable } from "shared/dodge";
 import { NPC_TAG, NpcBehavior } from "../../npc/Behavior";
 import { createCatchBehavior } from "../../npc/behaviors/CatchBehavior";
+import { createDodgeBehavior } from "../../npc/behaviors/DodgeBehavior";
 import { createPickupBehavior } from "../../npc/behaviors/PickupBehavior";
 import { createRespawnBehavior } from "../../npc/behaviors/RespawnBehavior";
+import { createSeekBehavior } from "../../npc/behaviors/SeekBehavior";
 import { createThrowBehavior } from "../../npc/behaviors/ThrowBehavior";
 import { BallPickupService } from "../ball/BallPickupService";
 import { BallService } from "../ball/BallService";
 import { CatchService } from "../actions/CatchService";
+import { DodgeService } from "../actions/DodgeService";
 import { FreezeService } from "../actions/FreezeService";
 
 /** Prints each model as it is picked up. A print per tick would flood the output. */
@@ -25,6 +37,16 @@ const IDLE_PERIOD = 0.5;
  */
 interface NpcLoop {
 	stopped: boolean;
+
+	/**
+	 * When this rig's network ownership was last re-asserted, on the engine's clock.
+	 *
+	 * **Per rig, and kept here rather than in a map of its own**, because this object is already one
+	 * per rig and already dies with the rig — a second map keyed by the same models would be the same
+	 * bookkeeping twice, with two lifetimes to keep in step. See
+	 * `NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS` for why ownership is re-asserted at all.
+	 */
+	ownershipCheckedAt: number;
 }
 
 /**
@@ -66,11 +88,25 @@ export class NpcService implements OnStart {
 		private readonly balls: BallService,
 		private readonly pickups: BallPickupService,
 		private readonly freezes: FreezeService,
+		private readonly dodges: DodgeService,
 	) {
 		this.behaviors = [
 			createCatchBehavior(catches, balls),
+			// **After the catcher, and before everything else, and the order is not cosmetic.** The
+			// behaviors share facts that are written by *services* — a held ball, a chase, a dash — so
+			// almost nothing here depends on the order at all. This one case does: a catching rig's window
+			// is opened by `Behavior_Catching`'s own tick, so on a rig's *first* turn a dodge ticked before
+			// the catcher would find no window open yet and could fire. Behind it, the window is already
+			// open on the turn it matters, which is what makes "a rig wearing both is a catcher that never
+			// dodges" exactly true rather than true from the second turn onwards.
+			createDodgeBehavior(dodges, balls),
 			createThrowBehavior(balls),
 			createPickupBehavior(pickups, balls),
+			// The pair to the line above, and the difference between a rig that collects and a rig
+			// that only takes what rolls into its reach: this one walks to the nearest loose ball,
+			// and that one takes it. A rig needs both tags for the mechanic — either alone is a rig
+			// that stands beside a ball it will never pick up, or one that never goes anywhere.
+			createSeekBehavior(pickups, balls),
 			// The one behavior that needs something no other one does: the ball the rig was
 			// holding, so it can be taken out of the copy this makes. It re-enters this service
 			// the way any other rig does — by putting `NPC` on a model and letting the
@@ -150,7 +186,28 @@ export class NpcService implements OnStart {
 			model.SetAttribute(THROWER_TOKEN, HttpService.GenerateGUID(false));
 		}
 
-		const loop: NpcLoop = { stopped: false };
+		// **What a rig has to be given before anything can move or animate it**, and this is the one
+		// site for both. They are properties of the *body* rather than of this loop, and a replacement
+		// body still gets them: `RespawnBehavior` puts `NPC` back on a new rig and lets the added-signal
+		// start it, which is what makes this the funnel for spawned rigs and hand-tagged ones alike.
+		//
+		// **The animator goes first because it cannot be refused.** Ownership can be — see
+		// `ownForServer` — and a rig that can never be owned by the server still has to be animatable.
+		//
+		// **And both are guarded, because a rig's setup must not be able to take the rigs after it down
+		// with it.** That is not hypothetical: `SetNetworkOwner` *raises* on a rig whose assembly is
+		// anchored, `onStart` calls this once per rig *inside its scan loop*, and one anchored rig
+		// therefore aborted the whole scan — no loops, no behaviors, no `[NPC]` lines, and nothing in
+		// the output naming the rig it happened on. A rig whose setup fails is a rig that does nothing,
+		// because the loop is what runs it; the least this can do is fail alone and say so.
+		const [prepared, err] = pcall(() => {
+			this.ensureAnimator(model);
+			this.ownForServer(model, true);
+		});
+
+		if (!prepared) warn(`[NPC] ${model.Name}: setup failed — ${tostring(err)}`);
+
+		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: os.clock() };
 		this.loops.set(model, loop);
 
 		task.spawn(() => this.run(model, loop));
@@ -170,6 +227,98 @@ export class NpcService implements OnStart {
 	private stop(model: Model): void {
 		const loop = this.loops.get(model);
 		if (loop) loop.stopped = true;
+	}
+
+	/**
+	 * Makes the server the owner of this rig's root part.
+	 *
+	 * **The line that keeps a rig's movement on the machine driving it.** `MoveTo` and `WalkSpeed` are
+	 * inputs to the engine's mover, and the mover runs where the assembly's *network ownership* is —
+	 * which the engine assigns by proximity. So a rig standing next to a player can have its physics
+	 * handed to that player's client, and what that looks like is a rig that jitters while it walks
+	 * and a destination that stops being reached. It is also what would make the published speed wrong:
+	 * the speed this service reads is the *server's* copy of the assembly, and a body simulated on
+	 * somebody else's machine does not move this one.
+	 *
+	 * **Asked before it is called, because the call *raises* rather than refusing.** The engine's own
+	 * message is "Network Ownership API cannot be called on Anchored parts or parts welded to Anchored
+	 * parts", and it arrives as an error thrown into whatever called it — so an unguarded call is not
+	 * a rig that quietly keeps auto ownership, it is an error in the middle of `start`. That is what
+	 * this did, and what it cost is written down in `start`: one anchored rig stopped every rig on the
+	 * server from being managed at all.
+	 *
+	 * **`CanSetNetworkOwnership` is the question `SetNetworkOwner` cannot answer for itself**, and its
+	 * own documentation says exactly that: it reports whether ownership can be *modified or read*, and
+	 * gives the reason. `BallService` asks it about a ball for the same reason. The read below is behind
+	 * this gate because the gate covers reading too, so a rig that cannot be owned is never asked.
+	 *
+	 * **What a rig that cannot be owned means, because it is more than bookkeeping.** An anchored
+	 * assembly is one the engine does not simulate, so a rig with an anchored root — or one welded to
+	 * anything anchored — **cannot be walked by `MoveTo` either**, and its published speed will say
+	 * "standing" for ever. That is the animation telling the truth about a rig that cannot move, which
+	 * is the whole design; the fix is on the rig, not in this file.
+	 *
+	 * **No argument, and that is what "the server" means here.** `SetNetworkOwner(playerInstance?)`
+	 * reads as "the player this belongs to", and the engine's convention for handing it back is to pass
+	 * none — the same call `BallService` makes on a ball it has just thrown, which is where this
+	 * project's precedent for it lives. `SetNetworkOwnershipAuto` and `GetNetworkOwnershipAuto` are the
+	 * pair that says the engine may decide for itself, which is why this is called again on a re-check
+	 * rather than once: see `NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS`.
+	 *
+	 * **The root part is looked up by the helper everything else uses**, so the part given an owner is
+	 * the part a dodge, a catch and the seeking behavior all call the rig's position. A rig with no part
+	 * to own is a rig with nothing to move, and is left alone rather than reported: `run` is where a
+	 * model with no humanoid is named.
+	 */
+	private ownForServer(model: Model, report: boolean): void {
+		const root = resolveDodgeable(model)?.root;
+		if (!root) return;
+
+		const [canSet, reason] = root.CanSetNetworkOwnership();
+		if (!canSet) {
+			// **Said once per rig, at setup, and never again.** This is not a note — it names a rig that
+			// will not walk and whose animation will therefore never say anything but "standing" — but
+			// the re-check below runs every few seconds and passes `false`, because a line repeated for
+			// ever is a line nobody reads.
+			if (report) {
+				warn(`[NPC] ${model.Name}: the server cannot own it — ${reason ?? "no reason given"}`);
+			}
+
+			return;
+		}
+
+		// **The server already has it, which is the ordinary answer on a re-check.** Nothing is written;
+		// the cost of the whole check is two reads. `nil` is the server here — the API's own words —
+		// which is the one place that reads oddly next to a call whose argument `nil` *means* the
+		// server.
+		if (root.GetNetworkOwner() === undefined) return;
+
+		root.SetNetworkOwner();
+	}
+
+	/**
+	 * Gives the rig an `Animator` if it has none — **on the server**, which is the load-bearing half.
+	 *
+	 * **The renderer cannot make one for itself.** An animation is loaded onto an `Animator`, so the
+	 * instance every client loads onto has to be one every client has: a client that created one would
+	 * be animating a body through an object nobody else can see, and each client would be doing it
+	 * through a different one. Created here, it is part of the rig that replicates. **And creating it
+	 * is not playing anything** — this service never loads a track on a rig, which is the rule the
+	 * whole arrangement rests on. See `RigAnimationController` for the side that does play them.
+	 *
+	 * **Nothing guarantees a rig arrives with one.** `Humanoid:LoadAnimation` is deprecated on the
+	 * engine's own note that "the `Animator` may be created while editing or at runtime", which is the
+	 * engine saying it is not its job; `LocomotionAnimationController` says the same from the other
+	 * side — "a player character arrives with one; a bare rig may not" — and `DodgeService` builds one
+	 * when it is missing for exactly this reason. A rig that already has one is left untouched, which
+	 * is the ordinary case for a rig made in Studio's animation editor.
+	 */
+	private ensureAnimator(model: Model): void {
+		const humanoid = model.FindFirstChildWhichIsA("Humanoid");
+		if (!humanoid || humanoid.FindFirstChildOfClass("Animator")) return;
+
+		const animator = new Instance("Animator");
+		animator.Parent = humanoid;
 	}
 
 	/**
@@ -228,6 +377,17 @@ export class NpcService implements OnStart {
 			// anybody adds; here it cannot be forgotten, and it stops throwing, catching and picking a ball up
 			// in one line.
 			//
+			// **And it is answered once per turn, above the publish, because the published state needs it.**
+			// Whether a rig is frozen is part of what a client is told — a held rig's legs stop — so the answer
+			// is taken here and handed to both readers, rather than asked twice with the chance of the two
+			// disagreeing. **The publish is above the gate on purpose**: a rig that had just been frozen would
+			// otherwise never publish that it had been, because everything below this line is skipped until it
+			// thaws.
+			const now = os.clock();
+			const frozen = this.freezes.isFrozen(model);
+
+			this.publishAnimation(model, humanoid, frozen, loop, now);
+
 			// **Inside the loop rather than in its condition, and that move is a bug fix rather than a
 			// preference.** This first went into the `while` above — which meant a frozen rig *left the loop*,
 			// and a loop is not a thing that comes back: `start` is called from the tag's added-signal and
@@ -237,12 +397,10 @@ export class NpcService implements OnStart {
 			// `announceDeath` was never called, and `RespawnBehavior` — which learns about deaths from that
 			// call and from nothing else — never brought it back. That is the whole of "the enemy falls down
 			// and never re-spawns", and it only happened to rigs that were frozen when they died.
-			if (this.freezes.isFrozen(model)) {
+			if (frozen) {
 				task.wait(period);
 				continue;
 			}
-
-			const now = os.clock();
 
 			for (const behavior of this.behaviors) {
 				// Untagged: this behavior is not on for this model, so it is skipped
@@ -277,6 +435,64 @@ export class NpcService implements OnStart {
 		// because a behavior that brings the model back starts a *new* loop, which must not be
 		// mistaken for this one on its way out.
 		if (humanoid.Health <= 0) this.announceDeath(model);
+	}
+
+	/**
+	 * Publishes what this rig is doing, for the clients that animate it. **One publisher, not four.**
+	 *
+	 * **Why here rather than in the behaviors that know.** The facts are spread across services — "is a
+	 * ball in hand" is `BallService`'s, "is it frozen" is `FreezeService`'s, "how fast is it going" is
+	 * the humanoid's — so a behavior publishing for itself would publish a *fragment*, and a client
+	 * would have to merge four writers and work out what their combination means. Every behavior would
+	 * also have to change, which is the thing this service's registry exists to avoid: a behavior is a
+	 * thin caller that knows nothing about being observed. And this loop already holds the model, the
+	 * humanoid and the freeze answer, so the whole state is one call in the one place that runs per rig.
+	 *
+	 * **On change only, and the *instance* is the record.** Every attribute is read before it is
+	 * written, so a rig walking in a straight line publishes its speed once and then says nothing at
+	 * all — and there is no second copy of "what did I last publish" to keep in step, because the rig
+	 * carries it. The speed is banded before it is written for exactly that reason: see
+	 * `ANIMATION_SPEED_BAND`, which also explains why the two thresholds downstream sit where they do.
+	 *
+	 * **The speed is measured the way the player's own controller measures its body** —
+	 * `HumanoidRootPart.AssemblyLinearVelocity`, horizontally — so both callers of `animationFor` are
+	 * reading the same quantity off the same kind of part. On the server that figure is only true while
+	 * the server owns the rig, which is what {@link ownForServer} is for.
+	 *
+	 * **Ownership is re-asserted from here, on a throttle**, because this is the one function that
+	 * already runs per rig on a clock. See `NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS` for what the
+	 * re-check protects and why one call at spawn is not enough; it passes `false` for the report, so a
+	 * rig that cannot be owned says so once at setup and not every few seconds.
+	 */
+	private publishAnimation(model: Model, humanoid: Humanoid, frozen: boolean, loop: NpcLoop, now: number): void {
+		const velocity = humanoid.RootPart?.AssemblyLinearVelocity;
+		const speed = velocity === undefined ? 0 : math.sqrt(velocity.X * velocity.X + velocity.Z * velocity.Z);
+
+		this.writeAttribute(model, NPC_ANIM_SPEED_ATTRIBUTE, math.floor(speed / ANIMATION_SPEED_BAND) * ANIMATION_SPEED_BAND);
+		this.writeAttribute(model, NPC_ANIM_GROUNDED_ATTRIBUTE, humanoid.FloorMaterial !== Enum.Material.Air);
+		this.writeAttribute(model, NPC_ANIM_FROZEN_ATTRIBUTE, frozen);
+		this.writeAttribute(model, NPC_ANIM_THROWING_ATTRIBUTE, this.balls.getHeldBall(model) !== undefined);
+
+		if (now - loop.ownershipCheckedAt < NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS) return;
+
+		loop.ownershipCheckedAt = now;
+		this.ownForServer(model, false);
+	}
+
+	/**
+	 * Writes an attribute only where it differs from what is already on the instance.
+	 *
+	 * **The comparison is the function.** An attribute write is a replication, so the state above can
+	 * only afford to be recomputed every turn if a rig that is doing what it was already doing writes
+	 * nothing at all. The value comes back from the instance as `AttributeValue` and is compared as it
+	 * is rather than type-checked first, because this is a *write* guard: a value that is not the one
+	 * this service last wrote is a value somebody else put there, which is a reason to write rather
+	 * than a reason to refuse.
+	 */
+	private writeAttribute(model: Model, name: string, value: number | boolean): void {
+		if (model.GetAttribute(name) === value) return;
+
+		model.SetAttribute(name, value);
 	}
 
 	/**

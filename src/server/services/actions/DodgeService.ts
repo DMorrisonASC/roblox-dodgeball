@@ -14,6 +14,7 @@ import { DevService } from "../../dev/DevService";
 import { FreezeService } from "./FreezeService";
 import { extendReadyAt, publishReadyAt } from "./readyAt";
 import { emitSound } from "../ball/SoundEmitter";
+import { insideZone } from "../zone/PracticeZoneService";
 
 /** Prints what every dodge request did, and why it did nothing. */
 const DEBUG = true;
@@ -309,12 +310,36 @@ export class DodgeService implements OnStart {
 		// source once the tracker's fact has replicated. A folder that is not there yet reads as "no round"
 		// and a player who has never been in a zone carries no attribute; both are the right answer while
 		// the server is still igniting.
+		//
+		// **A rig is the one body that still asks the question, because a rig cannot be asked anything
+		// else, and this paragraph is the exception to the rule above.** The attribute is written on the
+		// *player* — `PracticeZoneService.tick` takes a `Player`, one per body — so `GetPlayerFromCharacter`
+		// answers `nil` for an NPC rig and the attribute half of this gate would answer `false` for it for
+		// ever. A round covers that, because the round half is about the *round* rather than about the body,
+		// which is why an NPC dodges in play and why the hole only shows in the practice area: the place a
+		// rig is most likely to be tested in. So a body with no player queries the zone directly, through
+		// `insideZone` — already exported, already taking any `Instance` for the mystery box's sake, and
+		// already the one place the rule about what a zone *is* lives.
+		//
+		// **What makes the exception legitimate is the rule's own reason.** The cost the tracker exists to
+		// avoid is a query whose rate is set by *how fast somebody can mash a key* — and a rig does not
+		// mash. Its requests come from `DodgeBehavior`, which pre-checks `DODGE_CONFIG.COOLDOWN` on its own
+		// side, so the query runs at most once per 1.5 seconds per rig, for the handful of rigs that exist.
+		// A player never reaches it: the attribute arm is what a player takes, and a ternary does not
+		// evaluate the arm it does not need.
 		const status = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
 		const playing = status?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
 
 		if (!playing) {
+			// **The player's arm of this line is unchanged, character for character**, which is the whole
+			// of what this change promised: the same single attribute read, compared the same way. The
+			// query arm is the new one, and it is only reachable by a model the engine does not consider a
+			// character.
 			const player = Players.GetPlayerFromCharacter(model);
-			const inZone = player !== undefined && player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true;
+			const inZone =
+				player !== undefined
+					? player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true
+					: insideZone(model);
 
 			if (!inZone) {
 				if (DEBUG) print(`[Dodge] ${model.Name}: refused — no round, and not in a practice zone`);

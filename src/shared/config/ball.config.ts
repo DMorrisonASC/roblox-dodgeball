@@ -528,7 +528,7 @@ export const BALL_CONFIG = {
 	 * **Zeroed, and it should stay zeroed.** A non-zero nudge is a fault in the plan being papered over.
 	 * Tune with it, write down what it took, fix the cause, and put it back to zero.
 	 */
-	THROW_LAUNCH_NUDGE: { forward: 1, left: 0.5, up: 0 },
+	THROW_LAUNCH_NUDGE: { forward: 0, left: 0, up: 1 },
 
 	/**
 	 * Launch angle of the curveball, in degrees.

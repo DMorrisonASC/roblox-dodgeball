@@ -37,18 +37,20 @@ a place file that no build touches.
 | `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.roundBallCount` (the budget) and `cleanupRoundBalls` (the sweep) |
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
-| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `client/roundZone.ts` — the only tag read on the client, asked by `ShiftLock` and by the dodge input |
+| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` on the server — the tracker that publishes the attribute, `MysteryBoxService` through its point test `insideZoneAt`, and the dodge gate for a body with no player — plus `client/roundZone.ts` for `ShiftLock` and the dodge input, one of the two tags a client reads |
 | `mysterySpawnPrize` | `shared/constants.ts`, `MYSTERY_SPAWN_TAG` | *painted in Studio* | `MysteryBoxService.report`, `.tick` and `forgetLostSpawns` — **plus `PracticeZoneService.insideZone`, which decides whether the part is on a practice floor** |
 | `MatchJoinA` | `shared/constants.ts`, `MATCH_JOIN_A_TAG` | *painted in Studio* — the part's flags are then forced from code | `MatchService.mountSide` |
 | `MatchJoinB` | `shared/constants.ts`, `MATCH_JOIN_B_TAG` | as above | as above |
 | `MatchJoinTouched` | `MatchService`, `DEBOUNCE_TAG` | `MatchService.touched`, on a **character** | `MatchService.touched` |
-| `NPC` | `npc/Behavior.ts`, `NPC_TAG` | `NpcService.spawn`, `RespawnBehavior`, or painted in Studio | `NpcService`, `CollisionGroups`, `BallService`, `RoundService`, `OutlineService` |
+| `NPC` | `shared/constants.ts`, `NPC_TAG` — re-exported by `npc/Behavior.ts`, which is where every server reader still imports it from | `NpcService.spawn`, `RespawnBehavior`, or painted in Studio | `NpcService`, `CollisionGroups`, `BallService`, `RoundService`, `OutlineService` — **and `client/controllers/character/RigAnimationController`, which is what animates the rigs** |
 | `Behavior_Catching` | `npc/Behavior.ts`, `BEHAVIOR_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted | `NpcService`'s per-behavior gate |
 | `Behavior_Throwing` | `npc/Behavior.ts`, `BEHAVIOR_THROWING` | as above | as above |
 | `Behavior_Pickup` | `npc/Behavior.ts`, `BEHAVIOR_PICKUP` | as above | as above |
+| `Behavior_Seeking` | `npc/Behavior.ts`, `BEHAVIOR_SEEKING` | as above | as above |
+| `Behavior_Dodging` | `npc/Behavior.ts`, `BEHAVIOR_DODGING` | as above | as above |
 | `Behavior_Respawn` | `npc/Behavior.ts`, `BEHAVIOR_RESPAWN` | as above | as above |
 
-Fourteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
+Sixteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
 in the world — and the rule is now enforced by the reader rather than repeated in each one: see the
 four sections below that say so.
 
@@ -189,7 +191,9 @@ false. Six of the seven are enforced on the server, and five of those six are de
 made per frame on a client.
 
 **Two halves, one fact.** `client/roundZone.ts` answers "in a round, or in a practice zone" for the
-camera and the dodge input, and it is still the **only tag read on the client**. On the server
+camera and the dodge input, and **`NPC` is the only other tag any client reads** — see that row, and
+see why: a rig's animation state is published as attributes *on the rig*, so the renderer has to be
+able to find the rigs before there is anything to watch, and the tag is how. On the server
 `PracticeZoneService` owns membership: it runs the same bounds test on a tick, and publishes the answer
 as **`PracticeZone` on the `Player`**. Everything else reads that attribute — the dodge gate, the ball's
 contact handler, the Freeze splash, the dock — so the zone costs **one query per player per tick** no
@@ -269,7 +273,7 @@ a switch wants a pause between the two touches.
 It is worth having in this file despite being code-only, because it is a tag on a **character**, and
 a reader who knows the rest of this list will not expect that.
 
-## `NPC` and the four `Behavior_*` tags
+## `NPC` and the six `Behavior_*` tags
 
 `NPC` is the entry point; a `Behavior_*` tag enables one mechanic. A rig wearing `NPC` and no
 behaviour tag is managed and does nothing.
@@ -297,6 +301,23 @@ which is where a thrown ball goes. A parked map template in `ServerStorage` ther
 the world out of nowhere, at the coordinates its rigs had been saved at, with nothing in the output
 to say where they came from. It was found by the user, reported as "ball appear out of nowhere when
 testplay", and fixed by the world gate.
+
+**Two tags can be one mechanic, and `Behavior_Seeking` with `Behavior_Pickup` is that case.** The
+seeker walks the rig to the nearest loose ball and stops once the ball is inside a picker's reach;
+the picker takes whatever is in that reach. Either tag alone is a working rig that does nothing
+useful — with seeking only it crosses the arena and stands beside a ball it will never take, and with
+pickup only it collects what happens to roll within `PICKUP_RADIUS` of wherever it is standing. That
+belongs in this file because nothing in the build knows the two belong together: they are independent
+strings, and the system that runs them is deliberately independent as well.
+
+**And two tags can be a mechanic that never runs, which is the other half of that fact and is written
+down for the same reason.** `Behavior_Catching` holds a catch window **open continuously** — that is
+what a catcher is — and an open catch window refuses a dodge outright (`DodgeService.blocksDodge`).
+So a rig wearing `Behavior_Catching` and `Behavior_Dodging` is a catcher that never dodges: not a
+bug, and not a special case anywhere, but a combination nobody would guess from the two tag names.
+The same gate is why a dodge cannot interrupt a catch: the two actions are mutually exclusive by
+design, for a player and for a rig alike — the difference being that a player chooses, and a rig
+cannot.
 
 ## Cloning
 

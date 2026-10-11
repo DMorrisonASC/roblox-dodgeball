@@ -113,6 +113,25 @@ export const PRACTICE_ZONE_TAG = "practiceZone";
 export const MYSTERY_SPAWN_TAG = "mysterySpawnPrize";
 
 /**
+ * Tag marking a model as one `NpcService` manages — and, now, the tag a client finds rigs by.
+ *
+ * **It lived in `server/npc/Behavior.ts` and is here because a client needs it.** The four
+ * `Behavior_*` tags are still declared there, beside the behaviors they switch on, and that is where
+ * they belong: `NpcService` is their only reader in the game. This one stopped being like them when
+ * rigs became something a client animates — `RigAnimationController` finds the rigs it dresses by
+ * exactly this string — and a client file cannot require a *server* module: everything under
+ * `src/server` is mapped into `ServerScriptService`, which does not exist on a client at all. So the
+ * constant moved to the file that exists for names two machines must agree on, and `Behavior.ts`
+ * re-exports it, so the eight server files that read it did not have to change.
+ *
+ * **The entry point of the behavior system rather than a behavior itself**: a model wearing this is
+ * managed, and each `Behavior_*` tag on it enables one mechanic — a rig wearing this and no behavior
+ * tag is managed and does nothing. `TAGS.md` records the ordering rule (behaviors on first, this last)
+ * and why a rig is managed only while it is in the world.
+ */
+export const NPC_TAG = "NPC";
+
+/**
  * Which power a collected mystery box is paying for, on the `Player`. Empty string for none.
  *
  * **Published by `SuperService`, which holds the prize, and written with the rest of that readout** — see
@@ -801,4 +820,46 @@ export const AFTERIMAGE_WINDOW_ATTRIBUTE = "AfterimageWindow";
  * trail and a late attribute hides rather than doubles.
  */
 export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
+
+/**
+ * The four attributes a **rig `Model`** carries while it is doing something, which are what a client
+ * animates it from. Together they are the rig's animation state, published by the server.
+ *
+ * **A rig is animated by the clients looking at it, and these are what they are told.** The server does
+ * not play a rig's clips: a rig's `Animator` is the server's, so a track started there replicates every
+ * CFrame change of every rig to every client — traffic and stutter for rigs nobody is looking at. The
+ * middle way is this one: the server owns the *state*, because it is the only machine that can know it,
+ * and each client dresses the rig it can see. See `NpcService.publishAnimation` for the writer and
+ * `RigAnimationController` for the reader.
+ *
+ * **The vocabulary is exactly the four facts `animationFor` branches on, and nothing else.** That is
+ * deliberate rather than convenient: a state that existed on one side and not the other would be a
+ * mapping function that could not be shared, which is the whole point of it. The published *speed* is
+ * banded before it is written — see `ANIMATION_SPEED_BAND` — because a state carrying a measurement
+ * would publish continuously, and this arrangement's entire economics is that it publishes on change.
+ *
+ * **Four attributes rather than one packed value.** Each is a scalar, so Roblox replicates only the one
+ * that changed, which is exactly what "bytes per rig per change" means; and none of them needs a packing
+ * convention that a reader on the other side could get wrong. The alternative considered and rejected was
+ * one integer of bit fields, or one delimited string: it saves nothing on the wire — a change is one
+ * scalar either way — and it puts an unpacking step, and that step's bugs, on every client. The project's
+ * own convention is the same one, an attribute per fact, as {@link ROUND_SCORE_A_ATTRIBUTE} beside its
+ * sibling, and the client renderer asks for four names it can see.
+ *
+ * **On the rig rather than on a folder or the wire**, for the reason the round's attributes are on a
+ * folder: attributes replicate on their own, so the renderer needs no remote, no reply and no reference
+ * to `NpcService` — and this is a fact about a *model in the world*, which is what an instance attribute
+ * is for. A rig that is out of the world is not published at all (the gate `NpcService.run` keeps), so a
+ * parked template in `ServerStorage` wears no state and no client animates it.
+ */
+export const NPC_ANIM_SPEED_ATTRIBUTE = "AnimSpeed";
+
+/** Whether the rig is standing on something. Part of the state above; see it for the whole. */
+export const NPC_ANIM_GROUNDED_ATTRIBUTE = "AnimGrounded";
+
+/** Whether the rig is frozen — held, and unable to choose where it goes. See the state above. */
+export const NPC_ANIM_FROZEN_ATTRIBUTE = "AnimFrozen";
+
+/** Whether the rig has a ball in hand, which is what a rig with one is about to throw. See the state above. */
+export const NPC_ANIM_THROWING_ATTRIBUTE = "AnimThrowing";
 

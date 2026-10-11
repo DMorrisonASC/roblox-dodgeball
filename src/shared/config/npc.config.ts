@@ -17,4 +17,25 @@ export const NPC_CONFIG = {
 	 * enough that a test is not waiting on it.
 	 */
 	RESPAWN_DELAY_SECONDS: 3,
+
+	/**
+	 * How often a rig's network ownership is re-asserted, in seconds.
+	 *
+	 * **Ownership is the one thing about a rig that something other than this project can change.**
+	 * `SetNetworkOwner` with no argument makes the server the owner, which is what a rig needs — the
+	 * server is the machine driving every `MoveTo` a rig makes, and the one measuring the speed its
+	 * animation is chosen from — but the engine also *assigns* ownership automatically by proximity.
+	 * A rig that has had it taken is a rig whose physics is being simulated by whichever client is
+	 * nearest, and the symptoms are a rig that jitters underfoot and a `MoveTo` that stops arriving:
+	 * exactly when a player is close enough to be watching. `GetNetworkOwnershipAuto` is the engine's
+	 * own statement that the decision can be automatic, which is why this is a re-check rather than
+	 * one call at spawn.
+	 *
+	 * **Five seconds, and it is cheap enough not to be clever about.** The check is one
+	 * `GetNetworkOwner` per rig per interval, inside a loop that already runs several times a second
+	 * per rig, and what it is protecting is a walk and a destination.
+	 *
+	 * **Placeholder.**
+	 */
+	NETWORK_OWNERSHIP_RECHECK_SECONDS: 5,
 } as const;

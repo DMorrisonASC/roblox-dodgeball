@@ -12,8 +12,15 @@
  * does, so nothing else has to change.
  */
 
-/** Marks a model as managed by `NpcService`. The entry point, not a behavior. */
-export const NPC_TAG = "NPC";
+/**
+ * Marks a model as managed by `NpcService`. The entry point, not a behavior.
+ *
+ * **Declared in `shared/constants.ts` and re-exported here, since the tag became something a client
+ * reads too** — the rig animation renderer finds the rigs it dresses by it, and a client cannot
+ * require a module that lives under `src/server`. This file stays the name every server reader already
+ * imports it from, so nothing else moved. See that constant for the whole of the argument.
+ */
+export { NPC_TAG } from "shared/constants";
 
 /** Enables the catching behavior. */
 export const BEHAVIOR_CATCHING = "Behavior_Catching";
@@ -23,6 +30,40 @@ export const BEHAVIOR_THROWING = "Behavior_Throwing";
 
 /** Enables the pickup behavior. */
 export const BEHAVIOR_PICKUP = "Behavior_Pickup";
+
+/**
+ * Enables the seeking behavior: the rig walks to the nearest loose ball.
+ *
+ * **This is the first behavior that moves the rig, and that is the whole of its difference.**
+ * The other four act where the rig already stands — catching and throwing at whatever arrives,
+ * picking up what is already within `PICKUP_RADIUS`, respawning by placement — so none of them
+ * ever had to ask whether a ball was reachable. A destination brings that question with it, and
+ * the cheap ways to answer it do not work here, so the walk is bounded instead. See `SeekBehavior`,
+ * which owns that decision and states what it costs.
+ *
+ * **It fetches; it does not take.** A rig wearing this and not `BEHAVIOR_PICKUP` walks to a ball
+ * and then stands next to it, which is the correct reading of two tags that each mean one thing —
+ * the walk is this tag, the hand is that one. The pair is what produces a rig that collects.
+ */
+export const BEHAVIOR_SEEKING = "Behavior_Seeking";
+
+/**
+ * Enables the dodging behavior: the rig steps out of the way of a ball that is going to hit it.
+ *
+ * **The only behavior here that reacts to something outside the rig**, and the only one with a
+ * chance in it. The other five ask a service to do something the rig wants; this one asks for
+ * something a ball has made urgent. It is chance-based on purpose — a rig that always dodged would
+ * be untouchable, in a game about hitting people with a ball — and see `DodgeBehavior` for the chance
+ * itself, which is rolled **once per ball** aimed at the rig, and for the conditions that can refuse a
+ * dodge the rig has already decided to make.
+ *
+ * **It composes with the rest by not touching them.** A dodge is a two-tenths-of-a-second override
+ * of where the body is going, and a rig that is also seeking walks on from wherever the dash left
+ * it, because `DodgeService` restores the humanoid and the walk target was never changed. A rig that
+ * is *catching* is a different matter, and it is the existing gate rather than a new one: an open
+ * catch window refuses a dodge outright, so a rig wearing both tags is a catcher that never dodges.
+ */
+export const BEHAVIOR_DODGING = "Behavior_Dodging";
 
 /**
  * Enables the respawn behavior: the rig gets up again after it is killed.

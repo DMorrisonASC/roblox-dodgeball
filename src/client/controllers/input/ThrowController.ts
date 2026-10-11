@@ -569,6 +569,23 @@ export class ThrowController implements OnStart {
 			print(`[Throw] charging — ${BALL_CONFIG.CHARGE_SECONDS}s to full${this.curve ? ", bending" : ""}`);
 		}
 
+		// **The marker report's memory of a frame is dropped here, because the frame it remembers belongs to the
+		// previous hold.** `reportMarkerJitter` compares each frame against `lastMouse`, `lastMuzzle`, `lastLanding`
+		// and `lastMid`, and writes all four at the end of every frame it runs — which is every *charging* frame and
+		// no other. So without this, the first report of a new hold measures the player's movement across the whole
+		// gap between the two holds: a body that walked ten studs and re-aimed reports as ten studs of "marker
+		// jitter" that no simulation produced, on the one line a reader is most likely to take at face value.
+		// Clearing them costs one frame of silence rather than a false reading, because the report already requires
+		// previous values — the frame that sets these four is the frame it declines to report on.
+		//
+		// **What this is not:** charge state. Nothing here is read by `currentCharge`, which still derives the hold
+		// from `chargeStartedAt` alone — these four are this file's diagnostic scaffolding going quiet, and nothing
+		// in the throw or the preview reads them. Delete this block with the report it feeds.
+		this.lastMouse = undefined;
+		this.lastMuzzle = undefined;
+		this.lastLanding = undefined;
+		this.lastMid = undefined;
+
 		this.updateGuide();
 	}
 

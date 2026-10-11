@@ -1,6 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
+import { AnimationClip, animationFor, clipFor } from "shared/animation";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { sprinting } from "../../sprinting";
 
@@ -54,13 +55,15 @@ const LOAD_TIMEOUT_SECONDS = 5;
 const CONFIG_WEIGHT_NAME = "Weight";
 
 /**
- * The animation sets this controller claims, and the ids it claims them with.
+ * The clips this controller claims on a body, in the order the engine's script is asked for them.
  *
- * **A list rather than four blocks of code, because they differ only in which ids they carry.** The
- * names are not this codebase's choosing: `idle`, `walk`, `run` and `jump` are the names the
- * animation script looks its own sets up by, and they are the whole of the interface between it and
- * this file. See {@link CHARACTER_CONFIG.IDLE_ANIMATION_R6} for the ids themselves and for what a
- * blank one means.
+ * **Names rather than ids, because the ids are `shared/animation.ts`'s now.** These are that file's
+ * `AnimationClip` vocabulary — the same four words `animationFor` returns and the same four Roblox's
+ * animation script looks its own sets up by — and the id one of them means *on this rig* comes from
+ * `clipFor`, which is where the two ids per clip and the rig-type choice both live. Nothing here
+ * spells an asset id, and that is the point: this controller hands the script four sets *and* plays
+ * two of the clips itself, so the clip a set holds and the clip a track plays must be the same clip,
+ * and the only way to be certain of that is for one function to answer for both. See `clipFor`.
  *
  * **`run` is the sprint.** Roblox's name for the set is `run`; the game's name for the thing it
  * plays is the sprint, spelled {@link CHARACTER_CONFIG.RUN_ANIMATION_R6}. They are the same
@@ -79,18 +82,13 @@ const CONFIG_WEIGHT_NAME = "Weight";
  * has just jumped is falling a moment later: it lands on Roblox's falling clip until one is
  * supplied, and that is a visible seam rather than a theoretical one.
  */
-const ANIMATED_SETS: Array<{ name: string; r6: string; r15: string }> = [
-	{ name: "idle", r6: CHARACTER_CONFIG.IDLE_ANIMATION_R6, r15: CHARACTER_CONFIG.IDLE_ANIMATION_R15 },
-	{ name: "walk", r6: CHARACTER_CONFIG.WALK_ANIMATION_R6, r15: CHARACTER_CONFIG.WALK_ANIMATION_R15 },
-	{ name: "run", r6: CHARACTER_CONFIG.RUN_ANIMATION_R6, r15: CHARACTER_CONFIG.RUN_ANIMATION_R15 },
-	{ name: "jump", r6: CHARACTER_CONFIG.JUMP_ANIMATION_R6, r15: CHARACTER_CONFIG.JUMP_ANIMATION_R15 },
-];
+const ANIMATED_SETS: AnimationClip[] = ["idle", "walk", "run", "jump"];
 
-/** The set name of the clip a body wears at this game's walk speed. See {@link ANIMATED_SETS}. */
-const WALK_SET = "walk";
+/** The clip a body wears at this game's walk speed. A clip rather than a string: `clipFor` reads it. */
+const WALK_SET: AnimationClip = "walk";
 
-/** The set name of the clip a body wears while sprinting. See {@link WALK_SET}. */
-const RUN_SET = "run";
+/** The clip a body wears while sprinting. See {@link WALK_SET}. */
+const RUN_SET: AnimationClip = "run";
 
 /**
  * How often the moving clip is re-chosen, in seconds.
@@ -111,15 +109,6 @@ const MOVEMENT_TICK_SECONDS = 0.05;
  * the two clips here were authored separately rather than as a pair.
  */
 const MOVEMENT_FADE_SECONDS = 0.2;
-
-/**
- * The speed at or below which a body counts as standing still, in studs per second.
- *
- * **The engine's own figure rather than a second opinion about it.** It is the number Roblox's
- * animation script draws this line at — `speed > 0.01` in its `onRunning` — and this file is making
- * the same decision from the same measurement, so it draws it in the same place.
- */
-const STANDING_SPEED = 0.01;
 
 /**
  * One body's moving playback: the two clips, and which of them is playing.
@@ -153,25 +142,6 @@ interface Moving {
 
 	/** Which of the two is playing, or `none` while standing still or off the ground. */
 	playing: "walk" | "run" | "none";
-}
-
-/**
- * The id this game has for the `name` set on a body of this rig, or `""` where it has none.
- *
- * Read back out of {@link ANIMATED_SETS} rather than repeated, and that is the point of the function:
- * the two places that need a clip — the container handed to the animation script, and the track this
- * file plays itself — must be holding the *same* clip. Two lists of ids would be two answers to
- * "which animation is the walk", and the bug that comes out of that is a body that walks one way
- * under the script and another way under this file, depending on which of them got there first.
- */
-function clipFor(name: string, isR15: boolean): string {
-	for (const set of ANIMATED_SETS) {
-		if (set.name === name) {
-			return isR15 ? set.r15 : set.r6;
-		}
-	}
-
-	return "";
 }
 
 /**
@@ -212,11 +182,13 @@ function clipFor(name: string, isR15: boolean): string {
  * between this game's two speeds: at the base walk speed it was already choosing the same set it
  * chooses while sprinting, so one of the two clips was never seen at all. The moving clip is
  * therefore played here — on the local body, at `Movement` priority, with the script's own attempt
- * stopped — and the decision is made from the body's ground speed against
- * {@link CHARACTER_CONFIG.BASE_WALK_SPEED}, which is the game's own statement of where the sprint
- * begins. The claimed sets stay, and they are load-bearing rather than left over: they are what the
- * script plays in the moment before this file has chosen, and they are how the script's own attempt
- * is recognised when it makes one.
+ * stopped — and the decision is made **by `animationFor` in `shared/animation.ts`**, from the body's
+ * ground speed against {@link CHARACTER_CONFIG.RUN_ANIMATION_SPEED}, which sits between this game's
+ * two speeds. That function being shared rather than written here is the newer half of this
+ * paragraph: an NPC rig's clips are played by a client renderer with no `Humanoid` of its own, and
+ * the two must not answer the same question differently. The claimed sets stay, and they are
+ * load-bearing rather than left over: they are what the script plays in the moment before this file
+ * has chosen, and they are how the script's own attempt is recognised when it makes one.
  *
  * **The local player's body, and only that one.** An animation track is started by the client that
  * owns the body and replicated from its `Animator`, which is why the default script animating one
@@ -314,7 +286,7 @@ export class LocomotionAnimationController implements OnStart {
 		if (DEBUG) print(`[Animate] ${character.Name}: ${isR15 ? "R15" : "R6"} body`);
 
 		for (const set of ANIMATED_SETS) {
-			this.claimSet(animate, animator, set.name, isR15 ? set.r15 : set.r6);
+			this.claimSet(animate, animator, set, clipFor(set, isR15));
 		}
 
 		// **And then the two moving clips are chosen here rather than left to the script** — see
@@ -411,10 +383,13 @@ export class LocomotionAnimationController implements OnStart {
 	 * decision made from it, which is how a line reading `speed 19.5` beside `none` and `speed 0.1`
 	 * beside `walk` came to be written by a rule that reads neither of those ways.
 	 *
-	 * **The sprint input is read here too, and printed with it**, because the clip is now decided by a
-	 * key *and* a measurement: a line showing only one of the two could not tell "the player is not
-	 * holding sprint" from "the player is holding sprint and the body cannot move", and telling those
-	 * apart is most of what this decision does.
+	 * **The sprint input is still read here and still printed, but it no longer decides anything.**
+	 * The clip is chosen by `animationFor` from the measurement alone, because a rig has no key to
+	 * read and the rule has to be one rule — see that function for the reversal and for what the old
+	 * key-based rule cost. What this line is for now is telling the two failures apart at a glance: a
+	 * body with the key held and a speed sitting at the walk's own figure is a sprint the *server*
+	 * refused, which is a state the old rule wore the sprint clip through and this one wears the
+	 * walking clip for, because that is what the body is doing.
 	 */
 	private step(moving: Moving): void {
 		const speed = this.measuredSpeed(moving);
@@ -424,7 +399,7 @@ export class LocomotionAnimationController implements OnStart {
 		// the observer.
 		const wantsSprint = Fusion.peek(sprinting);
 
-		const wanted = this.wantedClip(moving, speed, wantsSprint);
+		const wanted = this.wantedClip(moving, speed);
 
 		if (wanted === moving.playing) return;
 
@@ -494,42 +469,40 @@ export class LocomotionAnimationController implements OnStart {
 	}
 
 	/**
-	 * Which of the two clips the body should be wearing at this instant.
+	 * Which of this file's two clips the body should be wearing at this instant.
 	 *
-	 * **Standing still and leaving the ground are both "neither", and for one reason**: those are the
-	 * states the engine's script already has the right answer for — the idle clip while the body is
-	 * still, the jump and fall clips while it is in the air — and a walking clip held through them
-	 * would be this file overriding decisions it did not come here to make.
+	 * **The decision is `animationFor`'s now, not this file's.** The rule that reads a state and names
+	 * a clip lives in `shared/animation.ts`, because an NPC rig is dressed by a client renderer that
+	 * has no `Humanoid` of its own to read and has to reach the same answer — see
+	 * `RigAnimationController`. What is left here is the translation between two vocabularies, "no
+	 * clip" and "not mine".
 	 *
-	 * **A key picks between the two moving clips; the measurement only decides whether either is
-	 * wanted.** That reverses what this used to do: it read the *configured* speed — whether
-	 * `WalkSpeed` had been raised above {@link CHARACTER_CONFIG.BASE_WALK_SPEED} — on the argument that
-	 * a measured speed dips when a sprint turns a corner, and that a threshold read off it would flap
-	 * between the two clips every time it did. The case that argument never covered is the one the key
-	 * answers: the pool is the server's, so a player holding sprint with nothing left to spend moved at
-	 * walking pace and wore the walking clip — the animation agreeing with the server rather than with
-	 * the player. **The player's hands are the input**, and a sprint that is visibly asked for and not
-	 * paid for is a fact the player already knows.
+	 * **"Not mine" is everything that is not a moving clip, and it is not a refusal.** The engine's
+	 * script has the right answer for standing still and for being in the air — the idle clip, and the
+	 * jump and fall clips — and this file has never claimed those sets: it plays two clips and leaves
+	 * the rest to the script, which is why `idle`, `jump` and "no clip at all" all mean the same thing
+	 * here. The two tracks this file owns are stopped, and the script is heard.
 	 *
-	 * **The measurement is a gate on both, and it is what stops the two failures the key alone would
-	 * allow.** Standing still holding sprint is not a sprint — the legs keep the engine's idle clip —
-	 * and neither is a body pressed against a wall with the key down, because the measured speed is the
-	 * only figure that can tell walking into a wall from walking across a floor. See
-	 * {@link measuredSpeed} for where that figure comes from and why it is measured rather than
-	 * received.
+	 * **`grounded` is read off `FloorMaterial`**, which is the same fact the server publishes for a rig
+	 * (`NpcService.publishAnimation`) so that both sides of the mapping are answering from the same
+	 * kind of read. What it costs is the one case Roblox draws differently: a body in *water* has a
+	 * floor material that is not air and would be read as walking. No clip was ever claimed for a
+	 * swimming body either, so this is the same gap the set list above already records rather than a
+	 * new one — and there is no water in the arena for it to appear in.
 	 *
-	 * **What this knowingly costs, and the half of it to watch in Studio:** a body the server has
-	 * refused to sprint wears the sprint clip at walking pace, so a player out of stamina runs on the
-	 * spot in the sense that matters — the legs are going faster than the ground is. If that reads worse
-	 * than the walking clip did, the fix is to gate on `WalkSpeed` as *well* as the key, which is one
-	 * line and puts the two facts back in agreement; the trade is that a refused sprint then looks like
-	 * nothing happened at all.
+	 * **`frozen` is passed as `false`, always.** The player's own freeze is a walk-speed key and an
+	 * anchored root (`FreezeService`), which arrive at the mapping as a body that is neither moving nor
+	 * on the ground — the first two branches — so the flag has nothing to add on this side. **`throwing`
+	 * is passed as `false` for a different reason**: a player carries a ball while running, and a charge
+	 * is an input this file deliberately has no opinion about, so a player's arms are never "busy" in
+	 * the sense that flag means. Both are states the rig has and the player does not, and they are
+	 * passed as absent rather than faked.
 	 */
-	private wantedClip(moving: Moving, speed: number, wantsSprint: boolean): "walk" | "run" | "none" {
-		if (moving.humanoid.GetState() !== Enum.HumanoidStateType.Running) return "none";
-		if (speed <= STANDING_SPEED) return "none";
+	private wantedClip(moving: Moving, speed: number): "walk" | "run" | "none" {
+		const grounded = moving.humanoid.FloorMaterial !== Enum.Material.Air;
+		const clip = animationFor(speed, grounded, false, false);
 
-		return wantsSprint ? "run" : "walk";
+		return clip === "walk" || clip === "run" ? clip : "none";
 	}
 
 	/**

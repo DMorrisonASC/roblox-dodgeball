@@ -26,6 +26,9 @@ const BALL_TAG = "Ball";
  * loose ball takes it, with nothing to press. One rule for both, which is what
  * stops a player and an NPC disagreeing about what is on the floor.
  *
+ * And a third reader that only reads: a seeking NPC asks for the floor itself —
+ * see {@link looseBalls} — because walking to a ball is not taking one.
+ *
  * The *search* is all this owns: which ball, and whether it is near enough. The
  * attach is `BallService`'s, so a picked-up ball is indistinguishable from a
  * caught one the moment it is in the hand, and is thrown by the same call.
@@ -120,7 +123,7 @@ export class BallPickupService implements OnStart {
 	}
 
 	/**
-	 * The closest ball lying loose within `radius`, or `undefined`.
+	 * Every ball lying loose right now: there for the taking, by anybody.
 	 *
 	 * Loose means three things, and each is a ball this must not take: **not armed**
 	 * (an armed ball is in flight and belongs to the throw), **not anchored** (that
@@ -131,10 +134,18 @@ export class BallPickupService implements OnStart {
 	 * And a fourth: **not still settling from a drop.** That one is the ball's own fact
 	 * rather than the picker's, so it is stamped on the ball and applies to everybody
 	 * equally — see `PICKUP_LOCKED_UNTIL`.
+	 *
+	 * **Public because the question has a second caller, and it is a *list* rather than a
+	 * distance for that reason.** A pickup wants the closest of these; a seeking NPC wants the
+	 * closest it has not already failed to reach, and *that* filter is the walker's own business
+	 * — so what is offered is the floor, and each caller picks from it. One walk of the tag and
+	 * one definition of loose come out of the arrangement rather than two of each.
+	 *
+	 * The `IsA` guard is part of the definition rather than a detail of the caller: the tag list
+	 * is `Instance`s, and only a part has a position to measure or a hand to sit in.
 	 */
-	private nearestLooseBall(origin: Vector3, radius: number): BasePart | undefined {
-		let best: BasePart | undefined;
-		let bestDistance = radius;
+	public looseBalls(): BasePart[] {
+		const loose: BasePart[] = [];
 
 		for (const instance of CollectionService.GetTagged(BALL_TAG)) {
 			if (!instance.IsA("BasePart")) continue;
@@ -148,10 +159,27 @@ export class BallPickupService implements OnStart {
 			const lockedUntil = instance.GetAttribute(PICKUP_LOCKED_UNTIL);
 			if (typeIs(lockedUntil, "number") && os.clock() < lockedUntil) continue;
 
-			const distance = instance.Position.sub(origin).Magnitude;
+			loose.push(instance);
+		}
+
+		return loose;
+	}
+
+	/**
+	 * The closest ball lying loose within `radius`, or `undefined`.
+	 *
+	 * A use of {@link looseBalls} rather than a second walk over the tag: the one thing this asks
+	 * that the list does not answer is *distance*, so distance is all it adds.
+	 */
+	private nearestLooseBall(origin: Vector3, radius: number): BasePart | undefined {
+		let best: BasePart | undefined;
+		let bestDistance = radius;
+
+		for (const ball of this.looseBalls()) {
+			const distance = ball.Position.sub(origin).Magnitude;
 			if (distance > bestDistance) continue;
 
-			best = instance;
+			best = ball;
 			bestDistance = distance;
 		}
 

@@ -60,6 +60,28 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 	 */
 	const homes = new Map<Model, CFrame>();
 
+	/**
+	 * The parent each rig is *filed* under, taken the first time this behavior saw the rig alive.
+	 *
+	 * **Taken while the rig is alive, for the same reason the template is.** A corpse cannot be asked
+	 * where it used to live: by the time `onDied` runs the rig has been knocked down, the ball it was
+	 * carrying has been dropped, and the only thing that knows the answer is what was written down at
+	 * the start of the life. Carried to the replacement exactly like `homes` and `templates` — one rig's
+	 * file serves every death it has, because a replacement arrives with its file carried over.
+	 *
+	 * **A parent, not a path, and that is the point.** The map's own rigs live in a folder inside the
+	 * arena — `Workspace.ArenaV2.PracticeArea.NPCs` in the place this was written for — while a rig
+	 * `NpcService.spawn` made lives directly in `Workspace`. Whichever it was, the replacement belongs
+	 * in the same place: a respawned rig that lands at `Workspace` root instead is two kinds of rig
+	 * where there is one kind of thing, and every name in the log that describes the folder is then
+	 * describing a rig that is no longer in it.
+	 *
+	 * **`undefined` is recorded as `undefined` rather than skipped**, because a rig that was unparented
+	 * when it was first seen has no file to go back to, and the placement in `onDied` has a fallback for
+	 * it — the same one a destroyed folder gets.
+	 */
+	const folders = new Map<Model, Instance | undefined>();
+
 	return {
 		tag: BEHAVIOR_RESPAWN,
 		tickInterval: math.huge,
@@ -82,6 +104,11 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 			if (homes.get(model) !== undefined) return;
 
 			homes.set(model, root.CFrame);
+
+			// **And where it is filed, taken at the same moment and for the same reason.** The corpse
+			// cannot be asked this later, and a rig moved between folders during its life should come back
+			// where it was first filed rather than where it happened to end up. See `folders`.
+			folders.set(model, model.Parent);
 
 			// Taken now: alive, standing, and usually empty-handed. This is the only moment at
 			// which a copy of a rig is a copy of a rig that works.
@@ -140,6 +167,12 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// since have had tags added to it.
 				const tags = CollectionService.GetTags(model);
 
+				// **Read off the corpse beside the tags, and for the same reason: this is the last moment
+				// it can be read at all.** The corpse's own parent is the *fallback* rather than the first
+				// choice — a rig that was unparented when it was first seen has no file to go back to, and
+				// that is the same case the placement below falls back for. See `folders`.
+				const filed = folders.get(model) ?? model.Parent;
+
 				const rig = template.Clone();
 				const fresh = rig.FindFirstChildWhichIsA("Humanoid");
 				const root = rig.FindFirstChild("HumanoidRootPart");
@@ -153,6 +186,7 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				model.Destroy();
 				homes.delete(model);
 				templates.delete(model);
+				folders.delete(model);
 
 				// **Placed by its root part, not by `PivotTo`.** A model pivot has no orientation of
 				// its own — it is a point — so moving a model by one moves it without turning it,
@@ -172,8 +206,29 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// and the loop about to start will ask for them on its first turn.
 				homes.set(rig, home);
 				templates.set(rig, template);
+				folders.set(rig, filed);
 
-				rig.Parent = Workspace;
+				// **Back into the file it came from, not into `Workspace`.** A rig that lands at `Workspace`
+				// root while the map's own rigs sit in a folder is two kinds of rig where there is one kind
+				// of thing, and everything that names the folder afterwards — a log line, a lookup, a person
+				// reading the Explorer — is naming a rig that is no longer in it. The world gate in
+				// `NpcService.run` asks `IsDescendantOf(Workspace)`, so a rig in a folder inside the arena is
+				// exactly as live as one at the root: the folder is where the rig belongs, not where it has
+				// to be for the loop to run.
+				//
+				// **A file that is gone is the fallback's problem, and it says so out loud.** A folder
+				// destroyed mid-round takes its contents with it, so the rig is headed for `Workspace` — but
+				// only after a line naming the folder, because a rig that silently moves house is the same
+				// fault in miniature as the one this placement exists to end.
+				if (filed !== undefined && filed.Parent !== undefined) {
+					rig.Parent = filed;
+				} else {
+					if (filed !== undefined) {
+						warn(`[NPC] ${name}: ${filed.Name} is gone — the rig is going to Workspace instead`);
+					}
+
+					rig.Parent = Workspace;
+				}
 
 				for (const tag of tags) {
 					if (tag !== NPC_TAG) rig.AddTag(tag);
