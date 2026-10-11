@@ -21,6 +21,17 @@ and `MatchSpawner` in terms of a map that is no longer cloned. The 2026-10-06 re
 after it, and the two behaviours for seeking and dodging. Those three are what the register below
 grew by.
 
+**Working-tree change, not in the commit above.** The six `Behavior_*` tags became nine. The catch
+and throw behaviours were split into an always-on variant and a gated one, so `Behavior_Catching` and
+`Behavior_Throwing` now name the **gated** behaviours, and `Behavior_AlwaysCatching` /
+`Behavior_AlwaysThrowing` name the always-on ones — the behaviour those two original strings used to
+describe. The dodge behaviour was then split the same way, but **without moving any string**: the new
+`Behavior_AlwaysDodging` is the always-on variant, and `Behavior_Dodging` keeps the chance-gated
+behaviour it has always had. The register and the sections below describe the source as it stands;
+commit `9e2e971` predates all of it, so **a place-file rig still wearing `Behavior_Catching` or
+`Behavior_Throwing` is now dispatched to different code than it was** (see the catching section
+below), while **a rig wearing `Behavior_Dodging` dodges exactly as often as it did**.
+
 ## Why there are copies at all
 
 Two separate reasons, and they are why this cannot be one shared constant:
@@ -51,14 +62,17 @@ a place file that no build touches.
 | `MatchJoinB` | `shared/constants.ts`, `MATCH_JOIN_B_TAG` | as above | as above |
 | `MatchJoinTouched` | `MatchService`, `DEBOUNCE_TAG` | `MatchService.touched`, on a **character** | `MatchService.touched` |
 | `NPC` | `shared/constants.ts`, `NPC_TAG` — re-exported by `npc/Behavior.ts`, which is where every server reader still imports it from | `NpcService.spawn`, `RespawnBehavior`, or painted in Studio | `NpcService`, `CollisionGroups`, `BallService`, `RoundService`, `OutlineService` — **and `client/controllers/character/RigAnimationController`, which is what animates the rigs** |
-| `Behavior_Catching` | `npc/Behavior.ts`, `BEHAVIOR_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted | `NpcService`'s per-behavior gate |
-| `Behavior_Throwing` | `npc/Behavior.ts`, `BEHAVIOR_THROWING` | as above | as above |
+| `Behavior_Catching` | `npc/Behavior.ts`, `BEHAVIOR_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted | `NpcService`'s per-behavior gate — and **gated since the catch/throw split**: a per-window 50 % decision, not the always-on window this string used to name. See the section below |
+| `Behavior_AlwaysCatching` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted | as above — **the always-on catcher, which is the behaviour `Behavior_Catching` used to name** |
+| `Behavior_Throwing` | `npc/Behavior.ts`, `BEHAVIOR_THROWING` | as above | as above — **gated since the split**: it turns to face an enemy and throws at it, and issues itself no ball. See the section below |
+| `Behavior_AlwaysThrowing` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_THROWING` | as above | as above — **the always-on thrower, which is the behaviour `Behavior_Throwing` used to name** |
 | `Behavior_Pickup` | `npc/Behavior.ts`, `BEHAVIOR_PICKUP` | as above | as above |
 | `Behavior_Seeking` | `npc/Behavior.ts`, `BEHAVIOR_SEEKING` | as above | as above |
-| `Behavior_Dodging` | `npc/Behavior.ts`, `BEHAVIOR_DODGING` | as above | as above |
+| `Behavior_Dodging` | `npc/Behavior.ts`, `BEHAVIOR_DODGING` | as above | as above — **the chance-gated dodger, whose meaning this split did not change** (a sibling was added beside it rather than it moved). See the section below |
+| `Behavior_AlwaysDodging` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_DODGING` | as above | as above — **the always-on dodger**, which answers yes to every ball it can move away from |
 | `Behavior_Respawn` | `npc/Behavior.ts`, `BEHAVIOR_RESPAWN` | as above | as above |
 
-Sixteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
+Nineteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
 in the world — and the rule is now enforced by the reader rather than repeated in each one: see the
 four sections below that say so.
 
@@ -282,7 +296,7 @@ a switch wants a pause between the two touches.
 It is worth having in this file despite being code-only, because it is a tag on a **character**, and
 a reader who knows the rest of this list will not expect that.
 
-## `NPC` and the six `Behavior_*` tags
+## `NPC` and the nine `Behavior_*` tags
 
 `NPC` is the entry point; a `Behavior_*` tag enables one mechanic. A rig wearing `NPC` and no
 behaviour tag is managed and does nothing.
@@ -319,11 +333,25 @@ pickup only it collects what happens to roll within `PICKUP_RADIUS` of wherever 
 belongs in this file because nothing in the build knows the two belong together: they are independent
 strings, and the system that runs them is deliberately independent as well.
 
-**And two tags can be a mechanic that never runs, which is the other half of that fact and is written
-down for the same reason.** `Behavior_Catching` holds a catch window **open continuously** — that is
-what a catcher is — and an open catch window refuses a dodge outright (`DodgeService.blocksDodge`).
-So a rig wearing `Behavior_Catching` and `Behavior_Dodging` is a catcher that never dodges: not a
-bug, and not a special case anywhere, but a combination nobody would guess from the two tag names.
+**And two tags can be a mechanic that never runs — which now turns on *which catcher* a rig wears, where
+it used to be the only catching tag there was.** An open catch window refuses a dodge outright
+(`DodgeService.blocksDodge`), so a dodging tag beside a catching one is either starved or merely
+rationed:
+
+- **`Behavior_AlwaysCatching` starves *any* dodger.** Its window is held open continuously, so
+  `Behavior_Dodging` and `Behavior_AlwaysDodging` alike never get an opening — the rig catches and
+  nothing else. Not a bug and not a special case anywhere, but a combination nobody would guess from
+  the tag names, which is why it stays written down.
+- **`Behavior_Catching` rations them instead.** The gated catcher rolls once per window whether it is
+  a catcher at all, and asks only when the roll says yes *and* a ball is in its detection radius — so
+  it leaves the window **closed** for roughly the other half of the timeline, and a closed window is
+  exactly what a dodge needs. A rig wearing it and `Behavior_AlwaysDodging` dodges in **every** gap;
+  one wearing it and the gated `Behavior_Dodging` dodges in about half of them. Either way the two
+  actions are still mutually exclusive *at any instant* (the gate is unchanged, and still
+  `DodgeService`'s): the rig catches while its window is open and dodges in the gaps, never both at
+  once. **This is the one place the catch/throw split changed a documented behaviour, and it is the
+  point of that split** — see the note at the head of this file and `CatchBehavior`.
+
 The same gate is why a dodge cannot interrupt a catch: the two actions are mutually exclusive by
 design, for a player and for a rig alike — the difference being that a player chooses, and a rig
 cannot.

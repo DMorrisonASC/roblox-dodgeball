@@ -1,19 +1,12 @@
 import { ThrowArc } from "shared/Trajectory";
+import { NPC_CONFIG } from "shared/config/npc.config";
+import { resolveDodgeable } from "shared/dodge";
 import { BEHAVIOR_THROWING, NpcBehavior } from "../Behavior";
+import { detectEnemy } from "../detect";
 import type { BallService } from "../../services/ball/BallService";
 
 /**
- * How far in front of itself an NPC aims, in studs.
- *
- * A direction is not a throw: the solve takes a *point*, and the only point an
- * NPC has to offer is "straight ahead of wherever it is facing". This is the
- * stand-in for aim. Replacing it — with the nearest player's torso, say — is a
- * change to this file alone.
- */
-const THROW_RANGE = 60;
-
-/**
- * Which arc an NPC throws. Straight is the plain default; a real aim is what would choose.
+ * Which arc this behaviour throws. Straight is the plain default; a real aim is what would choose.
  *
  * **A rig is the only thing in the game that still names an arc.** A player's throw is charged — a heading
  * and a hold, with no point in it at all — so `overhead`, `straight` and `curve` survive here, where there
@@ -23,53 +16,212 @@ const THROW_RANGE = 60;
 const THROW_ARC: ThrowArc = "straight";
 
 /**
- * Throwing, for an NPC.
+ * How often this behaviour looks for something to throw at, in seconds.
  *
- * The ball leaves the hand through `BallService.throwBall` and nothing else, so
- * an NPC's throw *is* a throw with a different direction in it: the same weld release,
- * the same token stamped at release and the same hand of gates — with one difference that
- * is worth knowing at this call site, which is that the *solve* is a different function from a player's.
- * A rig has a point to reach and asks for a throw at it; a player has a heading and a hold and asks for a
- * throw along it. Both are in `shared/throw.ts`, and the request below says which one this is.
+ * **Fast, because the rig has to *turn* before it throws and the turn is watched from here.** The
+ * interval is not a throw rate — a throw needs a ball in the hand, and this behaviour never hands
+ * itself one, so the rate is set by how often `Behavior_Seeking` and `Behavior_Pickup` fetch another.
+ * What the interval paces is the reaction: how soon the rig notices an enemy, and how often it
+ * re-checks that it has finished turning. A tenth of a second is the same cadence the catcher and the
+ * dodger ask for, which keeps `NpcService`'s one-loop-per-rig turn rate unchanged for a rig wearing
+ * any of them.
  *
- * `tickInterval` is what paces the throws. It is deliberately slower than the
- * catching behavior's, so a rig that both catches and throws has time to be hit
- * between its own throws.
+ * This is deliberately *not* the old throw's five seconds. That number paced a rig that refilled its
+ * own hand and threw on a metronome; with the refill gone (see the file comment), a slow tick would
+ * only delay the turn.
+ */
+const THROW_TICK_SECONDS = 0.1;
+
+/** The name on the attachment the aim constraint hangs from, so a stray one can be found. */
+const AIM_ATTACHMENT_NAME = "NpcAimAttachment";
+
+/** The name on the aim constraint itself, for the same reason. */
+const AIM_CONSTRAINT_NAME = "NpcAimBalance";
+
+/**
+ * How hard the aim constraint may torque the rig, and how quickly it answers.
+ *
+ * **`AlignOrientation` rather than a per-tick `CFrame` write, and the codebase already made this
+ * choice once**: `DodgeService.startDash` turns a dashing body with the same constraint, at the same
+ * torque and responsiveness, for the same reason — a constraint turns the body *and* what the engine
+ * thinks the body is doing, where a `CFrame` write on a physics-simulated root fights the solver and
+ * reads as a snap. The numbers are copied from there deliberately so a rig turning to throw and a rig
+ * dashing look like the same engine doing the same thing. They are not tuning values and so are not
+ * in the config beside the range and the angle: they are the mechanism, and a rig that turns at a
+ * different speed to a dodge is a different complaint to file.
+ */
+const AIM_MAX_TORQUE = 1e6;
+const AIM_RESPONSIVENESS = 50;
+
+/** Below this a target is too close to have a horizontal heading worth turning to. */
+const AIM_FLAT_EPSILON = 0.001;
+
+/**
+ * One rig's aim: the constraint that is turning it, and what the humanoid's rotation was before.
+ *
+ * **State rather than locals, because the constraint has to outlive the tick that built it.** An
+ * `AlignOrientation` turns a body over *time* — that is what makes the turn smooth — so it cannot be
+ * created, used and destroyed inside one `tick`. It is kept per rig and reused until the aim ends.
+ */
+interface Aim {
+	readonly attachment: Attachment;
+	readonly balance: AlignOrientation;
+
+	/** The rig's humanoid, if it has one, so its own rotation can be handed back. */
+	readonly humanoid?: Humanoid;
+
+	/** What `Humanoid.AutoRotate` was before this file switched it off. */
+	readonly autoRotate: boolean;
+}
+
+/**
+ * Throwing, for an NPC — **the gated variant, worn by `Behavior_Throwing`.**
+ *
+ * **It throws at an enemy, and it has to be facing one to do it.** Where `Behavior_AlwaysThrowing`
+ * throws straight ahead on a timer whether or not anybody is there, this rig throws at the nearest
+ * opposing model — and only when that model is roughly in front of it and within range. That facing
+ * rule is not a property of throwing; it is the prerequisite the user asked for, and it lives in
+ * `detect.ts` so a later dodge or catch can ask the same question of the same maths.
+ *
+ * **It never calls `prepare`, and it never hands itself a ball.** The rig that wears this is expected
+ * to be wearing `Behavior_Seeking` and `Behavior_Pickup` too: it walks to a loose ball, picks it up,
+ * and throws the one it has. **An empty hand is therefore not an error but the ordinary state after a
+ * throw** — the rig goes and fetches another — so the tick below returns without throwing when there
+ * is nothing in the hand, which is what `BallService.throwBall` would answer anyway, without the
+ * lookups this file would have spent getting there.
+ *
+ * **It turns, and it throws when the turn is done — `turn-then-fire`, not `fire-when-close-enough`
+ * (see `aimAt`).** The angle gate is re-read every tick from the rig's *current* facing, so the rig
+ * visibly rotates onto its target and the ball leaves once the target is inside the window. The
+ * alternative — throw the instant the *enemy* is within ±45° of wherever the rig happens to be
+ * looking — is a rig that fires sideways while still standing, which reads as a bug from the seat
+ * even though the aimed solve would land the ball anyway. The turn is what makes it read as a throw.
+ *
+ * **What the turn is not:** a change to the throw's *arithmetic*. `BallService.throwBall` is handed
+ * the target's own position, and the aimed solve flys the ball at that point from wherever the muzzle
+ * is — so the rotation is presentation, and the facing window is a plausibility gate ("do not throw
+ * behind you"), not a correction the solver needs. Stated because the opposite is easy to assume: the
+ * ball is not thrown along `LookVector`.
  */
 export function createThrowBehavior(balls: BallService): NpcBehavior {
+	/** One row per rig currently turning toward a target. See {@link Aim}. */
+	const aims = new Map<Model, Aim>();
+
+	/**
+	 * Points `model`'s body at `aimPoint`, building the constraint the first time and re-aiming it
+	 * after.
+	 *
+	 * **The humanoid's own rotation is switched off for the duration, and handed back afterwards.**
+	 * A standing humanoid steers its own facing, which would fight the constraint for the body — the
+	 * same fight `DodgeService` settles with `PlatformStand`, and settled here more cheaply because a
+	 * rig that is walking must not be put on platform stand. `AutoRotate = false` leaves the walk
+	 * controller alone and takes only the facing, which is the one thing this wants.
+	 */
+	const aimAt = (model: Model, root: BasePart, aimPoint: Vector3): void => {
+		let aim = aims.get(model);
+
+		if (aim === undefined) {
+			const attachment = new Instance("Attachment");
+			attachment.Name = AIM_ATTACHMENT_NAME;
+			attachment.Parent = root;
+
+			const balance = new Instance("AlignOrientation");
+			balance.Name = AIM_CONSTRAINT_NAME;
+			balance.Attachment0 = attachment;
+			balance.Mode = Enum.OrientationAlignmentMode.OneAttachment;
+			balance.MaxTorque = AIM_MAX_TORQUE;
+			balance.Responsiveness = AIM_RESPONSIVENESS;
+			balance.RigidityEnabled = false;
+			balance.Parent = root;
+
+			const humanoid = model.FindFirstChildWhichIsA("Humanoid");
+			const autoRotate = humanoid?.AutoRotate ?? true;
+			if (humanoid) humanoid.AutoRotate = false;
+
+			aim = { attachment, balance, humanoid, autoRotate };
+			aims.set(model, aim);
+		}
+
+		// Flat, so the turn is a yaw and never pitches the rig into the floor — the same reasoning
+		// `DodgeService` gives for the two points of its own `lookAt`. A target directly overhead has
+		// no heading to turn to, and the guard leaves the last good aim standing rather than turning
+		// the rig to face nothing.
+		const flat = new Vector3(aimPoint.X - root.Position.X, 0, aimPoint.Z - root.Position.Z);
+		if (flat.Magnitude < AIM_FLAT_EPSILON) return;
+
+		aim.balance.CFrame = CFrame.lookAt(root.Position, root.Position.add(flat.Unit));
+	};
+
+	/**
+	 * Ends an aim: destroys the constraint and gives the humanoid its own rotation back.
+	 *
+	 * Called on the three ways an aim can end — a throw, a lost target, and a death — and safe to call
+	 * when there is no aim, so each of those paths can call it unconditionally rather than each having
+	 * to know whether one was ever built.
+	 */
+	const clearAim = (model: Model): void => {
+		const aim = aims.get(model);
+		if (aim === undefined) return;
+
+		aim.balance.Destroy();
+		aim.attachment.Destroy();
+		if (aim.humanoid) aim.humanoid.AutoRotate = aim.autoRotate;
+
+		aims.delete(model);
+	};
+
 	return {
 		tag: BEHAVIOR_THROWING,
-		tickInterval: 5.0,
-
-		// A rig that throws needs something to throw, and it gets it by the same call
-		// a player's character is given a ball by. Declared here, not in `NpcService`,
-		// so the next throwing mechanic asks for its own ball the same way and the tag
-		// runner never has to know what a ball is.
-		prepare(model) {
-			balls.giveBall(model);
-		},
+		tickInterval: THROW_TICK_SECONDS,
 
 		tick(model) {
-			// Empty hand: take another ball, by the same call `prepare` made the first
-			// time. A throwing rig is one of the only two things in the game that is
-			// never left without one — the other is a dev with `InfiniteBalls` — and this
-			// is where that lives. It is a *behavior* asking, rather than the throw
-			// handing a ball back to everybody who throws one.
+			// Nothing to throw with: the ordinary state after a throw, and the rig is expected to go
+			// and fetch another. Ending the aim is the honest thing here — a rig holding no ball is
+			// not aiming at anything, and a constraint left standing would keep turning a body that
+			// has nothing to do with the turn.
 			if (!balls.getHeldBall(model)) {
-				balls.giveBall(model);
+				clearAim(model);
+
 				return;
 			}
 
-			const root = model.FindFirstChild("HumanoidRootPart");
-			if (!root || !root.IsA("BasePart")) return;
+			const rigBody = resolveDodgeable(model);
+			if (!rigBody) {
+				clearAim(model);
 
-			const target = root.Position.add(root.CFrame.LookVector.mul(THROW_RANGE));
+				return;
+			}
 
-			// **The `aimed` kind, which is the one a caller with a point in mind uses.** It is tagged rather
-			// than inferred because `BallService.throwBall` accepts both kinds and a target handed to the
-			// charged solve would be a distance — see `ThrowRequest` in `shared/throw.ts`, which is where that
-			// argument lives in full.
-			balls.throwBall(model, { kind: "aimed", target: target, arc: THROW_ARC });
+			// The enemy, or nothing — and nothing also covers "no round is playing", because
+			// `detectEnemy` is silent outside one. A rig with no enemy stops aiming.
+			const sighting = detectEnemy(model);
+			if (sighting === undefined || sighting.distance > NPC_CONFIG.THROW_RANGE_STUDS) {
+				clearAim(model);
+
+				return;
+			}
+
+			// Turn toward it. This runs whether or not the rig is already on target, because the
+			// target may have moved and because re-aiming is what keeps the constraint pointing at
+			// the body rather than at where it was.
+			aimAt(model, rigBody.root, sighting.aimPoint);
+
+			// Not yet facing it: keep turning, and do not throw. The angle was measured this tick from
+			// the rig's current facing, so this is the *turn* being watched and not a fixed pose.
+			if (math.abs(sighting.angle) > math.rad(NPC_CONFIG.THROW_ANGLE_DEGREES)) return;
+
+			// On target: stop turning and throw at the body. The constraint comes down before the
+			// throw so the ball leaves a body that has finished moving, and the aimed solve carries
+			// it to the target from the muzzle the rig is now facing along.
+			clearAim(model);
+			balls.throwBall(model, { kind: "aimed", target: sighting.aimPoint, arc: THROW_ARC });
+		},
+
+		// A rig killed mid-turn leaves a constraint on its root otherwise, and `RespawnBehavior`
+		// replaces the whole model a moment later — so the turn would be left running on a body that
+		// is about to be thrown away.
+		onDied(model) {
+			clearAim(model);
 		},
 	};
 }

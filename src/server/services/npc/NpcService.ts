@@ -11,6 +11,9 @@ import {
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { resolveDodgeable } from "shared/dodge";
 import { NPC_TAG, NpcBehavior } from "../../npc/Behavior";
+import { createAlwaysCatchBehavior } from "../../npc/behaviors/AlwaysCatchBehavior";
+import { createAlwaysDodgeBehavior } from "../../npc/behaviors/AlwaysDodgeBehavior";
+import { createAlwaysThrowBehavior } from "../../npc/behaviors/AlwaysThrowBehavior";
 import { createCatchBehavior } from "../../npc/behaviors/CatchBehavior";
 import { createDodgeBehavior } from "../../npc/behaviors/DodgeBehavior";
 import { createPickupBehavior } from "../../npc/behaviors/PickupBehavior";
@@ -91,15 +94,29 @@ export class NpcService implements OnStart {
 		private readonly dodges: DodgeService,
 	) {
 		this.behaviors = [
+			// **Both catchers come before the dodge, and the order is not cosmetic.** The behaviors share
+			// facts that are written by *services* — a held ball, a chase, a dash — so almost nothing here
+			// depends on the order at all. This one case does: a catching rig's window is opened by the
+			// catcher's own tick, so on a rig's *first* turn a dodge ticked before the catcher would find no
+			// window open yet and could fire. Behind it, the window is already open on the turn it matters,
+			// which is what makes a catch win the turn it starts on.
+			//
+			// **Which catcher is first matters only if a rig wore both tags**, which nothing does — the two
+			// tags are alternatives, and a rig carries one of them. The always-on catcher is listed first
+			// because it predates the gated one; the gated catcher's own decision is what gives a sibling
+			// dodge its gaps, so it has to be ahead of the dodge for the reason above.
+			createAlwaysCatchBehavior(catches, balls),
 			createCatchBehavior(catches, balls),
-			// **After the catcher, and before everything else, and the order is not cosmetic.** The
-			// behaviors share facts that are written by *services* — a held ball, a chase, a dash — so
-			// almost nothing here depends on the order at all. This one case does: a catching rig's window
-			// is opened by `Behavior_Catching`'s own tick, so on a rig's *first* turn a dodge ticked before
-			// the catcher would find no window open yet and could fire. Behind it, the window is already
-			// open on the turn it matters, which is what makes "a rig wearing both is a catcher that never
-			// dodges" exactly true rather than true from the second turn onwards.
+			// **Both dodgers, on the far side of both catchers for the reason above.** They are
+			// alternatives — a rig wears one of the two tags — so their order relative to each other is
+			// free; what is not free is that both sit *behind* the catchers, so a catching rig's window is
+			// already open on the turn the dodge asks about it.
 			createDodgeBehavior(dodges, balls),
+			createAlwaysDodgeBehavior(dodges, balls),
+			createAlwaysThrowBehavior(balls),
+			// **The gated throw, which is the one that needs a target.** It is listed after its
+			// always-on sibling because the pair are alternatives rather than a sequence; a rig carries
+			// one of the two tags.
 			createThrowBehavior(balls),
 			createPickupBehavior(pickups, balls),
 			// The pair to the line above, and the difference between a rig that collects and a rig

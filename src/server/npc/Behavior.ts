@@ -22,11 +22,51 @@
  */
 export { NPC_TAG } from "shared/constants";
 
-/** Enables the catching behavior. */
+/**
+ * Enables the **gated** catching behavior: the rig catches part of the time, not always.
+ *
+ * **A catch window is open only while a per-window decision says so**, so a rig wearing this *and*
+ * `BEHAVIOR_DODGING` can actually do both — the window is closed often enough for a dodge to fire in
+ * the gaps, which the always-on variant below does not leave. See `CatchBehavior`, which owns the
+ * decision and its cadence. **The tag string is unchanged but the meaning is not**: a rig that used to
+ * catch continuously now catches by decision, so a place-file rig still wearing `Behavior_Catching`
+ * is dispatched to the new code. `TAGS.md` records the change.
+ */
 export const BEHAVIOR_CATCHING = "Behavior_Catching";
 
-/** Enables the throwing behavior. */
+/**
+ * Enables the **gated** throwing behavior: the rig turns to face an enemy and throws at it.
+ *
+ * It never issues itself a ball — it throws what `BEHAVIOR_SEEKING` and `BEHAVIOR_PICKUP` put in its
+ * hand, and does nothing while the hand is empty — and it acts only during a round, at a target in
+ * front of it and in range. **The tag string is unchanged but the meaning is not**; see
+ * `ThrowBehavior` and `TAGS.md`.
+ */
 export const BEHAVIOR_THROWING = "Behavior_Throwing";
+
+/**
+ * Enables the **always-on** catching behavior: the rig holds its catch window open continuously.
+ *
+ * **The variant that was `BEHAVIOR_CATCHING` before the split**, preserved for a rig meant to be a
+ * catcher and nothing else. Its price is the one that made the split worth making: because the window
+ * never closes, a rig wearing this and `BEHAVIOR_DODGING` can never dodge. See `AlwaysCatchBehavior`.
+ *
+ * **Placeholder string**, chosen to match the file name. The camel-case matches the original two, so
+ * the four tags read as one family; the originals' lack of an underscore is left as it was rather than
+ * renamed, because a rename of a painted tag is a place-file edit no build can catch.
+ */
+export const BEHAVIOR_ALWAYS_CATCHING = "Behavior_AlwaysCatching";
+
+/**
+ * Enables the **always-on** throwing behavior: the rig is issued a ball and throws straight ahead on a
+ * timer, whether or not anybody is there.
+ *
+ * **The variant that was `BEHAVIOR_THROWING` before the split**, preserved for a practice dummy. This
+ * is the one that still calls `prepare`; see `AlwaysThrowBehavior`.
+ *
+ * **Placeholder string**, as above.
+ */
+export const BEHAVIOR_ALWAYS_THROWING = "Behavior_AlwaysThrowing";
 
 /** Enables the pickup behavior. */
 export const BEHAVIOR_PICKUP = "Behavior_Pickup";
@@ -48,22 +88,39 @@ export const BEHAVIOR_PICKUP = "Behavior_Pickup";
 export const BEHAVIOR_SEEKING = "Behavior_Seeking";
 
 /**
- * Enables the dodging behavior: the rig steps out of the way of a ball that is going to hit it.
+ * Enables the **gated** dodging behavior: the rig dodges a fraction of the balls aimed at it.
  *
- * **The only behavior here that reacts to something outside the rig**, and the only one with a
- * chance in it. The other five ask a service to do something the rig wants; this one asks for
- * something a ball has made urgent. It is chance-based on purpose — a rig that always dodged would
- * be untouchable, in a game about hitting people with a ball — and see `DodgeBehavior` for the chance
- * itself, which is rolled **once per ball** aimed at the rig, and for the conditions that can refuse a
- * dodge the rig has already decided to make.
+ * **The only behavior here that reacts to something outside the rig** — the rest ask a service to do
+ * something the rig wants; this one asks for something a ball has made urgent. It is chance-based on
+ * purpose — a rig that dodged every ball would be untouchable, in a game about hitting people with a
+ * ball — and the chance is `NPC_CONFIG.DODGE_CHANCE_PER_BALL`, decided **once per ball** aimed at the
+ * rig and held for as long as that ball is on course. See `DodgeBehavior` for the decision and for the
+ * conditions that can refuse a dodge the rig has already committed to, and `AlwaysDodgeBehavior` for
+ * the variant with no chance in it at all. **This tag keeps the meaning it always had** — the split
+ * added a sibling beside it rather than moving it.
  *
  * **It composes with the rest by not touching them.** A dodge is a two-tenths-of-a-second override
  * of where the body is going, and a rig that is also seeking walks on from wherever the dash left
  * it, because `DodgeService` restores the humanoid and the walk target was never changed. A rig that
  * is *catching* is a different matter, and it is the existing gate rather than a new one: an open
- * catch window refuses a dodge outright, so a rig wearing both tags is a catcher that never dodges.
+ * catch window refuses a dodge outright, so whether the two can both happen turns on which catcher the
+ * rig wears — `Behavior_AlwaysCatching` leaves no gap for a dodge, while `Behavior_Catching` does. See
+ * those two tags above.
  */
 export const BEHAVIOR_DODGING = "Behavior_Dodging";
+
+/**
+ * Enables the **always-on** dodging behavior: the rig answers yes to every ball it can move away from.
+ *
+ * **The variant that did not exist before the split, and the whole reason for it.** A rig meant to
+ * dodge *everything* used to be expressible only by setting the chance to `1` — a shared tuning number
+ * for the rigs meant to dodge *sometimes*. `DodgeService`'s own cooldown still bounds this one, so
+ * "always" means **always tries**, never "dodges at will". See `AlwaysDodgeBehavior`.
+ *
+ * **Placeholder string**, chosen to match the file name and the two always-variants beside the catch
+ * and throw tags, so the four read as one family.
+ */
+export const BEHAVIOR_ALWAYS_DODGING = "Behavior_AlwaysDodging";
 
 /**
  * Enables the respawn behavior: the rig gets up again after it is killed.
