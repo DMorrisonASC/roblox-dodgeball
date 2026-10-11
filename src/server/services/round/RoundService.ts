@@ -530,15 +530,20 @@ export class RoundService implements OnStart {
     // ---- The round, as a mode is allowed to see it (`RoundView`) ----
 
     /**
-     * Everyone still in the round.
+     * Everyone still in the round, as `Player`s.
      *
-     * The one place that knows who is playing is `activePlayers`, and a mode reads it through
+     * The one place that knows who is playing is `activePlayers`, and a caller reads it through
      * this rather than being handed the set itself — a mode able to `delete` from it would be a
      * mode able to eliminate somebody, and that is a decision for the round.
      *
-     * Built fresh on each read rather than kept in step beside the set: the only reader is the
-     * outcome check, once a second, and a second collection maintained in parallel would be a
-     * second answer to the same question.
+     * Built fresh on each read rather than kept in step beside the set: a second collection
+     * maintained in parallel would be a second answer to the same question.
+     *
+     * **This is the round's *player* list, and since a rig is a placeholder for a player it is no longer
+     * the whole of who is playing.** It stays what it is because its readers want people: the players'
+     * teleport, the players' entry hold and the list the transition covers — each of which needs a `Player`'s
+     * attribute or a `Player`'s client. A question about a *side* is {@link standingFor}, which counts the rigs
+     * standing in for the missing players too; see that method for why the two are separate rather than one.
      *
      * A method and not a getter because **roblox-ts does not support getters** — see `RoundView`.
      */
@@ -550,6 +555,50 @@ export class RoundService implements OnStart {
         }
 
         return players;
+    }
+
+    /**
+     * How much of `team` is still in the round: **the players on that side, and the rigs standing in for them.**
+     *
+     * **This exists because all three modes asked the same player-only question and all three were wrong about
+     * rigs.** Team Elimination walked `playersInRound()` to find the last side standing, Dodge and Seek walked it
+     * to count un-hit dodgers, and Score Rush asked whether it was empty — so a field of rigs read as *nobody* on
+     * both sides, and a round with four rigs on it opened, drew on its first tick and looped. That is the
+     * "starts, ends immediately, loops" the rig feature exists to remove, and the answer the modes needed was in
+     * this file the whole time: `rosterOutcome` has counted rigs since `rigsInPlay` was written.
+     *
+     * **A count by side rather than a list of everybody playing, because a count is what all three were
+     * computing.** Each of them built the list and then walked it to a number, so the round hands over the
+     * number and each mode keeps its own rule about what the number *means* — a draw at nought, a win at nought,
+     * zero dodgers. The alternative, a `Model[]` of the round's bodies, would have made each mode compare models
+     * to sides itself and would have put a `Model` where `teamOf` takes a `Player`, for no gain.
+     *
+     * **The rig half is `rigsInPlay`'s definition rather than a second one**: a rig that carries
+     * `RIG_TEAM_ATTRIBUTE` and is in the world, counted by *presence* rather than by health — a dead rig is not
+     * gone, because `RespawnBehavior` replaces it and its corpse keeps the side. That is deliberately the same
+     * test `rosterOutcome` uses, so the round has one answer to "is this side still in it" rather than two that
+     * could disagree.
+     *
+     * **It is only the same question as "who is in this round" while a round is playing**, which is the only
+     * time a mode is asked anything: a rig keeps its side through an intermission, so outside a round this counts
+     * rigs that are waiting on a pad.
+     *
+     * **What this deliberately does not change, and the two halves point in opposite directions on purpose.**
+     * `MatchService.countsFor` still counts *players* for the roster cap, so a rig never fills a seat a person
+     * could take; the minimum still counts rigs as participants, so a lone player's intermission can open. This
+     * method is about neither: it answers "how much of this side is left", not "may a match start" and not "is
+     * this team full". See `MatchService.canStart`, which is where that asymmetry is argued.
+     */
+    public standingFor(team: TeamLabel): number {
+        let standing = 0;
+
+        for (const player of this.activePlayers) {
+            if (this.teams.get(player) === team) standing++;
+        }
+
+        const rigs = rigsInPlay();
+
+        return standing + (team === TEAM_B ? rigs.b : rigs.a);
     }
 
     /** Which side a player is on, or nothing if they are not in this round. */
@@ -2757,10 +2806,16 @@ function rigsOnPads(): { readonly a: number; readonly b: number } {
  * **The second of the two rig counts, and it answers a different question from `rigsOnPads`.** That one asks
  * "has this rig come to a pad to play", which is what the round's *minimum* is about, and it is positional
  * because a rig still walking has not arrived. This one asks "is this side still in the round", which is what
- * *ends* a round, and it is deliberately **not** positional: **the gather behaviour walks a rig home the
- * moment the round opens** — `home` is where it stood when it set off, and for a spawned rig that is the lobby
- * spawn — so during play there may be no rig on a pad at all. A pads-only count would read zero for the whole
- * round and `rosterOutcome` would draw every one of them, which is the loop this exists to break.
+ * *ends* a round, and it is deliberately **not** positional: **the gather behaviour walks a rig off the pads
+ * the moment the round opens** — its destination for the round is its side's spawn on the court, and the pads
+ * are where a rig waits for a match rather than where it fights one — so during play there may be no rig on a
+ * pad at all. A pads-only count would read zero for the whole round and `rosterOutcome` would draw every one
+ * of them, which is the loop this exists to break.
+ *
+ * **The reason above is the rewritten half, and it is worth saying which half changed.** This used to argue
+ * from a rig walking *home* when the round opened, which is what the gather behaviour did before a rig had a
+ * court to walk to: the conclusion — count by presence, not by position — was right for that walk and is right
+ * for this one, so only the walk named in the argument moved.
  *
  * **"Standing" is about presence, not health.** A dead rig is not gone: it wears `Behavior_Respawn`, its corpse
  * keeps the side, and `RespawnBehavior` replaces it a few seconds later — so counting only the living would end

@@ -66,6 +66,22 @@ export interface RoundView {
 	 */
 	playersInRound(): ReadonlyArray<Player>;
 
+	/**
+	 * How much of `team` is still in the round — its players, and the rigs standing in for them.
+	 *
+	 * **A count by side rather than a list of bodies, and the rig is why.** A rig is a placeholder for a
+	 * player: it holds a seat and plays the round, but it has no `Player`, so {@link playersInRound} cannot
+	 * answer for it — and a mode that counted only people read a field of rigs as an empty round and drew it a
+	 * second after it opened. Every mode's outcome wants the same shape of answer, "how much of a side is
+	 * left", so that is the question the round answers; each mode keeps its own rule about what the number
+	 * means.
+	 *
+	 * See `RoundService.standingFor` for what "standing" is (presence rather than health, and the same test the
+	 * round's own roster check uses) and for what it deliberately leaves alone: the roster cap stays a question
+	 * about *players*, so a rig can never fill a seat a person could take.
+	 */
+	standingFor(team: TeamLabel): number;
+
 	/** The side a player is on, or `undefined` if they are not in the round. */
 	teamOf(player: Player): TeamLabel | undefined;
 
