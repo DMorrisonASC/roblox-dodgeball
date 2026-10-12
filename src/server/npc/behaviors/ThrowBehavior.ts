@@ -108,6 +108,17 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 	const aims = new Map<Model, Aim>();
 
 	/**
+	 * The rigs that have already been reported as **holding a ball with nobody to throw it at**.
+	 *
+	 * A `Set` rather than a flag on the aim, because it is about a state that is not an aim: a rig with no
+	 * target has no aim at all (this file clears it), so the fact has nowhere else to live. Presence is the
+	 * latch — a rig is reported the turn it becomes blocked and again the turn it stops being blocked, and
+	 * says nothing in between. Never cleared, like every other per-rig table in this directory: a destroyed
+	 * rig never ticks again, so its entry is never read again either.
+	 */
+	const idle = new Set<Model>();
+
+	/**
 	 * Points `model`'s body at `aimPoint`, building the constraint the first time and re-aiming it
 	 * after.
 	 *
@@ -195,10 +206,35 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// The enemy, or nothing — and nothing also covers "no round is playing", because
 			// `detectEnemy` is silent outside one. A rig with no enemy stops aiming.
 			const sighting = detectEnemy(model);
+
+			// **A rig holding a ball with nobody to throw it at says so once, and says when that ends.** This
+			// is the one state this behaviour has that is invisible in every other line a server prints: a rig
+			// with a ball in hand and its target out of range does *nothing*, for as long as the state lasts,
+			// and looks from a seat exactly like a rig that is thinking about it. In and out, once each, is
+			// what turns "the rigs stopped throwing after a while" into a distance and a range to compare —
+			// which is otherwise a question about a number in a config file that nothing reports.
 			if (sighting === undefined || sighting.distance > NPC_CONFIG.THROW_RANGE_STUDS) {
 				clearAim(model);
 
+				if (!idle.has(model)) {
+					idle.add(model);
+
+					const reason =
+						sighting === undefined
+							? "no enemy in the round"
+							: `the nearest is ${math.floor(sighting.distance)} studs off, ` +
+								`and the range is ${NPC_CONFIG.THROW_RANGE_STUDS}`;
+
+					print(`[Rig] ${model.Name}: holding a ball and not throwing — ${reason}`);
+				}
+
 				return;
+			}
+
+			if (idle.has(model)) {
+				idle.delete(model);
+
+				print(`[Rig] ${model.Name}: throwing again — target ${math.floor(sighting.distance)} studs off`);
 			}
 
 			// Turn toward it. This runs whether or not the rig is already on target, because the

@@ -3,6 +3,7 @@ import { BALL_NAME, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE }
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { resolveDodgeable } from "shared/dodge";
 import type { BallService } from "../services/ball/BallService";
+import { TEAM_A, TEAM_B, TeamLabel } from "../services/round/team";
 import { NPC_TAG } from "./Behavior";
 
 /**
@@ -101,23 +102,62 @@ function isRoundPlaying(): boolean {
 }
 
 /**
+ * **Which side a body is on, read from wherever that side actually lives.**
+ *
+ * A side is `TEAM_ATTRIBUTE`, and it is written in two different places depending on what the body is:
+ * `RoundService.assignTeams` writes it on the **`Player`**, because the roster is player-keyed and a
+ * character is replaced on every death; `LobbyRigService` writes it on the **rig**, because a rig *is*
+ * the body. So a reader has to ask the right one or it is asking nobody — and the old comparison asked
+ * the model in both cases, which meant every player's character read as side-less and therefore, under a
+ * "not equal" test, as an enemy of every rig, teammate or not.
+ *
+ * **`GetPlayerFromCharacter` is the whole of the test, and it is nullable.** Verified in the installed
+ * typings (`@rbxts/types/include/generated/None.d.ts`):
+ * `GetPlayerFromCharacter(this: Players, character: Instance | undefined): Player | undefined` — so
+ * `undefined` means "this model is not a player's character", which for this file means it is a rig, and
+ * the model's own attribute is the answer.
+ *
+ * **One helper rather than two branches at each call site**, because it is the same question in both
+ * places: the rig asking is a model and each candidate is a model, and "what side is this body on" does
+ * not have two answers depending on which end of the comparison you are standing at. Writing the branch
+ * twice would be two places to fix the next time a third kind of body can hold a side.
+ *
+ * **Validated rather than trusted**, for `sideOfRig`'s reason in `npc/rigs.ts`: a string attribute
+ * anybody can write is not a side until it reads as one. The comparison's outcome is unchanged by the
+ * check — an invalid label was never equal to a valid one — but what comes back is a `TeamLabel` or
+ * nothing, which is a thing the caller can act on rather than a value it has to keep re-asking about.
+ */
+function sideOf(model: Model): TeamLabel | undefined {
+	const player = Players.GetPlayerFromCharacter(model);
+	const label = player !== undefined ? player.GetAttribute(TEAM_ATTRIBUTE) : model.GetAttribute(TEAM_ATTRIBUTE);
+
+	if (label === TEAM_A || label === TEAM_B) return label;
+
+	return undefined;
+}
+
+/**
  * The nearest opposing model to `rig`, or `undefined`.
  *
- * **What an "enemy" is, stated plainly, because the answer is not what the name suggests.** The rule
- * is "a model that is not on the same team", read as `candidateTeam !== rigTeam`. A **rig carries no
- * team**: `RoundService.assignTeams` fills its map from `MatchService.roster()`, which is
- * `Player`-keyed, and writes `TEAM_ATTRIBUTE` on players alone — so a rig's team is `undefined`, and
- * under an equality test that is the same "team" as every other rig's and as every model outside a
- * round. The consequences fall out of that one comparison and are the whole design:
+ * **What an "enemy" is, stated plainly, because the rule is one comparison and the two sides are read
+ * from two different places.** A candidate is an enemy when its side is **not equal** to the rig's side —
+ * a player's character's side coming from its `Player`, a rig's from the rig itself, and a body with no
+ * side at all reading as `undefined`. See {@link sideOf}. The four consequences, which are the whole
+ * design:
  *
- * - **A rig's enemies are the players who have a side.** A player in the round wears `"A"` or `"B"`,
- *   which is not `undefined`, so they are an enemy of the rig.
- * - **Two rigs are never enemies of each other.** Both teams are `undefined`, so they are "the same
- *   side" — which is what a game where rigs are training dummies and players are the opposition
- *   wants, and is worth knowing before anybody tries to make two rigs fight.
- * - **A model with no team is nobody's enemy.** A player in the lobby, or one who joined mid-round
- *   and has no side, is `undefined` too, and so is skipped. "Not on the same team" is only a
- *   meaningful question of a model that *has* a team.
+ * - **A rig on a side sees players on the other side, and only those.** A rig on `A` does not throw at a
+ *   player on `A`, which is the rule the game is for and which the previous comparison got wrong.
+ * - **A rig on a side sees rigs on the other side**, because a rig's side is on the rig — so two
+ *   placeholders on opposite sides fight each other, which is what a rig-versus-rig round is.
+ * - **A body with no side is an enemy of every rig that has one**, because `undefined !== "A"` is true.
+ *   That covers a player standing in the lobby who has not opted in, and a rig that lost its side. It is
+ *   the comparison's honest answer rather than a rule anybody chose: "not on my side" is all this asks,
+ *   and a caller that wants side-less bodies skipped is asking a *different* question — "is this a
+ *   participant" — which is `npc/rigs.ts`'s question and is asked there.
+ * - **A rig with no side of its own** sees every team-bearing rig as an enemy and every player as a
+ *   friend, because `undefined` equals `undefined`. Nothing in this game is in that state during a round:
+ *   a placeholder takes its side when it reaches its pad and keeps it, and the behaviours that call this
+ *   are only ever worn by a rig that holds one.
  *
  * **Outside a round it is silent**, which is the user's own rule ("not functioning outside of a
  * round") and the reason for {@link isRoundPlaying}: with no round there are no sides, so every
@@ -139,7 +179,7 @@ export function detectEnemy(rig: Model): EnemySighting | undefined {
 	const rigBody = resolveDodgeable(rig);
 	if (!rigBody) return undefined;
 
-	const rigTeam = rig.GetAttribute(TEAM_ATTRIBUTE);
+	const rigTeam = sideOf(rig);
 
 	let found: EnemySighting | undefined;
 	let bestDistance = math.huge;
@@ -147,10 +187,11 @@ export function detectEnemy(rig: Model): EnemySighting | undefined {
 	const consider = (candidate: Model): void => {
 		if (candidate === rig) return;
 
-		// **The side test, before any arithmetic.** A candidate on the same team — which includes
-		// every other rig, see the note above — is not an enemy, and is dropped here rather than
-		// being measured and then discarded.
-		if (candidate.GetAttribute(TEAM_ATTRIBUTE) === rigTeam) return;
+		// **The side test, before any arithmetic.** A candidate on the same side — which is a rig on the
+		// same side, or a player on the same side, both resolved by `sideOf` — is not an enemy, and is
+		// dropped here rather than being measured and then discarded. Everything on the other side is,
+		// and a body with no side is too: see the note above for why that is the comparison's answer.
+		if (sideOf(candidate) === rigTeam) return;
 
 		const other = resolveDodgeable(candidate);
 		if (!other) return;

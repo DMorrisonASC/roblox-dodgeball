@@ -1,5 +1,6 @@
 import { Workspace } from "@rbxts/services";
 import { DODGE_CONFIG } from "shared/config/dodge.config";
+import { NPC_CONFIG } from "shared/config/npc.config";
 import { BALL_NAME } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { BEHAVIOR_ALWAYS_DODGING, NpcBehavior } from "../Behavior";
@@ -186,6 +187,20 @@ const CAST_LIFT = 0.25;
  * turn and is acted on as soon as there is room, because the ball is still coming. The 1.5 s cooldown
  * means one dodge per `DODGE_CONFIG.COOLDOWN`, however many balls arrive inside it. And a rig the engine
  * will not simulate cannot dodge at all, which is answered before the decision is even made.
+ *
+ * **Two of those three now *run* instead of standing, and the distinction is worth keeping straight: a
+ * refused dash is not a refused movement.** A rig on cooldown, or one whose request the service turned
+ * down because a catch window was open, still holds an escape direction it has already proved clear — so
+ * it walks it, which is strictly better than being a stationary target in the path of a ball. The other
+ * two cases still stand, because there is nothing else they can do: a rig with both ways blocked has no
+ * clear direction to walk, and a rig the engine will not simulate has no movement at all. See `runAway`
+ * below for what that walk is, what it costs, and the one case it deliberately does not cover (a roll the
+ * gated variant *declined*, which is a decision rather than an unavailability).
+ *
+ * **Both variants get this, and that is easy to get wrong from the file names alone.** The gated variant
+ * is what `Behavior_Dodging` selects, `Behavior_Dodging` is what the arena rigs wear, and the body both
+ * variants share is *this* function — so a change here is a change for the arena as much as the practice
+ * area. See `DodgeBehavior.ts`, which is a one-line factory and says where its mechanism lives.
  *
  * **It fetches nothing and takes nothing.** A rig holding a ball dodges exactly like an empty-handed
  * one: a ball in the hand is not a shield, and the game's own rules say so — a catcher may not catch
@@ -447,6 +462,44 @@ export function makeDodgeBehavior(
 		);
 	};
 
+	/**
+	 * **Runs instead of standing: a `MoveTo` along a direction the rig has already proved is clear.**
+	 *
+	 * **This tag's job is not to be hit, and a dodge is only one way to do that.** `DodgeService` refuses a
+	 * dash for reasons that are about the *service* rather than about the rig — a catch window open, a freeze,
+	 * the cooldown, a round that is not on — and a rig wearing this beside `Behavior_Catching` spends most of a
+	 * round inside the first of those, which is the state its log line reports as `refused — DodgeballBall is
+	 * already in hand`. What the behaviour did until now was stand exactly where it was, which is the one thing
+	 * a body in the path of a ball must not do, and from a seat it reads as a rig that has given up.
+	 *
+	 * **A walk, and not a dodge in disguise.** The direction is the one the dash would have taken and the rig
+	 * travels the same way; what it does not get is the speed, the platform stand, the ghost, the sound or the
+	 * cooldown — so it is not the dodge this behaviour is named for and does not pretend to be. A ball doing
+	 * 125 studs/s is not evaded by walking; a ball that was going to *miss* now misses by more, and a rig that
+	 * is moving is not the stationary target it was.
+	 *
+	 * **Not for a *declined* roll, deliberately.** The gated variant's `shouldDodge` answering "let this one
+	 * past" is a decision rather than an unavailability — and if a rig ran for every ball it declines, the
+	 * chance in `DODGE_CHANCE_PER_BALL` would stop meaning anything, because running is most of what dodging
+	 * buys. Only the paths where the rig *could not* dodge call this: the cooldown below, and a refusal from
+	 * the service.
+	 *
+	 * **`MoveTo` and not a velocity write**, for `SeekBehavior`'s reason: the engine's own mover owns the body,
+	 * and this is the same request that behaviour issues.
+	 *
+	 * **What it fights, named.** `Behavior_Seeking` also issues `MoveTo` — at a ball, rather than away from one
+	 * — so a rig doing both is two walkers taking turns and whichever ticks last each turn wins. That is the
+	 * same interaction `WalkToJoinPadBehavior`'s doc records for its own pair, and it is worth its cost here: a
+	 * rig running for its life and a rig fetching a ball are both doing what they were told, and the ball it
+	 * wants is usually the one away from the ball coming at it.
+	 */
+	const runAway = (model: Model, root: BasePart, direction: Vector3): void => {
+		const humanoid = model.FindFirstChildWhichIsA("Humanoid");
+		if (!humanoid) return;
+
+		humanoid.MoveTo(root.Position.add(direction.mul(NPC_CONFIG.DODGE_RUN_STUDS)));
+	};
+
 	return {
 		tag,
 		tickInterval: DODGE_TICK_SECONDS,
@@ -467,15 +520,11 @@ export function makeDodgeBehavior(
 			// is asked below, once, and only when a roll has already succeeded.
 			if (root.Anchored) return;
 
-			// **The cooldown, read from the constant the service charges against, and applied before
-			// anything else.** It bounds the rate regardless of rolls — at most one dodge per
-			// `DODGE_CONFIG.COOLDOWN` — and it is asked here as well as inside `DodgeService` because the
-			// service's refusal is a print line: a rig rolling ten times a second and asking ten times a
-			// second would fill the output with refusals.
+			// **The threat, then the direction, and only then the cooldown — and that order is the change that
+			// lets a rig on cooldown run instead of standing.** The direction used to be chosen *below* the
+			// gate, which was right while the only thing a rig could do with it was dash; now it is what a rig
+			// does when it cannot dash, so it has to be known before the gate is asked.
 			const now = os.clock();
-			const last = lastDodgedAt.get(model);
-			if (last !== undefined && now - last < DODGE_CONFIG.COOLDOWN) return;
-
 			const threat = threatAgainst(root.Position);
 			if (!threat) return;
 
@@ -489,6 +538,22 @@ export function makeDodgeBehavior(
 			const direction = escapeFrom(model, threat, threat.AssemblyLinearVelocity);
 			if (!direction) {
 				note(model, root, threat, "neither side is clear");
+
+				return;
+			}
+
+			// **The cooldown, read from the constant the service charges against.** It bounds the rate
+			// regardless of rolls — at most one dodge per `DODGE_CONFIG.COOLDOWN` — and it is asked here as
+			// well as inside `DodgeService` because the service's refusal is a print line: a rig rolling ten
+			// times a second and asking ten times a second would fill the output with refusals.
+			//
+			// **And a rig on cooldown runs rather than standing.** The second and a half after a dodge is the
+			// window in which a rig cannot dodge again, and standing through it is exactly what a body in the
+			// path of a ball must not do — it is the turn it gets hit on. It keeps moving along the escape
+			// direction it has already proved clear; see `runAway` for what that is and is not.
+			const last = lastDodgedAt.get(model);
+			if (last !== undefined && now - last < DODGE_CONFIG.COOLDOWN) {
+				runAway(model, root, direction);
 
 				return;
 			}
@@ -545,7 +610,20 @@ export function makeDodgeBehavior(
 			// character. Its answer is what the stamp above is set from.
 			note(model, root, threat, "dodging");
 
-			if (dodges.requestDodge(model, direction)) lastDodgedAt.set(model, os.clock());
+			if (dodges.requestDodge(model, direction)) {
+				lastDodgedAt.set(model, os.clock());
+			} else {
+				// **The service refused, so the rig runs instead of standing.** The common refusal for the
+				// rigs that wear this tag is a catch window being open — they wear `Behavior_Catching` beside
+				// it — and the others are the freeze, the zone, the round and the cooldown this file also
+				// keeps. None of them is a reason to stay in the path of a ball, and the direction the dash
+				// would have used is already chosen and already proved clear. See `runAway`.
+				//
+				// **The stamp above is left alone**, which is the point of it being stamped on success: a
+				// refusal has not happened, so no cooldown is charged here — the walk is free to repeat every
+				// turn the ball stays on course, and that repetition is what makes it a run rather than a step.
+				runAway(model, root, direction);
+			}
 		},
 	};
 }
@@ -557,8 +635,10 @@ export function makeDodgeBehavior(
  * chance that also governs the rigs that dodge only sometimes. It is not "dodges five times a
  * second": `DodgeService` refuses a dodge inside `DODGE_CONFIG.COOLDOWN`, and the local pre-check
  * above stops the behaviour asking inside it either, so a second ball arriving within 1.5 s of a
- * successful dodge finds the rig standing still, exactly as a gated rig's would. "Always" means
- * **always tries**, bounded by the same cooldown every dodger is bounded by.
+ * successful dodge finds the rig **walking** rather than dashing — see `runAway`. "Always" means
+ * **always tries**, bounded by the same cooldown every dodger is bounded by, and never "dodges at
+ * will". It used to say that such a rig was found standing still, which was true until the walk
+ * above was added and is the value the gated variant gets too.
  *
  * A predicate that is always `true` is not a placeholder for a missing rule — it *is* the rule for
  * this tag. See {@link makeDodgeBehavior} for the body it selects.

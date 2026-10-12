@@ -75,6 +75,14 @@ interface CatchDecision {
  *
  * The variant that asks every tick is `Behavior_AlwaysCatching`, in `AlwaysCatchBehavior.ts`; the two
  * share this body and differ in the predicate below.
+ *
+ * **And in one other argument: this variant does not drop what it catches.** `makeCatchBehavior`'s
+ * `dropCaught` is `false` here and `true` for its sibling, and the reason is the rig rather than the tag
+ * — the lobby placeholders wear `Behavior_Pickup` and `Behavior_Throwing` beside this one, so **the
+ * throw is what empties their hand**, and the always catcher's drop-on-every-tick rule was putting a ball
+ * back on the floor two ticks after the pickup that fetched it. A rig wearing this tag and *not* a
+ * thrower keeps its one ball for the rest of the round and stops playing; that price is argued where the
+ * rule lives, in `AlwaysCatchBehavior`'s tick.
  */
 export function createCatchBehavior(catches: CatchService, balls: BallService): NpcBehavior {
 	/**
@@ -115,5 +123,5 @@ export function createCatchBehavior(catches: CatchService, balls: BallService): 
 		return true;
 	};
 
-	return makeCatchBehavior(catches, balls, BEHAVIOR_CATCHING, shouldAsk);
+	return makeCatchBehavior(catches, balls, BEHAVIOR_CATCHING, false, shouldAsk);
 }

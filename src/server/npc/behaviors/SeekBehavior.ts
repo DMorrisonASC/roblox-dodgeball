@@ -1,5 +1,7 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { resolveDodgeable } from "shared/dodge";
+import { claim, claimedBy, release } from "../ballClaims";
+import { insideZone, keepOutPartsFor } from "../sideZones";
 import { BEHAVIOR_SEEKING, NpcBehavior } from "../Behavior";
 import type { BallPickupService } from "../../services/ball/BallPickupService";
 import type { BallService } from "../../services/ball/BallService";
@@ -126,7 +128,7 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 	};
 
 	/**
-	 * The closest loose ball this rig has not given up on, or `undefined`.
+	 * The closest loose ball this rig may walk to, or `undefined`.
 	 *
 	 * **The nearest-ball arithmetic is written twice in this project, and this is the second.**
 	 * `BallPickupService.nearestLooseBall` cannot serve here, because it answers "what is closest"
@@ -134,13 +136,44 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 	 * failed to reach*" — a filter that belongs to the walker and not to the floor. Given the list,
 	 * the difference is four lines; handed to the service it would be a skip list or a callback on
 	 * a service that has no idea what a give-up is.
+	 *
+	 * **And now a second filter, for the other reason a ball is not this rig's to walk to: somebody else
+	 * has already set off for it.** That is `npc/ballClaims.ts`, and it is *read-only* here — the filter
+	 * asks who holds a ball and moves past it, because taking the claim is a decision about the ball this
+	 * rig has actually chosen, and a search that claimed as it went would leave a rig holding reservations
+	 * on every ball it looked at before settling. So the order is: choose among the free ones here, claim
+	 * the winner in `tick`. **It cannot claim the ball of a rig that is already walking to it**, which is
+	 * the whole point: eight rigs asking "what is nearest to me" independently is what produced three of
+	 * them walking the same line to the same ball.
 	 */
-	const nearest = (loose: BasePart[], from: Vector3, givenUp: Map<BasePart, Vector3>): BasePart | undefined => {
+	const nearest = (
+		rig: Model,
+		loose: BasePart[],
+		from: Vector3,
+		givenUp: Map<BasePart, Vector3>,
+	): BasePart | undefined => {
 		let best: BasePart | undefined;
 		let bestDistance = math.huge;
 
+		// **The boxes this rig may not cross the court for, read once per choice.** A ball that has come to
+		// rest on the far side of the barrier is unreachable — `MoveTo` walks a straight line — and the only
+		// thing this behaviour can do about it unaided is walk at the wall until its patience runs out. The
+		// box is how the *place* answers the question instead: see `sideZones`, and note that an empty list is
+		// the ordinary state of a place that has no boxes, in which case nothing is skipped.
+		const keepOut = keepOutPartsFor(rig);
+
 		for (const ball of loose) {
 			if (givenUp.has(ball)) continue;
+
+			// Somebody else is on their way to it. Read rather than taken: see the doc above.
+			const holder = claimedBy(ball);
+			if (holder !== undefined && holder !== rig) continue;
+
+			// **And not somewhere this rig is not allowed to fetch from.** Skipped rather than given up on:
+			// `givenUp` is a record about *this* ball at *this* position — a ball that is later thrown back
+			// across the line is a fresh question — while a ball inside the box is out of reach by the place's
+			// own design, and asking again next turn costs one comparison.
+			if (insideZone(keepOut, ball.Position)) continue;
 
 			const distance = ball.Position.sub(from).Magnitude;
 			if (distance > bestDistance) continue;
@@ -182,8 +215,16 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 	 * for "there is a walk in progress"**. The rest of the state is cleared either way, because a
 	 * rig that has just been given a ball has a progress count that means nothing any more.
 	 */
-	const stand = (humanoid: Humanoid, root: BasePart, seek: Seek): void => {
+	const stand = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek): void => {
 		if (seek.ball !== undefined) humanoid.MoveTo(root.Position);
+
+		// **Every way a walk can end, and the reservation ends with it.** This is where the three
+		// non-death routes converge — the rig has a ball in hand, the ball stopped being loose, and the rig
+		// gave up on it — so one release here is what makes "the claim lives exactly as long as the walk"
+		// true without three copies of it. The route it deliberately does not cover is *arrival*: a rig
+		// standing inside `PICKUP_RADIUS` of its ball keeps the claim, because the ball is not free — this
+		// rig is about to take it, and it takes it on its next turn.
+		release(model);
 
 		seek.ball = undefined;
 		seek.aimedAt = undefined;
@@ -212,7 +253,7 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 			// time in. Asked of `BallService` rather than of the floor, because "am I holding one"
 			// is the one question about balls that a list of loose ones cannot answer.
 			if (balls.getHeldBall(model)) {
-				stand(humanoid, root, seek);
+				stand(model, humanoid, root, seek);
 				return;
 			}
 
@@ -224,15 +265,22 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 			// a throw, in somebody's hand, or dropped and still settling. The walk ends rather than
 			// being re-aimed at something that is gone: which ball is right *now* is the question
 			// below, and it is asked once.
-			if (seek.ball !== undefined && !loose.includes(seek.ball)) stand(humanoid, root, seek);
+			if (seek.ball !== undefined && !loose.includes(seek.ball)) stand(model, humanoid, root, seek);
 
-			// Nothing to walk to. Quietly ordinary: an empty floor, every ball loose enough to be
-			// seen but not yet settled, or nothing left that this rig has not already given up on.
+			// Nothing to walk to, and the reasons are ordinary rather than exceptional: an empty floor;
+			// every ball loose enough to be seen but not yet settled; nothing left this rig has not already
+			// given up on; **and — the new one — every remaining ball already claimed by another rig.** The
+			// last case ends with the rig *standing*, because issuing no `MoveTo` is what standing is: a rig
+			// that has nothing to fetch does not join a scrum to watch somebody else fetch it, and it does
+			// not need to be told to stop, because `stand` above has already stopped any walk it was making.
+			// It is a wait, not a fault — a claim releases the moment its owner takes its ball or gives up,
+			// and the next turn picks the freed ball up. That is the whole of "what does a rig do when
+			// everything is claimed": nothing, and then something.
 			let ball = seek.ball;
 			if (ball === undefined) {
 				prune(seek);
 
-				ball = nearest(loose, root.Position, seek.givenUp);
+				ball = nearest(model, loose, root.Position, seek.givenUp);
 				if (ball === undefined) return;
 
 				// A fresh walk, with no history: the distance is re-learned from this turn's, so a
@@ -242,6 +290,26 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 				seek.aimedAt = undefined;
 				seek.best = math.huge;
 				seek.stalled = 0;
+			}
+
+			// **The reservation: taken here, and renewed on every turn the rig is still walking to it.**
+			// Claiming and renewing are one call because they are one statement about one fact — *this ball
+			// is mine to fetch* — and a caller that had to know which of the two it was making would be a
+			// caller with a state machine bolted to the side of it. What the renewal buys is the meaning of
+			// the claim's timeout: a claim is kept alive by a rig that keeps asking, so it lapses exactly
+			// when the rig stops asking — held still by a freeze, parked out of the world (the loop is
+			// skipped there too), or no longer wearing the tag at all — and never in the middle of a walk
+			// that is still being made. See `npc/ballClaims.ts`.
+			if (!claim(model, ball)) {
+				// **The one way this refuses, and it is a race that resolved against this rig.** It can only
+				// happen when this rig was walking to a ball and stopped asking about it for longer than
+				// `CLAIM_SECONDS` — one of the three cases just named — and another rig claimed the ball in
+				// the meantime; a fresh choice cannot reach this line, because `nearest` only offers balls
+				// nobody else holds. Standing is the right answer, for the same reason it is right on
+				// arrival: the ball is not this rig's to fetch, and next turn's selection will choose from
+				// whatever is free by then.
+				stand(model, humanoid, root, seek);
+				return;
 			}
 
 			const distance = ball.Position.sub(root.Position).Magnitude;
@@ -273,7 +341,14 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 			// than left walking at a wall it is not going to get past.
 			if (seek.stalled >= SEEK_STALL_TICKS) {
 				seek.givenUp.set(ball, ball.Position);
-				stand(humanoid, root, seek);
+
+				// **The give-up route, and it frees the ball for somebody else on the way out.** `stand`
+				// releases the claim, because every way a walk can end lets the ball go — see the note inside
+				// `stand` itself — and this is the route where that matters most: a ball this rig cannot reach
+				// is a ball the next rig should be allowed to try, and without the release it would sit behind
+				// a claim held by a rig standing still and thinking about it.
+				stand(model, humanoid, root, seek);
+
 				return;
 			}
 
@@ -300,9 +375,20 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 		 * is nothing worth carrying — a replacement is a different model standing somewhere else,
 		 * with the balls where they are, and a fresh row it makes itself on its first turn. The same
 		 * reasoning `RespawnBehavior` uses to hand over a home and a template and nothing else.
+		 *
+		 * **And the claim goes with the row, because the rig that comes back is a different model.**
+		 * `RespawnBehavior` does not revive a corpse: it destroys it and clones a *new* model from a template
+		 * taken while the rig was alive, so every map in this file — and `npc/ballClaims.ts` — is keyed by a
+		 * model that is about to stop existing. A claim held by the corpse would be a reservation by a body
+		 * that is gone, and it *would* eventually clear itself, because `claimedBy` judges an entry partly by
+		 * its holder's `Parent` — but only **when something next asked about that ball**, and until then every
+		 * other rig would have read it as taken. That is the whole difference between "free the instant the
+		 * rig dies" and "free on the next unlucky lookup", and it is the class of bug the previous task's
+		 * missing `Team` was in.
 		 */
 		onDied(model) {
 			walking.delete(model);
+			release(model);
 		},
 	};
 }

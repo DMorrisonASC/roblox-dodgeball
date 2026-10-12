@@ -1,6 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage } from "@rbxts/services";
-import { MATCH_JOIN_A_TAG, MATCH_JOIN_B_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { MATCH_JOIN_A_TAG, MATCH_JOIN_B_TAG, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
 import {
 	MATCH_MAX_PER_TEAM,
@@ -12,6 +12,7 @@ import {
 	MATCH_TOUCH_DEBOUNCE_SECONDS,
 } from "../../config/match.config";
 import { TEAM_A, TEAM_B, TeamLabel } from "../round/team";
+import { rigCounts } from "../../npc/rigs";
 
 /** Prints every opt-in, refusal and opt-out. The sign is player-facing; this is the record. */
 const DEBUG = true;
@@ -228,12 +229,21 @@ export class MatchService implements OnStart {
 	}
 
 	/**
-	 * Whether a match could start right now: enough players, and a side that is not over its cap.
+	 * Whether a match could start right now: enough *available* bodies, one a side, and no side over its
+	 * player cap.
+	 *
+	 * **The body count is now players and rigs, and a practice-zone player is neither.** "Available" is
+	 * the word that changed: a rig on a side is a body that will play, and a player standing in a practice
+	 * zone is a body that will not — the first is counted, the second is not, and the two together are
+	 * what let a rig-only lobby start a round and keep a practice-zone player from starting one. The rig
+	 * derivation is `rigsOnASide` in `npc/rigs.ts`, shared with `RoundService` so the two services cannot
+	 * come to different answers about which rigs hold a side.
 	 *
 	 * **Three questions, and each of them is a different refusal to explain.** The total is
-	 * {@link MATCH_MIN_PLAYERS}, then one player a side — because a match with one side in it is not a
-	 * match — and then the cap, which cannot currently be exceeded (a side refuses a player rather than
-	 * growing) and is checked anyway because this is the method a caller asks "may a match start", and an
+	 * {@link MATCH_MIN_PLAYERS} bodies, then one body a side — because a match with one side in it is not
+	 * a match — and then the cap, which counts *players* only. A rig does not fill a side's player quota,
+	 * which is the rule "a side is full only when it has that many players" kept intact; the cap is still
+	 * checked rather than assumed, because this is the method a caller asks "may a match start", and an
 	 * answer that assumed its own caller's bookkeeping would be the wrong place to save a comparison.
 	 *
 	 * **Two callers, and they want different things from the same answer.** `RoundService.requestMatch`
@@ -245,8 +255,22 @@ export class MatchService implements OnStart {
 	public canStart(): boolean {
 		const counts = this.countsFor();
 
-		if (counts.a + counts.b < MATCH_MIN_PLAYERS) return false;
-		if (counts.a < 1 || counts.b < 1) return false;
+		let a = 0;
+		let b = 0;
+
+		for (const [player, team] of this.opted) {
+			if (player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true) continue;
+
+			if (team === TEAM_A) a++;
+			else b++;
+		}
+
+		const rigs = rigCounts();
+		a += rigs.a;
+		b += rigs.b;
+
+		if (a + b < MATCH_MIN_PLAYERS) return false;
+		if (a < 1 || b < 1) return false;
 
 		return counts.a <= MATCH_MAX_PER_TEAM && counts.b <= MATCH_MAX_PER_TEAM;
 	}

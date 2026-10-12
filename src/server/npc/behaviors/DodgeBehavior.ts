@@ -23,6 +23,13 @@ import type { BallService } from "../../services/ball/BallService";
  * The mechanism — the threat test, the per-ball decision held in `pledged`, the escape-direction
  * search, the cooldown — is {@link makeDodgeBehavior}, which both variants share. See that function
  * for the whole design; this file supplies one predicate and nothing else.
+ *
+ * **Where the code actually is, because this file's name makes it look self-contained.** Every gate,
+ * every print line and the run-instead-of-dodging fallback live in `AlwaysDodgeBehavior.ts`, in the
+ * factory this file imports; all that is here is the tag and one predicate. So an edit made there is an
+ * edit to `Behavior_Dodging` — the tag the arena rigs wear through `LobbyRigService`'s gameplay set —
+ * and not only to the practice-area dummies. **The file names follow the tags rather than which variant
+ * is the common one**, which is the opposite of how the pair reads at a glance.
  */
 export function createDodgeBehavior(dodges: DodgeService, balls: BallService): NpcBehavior {
 	return makeDodgeBehavior(dodges, balls, BEHAVIOR_DODGING, () => math.random() < NPC_CONFIG.DODGE_CHANCE_PER_BALL);

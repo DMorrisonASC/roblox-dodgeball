@@ -96,9 +96,21 @@ export const NPC_CONFIG = {
 	 * farthest an enemy can be and still be thrown at. Beyond it the rig simply does not throw, rather
 	 * than lobbing a ball at somebody across the arena.
 	 *
-	 * **Placeholder.** Sixty studs, the same span the old stand-in used.
+	 * **Raised from sixty, and that is the symptom it was causing.** Sixty studs is roughly a court's
+	 * *width*, and two rigs placed on opposite sides of an arena are routinely further apart than that:
+	 * the two sides spawn on their own halves and the ball each one is chasing drags it further apart,
+	 * so a rig spent long stretches holding a ball with a live enemy forty studs out of reach and no
+	 * way to say so. What that looked like from a seat was rigs that stopped throwing at each other
+	 * after a while — nothing in the log, because "no target in range" is a *state* and nothing was
+	 * printing it. **The figure is now generous on purpose** (a court diagonal with room to spare) and
+	 * the print in `ThrowBehavior` reports the distance when a rig is blocked, so the next run says
+	 * whether it is still too small rather than leaving it to be inferred.
+	 *
+	 * **Placeholder — 150.** A longer range does not make a throw worse: `BallService.throwBall` solves
+	 * the arc to the target's own position, so a rig that throws at a body across the arena is throwing
+	 * a legal throw at a body it can see, not lobbing at a guess.
 	 */
-	THROW_RANGE_STUDS: 60,
+	THROW_RANGE_STUDS: 150,
 
 	/**
 	 * How far off a gated thrower's nose a target may be, in degrees, and still be thrown at.
@@ -134,7 +146,16 @@ export const NPC_CONFIG = {
 	 *
 	 * **1 means the gated rig gets out of the way of every ball it can move away from**, which is a rig
 	 * players cannot hit; **0.5 is half the throws aimed at it**, and is where this sits. What it still
-	 * cannot do is dodge with something in the way, or dodge twice inside `DODGE_CONFIG.COOLDOWN`.
+ * cannot do is *dash* with something in the way, or *dash* twice inside `DODGE_CONFIG.COOLDOWN` — and of
+ * those, only the blocked direction still leaves the rig standing, because a rig that did commit and was
+ * turned away now runs instead (see `AlwaysDodgeBehavior`'s `runAway`). **This number is the odds of the
+ * rig picking a ball to get out of the way of, not the odds of it moving at all.**
+ *
+ * **And a *declined* roll is the one case where a rig still stands on purpose.** A roll that says "let
+ * this one past" is a decision, not an unavailability — and if the rig ran for every ball it declined,
+ * running would be most of what this number buys and the number would stop meaning anything. So the walk
+ * answers "I could not dodge", never "I chose not to". That is the trade as it stands; this is the
+ * paragraph to reverse if a round makes it read as rigs that ignore balls they could have avoided.
 	 *
 	 * **What the reading costs, stated:** a lob in the air for a second and a drive that arrives in two
 	 * tenths now get the same chance, where the rate gave the lob more of one. What it buys is that the
@@ -148,4 +169,118 @@ export const NPC_CONFIG = {
 	 * **Placeholder.**
 	 */
 	DODGE_CHANCE_PER_BALL: 0.5,
+
+	/**
+	 * The name of the model in `ServerStorage` that the lobby's placeholder rigs are cloned from.
+	 *
+	 * **This is the name the template has to be given in Studio, and it is the whole of the contract**
+	 * — `LobbyRigService` looks for a `Model` with this name *anywhere* under `ServerStorage`, so where
+	 * it is filed does not matter and what it is called does.
+	 *
+	 * **A rig and not a model of some other shape.** The thing cloned has to be something
+	 * `NpcService.spawn` can hand to a behaviour: a `Model` with a `Humanoid` and a
+	 * `HumanoidRootPart`. A `PrimaryPart` set to the root is worth having as well, because the spawn
+	 * places a rig by its *pivot* — see `NpcService.spawn` for that, and see the report on this task
+	 * for why the current placement is kept rather than a root-part one.
+	 *
+	 * **`PlaceholderRig` is the name for a reason rather than a word:** a rig in this project is a
+	 * placeholder for a player who has not arrived, which is what the whole rig system is for. The
+	 * name says what the thing *is* rather than where it is, so a second template — a heavier dummy, a
+	 * testing rig — can carry a name that says what makes it different.
+	 *
+	 * **Placeholder.** Nothing has been modelled for this yet; the user creates the rig and gives it
+	 * this name.
+	 */
+	PLACEHOLDER_RIG_TEMPLATE: "PlaceholderRig",
+
+	/**
+	 * How fast a placeholder rig walks to its join pad, in studs per second. **Placeholder — 16.**
+	 *
+	 * **Set rather than left to the template, and that is a fault-removal rather than a preference.**
+	 * A rig authored as a *pose* quite reasonably carries a `WalkSpeed` of zero, and a rig whose
+	 * humanoid cannot walk is a rig that agrees to be told to walk and then does not move — with
+	 * nothing in the output to tell it apart from a rig that has arrived. Sixteen is the engine's own
+	 * default for a humanoid, so a template that was already walkable is left exactly as it was;
+	 * stated here so that the failure cannot happen. See `WalkToJoinPadBehavior.prepare`.
+	 */
+	WALK_TO_PAD_SPEED: 16,
+
+	/**
+	 * How close a rig has to get to its pad to count as arrived, in studs. **Placeholder — 4.**
+	 *
+	 * **Flat, and measured from the rig's root to the point in the middle of the pad.** Two numbers sit
+	 * either side of this one and both matter: it has to be *larger* than the distance at which the
+	 * engine's own `MoveTo` gives up on the last stud, or the behaviour would keep asking for a walk the
+	 * body has already finished; and it has to be *smaller* than the pad, or a rig would stop short of
+	 * the thing it is meant to be standing on. Four studs is about a body's width — so "arrived" means
+	 * "standing on it" — and it is the number to lower if a rig reads as stopping short of its sign.
+	 */
+	WALK_TO_PAD_ARRIVAL_STUDS: 4,
+
+	/**
+	 * How often the walk behaviour looks at where its rig is, in seconds. **Placeholder — 0.5.**
+	 *
+	 * **The walk itself is not paced by this — the engine's own `MoveTo` is.** A humanoid walks to the
+	 * point it was given on its own clock, so this number only decides how soon a rig that has arrived is
+	 * *told* to stop, and how often the request is repeated for a rig that is still going. Half a second
+	 * is the retarget interval `SeekBehavior` uses, and for the same reason: it is fast enough that
+	 * nothing about the walk reads as delayed and slow enough that repeating a `MoveTo` costs nothing.
+	 */
+	WALK_TO_PAD_TICK_SECONDS: 0.5,
+
+	/**
+	 * How often the lobby's seat bookkeeping checks whether the roster has moved, in seconds.
+	 * **Placeholder — 0.25.**
+	 *
+	 * **A poll of one number, and the number is the point.** `MatchService` already bumps
+	 * `rosterRevision` on every opt-in, move-out and clearing, so a reader that wants to know "did the
+	 * roster change" has an answer that costs one field read — and `LobbyRigService` reads it, and does
+	 * the rest of its work only on the turns where it moved. What this interval therefore decides is the
+	 * delay between a player touching a pad and the rig they displaced leaving the lobby: a quarter of a
+	 * second is under the time it takes to step off a pad, and it costs four reads a second to have it.
+	 *
+	 * **Why a poll at all, rather than being told.** The other direction is a call from
+	 * `MatchService.optIn` into the service that owns the rigs, and that is a constructor cycle: this
+	 * service reads the roster, so the roster cannot read it back. `MatchService` could expose a second
+	 * notification — a signal fired from `optIn` — but the revision *is* that notification, published
+	 * once for every path that moves the roster, and a signal beside it would be two answers to "who is
+	 * playing" for one event.
+	 */
+	SEAT_POLL_SECONDS: 0.25,
+
+	/**
+	 * How long a rig's claim on a loose ball survives without being renewed, in seconds.
+	 * **Placeholder — 8.**
+	 *
+	 * **What it is sized against is the walk, not the seek.** A claim is renewed on every turn of a walk, so
+	 * this is not "how long a walk may take" — it is how long `npc/ballClaims.ts` keeps believing a rig that
+	 * has *stopped saying anything*. The shortest honest answer is therefore just past the longest pause in
+	 * which a rig is still legitimately walking to a ball: `SEEK_RETARGET_SECONDS × SEEK_STALL_TICKS` is that
+	 * behaviour's own give-up budget — a second and a half — and eight seconds is that with room for the walk
+	 * across an arena, for a freeze that skips several turns, and for a rig being shoved off course once.
+	 *
+	 * **What it costs when it is wrong in either direction.** Too short and a claim lapses mid-walk, so a
+	 * second rig picks the same ball and the scrum is back: visible, occasional, and self-correcting. Too
+	 * long and a ball only a dead rig wanted stays parked for that long — with eight rigs and
+	 * `MATCH_BALL_COUNT` balls, that is a body standing still for seconds, which is the thing the reservation
+	 * exists to prevent. The second failure is the worse one, which is why the figure is seconds rather than
+	 * a minute.
+	 */
+	CLAIM_SECONDS: 8,
+
+	/**
+	 * How far a rig runs when it cannot dodge, in studs. **Placeholder — 12.**
+	 *
+	 * **The distance a rig covers *along the escape direction* when a dodge is unavailable** — a catch window
+	 * is open, a freeze, the cooldown, or the round refusing the request. It is a `MoveTo` target rather than a
+	 * dash, so this is a walk of about three-quarters of a second at `WALK_TO_PAD_SPEED`, and it is re-issued
+	 * every turn the ball is still on course, which is what makes it a run rather than a single step.
+	 *
+	 * **Sized against `DODGE_CONFIG`'s dash rather than picked.** A dash crosses fifteen studs in a fifth of a
+	 * second; twelve studs of walking is the same *place* reached by the slow route, which is the point —
+	 * the rig gets out of the line it was standing in, not out of the ball's reach. Larger would have rigs
+	 * marching across the arena every time a ball came near; smaller would leave them inside the same hit
+	 * radius the dash exists to escape.
+	 */
+	DODGE_RUN_STUDS: 12,
 } as const;

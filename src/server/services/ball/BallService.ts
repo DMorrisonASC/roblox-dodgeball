@@ -1223,10 +1223,12 @@ export class BallService implements OnStart {
 		// was given velocity — one moment, two senses, which is why they are adjacent rather than fired from
 		// two places that would have to agree about when a throw happens.
 		//
-		// **Built by the server, so everybody sees it**, which is the same choice the sound makes: a burst
-		// built on the thrower's own machine would be a gust only the thrower was standing in. Nothing is
-		// sent and no client is asked, so this adds no wire and no validation — the server is already the one
-		// deciding that this throw happened, because this line is inside that decision.
+		// **Built by the server, and simulated by every client** — which is not the same claim, and is the one
+		// that turned out to be true. What replicates is the emitter: its properties. Each client then simulates
+		// the particles from them, so nothing is sent and no client is asked, and the server is still the only
+		// thing that decides a throw happened. See `WindBurst.ts`, which used to fire the gust with a single
+		// `Emit` call — an emission *event* rather than a property — and was therefore invisible to everybody
+		// but the server that made it.
 		//
 		// **A rig's throw comes through this same line**, because `ThrowBehavior` calls `throwBall` like any
 		// other thrower. That is deliberate rather than overlooked: a rig displaces air when it throws for the

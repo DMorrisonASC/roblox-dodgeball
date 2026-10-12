@@ -137,8 +137,40 @@ export const THROW_FEEDBACK_CONFIG = {
 	 * while this is one mass of air where the individual particles are not the point. Raised because the shell
 	 * is a *sphere* (see {@link WIND_BURST_SPREAD_ANGLE}) rather than a cone, so the same count spread over
 	 * twice the directions is half as dense where it matters.
+	 *
+	 * **A budget now rather than a one-off population.** The gust is emitted by a rate over
+	 * {@link WIND_BURST_EMIT_SECONDS}, so this is the number of particles the gust *spends*, and the number
+	 * alive at once peaks at roughly `rate × LIFETIME` — which is why the same 70 read as a denser, shorter
+	 * puff than it did when it was fired in one call.
+	 *
+	 * **Toned down hard at the user's request — 70 to 12.** The rate-driven version was overwhelming in play:
+	 * at 70 over a quarter of a second the peak in flight was around 170 particles, against the 70 the
+	 * original one-shot had, and every other dial below was still set to "dramatic". Twelve over the same
+	 * window peaks at about twenty, which is a puff of air at a hand rather than weather. **This is the dial
+	 * to move first** — it is the number of particles on screen, and nothing else here scales the whole effect
+	 * with it.
 	 */
-	WIND_BURST_COUNT: 70,
+	WIND_BURST_COUNT: 12,
+
+	/**
+	 * How long the gust keeps emitting, in seconds. **Placeholder — 0.25.**
+	 *
+	 * **A window of `Rate` rather than a single `Emit`, and this is how long that window is.** The emitter is
+	 * `Enabled` with `Rate = COUNT / this`, so the whole gust is emitted over a quarter of a second and then
+	 * the emitter runs out of particles to make — the one-shot shape, built out of the mechanism the engine
+	 * documents as reaching every client: *"Particles emit automatically when the emitter is Enabled with a
+	 * non-zero Rate."*
+	 *
+	 * **What it replaced was a single `ParticleEmitter:Emit(70)` on the server, and the effect was invisible to
+	 * every client because of it** — see `WindBurst.ts` for the correction, which is the only reason this entry
+	 * exists.
+	 *
+	 * **Short and not zero.** At a frame's length the population would ramp for one frame and the shell would
+	 * read as a flash of particles rather than a gust arriving; a quarter of a second builds and is gone. Note
+	 * that *shortening* this raises the rate and therefore the peak — the two dials that shrink the effect are
+	 * `COUNT` and `LIFETIME`, not this one.
+	 */
+	WIND_BURST_EMIT_SECONDS: 0.25,
 
 	/**
 	 * How long a particle lives, in seconds. **Placeholder — 0.6, up from 0.45.**
@@ -150,19 +182,26 @@ export const THROW_FEEDBACK_CONFIG = {
 	 *
 	 * Raised with the speed below: the two together decide how far the shell gets, and at the old pair it was
 	 * still contracting visibly into a fade rather than having crossed anything.
+	 *
+	 * **Toned down with the rest — 0.6 to 0.45.** This is the second of the two dials that shrink the effect:
+	 * with a rate doing the emitting, the number of particles alive at once is `rate × this`, so lowering it
+	 * both thins the gust and shortens how long it hangs around. See `WIND_BURST_COUNT`.
 	 */
-	WIND_BURST_LIFETIME: 0.6,
+	WIND_BURST_LIFETIME: 0.45,
 
 	/**
-	 * How fast the particles leave, in studs per second. **Placeholder — 45, up from 32.**
+	 * How fast the particles leave, in studs per second. **Placeholder — 24, toned down from 45.**
 	 *
-	 * **The single number most responsible for "dramatic".** Paired with the drag below it decides how far the
-	 * shell actually gets: at these two values a particle crosses roughly **fifteen studs** — about three
-	 * character heights — before it fades, so the gust is still visibly travelling when it dies rather than
-	 * having stopped a stud from the hand. That distance is the effect: air leaving the thrower in every
-	 * direction and *reaching* something.
+	 * **The single number most responsible for how far the gust reaches**, and the one that made it read as
+	 * overwhelming. Paired with the drag below it decides how far the shell actually gets: at 45 and a
+	 * half-life of a third of a second a particle crossed roughly fifteen studs — three character heights —
+	 * so the gust left the thrower entirely and wrapped whoever was standing next to them. At 24 it crosses
+	 * about six, which is a puff of air at the hand with the thrower still inside it.
+	 *
+	 * The effect does not need the distance to be legible: the thrower is the one looking at it, and what has
+	 * to be visible is that air moved at the moment of the throw, not how far it went.
 	 */
-	WIND_BURST_SPEED: 45,
+	WIND_BURST_SPEED: 24,
 
 	/**
 	 * How wide the cone is, in degrees, measured from the emitter's own forward. **Placeholder — 360.**
@@ -212,11 +251,16 @@ export const THROW_FEEDBACK_CONFIG = {
 	 * at the moment the particle was at its most opaque was still under two — so the *visible* phase was a
 	 * small ball near the hand and the *big* phase was the faint one. Starting at 1.6 and reaching 5.5 by 30%
 	 * of the life lines the two up: solid while it grows, and still large while it fades.
+	 *
+	 * **Halved at the user's request — 1.6/5.5/10 to 1.0/3.0/5.0.** At the old curve a particle was ten studs
+	 * across at the end of its life, which is taller than a character, and there were a hundred and seventy of
+	 * them at the peak: between the size and the count the gust filled the screen. The *shape* of the curve is
+	 * the part worth keeping — a puff that only ever grows — and the tone-down is the scale on it.
 	 */
 	WIND_BURST_SIZE: new NumberSequence([
-		new NumberSequenceKeypoint(0, 1.6),
-		new NumberSequenceKeypoint(0.3, 5.5),
-		new NumberSequenceKeypoint(1, 10),
+		new NumberSequenceKeypoint(0, 1),
+		new NumberSequenceKeypoint(0.3, 3),
+		new NumberSequenceKeypoint(1, 5),
 	]),
 
 	/**
@@ -229,18 +273,19 @@ export const THROW_FEEDBACK_CONFIG = {
 	 * circles; the short ramp is what makes them read as one mass. The tail is the long half because that is
 	 * the part the eye is following.
 	 *
-	 * **The peak is `0.15` — eighty-five per cent opaque — and it was `0.55` until this revision, which is the
-	 * change this effect most needed.** A smoke texture has soft edges, so its *effective* coverage is well
-	 * below whatever this number says, and the old peak of 45% was reached for about three frames before the
-	 * tail settled at 20% — a white haze of a fifth opacity against a room, which is not a burst, it is a
-	 * rumour of one. The freeze burst this was modelled on peaks at 70% and reads; this now peaks above it,
-	 * because a gust is a *volume* of air rather than a set of readable pieces and has nothing else to be
-	 * legible with.
+	 * **The peak is `0.55` — forty-five per cent opaque — and it was `0.15` until the tone-down, which was the
+	 * revision before this one and overshot.** A smoke texture has soft edges, so its *effective* coverage is
+	 * well below whatever this number says: at `0.15` the gust was eighty-five per cent solid and, with a
+	 * hundred and seventy particles at the peak, it read as a white wall across the thrower rather than as air
+	 * moving. The old pair of warnings still holds in both directions — the earlier value of `0.55` against a
+	 * light floor was a haze nobody could see, and this one against the current count is a gust that is
+	 * unmistakably there. **If it needs to be lighter still, this is the dial**, because it changes how much of
+	 * the effect the eye has to deal with without changing how many particles are in it.
 	 */
 	WIND_BURST_TRANSPARENCY: new NumberSequence([
 		new NumberSequenceKeypoint(0, 1),
-		new NumberSequenceKeypoint(0.1, 0.15),
-		new NumberSequenceKeypoint(0.55, 0.45),
+		new NumberSequenceKeypoint(0.1, 0.55),
+		new NumberSequenceKeypoint(0.55, 0.72),
 		new NumberSequenceKeypoint(1, 1),
 	]),
 
@@ -274,8 +319,13 @@ export const THROW_FEEDBACK_CONFIG = {
 	 * legible from the far side of an arena, and this is at the thrower's own hand where the alternative to
 	 * being seen is being reported as missing. Not quite 1, because a fully additive white *bleaches* on a
 	 * bright background and a gust should still read as something with a colour.
+	 *
+	 * **Toned down to 0.25 at the user's request.** Additive blending is what makes a particle *glow*, and at
+	 * 0.8 across a hundred and seventy overlapping particles it stopped being air and became a light. A quarter
+	 * keeps a cold cast over the texture — the colour below still has something to say on a dark floor — while
+	 * leaving the gust mostly normal-blended, which is what a puff of air is.
 	 */
-	WIND_BURST_LIGHT_EMISSION: 0.8,
+	WIND_BURST_LIGHT_EMISSION: 0.25,
 
 	/**
 	 * What fraction of the world's gravity pulls the particles down. **Placeholder — 0.05.**

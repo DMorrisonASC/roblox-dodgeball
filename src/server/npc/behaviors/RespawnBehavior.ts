@@ -1,7 +1,9 @@
 import { CollectionService, Workspace } from "@rbxts/services";
-import { BALL_NAME } from "shared/constants";
+import { BALL_NAME, TEAM_ATTRIBUTE } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import { TEAM_A, TEAM_B } from "../../services/round/team";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
+import { WALK_TO_JOIN_PAD_ATTRIBUTE, WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE } from "./WalkToJoinPadBehavior";
 import type { BallService } from "../../services/ball/BallService";
 
 const DEBUG = true; // prints each rig that goes down and each that comes back
@@ -173,6 +175,25 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// that is the same case the placement below falls back for. See `folders`.
 				const filed = folders.get(model) ?? model.Parent;
 
+				// **And its side, read here for exactly the same reason as the two above — a corpse is the
+				// only place this fact exists, and the corpse is destroyed a few lines down.** A rig's `Team` is
+				// what makes it a participant: `npc/rigs.ts` reads that attribute and nothing else, so a
+				// replacement without it is a body the round does not count, never teleports, and — the
+				// part that is worse than absent, because it is *wrong* — one whose `detectEnemy` side reads
+				// `undefined`, which makes every rig on the field an enemy and every player a friend. That
+				// is a rig that comes back and shoots its own side.
+				//
+				// **`Team` alone, not every attribute, and the others are named rather than ignored.** The
+				// walk-pad pair is lobby baggage: this rig died in a round, so a destination pointing at a
+				// sign is stale, and copying it would have the replacement walk back out of the arena. The
+				// thrower token is re-issued by `NpcService.start` the moment a rig has none. The four
+				// animation attributes are republished from scratch on the replacement's first turn. What
+				// is left is the one attribute that is part of *being in the round* rather than part of a
+				// moment, and it is validated rather than trusted for `sideOfRig`'s reason: an attribute
+				// anybody can write is not a side until it reads as one.
+				const label = model.GetAttribute(TEAM_ATTRIBUTE);
+				const team = label === TEAM_A || label === TEAM_B ? label : undefined;
+
 				const rig = template.Clone();
 				const fresh = rig.FindFirstChildWhichIsA("Humanoid");
 				const root = rig.FindFirstChild("HumanoidRootPart");
@@ -230,6 +251,26 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 					rig.Parent = Workspace;
 				}
 
+				// **Written before the entry point arrives, exactly like the tags two lines down**, so the
+				// loop that starts on `NPC` finds a body that already has its side rather than one that
+				// becomes a participant a turn later. A corpse with no side of its own — a rig that was
+				// never in a round — writes nothing, and comes back exactly as side-less as it was.
+				//
+				// **And a rebuilt rig that holds a side is a round body, not a lobby walker**, so the
+				// destination it was once given goes the moment the side is written. The *tag* is already
+				// absent by then — `WalkToJoinPadBehavior` takes it off when the rig arrives, which is the fix
+				// for the bug that produced this guard — but the two *attributes* travel with the template,
+				// because `prepare` strips tags from the copy it takes and not attributes. So a rebuilt rig
+				// stands there with a stale lobby pad in its pocket, and the two are halves of one instruction:
+				// "walk to this point". A round body should carry neither. **A corpse with no side is the other
+				// case and keeps both** — a lobby walker that dies and comes back still knows where its pad
+				// is, and nothing else would tell it again.
+				if (team !== undefined) {
+					rig.SetAttribute(TEAM_ATTRIBUTE, team);
+					rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, undefined);
+					rig.SetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE, undefined);
+				}
+
 				for (const tag of tags) {
 					if (tag !== NPC_TAG) rig.AddTag(tag);
 				}
@@ -239,8 +280,17 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// The state is on this line because it is the thing that was wrong every time this
 				// went wrong: a rig that is standing and limp prints a state that is not a live one,
 				// and a rig that prints a live state while still looking wrong is wrong somewhere
-				// else entirely.
-				if (DEBUG) print(`[NPC] ${name}: back — health ${fresh.Health}, state ${fresh.GetState()}`);
+				// else entirely. **The side is on it for a different reason**: whether the replacement
+				// is a participant is the one fact about this respawn that is not visible in the
+				// Explorer twice over (the tag set looks identical either way), and this is the line
+				// the next log will be read for.
+				if (DEBUG) {
+					const sideLabel = team === undefined ? "no side" : `side ${team}`;
+
+					print(
+						`[NPC] ${name}: back — health ${fresh.Health}, state ${fresh.GetState()}, ${sideLabel}`,
+					);
+				}
 			});
 		},
 	};

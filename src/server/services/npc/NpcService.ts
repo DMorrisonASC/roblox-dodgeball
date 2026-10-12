@@ -20,6 +20,7 @@ import { createPickupBehavior } from "../../npc/behaviors/PickupBehavior";
 import { createRespawnBehavior } from "../../npc/behaviors/RespawnBehavior";
 import { createSeekBehavior } from "../../npc/behaviors/SeekBehavior";
 import { createThrowBehavior } from "../../npc/behaviors/ThrowBehavior";
+import { createWalkToJoinPadBehavior } from "../../npc/behaviors/WalkToJoinPadBehavior";
 import { BallPickupService } from "../ball/BallPickupService";
 import { BallService } from "../ball/BallService";
 import { CatchService } from "../actions/CatchService";
@@ -129,6 +130,15 @@ export class NpcService implements OnStart {
 			// the way any other rig does — by putting `NPC` on a model and letting the
 			// added-signal start its loop — so there is no callback and no hole in the registry.
 			createRespawnBehavior(balls),
+			// **Last, because nothing here reacts to it and it reacts to nothing.** Every other entry
+			// above shares a fact with another behaviour through a service — a window, a chase, a held
+			// ball — which is what makes their order worth arguing about. This one moves a rig to a point
+			// written on the rig and then stops, so its only interaction is with a rig that also wears
+			// `Behavior_Seeking`: two walkers, whichever ticks last each turn winning. That combination
+			// is documented in `WalkToJoinPadBehavior` rather than ordered around here, because the two
+			// tags are alternatives in every use this game has — a placeholder rig wears this one and
+			// nothing else.
+			createWalkToJoinPadBehavior(),
 		];
 	}
 

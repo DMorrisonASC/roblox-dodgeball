@@ -88,6 +88,25 @@ export const BEHAVIOR_PICKUP = "Behavior_Pickup";
 export const BEHAVIOR_SEEKING = "Behavior_Seeking";
 
 /**
+ * Enables the walk-to-join-pad behavior: the rig walks to the point its `WalkToJoinPad` attribute
+ * names and stands there.
+ *
+ * **The one behaviour whose destination is handed to it rather than found by it.** Every other tag
+ * here is a rig asking the world a question — where is a ball, is one coming at me, is one within
+ * reach — while this one is told where to go by whoever spawned it. That is deliberate: a join pad
+ * is a fact about the *lobby*, and the alternative would be a behaviour that knows which tag a pad
+ * wears and which side it belongs to, which is the lobby's vocabulary leaking into the machine that
+ * animates NPCs. See `WalkToJoinPadBehavior`, which is where the attribute is written down.
+ *
+ * **It is a behaviour rather than a spawner because a body that appears on a sign reads as a
+ * mistake.** A rig *placed* on its pad would be a placeholder that pops into existence where a
+ * person would have walked — and a lobby is exactly the room where somebody is watching.
+ *
+ * **Placeholder string**, matching the file name and the camel-case of the four tags above it.
+ */
+export const BEHAVIOR_WALK_TO_JOIN_PAD = "Behavior_WalkToJoinPad";
+
+/**
  * Enables the **gated** dodging behavior: the rig dodges a fraction of the balls aimed at it.
  *
  * **The only behavior here that reacts to something outside the rig** — the rest ask a service to do
@@ -95,17 +114,23 @@ export const BEHAVIOR_SEEKING = "Behavior_Seeking";
  * purpose — a rig that dodged every ball would be untouchable, in a game about hitting people with a
  * ball — and the chance is `NPC_CONFIG.DODGE_CHANCE_PER_BALL`, decided **once per ball** aimed at the
  * rig and held for as long as that ball is on course. See `DodgeBehavior` for the decision and for the
- * conditions that can refuse a dodge the rig has already committed to, and `AlwaysDodgeBehavior` for
- * the variant with no chance in it at all. **This tag keeps the meaning it always had** — the split
- * added a sibling beside it rather than moving it.
+ * conditions that can refuse a dodge the rig has already committed to — and for what a refused rig does
+ * *instead* of standing, which is the newer half of that file and applies this tag as much as the other
+ * — and `AlwaysDodgeBehavior` for the variant with no chance in it at all. **This tag keeps the meaning
+ * it always had** — the split added a sibling beside it rather than moving it.
  *
  * **It composes with the rest by not touching them.** A dodge is a two-tenths-of-a-second override
  * of where the body is going, and a rig that is also seeking walks on from wherever the dash left
  * it, because `DodgeService` restores the humanoid and the walk target was never changed. A rig that
  * is *catching* is a different matter, and it is the existing gate rather than a new one: an open
- * catch window refuses a dodge outright, so whether the two can both happen turns on which catcher the
- * rig wears — `Behavior_AlwaysCatching` leaves no gap for a dodge, while `Behavior_Catching` does. See
- * those two tags above.
+ * catch window refuses the *dash* outright, so whether the two can both happen turns on which catcher
+ * the rig wears — `Behavior_AlwaysCatching` leaves no gap for a dash, while `Behavior_Catching` does.
+ * **A refused dash is no longer a standstill**, which is what makes the pairing workable at all: the
+ * rig walks the escape direction it had already chosen (see `AlwaysDodgeBehavior`'s `runAway`), so a
+ * rig that wears the always-catcher beside this tag reads as one that runs away from balls rather
+ * than one that ignores them. It is still the weaker pairing — that catcher never closes its window,
+ * so a dash never gets through — and that is part of why the arena rigs wear the gated pair; see
+ * `LobbyRigService`'s `GAMEPLAY_BEHAVIORS`.
  */
 export const BEHAVIOR_DODGING = "Behavior_Dodging";
 

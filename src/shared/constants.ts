@@ -201,6 +201,30 @@ export const MATCH_JOIN_A_TAG = "MatchJoinA";
 export const MATCH_JOIN_B_TAG = "MatchJoinB";
 
 /**
+ * Tag marking the region a rig will not fetch a ball from — **one box per side, painted in Studio.**
+ *
+ * **What it is for.** A ball that ends up on the far side of the court is unreachable, and the way
+ * `Behavior_Seeking` discovers that is the expensive way: `MoveTo` walks a straight line and cannot go round
+ * anything, so a rig sent after it crosses the midline, is stopped by the barrier, and spends its whole
+ * patience pressed against a wall before giving up on that ball and choosing another. That is the one failure
+ * `SeekBehavior`'s own doc admits to, and from a seat it reads as a rig running at a wall for no reason. A box
+ * on each side lets the rig *skip* those balls instead of finding them one at a time.
+ *
+ * **The side is in the tag rather than in an attribute**, exactly as the join parts above work — and the pair
+ * is why a server that finds only one of them can name which one is missing rather than saying "something is
+ * wrong with the arena".
+ *
+ * **`Anchored`, and invisible, and all four flags the join parts use, for the reasons that doc gives**: a box
+ * somebody can walk into must not collide, must not hand `Touched` to every ball that crosses it, and must not
+ * be what the aim preview stops on. Its `CFrame` and `Size` *are* the region — there is nothing else to
+ * configure, and moving it in Studio is the configuration.
+ */
+export const SIDE_KEEP_OUT_A_TAG = "SideKeepOutA";
+
+/** The other side's box. See {@link SIDE_KEEP_OUT_A_TAG}. */
+export const SIDE_KEEP_OUT_B_TAG = "SideKeepOutB";
+
+/**
  * Tag marking a piece of arena that keeps match balls beside it.
  *
  * **A marker, and the only thing read from it is where it is.** `BallSpawnerService` puts one ball
