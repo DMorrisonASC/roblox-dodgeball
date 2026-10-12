@@ -54,8 +54,8 @@ class TeamEliminationMode implements GameMode {
 		let standingA = 0;
 		let standingB = 0;
 
-		for (const player of view.playersInRound()) {
-			const team = view.teamOf(player);
+		for (const participant of view.participantsInRound()) {
+			const team = view.teamOf(participant);
 
 			if (team === TEAM_A) standingA++;
 			else if (team === TEAM_B) standingB++;

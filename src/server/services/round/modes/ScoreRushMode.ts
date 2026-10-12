@@ -73,7 +73,7 @@ class ScoreRushMode implements GameMode {
 	 * early, because the other side is still playing and will win on points if it still holds them.
 	 */
 	public outcome(view: RoundView): RoundOutcome | undefined {
-		if (view.playersInRound().size() === 0) return DRAW;
+		if (view.participantsInRound().size() === 0) return DRAW;
 
 		const pointsA = view.scores.get(TEAM_A) ?? 0;
 		const pointsB = view.scores.get(TEAM_B) ?? 0;

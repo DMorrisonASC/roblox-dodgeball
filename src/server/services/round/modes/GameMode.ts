@@ -44,6 +44,23 @@ export interface DeathEvent {
 }
 
 /**
+ * One body the round is playing with: **a person, or a rig holding a seat on a side.**
+ *
+ * **The union is named rather than spelled out at each signature, and the name is the point rather
+ * than a convenience.** A participant is either a `Player` — the thing `MatchService` counts,
+ * `StatsService` records and every economy rule is about — or a `Model`, which is the only thing an
+ * NPC can be: a rig has no `Player`, no `UserId`, and nothing behind it to credit. Code that means
+ * "one of the two, and I do not care which" says `RoundParticipant`; code that means "a person"
+ * keeps saying `Player`, and the compiler then points at every place the two have been conflated.
+ *
+ * **What this is not:** a licence to treat a participant as a player. Every read of a person-only
+ * fact — `UserId`, `Character`, the roster map, a statistic — has to narrow first, and that is the
+ * point: a union that compiles everywhere is a union that hides where a rig is about to be treated
+ * as a person. `RoundService.teamOf` is the one place the round itself tells the two apart.
+ */
+export type RoundParticipant = Player | Model;
+
+/**
  * Everything a mode is allowed to know about the round in progress.
  *
  * **Read-only, and narrow on purpose.** A mode is a set of decisions; the round is the thing that
@@ -56,7 +73,16 @@ export interface DeathEvent {
  */
 export interface RoundView {
 	/**
-	 * Everyone still in the round. Nobody who has left, died out or is watching.
+	 * Everyone in the round: the players in it, and the rigs standing on a side.
+	 *
+	 * **Widened from players to participants, and the reason is that a mode's questions are about the
+	 * round rather than about people.** Every reader of this member asks one of three things — is
+	 * anybody left, how many stand on each side, how many dodgers remain — and a rig on a side stands,
+	 * has a side and can be knocked down. An answer that left it out would be a mode judging a round on
+	 * a roster it could not see, and that was a live defect rather than a hypothetical: an all-rig
+	 * round read as empty, and the mode ended it with a draw on its first tick. See
+	 * `RoundService.participantsInRound` for what counts as being in the round, and
+	 * `RoundService.playersInRound` for the narrower query a player-only caller still has.
 	 *
 	 * A method rather than a property, and that is the compiler's rule rather than this interface's:
 	 * **roblox-ts does not support getters** — "Getters and Setters are not supported!" — so a value
@@ -64,10 +90,10 @@ export interface RoundView {
 	 * the set it describes, would be a second answer to "who is playing", which is the exact thing
 	 * this design spends its effort avoiding.
 	 */
-	playersInRound(): ReadonlyArray<Player>;
+	participantsInRound(): ReadonlyArray<RoundParticipant>;
 
-	/** The side a player is on, or `undefined` if they are not in the round. */
-	teamOf(player: Player): TeamLabel | undefined;
+	/** The side a participant is on, or `undefined` if they are not in the round. */
+	teamOf(participant: RoundParticipant): TeamLabel | undefined;
 
 	/** Points per side. Empty for a mode that does not keep score — see {@link GameMode.scores}. */
 	readonly scores: ReadonlyMap<TeamLabel, number>;
