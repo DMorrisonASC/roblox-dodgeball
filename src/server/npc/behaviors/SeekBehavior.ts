@@ -1,7 +1,7 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { resolveDodgeable } from "shared/dodge";
 import { claim, claimedBy, release } from "../ballClaims";
-import { insideZone, keepOutPartsFor } from "../sideZones";
+import { fetchRegionFor, insideZone } from "../sideZones";
 import { BEHAVIOR_SEEKING, NpcBehavior } from "../Behavior";
 import type { BallPickupService } from "../../services/ball/BallPickupService";
 import type { BallService } from "../../services/ball/BallService";
@@ -73,6 +73,25 @@ interface Seek {
 
 	/** Balls this rig has given up on, and where each was when it gave up. */
 	givenUp: Map<BasePart, Vector3>;
+
+	/**
+	 * Balls this rig has already been *told about* for being outside its region, so that line is an edge
+	 * rather than a drumbeat.
+	 *
+	 * **A set of balls rather than a flag, because one line per ball is what makes the log readable.** A rig
+	 * standing in a lobby with three loose balls in it says so three times, once, and then says nothing more —
+	 * where a per-turn print would be six lines a second per rig, from every rig, in the one room where nobody
+	 * is playing. Membership is cleared by `prune` when the ball is destroyed, which is also what stops the set
+	 * holding a reference to a body that is gone.
+	 *
+	 * **Not cleared by movement, deliberately, and that is the difference from `givenUp`.** A give-up is a
+	 * record about *this ball at this position* and expires when the ball moves, because the ball may have
+	 * become reachable. A skip is a record about *this ball* and where the region is: a ball carried from the
+	 * lobby into the rig's own half and back is the same ball, and the second skip is the same fact as the
+	 * first — the state that would make it worth saying twice is the ball's position, which the line already
+	 * carries as a distance.
+	 */
+	outside: Set<BasePart>;
 }
 
 /**
@@ -111,8 +130,44 @@ interface Seek {
  * picker's reach — and taking it is not this tag's job. That is also what stops a *successful*
  * walk from being read as a failure, since a rig standing next to the ball it set off for gets no
  * closer to it and would otherwise run out of patience on arrival.
+ *
+ * **And since 2026-10-13 it fetches only from one region, which is the rule the behaviour is really
+ * parameterised by.** The factory takes a tag and a region, and the two variants built from it are a *round*
+ * rig fetching inside its own half of the court and a *practice* rig fetching inside the practice zone — two
+ * files, two tags, and no other difference between them. A ball outside the region is not a candidate and is
+ * never walked to, which is what makes the walk-at-a-wall case above largely historical: the barrier now sits
+ * beyond a boundary the selection refuses to cross, so the stall budget is left for the obstructions *inside*
+ * a rig's own region, where a straight line can still be wrong. See `SeekRegion` below.
  */
-export function createSeekBehavior(pickups: BallPickupService, balls: BallService): NpcBehavior {
+export interface SeekRegion {
+	/** What this region is called in the log — "its half", "the practice zone". See the skip line in `nearest`. */
+	readonly label: string;
+
+	/**
+	 * The parts that *are* this rig's region, read once per choice.
+	 *
+	 * **A function returning parts rather than a function answering about a point, and the cost is why.** The
+	 * test runs once per candidate ball on every turn, while finding the parts is a `CollectionService` tag
+	 * walk — so asking for the parts once and testing each ball against them keeps that walk at one per turn,
+	 * where a point-at-a-time predicate would re-walk the tags for every ball on the floor. An empty list means
+	 * *this rig may fetch nothing*, which is a real state — a round rig with no side — rather than a fault.
+	 */
+	readonly parts: (model: Model) => Array<BasePart>;
+}
+
+/**
+ * **The one seek, parameterised.** Both variants in the game are one call to this: `createRoundSeekBehavior`
+ * at the end of this file, and `createAlwaysSeekBehavior` in `AlwaysSeekingBehavior.ts`, differing in a tag
+ * and a region. Everything else is shared — the candidate list, the region test, the nearest arithmetic, the
+ * claim, the stall budget, the give-up record and the edge log — so the two cannot drift apart in any of the
+ * ways that matter. That is the whole reason the split is a parameter rather than a second copy of this file.
+ */
+export function createSeekBehavior(
+	pickups: BallPickupService,
+	balls: BallService,
+	tag: string,
+	region: SeekRegion,
+): NpcBehavior {
 	/** One row per rig. See `onDied` for the row that goes with the rig it belonged to. */
 	const walking = new Map<Model, Seek>();
 
@@ -120,7 +175,7 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 	const stateOf = (model: Model): Seek => {
 		let seek = walking.get(model);
 		if (seek === undefined) {
-			seek = { best: math.huge, stalled: 0, givenUp: new Map() };
+			seek = { best: math.huge, stalled: 0, givenUp: new Map(), outside: new Set() };
 			walking.set(model, seek);
 		}
 
@@ -145,37 +200,55 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 	 * the winner in `tick`. **It cannot claim the ball of a rig that is already walking to it**, which is
 	 * the whole point: eight rigs asking "what is nearest to me" independently is what produced three of
 	 * them walking the same line to the same ball.
+	 *
+	 * **And the region, which is the filter that decides whether a ball is this rig's at all.** The variant's
+	 * `region` names the parts its rigs may fetch from — its own half for a round rig, the practice zone for a
+	 * practice rig — and a ball **outside** them is not a candidate: not walked to, not stalled at, never
+	 * reached for. **That is the opposite of what this function used to do**: the *other* side's box was
+	 * excluded and every remaining ball in `Workspace` stayed fair game, which is how a rig came to walk into
+	 * the lobby after a ball. See `SeekRegion`, and `shared/constants.ts` at the two tags for the same
+	 * correction written where the tags are declared.
 	 */
-	const nearest = (
-		rig: Model,
-		loose: BasePart[],
-		from: Vector3,
-		givenUp: Map<BasePart, Vector3>,
-	): BasePart | undefined => {
+	const nearest = (rig: Model, loose: BasePart[], from: Vector3, seek: Seek): BasePart | undefined => {
 		let best: BasePart | undefined;
 		let bestDistance = math.huge;
 
-		// **The boxes this rig may not cross the court for, read once per choice.** A ball that has come to
-		// rest on the far side of the barrier is unreachable — `MoveTo` walks a straight line — and the only
-		// thing this behaviour can do about it unaided is walk at the wall until its patience runs out. The
-		// box is how the *place* answers the question instead: see `sideZones`, and note that an empty list is
-		// the ordinary state of a place that has no boxes, in which case nothing is skipped.
-		const keepOut = keepOutPartsFor(rig);
+		// **The region this rig may fetch from, read once per choice rather than once per ball.** Its own
+		// half for a round rig; the practice zone for a practice rig; and for a rig with no side, nothing at
+		// all — which is a rig that fetches *nothing* rather than one that fetches everything, and is why the
+		// practice rigs in the place file wear a tag of their own. See `sideZones.fetchRegionFor` and
+		// `AlwaysSeekingBehavior`.
+		const parts = region.parts(rig);
 
 		for (const ball of loose) {
-			if (givenUp.has(ball)) continue;
+			if (seek.givenUp.has(ball)) continue;
 
 			// Somebody else is on their way to it. Read rather than taken: see the doc above.
 			const holder = claimedBy(ball);
 			if (holder !== undefined && holder !== rig) continue;
 
-			// **And not somewhere this rig is not allowed to fetch from.** Skipped rather than given up on:
-			// `givenUp` is a record about *this* ball at *this* position — a ball that is later thrown back
-			// across the line is a fresh question — while a ball inside the box is out of reach by the place's
-			// own design, and asking again next turn costs one comparison.
-			if (insideZone(keepOut, ball.Position)) continue;
-
 			const distance = ball.Position.sub(from).Magnitude;
+
+			// **A ball outside the region is not this rig's to fetch, and the line that says so is said once
+			// per ball.** Skipped rather than given up on: `givenUp` is a record about *this* ball at *this*
+			// position, and a ball later thrown inside the region is a fresh question, while a ball outside it
+			// is out of reach by the place's own design — asking again next turn costs one comparison. **The
+			// print is the diagnostic the previous version of this file lacked**: a region that does not cover
+			// the floor its rigs walk on looks exactly like a rig with nothing to do, and this is the line that
+			// tells those two apart from a log alone.
+			if (!insideZone(parts, ball.Position)) {
+				if (!seek.outside.has(ball)) {
+					seek.outside.add(ball);
+
+					print(
+						`[Rig] ${rig.Name}: skipped a ball outside ${region.label} — ` +
+							`${string.format("%.0f", distance)} studs away`,
+					);
+				}
+
+				continue;
+			}
+
 			if (distance > bestDistance) continue;
 
 			best = ball;
@@ -200,6 +273,15 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 			if (ball.Parent === undefined || ball.Position.sub(givenUpAt).Magnitude > SEEK_BALL_MOVED_STUDS) {
 				seek.givenUp.delete(ball);
 			}
+		}
+
+		// **And the skip line's memory, on the one condition that matters for it: the ball is gone.** A
+		// destroyed ball has to leave this set for the reason every map keyed on an instance has to — the
+		// reference is what keeps a destroyed body alive — while a ball still in the world is still the ball
+		// whose skip was already reported, and stays in the set wherever it is thrown next. See `Seek.outside`
+		// for why movement is deliberately not a condition here, unlike the give-up record above.
+		for (const ball of seek.outside) {
+			if (ball.Parent === undefined) seek.outside.delete(ball);
 		}
 	};
 
@@ -233,7 +315,11 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 	};
 
 	return {
-		tag: BEHAVIOR_SEEKING,
+		// **The variant's tag, and the only thing here besides the region that is not shared.** Both seek
+		// behaviours are this object; what tells them apart is this string and the region the factory was
+		// given. See `createRoundSeekBehavior` at the end of this file, and `createAlwaysSeekBehavior` in
+		// `AlwaysSeekingBehavior.ts`.
+		tag,
 
 		// The retarget interval, not a tick rate: see the constant for why those are the same
 		// number here and why it is not a frame.
@@ -269,18 +355,22 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 
 			// Nothing to walk to, and the reasons are ordinary rather than exceptional: an empty floor;
 			// every ball loose enough to be seen but not yet settled; nothing left this rig has not already
-			// given up on; **and — the new one — every remaining ball already claimed by another rig.** The
-			// last case ends with the rig *standing*, because issuing no `MoveTo` is what standing is: a rig
-			// that has nothing to fetch does not join a scrum to watch somebody else fetch it, and it does
-			// not need to be told to stop, because `stand` above has already stopped any walk it was making.
-			// It is a wait, not a fault — a claim releases the moment its owner takes its ball or gives up,
-			// and the next turn picks the freed ball up. That is the whole of "what does a rig do when
-			// everything is claimed": nothing, and then something.
+			// given up on; **every ball outside the region this rig may fetch from** — the enemy's half, the
+			// practice court, the lobby, for a round rig; and — the other new one — every remaining ball
+			// already claimed by another rig. **The last two are not the same wait**, and the difference is
+			// worth the sentence: a claimed ball frees itself the moment its owner takes it or gives up, so the
+			// rig's next turn has something to pick, while a ball outside the region may never be this rig's at
+			// all. Both end in the same place — the rig standing — because issuing no `MoveTo` is what standing
+			// is: a rig that has nothing to fetch does not join a scrum to watch somebody else fetch it, and it
+			// does not need to be told to stop, because `stand` above has already stopped any walk it was
+			// making. It is a wait, not a fault.
 			let ball = seek.ball;
 			if (ball === undefined) {
 				prune(seek);
 
-				ball = nearest(model, loose, root.Position, seek.givenUp);
+				// The row rather than the give-up map, because selection now skips on two records: the balls
+				// this rig gave up on, and the balls it has already reported as outside its region.
+				ball = nearest(model, loose, root.Position, seek);
 				if (ball === undefined) return;
 
 				// A fresh walk, with no history: the distance is re-learned from this turn's, so a
@@ -391,4 +481,28 @@ export function createSeekBehavior(pickups: BallPickupService, balls: BallServic
 			release(model);
 		},
 	};
+}
+
+/**
+ * **The round variant: a rig fetches only inside its own half of the court.**
+ *
+ * One call to the factory above, and the two facts that make it this variant are the tag the round already
+ * uses and the region the place file paints. Nothing about the behaviour itself is repeated here, which is the
+ * whole point of the arrangement: this file is the seek, and this function is the round's tap on it.
+ *
+ * **Its region is `fetchRegionFor`, which answers per rig** — the `SideKeepOutA` box for a rig on A and
+ * `SideKeepOutB` for one on B, with the tag names meaning the opposite of what they say, since the reading was
+ * inverted on 2026-10-13. See `shared/constants.ts` at the two tags.
+ *
+ * **A rig with no side gets an empty region, and therefore stands.** That is not a case to be handled here but
+ * the rule falling out of the code: `insideZone` answers `false` for an empty list, so no ball is ever a
+ * candidate, `nearest` returns `undefined` and `tick` issues no `MoveTo` — the rig keeps whatever walk it was
+ * making until that ends, and then stays. It is the same "a rig with no side is inert" the rest of the project
+ * keeps, and it is why a rig that is *supposed* to fetch a ball needs either a side or the practice tag.
+ */
+export function createRoundSeekBehavior(pickups: BallPickupService, balls: BallService): NpcBehavior {
+	return createSeekBehavior(pickups, balls, BEHAVIOR_SEEKING, {
+		label: "its half",
+		parts: fetchRegionFor,
+	});
 }

@@ -336,11 +336,14 @@ export class LobbyRigService implements OnStart {
 		// already use. The counts are the diagnostic: a folder holding fewer parts than rigs is visible
 		// here as a number smaller than the rig count, which is the case where two rigs share a spawn.
 		//
-		// **The keep-out boxes are reported here and are never fatal**, which is the difference between them
-		// and every other thing above: a place without them is a place where every ball is worth chasing, which
-		// is how the rigs behaved before they existed, so a missing box is a line and not a refusal to spawn
-		// anything. They are also the one part of this system a person paints on purpose — see `npc/sideZones` —
-		// so the server saying whether it found them is the only way to know the painting took.
+		// **The fetch boxes are reported here and are never fatal**, which is the difference between them
+		// and every other thing above: a place file is not something this service can repair, and the rigs
+		// that cannot fetch are still rigs that hold a seat. **What a missing box costs changed on
+		// 2026-10-13**, when the box stopped being a no-go region and became the region a side may fetch
+		// from: it used to be a rig that walks at a wall and gives up, and it is now a whole side that never
+		// fetches a ball — so the line is about a broken round rather than about an ugly one. They are also
+		// the one part of this system a person paints on purpose — see `npc/sideZones` — so the server saying
+		// whether it found them is the only way to know the painting took.
 		const zones = zoneCounts();
 		const missingZones = new Array<string>();
 
@@ -349,16 +352,16 @@ export class LobbyRigService implements OnStart {
 
 		if (missingZones.size() > 0) {
 			warn(
-				`[Rig] no part is tagged ${missingZones.join(" or ")} — a rig sent after a ball left on the far ` +
-					`side of the court walks at the barrier until it gives up on that ball. Tag one box on each ` +
-					`side of the court; nothing else about the rigs depends on it.`,
+				`[Rig] no part is tagged ${missingZones.join(" or ")} — a rig holding that side fetches ` +
+					`nothing and stands still for the whole round. Tag one box on each side of the court, ` +
+					`covering the floor a rig on that side can walk; the box is where that side may fetch from.`,
 			);
 		}
 
 		print(
 			`[Rig] up — ${count} placeholder rig(s) from "${template.Name}", ` +
 				`${spawns.size()} lobby spawn(s), pads ${padsA.size()} + ${padsB.size()}, ` +
-				`keep-out ${zones.a} + ${zones.b}`,
+				`fetch boxes ${zones.a} + ${zones.b}`,
 		);
 
 		// **The seat wiring, and it is behind the guard above on purpose.** With no template there are no

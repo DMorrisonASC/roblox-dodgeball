@@ -72,7 +72,8 @@ export const BEHAVIOR_ALWAYS_THROWING = "Behavior_AlwaysThrowing";
 export const BEHAVIOR_PICKUP = "Behavior_Pickup";
 
 /**
- * Enables the seeking behavior: the rig walks to the nearest loose ball.
+ * Enables the **round** seeking behavior: the rig walks to the nearest loose ball **inside its own half of
+ * the court**, and to nothing else.
  *
  * **This is the first behavior that moves the rig, and that is the whole of its difference.**
  * The other four act where the rig already stands — catching and throwing at whatever arrives,
@@ -81,11 +82,44 @@ export const BEHAVIOR_PICKUP = "Behavior_Pickup";
  * the cheap ways to answer it do not work here, so the walk is bounded instead. See `SeekBehavior`,
  * which owns that decision and states what it costs.
  *
+ * **Bounded to a *region* since 2026-10-13, which is the newer half and the more important one.** "Is that
+ * ball reachable" is not something a behaviour can ask cheaply, so the place file is asked *where this rig
+ * may fetch* instead: the box painted `SideKeepOutA` for a rig on A and `SideKeepOutB` for one on B, with a
+ * ball anywhere else — the enemy's half, the practice court, the lobby — not a candidate at all. **The tags
+ * on those boxes mean the opposite of what their names suggest**, and `shared/constants.ts` says so at the
+ * tags themselves. A rig with no `Team` is in no half, so it fetches nothing; that is what the sibling tag
+ * below exists for.
+ *
  * **It fetches; it does not take.** A rig wearing this and not `BEHAVIOR_PICKUP` walks to a ball
  * and then stands next to it, which is the correct reading of two tags that each mean one thing —
  * the walk is this tag, the hand is that one. The pair is what produces a rig that collects.
  */
 export const BEHAVIOR_SEEKING = "Behavior_Seeking";
+
+/**
+ * Enables the **practice** seeking behavior: the rig walks to the nearest loose ball **inside the practice
+ * zone**, whatever side it has — which, for the rigs this is painted on, is no side at all.
+ *
+ * **A second tag rather than a second meaning for the first one, and the report is the argument.** A rig in
+ * the practice area and a rig playing a round wore the same tag, ran the same code, and fetched from
+ * anywhere: a practice rig would chase a ball out of the zone, and a round rig would chase one into the lobby.
+ * The two rigs fetch from two different places, so there are two tags — this one reads `PRACTICE_ZONE_TAG`
+ * and nothing else, and `Behavior_Seeking` reads the side boxes. Both are one call to the factory in
+ * `SeekBehavior.ts`, differing only in the tag and the region.
+ *
+ * **The region is a property of the behaviour, not of where the rig stands.** A practice rig that wanders out
+ * of the zone still fetches from inside it, and walks back in to do it: the tag says which region is *this
+ * rig's world*, and standing outside it is not a state that changes that.
+ *
+ * **The name is the user's choice and it reads oddly, deliberately.** Every other `Always*` tag in this file
+ * is the ungated twin of a gated one — AlwaysCatch, AlwaysDodge and AlwaysThrow each have a chance-gated
+ * sibling — and seeking has no gate to remove, so `Behavior_AlwaysSeeking` beside `Behavior_AlwaysDodging`
+ * invites a reader to expect a sibling that does not exist. `Behavior_PracticeSeeking` would say what it is.
+ * Not renamed unilaterally: the string is painted in the place file, and the name is the user's.
+ *
+ * **Placeholder string**, matching the file name it is read from, as the four other `Always*` tags do.
+ */
+export const BEHAVIOR_ALWAYS_SEEKING = "Behavior_AlwaysSeeking";
 
 /**
  * Enables the walk-to-join-pad behavior: the rig walks to the point its `WalkToJoinPad` attribute

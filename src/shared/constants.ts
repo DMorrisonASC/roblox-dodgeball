@@ -201,14 +201,30 @@ export const MATCH_JOIN_A_TAG = "MatchJoinA";
 export const MATCH_JOIN_B_TAG = "MatchJoinB";
 
 /**
- * Tag marking the region a rig will not fetch a ball from — **one box per side, painted in Studio.**
+ * Tag marking the region a rig **may** fetch a ball from — **one box per side, painted in Studio.**
  *
- * **What it is for.** A ball that ends up on the far side of the court is unreachable, and the way
+ * **Inverted 2026-10-13, and the inversion is the whole of it: this used to be a no-go box.** A rig used to
+ * read the *other* side's box and skip the balls inside it, which excluded one region and left every other
+ * ball in `Workspace` a candidate — so a round rig would cross to the enemy's half, or walk into the practice
+ * court or the lobby, for a loose ball, and the report that produced this change is a rig walking to the lobby
+ * for one. The reading now is the rule the user asked for: **a round rig fetches only what is inside the box
+ * painted for its own side**, and a ball anywhere else is not a candidate at all. `npc/sideZones.ts` finds the
+ * parts; `SeekBehavior` owns the test.
+ *
+ * **What it is still for.** A ball that ends up on the far side of the court is unreachable, and the way
  * `Behavior_Seeking` discovers that is the expensive way: `MoveTo` walks a straight line and cannot go round
  * anything, so a rig sent after it crosses the midline, is stopped by the barrier, and spends its whole
- * patience pressed against a wall before giving up on that ball and choosing another. That is the one failure
- * `SeekBehavior`'s own doc admits to, and from a seat it reads as a rig running at a wall for no reason. A box
- * on each side lets the rig *skip* those balls instead of finding them one at a time.
+ * patience pressed against a wall before giving up on that ball and choosing another. An allow-list skips
+ * those balls *before* the rig sets off, which is what stops the walk being made at all.
+ *
+ * **And the cost is the other direction, which is a place-file fact rather than a code one.** A box that does
+ * not cover everything a rig on that side can walk to makes the rig ignore balls it *could* reach — quieter
+ * than a rig pressed against a wall, and worse, because a side whose box is missing or too small simply stops
+ * fetching. The two counts on the boot line are the only warning there is; see `LobbyRigService`.
+ *
+ * **The names are kept although "keep-out" now reads backwards.** The strings are painted in the place file,
+ * and a rename would silently stop matching — the failure `PRACTICE_ZONE_TAG` above writes down at length — so
+ * the constant keeps its name and this doc carries the correction.
  *
  * **The side is in the tag rather than in an attribute**, exactly as the join parts above work — and the pair
  * is why a server that finds only one of them can name which one is missing rather than saying "something is

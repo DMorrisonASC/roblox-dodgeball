@@ -280,7 +280,8 @@ export class RigAnimationController implements OnStart {
 	}
 
 	/**
-	 * The three facts a rig cannot measure for itself, as the server published them.
+	 * The four facts a rig cannot measure for itself, as the server published them — **and the one it answers by
+	 * construction.**
 	 *
 	 * **Absent reads as an ordinary standing body, and that is the safe direction.** A rig whose replacement
 	 * body has just replicated, or one whose first publish is a turn away, is a body standing still on the
@@ -288,12 +289,21 @@ export class RigAnimationController implements OnStart {
 	 * default — is a rig that reads as falling for a turn, which every player would see as a different bug.
 	 * The frozen flag is the one that defaults the other way, because a rig whose freeze state is unknown is
 	 * a rig that has not been frozen yet.
+	 *
+	 * **`deferToDefault` is `false` for a rig, and it is a fact rather than a default.** The deferral exists for
+	 * a body that can be *sat on*: Roblox's own `Animate` script supplies `sit`, `climb` and `swim`, and a player
+	 * is the only body here the engine runs that script for. A rig has no such script — its tracks are loaded by
+	 * this client — so deferring a rig would stop our clips and put nothing in their place, which is a rig
+	 * standing in its bind pose. The states a rig does reach are answered otherwise: a freeze is `frozen` below,
+	 * and a corpse stops being rendered at all when `RespawnBehavior` replaces it. See
+	 * `BodyConditions.deferToDefault`.
 	 */
 	private conditionsOf(model: Model): BodyConditions {
 		return {
 			speed: this.numberOf(model, NPC_ANIM_SPEED_ATTRIBUTE),
 			grounded: this.flagOf(model, NPC_ANIM_GROUNDED_ATTRIBUTE, true),
 			frozen: this.flagOf(model, NPC_ANIM_FROZEN_ATTRIBUTE, false),
+			deferToDefault: false,
 		};
 	}
 

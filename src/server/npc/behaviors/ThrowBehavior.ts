@@ -1,19 +1,9 @@
-import { ThrowArc } from "shared/Trajectory";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { resolveDodgeable } from "shared/dodge";
+import { chargeForRange, getThrowMuzzle } from "shared/throw";
 import { BEHAVIOR_THROWING, NpcBehavior } from "../Behavior";
 import { detectEnemy } from "../detect";
 import type { BallService } from "../../services/ball/BallService";
-
-/**
- * Which arc this behaviour throws. Straight is the plain default; a real aim is what would choose.
- *
- * **A rig is the only thing in the game that still names an arc.** A player's throw is charged — a heading
- * and a hold, with no point in it at all — so `overhead`, `straight` and `curve` survive here, where there
- * really is a target and a choice of how to reach it. This constant is therefore the whole of what selects
- * between them, which makes it the line to change if a rig should arc a ball instead of driving it.
- */
-const THROW_ARC: ThrowArc = "straight";
 
 /**
  * How often this behaviour looks for something to throw at, in seconds.
@@ -174,11 +164,12 @@ function rollMiss(root: BasePart, aimPoint: Vector3): Miss | undefined {
  * looking — is a rig that fires sideways while still standing, which reads as a bug from the seat
  * even though the aimed solve would land the ball anyway. The turn is what makes it read as a throw.
  *
- * **What the turn is not:** a change to the throw's *arithmetic*. `BallService.throwBall` is handed
- * the target's own position, and the aimed solve flys the ball at that point from wherever the muzzle
- * is — so the rotation is presentation, and the facing window is a plausibility gate ("do not throw
- * behind you"), not a correction the solver needs. Stated because the opposite is easy to assume: the
- * ball is not thrown along `LookVector`.
+ * **What the turn is not:** a change to the throw's *arithmetic*. `BallService.throwBall` is handed a
+ * heading taken from the muzzle to the target's own point, and the charged solve flies the ball along
+ * that compass direction from wherever the muzzle is — so the rotation is presentation, and the facing
+ * window is a plausibility gate ("do not throw behind you") rather than a correction the solver needs.
+ * Stated because the opposite is easy to assume: the ball is not thrown along `LookVector`, it is thrown
+ * along the line to the target, which the rig merely happens to be facing.
  */
 export function createThrowBehavior(balls: BallService): NpcBehavior {
 	/** One row per rig currently turning toward a target. See {@link Aim}. */
@@ -324,8 +315,8 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			if (math.abs(sighting.angle) > math.rad(NPC_CONFIG.THROW_ANGLE_DEGREES)) return;
 
 			// On target: stop turning and throw at the body. The constraint comes down before the
-			// throw so the ball leaves a body that has finished moving, and the aimed solve carries
-			// it to the target from the muzzle the rig is now facing along.
+			// throw so the ball leaves a body that has finished moving, and the charge carries it to
+			// the target from the muzzle the rig is now facing along.
 			//
 			// **And the point handed over is the only thing the miss touches.** `rollMiss` runs once,
 			// here, and answers either nothing — aim at the body — or a point a few studs to the rig's
@@ -335,22 +326,76 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// for the rule and `NPC_CONFIG` for the numbers.
 			clearAim(model);
 			const miss = rollMiss(rigBody.root, sighting.aimPoint);
+			const aimPoint = miss?.target ?? sighting.aimPoint;
 
-			const thrown = balls.throwBall(model, {
-				kind: "aimed",
-				target: miss?.target ?? sighting.aimPoint,
-				arc: THROW_ARC,
-			});
+			// **A rig throws the ball the player throws — the same charge, the same arc, the same envelope.
+			// The rig differs only in how it picks a target and in being allowed to miss.** That is the whole
+			// of this block: a heading and a hold, built here, handed to the one method both bodies throw
+			// through, which is what makes a retune of `BALL_CONFIG` move a rig and a player together.
+			//
+			// **The hold is the one thing a rig works out rather than measures.** A player's charge is how long
+			// a button was held; a rig has no button, so it has a *distance* and asks `chargeForRange` for the
+			// hold that covers it. Same law read backwards — and backwards is the only direction a rig can read
+			// it in, because the answer is exactly what a player's own hold would have been at that distance.
+			// The arc word is gone with it: `overhead`/`straight`/`curve` named ways of *reaching a point*,
+			// which is the axis the charge replaced, so there is no rig-only throw number left in this file.
+			//
+			// **The distance is taken from the muzzle and not from `sighting.distance`.** That figure is the
+			// range from the rig's *root*, and the ball does not leave the root: `planChargedThrow` will solve
+			// from `getThrowMuzzle` on the server's copy of this body a moment from now, and measuring from
+			// anywhere else would be a charge describing a throw two studs behind the one that happens. Two
+			// studs is nothing across an arena and is a tenth of a short throw, which is exactly why the
+			// measurement is taken the way the solve takes it.
+			//
+			// **Heading and distance come off the same flattened vector, and that is what keeps them one
+			// throw.** `planChargedThrow` projects a heading onto the ground plane itself, so a heading that
+			// still carried the height difference would arrive at the same compass direction — but the
+			// *distance* has to be a horizontal one, because that is the distance the ballistic range is
+			// measured in. Flattening once here is what stops the two describing different throws.
+			const muzzle = getThrowMuzzle(model);
+			const flat = new Vector3(aimPoint.X - muzzle.X, 0, aimPoint.Z - muzzle.Z);
+			const distance = flat.Magnitude;
+
+			// **And the rise goes with it, because a rig aims downhill.** A charged throw leaves the hand at
+			// head height and `sighting.aimPoint` is a body's *root* — about two and a half studs lower — so a
+			// charge solved from the horizontal distance alone would fly long by a fifth and the ball would pass
+			// behind the body it was aimed at. See `chargeForRange`: this is the one figure a rig has in hand
+			// that a player never has, and the reason the bridge takes two arguments rather than one.
+			const rise = aimPoint.Y - muzzle.Y;
+
+			// **A rig does not bend the ball, and that is the decision rather than a missing one.** `curve`
+			// is a player's lateral control — one key, held or not — and a rig has no input of that kind. Its
+			// error model is `rollMiss` instead, which moves the *aim* rather than the flight, and the two are
+			// different throws: a bending ball arrives on the mark and a missed one does not. So `false` here
+			// is the same `false` an untouched player sends, and the two bodies are doing one thing.
+			const charge = chargeForRange(distance, rise);
+			const heading = distance > AIM_FLAT_EPSILON ? flat.Unit : rigBody.root.CFrame.LookVector;
+
+			const thrown = balls.throwBall(model, { kind: "charged", heading, charge, curve: false });
 
 			// **Logged once, and only for a throw that actually left** — which is the difference between
-			// one line per wide throw and a line per tick for a rig that cannot throw at all. `throwBall`
+			// one line per throw and a line per tick for a rig that cannot throw at all. `throwBall`
 			// answers whether a ball went, and its refusals include a frozen body: a rig frozen with a
 			// ball in hand reaches this line every tenth of a second, and a print from `rollMiss` would
 			// have described thirty throws that never happened for the length of one freeze.
-			if (thrown && miss !== undefined) {
+			//
+			// **The line names the charge and the distance it was solved from, and those are the two numbers
+			// that make the shared envelope checkable rather than asserted.** "The same throw" means the same
+			// charge at the same distance; a reader with a player's `[Throw]` line and this one has both halves
+			// of that comparison. `BallService` prints the solved speed, the launch angle and the muzzle a
+			// moment later for both bodies, in its `[Ball]` line, so nothing about the flight is repeated here.
+			if (thrown) {
+				const wide =
+					miss === undefined
+						? ""
+						: `, ${string.format("%.1f", miss.studs)} studs to the ` +
+							`${miss.side > 0 ? "right" : "left"} (missed on purpose)`;
+
 				print(
-					`[Rig] ${model.Name}: throwing wide — ${string.format("%.1f", miss.studs)} studs to the ` +
-						`${miss.side > 0 ? "right" : "left"} (missed on purpose)`,
+					`[Rig] ${model.Name}: throw — charge ${string.format("%.2f", charge)} at ` +
+						`${string.format("%.1f", distance)} studs, heading ` +
+						`(${string.format("%.2f", heading.X)}, ${string.format("%.2f", heading.Y)}, ` +
+						`${string.format("%.2f", heading.Z)})${wide}`,
 				);
 			}
 		},

@@ -52,7 +52,7 @@ export const NPC_CONFIG = {
 	 * design one: the design is the cadence below, and this is what fraction of the cadences the rig
 	 * decides to catch. If it reads as "rarely catches", move it up; if as "usually catches", down.
 	 */
-	CATCH_CHANCE: 0.5,
+	CATCH_CHANCE: 0.3,
 
 	/**
 	 * How long a gated catcher's decision lasts, in seconds — the cadence the chance above is rolled on.
@@ -150,7 +150,7 @@ export const NPC_CONFIG = {
 	 * rigs read as worse shots, lower it to tighten them; 0 is exactly the old behaviour, and it is the
 	 * value to set when comparing two runs.
 	 */
-	THROW_MISS_CHANCE: 2 / 3,
+	THROW_MISS_CHANCE: 2 / 4,
 
 	/**
 	 * The shortest deliberate miss, in studs. **Placeholder — 0.5.**

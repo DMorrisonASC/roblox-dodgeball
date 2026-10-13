@@ -59,11 +59,12 @@ export interface BodyRender {
 /**
  * The facts a caller measures, because a body cannot read them for itself.
  *
- * **Three of `BodyState`'s five, and the split is the point of the type.** A body cannot measure its own
- * ground speed or tell whether it is held — for a rig, the machine that *is* the body (the server) measures
- * them and publishes them; for a player's own body, the client that owns it measures them directly. Both then
- * hand the same three facts to {@link applyBodyRender}, which adds the two any body can always answer for
- * itself, because those are the events it carries as attributes.
+ * **Four of `BodyState`'s six, and the split is the point of the type.** A body cannot measure its own
+ * ground speed, tell whether it is held, or say whether the game has a clip for what it is doing — for a rig,
+ * the machine that *is* the body (the server) measures and publishes those facts; for a player's own body, the
+ * client that owns it measures them directly. Both then hand the same four facts to {@link applyBodyRender},
+ * which adds the two any body can always answer for itself, because those are the events it carries as
+ * attributes.
  */
 export interface BodyConditions {
 	/** Ground speed in studs per second. */
@@ -74,6 +75,16 @@ export interface BodyConditions {
 
 	/** Whether the body is held. A player passes `false` — see `LocomotionAnimationController`. */
 	readonly frozen: boolean;
+
+	/**
+	 * **Whether the game has a clip for what this body is doing** — the same fact as `BodyState.deferToDefault`,
+	 * one layer down, and the renderer passes it straight through.
+	 *
+	 * A caller that cannot answer says `false`, which is "keep playing our clips": the safe direction, because
+	 * the alternative on a body with no `Animate` script to fall back to — a rig — is a body that plays nothing
+	 * at all and stands in its bind pose.
+	 */
+	readonly deferToDefault: boolean;
 }
 
 /**
@@ -120,12 +131,17 @@ export function startBodyRender(
  * Called on a change rather than on a clock: a rig's caller is driven by the body's attributes, a player's by
  * the tick that measures its speed. A call that arrives at the same clip as the last one is a comparison and
  * nothing else, which is what makes it safe to call as often as a caller likes.
+ *
+ * **And it is also the place the game lets go.** A caller that has decided the game has no clip for what the
+ * body is doing passes `deferToDefault`, `bodyClipFor` answers nothing, and the two lines below stop what is
+ * playing and start nothing in its place — the release, in the same shape as a state whose id is blank.
  */
 export function applyBodyRender(render: BodyRender, conditions: BodyConditions): void {
 	const clip = bodyClipFor({
 		speed: conditions.speed,
 		grounded: conditions.grounded,
 		frozen: conditions.frozen,
+		deferToDefault: conditions.deferToDefault,
 		dodge: publishedDodge(render.body),
 		action: publishedAction(render.body),
 	});
@@ -138,6 +154,14 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	// left empty, which is how a state opts out — is not a clip that can be loaded, and remembering the attempt
 	// is what stops every change from trying again for a clip that will never exist.
 	render.playing = clip;
+
+	// **And `undefined` is the release: the stop above has already happened and no track is started here, which
+	// is the whole of "play nothing".** The body is left to whoever else is animating it — for a player that is
+	// Roblox's own `Animate` script, whose `sit`, `climb` and `swim` sets this game never claimed and whose four
+	// claimed sets are the only tracks `LocomotionAnimationController.suppressScript` stops. The record is
+	// `undefined` rather than the clip that was playing, so the next *owned* state is a change again and the
+	// body resumes rather than sitting in a stale track. See `BodyState.deferToDefault`.
+	if (clip === undefined) return;
 
 	const track = trackFor(render, clip);
 	if (track === undefined) return;

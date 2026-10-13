@@ -13,12 +13,13 @@ import { resolveDodgeable } from "shared/dodge";
 import { NPC_TAG, NpcBehavior } from "../../npc/Behavior";
 import { createAlwaysCatchBehavior } from "../../npc/behaviors/AlwaysCatchBehavior";
 import { createAlwaysDodgeBehavior } from "../../npc/behaviors/AlwaysDodgeBehavior";
+import { createAlwaysSeekBehavior } from "../../npc/behaviors/AlwaysSeekingBehavior";
 import { createAlwaysThrowBehavior } from "../../npc/behaviors/AlwaysThrowBehavior";
 import { createCatchBehavior } from "../../npc/behaviors/CatchBehavior";
 import { createDodgeBehavior } from "../../npc/behaviors/DodgeBehavior";
 import { createPickupBehavior } from "../../npc/behaviors/PickupBehavior";
 import { createRespawnBehavior } from "../../npc/behaviors/RespawnBehavior";
-import { createSeekBehavior } from "../../npc/behaviors/SeekBehavior";
+import { createRoundSeekBehavior } from "../../npc/behaviors/SeekBehavior";
 import { createThrowBehavior } from "../../npc/behaviors/ThrowBehavior";
 import { createWalkToJoinPadBehavior } from "../../npc/behaviors/WalkToJoinPadBehavior";
 import { BallPickupService } from "../ball/BallPickupService";
@@ -124,7 +125,19 @@ export class NpcService implements OnStart {
 			// that only takes what rolls into its reach: this one walks to the nearest loose ball,
 			// and that one takes it. A rig needs both tags for the mechanic — either alone is a rig
 			// that stands beside a ball it will never pick up, or one that never goes anywhere.
-			createSeekBehavior(pickups, balls),
+			//
+			// **Two entries since 2026-10-13, because a rig fetches from one region and there are two
+			// regions.** `createRoundSeekBehavior` reads the side boxes — a rig on A fetches inside
+			// `SideKeepOutA` and nowhere else — and `createAlwaysSeekBehavior` reads `practiceZone`, so a rig
+			// painted for the practice area never leaves it for a ball. Both are one call to the factory in
+			// `SeekBehavior.ts` and differ in their tag and their region, which is the whole of the split.
+			//
+			// **Which one a rig wears is what its tags say, and nothing here consults the side.** A round rig
+			// wears the first because `LobbyRigService` put it there, and the practice rigs wear the second
+			// because a person painted it — so a practice tag on a side-bearing rig would be honoured rather
+			// than corrected, and that is the same rule every behaviour tag has always had.
+			createRoundSeekBehavior(pickups, balls),
+			createAlwaysSeekBehavior(pickups, balls),
 			// The one behavior that needs something no other one does: the ball the rig was
 			// holding, so it can be taken out of the copy this makes. It re-enters this service
 			// the way any other rig does — by putting `NPC` on a model and letting the
@@ -137,7 +150,9 @@ export class NpcService implements OnStart {
 			// `Behavior_Seeking`: two walkers, whichever ticks last each turn winning. That combination
 			// is documented in `WalkToJoinPadBehavior` rather than ordered around here, because the two
 			// tags are alternatives in every use this game has — a placeholder rig wears this one and
-			// nothing else.
+			// nothing else. **Both seek tags are named since the 2026-10-13 split**, because the walker's
+			// interaction is with "a behaviour that moves the rig to a point" and there are now two of
+			// those: the round seek reads the rig's own half and the practice seek reads the practice zone.
 			createWalkToJoinPadBehavior(),
 		];
 	}

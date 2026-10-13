@@ -83,6 +83,37 @@ const CONFIG_WEIGHT_NAME = "Weight";
 const ANIMATED_SETS: AnimationClip[] = ["idle", "walk", "run", "jump"];
 
 /**
+ * **The humanoid states this game has a clip for — the list that decides when the game defers to Roblox.**
+ *
+ * **The question is "does the game have a clip for this state", and not "is the character on the floor".** The
+ * body's own state is what says whether its legs are doing something this game has a picture of, and floor
+ * contact cannot answer it — which is the mistake this list was written to end, and it cost two visible faults.
+ * A character *seated* on a bench is welded to it rather than standing on it, so `FloorMaterial` reads `Air`,
+ * the body was read as falling, and the jump clip looped at `Movement` over Roblox's own `sit` animation. And a
+ * body that has been knocked over (`FallingDown`) rolls with its contact flickering, so the same measurement
+ * alternated tick by tick and the legs flipped between idle and jump at the poll rate.
+ *
+ * **These five are the states the four clips describe**, which is why the list is this and not something else:
+ * `Running` and `RunningNoPhysics` are the on-the-ground states in which `idle`/`walk`/`run` are decided (from
+ * speed, by `animationFor`), and `Jumping`/`Freefall`/`Landed` are the airborne ones the `jump` clip covers.
+ * **Everything else defers** — `Seated`, `FallingDown`, `Climbing`, `Swimming`, `Dead`, `PlatformStanding`,
+ * `Physics`, `GettingUp`, `Ragdoll`, `Flying` — because Roblox's `Animate` script has clips for those and this game
+ * has none: it owns the four sets in {@link ANIMATED_SETS} and leaves the script's other sets exactly as Roblox
+ * wrote them, so deferring is what lets `sit`, `climb` and `swim` be Roblox's own.
+ *
+ * **This list is the only place the question is answered.** The renderer is handed the answer and never the
+ * state's name (see `BodyConditions.deferToDefault`), and an event still outranks it: a body knocked over
+ * mid-throw still throws, because the events rank above the deferral in `bodyClipFor`.
+ */
+const OWNED_STATES: ReadonlyArray<Enum.HumanoidStateType> = [
+	Enum.HumanoidStateType.Running,
+	Enum.HumanoidStateType.RunningNoPhysics,
+	Enum.HumanoidStateType.Jumping,
+	Enum.HumanoidStateType.Freefall,
+	Enum.HumanoidStateType.Landed,
+];
+
+/**
  * How often the body is re-dressed, in seconds.
  *
  * **A poll rather than an event, and twenty times a second.** The things being watched — the body's state and
@@ -116,6 +147,16 @@ interface OwnedBody {
 
 	/** The four set ids claimed for this body's rig type. See {@link LocomotionAnimationController.dress}. */
 	claimed: string[];
+
+	/**
+	 * Whether the last tick deferred to Roblox's own animation script, so the log line is an edge.
+	 *
+	 * **On the row rather than re-read from the humanoid, because it is the *previous* answer that matters.** The
+	 * transition into and out of a deferral is the event worth a line, and the state itself is on the body and is
+	 * asked again every tick — a `deferToDefault` recomputed from the body each time cannot tell "still sitting"
+	 * from "just sat down", which is the whole of what this field is for. See `step`.
+	 */
+	deferring: boolean;
 }
 
 /**
@@ -291,6 +332,10 @@ export class LocomotionAnimationController implements OnStart {
 			animator,
 			body: startBodyRender(character, humanoid, animator, "Animate"),
 			claimed: ANIMATED_SETS.map((set) => clipIdFor(set, isR15)),
+			// **False, and the first tick is what says otherwise.** A body arrives standing, so the first tick
+			// finds owning already true and prints nothing — which is what keeps the log to the transitions the
+			// line is for. See `OwnedBody.deferring`.
+			deferring: false,
 		};
 
 		// Spawned, because the loop is the rest of this body's life and `dress` is a handler on the
@@ -362,14 +407,36 @@ export class LocomotionAnimationController implements OnStart {
 	 * walk-speed key and an anchored root (`FreezeService`), which arrive at this measurement as a body that is
 	 * not moving and cannot move, so the speed already answers it. Publishing a flag for it would be a second
 	 * answer to a question this one has answered, and the two could disagree.
+	 *
+	 * **And the state is read here too, because it is the one fact this file has that the renderer must not
+	 * learn.** `OWNED_STATES` answers it, the answer travels as `deferToDefault`, and the humanoid's own
+	 * vocabulary stops at this line — which is why `BodyConditions` carries the boolean rather than the enum.
+	 * The transition is printed and the state itself is not, for the reason a per-tick print is never the right
+	 * one: a body sitting on a bench is asked twenty times a second and answers the same thing.
 	 */
 	private step(owned: OwnedBody): void {
 		this.suppressScript(owned);
+
+		// **The deferral, decided here and nowhere else.** `FloorMaterial` is what this file used to answer with
+		// and it is the wrong question — see `OWNED_STATES` for the two faults that came of it. Read once per
+		// tick because the state can change between ticks, and compares against the row rather than against the
+		// last read so that the line below is an edge.
+		const state = owned.humanoid.GetState();
+		const deferring = !OWNED_STATES.includes(state);
+
+		if (deferring !== owned.deferring) {
+			owned.deferring = deferring;
+			print(
+				`[Animate] ${owned.body.body.Name}: ${deferring ? "deferring to Roblox" : "owning"} — ` +
+					`state ${state.Name}`,
+			);
+		}
 
 		applyBodyRender(owned.body, {
 			speed: this.measuredSpeed(owned.humanoid),
 			grounded: owned.humanoid.FloorMaterial !== Enum.Material.Air,
 			frozen: false,
+			deferToDefault: deferring,
 		});
 	}
 

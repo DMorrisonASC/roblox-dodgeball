@@ -166,6 +166,24 @@ export interface BodyState {
 	/** Whether the body is held. Only a rig publishes this: a player's freeze arrives as no speed at all. */
 	readonly frozen: boolean;
 
+	/**
+	 * **Whether the game has nothing to say about this body right now** — set by the caller when the body is in
+	 * a state the four clips were never a description of: sitting on a bench, knocked over, climbing, swimming.
+	 * When it is true the decision below answers `undefined`, which the renderer reads as *play nothing* and
+	 * hands the body back to Roblox's own `Animate` script.
+	 *
+	 * **It outranks the locomotion answer and nothing else.** An event still wins — a dodge or a throw is a
+	 * motion that has to be seen, and a body knocked over mid-throw still throws — so the deferral sits below the
+	 * events and above `animationFor` in the ranking inside `bodyClipFor`. See `LocomotionAnimationController`
+	 * for the list of states the game does own, which is where the question is actually answered; this field is
+	 * only how the answer travels.
+	 *
+	 * **A rig passes `false`, and that is a reading rather than an omission.** Nothing can seat a rig, and the
+	 * states a rig *can* reach are answered otherwise: a freeze is published as `frozen`, and a corpse ends the
+	 * loop that dresses it. See `RigAnimationController.conditionsOf`.
+	 */
+	readonly deferToDefault: boolean;
+
 	/** The direction of a dash in flight, or nothing. Outranks every state below it. */
 	readonly dodge: DodgeDirection | undefined;
 
@@ -219,17 +237,24 @@ export const RESTING_STATE: AnimationState = "idle";
  * catch — see `BallService.catchBall`, which drops a standing throw mark the moment a catch is confirmed, so
  * that the *newer* action is the one that owns the limbs in the case that can actually be arranged.
  *
- * **`holding` is deliberately not a member of {@link BodyState}.** A ball in a hand is not an animation
- * state: a rig holding one is standing still and waiting to throw, a player carrying one is usually running,
- * and a pose that changed for it would be the rig and the player disagreeing about what carrying a ball looks
- * like — which is the complaint this unification is answering. The `holdBallIdle` row stays in the table for
- * the day that changes; nothing reaches it today.
+ * **`undefined` is a real answer, and it means "play nothing".** It is the *caller's* answer rather than this
+ * function's judgement: a body in a state the game has no clip for — seated on a bench, knocked over — is handed
+ * back to Roblox's own `Animate` script, and the renderer reads `undefined` as "stop our tracks and start no
+ * more of ours". Nothing in the ranking above the deferral can produce it, which is what keeps "the game has
+ * nothing to say here" distinct from "the locomotion answer happens to be empty" — the latter is
+ * {@link RESTING_STATE}'s job and is unchanged.
  */
-export function bodyClipFor(state: BodyState): AnimationState {
+export function bodyClipFor(state: BodyState): AnimationState | undefined {
 	if (state.action === "throw") return "throw";
 	if (state.dodge !== undefined) return DODGE_STATES[state.dodge];
 
 	if (state.action === "catch") return "catch";
+
+	// **The deferral, below the events and above the locomotion answer.** Below, because an event outranks
+	// everything — a body knocked over mid-throw still throws; above, because the whole point of it is that
+	// `animationFor`'s question ("how is this body moving on the ground") is not the question to ask about a
+	// body that is sitting on a bench. See `BodyState.deferToDefault`.
+	if (state.deferToDefault) return undefined;
 
 	return animationFor(state.speed, state.grounded, state.frozen) ?? RESTING_STATE;
 }

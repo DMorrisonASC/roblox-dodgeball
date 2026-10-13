@@ -1099,9 +1099,9 @@ export class BallService implements OnStart {
 	 * Throws whatever `model` is holding, **as `request` states it** — charged for a player, aimed at a point
 	 * for a rig.
 	 *
-	 * Keyed on the **model**, so an NPC's throw is this function with a different model and target in
-	 * it rather than a second copy of the throw. A `Player` is still around, but never as the thing
-	 * being thrown from: the remote handlers in {@link onStart}, the charge and MultiBall
+	 * Keyed on the **model**, so an NPC's throw is this function with a different model and a different
+	 * request in it rather than a second copy of the throw. A `Player` is still around, but never as the
+	 * thing being thrown from: the remote handlers in {@link onStart}, the charge and MultiBall
 	 * bookkeeping — which belongs to a player rather than to a body — and the dev check that lets a
 	 * flagged dev throw with an empty hand.
 	 *
@@ -1206,10 +1206,10 @@ export class BallService implements OnStart {
 		// `planChargedThrow` itself.
 		//
 		// **The one branch in the whole throw, and it is deliberately two lines wide.** A charged throw is
-		// solved from a heading and a power, which is everything the wire carried; an aimed one is solved from
-		// a point and one of the three named arcs, which is what a rig's behavior has. See `ThrowRequest` for
-		// why they are tagged rather than guessed at, and `shared/throw.ts` for why there are two solves at
-		// all.
+		// solved from a heading and a power — which is everything the wire carries *and* everything a rig's
+		// behavior builds now, so this is the arm every throw in the game takes — while the aimed one is solved
+		// from a point and one of the three named arcs. See `ThrowRequest` for why the two are still tagged
+		// rather than guessed at, and `shared/throw.ts` for why there are two solves at all.
 		const releasePosition = ball.Position;
 		const ownLaunch = getThrowMuzzle(model);
 		const launch = this.acceptLaunch(ownLaunch, claimedLaunch);

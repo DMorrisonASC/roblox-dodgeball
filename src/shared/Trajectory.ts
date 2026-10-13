@@ -37,13 +37,15 @@ const MAX_THROW_ANGLE = math.rad(85);
  * launch and the same fall, plus a constant lateral acceleration that bows the
  * path out and then brings it back. See {@link solveLaunchVelocity}.
  *
- * **All of them land on the target exactly, which is what makes them safe to choose between — and a player
- * no longer chooses one.** These three name ways of *reaching a point*, and a player's throw has no point in
- * it any more: its elevation is the charge and its lateral shape is a separate switch, so `overhead` and
- * `straight` have no player input behind them at all and only a rig's behavior passes them (it passes
- * `straight`). `curve` is the one member that is still *reached* by a player, and not through this type —
- * see `ChargeRequest.curve`, which decides a lateral pull rather than an arc, and `planChargedThrow`, which
- * labels its plan `"curve"` when that switch is on because the name is still true of the shape.
+ * **All of them land on the target exactly, which is what makes them safe to choose between — and nothing in
+ * the game passes one any more.** These three name ways of *reaching a point*, and the throw every body now
+ * makes has no point in it: its elevation is the charge and its lateral shape is a separate switch, so
+ * `overhead` and `straight` have no input behind them at all. **A rig used to pass `straight` and now passes
+ * nothing** — it builds the same charged request a player does; see `planAimedThrow`, which is the solve these
+ * names feed and which has had no caller since the rigs moved. `curve` is the one member that is still
+ * *reached* by a player, and not through this type — see `ChargeRequest.curve`, which decides a lateral pull
+ * rather than an arc, and `planChargedThrow`, which labels its plan `"curve"` when that switch is on because
+ * the name is still true of the shape.
  */
 export type ThrowArc = "overhead" | "straight" | "curve";
 

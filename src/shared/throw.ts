@@ -17,16 +17,22 @@ import {
  * place so the server (which applies the throw for real) and the client (which
  * predicts it for the aim guide) can never disagree.
  *
- * **Two kinds of throw live here now, and telling them apart is the first thing to do in this file.** A
- * **charged** throw is what a player makes: a heading, a hold and whether the ball bends, with no target
- * anywhere in it — see {@link planChargedThrow}. An **aimed** throw is what a rig makes: a point to land on
- * and a discrete arc, which is what every throw in the game used to be — see {@link planAimedThrow}.
+ * **One kind of throw is the game's now, and telling it apart from the one it replaced is the first thing to
+ * do in this file.** A **charged** throw is what *every* body makes: a heading, a hold and whether the ball
+ * bends, with no target anywhere in it — see {@link planChargedThrow}. A player measures the hold with a
+ * button; a rig measures a *distance* with `detectEnemy` and asks {@link chargeForRange} what hold that
+ * distance is. One solve, one config, one envelope — which is the property the whole file is arranged
+ * around, and the reason retuning {@link BALL_CONFIG.THROW_MAX_SPEED} moves a rig and a player together.
  *
- * **Each kind keeps the rule above on its own, and neither can borrow the other's.** The charged throw is
- * planned here and called by *both* the client's preview and the server's launch, from the same three
- * inputs, so the drawn line and the flown line cannot come from different arithmetic. The aimed throw has
- * one caller — `BallService.throwBall` invoked by a rig's behavior — because a rig draws no preview, so
- * there is nothing on the other side for it to disagree with.
+ * **An *aimed* throw — a point to land on and a discrete arc — is what every throw in the game used to be,
+ * and {@link planAimedThrow} still solves one.** **No caller passes it any more**: the two rig behaviours
+ * that did have moved onto the charged arm, and a player's path never did. It is kept rather than deleted
+ * because it is a working solve with its own comments behind it, and because removing it would reach into
+ * `shared/Trajectory.ts` and `ball.config.ts` — see that function's own note for the state it is in.
+ *
+ * **The charged throw keeps the rule above on its own.** It is planned here and called by *both* the
+ * client's preview and the server's launch, from the same three inputs, so the drawn line and the flown line
+ * cannot come from different arithmetic — and a rig's throw, being the same solve, cannot come from a third.
  */
 
 /**
@@ -142,6 +148,9 @@ const CURVE_ANGLE = math.rad(BALL_CONFIG.THROW_CURVE_ANGLE);
  * The point to aim the ball's *centre* at so that its *surface* arrives at
  * `target`.
  *
+ * **Reached only through the aimed solve, and that solve has no caller any more** — see `planAimedThrow`.
+ * Nothing a charged throw does consults it, because a charged throw has no target to centre anything on.
+ *
  * A ball stops when its edge touches something — a full radius before its
  * centre gets there. How far short that is depends on the angle it arrives at,
  * so a flat throw and a lobbed one would otherwise stop in visibly different
@@ -194,6 +203,10 @@ function centreAimPoint(character: Model, muzzle: Vector3, target: Vector3): Vec
  * game's flattest angle, `curve` at its own steeper one, plus the sideways pull
  * the curveball flies under.
  *
+ * **Reached only through the aimed solve, and that solve has no caller any more** — see `planAimedThrow`.
+ * A charged throw has no arc to choose and no distance to solve against, so neither of the two arms below
+ * is on the path any throw the game makes takes.
+ *
  * The two share everything except angle and pull, and both take their speed from
  * {@link flatLaunchSpeed} at the angle they will actually be launched at. Get
  * those two out of step and the throw misses the mark, which is why they are
@@ -240,14 +253,25 @@ function planFlatThrow(muzzle: Vector3, aim: Vector3, arc: "straight" | "curve")
 }
 
 /**
- * Plans an **aimed** throw — the rig's solve, and what every throw in this game used to be.
+ * Plans an **aimed** throw — a point to land on and a discrete arc, which is what every throw in this game
+ * used to be.
  *
- * **The name says "aimed" rather than "player" because a player does not make one any more.** A player's
- * throw is charged — a heading and a hold, with no point to land on anywhere in it — and lives in
- * {@link planChargedThrow} below. What is left here is the solve for a thrower that *has* a point in mind,
- * which means a rig: `ThrowBehavior` picks a body and asks for a ball at it, and this is the arithmetic that
- * gets one there. It is still the game's rulebook in the sense that matters — one function, one answer —
- * it simply has one caller now instead of two, because a rig has no preview to draw.
+ * **Nothing calls this, and that is the current and deliberate state rather than an oversight.** A rig used
+ * to: `ThrowBehavior` picked a body and asked for a ball at it, and this was the arithmetic that got one
+ * there. The rigs now make the same throw a player makes — see {@link chargeForRange} for the one question a
+ * rig has to ask first — so the last caller is gone and this function, `planFlatThrow`,
+ * `centreAimPoint` and the `overhead`/`straight`/`curve` vocabulary they read are all unreachable from the
+ * game today.
+ *
+ * **Kept rather than deleted, and this is a note about scope rather than about merit.** It is a working
+ * solve with its own comments and history, and it is the thing the charged throw replaced — so a reader
+ * arriving at `ThrowArc` or `overhead` has somewhere to look. Deleting it would take `shared/Trajectory.ts`'s
+ * `solveLaunchVelocity`, `flatLaunchSpeed` and `minimumReachSpeed`, `ThrowArc` and `LaunchPlan.arc`,
+ * `AimedRequest` and half of `ThrowRequest`, the `aimed` arm of `BallService.throwBall`, and four constants
+ * in `ball.config.ts` — a change of a different size to the one that removed its caller, and one worth doing
+ * on its own. **If it is deleted, `chargeForRange` and `planChargedThrow` are the whole of the throw.**
+ *
+ * What follows is still true of it, and is what a future caller would be reading.
  *
  * The modes get their speed from different places, because they are answering
  * different questions:
@@ -357,21 +381,32 @@ export interface ChargeRequest {
 	readonly curve: boolean;
 }
 
-/** What a rig's behavior produces: a point to land on, and one of the three named arcs. */
+/**
+ * What a rig's behavior used to produce: a point to land on, and one of the three named arcs.
+ *
+ * **Constructed nowhere today.** A rig now builds a {@link ChargeRequest} like everybody else — a heading and
+ * a hold — and the arc vocabulary this type carries is the half of the aimed solve that is unreachable. See
+ * {@link planAimedThrow}.
+ */
 export interface AimedRequest {
 	readonly target: Vector3;
 	readonly arc: ThrowArc;
 }
 
 /**
- * A throw as its caller states it — **and the tag is load-bearing rather than decorative.**
+ * A throw as its caller states it — **and the tag is still load-bearing, even though only one member is
+ * built today.**
  *
- * The two kinds take different arguments and answer to different rules, and mixing them would be *wrong*
- * rather than merely odd: a charge handed to the aimed solve is a number it would read as a distance, and a
- * target handed to the charged solve is a point with no meaning. `BallService.throwBall` branches on this
- * tag at the single line where a solve happens, so the two arms sit two lines apart and each names the
- * function it calls — which is what keeps "one solve, both sides" a thing a reader can check rather than a
- * thing this comment claims.
+ * The two bodies that throw used to speak different arms: a player sent a `charged` request, a rig sent an
+ * `aimed` one. **Both send `charged` now** — a rig asks {@link chargeForRange} for the hold its distance
+ * needs and passes a heading like anybody else — so the `aimed` member is constructed nowhere and the branch
+ * in `BallService.throwBall` has one live arm.
+ *
+ * **The union is kept because the branch it feeds is the property worth keeping**: the two kinds take
+ * different arguments and answer to different rules, so mixing them would be *wrong* rather than merely odd —
+ * a charge handed to the aimed solve is a number it would read as a distance, and a target handed to the
+ * charged solve is a point with no meaning. Collapsing this to a single interface would delete the typed
+ * statement of that, and put the two solves back within reach of each other's arguments.
  */
 export type ThrowRequest =
 	| ({ readonly kind: "charged" } & ChargeRequest)
@@ -438,6 +473,84 @@ function chargeSpeed(charge: number): number {
 }
 
 /**
+ * The hold whose charged throw lands `range` studs away, as a fraction of a full one — **the inverse of
+ * {@link chargeSpeed} and {@link peakAngle} read together, and the one bridge between a distance and a
+ * charge.**
+ *
+ * **A player and a rig arrive at a charge from opposite ends, and this is the direction a rig travels.** A
+ * player holds a button and *measures* how long they held: the hold is the charge and the range is whatever
+ * it produces, which is `chargeSpeed`'s direction and the one the preview and the ball both read. A rig has
+ * no button — it has a target, so it knows a *distance* and needs the hold that covers it. One law read
+ * backwards, which is why this is arithmetic over the config rather than a table somebody keeps in step
+ * with it.
+ *
+ * **The algebra, in the order it is written below.** A charged throw's vertical launch is
+ * `v_y = sqrt(2·g·h)` — a *constant*, because the peak is fixed and the speed only changes the angle — and
+ * the flight time to a point `rise` studs above the hand is the later root of `v_y·t − ½·g·t² = rise`. The
+ * horizontal speed that covers `range` in that time is `range/t`, and the launch speed the charge has to
+ * produce is `v = sqrt(v_y² + (range/t)²)`. Inverting {@link chargeSpeed} — a straight line from
+ * {@link BALL_CONFIG.CHARGE_MIN_SPEED} to {@link BALL_CONFIG.THROW_MAX_SPEED} — turns that speed back into a
+ * hold.
+ *
+ * **`rise` is a parameter rather than an assumption, and without it a rig misses long every single throw.**
+ * A charged throw leaves the hand at head height and the thing a rig aims at is a body's *root*, about two
+ * and a half studs lower. A ball launched above the point it is aimed at stays in the air longer than the
+ * level flight, so it covers more ground: at `rise = −2.5` the flight is `0.559 s` against the level
+ * `0.447 s`, and a rig that asked for the *level* hold at a target sixty studs away would fly the ball
+ * `75`. That is not a misclick, it is a broken aim — and it is a difference the forward direction simply
+ * does not have, because a player has no target and therefore no rise to get wrong. **A caller holding a
+ * point passes `target.Y − launch.Y` and lands on the point**; a caller with only a distance leaves it at
+ * `0` and gets the level-ground throw.
+ *
+ * **Exact while the target is at or below the peak, and flat-out above it.** A `rise` higher than
+ * {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT} above the hand cannot be reached at *any* speed, because the apex
+ * is fixed by the peak — so the root is floored at zero there and the answer is the charge that throws
+ * flat-out, which is the same "falls short" the clamp below gives. Nothing in the game asks for it: a rig
+ * aims at a body, which is below its own head, and every floor slopes down from there.
+ *
+ * **The clamp is the honest answer at both ends, and neither end is an error.** Below the tap's reach the
+ * charge is `0`, so the throw is the softest ball the mechanic has — exactly what a player who presses and
+ * releases inside one frame gets. Above a full hold's reach the charge is `1` and **the ball falls short**,
+ * which is what a player at that distance gets too, and the reason there is no refusal anywhere in here: a
+ * rig that declined to throw would read, from a seat, as a rig that had stopped working, and the throw it
+ * declined is one a player would have made and watched land short. **Falling short is the shared
+ * behaviour**; it is not a rig being worse at anything.
+ *
+ * **Who calls it: the rig, and only the rig.** `ThrowBehavior` has a point from `detectEnemy` and turns it
+ * into `chargeForRange(distance, aimPoint.Y − muzzle.Y)`; `AlwaysThrowBehavior` does the same from the
+ * stand-in distance it throws along, measured against its own hip height. Both read the muzzle with
+ * `getThrowMuzzle`, the same call the solve itself will make a moment later. A player's path never calls this,
+ * because a player never has a distance to start from — see {@link ChargeRequest}, whose `charge` is a
+ * measurement. Both of this function's callers are the same mechanic as a player's throw, entered from the
+ * other end.
+ *
+ * **Placeholder-free on purpose.** There is no number here of its own to tune: every figure is
+ * {@link BALL_CONFIG}'s, so retuning the throw retunes both bodies at once, which is the whole point of the
+ * rig asking this question instead of carrying a table of its own.
+ */
+export function chargeForRange(range: number, rise = 0): number {
+	// The vertical launch a charged throw always has. It is a property of the config rather than of this
+	// throw — the same `v_y` `peakAngle` clamps against and the same flight `ballisticFlight` reports.
+	const vertical = math.sqrt(2 * BALL_CONFIG.BALL_GRAVITY * BALL_CONFIG.CHARGE_PEAK_HEIGHT);
+
+	// The *later* root of `v_y·t − ½·g·t² = rise`, which is the time the ball comes back down to the target's
+	// height: it passes that height on the way up first, and the aimed point is the one it meets on the way
+	// down. Floored at zero, so a target above the fixed apex answers with the apex's own time rather than a
+	// `nan` — see the doc, where that case is stated rather than hidden.
+	const reach = vertical * vertical - 2 * BALL_CONFIG.BALL_GRAVITY * rise;
+	const flight = (vertical + math.sqrt(math.max(0, reach))) / BALL_CONFIG.BALL_GRAVITY;
+
+	// The horizontal speed that covers the range in that flight, recombined with the vertical to give the
+	// launch speed the charge must produce.
+	const along = range / flight;
+	const speed = math.sqrt(vertical * vertical + along * along);
+
+	const floor = BALL_CONFIG.CHARGE_MIN_SPEED;
+
+	return math.clamp((speed - floor) / (BALL_CONFIG.THROW_MAX_SPEED - floor), 0, 1);
+}
+
+/**
  * How long a projectile launched at `speed` and `angle` stays up, if it lands at the height it left from:
  * `2·v·sin θ / g`.
  *
@@ -468,19 +581,27 @@ function ballisticFlight(speed: number, angle: number): number {
  * now true of one number rather than of two moving together: **nothing but the speed changes with the hold**,
  * and the flattening is a consequence of it rather than a second dial.
  *
- * **On level ground that gives 18.5 studs at a tap, 27.9 at a quarter, 37.2 at a half, 46.3 at three quarters
- * and 55.3 at a full hold** — monotone, and far shorter than the lob it replaces (22 / 52 / 90 / 127 / 150).
- * **That loss is the price of the shape and it is a real one**, so the numbers that would restore it are
- * written down here rather than found by tuning later. Reach rises with both the speed and the peak, and at
- * full charge it is about `2·v·sqrt(2·g·h)/g` for a small peak: 150 studs needs roughly
- * `THROW_MAX_SPEED = 335`, which is far past anything this game has thrown, or a peak near 18 studs, which
- * puts the apex several character-heights up and is the lob this change exists to remove. **Neither was
- * moved.** The table above is what the current numbers do — the same arithmetic as the 21.5 / 33.5 / 45 / 56 /
- * 67 table this replaces, at the peak the config now holds rather than the old one, so the range fell by a
- * sixth when the peak dropped by a stud — and the honest reading of it is that a real trajectory at a
- * 125 studs/s ceiling reaches about 55 studs.
+ * **On level ground that gives 18.5 studs at a tap, 52.0 at a quarter, 84.8 at a half, 117.5 at three
+ * quarters and 150.1 at a full hold** — monotone, and now reaching exactly as far as a rig's own range gate.
  *
- * **Every charge is in the air for the same 0.55 s, and that is a consequence rather than a coincidence.** A
+ * **The ceiling was raised, and the paragraph that stood here argued the opposite.** It read *"that loss is
+ * the price of the shape and it is a real one"*, and it wrote down the numbers that would undo it "rather
+ * than found by tuning later": 150 studs needs roughly `THROW_MAX_SPEED = 335`, or a peak near 18 studs,
+ * which puts the apex several character-heights up and is the lob this change exists to remove. **The speed
+ * is the one that moved and the peak did not** — `THROW_MAX_SPEED` is `336`, and the arithmetic that lands on
+ * it is written up beside the constant. The old table was 18.5 / 27.9 / 37.2 / 46.3 / 55.3, and the numbers
+ * above are that table with one figure of the config changed: nothing in this function's shape moved.
+ *
+ * **A rig is why, and it is the whole reason.** A rig throws the ball a player throws — same solve, same
+ * config, same envelope — and a rig's range gate is `NPC_CONFIG.THROW_RANGE_STUDS`. So a ceiling that reaches
+ * 55 studs leaves a rig past that range throwing its hardest and watching the ball land short, which is a
+ * worse reading of "the rigs are like the players" than a longer throw is. One envelope, wide enough for the
+ * body that has a *distance* in its hand rather than a button. **What that costs is stated beside the
+ * constant**: the top of a hold now covers much more ground — a half hold was 37 studs and is 85 — so the
+ * band a player learns is the same shape stretched, and the shot that used to be near the end of the throw is
+ * nearer the middle.
+ *
+ * **Every charge is in the air for the same 0.45 s, and that is a consequence rather than a coincidence.** A
  * fixed apex from a fixed hand means a fixed *vertical* flight — `2·v_y/g`, and `v_y` is the same number for
  * every hold — so only the horizontal distance covered changes. Two things follow, and both are changes to how
  * the game plays rather than to how it looks. The ball arrives at a target in about half the time the lob took

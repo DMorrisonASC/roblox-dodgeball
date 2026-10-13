@@ -716,17 +716,20 @@ export class ThrowController implements OnStart {
 		// wire not at all.
 		shakeCamera(charge);
 
-		this.throwRemote?.FireServer(
-			this.getThrowDirection(),
-			charge,
-			this.curve,
-			getThrowMuzzle(character),
-		);
+		// **The heading is taken once and used twice**, so the line below names the vector the wire actually
+		// carried rather than a second reading of the same mouse a frame later. The rigs' `[Rig] … throw` lines
+		// print their heading in this same shape, which is what lets a reader put the two side by side: same
+		// charge at the same distance is the same throw, and this is the player's half of that comparison.
+		const heading = this.getThrowDirection();
+
+		this.throwRemote?.FireServer(heading, charge, this.curve, getThrowMuzzle(character));
 
 		if (DEBUG) {
 			print(
 				`[Throw] released at charge ${string.format("%.2f", charge)}` +
-					` (drawn ${string.format("%.2f", drawn)})${this.curve ? " — bending" : ""}`,
+					` (drawn ${string.format("%.2f", drawn)})${this.curve ? " — bending" : ""}, heading ` +
+					`(${string.format("%.2f", heading.X)}, ${string.format("%.2f", heading.Y)}, ` +
+					`${string.format("%.2f", heading.Z)})`,
 			);
 		}
 	}

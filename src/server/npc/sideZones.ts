@@ -4,49 +4,58 @@ import { TEAM_A, TEAM_B } from "../services/round/team";
 import { sideOfRig } from "./rigs";
 
 /**
- * **Where a rig may not go and fetch a ball from — one painted box per side, and the test that reads it.**
+ * **Where a rig *may* fetch a ball from — one painted box per side, and the test that reads it.**
  *
- * **The problem this answers is a straight line.** `Behavior_Seeking` walks with `MoveTo`, which cannot go
- * round anything (its own doc says so at length), so a ball that has been thrown across the court and left on
- * the other side of the barrier is a ball a rig will walk at for the whole of its stall budget — 1.5 s of a
+ * **An allow-list, and it was a deny-list until 2026-10-13.** This module used to hand `SeekBehavior` the
+ * *other* side's box and the behaviour skipped whatever was inside it: one exclusion, with every remaining ball
+ * in `Workspace` a candidate — the lobby, the practice court and the enemy's floor included. The report that
+ * produced the change is a rig walking to the lobby for a ball it could see and not reach. The box a side reads
+ * is now **its own**, and a ball outside it is not a candidate at all; `constants.ts` carries the same
+ * correction beside the two tags, and the tag strings are unchanged because they are painted in the place file.
+ *
+ * **The problem the region answers is a straight line.** `Behavior_Seeking` walks with `MoveTo`, which cannot
+ * go round anything (its own doc says so at length), so a ball that has been thrown across the court and left
+ * on the other side of the barrier is a ball a rig will walk at for the whole of its stall budget — 1.5 s of a
  * body pressed against a wall, in view, before it gives up and picks another. That is not a bug in the
  * behaviour; it is the behaviour being asked a question it cannot answer cheaply. See its doc for why the
  * honest answers (a raycast, a path) are all worse than the bound it already keeps.
  *
- * **So the place file answers it instead.** A box on each side means a rig skips a ball on the far side
- * *before* it sets off, rather than discovering the wall and charging it. The box is authored geometry — the
- * `CFrame` and `Size` of a part — and this module is only the two questions about it: *which box applies to
- * this rig*, and *is this point inside it*.
+ * **So the place file answers it instead, and answering it as a *region* rather than as an exclusion is what
+ * makes the rule expressible at all.** The box is authored geometry — the `CFrame` and `Size` of a part — and
+ * this module is only the two questions about it: *which box applies to this rig*, and *is this point inside
+ * it*. A denylist could only ever name what is out of bounds; an allowlist names what a rig's world is.
  *
  * **A module beside `rigs.ts` rather than a service**, for `HANDOFF.md` §0's rule and for `rigs.ts`'s own
  * reason: two lines of arithmetic over a painted part, asked by a behaviour, with no lifecycle, no state and
  * nothing to keep in step. The **tag** is what a person paints; the *side* is in the tag rather than in an
  * attribute so that a server which finds only one of the pair can say which one is missing.
  *
- * **The rig's own side is not consulted for its own box** — that is the point of "opposing": a ball inside
- * the box on *its own* side is a ball it can walk to, and blocking that would refuse the ordinary case. The
- * rig's side comes from `sideOfRig`, so a mid-walk placeholder (no side yet) and a hand-tagged rig with no
- * `Team` are both unconstrained: they are not playing a round, so there is no side of the court that is not
- * theirs.
+ * **A rig with no side has no region at all**, and that is the one case where the allow-list bites: it is not
+ * in a round, so there is no half of the court that is its, and the round variant of the seek therefore
+ * fetches *nothing* rather than everything. That is deliberate — the same "a rig with no side is inert" the
+ * rest of the project keeps — and it is why the practice rigs in the place file wear a tag of their own, one
+ * that reads the practice zone instead. See `AlwaysSeekingBehavior`.
  */
 
 /**
- * **The boxes `rig` may not fetch from: the other side's.**
+ * **The boxes `rig` may fetch from: its own side's.**
  *
  * Read per call rather than cached, which is the same choice — and the same reason — `LobbyRigService.padsFor`
  * makes: the parts are painted, a dev moves them between runs and sometimes during one, and
  * `taggedPartsInWorkspace` is a `CollectionService` tag query rather than a walk of the tree, so the cost is
  * of the same order as the `looseBalls()` call the caller has already made this tick.
  *
- * An empty list is a **valid state**, not a fault: a place with no boxes is a place where every ball is worth
- * chasing, which is the behaviour every rig had before this existed. The boot line is what says whether the
- * place has them — see `LobbyRigService`, which reports the pair beside the pads and the template.
+ * **An empty list now means "this rig fetches nothing", which is the opposite of what it used to mean** — the
+ * old reading was "no box, so every ball is worth chasing", and the caller is what decides the difference:
+ * `createRoundSeekBehavior` reads an empty region as *stand*, because a rig without a side is not playing. A
+ * place file that has lost one of the two boxes is the case `LobbyRigService`'s boot warning names, and the
+ * symptom there is a whole side that never fetches a ball.
  */
-export function keepOutPartsFor(rig: Model): Array<BasePart> {
+export function fetchRegionFor(rig: Model): Array<BasePart> {
 	const side = sideOfRig(rig);
 	if (side === undefined) return [];
 
-	return taggedPartsInWorkspace(side === TEAM_A ? SIDE_KEEP_OUT_B_TAG : SIDE_KEEP_OUT_A_TAG);
+	return taggedPartsInWorkspace(side === TEAM_A ? SIDE_KEEP_OUT_A_TAG : SIDE_KEEP_OUT_B_TAG);
 }
 
 /**
@@ -85,9 +94,13 @@ export function insideZone(parts: Array<BasePart>, point: Vector3): boolean {
  * How many boxes each side has, for the boot line.
  *
  * **The count is the whole diagnostic**, and it is the one thing about a painted part that a build cannot
- * check: a zone that was never tagged is not a fault in any file, and a rig that fetches balls from the far
- * side of the court looks exactly like a rig that is allowed to. Two numbers, printed once at server start,
- * are what turn "the rigs still chase unreachable balls" into "B has no box".
+ * check: a box that was never tagged is not a fault in any file, and a side with no box fetches nothing at all
+ * — which looks exactly like a side whose rigs have decided to stand still. Two numbers, printed once at
+ * server start, are what turn "the rigs on B never pick a ball up" into "B has no box".
+ *
+ * **What the count means changed with the reading.** It was a count of *exclusions*, so a missing pair meant
+ * rigs that chased balls they could not reach; it is a count of *regions* now, so a missing box means a side
+ * that cannot fetch. The line is the same line; the failure behind it is louder. See `LobbyRigService`.
  */
 export function zoneCounts(): { readonly a: number; readonly b: number } {
 	return {
