@@ -810,14 +810,19 @@ export const SUPER_MULTI_BALL_COUNT_ATTRIBUTE = "SuperMultiBallCount";
 export const BALL_SIZE = 2;
 
 /**
- * Attribute on a **character `Model`** saying that the server has a dodge or catch window open on it.
+ * Attribute on a **character `Model`** saying that the server has a dodge window open on it.
  *
  * **The one thing a client cannot work out for itself, which is why it is published at all.** A window is
- * opened and closed by `DodgeService` and `CatchService` — a dash's `DURATION`, a catch's window, and the
- * early exits from both — and none of it reaches a client as state. A client that wanted to know would have
- * to re-derive those rules from its own input and from the cooldown stamps, which is the second copy of a
- * server rule this project does not keep. So the server says so instead, from `afterimage.ts` — the one
- * function that already knows a window has opened. See `startAfterimage` and `publishWindow`.
+ * opened and closed by `DodgeService` — a dash's `DURATION`, and the early exits from it — and none of that
+ * reaches a client as state. A client that wanted to know would have to re-derive those rules from its own
+ * input and from the cooldown stamps, which is the second copy of a server rule this project does not keep.
+ * So the server says so instead, from `afterimage.ts` — the one function that already knows a window has
+ * opened. See `startAfterimage` and `publishWindow`.
+ *
+ * **A catch window is *not* published, because a catch draws no trail.** `CatchService` used to open one and
+ * to be published by the same path; both halves were removed on request, so a catching body is untrailed on
+ * every machine and its client draws nothing. The attribute itself is unchanged — it answers about whoever
+ * opens a window, and that is the dodge alone.
  *
  * **On the character rather than on the player**, which is the opposite of `THROW_ENABLED`'s choice and for
  * the opposite reason: a throw preference has to survive a death, and a window must not. An attribute on the

@@ -230,6 +230,17 @@ export const NPC_CONFIG = {
 	 * — `LobbyRigService` looks for a `Model` with this name *anywhere* under `ServerStorage`, so where
 	 * it is filed does not matter and what it is called does.
 	 *
+	 * **And it wears no tag — any tag, and `NPC` in particular.** The contract is the *name*; the tags go
+	 * on the **clone**, from `NpcService.spawn` (which adds `NPC` and the behaviour tags it is handed)
+	 * and from `LobbyRigService` (which adds and removes the six gameplay behaviours on the rigs that are
+	 * playing). A tag on the template is not harmless, and the shape of the harm is worth knowing because
+	 * **nothing in the output names it**: `NpcService` scans for `NPC` across the whole DataModel on
+	 * purpose, so a tagged template is handed a *loop* — and, before `NpcService.ensureToken` refused it,
+	 * a `ThrowerToken`, which every clone of that template then inherited. One token shared by every
+	 * placeholder rig makes `BallComponent`'s own-ball rule answer "this is your ball" for **every**
+	 * rig-to-rig throw, so a rig hit by another rig's ball resolves to nothing and dies of it never. See
+	 * `TAGS.md`'s `NPC` row for the register and `NpcService.ensureToken` for the code half of the rule.
+	 *
 	 * **A rig and not a model of some other shape.** The thing cloned has to be something
 	 * `NpcService.spawn` can hand to a behaviour: a `Model` with a `Humanoid` and a
 	 * `HumanoidRootPart`. A `PrimaryPart` set to the root is worth having as well, because the spawn

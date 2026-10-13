@@ -1,6 +1,5 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players } from "@rbxts/services";
-import { startAfterimage, stopAfterimage } from "shared/afterimage";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
@@ -266,27 +265,28 @@ export class CatchService implements OnStart {
 		if (open) {
 			open.expiresAt = now + CATCH_CONFIG.WINDOW_SECONDS;
 
-			// **A window can be extended *after* its trail has stopped, and this is the line that catches
+			// **A window can be extended *after* its trail has stopped, and this branch used to answer for
 			// that.** An expired window is left in the table until somebody asks about it, so a rig that
 			// stopped catching for longer than one window and then started again arrives here rather than at
-			// the branch below — and without this it would catch for a whole window with nothing behind it.
-			// `startAfterimage` answers whether it was this call that started a trail, and the timer is
-			// armed **only when it did**: a trail that was already running has a timer already, and arming a
-			// second one for the same window would leave two threads counting down the same expiry.
+			// the branch below — and while the body left a trail, that mattered: `startAfterimage` answered
+			// whether *this* call had started one, and the timer was armed only when it had, because arming a
+			// second timer for the same window would have left two threads counting down the same expiry.
 			//
-			// The branch below arms unconditionally for the same reason seen from the other side: it has
-			// just stored a *new* window record, and the identity test in the timer is what makes the two
-			// cases one timer each rather than two for either.
-			if (startAfterimage(model)) this.armAfterimageTimer(model, open);
+			// **There is no trail to arm now** — that removal is documented at the branch below — so the
+			// extension above is exactly what it reads as: a new expiry, and nothing else. A window that runs
+			// out on its own is still nobody's business but {@link isCatching}'s, which has always been what
+			// decides expiry; the trail was the only thing here that needed a timer, and it is gone.
 
 			return true;
 		}
 
 		// The window dies with the catcher. `Once` because a humanoid dies once.
 		//
-		// Assigned to a local before it is stored, and that is what the trail's timer below hangs on: the
-		// record is the *token* for this window, so the timer armed with it can tell "my window is still the
-		// one open" from "my window was spent and another has taken its place" without a second map to keep.
+		// Built as a local before it is stored, and that is what the trail's timer used to hang on: the record
+		// is the *token* for this window, so a timer armed with it could tell "my window is still the one open"
+		// from "my window was spent and another has taken its place" without a second map to keep. That timer
+		// went with the trail — the note below is where — so the local now buys nothing but a name for a thing
+		// that is otherwise created and stored in one breath.
 		const window: CatchWindow = {
 			expiresAt: now + CATCH_CONFIG.WINDOW_SECONDS,
 			death: humanoid.Died.Once(() => this.forget(model)),
@@ -294,17 +294,40 @@ export class CatchService implements OnStart {
 
 		this.windows.set(model, window);
 
-		// **The trail opens with the window and is timed to outlive every extension of it.** Idempotent, so
-		// the rig that re-asks every tick costs one map lookup and not one trail per tick — see
-		// `afterimage.startAfterimage`.
+		// **And the body is marked as mid-catch, which is what the catch's own clip is played from — the
+		// *attempt*, with no ball anywhere near it.**
 		//
-		// The timer is armed rather than the stop being written into the expiry, because **a window does not
-		// close on a timer**: {@link isCatching} decides expiry, so a window nobody asks about would sit there
-		// open in the table with a trail still emitting behind a body that stopped catching minutes ago. That
-		// is the state this method exists to make impossible — a window is allowed to be lazy about *when it is
-		// noticed*, and the trail it started is not.
-		startAfterimage(model);
-		this.armAfterimageTimer(model, window);
+		// **A catch and an attempt are the same animation, so they are the same mark**, and the mark's one writer
+		// is `BallService.markCatchAnimation` — reached from here when a window opens and from `catchBall` when
+		// the ball actually arrives. A body reaching for a ball it never gets is doing the same thing as one that
+		// gets it, and the press has no other feedback at all.
+		//
+		// **Written here rather than above the branch, and that placement is the whole of the rule.** The line
+		// below this one extends a window that is already open — which a rig with `AlwaysCatching` asks for
+		// *every tick*, deliberately, because that is how it holds a window open continuously. A mark written on
+		// the extension would be a mark rewritten twenty times a second for the whole of that rig's life, which
+		// is a rig frozen in a catch pose rather than a rig catching. A *new* window is the event worth drawing:
+		// a press that was accepted, or a gated rig's first ask after its last window closed. The successful
+		// catch draws it again from `BallService`, on top of this.
+		this.balls.markCatchAnimation(model, "attempt");
+
+		// **No trail opens with the window, and nothing is armed for when it ends.**
+		//
+		// Opening a window used to start the afterimage right here and arm the one timer that stopped it when
+		// a window ran out on its own. The trail was removed — the cue stood for "this body is mid-action"
+		// and a catch and a dodge are not the same action to read, so a body trailing behind it said *dodge*
+		// while the body was in fact reaching for a ball — the two cues are one cue, and only one of the two
+		// actions is a dodge, so the cue belongs to the dodge and was briefly taken away from it and given
+		// back. `shared/afterimage.ts` is untouched and is the dodge's again; what was removed here is the
+		// catch's own two asks and its stop.
+		//
+		// **What this costs:** there is nothing drawn at the instant a catch *begins*. The catch pose from
+		// {@link markCatchAnimation} above is now the whole of that feedback, and a body that is catching
+		// looks like a body that is standing there until the ball actually arrives.
+		//
+		// The window itself is unchanged: it opens here, re-asks extend it, and {@link isCatching} expires it
+		// lazily. The trail was the only part of it that could not be lazy about *when it was noticed*, which
+		// is why it had a timer and the window does not.
 
 		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Catch] ${model.Name}: window open`);
 
@@ -327,69 +350,38 @@ export class CatchService implements OnStart {
 
 		this.alwaysCatching.add(player);
 
-		// **Emitting too, because this is a window** — {@link isCatching} answers yes for it, and the cue is
-		// about what a body is doing rather than about which mechanism put it in that state.
-		//
-		// **No timer, because there is nothing to time out.** An endless window has no expiry to aim a stop
-		// at, so the trail ends where the window ends: {@link consume} is reached when the flag goes off and
-		// {@link isCatching} notices, or when the dev catches something, and both stop it. The one shape worth
-		// knowing about is a dev who turns the flag off and then does nothing at all: the window itself stays
-		// open until somebody asks about it — that is the lazy expiry documented on {@link isCatching},
-		// unchanged here — and the trail goes with it on the same ask. Any ball reaching them, or their own
-		// dodge key, is that ask.
-		//
-		// A dev standing still under this window leaves no ghosts at all beyond the first, which is the
-		// movement gate rather than a fault — see `afterimage.leaveGhost`.
-		startAfterimage(model);
+		// **The dev's endless window draws no trail either**, from the same removal — see the note on the
+		// normal branch above. This one is worth a line of its own because it was the case with no timer at
+		// all: an endless window has no expiry to aim a stop at, so its trail ended where the window ended,
+		// through {@link consume} on the flag going off or on a catch. *That* path is still live and still
+		// matters — it is one of the five ways a window closes, and it is where the dodge lockout is stamped
+		// too — it simply no longer has a trail to switch off on the way through.
 
 		// An endless window is not a length, so there is nothing to count down: the readout is told
 		// the wait is over rather than left showing the remains of whatever window came before it.
 		publishReadyAt(model, CATCH_READY_AT, 0);
+
+		// **And the attempt draws, like any other.** This method is reached on *every* press by a dev holding
+		// the flag — the cycle gate below it is what refuses a second press for everybody else, and a dev is
+		// deliberately not held to it — so this is one mark per press rather than one per tick: the press is the
+		// event, and it is the only thing here that repeats.
+		this.balls.markCatchAnimation(model, "attempt");
 
 		if (DEBUG) print(`[Catch] ${model.Name}: endless window open (dev)`);
 
 		return true;
 	}
 
-	/**
-	 * Arms the one timer that stops a window's trail when the window runs out on its own.
-	 *
-	 * **Re-arms itself rather than being armed again by the window being extended**, which is what makes it
-	 * one pending timer per open window however many times an NPC pushes the expiry forward. The delay is
-	 * therefore the *remaining* window rather than {@link CATCH_CONFIG.WINDOW_SECONDS}: a timer that always
-	 * waited a fresh window would let the trail run on up to a whole window after the window had closed, and
-	 * the point of the cue is that it stops when the thing it stands for stops.
-	 *
-	 * **The three things this can find, and why each is answered the way it is.**
-	 *
-	 * - The window is no longer the open one: it was spent by a catch, dropped on death or on leaving, or
-	 *   replaced. Every one of those paths stops the trail, through {@link consume}, and this returns without
-	 *   touching it. The identity test is what stops a *new* window's trail being cut off by this timer — a
-	 *   window is only ever created when none is open, so a different record means this one is over.
-	 * - It is still open, and there is time left on it: that is an NPC, whose `CatchBehavior` re-asks every
-	 *   tick and whose every ask pushes `expiresAt` forward. Re-armed for what is left, which is exactly the
-	 *   case this shape exists for.
-	 * - It is still open and the time is up: the emission stops, and **the window itself is left alone**.
-	 *   Expiry stays {@link isCatching}'s business — this method decides when a body stops *leaving ghosts*,
-	 *   not when it stops being able to catch, and moving the second into a timer would be the change this
-	 *   feature has no reason to make. The ghosts already in the world finish fading by themselves.
-	 */
-	private armAfterimageTimer(model: Model, window: CatchWindow): void {
-		const remaining = math.max(window.expiresAt - os.clock(), 0);
-
-		task.delay(remaining, () => {
-			if (this.windows.get(model) !== window) return;
-
-			if (window.expiresAt - os.clock() > 0) {
-				this.armAfterimageTimer(model, window);
-				return;
-			}
-
-			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Catch] ${model.Name}: window ran out — trail off`);
-
-			stopAfterimage(model);
-		});
-	}
+	// **`armAfterimageTimer` stood here.** One timer per open window, and its whole job was to stop the trail
+	// when a window ran out on its own rather than being spent by a catch or dropped by a death — the case
+	// {@link isCatching} cannot report, because it only finds an expired window when somebody asks about it.
+	// With no trail there is no emission to stop, so the timer went, and its re-arming and its identity test
+	// against {@link windows} went with it.
+	//
+	// **What it did not do is expire the window**, and that is why nothing replaces it: expiry was, and still
+	// is, lazy and {@link isCatching}'s alone. A window that runs out with nobody asking about it leaves one
+	// stale entry in the table until the next ask — which is the cost the trail was paying for, and the only
+	// reason it needed a thread of its own.
 
 	/**
 	 * Whether `model` has a catch window open at this instant.
@@ -529,18 +521,15 @@ export class CatchService implements OnStart {
 		// for that one it is now.
 		this.lastCatchCloseAt.set(model, window ? math.min(now, window.expiresAt) : now);
 
-		// **The trail stops here, which is the one place every close passes through**: a window spent by a
-		// catch, dropped when the catcher died, dropped when the player left, found expired by
-		// {@link isCatching}, and the endless window's close. Writing it here rather than into each of those
-		// is the same argument this method's own doc makes about `lastCatchCloseAt` — one writer, so no path
-		// can close a window and leave a body still emitting behind it.
+		// **The trail used to stop here**, and this was the point every close passed through: a window spent
+		// by a catch, dropped when the catcher died, dropped when the player left, found expired by
+		// {@link isCatching}, and the endless window's close. Putting it here rather than in each of those was
+		// the same argument this method's own doc makes about `lastCatchCloseAt` — one writer, so no path
+		// could close a window and leave a body still emitting behind it.
 		//
-		// Below the early return above, and that is safe rather than lucky: a body can only be emitting while
-		// it has a window or an endless entry — both of which mean this method did not return early — and
-		// {@link stopAfterimage} is a map delete on a body that is not emitting anyway.
-		//
-		// Most calls do not reach here at all, because most calls are `isCatching` asking after a body that
-		// is not catching; the ones that do are windows ending, one each.
-		stopAfterimage(model);
+		// `stopAfterimage` is gone because nothing emits any more; the starts were the two branches of
+		// {@link attemptCatch} and {@link holdOpenForDev}, and each of those carries the note where it stood.
+		// Worth recording what this shape bought while it existed: all five closes above were covered by one
+		// line, and none of them had to know the trail existed at all.
 	}
 }

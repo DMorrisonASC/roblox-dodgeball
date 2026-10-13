@@ -55,10 +55,17 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 	 *
 	 * The root and not the model's pivot, because a model pivot carries no
 	 * orientation of its own — see the placement in `onDied` for what moving a rig by
-	 * one does to a rig that is not already upright. Read once per rig and carried to
-	 * its replacement: a rig that has been knocked down has been knocked down
+	 * one does to a rig that is not already upright. Read when a rig is first seen and
+	 * carried to its replacement: a rig that has been knocked down has been knocked down
 	 * *somewhere*, and the point of a respawn is to come back where it was put, not
 	 * where its body happened to fall.
+	 *
+	 * **And written again every time the game puts the rig somewhere else**, which is `onPlaced` and is a
+	 * repair rather than a refinement. Read once, "where it was put" is only true until something puts it
+	 * somewhere else, and this game does exactly that twice a round: a placeholder rig is born on a *lobby*
+	 * spawn, walks to a join pad, and is teleported onto an arena spawn at the whistle. So the home read at
+	 * the first turn was a lobby spawn, and every rig killed in a round came back standing in the lobby —
+	 * out of the game, holding a side, with nothing left that would move it in. See `onPlaced`.
 	 */
 	const homes = new Map<Model, CFrame>();
 
@@ -134,6 +141,45 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 		// Nothing to do on a timer — see `tickInterval`. This behavior does its work in
 		// `onDied`, because that is the only moment it has anything to say.
 		tick() {},
+
+		/**
+		 * **The rig has been moved by somebody else, and where it stands now is where it belongs.**
+		 *
+		 * A home is a fact about where a rig was *put*, and this game puts a rig in more than one place.
+		 * `prepare` reads it on the first turn, which is the right moment for a rig born where it plays and
+		 * the wrong one for every rig this game actually makes: a placeholder rig is spawned on a lobby spawn,
+		 * walks to a join pad, and is teleported onto an arena spawn when the round starts. So the home written
+		 * at that first turn is a *lobby* spawn — and a rig killed in the arena came back in the lobby, kept
+		 * its side, and could not rejoin, because nothing moves a side-bearing rig into the arena except the
+		 * round's own teleport, which is a round away. The same fault runs the other way at the end of a round,
+		 * where `RoundService.returnRigsToLobby` puts a rig back in the lobby while its home still points at
+		 * the arena. See `NpcBehavior.onPlaced` for why a teleport is the only thing that has to be announced.
+		 *
+		 * **Only for a rig this behavior already knows**, and that guard is what keeps the two moments in the
+		 * right order. `prepare` records a home and takes a template *together*, and it reads a known home as
+		 * "this rig is a replacement, with all of that already carried over" — so a home written for a rig
+		 * that has not been prepared would make `prepare` return early and leave that rig with no template at
+		 * all, which is a rig that dies and never comes back. A rig placed before its first turn loses nothing
+		 * either way: `prepare` reads where it stands then, which is where it was just put.
+		 */
+		onPlaced(model) {
+			if (homes.get(model) === undefined) return;
+
+			const root = model.FindFirstChild("HumanoidRootPart");
+			if (!root || !root.IsA("BasePart")) return;
+
+			homes.set(model, root.CFrame);
+
+			// **Where, as well as that.** A rig that comes back in the wrong room reads exactly like a rig
+			// that never came back, and nothing in the output said which room it had been put in until this
+			// line — so the position is the whole of what this print is for. Only the movers reach here, and
+			// only for a rig this behavior knows, so it costs a boundary rather than a turn.
+			if (DEBUG) {
+				const at = root.Position;
+
+				print(`[NPC] ${model.Name}: placed — ${string.format("%.0f, %.0f, %.0f", at.X, at.Y, at.Z)}`);
+			}
+		},
 
 		onDied(model) {
 			task.spawn(() => {
@@ -284,11 +330,19 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// is a participant is the one fact about this respawn that is not visible in the
 				// Explorer twice over (the tag set looks identical either way), and this is the line
 				// the next log will be read for.
+				//
+				// **And where it came back, which is the third fact of that kind.** A replacement put in
+				// the wrong *room* is not visible in the Explorer either — the tag set and the side read
+				// identically — and it is the one thing that made a respawn into the lobby look like a rig
+				// that never came back at all. Printed from the home rather than from the rig's position a
+				// frame later, because the home is what this behavior decided and placed.
 				if (DEBUG) {
 					const sideLabel = team === undefined ? "no side" : `side ${team}`;
+					const at = home.Position;
 
 					print(
-						`[NPC] ${name}: back — health ${fresh.Health}, state ${fresh.GetState()}, ${sideLabel}`,
+						`[NPC] ${name}: back — health ${fresh.Health}, state ${fresh.GetState()}, ${sideLabel}, ` +
+							`at ${string.format("%.0f, %.0f, %.0f", at.X, at.Y, at.Z)}`,
 					);
 				}
 			});

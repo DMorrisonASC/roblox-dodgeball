@@ -518,51 +518,74 @@ export class BallService implements OnStart {
 		// for the two to be talking about different places.
 		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.CATCH, CATCH_EMITTER_NAME);
 
-		// **And the body is marked as mid-catch, which is what the catch's own clip is played from.**
-		//
-		// **The throw's two halves, at the other end of a throw.** A rig is drawn from the mark by every
-		// client that can see it (`RigAnimationController`), while a player's body is animated on that
-		// player's own client and needs a track started here for anybody else to see the catch — see
-		// `playActionAnimation`, which is the same split the throw makes and argues. **One mark covers both
-		// bodies**, because this is where a catch is confirmed whoever made it: a rig arrives through
-		// `CatchBehavior` and a player through the remote, and both end up in this method with the ball in
-		// their hand.
-		//
-		// **A throw's mark still standing is dropped first, and that is the one guard the two actions need
-		// between them.** A body can throw and catch inside `CATCH_ANIMATION_SECONDS` — the thrown ball is
-		// gone, the hand is free, and a second ball arriving is an ordinary catch — and without this the rig's
-		// renderer would be holding the catch branch *behind* the throw branch (`wantedClip` ranks the throw
-		// first) and would replay the catch clip the moment the throw's own mark expired: a catch pose a fifth
-		// of a second after the catch. Dropping the older mark says the honest thing instead — the newer action
-		// owns the limbs — and the throw's timer is already written to notice that its mark is gone and leave
-		// both the attribute and its track alone. **The other order needs nothing**: a throw inside a catch
-		// window takes the limbs because the throw outranks the catch, and the catch mark expires behind it
-		// without ever being played again.
+		// **And the body is marked as mid-catch, which is what the catch's own clip is played from.** The mark
+		// is shared with the *attempt*: `CatchService` calls the same method when a window opens, so a body that
+		// reached for a ball and did not get one is drawn reaching exactly like a body that did. See
+		// {@link markCatchAnimation}, which owns the mark and is the only thing that writes it.
+		this.markCatchAnimation(model, "catch");
+
+		return true;
+	}
+
+	/**
+	 * Marks `model` as mid-catch — **the one writer of `CATCH_ANIMATION_ATTRIBUTE`, called by both halves of
+	 * catching.**
+	 *
+	 * **A catch and an attempt are the same animation, so they are the same mark.** This method is reached when
+	 * the ball actually arrives in a hand ({@link catchBall}) and when an attempt is *accepted* with no ball in
+	 * sight (`CatchService.attemptCatch`) — because the body is doing the same thing either way: reaching. A
+	 * catch that never comes has to be visible as much as one that does; it is the only feedback a press has.
+	 *
+	 * **One writer rather than two, and that is the whole reason this is public at all.** The mark's lifetime is
+	 * a counter plus a timer, and two services each holding their own copy would leave two timers racing over
+	 * one attribute: an older one fires, finds an attribute a newer mark still owns, and clears it early —
+	 * cutting the clip off after a fraction of a second, which reads exactly like a clip that failed to load.
+	 * So the machinery lives beside the catch it belongs to, and the catch *window* asks for it.
+	 *
+	 * **A throw's mark still standing is dropped first, and that is the one guard the two actions need between
+	 * them.** A body can throw and catch inside `CATCH_ANIMATION_SECONDS` — the thrown ball is gone, the hand is
+	 * free, and a second ball arriving is an ordinary catch — and without this the renderer would be holding the
+	 * catch branch *behind* the throw branch (`bodyClipFor` ranks the throw first) and would replay the catch
+	 * clip the moment the throw's own mark expired: a catch pose a fifth of a second after the catch. Dropping
+	 * the older mark says the honest thing instead — the newer action owns the limbs — and the throw's own timer
+	 * is already written to notice that its mark is gone and leave the attribute alone. **The other order needs
+	 * nothing**: a throw inside a catch window takes the limbs because the throw outranks the catch, and the
+	 * catch mark expires behind it without ever being played again.
+	 *
+	 * **A mark on a body already marked restarts the window rather than stacking one**, which is the counter
+	 * below and the timer at the end of this method working together: the newer mark owns the attribute, and the
+	 * older timer finds it does not and leaves it alone. This is the case a catcher actually produces — a press
+	 * after a press, or the same body catching twice inside half a second.
+	 *
+	 * **`cause` is for the log and nothing else**, which is the only place the two callers differ: it is worth
+	 * being able to tell, from the output, a body that reached and missed from one that reached and took it.
+	 */
+	public markCatchAnimation(model: Model, cause: "attempt" | "catch"): void {
 		this.clearAnimationMark(model, THROW_ANIMATION_ATTRIBUTE, this.throwMarks);
 
 		const catchMark = (this.catchMarks.get(model) ?? 0) + 1;
 		this.catchMarks.set(model, catchMark);
 		model.SetAttribute(CATCH_ANIMATION_ATTRIBUTE, true);
 
-		// **The observable, and it is one line per catch.** The clip itself is drawn by the client that owns
-		// the body — every client for a rig, its own for a player — and each of those prints its own line when
-		// it changes clip (`[Animate] <name>: catch — Action`, `[Rig] <name>: catch — Action`). This line is
-		// the *server's* half: it says the fact was published, which is the one thing a client's silence cannot
-		// tell you. A catch with no line here is a catch no client can be drawing.
+		// **One line per mark.** The clip itself is drawn by the client that owns the body — every client for a
+		// rig, its own for a player — and each of those prints its own line when it changes clip
+		// (`[Animate] <name>: catch — Action`, `[Rig] <name>: catch — Action`). This line is the *server's*
+		// half, and it says the fact was published, which is the one thing a client's silence cannot tell you.
 		if (DEBUG) {
-			print(`[Ball] ${model.Name}: catch animation mark — ${CATCH_CONFIG.CATCH_ANIMATION_SECONDS}s`);
+			print(
+				`[Ball] ${model.Name}: catch animation mark — ${cause}, ` +
+					`${CATCH_CONFIG.CATCH_ANIMATION_SECONDS}s`,
+			);
 		}
 
 		task.delay(CATCH_CONFIG.CATCH_ANIMATION_SECONDS, () => {
-			// A newer catch owns the mark by now; its own timer is the one that clears it, so this leaves the
-			// attribute alone.
+			// A newer mark owns the attribute by now; its own timer is the one that clears it, so this leaves it
+			// alone rather than cutting a later reach short.
 			if (this.catchMarks.get(model) !== catchMark) return;
 
 			this.catchMarks.delete(model);
 			model.SetAttribute(CATCH_ANIMATION_ATTRIBUTE, undefined);
 		});
-
-		return true;
 	}
 
 	/**

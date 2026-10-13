@@ -194,13 +194,42 @@ export class NpcService implements OnStart {
 		model.PivotTo(cframe);
 		model.Parent = Workspace;
 
+		// **A clone is a new body, so it is given a new token — set rather than defaulted, which is the
+		// whole difference between this line and {@link ensureToken}.**
+		//
+		// `Clone` copies the template's attributes, and `ThrowerToken` is an attribute like any other.
+		// Left to `ensureToken`, a template that carries one therefore hands **the same token** to every
+		// model cloned from it — and the token is what `BallComponent`'s immunity rule compares against
+		// the token on the ball. One token standing for eight placeholder rigs makes every rig-to-rig
+		// throw read as *that body's own ball*: the contact returns before anything is tagged, silently,
+		// so rigs are unhurtable by each other and immortally so, while a player — who has a token of
+		// their own, their `UserId` — is still killed by the same throws. That is the report this line
+		// answers, and it is answered here rather than in the comparison because the comparison is
+		// right: a token belongs to a *body*, and this is where a body is made.
+		//
+		// **Set before the tags, because `NPC` is what starts this rig**: the added-signal runs `start`,
+		// which mints nothing when a token is already there — so this line is what keeps the token
+		// decision in one place even for a rig that was spawned.
+		//
+		// **And it is not the only fix, deliberately.** A template should carry no token at all — and
+		// no tag, since `LobbyRigService` finds it by name, see `NPC_CONFIG.PLACEHOLDER_RIG_TEMPLATE` —
+		// but a place file that already has one cannot be repaired from code, and this is the line that
+		// makes the difference unobservable either way. `ensureToken` is the other half: it refuses to
+		// write to a model that is not in the world, which is how the token got into the template.
+		model.SetAttribute(THROWER_TOKEN, HttpService.GenerateGUID(false));
+
 		for (const tag of behaviorTags) model.AddTag(tag);
 		model.AddTag(NPC_TAG);
 
 		return model;
 	}
 
-	/** Begins managing `model`: a thrower token if it has none, then one loop. */
+	/**
+	 * Begins managing `model`: a thrower token if it has none, then one loop.
+	 *
+	 * **The token is settled by {@link ensureToken}, which refuses a model that is not in the world** —
+	 * that refusal is the point rather than a detail, see it.
+	 */
 	private start(model: Model): void {
 		if (this.loops.has(model)) return;
 
@@ -209,9 +238,16 @@ export class NpcService implements OnStart {
 		// is given when it is handed a ball, which is what lets one immunity check
 		// cover both. Once only: a GUID that changed would break the ball already in
 		// flight.
-		if (model.GetAttribute(THROWER_TOKEN) === undefined) {
-			model.SetAttribute(THROWER_TOKEN, HttpService.GenerateGUID(false));
-		}
+		//
+		// **And this used to be the line that wrote into a place file.** The scan above is world-blind
+		// on purpose — a rig wearing `NPC` inside a parked template is handed a loop so that dragging it
+		// into the world later just works — and a rig with a loop arrives here, so a token *was* written
+		// to the **template**: every model cloned from it shared that one token (which is the rigs that
+		// could not hurt each other), and the template carried the attribute into the place file the next
+		// time it was saved, which is how a fault that began at runtime came back after a restart.
+		// `ensureToken` therefore asks the world first, and `run` settles the token on the first turn a
+		// parked rig is in it.
+		this.ensureToken(model);
 
 		// **What a rig has to be given before anything can move or animate it**, and this is the one
 		// site for both. They are properties of the *body* rather than of this loop, and a replacement
@@ -254,6 +290,32 @@ export class NpcService implements OnStart {
 	private stop(model: Model): void {
 		const loop = this.loops.get(model);
 		if (loop) loop.stopped = true;
+	}
+
+	/**
+	 * Gives `model` its thrower token, if it has none **and it is in the world**.
+	 *
+	 * **The one *defaulting* writer of the attribute the immunity rule reads** — `spawn` is the other
+	 * writer, and it *sets* one because a clone is a new body. `BallComponent` compares the token a ball
+	 * carries against the token on the body it touches, and that single comparison is the whole of
+	 * "nobody is hurt by their own ball", for a player (whose token is their `UserId` text, stamped by
+	 * `JoinService`) and for a rig alike. So a token is not bookkeeping: a body without one can hit
+	 * itself, and two bodies sharing one cannot hit each other.
+	 *
+	 * **In the world, or not at all, and that is the load-bearing half.** A model that is not in the
+	 * world is a template, and a token written to a template is inherited by everything cloned from it
+	 * (`Clone` copies attributes) and saved into the place file with it. So this refuses a parked model
+	 * outright, and {@link run} calls it on the first turn a parked rig *is* in the world — the same
+	 * promise, made at the same place, as the world gate that keeps a parked rig's behaviors idle.
+	 *
+	 * **Idempotent rather than once**: the loop asks every turn, and every ask after the first is one
+	 * `GetAttribute` on a body whose attributes are already being read and written on that turn.
+	 */
+	private ensureToken(model: Model): void {
+		if (!model.IsDescendantOf(Workspace)) return;
+		if (model.GetAttribute(THROWER_TOKEN) !== undefined) return;
+
+		model.SetAttribute(THROWER_TOKEN, HttpService.GenerateGUID(false));
 	}
 
 	/**
@@ -399,6 +461,14 @@ export class NpcService implements OnStart {
 				continue;
 			}
 
+			// **And the first thing a rig is owed once it is in the world: a token.** A rig the boot scan
+			// found parked in `ServerStorage` was given a loop and deliberately no token — `ensureToken`
+			// refuses a model that is not in the world, because a token written to a template is inherited
+			// by every clone of it and saved into the place file. This is where the promise is kept: the
+			// first turn it is in the world is both the earliest moment a token means anything and the turn
+			// its behaviors start running on. See `ensureToken` for the whole rule.
+			this.ensureToken(model);
+
 			// **A frozen rig does nothing, and this is the second gate every behavior passes through.** A check
 			// inside each behavior would be one guard per mechanic and a silent omission in the next one
 			// anybody adds; here it cannot be forgotten, and it stops throwing, catching and picking a ball up
@@ -540,6 +610,31 @@ export class NpcService implements OnStart {
 
 		for (const behavior of this.behaviors) {
 			if (model.HasTag(behavior.tag)) behavior.onDied?.(model);
+		}
+	}
+
+	/**
+	 * Tells the behaviors the model still wears that it has been **placed**: moved by something that owns
+	 * where rigs stand.
+	 *
+	 * **The sibling of {@link announceDeath}, and needed for the same reason.** A `CFrame` write made by
+	 * another service is not a fact a behavior can see — the loop is what hands out turns, and the one
+	 * behavior that remembers a position asks for none at all (`tickInterval: math.huge`) — so "this rig is
+	 * where it belongs now" has to be said out loud by whoever moved it. The movers are
+	 * `RoundService.teleportTeamsToArena`, `LobbyRigService.moveWalkersToArena` and
+	 * `RoundService.returnRigsToLobby`. `NpcBehavior.onPlaced` states the rule that separates a *placement*
+	 * from a rig that walked somewhere by itself, and why the difference matters to a home.
+	 *
+	 * **Public, and that is the one difference from the death announcement**: the movers are other
+	 * services, where a death is announced by this service's own loop and by nothing else.
+	 *
+	 * Every behavior the model wears is asked and each decides — exactly as `announceDeath` does, for the
+	 * same reason: a placement is a fact about the model, and what to make of it is the hook's business.
+	 * A behavior with no use for one simply does not write the hook.
+	 */
+	public announcePlaced(model: Model): void {
+		for (const behavior of this.behaviors) {
+			if (model.HasTag(behavior.tag)) behavior.onPlaced?.(model);
 		}
 	}
 

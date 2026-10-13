@@ -11,6 +11,19 @@
  * convenience — one trail for both windows, so a reader asking "how does a body look
  * while it is acting" has one file to open, and each of the two services keeps the
  * imports it already had instead of gaining one for numbers it shares.
+ *
+ * **The trail is the dodge's alone now, and this is the line that says so.** It was shared with the catch —
+ * `CatchService` opened a window for the length of a catch window and drew the same ghosts — and **that half
+ * was removed on request, which is the opposite reading of the very same cue**: a trail behind a body says
+ * "this body is mid-dodge", and a body reaching for a ball is not dodging, so the cue was pointing at the
+ * wrong action. A ghost trail is a dash's and nothing else's; the dodge's own half was briefly removed and
+ * restored, so read the removal history on both services if the argument looks roundabout.
+ *
+ * **Nothing below became dead code**: a dash still opens a trail, so the emitter still has a caller and every
+ * number here still has a reader. What is history is only the *sizing*: every measurement quoted in these
+ * values is the record of tuning against a dash of `DODGE_CONFIG.DISTANCE` — nine ghosts over fifteen studs,
+ * 1.875 studs apart, the movement gate cleared four times over on every interval. Read them as the record of
+ * how the numbers were chosen, not as a description of what a dodge currently does.
  */
 export const ACTION_CONFIG = {
 	/**

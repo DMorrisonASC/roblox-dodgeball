@@ -229,4 +229,27 @@ export interface NpcBehavior {
 	 * A method for the same reason `tick` is.
 	 */
 	onDied?(model: Model): void;
+
+	/**
+	 * Optional: the model has been **placed** — moved by something that owns where rigs stand.
+	 *
+	 * The sibling of `onDied`, and told from outside for the same reason: what it reports is a write to
+	 * the rig's own `CFrame` by another service, which is not a thing a behavior can observe. A behavior
+	 * with a real `tickInterval` could notice it had been moved, because it is the only thing that moves
+	 * itself; the one behavior that cares asks for no turns at all and would never look.
+	 *
+	 * **Who calls it, and why the list is short.** Every service that puts a rig at a post *it* chose:
+	 * `RoundService.teleportTeamsToArena` at the whistle, `LobbyRigService.moveWalkersToArena` for a rig
+	 * still walking when a round starts, and `RoundService.returnRigsToLobby` when one ends. Nothing else
+	 * does, and the omission is the rule: **a rig that walked somewhere has not been placed there.** The
+	 * lobby's own walk to a join pad is the case that proves it — the rig crossed that ground on its own
+	 * feet, so it keeps the post it was spawned with, which is a few studs away in the same room.
+	 *
+	 * **Told, not due.** It arrives whenever something moves the rig, which can be mid-life or between
+	 * rounds. A rig placed before its first turn is not a case this has to cover: `prepare` reads where it
+	 * stands when it is first seen, which is the same answer.
+	 *
+	 * A method for the same reason `tick` is.
+	 */
+	onPlaced?(model: Model): void;
 }

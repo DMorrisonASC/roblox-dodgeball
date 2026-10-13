@@ -1111,6 +1111,13 @@ export class LobbyRigService implements OnStart {
 				}
 
 				root.CFrame = parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
+
+				// **And the move is announced, because being put somewhere is a fact one behavior remembers
+				// and cannot see.** `RespawnBehavior` read this rig's home while it stood in the lobby, and the
+				// alternative to telling it is what the game did until now: a rig killed in a round came back
+				// standing on its lobby spawn, off the field, with a side on it and nothing left that would
+				// move it back in. See `NpcBehavior.onPlaced` and `NpcService.announcePlaced`.
+				this.npcs.announcePlaced(rig);
 			}
 		}
 	}

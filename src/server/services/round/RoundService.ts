@@ -35,6 +35,7 @@ import { shieldCharacter } from "../character/SpawnShield";
 import { BallService } from "../ball/BallService";
 import { FreezeService } from "../actions/FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
+import { NpcService } from "../npc/NpcService";
 import { MatchService } from "../match/MatchService";
 import { StatsService } from "../stats/StatsService";
 import { EconomyService } from "../economy/EconomyService";
@@ -362,6 +363,7 @@ export class RoundService implements OnStart {
         private readonly freezes: FreezeService,
         private readonly speeds: WalkSpeedService,
         private readonly respawns: RespawnService,
+        private readonly npcs: NpcService,
     ) {}
 
     onStart() {
@@ -2206,6 +2208,11 @@ export class RoundService implements OnStart {
             if (!root || !root.IsA("BasePart")) continue;
 
             root.CFrame = spawn.add(new Vector3(0, 3, 0));
+
+            // **Announced, and this is the other half of the same fault.** A home read at the first turn
+            // still points at an arena spawn once the rig has been in a round, so a rig killed between
+            // rounds came back standing on the field instead of in the lobby. See `NpcBehavior.onPlaced`.
+            this.npcs.announcePlaced(rig);
         }
     }
 
@@ -2266,6 +2273,12 @@ export class RoundService implements OnStart {
             if (!root || !root.IsA("BasePart")) continue;
 
             root.CFrame = this.arenaSpawnFor(rig);
+
+            // **Announced, because the rig has just been put somewhere and one behavior remembers where.**
+            // `RespawnBehavior` reads a rig's home the first time it sees it alive and — until this line —
+            // never again, so a rig born in the lobby kept a lobby home for life and came back there every
+            // time it died in a round. See `NpcBehavior.onPlaced` and `NpcService.announcePlaced`.
+            this.npcs.announcePlaced(rig);
         }
     }
 

@@ -607,6 +607,12 @@ export class DodgeService implements OnStart {
 
 		this.dashes.set(model, record);
 
+		// **Restored, and the history matters because it went round a full turn.** This line was removed on
+		// request — a ghost trail on a dash was read as visual noise rather than as motion — and the catch's
+		// trail was left standing in its place. That reading was then reversed in the other direction: the
+		// cue is a *dodge's*, so the dodge keeps it and the catch lost its own. The argument below is the
+		// original one, and it stands again unchanged.
+		//
 		// **The trail opens exactly here, which is where `isDodging` starts answering yes.** The dashes table
 		// *is* the window — see {@link isDodging} — so the ghosts and the state they stand for begin in the
 		// same instant by construction rather than by two places agreeing to write at the same time. It
@@ -699,6 +705,13 @@ export class DodgeService implements OnStart {
 		// Stopping an emission that was never started is the ordinary case rather than a fault: a dash that
 		// ends by being replaced had its predecessor's trail stopped when that one ended a moment ago, and
 		// `stopAfterimage` is a map delete either way.
+		//
+		// **And the trail table is keyed on the body rather than on the action, which is worth knowing here.**
+		// One body has one trail however many windows it has open, so this line ends whatever trail that body
+		// has — exactly right while the dodge is the only action that opens one, and a real fault while the
+		// catch opened one too: a dash ending would have cut a catch's cue short. The catch's trail has since
+		// been removed, so the collision is gone. **If a second action is ever given a trail, this is the line
+		// that needs the split** — one trail per action rather than per body.
 		stopAfterimage(model);
 
 		record.finish();
