@@ -2,7 +2,7 @@ import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { startAfterimage, stopAfterimage } from "shared/afterimage";
 import { ACTION_CONFIG } from "shared/config/action.config";
-import { DODGE_ANIMATION, DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
+import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
 import { CATCH_READY_AT, DODGE_DIRECTION_ATTRIBUTE, DODGE_READY_AT, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
@@ -75,138 +75,21 @@ export interface CatchState {
 }
 
 /**
- * The animation id a `direction` dodge plays on a body of `rigType`.
+ * **The dodge flourishes are no longer played by the server, and this note is what stands in for the three
+ * functions that played them.**
  *
- * **One table for both kinds of body, so a dodge clip is swapped in one place.** The four ids come from
- * {@link DODGE_CONFIG.DODGE_ANIMATION}, which is also where the rig renderer reads them from — a player's
- * flourish and a rig's clip are the same four animations, played by different machines. See that
- * config for why the two share a table rather than keeping a copy each.
+ * This service used to resolve the clip (`dodgeAnimationId`), load it onto a player character's animator
+ * (`playDodgeAnimation`) and stop it when the dash ended (`stopDodgeAnimation`) — a track started on the
+ * server, on the argument that a client-started one would be that client's private flourish. A rig was drawn
+ * by every client from the direction published below, so the game had two ways of drawing one dodge, and the
+ * two could disagree about which of the four clips a dash was.
  *
- * **The direction is a parameter rather than a second lookup.** Which of the four a dash plays is decided
- * once, by `dodgeDirectionOf`, and handed down from the one place that has the heading and the body's
- * facing; a second classification here would be a second answer to what `S+D` means.
- *
- * The rig-type choice is not cosmetic: an R6 clip never loads onto an R15 rig, so the wrong column is a
- * dodge that silently does nothing rather than one that looks slightly off.
+ * **There is one way now, and it is the direction below.** Every body's dash is drawn from
+ * `DODGE_DIRECTION_ATTRIBUTE` by `client/controllers/character/BodyAnimator.ts` — a rig on every client, a
+ * player's own body on the client that owns it — and the clip is `BODY_ANIMATION`'s dodge row for the
+ * direction that was published. So this service's animation duty is one attribute write and one clear, and
+ * the clip table is the shared one rather than a second lookup here.
  */
-function dodgeAnimationId(rigType: Enum.HumanoidRigType, direction: DodgeDirection): string {
-	const ids = rigType === Enum.HumanoidRigType.R15 ? DODGE_ANIMATION.R15 : DODGE_ANIMATION.R6;
-
-	return ids[direction];
-}
-
-/**
- * Plays a **player character's** dodge flourish and hands back the track playing it.
- *
- * Played from the **server** on purpose: a track started here replicates to every
- * client, so the other players see the dodge rather than only the one who asked for
- * it. A track started on the client would be that client's private flourish.
- *
- * **Called for a player's character and for nothing else, and that is the caller's gate rather than a
- * refusal here.** A rig's dodge is rendered by *every* client that can see it, from the direction this
- * service publishes — see `DODGE_DIRECTION_ATTRIBUTE` and `RigAnimationController` — so the reason this
- * function exists (nobody else would see it) does not apply to a rig, and a track started on a rig would
- * be a second copy of the same animation fighting each client's own track on the same limbs, plus the
- * replication cost that having clients render rigs exists to avoid. The gate is in `startDash`, at the
- * one place that knows which kind of body this is.
- *
- * **Never waited on.** `Play` returns at once and the clip streams in behind the dash,
- * which is what lets the caller apply the dash velocity without gating it on an asset
- * that may not be cached. The dash is the authoritative part; this is a visual.
- *
- * The `Animator` is looked up rather than assumed — a modern character already carries
- * one, but a bare rig may not, and a track cannot be loaded without it.
- *
- * The returned track is the caller's to stop: it owns the lifecycle, because only the
- * caller knows when the dash it belongs to is over. Nothing is cached between dodges —
- * a fresh `Animation` and a fresh track each time, and the engine deduplicates the
- * identical asset id underneath.
- *
- * **This never raises, and it may return nothing.** That is the whole contract, and it
- * is load-bearing rather than defensive: a flourish is a *visual*, and the one thing it
- * must never be able to do is take the dash down with it. A load that fails — an asset
- * the place does not own, a moderated one, a mistyped id — would otherwise fall straight
- * out of `startDash` and strand the dash constraints on the character, which is how a
- * dodge turns into a character that flies away and never comes back.
- */
-function playDodgeAnimation(
-	character: Model,
-	humanoid: Humanoid,
-	direction: DodgeDirection,
-): AnimationTrack | undefined {
-	const animationId = dodgeAnimationId(humanoid.RigType, direction);
-
-	// **An empty id is the off switch, and it is now a fault rather than a state.** Every one of the eight
-	// rows is filled in, so a body with no clip is a body whose config row was cleared or misspelled — and
-	// the symptom of that is a dodge with no animation, which looks exactly like a code bug. Hence `warn`
-	// rather than a `print` behind `DEBUG`, and hence the rig type and the direction in the line: they are
-	// the two facts that say *which* of the eight ids is missing. Checked before the loader sees it,
-	// because `LoadAnimation` raises on an empty id rather than quietly playing nothing.
-	if (animationId === "") {
-		warn(
-			`[Dodge] ${character.Name}: no ${direction} clip for a ` +
-				`${humanoid.RigType === Enum.HumanoidRigType.R15 ? "R15" : "R6"} body`,
-		);
-
-		return undefined;
-	}
-
-	let track: AnimationTrack | undefined;
-
-	// Everything the loader touches is inside the `pcall`, and the error is reported
-	// rather than swallowed: a flourish that cannot play is worth a line in the output,
-	// but it is never worth a broken dash. The empty-id check above is the common case
-	// and it does not even reach here.
-	const [ok, err] = pcall(() => {
-		const animator = humanoid.FindFirstChildOfClass("Animator") ?? new Instance("Animator");
-
-		// Only a rig that arrived without one is parented here: a character's own animator
-		// is already on the humanoid, and moving it would be pointless. Built first and
-		// attached after, because this codebase's `Instance` constructor is not given a
-		// property table.
-		if (animator.Parent === undefined) animator.Parent = humanoid;
-
-		const animation = new Instance("Animation");
-		animation.Name = "DodgeAnimation";
-		animation.AnimationId = animationId;
-
-		const loaded = animator.LoadAnimation(animation);
-
-		// Above the movement animations, so the dodge is not fought by the walk or run the
-		// humanoid happened to be playing when the dash started: the flourish takes priority
-		// for as long as it is on, and hands control back when it is stopped.
-		loaded.Priority = Enum.AnimationPriority.Action;
-
-		loaded.Play();
-
-		track = loaded;
-	});
-
-	if (!ok) {
-		warn(
-			`[Dodge] ${character.Name}: the dodge animation ${animationId} would not load: ${tostring(err)}`,
-		);
-		return undefined;
-	}
-
-	if (DEBUG) print(`[Dodge] ${character.Name}: playing ${animationId}`);
-
-	return track;
-}
-
-/**
- * Stops a dodge track, if there is still a track to stop.
- *
- * A character can be destroyed mid-dash — dying is the ordinary way — and that takes
- * its `Animator`, and every track loaded onto it, down with it. Stopping a track whose
- * animator has gone raises, and a death is not exceptional, so the guard is not
- * optional: it is what keeps a dodge that ends in death quiet in the output.
- */
-function stopDodgeAnimation(track: AnimationTrack): void {
-	if (track.Parent === undefined) return;
-
-	track.Stop();
-}
 
 /**
  * Dodging, decided by the server.
@@ -657,14 +540,13 @@ export class DodgeService implements OnStart {
 		balance.RigidityEnabled = false;
 		balance.Parent = root;
 
-		// Declared here and started at the *end* of this method, once the dash is
-		// registered and its cleanup is armed. The animation is the only part of a dash
-		// that can fail on something outside our control — an asset that will not load —
-		// so it is deliberately the last thing to run: by the time it can raise, `endDash`
-		// is already able to undo the constraints below, and a broken flourish costs the
-		// flourish and nothing else. The `finish` closure reads this by reference, and it
-		// only ever runs after the assignment, so the late start is safe.
-		let track: AnimationTrack | undefined;
+		// **Nothing about the animation is declared here any more.** There was a `let track` on this line, and
+		// a comment explaining that the clip was started at the very *end* of this method so that a flourish
+		// which would not load could not leave a character flying — the one part of a dash that depends on an
+		// asset outside this project's control, deliberately last. That whole arrangement is gone with the
+		// server-side flourish: nothing here loads a track, so nothing here can fail on one. The dash is
+		// registered, its cleanup is armed, and the direction published below is the entire animation contract.
+		// See the note above `CatchState` for what replaced it.
 
 		// The fall states are what the humanoid answers a shove with, and with no
 		// balance of its own it would flop, get up, and flop again for as long as the
@@ -696,23 +578,17 @@ export class DodgeService implements OnStart {
 					humanoid.SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true);
 				}
 
-				// The flourish goes with the dash, and it is stopped **after** the mechanics
-				// are already undone — deliberately, and for the same reason the animation is
-				// started last: the velocity that carries the dash is the one thing here that
-				// has to come off no matter what, so the visual is the final step rather than
-				// something that could stand between the dash and its own cleanup. Stopped
-				// rather than left to finish its clip, because `DODGE_CONFIG.DURATION` is
-				// shorter than the placeholder and a clip allowed to run on would keep
-				// swinging after the character had stopped moving. A clip shorter than the
-				// dash is already over here and the stop is a no-op; either way the visual
-				// ends exactly when the move does.
-				if (track) stopDodgeAnimation(track);
-
 				// **And the published direction goes with the rest of the dash**, which is what puts the body
 				// back into its walking or standing clip: the renderer reads the clear as "no longer dashing"
 				// and picks its clip from the ordinary state again, through the one decision it always uses
 				// rather than through a second path kept in step with this one. Empty rather than left
 				// standing, so a body that has never dodged and one whose dash has just ended read alike.
+				//
+				// **This is the whole of the dodge's ending, now that the clip is not this service's.** The
+				// flourish used to be stopped on the line above this one, because a track cannot be allowed to
+				// run on past the move it describes. Nothing needs stopping any more: the renderer sees the
+				// clear on this attribute change, and its own rule takes the dodge clip off — which is the same
+				// instant and one fewer thing to keep in step.
 				model.SetAttribute(DODGE_DIRECTION_ATTRIBUTE, undefined);
 
 				if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
@@ -755,12 +631,12 @@ export class DodgeService implements OnStart {
 		// and it reads it on the same `AttributeChanged` connection the rest of a rig's state arrives on —
 		// so writing it here is the whole of the wiring, and there is no second signal to keep in step.
 		//
-		// **It goes on the model rather than on the rig, so it is not the rig renderer's attribute in
-		// particular.** A player's character gets it too — `DodgeService` runs a player's dash through this
-		// same method — and nothing reads it there yet: the player's dodge is a flourish the *server* plays
-		// (see `playDodgeAnimation`, whose ids are still empty), so the client-side directional clips are a
-		// rig feature today. Publishing the fact for both bodies is what makes the player's half a reader
-		// rather than a second implementation when somebody gets to it; see `DODGE_DIRECTION_ATTRIBUTE`.
+		// **It goes on the model rather than on the rig, and both bodies now read it.** A player's character
+		// gets it too — this method runs a player's dash exactly as it runs a rig's — and the client that owns
+		// that character draws the dodge from it, the way it draws a throw and a catch. **That is a change**:
+		// the player's dodge used to be a flourish the *server* played, so this attribute was published for a
+		// body that did not read it, and the note here said so. It has a reader on both bodies now, which is
+		// what makes the four directional clips one feature rather than two. See `DODGE_DIRECTION_ATTRIBUTE`.
 		//
 		// **Cleared in `finish` below**, which is the only path a dash ends by, and before that happens for
 		// a dash being replaced the newer one's own write comes after it — so the attribute never describes
@@ -787,21 +663,6 @@ export class DodgeService implements OnStart {
 				this.endDash(model);
 			}
 		});
-
-		// Last, on purpose. See the declaration above: the dash is registered and its
-		// cleanup is armed before the one step that depends on an external asset runs, so
-		// a flourish that cannot play can never leave a character flying.
-		//
-		// **And only for a player's character.** A rig's dodge is drawn by every client that can see it,
-		// from the direction published at the top of this method, so a rig has no audience that a
-		// server-started track would be *for* — and a track started anyway would be a second animation on
-		// the same limbs as each client's own, which is two clips blended against each other rather than a
-		// dodge. It would also spend exactly the replication this project's design refuses to spend: see
-		// `RigAnimationController`'s class doc for why rigs are animated one client at a time. The gate is
-		// here rather than inside `playDodgeAnimation` because this is the line that knows which kind of
-		// body is dashing.
-		const playerOwned = Players.GetPlayerFromCharacter(model) !== undefined;
-		track = humanoid && playerOwned ? playDodgeAnimation(model, humanoid, dodgeDirection) : undefined;
 	}
 
 	/**

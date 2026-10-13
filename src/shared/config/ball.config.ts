@@ -281,7 +281,7 @@ export const BALL_CONFIG = {
 	 * **A rig and a player throw with the same animation, and this is where that is decided.** The clips
 	 * were supplied "for all models", which is the animation editor's phrase for an R6 export, and the
 	 * intent is that a rig's throw and a player's are the same motion: a rig reads these through
-	 * `RIG_ANIMATION.throw`, which borrows them rather than repeating the ids, and a player's throw is
+	 * `BODY_ANIMATION.throw`, which borrows them rather than repeating the ids, and a player's throw is
 	 * played from `BallService` itself (a track started on the server, so the other players see it — a
 	 * client-started one would be that client's private flourish). One table means swapping the throw clip
 	 * is one edit, and no body can end up throwing differently for no visible reason.

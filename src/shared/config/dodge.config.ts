@@ -13,7 +13,7 @@ import type { DodgeDirection } from "../dodge";
  * newer than the first, and it is why the ids below moved here: a dodge clip is played by two different
  * machines for two different kinds of body — a player's flourish is started by the server, a rig's clip is
  * played by each client from the published direction — and both of them must be looking at one table.
- * See `RIG_ANIMATION`, which borrows these four rows the way it borrows walk and run from
+ * See `BODY_ANIMATION`, which borrows these four rows the way it borrows walk and run from
  * `CHARACTER_CONFIG`.
  *
  * The server never sees a key press, and there is no client-side timing to configure here: a dodge is a

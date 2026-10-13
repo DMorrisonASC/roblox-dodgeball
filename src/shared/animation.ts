@@ -1,33 +1,37 @@
+import { AnimationState, BODY_ANIMATION } from "./config/animation.config";
 import { CHARACTER_CONFIG } from "./config/character.config";
-import { RIG_ANIMATION, RigAnimationClip } from "./config/rigAnimation.config";
+import { DodgeDirection } from "./dodge";
 
 /**
- * The state a body is in, turned into the clip it should wear.
+ * The state a body is in, turned into the clip it should wear — **one decision, for every body in the game.**
  *
- * **One decision, shared by the two machines that have to make it**, and that is the whole of the
- * reason this module exists:
+ * **One vocabulary, one table, one decision, two bodies.** A player's body and a rig draw their clips from
+ * `animation.config.ts` through this module: there is no second list of clips and no second rule about which
+ * one applies, so a state added there is a state **both** bodies wear. That is the property this module
+ * exists to make true, and it is the answer to the fault it replaces — a state wired for one body and
+ * silently doing nothing for the other, with every animation feature written twice in two styles.
  *
- *   - the **local player's controller**, which has a `Humanoid`, a camera and a sprint key, and
- *     dresses the body this client owns;
- *   - a **client renderer for NPC rigs**, which has none of those things — a rig is a server-owned
- *     model whose owner is somewhere else — and dresses it from the state the server publishes
- *     (see `RigAnimationController`).
+ * **Pure, therefore usable by both, and the purity is load-bearing rather than tidy.** It takes a
+ * {@link BodyState} — a value the caller gathers — and answers with a name. There is no `Players`, no
+ * `RunService`, no `Humanoid` and no attribute read in here, because those are exactly the things that differ
+ * between the two callers: a rig's facts are published by the server and read off the rig, a player's own
+ * body is measured by the client that owns it, and a decision that reached for either would fit one body and
+ * need a copy for the other. Gathering is the caller's job, deciding is this module's, rendering is
+ * `BodyAnimator`'s.
  *
- * **Pure, therefore usable by both.** It takes numbers and booleans and returns a name. There is no
- * `Players`, no `RunService`, no `Humanoid` and no read of anything on this machine: every fact it
- * needs is handed to it by a caller that already had it. That is what a version taking a `Humanoid`
- * would give up — it would fit the player's side only, and the rig's side would need a second copy,
- * and the second copy is where two answers to "which clip is walking" start to drift apart.
- *
- * **A name rather than an id, and the resolution is `clipFor`'s.** Every clip here is two ids, one
- * per rig type, and which pair applies is a fact about the *body* rather than about the state — so
- * it is answered where the body is, by `clipFor`, and never threaded through this decision. The
- * names are Roblox's own set names (`idle`, `walk`, `run`, `jump`), which is not a coincidence:
- * they are also what the player's `Animate` script looks its sets up by, so the same four words are
- * the vocabulary on both sides of this function.
+ * **A name rather than an id, and the resolution is `clipIdFor`'s.** Every clip is two ids, one per rig type,
+ * and which column applies is a fact about the *body* rather than about the state — so it is answered where
+ * the body is, and never threaded through this decision.
  */
 
-/** A clip a locomotion state can name. Roblox's own set names, see the file comment. */
+/**
+ * A clip Roblox's own `Animate` script has a *set* for — Roblox's own four names.
+ *
+ * **A subset of `AnimationState` rather than a parallel vocabulary**, and spelled the same way on purpose:
+ * these are the sets the script looks its own animations up by, which is why the controller that claims them
+ * and the shared table that holds the ids agree by construction. The other eight states in
+ * `AnimationState` are ones that script has no concept of at all.
+ */
 export type AnimationClip = "idle" | "walk" | "run" | "jump";
 
 /**
@@ -62,53 +66,42 @@ export const STANDING_SPEED = 0.01;
 export const ANIMATION_SPEED_BAND = 5;
 
 /**
- * The clip a body in this state should wear, or `undefined` for "no locomotion clip".
+ * The **locomotion** clip a body in this physical state should wear, or `undefined` for "none".
  *
- * **`undefined` means the same thing on both sides and is answered differently by each**, which is
- * worth stating because it is the one place the two callers diverge:
+ * **The ordinary answer, and only the ordinary one.** Events — a throw, a catch, a dash — are not this
+ * function's business: they outrank everything here and are ranked in {@link bodyClipFor}, which is the
+ * function a renderer calls. This is the half that answers "how is this body moving on the ground", and it
+ * is the half both bodies have always shared.
  *
- *   - the **player's controller** takes it as "not mine to decide" and leaves the body to Roblox's
- *     `Animate` script, which is already playing the right idle or jump clip;
- *   - the **rig renderer** takes it as "wear the standing clip", because a rig has no script to
- *     defer to — a rig with nothing playing is a rig in its bind pose, which is not a pose any
- *     state in this game has.
+ * **`undefined` is a real answer and means "no locomotion clip"**: a held body is not walking, not falling
+ * and not standing, so it has no clip from here. What a caller does with it is {@link RESTING_STATE}'s
+ * question, and it has one answer for both bodies now.
  *
- * **Frozen outranks everything.** A held body is not walking, not falling and not standing: it is
- * being held, and the honest answer for the legs of a body that cannot choose where it goes is to
- * stop playing one. For the player this never triggers — the player's own freeze is a walk-speed
- * key and an anchored root, which arrive here as "no speed and no ground" — so it exists for rigs,
- * where a freeze is a fact only the server holds.
+ * **Frozen outranks everything below it.** A held body is being held rather than choosing where to go, and
+ * the honest answer for its legs is to stop playing one. Only a rig ever reaches this branch today: a
+ * player's freeze is a walk-speed key and an anchored root, which arrive at the caller as "no speed and no
+ * ground" and are answered by the branches below.
  *
- * **Off the ground outranks the arms.** A body in the air wears the jump clip whether it is holding
- * a ball or not, because the alternative is a falling body whose legs are standing still — the one
- * combination nothing else in this project can produce.
+ * **Off the ground outranks speed.** A body in the air wears the jump clip whatever it is doing and however
+ * fast it is travelling, because the alternative is a falling body whose legs are walking.
  *
- * **A body whose arms are busy stands.** `throwing` is "this body is holding a ball, and its next
- * act is to throw it" — which is what a rig with a ball in hand is *always* about to do, and what a
- * player is never: a player carries a ball while running, and its charge is an input this module
- * has no business knowing about (see the file comment on what is player-only). So for a player the
- * flag is passed as `false`, always, and for a rig the publisher passes what `BallService` already
- * knows. The legs of a body about to throw are the standing clip, which is also what the rig's
- * movement agrees with: `SeekBehavior` stops walking the moment a ball is in hand.
+ * **Walk and run are decided by the measurement, and that is a reversal worth recording.** The player's
+ * controller used to decide between them from *whether the sprint key was held*, on the argument that the key
+ * is the player's intent and that a measured speed dips when a sprint turns a corner. That argument does not
+ * survive being shared with a rig, which has no key — and the cost it knowingly accepted (a sprint the server
+ * refused, worn as a sprint at walking pace, "running on the spot in the sense that matters") was the
+ * animation disagreeing with the server. Speed is the fact both bodies have, so speed is what decides, and
+ * the disagreement is gone: a refused sprint now looks like walking, which is what it was.
  *
- * **Walk and run are decided by the measurement, and that is a reversal worth recording.** The
- * player's controller used to decide between them from *whether the sprint key was held*, on the
- * argument that the key is the player's intent and that a measured speed dips when a sprint turns a
- * corner. That argument does not survive being shared with a rig, which has no key — and the cost
- * it knowingly accepted (a sprint the server refused, worn as a sprint at walking pace, "running on
- * the spot in the sense that matters") was the animation disagreeing with the server. Speed is the
- * fact both bodies have, so speed is what decides, and the disagreement is gone: a refused sprint
- * now looks like walking, which is what it was.
+ * **A body carrying a ball may walk, run or stand exactly as if it were not.** There used to be a fourth
+ * parameter here — `throwing`, "this body has a ball and its next act is to throw it" — which stood a rig
+ * still in a hold pose while it carried one. It is gone: a ball in a hand is not an animation state, and a
+ * rig wearing a hold pose while the player beside it walked normally with a ball was the two bodies
+ * disagreeing about the same thing. See `BodyState` for the rule.
  */
-export function animationFor(
-	speed: number,
-	grounded: boolean,
-	frozen: boolean,
-	throwing: boolean,
-): AnimationClip | undefined {
+export function animationFor(speed: number, grounded: boolean, frozen: boolean): AnimationClip | undefined {
 	if (frozen) return undefined;
 	if (!grounded) return "jump";
-	if (throwing) return "idle";
 
 	// At or above the sprint's own line, which is a number about *clips* rather than about speed:
 	// see `CHARACTER_CONFIG.RUN_ANIMATION_SPEED` for why it is not simply the base walk speed.
@@ -118,70 +111,125 @@ export function animationFor(
 }
 
 /**
- * Which two config ids each clip is read from.
+ * The id this game has for `state` on a body of this rig type, or `""` where it has none.
  *
- * **One table rather than a `switch`, because every row is reachable and the names are a fixed set.** The
- * player's controller hands all four to the engine's script as sets and plays two of them itself, so no
- * row is decoration. A table is also what stops an id being written out a second time anywhere: `clipFor`
- * is the only reader, and `CHARACTER_CONFIG` is the only place an id is spelled.
+ * **The one resolver, for both bodies.** It used to be two — `clipFor` for a player's four locomotion words
+ * out of `CHARACTER_CONFIG`, `rigClipFor` for a rig's twelve out of the rig table — and that split was the
+ * whole of what kept the two bodies apart: a state could exist for one and not for the other, and the failure
+ * of that was a body playing no clip at all. With one table there is one lookup, so a state added to
+ * `BODY_ANIMATION` is a state **both** bodies can be dressed in — which is the property the whole
+ * unification exists to buy.
  *
- * **These four are the player's, and the rig's table is a different one.** It used to be that both sides
- * read this table — a rig has no `Animate` script, so it took the same four ids straight from here — and
- * the rig now reads `RIG_ANIMATION` through `rigClipFor` instead, because it needs states this table has
- * no row for and an R6 standing clip this one deliberately leaves blank. See `rigClipFor`.
+ * **An empty id is the off switch and a legitimate answer**, exactly as it was on both sides before: a caller
+ * that reads one leaves the body alone rather than playing something almost right. No row of the shared table
+ * is empty today; this is the reading a blank row would get if one ever appeared.
+ *
+ * **Rig type is a parameter rather than a read**, because which column applies is a fact about the *body* and
+ * the caller is the thing holding it. It is the same read for a player and a rig (`Humanoid.RigType`), and
+ * the same trap if it is wrong: an R6 clip never loads onto an R15 rig and the reverse, so the wrong column
+ * is a track that loads nothing.
  */
-const CLIP_IDS: Record<AnimationClip, { r6: string; r15: string }> = {
-	idle: { r6: CHARACTER_CONFIG.IDLE_ANIMATION_R6, r15: CHARACTER_CONFIG.IDLE_ANIMATION_R15 },
-	walk: { r6: CHARACTER_CONFIG.WALK_ANIMATION_R6, r15: CHARACTER_CONFIG.WALK_ANIMATION_R15 },
-	run: { r6: CHARACTER_CONFIG.RUN_ANIMATION_R6, r15: CHARACTER_CONFIG.RUN_ANIMATION_R15 },
-	jump: { r6: CHARACTER_CONFIG.JUMP_ANIMATION_R6, r15: CHARACTER_CONFIG.JUMP_ANIMATION_R15 },
-};
+export function clipIdFor(state: AnimationState, isR15: boolean): string {
+	const ids = isR15 ? BODY_ANIMATION.R15 : BODY_ANIMATION.R6;
 
-/**
- * The id this game has for `clip` on a body of this rig, or `""` where it has none.
- *
- * **An empty id is the off switch and a legitimate answer** — the config holds blanks for the two
- * sets only one rig type was rendered for, and a caller is expected to leave that clip alone rather
- * than to play something almost right. See `CHARACTER_CONFIG`: an R6 body keeps Roblox's standing
- * and jumping animations and wears this game's walk and sprint.
- *
- * **Rig type is a parameter rather than a read**, for the file's reason turned around: this function
- * is the half of the decision that *is* about the body, so it is the half that takes the body's
- * facts as arguments. `Humanoid.RigType` is read by the caller that has one, and it is the same
- * read on both sides — an R6 clip never loads onto an R15 rig, and the reverse.
- *
- * It lived in `LocomotionAnimationController` as a private function until rigs needed it. The move
- * is the point: two copies of this lookup would be two answers to "which animation is the walk",
- * and the bug that comes out of that is one body dressed with two different clips depending on
- * which reader got there first.
- */
-export function clipFor(clip: AnimationClip, isR15: boolean): string {
-	const ids = CLIP_IDS[clip];
-	return isR15 ? ids.r15 : ids.r6;
+	return ids[state];
 }
 
 /**
- * The id this game has for `clip` on a **rig** of this type, or `""` where it has none.
+ * One of the actions a body can be **in the middle of** — an event rather than a condition.
  *
- * **The rig's resolver, sitting beside the player's so that the difference between them is visible.**
- * Both answer the same question — one name, one body, which asset — and both answer it from a table
- * keyed by rig type. What differs is the table: a player's clips are `CHARACTER_CONFIG`'s, because a
- * player's sets are what Roblox's `Animate` script reads and they therefore have to be the four names
- * it looks up; a rig's are `RIG_ANIMATION`'s, which carries states a player has no clip for at all.
- * Bringing them into one table would mean one of those two facts becoming false.
- *
- * **The dispatch is the same read on both sides, and it is a read rather than a guess.** `Humanoid.RigType`
- * is a property of the body being dressed, so the caller that has the body answers for it and hands the
- * answer in — which is why this is a boolean parameter here rather than a second lookup inside. An R6
- * clip never loads onto an R15 rig, so getting this wrong is a track that loads nothing and a body that
- * plays no clip: silent, and indistinguishable from a mistyped id.
- *
- * **Empty is a legitimate answer and means "leave this clip alone"**, exactly as it does for a player. It
- * is spelled `""` rather than `undefined` because the loader's own input is a string and an empty one is
- * what "no animation" is written as everywhere in this codebase.
+ * Both are written by `BallService` at the moment they happen, on **every** body they happen to, and cleared
+ * a moment later: the throw at `throwBall` (where a ball leaves a hand) and the catch at `catchBall` (where
+ * one arrives in it). Neither is a state a body is *in* for a while, which is why they are not conditions
+ * with attributes republished on change (that is what `NPC_ANIM_*` is for) and why they have to be read as
+ * "is this happening right now".
  */
-export function rigClipFor(clip: RigAnimationClip, isR15: boolean): string {
-	const ids = isR15 ? RIG_ANIMATION.R15 : RIG_ANIMATION.R6;
+export type BodyAction = "throw" | "catch";
 
-	return ids[clip];
+/**
+ * Everything a body's clip is decided from, in one value.
+ *
+ * **The seam between the two machines, and the reason this is a value rather than a set of parameters.** Who
+ * *knows* these facts differs between the bodies — a rig's are published by the server and read off the rig,
+ * a player's own body is measured by the client that owns it — and who *decides* from them must not. So the
+ * facts are gathered by the caller and handed over, and this module stays a pure function of them: no
+ * `Humanoid`, no `Players`, no attribute read, nothing that would make one body's answer depend on which
+ * machine was asking.
+ */
+export interface BodyState {
+	/** Ground speed in studs per second — the measurement `animationFor` bands. */
+	readonly speed: number;
+
+	/** Whether the body is standing on something. Off the ground outranks everything but an event. */
+	readonly grounded: boolean;
+
+	/** Whether the body is held. Only a rig publishes this: a player's freeze arrives as no speed at all. */
+	readonly frozen: boolean;
+
+	/** The direction of a dash in flight, or nothing. Outranks every state below it. */
+	readonly dodge: DodgeDirection | undefined;
+
+	/** A throw or a catch happening **now**, or nothing. Outranks every state below it. */
+	readonly action: BodyAction | undefined;
+}
+
+/**
+ * Which clip each dodge direction is, spelled once — **the mapping both bodies read.**
+ *
+ * **A dispatch rather than arithmetic**, because the table's names for these four are its own business: a
+ * state added later could be named anything, and the mapping between the published direction and the clip it
+ * means is exactly the kind of small table a reader should be able to check at a glance. It is keyed by
+ * `DodgeDirection` — the *published* vocabulary — so a fifth direction is a compile error here rather than a
+ * dodge that silently plays nothing.
+ *
+ * It used to live in `RigAnimationController`, which was the only reader, because a player's dash was drawn
+ * from the server. Both bodies are drawn from the published direction now, so the mapping sits on the shared
+ * side of the line, beside the decision that consults it.
+ */
+const DODGE_STATES: Record<DodgeDirection, AnimationState> = {
+	forward: "forwardDodge",
+	backward: "backwardDodge",
+	left: "leftDodge",
+	right: "rightDodge",
+};
+
+/**
+ * The state a body wears when this module has no locomotion clip for it.
+ *
+ * **A player and a rig used to answer "no clip" differently, and they do not any more.** `animationFor`
+ * answers `undefined` for a frozen body, and the player's controller used to take that as "not mine" and
+ * leave the body to Roblox's `Animate` script — which works for a player and cannot work for a rig, whose
+ * body would sit in its bind pose. Since both bodies are now dressed by the same renderer from the same
+ * table, the answer has to be one answer: the standing clip, which is what the script would have played for
+ * the player anyway (`idle` is a set the controller claims with this game's own clip).
+ */
+export const RESTING_STATE: AnimationState = "idle";
+
+/**
+ * The clip a body in this state wears — **the one decision, for both bodies.**
+ *
+ * **Three ranks, and the order is the whole of it.** An **event** beats everything, because a throw is a
+ * motion that has to be seen and it lasts a fifth of a second; a **dash** beats a throw, because a dodge is
+ * the body moving and the dash is what the player asked for; and a **condition** — the ordinary locomotion
+ * answer — is what is left when neither is happening. That is the rig's precedence, unchanged, now applied
+ * to the player's body as well.
+ *
+ * **The two events are ranked, because a body can hold both marks at once.** A rig that throws and then
+ * catches a second ball inside the throw's own window has both; the throw wins here because it outranks the
+ * catch — see `BallService.catchBall`, which drops a standing throw mark the moment a catch is confirmed, so
+ * that the *newer* action is the one that owns the limbs in the case that can actually be arranged.
+ *
+ * **`holding` is deliberately not a member of {@link BodyState}.** A ball in a hand is not an animation
+ * state: a rig holding one is standing still and waiting to throw, a player carrying one is usually running,
+ * and a pose that changed for it would be the rig and the player disagreeing about what carrying a ball looks
+ * like — which is the complaint this unification is answering. The `holdBallIdle` row stays in the table for
+ * the day that changes; nothing reaches it today.
+ */
+export function bodyClipFor(state: BodyState): AnimationState {
+	if (state.action === "throw") return "throw";
+	if (state.dodge !== undefined) return DODGE_STATES[state.dodge];
+
+	if (state.action === "catch") return "catch";
+
+	return animationFor(state.speed, state.grounded, state.frozen) ?? RESTING_STATE;
 }

@@ -919,6 +919,31 @@ export const NPC_ANIM_THROWING_ATTRIBUTE = "AnimThrowing";
 export const THROW_ANIMATION_ATTRIBUTE = "AnimThrow";
 
 /**
+ * Whether the body is **mid-catch** — a ball has just arrived in its hand — for as long as the catch's own
+ * clip is worth playing.
+ *
+ * **The second action mark, and deliberately the same shape as the throw's immediately above: an event
+ * rather than a condition.** It is written where a catch is *confirmed* — `BallService.catchBall`, the one
+ * place a ball ends up in a hand whoever caught it — and cleared a moment later, so the clip starts when the
+ * mark appears and is left when it goes.
+ *
+ * **What it is not is a catch window, and the two are one word apart.** `CATCH_READY_AT` and the window
+ * behind it are the *attempt*: a press, which may catch nothing at all and which a body can hold open for
+ * a second without a ball ever arriving. This is the other end of that — written only once the ball is
+ * actually in the hand, which is why a wait that came to nothing plays no clip.
+ *
+ * **Written for every body that catches, and read for the rigs.** A rig is dressed from it by every client
+ * that can see the rig (`RigAnimationController`); a **player's** body is animated on that player's own
+ * client, so the clip is played from the server beside this write rather than here — the same two-halves
+ * arrangement the throw has, argued in `BallService.playActionAnimation`. See
+ * {@link CATCH_CONFIG.CATCH_ANIMATION_SECONDS} for how long it stays up.
+ *
+ * **Absent means "not catching"**, and a catch that lands inside the window of an earlier one restarts this
+ * clock rather than stacking a second — see `BallService.catchBall`, which owns both ends.
+ */
+export const CATCH_ANIMATION_ATTRIBUTE = "AnimCatch";
+
+/**
  * Which way a body that is mid-dash went, as one of `DodgeDirection`'s four words — on the **dodging
  * model**, player or rig, for the length of the dash.
  *

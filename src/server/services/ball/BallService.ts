@@ -4,6 +4,7 @@ import {
 	ARMED_ABILITY_ATTRIBUTE,
 	BALL_ABILITY_ATTRIBUTE,
 	BALL_SIZE,
+	CATCH_ANIMATION_ATTRIBUTE,
 	PICKUP_LOCKED_UNTIL,
 	THROWER_TOKEN,
 	THROW_ANIMATION_ATTRIBUTE,
@@ -11,6 +12,7 @@ import {
 } from "shared/constants";
 import { NPC_TAG } from "../../npc/Behavior";
 import { BALL_CONFIG } from "shared/config/ball.config";
+import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
 import { abilityOn, isBallAbility, AbilityKind } from "shared/ability";
@@ -40,69 +42,22 @@ import { watchThrow } from "./ThrowProbe";
 const DEBUG = true; // prints the mode, speed and angle of each throw
 
 /**
- * The throw clip for a body of `rigType`, as an asset id.
+ * **The throw and catch clips are no longer played here, and this note is what stands in for the three
+ * functions that did.**
  *
- * One id per rig type from {@link BALL_CONFIG}, so the pair that swaps out when a real clip is bought lives
- * in one place — and it is the same pair `RIG_ANIMATION.throw` borrows for a rig, which is what makes a
- * player's throw and a rig's the same animation rather than two that drift. An R6 clip never loads onto an
- * R15 rig, so choosing by `Humanoid.RigType` is not cosmetic: the wrong one plays nothing at all.
+ * This service used to load a track for a player's throw and a player's catch (`throwAnimationId`,
+ * `catchAnimationId`, `playActionAnimation`), on the argument that a player's body is animated on that
+ * player's own client and a server-started track was therefore what made the other players see it. The
+ * argument was sound and the arrangement was still wrong: the *rigs* were drawn from a published mark by
+ * every client, so the game had two ways of playing one clip — and a state added for one body did nothing
+ * for the other, which is the split this was all for.
+ *
+ * **What replaced it is one renderer for both bodies.** The mark written below is the whole of this
+ * service's part, and `client/controllers/character/BodyAnimator.ts` plays the clip from it — for a rig on
+ * every client, for a player's own body on the client that owns it. The clips themselves are
+ * `BODY_ANIMATION`'s rows, so both bodies wear the same asset, and the fact that a client-started track on
+ * a player's own character replicates is what makes a throw seen by everybody rather than by its thrower.
  */
-function throwAnimationId(rigType: Enum.HumanoidRigType): string {
-	return rigType === Enum.HumanoidRigType.R15
-		? BALL_CONFIG.THROW_ANIMATION_R15
-		: BALL_CONFIG.THROW_ANIMATION_R6;
-}
-
-/**
- * Plays a **player's** throw and hands back the track for the caller to stop.
- *
- * **Played from the server, which is `DodgeService.playDodgeAnimation`'s arrangement and its reason**: a
- * player's body is animated on that player's own client, so a track started here is what makes the other
- * players see the throw. A client-started one would be that client's private flourish, and a throw is
- * something other people need to read. **A rig does not come here at all** — every client draws it from the
- * published mark, so a server track on top would be a second animation on the same limbs.
- *
- * **Never raises, and may return nothing.** The clip is a guess about an asset — an id that is not an
- * animation, one this place does not own, one that has been moderated — and `DodgeService` states the
- * contract this follows: a visual must never be able to take the mechanic down with it. A throw whose clip
- * will not load is a throw with no animation, which is what it had before this existed.
- */
-function playThrowAnimation(character: Model, humanoid: Humanoid): AnimationTrack | undefined {
-	const animationId = throwAnimationId(humanoid.RigType);
-
-	if (animationId === "") {
-		if (DEBUG) print(`[Ball] ${character.Name}: no throw animation set — the throw happens silently`);
-		return undefined;
-	}
-
-	let track: AnimationTrack | undefined;
-
-	const [ok, err] = pcall(() => {
-		const animator = humanoid.FindFirstChildOfClass("Animator") ?? new Instance("Animator");
-		if (animator.Parent === undefined) animator.Parent = humanoid;
-
-		const animation = new Instance("Animation");
-		animation.Name = "ThrowAnimation";
-		animation.AnimationId = animationId;
-
-		const loaded = animator.LoadAnimation(animation);
-
-		// Above the movement animations, so the throw draws over whatever the legs were doing — the same rung
-		// the dodge flourish plays on, and the same reason: the action owns the limbs for as long as it is on,
-		// and hands them back when it is stopped.
-		loaded.Priority = Enum.AnimationPriority.Action;
-		loaded.Play();
-
-		track = loaded;
-	});
-
-	if (!ok) {
-		warn(`[Ball] ${character.Name}: the throw animation ${animationId} would not load: ${tostring(err)}`);
-		return undefined;
-	}
-
-	return track;
-}
 
 /**
  * How far a client's claimed launch point may sit from the thrower's hand as the
@@ -360,6 +315,21 @@ export class BallService implements OnStart {
 	 */
 	private readonly throwMarks = new Map<Model, number>();
 
+	/**
+	 * Which catch each model's mid-catch mark belongs to, so a newer catch is not cleared by an older timer.
+	 *
+	 * **`throwMarks`' twin, and the case it covers is the one a catcher actually produces.** A body with its
+	 * window held open (`AlwaysCatchBehavior`, or a dev with `InfiniteCatch`) can take a second ball inside
+	 * {@link CATCH_CONFIG.CATCH_ANIMATION_SECONDS}, and two timers for one attribute means the first to fire
+	 * clears a mark the second catch still owns — a clip cut off after a fraction of a second, which looks
+	 * exactly like the clip failing to load. The counter makes the clear conditional on "no newer catch has
+	 * happened", which is the whole of "a re-catch restarts the window rather than stacking one".
+	 *
+	 * It holds only live marks, so it cannot grow: a superseded mark is replaced rather than added to, and
+	 * the newest catch deletes its own entry when its timer fires.
+	 */
+	private readonly catchMarks = new Map<Model, number>();
+
 	constructor(
 		private readonly factory: BallFactory,
 		private readonly dev: DevService,
@@ -548,7 +518,70 @@ export class BallService implements OnStart {
 		// for the two to be talking about different places.
 		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.CATCH, CATCH_EMITTER_NAME);
 
+		// **And the body is marked as mid-catch, which is what the catch's own clip is played from.**
+		//
+		// **The throw's two halves, at the other end of a throw.** A rig is drawn from the mark by every
+		// client that can see it (`RigAnimationController`), while a player's body is animated on that
+		// player's own client and needs a track started here for anybody else to see the catch — see
+		// `playActionAnimation`, which is the same split the throw makes and argues. **One mark covers both
+		// bodies**, because this is where a catch is confirmed whoever made it: a rig arrives through
+		// `CatchBehavior` and a player through the remote, and both end up in this method with the ball in
+		// their hand.
+		//
+		// **A throw's mark still standing is dropped first, and that is the one guard the two actions need
+		// between them.** A body can throw and catch inside `CATCH_ANIMATION_SECONDS` — the thrown ball is
+		// gone, the hand is free, and a second ball arriving is an ordinary catch — and without this the rig's
+		// renderer would be holding the catch branch *behind* the throw branch (`wantedClip` ranks the throw
+		// first) and would replay the catch clip the moment the throw's own mark expired: a catch pose a fifth
+		// of a second after the catch. Dropping the older mark says the honest thing instead — the newer action
+		// owns the limbs — and the throw's timer is already written to notice that its mark is gone and leave
+		// both the attribute and its track alone. **The other order needs nothing**: a throw inside a catch
+		// window takes the limbs because the throw outranks the catch, and the catch mark expires behind it
+		// without ever being played again.
+		this.clearAnimationMark(model, THROW_ANIMATION_ATTRIBUTE, this.throwMarks);
+
+		const catchMark = (this.catchMarks.get(model) ?? 0) + 1;
+		this.catchMarks.set(model, catchMark);
+		model.SetAttribute(CATCH_ANIMATION_ATTRIBUTE, true);
+
+		// **The observable, and it is one line per catch.** The clip itself is drawn by the client that owns
+		// the body — every client for a rig, its own for a player — and each of those prints its own line when
+		// it changes clip (`[Animate] <name>: catch — Action`, `[Rig] <name>: catch — Action`). This line is
+		// the *server's* half: it says the fact was published, which is the one thing a client's silence cannot
+		// tell you. A catch with no line here is a catch no client can be drawing.
+		if (DEBUG) {
+			print(`[Ball] ${model.Name}: catch animation mark — ${CATCH_CONFIG.CATCH_ANIMATION_SECONDS}s`);
+		}
+
+		task.delay(CATCH_CONFIG.CATCH_ANIMATION_SECONDS, () => {
+			// A newer catch owns the mark by now; its own timer is the one that clears it, so this leaves the
+			// attribute alone.
+			if (this.catchMarks.get(model) !== catchMark) return;
+
+			this.catchMarks.delete(model);
+			model.SetAttribute(CATCH_ANIMATION_ATTRIBUTE, undefined);
+		});
+
 		return true;
+	}
+
+	/**
+	 * Drops an action mark on `model` if one is up — **the whole of how one action supersedes another.**
+	 *
+	 * Nothing is stopped and nothing is scheduled here: the mark's owner has a timer of its own, and every
+	 * one of those timers is written to check whether it still owns the mark before clearing anything. So
+	 * removing the entry *is* the supersede — the older timer finds somebody else's mark (or none) and leaves
+	 * the attribute and its track where the newer action put them.
+	 *
+	 * The map is a parameter rather than this being two methods, because the rule is about the marks and not
+	 * about which action owns them: a third action clip would call this with its own map and need nothing
+	 * else.
+	 */
+	private clearAnimationMark(model: Model, attribute: string, marks: Map<Model, number>): void {
+		if (!marks.has(model)) return;
+
+		marks.delete(model);
+		model.SetAttribute(attribute, undefined);
 	}
 
 	/**
@@ -1104,11 +1137,14 @@ export class BallService implements OnStart {
 		ball.SetAttribute("Armed", true);
 		ball.SetAttribute("ThrowerId", this.tokenOf(model));
 
-		// **And the thrower is marked as mid-throw, which is what the throw's own clip is played from.**
-		// This is the moment the file already calls "the release", and it is the only place in the game a
-		// ball leaves a hand — a player's click and a rig's behavior both arrive at this method — so one mark
-		// here covers every body that throws. The renderer reads it on the same `AttributeChanged` connection
-		// the rest of a rig's state arrives on, so the clip costs no wiring beyond this line and the clear.
+		// **And the body is marked as mid-throw, which is what the throw's own clip is played from.** This is
+		// the moment the file already calls "the release", and it is the only place in the game a ball leaves a
+		// hand — a player's click and a rig's behavior both arrive at this method — so one mark here covers every
+		// body that throws. **The clip is drawn by the client that owns the body**, which is the same client for
+		// a player's character and *every* client for a rig: the server writes the fact and loads no track at
+		// all. It used to load one for a player, and that is gone — see the note above `THROW_ANIMATION_SECONDS`
+		// in `ball.config.ts` and `client/controllers/character/BodyAnimator.ts`, which is the renderer both
+		// bodies share.
 		//
 		// **Cleared on a timer rather than when the ball lands.** The mark means "this body is in the middle
 		// of the throw *motion*", which is over long before the ball is; a mark that lasted the flight would
@@ -1119,28 +1155,13 @@ export class BallService implements OnStart {
 		this.throwMarks.set(model, throwMark);
 		model.SetAttribute(THROW_ANIMATION_ATTRIBUTE, true);
 
-		// **And a player's throw is *played* here, while a rig's is played by each client.** That split is the
-		// dodge's own arrangement, made for the same reason: a player's body is animated on that player's
-		// client, so a track started here is what makes the other players see the throw — whereas every client
-		// draws a rig from the mark above, and a track started here as well would be two animations blended on
-		// the same limbs. See `playThrowAnimation`.
-		const humanoid = resolveDodgeable(model)?.humanoid;
-		const playerOwned = Players.GetPlayerFromCharacter(model) !== undefined;
-		const track = humanoid !== undefined && playerOwned ? playThrowAnimation(model, humanoid) : undefined;
-
 		task.delay(BALL_CONFIG.THROW_ANIMATION_SECONDS, () => {
-			// A newer throw owns the mark by now; its own timer is the one that clears it — and stops its own
-			// track — so this leaves both alone.
+			// A newer throw owns the mark by now; its own timer is the one that clears it, so this leaves the
+			// attribute alone rather than cutting a later throw's window short.
 			if (this.throwMarks.get(model) !== throwMark) return;
 
 			this.throwMarks.delete(model);
 			model.SetAttribute(THROW_ANIMATION_ATTRIBUTE, undefined);
-
-			// **Stopped rather than left to finish**, for the reason `DodgeService` stops its flourish: an
-			// unlooped track holds its last frame, so a body left wearing the end of a throw would be standing in
-			// a pose it has already finished. Guarded because a body can be destroyed inside the window, which
-			// takes its animator and every track on it with it.
-			if (track !== undefined && track.Parent !== undefined) track.Stop();
 		});
 		this.setPromptEnabled(ball, true);
 		// Airborne now, so the rod can start drawing behind it. Absent when the trail is

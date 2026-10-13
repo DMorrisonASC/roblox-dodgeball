@@ -1,12 +1,18 @@
 /**
- * Everything about the catch: how long an attempt stays open — and nothing about what a catch can be
- * made with, which used to live here.
+ * Everything about the catch: how long an attempt stays open, the clip a catch plays, and how long that
+ * clip is worth.
  *
  * Imports nothing. The window is the server's; the parts a catch can be made with are now **any part of
  * the body**, which is a rule rather than a list and so is kept where the rule is applied rather than
  * here. See `BallComponent.canCatch` and `BallComponent.struckBodyPart` — the second is what says a
  * contact is a contact with a body part at all, and it is the engine's own `Humanoid.GetLimb` that
  * answers it, for both rig types and for any rig nobody has seen yet.
+ *
+ * **The clip pair lives here rather than in `animation.config.ts`, and that is the throw's own
+ * arrangement copied.** A catch is not a rig's: `BallService` plays the same clip for a player's catch as
+ * a client draws for a rig's, so the pair belongs to the *catch* and the rig table borrows it — exactly as
+ * `BODY_ANIMATION.throw` borrows `BALL_CONFIG.THROW_ANIMATION_R6`. One table means the rig's catch and the
+ * player's catch cannot drift into two different animations.
  */
 
 export const CATCH_CONFIG = {
@@ -27,4 +33,46 @@ export const CATCH_CONFIG = {
 	 * Freeze, refused in `BallComponent.canCatch`).
 	 */
 	WINDOW_SECONDS: 1,
+
+	/**
+	 * How long a body stays marked as **mid-catch** after the ball arrives in its hand, in seconds.
+	 * **Placeholder — 0.6.**
+	 *
+	 * **The catch's own version of `BALL_CONFIG.THROW_ANIMATION_SECONDS`, and the same trade.** `BallService`
+	 * writes the mark when the catch is confirmed, clears it after this long, and the clip is played for
+	 * exactly that window on every body that caught: a rig is dressed from the mark by each client, a
+	 * player's track is played from the server and stopped on the same timer. Nothing here knows how long the
+	 * asset actually is — the clip streams in behind the catch, so a shorter clip holds its last frame for
+	 * the remainder and a longer one is cut off when the mark clears.
+	 *
+	 * **Longer than the throw's 0.4, and the reason is what the motion is.** A throw is the arm going out and
+	 * the ball leaving; a catch is the same reach *arriving* — the ball is pulled in and the body absorbs it,
+	 * which reads as a slightly larger movement in the clips supplied. It is still comfortably shorter than
+	 * {@link CATCH_CONFIG.WINDOW_SECONDS}, which is the number to keep it under: the window is the attempt and
+	 * this is the result, so a pose that outlived the window would have a body still catching while it was
+	 * able to catch again. Raise it if catches look cut off; a value longer than the clip is visible as a body
+	 * holding a pose it has finished.
+	 */
+	CATCH_ANIMATION_SECONDS: 0.6,
+
+	/**
+	 * The clip a **catch** plays, per rig type — the same pair for every body that catches.
+	 * **Placeholder**, in the sense that the ids were supplied ahead of a consumer and are the ones to swap
+	 * when a real clip is bought; they are read today, so the rows are live rather than staged.
+	 *
+	 * **A rig and a player catch with the same animation, and this is where that is decided.** A rig reads
+	 * these through `BODY_ANIMATION.catch`, which borrows them rather than repeating the ids, and a player's
+	 * catch is played from `BallService` itself — a track started on the server, so the other players see it,
+	 * which is the arrangement `playActionAnimation` argues. Neither half is a copy of the other, and a rig
+	 * cannot end up catching differently from a player for no visible reason.
+	 *
+	 * **The choice is not cosmetic.** An R6 clip never loads onto an R15 rig and the reverse, so the wrong one
+	 * is a catch that silently plays nothing — see `dodge.config.ts`, which records the same trap for the four
+	 * dodge clips.
+	 *
+	 * **An empty id is the *off* switch**, as everywhere else: the catch happens and the body keeps whatever
+	 * it was wearing.
+	 */
+	CATCH_ANIMATION_R6: "rbxassetid://112001937610745",
+	CATCH_ANIMATION_R15: "rbxassetid://140155652521630",
 } as const;

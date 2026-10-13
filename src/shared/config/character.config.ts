@@ -125,7 +125,7 @@ export const CHARACTER_CONFIG = {
      * complete and every body in the game wears them.
      *
      * **These four pairs are the clips for *every* body, not only for players**, which is worth stating
-     * because the file's name says otherwise. A rig reads them through `RIG_ANIMATION`, which borrows
+     * because the file's name says otherwise. A rig reads them through `BODY_ANIMATION`, which borrows
      * these four rows rather than repeating the ids — so a walking rig and a walking player are wearing
      * the same animation by construction, and changing one clip changes it for both. The rig table adds
      * the states a player has no clip for (a ball in hand, a dodge, a throw); these four are the ones
