@@ -1,5 +1,6 @@
 import { CollectionService, PhysicsService, Players, Workspace } from "@rbxts/services";
 import { CHARACTER_BARRIER_TAG } from "shared/constants";
+import { DUCK_GROUP } from "shared/duck";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { NPC_TAG } from "../npc/Behavior";
 
@@ -195,6 +196,37 @@ function registerGroups(): void {
 	Workspace.CollisionGroupSetCollidable(BARRIER_GROUP, BALL_GROUP, false);
 	Workspace.CollisionGroupSetCollidable(BALL_GROUP, PRACTICE_GROUP, false);
 	Workspace.CollisionGroupSetCollidable(PRACTICE_GROUP, PRACTICE_GROUP, false);
+
+	// ---------------------------------------------------------------- the duck
+	//
+	// **The duck's one row, and it is the whole of what a duck changes about physics.** A ducking body's
+	// head and arms are moved out of `Character` and into `DUCK_GROUP` for the length of the duck, and the
+	// pair below is the *only* one that stops colliding — so a ducking body still collides with the world,
+	// the midline, props and every other character exactly as it did. See `shared/duck.ts` for which parts
+	// move, and `DuckService` for when.
+	//
+	// **A group rather than a per-ball constraint, and the practice zone is why that is knowable.** The
+	// other shape — `CollisionIgnore.between(ball, part)` for every part and every ball in flight — needs
+	// a registry of what is in the air, a change to the throw, and cleanup that holds the handles it was
+	// handed: `CollisionIgnore.clear` takes *every* ignore off a part, the thrower's own and a Pierce
+	// ball's included, so it cannot be used for this. A group is one row, the engine applies it to every
+	// ball in the world the instant the group is written, and undoing it is writing the group back.
+	//
+	// **A collision group does not suppress `Touched`, and the duck needs that to be true.** It is the
+	// same engine fact the practice-zone note above relies on and the arena barrier is built on: the ball
+	// stops *bouncing* off a ducking head, and the contact still fires — which is what lets
+	// `BallComponent` refuse it. **The two halves are one rule**: a veto alone would leave the ball
+	// visibly bouncing off a body the game says it missed, and the group alone would leave it counting.
+	if (!PhysicsService.IsCollisionGroupRegistered(DUCK_GROUP)) {
+		PhysicsService.RegisterCollisionGroup(DUCK_GROUP);
+	}
+
+	if (!Workspace.IsCollisionGroupRegistered(DUCK_GROUP)) {
+		Workspace.RegisterCollisionGroup(DUCK_GROUP);
+	}
+
+	PhysicsService.CollisionGroupSetCollidable(DUCK_GROUP, BALL_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(DUCK_GROUP, BALL_GROUP, false);
 
 	// **The two rows nothing else can catch, printed for the same reason the wall's are.** A group is a
 	// name the engine either accepted or did not, and a row that failed to take is a rule that is

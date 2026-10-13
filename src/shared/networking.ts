@@ -91,6 +91,21 @@ export const events = Net.Definitions.Create({
 	dodge: Net.Definitions.ClientToServerEvent<[direction: Vector3, reference: Vector3]>(),
 
 	/**
+	 * Client → server: this character wants to duck.
+	 *
+	 * Carries nothing, on `catch`'s terms and for its reason — a key press is the only fact the client
+	 * has that the server does not, and the server already knows *who* pressed it. There is even less to
+	 * say here than there: a duck has no direction, no duration and no target, and every rule that
+	 * decides whether one happens is server-side. See `DuckService`.
+	 *
+	 * **A request rather than a state, and that is not a formality.** A client that sent "I am ducking"
+	 * would be describing a body the server has to trust it about, and the duck is a hit exemption — the
+	 * one thing in the game a client must not be able to grant itself. The server answers this out of
+	 * its own state and writes the attribute itself, which is what keeps the exemption unforgeable.
+	 */
+	duck: Net.Definitions.ClientToServerEvent<[]>(),
+
+	/**
 	 * Client → server: this character wants to try to catch.
 	 *
 	 * Carries nothing on purpose. The only thing the client knows that the server
@@ -170,6 +185,29 @@ export const events = Net.Definitions.Create({
 	 * gets by holding the key, and running out stops it either way. See `WalkSpeedService`.
 	 */
 	setSprinting: Net.Definitions.ClientToServerEvent<[active: boolean]>(),
+
+	/**
+	 * Client → server: whether this player is **holding the throw button** — a charge in progress.
+	 *
+	 * **A level, on `setSprinting`'s terms and for its reason: the server holds no opinion about a button
+	 * and no way to discover one.** The charge is measured on the client (`client/throwing.ts` owns its
+	 * start time) and the server learns nothing about it until the release arrives carrying the charge — so
+	 * a pool that must not refill while a body is winding up a throw has to be *told*, and the client is the
+	 * only machine that can say.
+	 *
+	 * **Nothing is validated on the far side, and the reason that is safe here is worth following through.**
+	 * An untrue `true` buys *nothing at all*: `WalkSpeedService` holds the **recovery** while this is up and
+	 * deliberately leaves the **drain** alone, so a client claiming to be charging forever while sprinting
+	 * still burns its pool at the normal rate and gains exactly zero, and one claiming it while walking
+	 * gives up the recovery it would otherwise have collected. **The lie is either neutral or self-harming** —
+	 * which is a stronger position than `setSprinting` is in, where an untrue `true` buys movement until the
+	 * pool runs out.
+	 *
+	 * **The server clears it on a new body**, because the claim is per *player* and the state it describes is
+	 * per *body*: a client that died mid-charge may never send the `false`, and a pool that never refilled
+	 * again would be a worse fault than the one this exists to fix. See `WalkSpeedService.trackPlayer`.
+	 */
+	setCharging: Net.Definitions.ClientToServerEvent<[charging: boolean]>(),
 
 	/**
 	 * Client → server: this player wants the ball in their hand to carry this ability.

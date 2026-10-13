@@ -3,7 +3,8 @@ import { BaseComponent, Component } from "@flamework/components";
 import { Players, Workspace } from "@rbxts/services";
 import { abilityOn } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
-import { BALL_NAME, PRACTICE_ZONE_ATTRIBUTE, THROWER_TOKEN } from "shared/constants";
+import { BALL_NAME, DUCKING_ATTRIBUTE, PRACTICE_ZONE_ATTRIBUTE, THROWER_TOKEN } from "shared/constants";
+import { isDuckExempt } from "shared/duck";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
@@ -527,6 +528,36 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// and this rule is only about hurting them.
 		if (typeIs(throwerId, "string") && this.rounds.isFriendlyFire(throwerId, character)) {
 			this.noteDecidedNothing(struck, "same side — vetoed, so no damage and no record");
+			return;
+		}
+
+		// **A duck, and this is the veto half of a rule whose other half is a collision group.**
+		//
+		// A ducking body's head and arms have been moved into a group the ball does not collide with — see
+		// `shared/duck.ts` for the parts and `CollisionGroups` for the row — so the ball *passes* rather
+		// than bouncing off. **What the group does not do is suppress `Touched`**, which is the same engine
+		// fact the practice-zone veto above relies on and the arena barrier is built on: this contact fires
+		// anyway, and without this refusal the ball would pass *and* count.
+		//
+		// **The two halves are one rule, and neither is the mechanic on its own.** A veto with no group
+		// leaves the ball visibly bouncing off a body the game says it missed; a group with no veto leaves
+		// it passing and tagging. The note in `shared/duck.ts` says the same thing from the other end, and
+		// they are deliberately written twice: a reader who finds one of them has found half a rule.
+		//
+		// **`struck` and not `otherPart`, and that is load-bearing.** `struckBodyPart` has already resolved
+		// an accessory to the limb it is worn on and the root to the torso it is jointed to, so asking the
+		// raw contact would let a hat's `Handle` be exempt while the head behind it was not. A ball into the
+		// hips is a *torso* contact and is therefore a hit — which is the whole point of the parts list:
+		// **a duck moves the head and the arms, and a low ball still hits.**
+		//
+		// **Placed beside the friendly-fire veto and before the tag**, because a tag written above could not
+		// be taken back: the ball carries its tags until it dies, and a duck that starts *after* this contact
+		// cannot save anybody. **A duck has to be up when the ball arrives.**
+		if (character.GetAttribute(DUCKING_ATTRIBUTE) === true && isDuckExempt(humanoid, struck)) {
+			if (DEBUG_CONFIG.VERBOSE_LOGS) {
+				print(`[Duck] ${character.Name}: ${struck.Name} exempted — the ball passed`);
+			}
+
 			return;
 		}
 

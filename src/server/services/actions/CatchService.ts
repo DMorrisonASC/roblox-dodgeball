@@ -11,6 +11,7 @@ import { DevService } from "../../dev/DevService";
 import { FreezeService } from "./FreezeService";
 import { extendReadyAt, publishReadyAt } from "./readyAt";
 import { BallService } from "../ball/BallService";
+import { WalkSpeedService } from "../character/WalkSpeedService";
 import { DodgeService } from "./DodgeService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
@@ -109,6 +110,7 @@ export class CatchService implements OnStart {
 		private readonly dodges: DodgeService,
 		private readonly balls: BallService,
 		private readonly freezes: FreezeService,
+		private readonly speeds: WalkSpeedService,
 	) {
 		// The dodge is gated on the catch, and this is where the catch side of that is handed
 		// over: the two services are gated on each other, and Flamework errors on a circular
@@ -124,6 +126,19 @@ export class CatchService implements OnStart {
 		// ask — see {@link attemptCatch} — and `BallService` knows nothing about catching, so
 		// there is nothing here to untangle.
 		this.dodges.watchCatchState(this);
+
+		// **And the stamina pool, which is a third thing that has to be able to see this window.**
+		// A catch is an *attempt* — a body with its hands up — and `WalkSpeedService` holds the pool's
+		// recovery for as long as one is open, so that recovering stamina and standing there ready to
+		// catch are not things a player can do at once. Handed over on `watchCatchState`'s own terms
+		// rather than injected into that service: the pool is keyed by *player* and a catch window is
+		// keyed by *model*, so the service that owns the pool asks about the model it already has
+		// instead of being given a second way to find one.
+		//
+		// Deliberately **not** an injection the other way — `WalkSpeedService` knows nothing about
+		// catching, and giving it a reason to would be a dependency pointing the wrong way down a graph
+		// it sits at the bottom of. See its `watchCatchState`.
+		this.speeds.watchCatchState(this);
 	}
 
 	public onStart() {

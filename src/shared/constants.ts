@@ -342,6 +342,18 @@ export const DODGE_READY_AT = "DodgeReadyAt";
 export const CATCH_READY_AT = "CatchReadyAt";
 
 /**
+ * Attribute on a **`Player`** holding the server-time instant at which their next duck counts as ready
+ * again, on {@link DODGE_READY_AT}'s terms exactly: an *instant* on the shared clock, written by
+ * `DuckService` when a duck is accepted, and covering the duck **plus** `ACTION_CONFIG.ACTION_LOCKOUT_SECONDS`
+ * — the tail after a duck in which the dodge and the catch are refused.
+ *
+ * Nothing reads it yet, and it is published anyway for `readyAt.ts`'s reason: the writer of a cooldown is
+ * always the service that owns it, and a HUD that wanted a third bar should not be the thing that makes
+ * the state exist. One line here, and no reader to keep in step with it.
+ */
+export const DUCK_READY_AT = "DuckReadyAt";
+
+/**
  * Attribute on a **`Player`** holding how much sprint stamina they have left, in seconds.
  *
  * On the player for the same reason as {@link DODGE_READY_AT}: the pool outlives the character, so
@@ -990,4 +1002,29 @@ export const CATCH_ANIMATION_ATTRIBUTE = "AnimCatch";
  * where the four words are defined and where the frame they are measured in is argued.
  */
 export const DODGE_DIRECTION_ATTRIBUTE = "DodgeDirection";
+
+/**
+ * Whether a body is ducking **right now**, on the **ducking model** — player or rig, for the length of
+ * the duck.
+ *
+ * **A flag rather than an end time, and the two readers are why.** The hit test and every action gate
+ * want the same thing — "is this body ducking at this instant" — and a countdown written into the
+ * attribute would make each of them compare it against a clock. The server's `os.clock` is not the
+ * client's, and an attribute is a value that replicates, so a number in here would be read by a
+ * different machine's clock than wrote it; an end time published as an instant would need
+ * `GetServerTimeNow`, and then every asker carries a subtraction. One boolean with no arithmetic in it
+ * is the smaller thing, and the service already owns the clock that ends it.
+ *
+ * **Server-written, which is what makes it unforgeable.** A client cannot author it: an attribute a
+ * client writes on its own character does not replicate, so the only value the server ever sees is its
+ * own. That is the property `PRACTICE_ZONE_ATTRIBUTE` has, and it is the whole reason the input path is
+ * a *request* — see the `duck` remote.
+ *
+ * **What reads it.** `BallComponent.handleTouch` asks it of the body a contact resolved to, and refuses
+ * the contact when the resolved part is an exempt limb; `DodgeService`, `CatchService`, `BallService`'s
+ * throw path and `BallPickupService` each ask it before acting, which is what makes a duck a committed
+ * stance rather than a free extra; and `client/bodyAnimation.ts` reads it as the body's fourth published
+ * action mark, which is how one clip reaches both bodies.
+ */
+export const DUCKING_ATTRIBUTE = "Ducking";
 

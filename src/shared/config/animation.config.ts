@@ -2,6 +2,7 @@ import { BALL_CONFIG } from "./ball.config";
 import { CATCH_CONFIG } from "./catch.config";
 import { CHARACTER_CONFIG } from "./character.config";
 import { DODGE_ANIMATION } from "./dodge.config";
+import { DUCK_CONFIG } from "./duck.config";
 
 /**
  * **Every state this game owns an animation for, and the clip each rig type wears in it — for *every* body
@@ -148,7 +149,40 @@ export const BODY_ANIMATION: {
  * ball" looks like.
  *
  * **The list is not exhaustive over the type, and the three absences are the rule rather than an omission**:
- * `throw`, `catch` and `duck` are actions, so they are not cycles — and of the three, only `duck` is also
- * without a consumer. See the states block above.
+ * `throw`, `catch` and `duck` are actions, so they are not cycles. **All three have a consumer now** — the
+ * duck's was the last to arrive, and this sentence used to record that it had none. See the states block
+ * above.
  */
 export const CYCLE_STATES: ReadonlyArray<AnimationState> = ["idle", "walk", "run", "jump", "holdBallIdle"];
+
+/**
+ * The states whose clip is **stretched to fill the state**, and how long that state lasts in seconds.
+ *
+ * **One entry, and the entry is the duck.** Every other action in this game is drawn the way the codebase
+ * has always drawn one: the *state* has a tuned duration — `THROW_ANIMATION_SECONDS`,
+ * `CATCH_ANIMATION_SECONDS`, `DODGE_CONFIG.DURATION` — and the clip is whatever the artist authored, so a
+ * clip longer than its state is cut when the state ends and a shorter one holds its last frame for the
+ * remainder. That trade is argued beside each of those numbers and it is the right one there, because the
+ * state is describing a *motion* the game is timing.
+ *
+ * **A duck is a different kind of thing and the difference is worth being exact about.** What the player
+ * sees is not a flourish drawn over a lasting state — it *is* the state: the head and arms are out of a
+ * ball's way for exactly `DUCK_CONFIG.DURATION_SECONDS`, so a crouch that finishes early, or is cut half
+ * way through, is a body the game says is ducking while it looks like it is standing up. The clip and the
+ * state are one fact with two readers, and this table is the sentence that says so.
+ *
+ * **The stretch is derived and never written down**, exactly as `ThrowController.chargePlaybackSpeed`
+ * derives the charge sound's rate from `TimeLength / CHARGE_SECONDS`: a playback speed is
+ * `state / track.Length`, so it is right for *any* clip and for any value of the duration, and moving the
+ * duration moves the animation with it. A written-down speed would be correct for one pair of numbers and
+ * would drift out of step the first time either was tuned — which is the fault this table exists to
+ * remove. See `client/bodyAnimation.ts`, which is the one reader.
+ *
+ * **`Partial`, and that is the rule rather than a shortcut**: a state not named here is drawn the ordinary
+ * way, which is every state but one. Adding an entry is how a second clip gets the same treatment — and the
+ * thing to check before adding one is whether that action's *state* is owned by the server or by the
+ * animation, because the two answers want different shapes.
+ */
+export const STATE_CLIP_SECONDS: Partial<Record<AnimationState, number>> = {
+	duck: DUCK_CONFIG.DURATION_SECONDS,
+};

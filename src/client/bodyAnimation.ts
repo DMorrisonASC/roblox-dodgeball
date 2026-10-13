@@ -1,8 +1,9 @@
-import { AnimationState, CYCLE_STATES } from "shared/config/animation.config";
+import { AnimationState, CYCLE_STATES, STATE_CLIP_SECONDS } from "shared/config/animation.config";
 import { BodyAction, bodyClipFor, clipIdFor } from "shared/animation";
 import {
 	CATCH_ANIMATION_ATTRIBUTE,
 	DODGE_DIRECTION_ATTRIBUTE,
+	DUCKING_ATTRIBUTE,
 	THROW_ANIMATION_ATTRIBUTE,
 } from "shared/constants";
 import { DodgeDirection } from "shared/dodge";
@@ -166,6 +167,25 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	const track = trackFor(render, clip);
 	if (track === undefined) return;
 
+	// **The clip is stretched to fill the state it is describing, for the states that name a duration.** See
+	// `STATE_CLIP_SECONDS` for which states those are and why the duck is one: its state *is* the animation,
+	// because the head and arms are out of a ball's way for exactly as long as the state lasts — so a crouch
+	// that ends early, or is cut in half, is a body the game says is ducking while it looks like it is
+	// standing up. The speed is *derived* from the track's own `Length` rather than written down, which is
+	// `chargePlaybackSpeed`'s trick on the charge sound and for its reason: `Length` is a fact about the asset
+	// and not about this game, so the duck's duration stays the one number to change.
+	//
+	// **Asked on every play rather than once when the track was loaded, and that is the load-bearing half.**
+	// `Length` reads `0` until the animation has streamed, and a track is cached for the life of the body — so
+	// a one-time read would settle on `1×` for the whole session the first time a client ducked before the
+	// asset arrived, silently, with nothing anywhere saying why. Asked here, the next duck picks the real
+	// length up. The `1×` branch is that same case answered rather than derived, which is the honest answer
+	// and the same one the charge sound gives.
+	const stretched = STATE_CLIP_SECONDS[clip];
+	if (stretched !== undefined) {
+		track.AdjustSpeed(track.Length > 0 ? stretched / track.Length : 1);
+	}
+
 	track.Play(fadeFor(clip));
 
 	// **Printed at the edge, and the rung is on the line because it is half of the answer.** The same shape for
@@ -245,6 +265,15 @@ function publishedDodge(body: Model): DodgeDirection | undefined {
 function publishedAction(body: Model): BodyAction | undefined {
 	if (body.GetAttribute(THROW_ANIMATION_ATTRIBUTE) === true) return "throw";
 	if (body.GetAttribute(CATCH_ANIMATION_ATTRIBUTE) === true) return "catch";
+
+	// **The duck is the third mark and the only one that lasts**, which is why it is read last and why it
+	// still sits above locomotion in `bodyClipFor` rather than being a condition. It is written by
+	// `DuckService` on the body for a player and a rig alike, so both are dressed by this one line — the
+	// same property every other row of the table has, and the reason nothing about the duck had to be
+	// added to either animator. See `shared/duck.ts` for what the clip is *for*: the animation is what the
+	// player sees, and the exemption is what the game agrees to, and the two are deliberately different
+	// mechanisms reading the same one attribute.
+	if (body.GetAttribute(DUCKING_ATTRIBUTE) === true) return "duck";
 
 	return undefined;
 }

@@ -5,6 +5,7 @@ import {
 	BALL_ABILITY_ATTRIBUTE,
 	BALL_SIZE,
 	CATCH_ANIMATION_ATTRIBUTE,
+	DUCKING_ATTRIBUTE,
 	PICKUP_LOCKED_UNTIL,
 	THROWER_TOKEN,
 	THROW_ANIMATION_ATTRIBUTE,
@@ -1131,6 +1132,19 @@ export class BallService implements OnStart {
 		// ball actually left — so a frozen player loses nothing for the throw they could not make.
 		if (this.freezes.isFrozen(model)) {
 			if (DEBUG) print(`[Ball] ${model.Name}: throw refused — frozen`);
+
+			return false;
+		}
+
+		// **A ducking body does not throw, and the gate is here for the freeze gate's reason above.** A duck is
+		// a *committed stance* — that is the whole trade the mechanic makes — so the body that ducks has given
+		// up its throw for the duration along with its walk. The gate is read off the body's published
+		// attribute rather than through an injected `DuckService`, which is the same choice `BallComponent`
+		// makes: the attribute is written by the one service that owns the duck, it is authorless from a
+		// client's point of view, and it is the fact both halves of the exemption already read. One writer,
+		// three readers, no second copy of the state.
+		if (model.GetAttribute(DUCKING_ATTRIBUTE) === true) {
+			if (DEBUG) print(`[Ball] ${model.Name}: throw refused — ducking`);
 
 			return false;
 		}

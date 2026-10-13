@@ -143,8 +143,18 @@ export function clipIdFor(state: AnimationState, isR15: boolean): string {
  * one arrives in it). Neither is a state a body is *in* for a while, which is why they are not conditions
  * with attributes republished on change (that is what `NPC_ANIM_*` is for) and why they have to be read as
  * "is this happening right now".
+ *
+ * **The duck is the third member and it is the one that breaks the paragraph above, which is why it is
+ * written down rather than quietly added.** It *is* a state a body is in for a while — half a second,
+ * `DUCK_SERVICE`'s number — so it belongs to the condition half of that distinction and not to this one.
+ * It is here anyway, and for one reason: the fact it is drawn from is published by `DuckService` as an
+ * attribute on the body, exactly as the throw's and the catch's marks are, and this module's job is to
+ * turn *a body's published marks* into a clip. Moving it to a condition would mean threading a second
+ * mechanism through `BodyState` — a field the client would gather from the same attribute — for no gain
+ * a reader can see. **What it costs is the word "event"**: the duck is the one member of this union that
+ * lasts, and the ranking in {@link bodyClipFor} is where that shows.
  */
-export type BodyAction = "throw" | "catch";
+export type BodyAction = "throw" | "catch" | "duck";
 
 /**
  * Everything a body's clip is decided from, in one value.
@@ -249,6 +259,14 @@ export function bodyClipFor(state: BodyState): AnimationState | undefined {
 	if (state.dodge !== undefined) return DODGE_STATES[state.dodge];
 
 	if (state.action === "catch") return "catch";
+
+	// **The duck sits below the catch and above locomotion, and the rank is the whole of the argument.**
+	// It is not an event — it lasts half a second — so it has no business outranking a throw or a catch,
+	// which are motions that have to be seen for a fifth of a second or not at all; and it is not
+	// locomotion either, because a ducking body is planted and `animationFor`'s answer for a standing body
+	// is the idle clip. So a body that ducks while catching *catches*, and a body that ducks while standing
+	// ducks. See {@link BodyAction} for why the one member with a duration is in that union at all.
+	if (state.action === "duck") return "duck";
 
 	// **The deferral, below the events and above the locomotion answer.** Below, because an event outranks
 	// everything — a body knocked over mid-throw still throws; above, because the whole point of it is that

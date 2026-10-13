@@ -68,7 +68,10 @@
 		"roblox-dodgeball:out/client/controllers/CoreGuiController@CoreGuiController": "client/controllers/CoreGuiController@CoreGuiController",
 		"roblox-dodgeball:out/client/controllers/hud/HitLogController@HitLogController": "client/controllers/hud/HitLogController@HitLogController",
 		"roblox-dodgeball:out/client/controllers/character/RigAnimationController@RigAnimationController": "client/controllers/character/RigAnimationController@RigAnimationController",
-		"roblox-dodgeball:out/server/services/npc/LobbyRigService@LobbyRigService": "server/services/npc/LobbyRigService@LobbyRigService"
+		"roblox-dodgeball:out/server/services/npc/LobbyRigService@LobbyRigService": "server/services/npc/LobbyRigService@LobbyRigService",
+		"roblox-dodgeball:out/server/services/actions/DuckService@DuckService": "server/services/actions/DuckService@DuckService",
+		"roblox-dodgeball:out/server/services/actions/DuckService@DuckState": "server/services/actions/DuckService@DuckState",
+		"roblox-dodgeball:out/client/controllers/input/DuckController@DuckController": "client/controllers/input/DuckController@DuckController"
 	},
 	"metadata": {}
 }

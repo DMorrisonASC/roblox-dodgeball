@@ -1,5 +1,6 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
+import Net from "@rbxts/net";
 import {
 	ContextActionService,
 	ContentProvider,
@@ -22,9 +23,49 @@ import { Trajectory } from "shared/Trajectory";
 import { aiming, predictedTargets } from "../../aiming";
 import { shakeCamera } from "../../cameraShake";
 import { chargeStartedAt } from "../../throwing";
+import { events } from "shared/networking";
 
 const ACTION_NAME = "ThrowDodgeball";
 const CURVE_ACTION_NAME = "BendThrow";
+
+/** The client half of the charge-level remote, as the declarations build it. */
+type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
+
+/** The charge-level remote, made once. See {@link syncCharging}. */
+let chargingRemote: ClientRemotes["setCharging"] | undefined;
+
+/** What the server was last told, so an unchanged level is never sent twice. `undefined` until the first. */
+let sentCharging: boolean | undefined;
+
+/**
+ * Tells the server whether this client is **holding the throw button** — a level, sent only when it changes.
+ *
+ * **The one fact about a charge the server cannot have.** The charge is measured here (`throwing.ts` owns its
+ * start time) and the server learns nothing until the release arrives carrying the number, so a stamina pool
+ * that must not refill while a body is winding up a throw has to be *told*. That is the same position
+ * `setSprinting` is in, and the event is deliberately the same shape — a level rather than a request, and a
+ * client that is the only machine able to answer.
+ *
+ * **Called from the frame loop rather than from the three places a charge can end, and that is the
+ * load-bearing choice.** A charge ends in `beginCharge`'s opposite three ways — the release, this file's
+ * `cancelCharge`, and `CatchController`'s `E` cancel, which clears the charge state *directly* by design so
+ * that a press and a release can land in one frame. A signal sent from those three would miss the third, and
+ * the server would go on believing this client was charging for the rest of the session — a stamina pool
+ * that never refilled again. The loop below reads the same value they all write, so **every way a charge can
+ * end is one comparison away and none of them has to remember to tell anyone.**
+ *
+ * **Said out loud on each change**, because a level with no line is a level nobody can check: the pair of
+ * lines this prints is the whole of what "is the pool being held for me" looks like from the client.
+ */
+function syncCharging(charging: boolean): void {
+	if (charging === sentCharging) return;
+	sentCharging = charging;
+
+	if (chargingRemote === undefined) chargingRemote = events.Client.Get("setCharging");
+	chargingRemote.SendToServer(charging);
+
+	if (DEBUG) print(`[Throw] charge level — ${charging ? "holding" : "released"}`);
+}
 
 /**
  * Console diagnostics: which throw was fired, and the marker-jitter report — that one is rate limited so
@@ -390,6 +431,12 @@ export class ThrowController implements OnStart {
 		}
 
 		const charging = Fusion.peek(chargeStartedAt) !== undefined;
+
+		// **The charge's level, reported from the one place that already knows it.** `charging` is computed
+		// above for the guide's own use, and it is read *after* the ball-left-the-hand cancel — so a charge
+		// that ended by any road is reported on the same frame it ended, without any of those roads having to
+		// remember to send anything. See `syncCharging`.
+		syncCharging(charging);
 
 		// **The glow's flag is the guide's own visibility, published rather than worked out twice.**
 		// It is set from the same expression that decides whether to draw, so the guide and the aim

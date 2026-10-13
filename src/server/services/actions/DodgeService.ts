@@ -11,6 +11,7 @@ import type { DodgeDirection } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { lockoutElapsed } from "./actionLock";
+import type { DuckState } from "./DuckService";
 import { DevService } from "../../dev/DevService";
 import { FreezeService } from "./FreezeService";
 import { extendReadyAt, publishReadyAt } from "./readyAt";
@@ -144,6 +145,18 @@ export class DodgeService implements OnStart {
 	 */
 	private catchState?: CatchState;
 
+	/**
+	 * The duck, as this service has to see it — **the same handover as {@link catchState}, in the other
+	 * direction, and it is a handover rather than an injection for a mechanical reason.** `DuckService`
+	 * injects this service, because it has to ask whether a dash is in flight before it starts one, so
+	 * this service cannot inject that one back. `DuckService.onStart` hands itself over instead, which is
+	 * the arrangement {@link watchCatchState} already established one file over.
+	 *
+	 * Unset until then, and while it is unset nothing is refused — a service that does not exist cannot
+	 * be holding a body in a duck.
+	 */
+	private duckState?: DuckState;
+
 	constructor(private readonly dev: DevService, private readonly freezes: FreezeService) {}
 
 	/**
@@ -154,6 +167,11 @@ export class DodgeService implements OnStart {
 	 */
 	public watchCatchState(state: CatchState): void {
 		this.catchState = state;
+	}
+
+	/** Hands this service the duck it has to respect. Called by `DuckService` itself. See {@link duckState}. */
+	public watchDuckState(state: DuckState): void {
+		this.duckState = state;
 	}
 
 	public onStart() {
@@ -393,6 +411,35 @@ export class DodgeService implements OnStart {
 			if (DEBUG) print(`[Dodge] ${model.Name}: refused — frozen`);
 
 			return true;
+		}
+
+		// **The duck, asked before the catch and for a state's reason rather than a clock's.** A duck is
+		// *up* for as long as it is up, so a dodge refused by one has not been charged for a cooldown it
+		// could have waited out — which is the position the freeze occupies above. What follows it is the
+		// duck's own lockout, and then the catch's, and both of those are clocks.
+		//
+		// **A ducking body cannot dash, and the anchor is why it must not.** `DuckService` anchors the root
+		// for the duration, so a dash started underneath it would be a velocity applied to a part the engine
+		// is not simulating: the rig would commit, the bar would charge, and nothing would move. Refusing is
+		// the honest answer to the same fact.
+		const duck = this.duckState;
+		if (duck !== undefined) {
+			if (duck.isDucking(model)) {
+				if (DEBUG) print(`[Dodge] ${model.Name}: refused — ducking`);
+				return true;
+			}
+
+			const sinceDuck = lockoutElapsed(duck.getLastDuckEndTime(model));
+			if (sinceDuck !== undefined) {
+				if (DEBUG) {
+					print(
+						`[Dodge] ${model.Name}: refused — the duck ended ` +
+							`${string.format("%.2f", sinceDuck)}s ago`,
+					);
+				}
+
+				return true;
+			}
 		}
 
 		const state = this.catchState;
