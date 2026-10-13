@@ -1,4 +1,5 @@
 import { CHARACTER_CONFIG } from "./config/character.config";
+import { RIG_ANIMATION, RigAnimationClip } from "./config/rigAnimation.config";
 
 /**
  * The state a body is in, turned into the clip it should wear.
@@ -119,11 +120,15 @@ export function animationFor(
 /**
  * Which two config ids each clip is read from.
  *
- * **One table rather than a `switch`, because the two callers both need every row.** The player's
- * controller needs all four — it hands them to the `Animate` script as sets *and* plays two of them
- * itself — and the rig renderer needs all four as well. A table is also what stops an id being
- * written out a second time anywhere: `clipFor` is the only reader, and `CHARACTER_CONFIG` is the
- * only place an id is spelled.
+ * **One table rather than a `switch`, because every row is reachable and the names are a fixed set.** The
+ * player's controller hands all four to the engine's script as sets and plays two of them itself, so no
+ * row is decoration. A table is also what stops an id being written out a second time anywhere: `clipFor`
+ * is the only reader, and `CHARACTER_CONFIG` is the only place an id is spelled.
+ *
+ * **These four are the player's, and the rig's table is a different one.** It used to be that both sides
+ * read this table — a rig has no `Animate` script, so it took the same four ids straight from here — and
+ * the rig now reads `RIG_ANIMATION` through `rigClipFor` instead, because it needs states this table has
+ * no row for and an R6 standing clip this one deliberately leaves blank. See `rigClipFor`.
  */
 const CLIP_IDS: Record<AnimationClip, { r6: string; r15: string }> = {
 	idle: { r6: CHARACTER_CONFIG.IDLE_ANIMATION_R6, r15: CHARACTER_CONFIG.IDLE_ANIMATION_R15 },
@@ -153,4 +158,30 @@ const CLIP_IDS: Record<AnimationClip, { r6: string; r15: string }> = {
 export function clipFor(clip: AnimationClip, isR15: boolean): string {
 	const ids = CLIP_IDS[clip];
 	return isR15 ? ids.r15 : ids.r6;
+}
+
+/**
+ * The id this game has for `clip` on a **rig** of this type, or `""` where it has none.
+ *
+ * **The rig's resolver, sitting beside the player's so that the difference between them is visible.**
+ * Both answer the same question — one name, one body, which asset — and both answer it from a table
+ * keyed by rig type. What differs is the table: a player's clips are `CHARACTER_CONFIG`'s, because a
+ * player's sets are what Roblox's `Animate` script reads and they therefore have to be the four names
+ * it looks up; a rig's are `RIG_ANIMATION`'s, which carries states a player has no clip for at all.
+ * Bringing them into one table would mean one of those two facts becoming false.
+ *
+ * **The dispatch is the same read on both sides, and it is a read rather than a guess.** `Humanoid.RigType`
+ * is a property of the body being dressed, so the caller that has the body answers for it and hands the
+ * answer in — which is why this is a boolean parameter here rather than a second lookup inside. An R6
+ * clip never loads onto an R15 rig, so getting this wrong is a track that loads nothing and a body that
+ * plays no clip: silent, and indistinguishable from a mistyped id.
+ *
+ * **Empty is a legitimate answer and means "leave this clip alone"**, exactly as it does for a player. It
+ * is spelled `""` rather than `undefined` because the loader's own input is a string and an empty one is
+ * what "no animation" is written as everywhere in this codebase.
+ */
+export function rigClipFor(clip: RigAnimationClip, isR15: boolean): string {
+	const ids = isR15 ? RIG_ANIMATION.R15 : RIG_ANIMATION.R6;
+
+	return ids[clip];
 }

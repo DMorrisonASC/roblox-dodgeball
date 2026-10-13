@@ -116,12 +116,21 @@ export const CHARACTER_CONFIG = {
      * Roblox's business rather than ours — its script picks between them by how fast the body is
      * going — so both are claimed, with these ids.
      *
-     * **An empty id is the *off* switch, and it is how a rig opts out of one set.** The controller
-     * leaves that set exactly as Roblox made it, which is what the two blank R6 lines below are for:
-     * only the R15 renders of idle and jump were uploaded, so an R6 body keeps the default standing
-     * and jumping animations and still wears this game's walk and sprint. Blank rather than filled
-     * with the R15 ids on purpose — the probe would refuse them on an R6 body anyway, and a config
-     * that says what it means beats one that says something the loader is expected to reject.
+     * **An empty id is the *off* switch, and it is how a body opts out of one set.** The controller
+     * leaves that set exactly as Roblox made it. **No row below is empty any more**, and that is a
+     * change: the R6 idle and jump rows used to be blank, because only the R15 renders of those two
+     * had been uploaded, so an R6 body kept Roblox's default standing and jumping animations while
+     * wearing this game's walk and sprint. The R6 half has since been supplied — and supplied "for all
+     * models", which is the animation editor's phrase for an R6 export — so the four pairs are now
+     * complete and every body in the game wears them.
+     *
+     * **These four pairs are the clips for *every* body, not only for players**, which is worth stating
+     * because the file's name says otherwise. A rig reads them through `RIG_ANIMATION`, which borrows
+     * these four rows rather than repeating the ids — so a walking rig and a walking player are wearing
+     * the same animation by construction, and changing one clip changes it for both. The rig table adds
+     * the states a player has no clip for (a ball in hand, a dodge, a throw); these four are the ones
+     * they share, and the user's whole point in supplying them was that players and rigs should not be
+     * seen wearing different animations for the same thing.
      *
      * **Every id here was checked against Roblox's asset API, and the R15 column was replaced on
      * 2026-10-01 because of what that check found.** The ids that used to sit there were emotes —
@@ -134,8 +143,8 @@ export const CHARACTER_CONFIG = {
      * **Quoted with the `rbxassetid://` prefix and never as a bare number.** The loader treats a
      * bare number as a name and finds nothing, which is the trap the dodge ids record at length.
      */
-    IDLE_ANIMATION_R6: "",
-    IDLE_ANIMATION_R15: "rbxassetid://109708134574404",
+    IDLE_ANIMATION_R6: "rbxassetid://120076256264870",
+    IDLE_ANIMATION_R15: "rbxassetid://107017385887434",
 
     WALK_ANIMATION_R6: "rbxassetid://71443035611308",
     WALK_ANIMATION_R15: "rbxassetid://136049554497965",
@@ -143,8 +152,8 @@ export const CHARACTER_CONFIG = {
     RUN_ANIMATION_R6: "rbxassetid://138082827258827",
     RUN_ANIMATION_R15: "rbxassetid://112953741427605",
 
-    JUMP_ANIMATION_R6: "",
-    JUMP_ANIMATION_R15: "rbxassetid://108854279734771",
+    JUMP_ANIMATION_R6: "rbxassetid://123624426349034",
+    JUMP_ANIMATION_R15: "rbxassetid://134059415042386",
 
     /**
      * The speed at or above which a body wears the sprint clip, in studs per second.

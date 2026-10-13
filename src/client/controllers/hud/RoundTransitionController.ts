@@ -1,9 +1,10 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
-import { ReplicatedStorage, RunService } from "@rbxts/services";
+import { Players, ReplicatedStorage, RunService } from "@rbxts/services";
 import { TRANSITION_CONFIG } from "shared/config/transition.config";
 import { ROUND_STATUS_FOLDER, ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
 import { getTransitionScreenGui } from "../../ui/screenGui";
+import { onASide } from "../../roundZone";
 
 /** Prints when a wipe starts and when it comes off, which is how a wipe is told from a round without one. */
 const DEBUG = true;
@@ -103,6 +104,14 @@ export class RoundTransitionController implements OnStart {
 	 */
 	private readonly scope = Fusion.scoped();
 
+	/**
+	 * The player whose screen this is, held so the wipe can ask whether it happens to them.
+	 *
+	 * **The gate is here rather than on the server, and this is why:** the cue is one number on one folder
+	 * that everybody reads, and what differs between clients is what each of them is doing when it arrives.
+	 */
+	private readonly player = Players.LocalPlayer;
+
 	/** Whether a wipe is on screen right now. Its own guard, so two can never overlap. */
 	private running = false;
 
@@ -149,6 +158,24 @@ export class RoundTransitionController implements OnStart {
 				if (value === last) return;
 
 				last = value;
+
+				// **And it is only for the people it happens to.** A wipe covers a *move*: this player is
+				// teleported into the arena at a round's start and back to the lobby at its end, and a player
+				// who is not on a side is moved by neither — they watch the round from the lobby, and a grid
+				// over a room they are already standing in is a cover over nothing. So the answer is
+				// `onASide` and **not** the phase: at the round's *end* the phase has already left `Playing`
+				// when this arrives, and the players who are being moved are exactly the ones still wearing a
+				// side. That asymmetry is what decided the wipe and the camera need two predicates rather than
+				// one; see `roundZone.ts`, which owns both, and `RoundService.assignTeams`, which is what keeps
+				// the attribute honest — it clears every player's side and rewrites it from the roster at each
+				// whistle, so a player who did not re-opt in stops reading as a participant at the next one.
+				//
+				// **A mid-round opt-in does not replay this**, and that is a property of the cue rather than
+				// of the gate: the counter only moves at a boundary, and a player admitted into a round that is
+				// already being played arrives between two of them, so there is no bump for them to answer.
+				// They get the camera and no wipe, which is the pair the rule asks for.
+				if (!onASide(this.player)) return;
+
 				this.play();
 			}),
 		);

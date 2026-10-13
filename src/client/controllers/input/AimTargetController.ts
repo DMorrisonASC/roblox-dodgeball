@@ -2,7 +2,9 @@ import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
+import { TEAM_ATTRIBUTE } from "shared/constants";
 import { aiming, predictedTargets } from "../../aiming";
+import { inRound } from "../../roundZone";
 
 /** Prints a line as a target is lit and as it goes out. Silent while a target stays the same. */
 const DEBUG = true;
@@ -19,6 +21,63 @@ const DEBUG = true;
  * the name says what it is rather than what it most often sits on.
  */
 const OUTLINE_NAME = "ObjectOutline";
+
+/** What `TEAM_ATTRIBUTE` holds for each side. Two literals between two files, spelled the same way. */
+const SIDE_A = "A";
+const SIDE_B = "B";
+
+/** One side, as a client reads it off an attribute. See {@link sideOfBody}. */
+type SideLabel = typeof SIDE_A | typeof SIDE_B;
+
+/**
+ * `label` as a side, or nothing — **the validation {@link sideOfBody} is a branch away from meaning nothing
+ * without**.
+ *
+ * An attribute is a string anybody can write, so `Team = "Red"` is not a side, it is a string that happens to
+ * be a colour. The same reading `npc/rigs.ts`'s `sideOfRig` and `roundZone.onASide` make on their own copies:
+ * a value that is not one of the two labels reads as "no side", and every caller here treats that as "leave
+ * it alone" rather than as a third side.
+ */
+function asSide(label: unknown): SideLabel | undefined {
+	if (label === SIDE_A || label === SIDE_B) return label;
+
+	return undefined;
+}
+
+/**
+ * **Which side a body is on, read from wherever that side actually lives** — the client's copy of the rule the
+ * server keeps in `npc/detect.ts` (`sideOf`) and `RoundService.teamOf`.
+ *
+ * **Two branches, because the attribute is written in two different places.** `RoundService.assignTeams` writes
+ * `TEAM_ATTRIBUTE` on the **`Player`** — the roster is player-keyed and a character is replaced on every death —
+ * while a **rig** carries its own, painted in Studio or written by the pad and the respawn. So a reader that
+ * asked the model in both cases would read every player's character as side-less; under the equality test below
+ * that is the same answer as "not a teammate", which is how a rule like this one goes quietly wrong.
+ * `GetPlayerFromCharacter` is the branch that tells the two apart, and it is nullable by design: `undefined`
+ * means "this model is not a player's character", and for this file that means a rig.
+ *
+ * **A `Model | Player` rather than a `Model`**, because the local player's own side is asked of the `Player`:
+ * `Players.LocalPlayer` is the one body in the game the client can read directly, and it is a `Player` rather
+ * than a character model — which also makes this answer survive a death, since a player with no character still
+ * has a side.
+ *
+ * **A copy rather than a shared helper, and the reasons are worth naming.** The server's read lives beside
+ * `TEAM_A`/`TEAM_B`/`TeamLabel`, which are in `server/services/round/team.ts` — a client cannot import that —
+ * and `npc/rigs.ts`'s `sideOfRig` is a server module that walks `CollectionService`, which is far more than a
+ * hint about a line colour should drag into the client. A new `shared/` module would have to carry its own copy
+ * of the two labels anyway, so extracting this would move four lines and duplicate the same pair in a *third*
+ * place — and it would touch `detect.ts` and `rigs.ts`, which this change has no other business in. If a fourth
+ * reader ever appears, the change to make first is to move the labels themselves to `shared/`; this file is not
+ * the place to half-make it. `client/roundZone.ts` records the same trade for its own two literals.
+ */
+function sideOfBody(body: Model | Player): SideLabel | undefined {
+	if (body.IsA("Player")) return asSide(body.GetAttribute(TEAM_ATTRIBUTE));
+
+	const player = Players.GetPlayerFromCharacter(body);
+	const label = player !== undefined ? player.GetAttribute(TEAM_ATTRIBUTE) : body.GetAttribute(TEAM_ATTRIBUTE);
+
+	return asSide(label);
+}
 
 /**
  * Whether two target lists name the same bodies in the same order.
@@ -93,11 +152,29 @@ function sameTargets(a: Array<Model>, b: Array<Model>): boolean {
  * be describing a different throw from the one being drawn — and this controller has no business
  * knowing any of them.
  *
- * **What it is aimed at is still asked of the world, not of the game.** A model with a humanoid is a
- * target, whatever it is: no team, no health, no tag, nothing about whether hitting it means
- * anything. The glow answers "where is this throw going", and the moment it started answering "what
- * may I throw at" it would be a second, quieter copy of the throw's rules. The *arc* is the throw's
- * geometry, which is exactly why it is the right input and the wrong place for any judgement to sit.
+ * **What it lights is what the arc would reach *and could hurt*, and that is a reversal.** The
+ * paragraph this replaces said the glow asked the world for a target and never for a team: a model
+ * with a humanoid was a target, whatever it was, on the grounds that the moment the glow answered
+ * "what may I throw at" it would be a second, quieter copy of the throw's rules. **The user's rule for
+ * this feature is the opposite — a teammate should not be highlighted while you aim at them — and the
+ * old argument had the friendly-fire rule wrong.** It is not a second set of rules beside the throw's,
+ * it is the *same* rule seen from the aim side, and `RoundService.isFriendlyFire` is the one place it
+ * is written: a body on your own side is a body this throw cannot hurt, so it is a body the hint must
+ * not point at. A hint that pointed at it would be promising a hit the game refuses — the same
+ * disagreement between the preview and the throw this controller exists to prevent, with the *rules*
+ * rather than the arc as the thing that moved.
+ *
+ * **Client-side, and the reason is what a wrong outline costs.** It is cosmetic: it cannot deal
+ * damage, cannot fake a hit, cannot move a body, and every client works out its own answer for its own
+ * aim. The server owns the *fact*, and it already acts on it — `isFriendlyFire` refuses the throw
+ * itself, before any damage — so a server-side version of this filter would enforce nothing the game
+ * does not already enforce. What it would cost is a per-frame report of where every client is aiming,
+ * so that the server could suppress a line. The hint is the client's opinion about what to draw; the
+ * rule it follows is the server's. See {@link hittable}.
+ *
+ * **What is still asked of the world is the geometry.** The arc names the bodies in the throw's path
+ * and nothing else, and the filter below only ever *removes* bodies from that list — so scenery, a body
+ * with no side, the drawn path and the landing marker are exactly what they were.
  *
  * See `client/aiming.ts` for both halves of what it reads, and `ThrowController.updateGuide` for
  * where they are written.
@@ -135,6 +212,14 @@ export class AimTargetController implements OnStart {
 
 	/** The flag as last reported, so only its transitions are printed. Diagnostic scaffolding. */
 	private lastAiming = false;
+
+	/**
+	 * The teammates the hint last declined to light, as one string, so only a *change* is printed.
+	 *
+	 * A field rather than a per-frame line, for the reason `lastAiming` is one: this runs on every frame
+	 * the aim is up, and a line a frame buries the answer it is there to give. See {@link reportSkip}.
+	 */
+	private lastSkipReport = "";
 
 	public onStart(): void {
 		// Per frame, and nothing is throttled any more. The arc this reads is rebuilt every frame
@@ -186,7 +271,12 @@ export class AimTargetController implements OnStart {
 		// it means the arc reaches no body, which is what a throw at a wall, a floor or the sky is. The
 		// usual length is one, and more than one means the throw is going through the bodies in its
 		// line rather than stopping on the first.
-		const targets = Fusion.peek(predictedTargets);
+		//
+		// **And the bodies this player's side cannot hurt are taken out of it**, which is the one place the
+		// glow has an opinion about anything but the arc: a teammate is not a body the game will let the ball
+		// land on. The phase, the thrower's side and the target's are all checked in there, and a body that
+		// fails to name a side is left exactly as it was. See {@link hittable}.
+		const targets = this.hittable(Fusion.peek(predictedTargets));
 
 		// The common case, and the reason the glow does not flicker: a set of targets that has not
 		// changed is left exactly as it is, so nothing is written to it and nothing is re-lit. It
@@ -220,6 +310,80 @@ export class AimTargetController implements OnStart {
 		for (const model of targets) {
 			if (!this.currentTargets.includes(model)) this.setGlow(model, true);
 		}
+	}
+
+	/**
+	 * `targets` without the bodies on the local player's own side — **the friendly-fire rule seen from the aim
+	 * side, and the whole of what the glow knows about teams.**
+	 *
+	 * **A body on your own side is not something this throw can hurt, so it is not something the guide points
+	 * at.** `RoundService.isFriendlyFire` refuses a same-side contact outright, before any damage, so a glow on
+	 * a teammate is the hint promising a hit the game will not deliver. See this controller's class doc for the
+	 * reading of that rule and for why the filter lives here rather than on the server.
+	 *
+	 * **Three preconditions, and each one is a case the rule must not claim.** A round has to be playing,
+	 * because a side only means something in one — `isFriendlyFire` gates on the phase for exactly this reason,
+	 * and `RoundService.assignTeams` leaves the last round's labels standing on every player through the
+	 * intermission, so a check without the phase would read a lobby throw at a former teammate as friendly. The
+	 * thrower has to *have* a side, because there is otherwise nobody to be friendly with. And the **target**
+	 * has to have one: a body with no side — a lobby spectator, a rig nobody painted, a practice dummy — is
+	 * highlighted exactly as it was, which is `isFriendlyFire`'s own answer about a side-less body. That is why
+	 * the test is an equality of two valid labels rather than "is this body's side not mine".
+	 *
+	 * **The thrower's own body cannot be in the list to begin with.** `ThrowController` puts the local character
+	 * in the arc's ignore list, so the guide can never reach it — and the equality test would answer it anyway,
+	 * since this player is on their own side.
+	 *
+	 * **Nothing is remembered between frames but the report**, and the lists are rebuilt every frame anyway: the
+	 * input is a fresh table a frame, so a filter that cached its answer would have to key it on the aim.
+	 */
+	private hittable(targets: Array<Model>): Array<Model> {
+		// Outside a round nobody is on a side: `sideOfBody` would answer from a label that outlived its round —
+		// see above, and `isFriendlyFire`'s own phase gate.
+		const mine = inRound() ? sideOfBody(this.player) : undefined;
+		if (mine === undefined) {
+			this.reportSkip([]);
+
+			return targets;
+		}
+
+		const hittable: Array<Model> = [];
+		const skipped: Array<string> = [];
+
+		for (const model of targets) {
+			if (sideOfBody(model) === mine) {
+				skipped.push(model.Name);
+				continue;
+			}
+
+			hittable.push(model);
+		}
+
+		this.reportSkip(skipped);
+
+		return hittable;
+	}
+
+	/**
+	 * Prints the teammates the hint has just declined to light, when that set changes.
+	 *
+	 * **Because a glow that did not happen and an arc that hit nothing look identical from the outside**, which
+	 * is the same fork {@link setGlow} prints for its missing-highlight case and the reason both lines exist:
+	 * "aiming at my own side does nothing" and "my aim is broken" are one silence apart. Printed on the
+	 * transition rather than per frame, since this is asked on every frame the aim is up.
+	 *
+	 * The empty report is passed in while nothing is being skipped, so the field is cleared — which is what lets
+	 * the next skip print again rather than being suppressed as a repeat.
+	 */
+	private reportSkip(skipped: Array<string>): void {
+		const report = skipped.size() === 0 ? "" : skipped.join(", ");
+		if (report === this.lastSkipReport) return;
+
+		this.lastSkipReport = report;
+		if (!DEBUG) return;
+
+		if (report === "") print(`[Aim] nothing skipped`);
+		else print(`[Aim] skipped on own side: ${report}`);
 	}
 
 	/**

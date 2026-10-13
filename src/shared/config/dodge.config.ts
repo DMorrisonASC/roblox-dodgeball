@@ -1,11 +1,24 @@
+import type { DodgeDirection } from "../dodge";
+
 /**
  * Everything about the dodge: how far it goes, how long it takes, and how often it
  * can be used.
  *
- * Imports nothing. **Read by `DodgeService` and by nothing else** — the server never sees a key press,
- * and there is no longer any client-side timing to configure here: a dodge is a movement key plus a
- * right-click, which is a combination rather than a rhythm, so nothing left in this file is measured
- * in taps.
+ * **One type-only import, and it is the direction vocabulary** — the four words a dodge is named by,
+ * which `shared/dodge.ts` owns and this file keys its clip table by. Nothing else is imported, and
+ * nothing here reads another config: the distances and clocks below are numbers, and the clip ids are
+ * strings.
+ *
+ * **Read by `DodgeService` and, through the rig clip table, by the rig renderer.** That second reader is
+ * newer than the first, and it is why the ids below moved here: a dodge clip is played by two different
+ * machines for two different kinds of body — a player's flourish is started by the server, a rig's clip is
+ * played by each client from the published direction — and both of them must be looking at one table.
+ * See `RIG_ANIMATION`, which borrows these four rows the way it borrows walk and run from
+ * `CHARACTER_CONFIG`.
+ *
+ * The server never sees a key press, and there is no client-side timing to configure here: a dodge is a
+ * movement key plus a right-click, which is a combination rather than a rhythm, so nothing left in this
+ * file is measured in taps.
  *
  * **`DOUBLE_TAP_WINDOW` and `GESTURE_WINDOW_MS` used to live here and are deleted
  * rather than left standing.** They were the whole of the old binding — how long a
@@ -43,22 +56,54 @@ export const DODGE_CONFIG = {
 	COOLDOWN: 1.5,
 
 	/**
-	 * The dodge flourish for an R6 rig, as an asset id.
-	 *
-	 * A placeholder standing in until a real clip is bought, which is why it lives
-	 * here rather than in the rig: swapping in the finished animation is an edit to
-	 * this string and nothing else. The `rbxassetid://` prefix is required — the
-	 * loader treats a bare number as a name and finds nothing.
-	 *
-	 * Paired with {@link DODGE_CONFIG.DODGE_ANIMATION_R15}: a rig can wear only one
-	 * of the two, and an R6 clip on an R15 rig does not load at all, so the server
-	 * picks by `Humanoid.RigType` rather than playing both and hoping.
+	 * The four dodge clips live below this object, as {@link DODGE_ANIMATION}, rather than in here — the
+	 * reason is mechanical and worth one line: this object is `as const`, so a member of it cannot carry a
+	 * `Record<…>` annotation, and the table wants one so that a missing direction is a compile error.
 	 */
-	DODGE_ANIMATION_R6: "",
-
-	/** The dodge flourish for an R15 rig, as an asset id. See {@link DODGE_CONFIG.DODGE_ANIMATION_R6}. */
-	DODGE_ANIMATION_R15: "",
 } as const;
+
+/**
+ * The four dodge clips, per rig type — **one table for every body that dodges.**
+ *
+ * **A dodge is the same move whoever takes it, so it is the same four clips.** These are worn by a
+ * player's character and by an NPC rig, and the two paths differ only in *who plays them*: a player's
+ * flourish is started by `DodgeService` on the server (so the other players see it — a client-started
+ * track would be that client's private flourish), and a rig's clip is played by every client that can
+ * see the rig, from the direction the server publishes. Both read the id from here, which is what makes
+ * "swap the dodge clip" one edit.
+ *
+ * **The R6 column was authored "for all models"**, which is the animation editor's own phrase for an R6
+ * export, and that is why one table covers a player and a placeholder alike. It says nothing about which
+ * *body* wears which column: that is `Humanoid.RigType`, and an R6 clip never loads onto an R15 rig — so
+ * the wrong column is a dodge that silently plays nothing rather than one that looks slightly off.
+ *
+ * **Keyed by direction, and the direction is `shared/dodge.ts`'s four words.** Which word a heading gets
+ * is `dodgeDirectionOf`, which is also where the frame those words are measured in is argued; a fifth
+ * direction would be a compile error here rather than a dodge that quietly plays nothing.
+ *
+ * **An empty id is the *off* switch**, as it is for every clip in this codebase: the reader leaves the
+ * body alone and says so rather than playing something almost right. No row below is empty, and one that
+ * becomes empty is a fault rather than a state — `DodgeService` warns about it with the direction and the
+ * rig type, because a dodge with no clip looks exactly like a code bug.
+ */
+export const DODGE_ANIMATION: {
+	readonly R6: Record<DodgeDirection, string>;
+	readonly R15: Record<DodgeDirection, string>;
+} = {
+	R6: {
+		forward: "rbxassetid://105768755953870",
+		backward: "rbxassetid://117214883548929",
+		left: "rbxassetid://78281915750764",
+		right: "rbxassetid://94964163326879",
+	},
+
+	R15: {
+		forward: "rbxassetid://102865243606683",
+		backward: "rbxassetid://80267851274003",
+		left: "rbxassetid://107415624086531",
+		right: "rbxassetid://129772201965757",
+	},
+};
 
 /**
  * Speed the dash is driven at, in studs per second.

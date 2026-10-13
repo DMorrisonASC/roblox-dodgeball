@@ -410,8 +410,8 @@ const MAX_VERTICAL_FRACTION = 1 / math.sqrt(2);
  * "throw it as far as you can to that height".
  *
  * **It is unreachable in the shipped numbers, and deliberately so.** The demand is
- * `sqrt(2·g·CHARGE_PEAK_HEIGHT)` = 21.9 studs/s and the floor is `CHARGE_MIN_SPEED` = 45, so this branch needs
- * a peak of about 12 studs or a floor under 22 before it can run. **Whichever of the two is ever tuned, the
+ * `sqrt(2·g·CHARGE_PEAK_HEIGHT)` = 17.9 studs/s and the floor is `CHARGE_MIN_SPEED` = 45, so this branch needs
+ * a peak of about 12 studs or a floor under 18 before it can run. **Whichever of the two is ever tuned, the
  * invariant is that the demand stays under the floor** — and if it does not, the visible symptom is not a
  * broken throw but a *flatter* one that lands closer than the charge promised, which is exactly what the
  * fallback is for and exactly why it is a clamp rather than a refusal.
@@ -468,16 +468,17 @@ function ballisticFlight(speed: number, angle: number): number {
  * now true of one number rather than of two moving together: **nothing but the speed changes with the hold**,
  * and the flattening is a consequence of it rather than a second dial.
  *
- * **On level ground that gives 21.5 studs at a tap, 33.5 at a quarter, 45 at a half, 56 at three quarters and
- * 67 at a full hold** — monotone, and far shorter than the lob it replaces (22 / 52 / 90 / 127 / 150).
+ * **On level ground that gives 18.5 studs at a tap, 27.9 at a quarter, 37.2 at a half, 46.3 at three quarters
+ * and 55.3 at a full hold** — monotone, and far shorter than the lob it replaces (22 / 52 / 90 / 127 / 150).
  * **That loss is the price of the shape and it is a real one**, so the numbers that would restore it are
  * written down here rather than found by tuning later. Reach rises with both the speed and the peak, and at
  * full charge it is about `2·v·sqrt(2·g·h)/g` for a small peak: 150 studs needs roughly
- * `THROW_MAX_SPEED = 275`, which is more than twice anything this game has thrown, or a peak near 7 studs,
- * which puts the apex two character-heights up and is the lob this change exists to remove. **Neither was
- * moved.** The table above is what the current numbers do, and the honest reading of it is that a real
- * trajectory at a 125 studs/s ceiling reaches about 67 studs — which is the same shape and about the same
- * distance as a baseball pitch at that speed.
+ * `THROW_MAX_SPEED = 335`, which is far past anything this game has thrown, or a peak near 18 studs, which
+ * puts the apex several character-heights up and is the lob this change exists to remove. **Neither was
+ * moved.** The table above is what the current numbers do — the same arithmetic as the 21.5 / 33.5 / 45 / 56 /
+ * 67 table this replaces, at the peak the config now holds rather than the old one, so the range fell by a
+ * sixth when the peak dropped by a stud — and the honest reading of it is that a real trajectory at a
+ * 125 studs/s ceiling reaches about 55 studs.
  *
  * **Every charge is in the air for the same 0.55 s, and that is a consequence rather than a coincidence.** A
  * fixed apex from a fixed hand means a fixed *vertical* flight — `2·v_y/g`, and `v_y` is the same number for
@@ -515,9 +516,9 @@ export function planChargedThrow(
 
 	// **Clamped rather than refused, because this function's contract is to return a plan.** An impossible
 	// charge is refused at the wire — see `BallService`'s handler — and this clamp is what makes the function
-	// total for every other caller: a hold of exactly one second can produce `1.0000000001` in floating
-	// point, and that must draw the same preview as `1` rather than put a `NaN` into a velocity and take the
-	// arc off the screen.
+	// total for every other caller: a hold taken all the way to the end of `CHARGE_SECONDS` can produce
+	// `1.0000000001` in floating point, and that must draw the same preview as `1` rather than put a `NaN`
+	// into a velocity and take the arc off the screen.
 	const charge = math.clamp(request.charge, 0, 1);
 
 	// **The speed first, because the angle is derived from it.** The order is the model: the hold picks one

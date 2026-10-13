@@ -856,11 +856,19 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * and each client dresses the rig it can see. See `NpcService.publishAnimation` for the writer and
  * `RigAnimationController` for the reader.
  *
- * **The vocabulary is exactly the four facts `animationFor` branches on, and nothing else.** That is
- * deliberate rather than convenient: a state that existed on one side and not the other would be a
- * mapping function that could not be shared, which is the whole point of it. The published *speed* is
- * banded before it is written — see `ANIMATION_SPEED_BAND` — because a state carrying a measurement
- * would publish continuously, and this arrangement's entire economics is that it publishes on change.
+ * **These four are the facts `animationFor` branches on, and `DODGE_DIRECTION_ATTRIBUTE` below is the
+ * exception that proves the rule rather than a fifth member of the set.** That function's vocabulary is
+ * exactly these four because a *shared* mapping between a player and a rig can only branch on facts both
+ * of them have — a state that existed on one side and not the other would be a mapping that could not be
+ * shared, which is the whole point of it. A dash direction is a fact neither side's locomotion decision
+ * has any use for: it does not change which locomotion clip a body wears, it changes which *action* clip
+ * draws over it, and it is published by the service that runs the dash rather than by `NpcService`. So it
+ * lives beside these rather than among them, and an animation state added here still has to justify
+ * itself against `animationFor`.
+ *
+ * **The published *speed* is banded before it is written** — see `ANIMATION_SPEED_BAND` — because a state
+ * carrying a measurement would publish continuously, and this arrangement's entire economics is that it
+ * publishes on change.
  *
  * **Four attributes rather than one packed value.** Each is a scalar, so Roblox replicates only the one
  * that changed, which is exactly what "bytes per rig per change" means; and none of them needs a packing
@@ -886,4 +894,54 @@ export const NPC_ANIM_FROZEN_ATTRIBUTE = "AnimFrozen";
 
 /** Whether the rig has a ball in hand, which is what a rig with one is about to throw. See the state above. */
 export const NPC_ANIM_THROWING_ATTRIBUTE = "AnimThrowing";
+
+/**
+ * Whether the body is **mid-throw** — the ball has just left its hand — for as long as the throw's own
+ * clip is worth playing.
+ *
+ * **A different fact from `NPC_ANIM_THROWING_ATTRIBUTE` immediately above, and the two names being one
+ * letter apart is the point rather than sloppiness.** `AnimThrowing` is a *condition*: this body is
+ * holding a ball and its next act is to throw it, true for as long as the ball is in the hand. This is an
+ * *event*: the ball has gone, and the body is playing the motion that sent it. A throwing rig does both
+ * in sequence — the hold pose while it carries the ball, then the throw — and a body can be one without
+ * ever being the other.
+ *
+ * **Written by `BallService` at the release and cleared a moment later**, which is why it is named beside
+ * the animation state rather than among it: the four attributes above are `NpcService`'s, published while
+ * a rig's loop runs, and this one belongs to the throw — the single funnel a player's click and a rig's
+ * behaviour both arrive through, so it is marked for every body that throws rather than for rigs alone.
+ * See {@link BALL_CONFIG.THROW_ANIMATION_SECONDS} for how long it stays up, and `RigAnimationController`,
+ * which plays the clip for exactly that window.
+ *
+ * **Absent means "not throwing"**, so a body that has never thrown and one whose throw has just finished
+ * read alike — the same convention the four above use.
+ */
+export const THROW_ANIMATION_ATTRIBUTE = "AnimThrow";
+
+/**
+ * Which way a body that is mid-dash went, as one of `DodgeDirection`'s four words — on the **dodging
+ * model**, player or rig, for the length of the dash.
+ *
+ * **The fact the dodge clips need and nothing on the client can work out.** The four dodge clips are
+ * directional, and the direction of a dash is decided by `DodgeService` on the server from the request
+ * the client sent: the client knows which way it *asked* to go, and not which way the dash actually went
+ * — a refusal, a heading the server flattened away, or a dash replaced by a newer one all produce a
+ * different answer from what was asked for.
+ *
+ * **Written by `DodgeService` and not by `NpcService`, which is why it is not named among the four
+ * above.** `NpcService` publishes a rig's *condition* while its loop runs; a dash is an action any body
+ * can take, a player's character included, and the service that runs it is the service that writes this.
+ * The renderer reads it on the same `AttributeChanged` connection it reads the rest of the state on, so
+ * no wiring in the renderer is specific to it.
+ *
+ * **Set at the start of the dash and cleared when it ends, which is the whole of its lifetime.** Absent
+ * means "not dashing", so a body that has never dodged and one whose dash has just finished read the
+ * same way — and a reader that arrives mid-dash reads the direction rather than having to infer one.
+ * A dodge that is replaced by a newer dodge has the newer direction written over it, which is correct:
+ * the clip should follow the dash that is actually in flight.
+ *
+ * **The direction is relative to the body's facing, not to the world** — see `dodgeDirectionOf`, which is
+ * where the four words are defined and where the frame they are measured in is argued.
+ */
+export const DODGE_DIRECTION_ATTRIBUTE = "DodgeDirection";
 

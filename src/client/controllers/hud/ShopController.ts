@@ -10,7 +10,7 @@ import { CHEST_POOL, ECONOMY_CONFIG, POWER_ROSTER, PREMIUM_COSMETICS, PURCHASE_C
 import type { ChestItem, CosmeticDef } from "shared/config/economy.config";
 import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
-import { INTERMISSION, roundPhase, shopOpen } from "../../panels";
+import { participating, shopOpen } from "../../panels";
 import { hudTheme } from "../../ui/hudTheme";
 import type { HudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
@@ -100,13 +100,15 @@ function slotLabel(def: CosmeticDef): string {
  * says, and what the footer does.
  *
  * **There is no button on this panel any more.** It used to own one at the top-left; that button is now
- * one of the two in the intermission dock (`DockController`), which is the only thing that opens either
+ * one of the two in the dock (`DockController`), which is the only thing that opens either
  * panel. `shopOpen` in `client/panels.ts` is this panel's half of that arrangement — a value in
  * nobody's file, so neither controller has to know the other exists.
  *
- * **The panel is visible when it is open *and* the phase is between rounds**, the same two facts the
- * dock reads. That is deliberate: a round starting closes the dock, and a panel left over the game with
- * its only button gone would be a window a player could not shut without hunting for the small `X`.
+ * **The panel is visible when it is open *and* this player is not in a round**, the same two facts the dock
+ * reads. That is deliberate in both directions: a round taking the dock away takes what it opened with it — a
+ * panel left over the game with its only button gone would be a window a player could not shut without
+ * hunting for the small `X` — and a round somebody else is playing takes nothing away from a player who is
+ * standing in the lobby, which is the bug this pair of facts replaced the phase with.
  *
  * **Everything is built once and only properties change afterwards.** big-ui components take their
  * contents at construction, so a pane that repopulated itself on a tab click would be torn down and
@@ -215,7 +217,7 @@ export class ShopController implements OnStart {
 			this.scope,
 			theme,
 			"ShopPanel",
-			Fusion.Computed(this.scope, (use) => use(shopOpen) && use(roundPhase) === INTERMISSION),
+			Fusion.Computed(this.scope, (use) => use(shopOpen) && !use(participating)),
 		);
 
 		const right = addHeaderBand(this.scope, theme, panel, 1, "Shop", () => shopOpen.set(false));

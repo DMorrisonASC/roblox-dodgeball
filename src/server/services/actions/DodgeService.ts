@@ -2,11 +2,12 @@ import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { startAfterimage, stopAfterimage } from "shared/afterimage";
 import { ACTION_CONFIG } from "shared/config/action.config";
-import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
+import { DODGE_ANIMATION, DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { CATCH_READY_AT, DODGE_READY_AT, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
-import { canDodge, flattenToGround, resolveDodgeable } from "shared/dodge";
+import { CATCH_READY_AT, DODGE_DIRECTION_ATTRIBUTE, DODGE_READY_AT, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { canDodge, dodgeDirectionOf, flattenToGround, resolveDodgeable } from "shared/dodge";
+import type { DodgeDirection } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { lockoutElapsed } from "./actionLock";
@@ -74,25 +75,40 @@ export interface CatchState {
 }
 
 /**
- * The animation id a dodge plays on a rig of `rigType`.
+ * The animation id a `direction` dodge plays on a body of `rigType`.
  *
- * One id per rig type, both from {@link DODGE_CONFIG} so the pair that swaps out when
- * a real clip is bought is in one place. The choice is not cosmetic: an R6 clip never
- * loads onto an R15 rig, so the wrong answer here is a dodge that silently does
- * nothing rather than one that looks slightly off.
+ * **One table for both kinds of body, so a dodge clip is swapped in one place.** The four ids come from
+ * {@link DODGE_CONFIG.DODGE_ANIMATION}, which is also where the rig renderer reads them from — a player's
+ * flourish and a rig's clip are the same four animations, played by different machines. See that
+ * config for why the two share a table rather than keeping a copy each.
+ *
+ * **The direction is a parameter rather than a second lookup.** Which of the four a dash plays is decided
+ * once, by `dodgeDirectionOf`, and handed down from the one place that has the heading and the body's
+ * facing; a second classification here would be a second answer to what `S+D` means.
+ *
+ * The rig-type choice is not cosmetic: an R6 clip never loads onto an R15 rig, so the wrong column is a
+ * dodge that silently does nothing rather than one that looks slightly off.
  */
-function dodgeAnimationId(rigType: Enum.HumanoidRigType): string {
-	return rigType === Enum.HumanoidRigType.R15
-		? DODGE_CONFIG.DODGE_ANIMATION_R15
-		: DODGE_CONFIG.DODGE_ANIMATION_R6;
+function dodgeAnimationId(rigType: Enum.HumanoidRigType, direction: DodgeDirection): string {
+	const ids = rigType === Enum.HumanoidRigType.R15 ? DODGE_ANIMATION.R15 : DODGE_ANIMATION.R6;
+
+	return ids[direction];
 }
 
 /**
- * Plays `character`'s dodge flourish and hands back the track playing it.
+ * Plays a **player character's** dodge flourish and hands back the track playing it.
  *
  * Played from the **server** on purpose: a track started here replicates to every
  * client, so the other players see the dodge rather than only the one who asked for
  * it. A track started on the client would be that client's private flourish.
+ *
+ * **Called for a player's character and for nothing else, and that is the caller's gate rather than a
+ * refusal here.** A rig's dodge is rendered by *every* client that can see it, from the direction this
+ * service publishes — see `DODGE_DIRECTION_ATTRIBUTE` and `RigAnimationController` — so the reason this
+ * function exists (nobody else would see it) does not apply to a rig, and a track started on a rig would
+ * be a second copy of the same animation fighting each client's own track on the same limbs, plus the
+ * replication cost that having clients render rigs exists to avoid. The gate is in `startDash`, at the
+ * one place that knows which kind of body this is.
  *
  * **Never waited on.** `Play` returns at once and the clip streams in behind the dash,
  * which is what lets the caller apply the dash velocity without gating it on an asset
@@ -113,15 +129,25 @@ function dodgeAnimationId(rigType: Enum.HumanoidRigType): string {
  * out of `startDash` and strand the dash constraints on the character, which is how a
  * dodge turns into a character that flies away and never comes back.
  */
-function playDodgeAnimation(character: Model, humanoid: Humanoid): AnimationTrack | undefined {
-	const animationId = dodgeAnimationId(humanoid.RigType);
+function playDodgeAnimation(
+	character: Model,
+	humanoid: Humanoid,
+	direction: DodgeDirection,
+): AnimationTrack | undefined {
+	const animationId = dodgeAnimationId(humanoid.RigType, direction);
 
-	// An empty id is the *off* switch, and a legitimate one: it is what the config holds
-	// between taking the placeholder out and putting the bought clip in. Checked before
-	// the loader sees it, because `LoadAnimation` raises on an empty id rather than
-	// quietly playing nothing.
+	// **An empty id is the off switch, and it is now a fault rather than a state.** Every one of the eight
+	// rows is filled in, so a body with no clip is a body whose config row was cleared or misspelled — and
+	// the symptom of that is a dodge with no animation, which looks exactly like a code bug. Hence `warn`
+	// rather than a `print` behind `DEBUG`, and hence the rig type and the direction in the line: they are
+	// the two facts that say *which* of the eight ids is missing. Checked before the loader sees it,
+	// because `LoadAnimation` raises on an empty id rather than quietly playing nothing.
 	if (animationId === "") {
-		if (DEBUG) print(`[Dodge] ${character.Name}: no dodge animation set for this rig`);
+		warn(
+			`[Dodge] ${character.Name}: no ${direction} clip for a ` +
+				`${humanoid.RigType === Enum.HumanoidRigType.R15 ? "R15" : "R6"} body`,
+		);
+
 		return undefined;
 	}
 
@@ -248,16 +274,19 @@ export class DodgeService implements OnStart {
 	}
 
 	public onStart() {
-		events.Server.OnEvent("dodge", (player, direction) => {
-			if (DEBUG) print(`[Dodge] ${player.Name} asked to dodge ${direction}`);
+			events.Server.OnEvent("dodge", (player, direction, reference) => {
+				if (DEBUG) print(`[Dodge] ${player.Name} asked to dodge ${direction}`);
 
-			const character = player.Character;
-			if (!character) {
-				if (DEBUG) print(`[Dodge] ${player.Name}: no character to move`);
-				return;
-			}
+				const character = player.Character;
+				if (!character) {
+					if (DEBUG) print(`[Dodge] ${player.Name}: no character to move`);
+					return;
+				}
 
-			this.requestDodge(character, direction);
+				// **The reference is passed straight through as the optional argument it is.** A client that could not
+				// read its camera sends zero, which flattens to nothing, which is the same as not sending one — and
+				// then the dash reads the body itself. See the `dodge` event for what the two fields are.
+				this.requestDodge(character, direction, reference);
 		});
 	}
 
@@ -268,8 +297,17 @@ export class DodgeService implements OnStart {
 	 * having a living humanoid, being off cooldown and having been given a usable direction — is checked
 	 * here, so a caller cannot half-ask, and the direction is normalized rather than trusted: a client can
 	 * send anything, and the only thing its direction is allowed to decide is which way the dash goes.
+	 *
+	 * **`reference` is optional, and which caller omits it is the whole of the rule.** A player's client sends
+	 * it — the frame its keys were read in, which is the camera — because the server has no camera to read.
+	 * An NPC's AI does not, because the server owns *that* body and the rig's own facing is both fresher and
+	 * the right frame for a step the AI chose: `DodgeBehavior` reaches this through
+	 * `requestDodge(model, direction)`. Omitting it is therefore not a degraded path — it is the correct
+	 * answer for a body whose direction is motion rather than input. What the two callers must not do is
+	 * disagree about *whose* reading wins for the same body, which is why the fallback lives where the dash
+	 * starts rather than being decided by the caller. See {@link startDash}.
 	 */
-	public requestDodge(model: Model, direction: Vector3): boolean {
+	public requestDodge(model: Model, direction: Vector3, reference?: Vector3): boolean {
 		const entity = resolveDodgeable(model);
 		if (!entity || !canDodge(entity)) {
 			if (DEBUG) print(`[Dodge] ${model.Name}: no living humanoid to dodge with`);
@@ -373,6 +411,13 @@ export class DodgeService implements OnStart {
 			return false;
 		}
 
+		// **The reference the requester reported, when it reported a usable one.** Flattened here rather than
+		// trusted, for the reason the direction is: the value arrives from a client, and the only thing this
+		// side does with it is name a clip — so a value with no horizontal part is the same as no value, and
+		// the dash falls back to reading the body itself. See {@link startDash}, which owns that fallback
+		// because it is the only place that has the body's root to read.
+		const reportedReference = typeIs(reference, "Vector3") ? flattenToGround(reference) : undefined;
+
 		// Charged now, before the dash exists: the request has been accepted at this
 		// point, and charging it after the fact would leave a window in which two
 		// requests can both pass the check. Nothing is charged for a dev who is not
@@ -393,7 +438,7 @@ export class DodgeService implements OnStart {
 		// while the pair was still shut.
 		extendReadyAt(model, CATCH_READY_AT, DODGE_CONFIG.DURATION + ACTION_CONFIG.ACTION_LOCKOUT_SECONDS);
 
-		this.startDash(model, entity, heading);
+		this.startDash(model, entity, heading, reportedReference);
 
 		// **Heard here, which is after every reason this dodge might not have happened.** No living
 		// humanoid, a catch in the way, a cooldown not yet elapsed, a direction that is not a
@@ -518,7 +563,7 @@ export class DodgeService implements OnStart {
 	 * constraint moves the model and what the engine thinks it is doing, so there
 	 * is nothing to walk back from.
 	 */
-	private startDash(model: Model, entity: Dodgeable, heading: Vector3): void {
+	private startDash(model: Model, entity: Dodgeable, heading: Vector3, reference?: Vector3): void {
 		// A dash already in flight is ended first: two of them would stack into
 		// twice the distance, which is not what a 20-stud dodge means.
 		this.endDash(model);
@@ -540,6 +585,45 @@ export class DodgeService implements OnStart {
 		}
 
 		const direction = flat.Unit;
+
+		// **Which of the four dodge clips this dash wears, worked out here and published below.** The
+		// dash is the only thing that knows the direction it actually went, and a client cannot derive
+		// it: the body is turned to face the dash by the balance constraint a few lines down, so by the
+		// time a client could see anything the answer would read as "forward" every time. See
+		// `dodgeDirectionOf` for the four words, the rule, and why they are body-relative rather than
+		// world-relative.
+		//
+		// **The reference is the requester's when it reported one, and this machine's own copy otherwise.**
+		// That is not a preference, it is *which frame the decision was made in*: a player's dodge is an
+		// input, read by the client through its camera, so the camera's heading is the frame that makes `S`
+		// mean backward — and the server has no camera, so it has to be told. A *rig*'s dodge is motion
+		// chosen by its AI, and the rig's own facing is both the right frame for it and a value the server
+		// owns, so `DodgeBehavior`'s call arrives with no reference at all and this read is the answer.
+		//
+		// **Both reads are *before* the turn below, which is the whole reason this line sits here.** The
+		// reference is where the body was pointing when the dodge was asked for, and the `balance` a few lines
+		// down is what takes it away. Read the root's `CFrame` after the `lookAt` is parented and every dash
+		// in the game classifies as forward. (For a player's dodge this ordering costs nothing and buys
+		// nothing — the camera is not what the dash turns — but one line serves both callers.)
+		const reported = reference !== undefined;
+		const frame = reference ?? root.CFrame.LookVector;
+
+		const dodgeDirection = dodgeDirectionOf(direction, frame);
+
+		// **Said out loud, once per dash, at the edge — and it says which reference was used, because that is
+		// the one fact the log otherwise cannot show and the one this classification kept getting wrong.**
+		// `(from the client)` is a player's camera; `(read here)` is the server's own copy of the body's
+		// facing, which is what a rig's dodge always is. One line per dash rather than per tick, in the four
+		// words the clips are named by, so a test can read a dodge off the output without a second instrument.
+		if (DEBUG) {
+			print(
+				`[Dodge] ${model.Name}: direction (${string.format("%.2f", direction.X)}, ` +
+					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)}), ` +
+					`measured against (${string.format("%.2f", frame.X)}, ${string.format("%.2f", frame.Y)}, ` +
+					`${string.format("%.2f", frame.Z)}) (${reported ? "from the client" : "read here"}) ` +
+					`→ ${dodgeDirection}`,
+			);
+		}
 
 		// The two constraints share this attachment. The velocity does not care where
 		// it sits; the orientation wants it at the point the body turns about, which
@@ -624,6 +708,13 @@ export class DodgeService implements OnStart {
 				// ends exactly when the move does.
 				if (track) stopDodgeAnimation(track);
 
+				// **And the published direction goes with the rest of the dash**, which is what puts the body
+				// back into its walking or standing clip: the renderer reads the clear as "no longer dashing"
+				// and picks its clip from the ordinary state again, through the one decision it always uses
+				// rather than through a second path kept in step with this one. Empty rather than left
+				// standing, so a body that has never dodged and one whose dash has just ended read alike.
+				model.SetAttribute(DODGE_DIRECTION_ATTRIBUTE, undefined);
+
 				if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
 					// What actually moved, against what was asked for. The two match
 					// unless something else got a hold of the character mid-dash.
@@ -659,6 +750,23 @@ export class DodgeService implements OnStart {
 		// frame could outrun.
 		startAfterimage(model);
 
+		// **The direction is published in the same instant the dash is registered, so a reader cannot see
+		// one without the other.** The renderer plays a dodge clip from this attribute and nothing else,
+		// and it reads it on the same `AttributeChanged` connection the rest of a rig's state arrives on —
+		// so writing it here is the whole of the wiring, and there is no second signal to keep in step.
+		//
+		// **It goes on the model rather than on the rig, so it is not the rig renderer's attribute in
+		// particular.** A player's character gets it too — `DodgeService` runs a player's dash through this
+		// same method — and nothing reads it there yet: the player's dodge is a flourish the *server* plays
+		// (see `playDodgeAnimation`, whose ids are still empty), so the client-side directional clips are a
+		// rig feature today. Publishing the fact for both bodies is what makes the player's half a reader
+		// rather than a second implementation when somebody gets to it; see `DODGE_DIRECTION_ATTRIBUTE`.
+		//
+		// **Cleared in `finish` below**, which is the only path a dash ends by, and before that happens for
+		// a dash being replaced the newer one's own write comes after it — so the attribute never describes
+		// a dash that is not the one in flight.
+		model.SetAttribute(DODGE_DIRECTION_ATTRIBUTE, dodgeDirection);
+
 		// Dying is the one thing that must not leave the character standing: a
 		// `PlatformStand` left on is a player who cannot walk after respawning.
 		diedConnection = humanoid?.Died.Connect(() => this.endDash(model));
@@ -683,7 +791,17 @@ export class DodgeService implements OnStart {
 		// Last, on purpose. See the declaration above: the dash is registered and its
 		// cleanup is armed before the one step that depends on an external asset runs, so
 		// a flourish that cannot play can never leave a character flying.
-		track = humanoid ? playDodgeAnimation(model, humanoid) : undefined;
+		//
+		// **And only for a player's character.** A rig's dodge is drawn by every client that can see it,
+		// from the direction published at the top of this method, so a rig has no audience that a
+		// server-started track would be *for* — and a track started anyway would be a second animation on
+		// the same limbs as each client's own, which is two clips blended against each other rather than a
+		// dodge. It would also spend exactly the replication this project's design refuses to spend: see
+		// `RigAnimationController`'s class doc for why rigs are animated one client at a time. The gate is
+		// here rather than inside `playDodgeAnimation` because this is the line that knows which kind of
+		// body is dashing.
+		const playerOwned = Players.GetPlayerFromCharacter(model) !== undefined;
+		track = humanoid && playerOwned ? playDodgeAnimation(model, humanoid, dodgeDirection) : undefined;
 	}
 
 	/**

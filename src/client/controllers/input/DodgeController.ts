@@ -328,14 +328,28 @@ export class DodgeController implements OnStart {
 		const direction = dodgeDirection(combo, forward, right);
 		if (!direction) return;
 
+		// **And the frame the keys were read in, which is the camera's heading — not the body's facing.**
+		// The clip a dodge wears is chosen by classifying the direction in the frame the decision was made
+		// in, and for a player that frame is the camera: `W` means "away from the camera" because that is
+		// what the key does, and the body is free to be pointing anywhere while it does it. Classifying
+		// against the body instead was the earlier version, and it produced the wrong clip roughly half the
+		// time — `RotationType` is `MovementRelative`, so the body turns to face wherever it is moving, and
+		// a dodge asked for a moment after an `S` press is classified against a body that has already
+		// turned to face the way it is about to go. See `dodgeDirectionOf`, which states the rule.
+		//
+		// **It is sent rather than re-derived on the server**, which has no camera to read, and it is the
+		// same vector the heading above was built from — so the two are in one frame by construction rather
+		// than by two reads happening to agree.
 		if (DEBUG) {
 			print(
 				`[Dodge] ${combo} + right-click → (${string.format("%.2f", direction.X)}, ` +
-					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)})`,
+					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)}) ` +
+					`camera (${string.format("%.2f", forward.X)}, ${string.format("%.2f", forward.Y)}, ` +
+					`${string.format("%.2f", forward.Z)})`,
 			);
 		}
 
-		this.getDodgeRemote().SendToServer(direction);
+		this.getDodgeRemote().SendToServer(direction, forward);
 	}
 
 	/** The local character's humanoid, while it is alive. */

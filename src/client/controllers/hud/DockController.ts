@@ -2,8 +2,9 @@ import { Controller, OnStart } from "@flamework/core";
 import { Button } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, ReplicatedStorage } from "@rbxts/services";
-import { PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
-import { inPracticeZone, INTERMISSION, roundPhase, togglePanel } from "../../panels";
+import { PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
+import { inPracticeZone, participating, roundPhase, togglePanel } from "../../panels";
+import { isParticipant } from "../../roundZone";
 import { addElevation, wireInteraction } from "../../ui/elevation";
 import { hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
@@ -38,12 +39,15 @@ const DOCK_MAX_WIDTH = 320;
 const DOCK_GAP = 8;
 
 /**
- * The intermission dock: the Shop and Inventory buttons, stacked at the bottom centre.
+ * The docks: the Shop and Inventory buttons, stacked at the bottom centre.
  *
- * **It exists only between rounds, and that is the whole of its definition.** The panels behind it are
- * things a player does *instead of* playing — reading a catalogue, looking at what they own — and the
- * moment a round starts they are in the way of the game. Gating the dock on the phase is therefore one
- * rule rather than two: the buttons go away, and (see the panels) anything they opened goes with them.
+ * **It exists whenever this player is not in a round, and that is the whole of its definition.** The
+ * panels behind it are things a player does *instead of* playing — reading a catalogue, looking at what
+ * they own — so the dock goes away for as long as a round is theirs. **Whose round it is, rather than
+ * whether one is on**, which is a correction: gating on the phase meant that a round somebody else had
+ * started took the shop away from a player who had opted into nothing and whose body was standing in the
+ * lobby. That is reported as a bug and it was one — see `participating`, which is the fact this file
+ * publishes for itself and for the two panels.
  *
  * **It is also hidden inside a practice zone, and that is a second rule rather than a refinement of the
  * first.** A practice zone is for practising — throwing, dodging, catching — and a shop is the opposite
@@ -57,16 +61,19 @@ const DOCK_GAP = 8;
  * because a third button is expected — see below — and the answer has to be chosen before there is one
  * to choose about.
  *
- * **A player who joins mid-round sees no dock until the round ends**, which is correct and is worth
- * stating because it is the case that looks like a bug from the inside: `ROUND_STATE_ATTRIBUTE` reads
- * `"Playing"` when they arrive, so there is nothing to show until the server publishes `Intermission`
- * — and the attribute is subscribed *and* seeded, so the dock appears on that write rather than on the
- * next round. Nothing else is needed for the joiner: the phase is published to the whole server.
+ * **A player who joins mid-round gets the dock, and that is the other half of the correction.** The
+ * phase reads `"Playing"` when they arrive, which used to mean no dock until the round ended — so a
+ * joiner had nothing to do *and* nowhere to spend the wait. They are not on a side when they arrive, so
+ * they are a spectator like any other and the dock is theirs; the moment they tap a pad and
+ * `RoundService` admits them, `TEAM_ATTRIBUTE` changes, `participating` follows, and the dock goes. The
+ * attribute is subscribed *and* seeded, so both of those happen on the write rather than on the next
+ * boundary.
  *
- * **`roundPhase` in `client/panels.ts` is written here and nowhere else.** The dock owns the
- * connection because the dock is the thing the phase defines, so the fact that watches the phase
- * lives with the only reason to watch it; the panels read it rather than each holding a connection to
- * the same attribute. See that module for why the state lives in neither controller.
+ * **`roundPhase` and `participating` in `client/panels.ts` are written here and nowhere else.** The dock
+ * owns the connections because the dock is the thing the round defines — a round takes this away and a
+ * zone takes it away — so the facts that watch the round live with the only element that is entirely
+ * about them; the panels and the session HUDs read them rather than each holding a connection to the
+ * same attributes. See that module for why the state lives in neither controller.
  *
  * **The frame is a `UIListLayout`, not two placed buttons.** A third button — an in-game dock with
  * cooldowns is the obvious next one — is one more child and no layout work at all, because the frame
@@ -89,37 +96,71 @@ export class DockController implements OnStart {
 		if (this.mounted) return;
 		this.mounted = true;
 
-		this.watchPhase();
+		this.watchRound();
 		this.addDock();
 
 		if (DEBUG) {
 			print(
-				`[Dock] up — Shop and Inventory, shown while the phase is ${INTERMISSION}` +
-					` (${Fusion.peek(roundPhase)} right now)`,
+				`[Dock] up — Shop and Inventory, shown while this player is not in a round` +
+					` (phase ${Fusion.peek(roundPhase)}, in the round ${Fusion.peek(participating)})`,
 			);
 		}
 	}
 
 	/**
-	 * Keeps `roundPhase` in step with the server's own attribute.
+	 * Keeps `roundPhase` and `participating` in step with the server's own attributes.
+	 *
+	 * **Two facts and two connections, because the dock's visibility needs both.** The phase says whether
+	 * a round is on; the local player's `TEAM_ATTRIBUTE` says whether it is *theirs*. Both are published,
+	 * both are subscribed to here rather than by each reader, and {@link publishParticipation} is the one
+	 * place they are combined — so a change to either re-derives the answer the same way.
 	 *
 	 * Subscribed *before* seeding, which is the order `RoundStatusController` uses and for its reason:
 	 * a change landing between the two is not lost, because the seed then reads the newer value and
 	 * wins. The seed matters here more than usual — a client that mounted mid-round would otherwise sit
-	 * on the module's own `Intermission` default and show a dock during a round until the next boundary.
+	 * on the module's own permissive defaults and show a dock during a round until the next boundary.
 	 */
-	private watchPhase(): void {
+	private watchRound(): void {
 		const status = ReplicatedStorage.WaitForChild(ROUND_STATUS_FOLDER);
+		const player = Players.LocalPlayer;
 
 		this.scope.push(
 			status.GetAttributeChangedSignal(ROUND_STATE_ATTRIBUTE).Connect(() => {
 				const value = status.GetAttribute(ROUND_STATE_ATTRIBUTE);
 				if (typeIs(value, "string")) roundPhase.set(value);
+
+				this.publishParticipation();
 			}),
+		);
+
+		// **The player's own side, and the reason the dock needs a second subscription at all.** A round
+		// running is not the same fact as this player being in it: the roster writes this attribute at
+		// every whistle and clears it for everybody who did not re-opt in, and `setTeam` writes it the
+		// moment a mid-round joiner is admitted — so this is the connection that gives a spectator their
+		// shop back while a round they are not in is being played.
+		this.scope.push(
+			player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => this.publishParticipation()),
 		);
 
 		const initial = status.GetAttribute(ROUND_STATE_ATTRIBUTE);
 		if (typeIs(initial, "string")) roundPhase.set(initial);
+
+		this.publishParticipation();
+	}
+
+	/**
+	 * Publishes whether **this player is in the round being played**, which is `roundZone.isParticipant`'s
+	 * rule read as a value a HUD can watch.
+	 *
+	 * **The rule is not restated here.** `isParticipant` is the one place "on a side, and a round on" is
+	 * written — it is what the shift lock and the round wipe already gate on — and calling it means the
+	 * dock cannot come to a different answer about a player the camera is already holding.
+	 *
+	 * **Read fresh rather than combined from the two subscribers**, because both of them can fire for a
+	 * change the other one has not seen yet and the function re-reads both attributes anyway.
+	 */
+	private publishParticipation(): void {
+		participating.set(isParticipant(Players.LocalPlayer));
 	}
 
 	private addDock(): void {
@@ -165,16 +206,20 @@ export class DockController implements OnStart {
 			BackgroundTransparency: 1,
 			ZIndex: DOCK_Z_INDEX,
 			// **Both `use` calls hoisted above the test, and that is load-bearing rather than style.** A
-			// `Computed`'s dependencies are the `use` calls that actually *ran*, so `use(roundPhase) ===
-			// INTERMISSION && !use(inPracticeZone)` written as one expression would drop the zone
-			// dependency on every frame the phase is not `Intermission` — and the dock would then be
-			// watching the zone only at the moments it is already hidden, which is the one time it does
-			// not matter. Hoisted, both sources are registered on every run.
+			// `Computed`'s dependencies are the `use` calls that actually *ran*, so `!use(participating) &&
+			// !use(inPracticeZone)` written as one expression would drop the zone dependency on every frame
+			// the player is in a round — and the dock would then be watching the zone only at the moments it
+			// is already hidden, which is the one time it does not matter. Hoisted, both sources are
+			// registered on every run.
+			//
+			// **The question is about this player, not about the phase** — see `participating`. A round that
+			// somebody else is playing used to hide this dock, which is how a player who had opted into
+			// nothing lost the shop for the length of a round.
 			Visible: Fusion.Computed(this.scope, (use) => {
-				const phase = use(roundPhase);
+				const inRound = use(participating);
 				const inZone = use(inPracticeZone);
 
-				return phase === INTERMISSION && !inZone;
+				return !inRound && !inZone;
 			}),
 		});
 

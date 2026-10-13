@@ -287,13 +287,16 @@ export class MatchService implements OnStart {
 	 *
 	 * **The refusals and the no-op, in the order they are asked.**
 	 *
-	 * 1. **The match has started** — `RoundStatus.State` is `Playing`, so both parts are inert and the
-	 *    roster is locked. This is refused *before the roster is read*, so a mid-match touch cannot even
-	 *    see who is on a side, let alone move them. The line is printed rather than swallowed because a
-	 *    part that does nothing reads as a broken part, and the moment a player is most likely to try is
-	 *    the moment they are watching a match they are not in.
-	 * 2. **Already on the requested side** — a no-op with no print. They are where they asked to be, and a
-	 *    line saying so would be noise on every brush past the part.
+	 * 1. **Already on the requested side** — a no-op with no print. They are where they asked to be, and a
+	 *    line saying so would be noise on every brush past the part. Asked first because it is the one
+	 *    answer that holds whatever the phase is doing.
+	 * 2. **A switch while a round is being played** — `RoundStatus.State` is `Playing` and this player
+	 *    already holds a side, so the move is refused and says so. **An arrival is not a switch and is
+	 *    never refused**, which is the reversal this list used to open with: the pads are live during a
+	 *    round now, and touching one joins the round that is being played — `RoundService` admits them to
+	 *    that side, puts them on its spawn and shields them, within a tenth of a second. What stays locked
+	 *    is *crossing*: the round's own team table was filled from this roster at the whistle, and a body
+	 *    changing sides is a decision about the round rather than about the roster.
 	 * 3. **The requested side has room** — placed, or *moved* if they were standing on the other side.
 	 *    A move is one `set`: the side they left loses a player and the side they joined gains one, and
 	 *    both signs are repainted by {@link updateSigns} because the switch changed both numbers.
@@ -306,18 +309,23 @@ export class MatchService implements OnStart {
 	 * a refusal — so a caller never has to ask again.
 	 */
 	public optIn(player: Player, side: TeamLabel): TeamLabel | undefined {
-		// **The lock, and the reason it is asked first.** A switch is allowed only while sides are still
-		// being picked, and this service learns that from the phase the round publishes rather than by
-		// asking the round — see the class doc. Nothing below runs on this path, deliberately: no read of
-		// the roster, no print about counts, no chance of a half-made move.
-		if (this.phase() === PLAYING) {
-			if (DEBUG) print(`[Match] ${player.Name}: the match has started — the roster is locked`);
+		const existing = this.opted.get(player);
+
+		// **The no-op first, and the reason it can be first is that it is phase-blind.** Somebody brushing
+		// past the part they are already standing on is where they asked to be, before a round and during
+		// one alike.
+		if (existing === side) return existing;
+
+		// **The half of the old lock that stays: a side cannot be crossed while a round is being played.**
+		// A player who has *no* side is not covered by this — they are the join, and the round notices them
+		// through the revision bumped below, within `MATCH_JOIN_POLL_SECONDS`. Asking the phase here rather
+		// than refusing at the top of the method is the whole of the change: this used to refuse everything
+		// during a round, and it now refuses only the move. See the doc above.
+		if (existing !== undefined && this.phase() === PLAYING) {
+			if (DEBUG) print(`[Match] ${player.Name}: the match has started — sides are locked until it ends`);
 
 			return undefined;
 		}
-
-		const existing = this.opted.get(player);
-		if (existing === side) return existing;
 
 		const counts = this.countsFor();
 

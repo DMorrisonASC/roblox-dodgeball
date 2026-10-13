@@ -19,7 +19,7 @@ import {
 	ownsPower,
 } from "shared/economy";
 import { events } from "shared/networking";
-import { INTERMISSION, inventoryOpen, roundPhase } from "../../panels";
+import { inventoryOpen, participating } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { hudTheme } from "../../ui/hudTheme";
 import type { HudTheme } from "../../ui/hudTheme";
@@ -356,14 +356,14 @@ export class InventoryController implements OnStart {
 
 		if (DEBUG) print(`[Inventory] panel up — ${this.slots.size()} slots`);
 
-		// Visible when it is open *and* the phase is between rounds — the same two facts the dock reads, so
-		// a round starting closes what the dock opened rather than leaving a panel over the game with its
-		// button gone.
+		// Visible when it is open *and* this player is not in a round — the same two facts the dock reads, so a
+		// round taking the dock away takes what it opened with it, and a round somebody *else* is playing leaves
+		// both alone. See `participating` for that correction.
 		const panel = addPanelFrame(
 			this.scope,
 			theme,
 			"InventoryPanel",
-			Fusion.Computed(this.scope, (use) => use(inventoryOpen) && use(roundPhase) === INTERMISSION),
+			Fusion.Computed(this.scope, (use) => use(inventoryOpen) && !use(participating)),
 		);
 
 		const right = addHeaderBand(this.scope, theme, panel, 1, "Inventory", () => inventoryOpen.set(false));

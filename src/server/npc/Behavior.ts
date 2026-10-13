@@ -126,7 +126,7 @@ export const BEHAVIOR_WALK_TO_JOIN_PAD = "Behavior_WalkToJoinPad";
  * catch window refuses the *dash* outright, so whether the two can both happen turns on which catcher
  * the rig wears — `Behavior_AlwaysCatching` leaves no gap for a dash, while `Behavior_Catching` does.
  * **A refused dash is no longer a standstill**, which is what makes the pairing workable at all: the
- * rig walks the escape direction it had already chosen (see `AlwaysDodgeBehavior`'s `runAway`), so a
+ * rig walks the escape direction it had already chosen (see `DodgeBehavior`'s `runAway`), so a
  * rig that wears the always-catcher beside this tag reads as one that runs away from balls rather
  * than one that ignores them. It is still the weaker pairing — that catcher never closes its window,
  * so a dash never gets through — and that is part of why the arena rigs wear the gated pair; see

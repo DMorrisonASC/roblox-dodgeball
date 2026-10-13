@@ -59,12 +59,36 @@ export type HitDirection = "AtoB" | "BtoA";
 
 export const events = Net.Definitions.Create({
 	/**
-	 * Client → server: this character wants to dodge in this direction.
+	 * Client → server: this character wants to dodge in this direction, measured in this frame.
+	 *
+	 * **Two facts rather than one, and the second is the frame the first was measured in** — the camera's
+	 * heading, flattened. Which of the four dodge clips the dash wears is
+	 * `dodgeDirectionOf(direction, reference)`, and what that reference is decides what a key means: measured
+	 * against the camera, `S` is a backward dodge whenever it is pressed, which is what the player pressing
+	 * it expects. Measured against the *body* instead — the earlier version — it is whichever direction the
+	 * body has finished turning to face, because `RotationType` is `MovementRelative` and the body tracks its
+	 * own movement: a player pressed the key for a backward dodge and got the forward clip, or a different
+	 * clip depending on how long they held the key first. A rig's dodge is the other way round and does not
+	 * travel this wire at all: its direction is *motion*, chosen by its AI, so the server classifies it
+	 * against the rig's own facing — which the server owns, so there is no lag to argue about.
+	 *
+	 * **The reference rather than a decided word.** The client could classify this itself and send the word,
+	 * and for a player that would be the smaller payload — but it would put a second copy of the rule in the
+	 * client for players while a rig's dodge stayed classified on the server, which is two answers to what
+	 * `S+D` means waiting to disagree. Sending the frame keeps exactly one classifier.
+	 *
+	 * **The cost is one `Vector3` per dodge** — three floats, at most once every `DODGE_CONFIG.COOLDOWN`
+	 * seconds — and it decides nothing about the dash: the direction is what the dash uses, the reference is
+	 * used only to name the clip.
+	 *
+	 * **A zero reference means "I did not send one"**, not "my camera faces nowhere": the reader flattens the
+	 * value, and a direction with no horizontal part is the same absence as no value at all — which is the
+	 * path that leaves the classification to the server's own read.
 	 *
 	 * Server-bound only. The movement replicates on its own, so there is nothing
 	 * to send back and no reason for a second event.
 	 */
-	dodge: Net.Definitions.ClientToServerEvent<[direction: Vector3]>(),
+	dodge: Net.Definitions.ClientToServerEvent<[direction: Vector3, reference: Vector3]>(),
 
 	/**
 	 * Client → server: this character wants to try to catch.

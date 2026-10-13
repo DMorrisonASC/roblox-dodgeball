@@ -12,9 +12,9 @@ import {
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SHIFT_LOCK_CONFIG } from "shared/config/shiftLock.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
-import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
-import { inTaggedZone } from "../../roundZone";
+import { inTaggedZone, isParticipant } from "../../roundZone";
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. */
 const PLAYING = "Playing";
@@ -77,11 +77,14 @@ function cameraSettings(): UserGameSettings | undefined {
  * the two can never be on at once and fight over the same two settings.
  *
  * **Two things ask for it, and neither of them is the player.** While a round is being played the lock
- * is on for everyone, because the throw is aimed from the centre of the screen — the camera *is* the
- * aim, and a crosshair that followed the body instead of the view would be pointing somewhere the
- * player is not looking. Outside a round it is off, and the player is free to run around and look at
- * the lobby — **except inside a zone somebody places** ({@link PRACTICE_ZONE_TAG}), where it comes
- * back so a practice throw lines up the way a real one will.
+ * is on for **the players who are in it** — on a side, having opted in — because the throw is aimed from
+ * the centre of the screen — the camera *is* the aim, and a crosshair that followed the body instead of
+ * the view would be pointing somewhere the player is not looking. **Not for the whole server**, which is
+ * what it used to mean: a player watching a round from the lobby is not teleported by its transition, not
+ * held by its freeze, and has nothing to aim from the middle of the screen, so the camera is theirs until
+ * they join one. Outside a round it is off, and the player is free to run around and look at the lobby —
+ * **except inside a zone somebody places** ({@link PRACTICE_ZONE_TAG}), where it comes back so a practice
+ * throw lines up the way a real one will.
  *
  * **There used to be a third and it was the player's own key. It is gone.** `~` handed the camera back
  * — even in the middle of a round — on the argument that a player who would rather have their ordinary
@@ -185,8 +188,22 @@ export class ShiftLock implements OnStart {
 	private restingCursor?: string;
 	private restingCursorEnabled?: boolean;
 
-	/** What the round says: a round is being played, so the camera is held for everybody. */
-	private phaseLocked = false;
+	/**
+	 * What the round says: **the local player is in the round being played** — on a side, and a round on.
+	 *
+	 * **Both halves, and this is a narrowing of what it used to mean.** The field was `phaseLocked`, set
+	 * from the phase alone, so the camera was held for *everybody* in the server while a round ran —
+	 * including a player in the lobby who had never opted in and was not in the round, not teleported by
+	 * its transition and not held by its freeze. The user's rule is "you need to opt in and a round to be
+	 * playing", and `roundZone.ts`'s `isParticipant` is that rule stated once for both this and the wipe.
+	 *
+	 * **The two halves arrive by different routes, which is why there are two subscriptions below.** A
+	 * phase change says "the round started or ended"; a change to this player's own `TEAM_ATTRIBUTE` says
+	 * "the roster decided something about me" — and the second can happen with no phase change at all,
+	 * because a player who walks onto a pad while a round is being played is admitted to it mid-flight.
+	 * That player is a participant and gets the camera; see `RoundService.admitMidRoundJoins`.
+	 */
+	private roundLocked = false;
 
 	/** What the zone says: the local player's body is inside a tagged box right now. */
 	private inZone = false;
@@ -266,7 +283,32 @@ export class ShiftLock implements OnStart {
 		// a late timer there would *hide* a message; here it recomputes the same answer.
 		scope.push(
 			status.GetAttributeChangedSignal(ROUND_STATE_ATTRIBUTE).Connect(() => {
-				task.delay(this.phaseDelay(phaseOf(status)), () => this.applyPhase(phaseOf(status)));
+				task.delay(this.phaseDelay(phaseOf(status)), () => this.applyRound());
+			}),
+		);
+
+		// **And the other half of the rule: this player's own side.** `TEAM_ATTRIBUTE` is written at each
+		// whistle from the roster and cleared for everybody who is not in it, and written again by
+		// `RoundService.setTeam` when a player is admitted to a round that is already being played — so it
+		// is the one per-player fact that says "the round is about *me*". Without this subscription the
+		// camera would need a phase change to notice, and a mid-round join has none: they would be
+		// teleported into the arena with their ordinary camera and stay that way until the next boundary.
+		//
+		// **The delay is zero for a change made inside a live round, and the ordinary cover's length
+		// otherwise.** The phase subscription above waits because the server publishes a phase and *then*
+		// moves everybody behind a closing grid — the delay is what lines the camera up with that move.
+		// There is no such move here: a mid-round join is teleported straight into the arena, uncovered, so
+		// the camera has nothing to wait for and arrives with the body. A side written while the phase is
+		// still `Intermission` is the round-*start* write — `assignTeams` runs before the phase is published
+		// — and that one takes the transition's own delay, which is what keeps the lock from snapping on
+		// while the player is still standing in the lobby under the grid. See `applyRound`, which reads the
+		// attribute again when the timer fires rather than trusting the values captured here.
+		scope.push(
+			this.player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => {
+				const phase = phaseOf(status);
+				const delay = phase === PLAYING ? 0 : this.phaseDelay(phase);
+
+				task.delay(delay, () => this.applyRound());
 			}),
 		);
 
@@ -277,7 +319,7 @@ export class ShiftLock implements OnStart {
 		// point.** A client that has just mounted is not watching for a teleport: the move is either long
 		// behind it or arriving with the body it is spawning. There is no moment to line up with, so waiting
 		// would be a second of the wrong camera for somebody who has done nothing.
-		this.applyPhase(phaseOf(status));
+		this.applyRound();
 
 		scope.push(this.player.CharacterAdded.Connect((character) => this.watchCharacter(character)));
 
@@ -413,14 +455,24 @@ export class ShiftLock implements OnStart {
 	}
 
 	/**
-	 * Reports what the phase says, and lets {@link refresh} work out what that means.
+	 * Reports whether this player is in the round, and lets {@link refresh} work out what that means.
 	 *
-	 * **When it runs is the caller's business, not its own.** It is called straight through with the seed and
-	 * a cover's length late with a change — see {@link mount} and {@link phaseDelay} for why those differ —
-	 * and it deliberately holds no opinion about which it is: all it does is record what the phase says and
-	 * let {@link refresh} work out what that means. So `phaseLocked` describes the phase as of the last time
-	 * this was called, which during a transition is a phase the server published a fraction of a second
-	 * earlier.
+	 * **It asks `isParticipant`, which reads both facts itself rather than being handed a phase.** That is
+	 * what lets one method answer both subscriptions in {@link mount}: a phase change and a change to this
+	 * player's own side are two different events, and "am I in the round" is the same question at either
+	 * one. It is also what makes a delayed call safe — the second paragraph of the subscription's comment
+	 * counts on a late timer reporting the *current* world, and a method that re-reads both attributes
+	 * cannot report any other.
+	 *
+	 * **No parameter, where it used to take the phase.** It recorded `phase === PLAYING`; the phase is now
+	 * one half of a question that is not about the phase alone, and the half that a caller could have passed
+	 * in without going stale is the half the caller is not there to report.
+	 *
+	 * **When it runs is still the caller's business, not its own.** It is called straight through with the
+	 * seed, a cover's length late with a phase change, and immediately or a cover late with a side change —
+	 * see {@link mount} and {@link phaseDelay} for why those differ — and it deliberately holds no opinion
+	 * about which it is. So `roundLocked` describes the world as of the last time this was called, which
+	 * during a transition is a roster the server wrote a fraction of a second earlier.
 	 *
 	 * **The phase is one input rather than the rule.** It used to release the lock outright on
 	 * entering the intermission and hand the camera to the zone check; now it only reports whether a
@@ -432,10 +484,10 @@ export class ShiftLock implements OnStart {
 	 * player's `~` release was taken back — on the one edge it should be, a round *starting* rather than a
 	 * round being played, so that any later publication of `Playing` could not clear a release the player
 	 * had just set mid-round. With no release there is nothing to take back, and the edge test went with
-	 * it: this now records the phase and does nothing else.
+	 * it: this now records the answer and does nothing else.
 	 */
-	private applyPhase(phase: string | undefined): void {
-		this.phaseLocked = phase === PLAYING;
+	private applyRound(): void {
+		this.roundLocked = isParticipant(this.player);
 
 		this.refresh();
 	}
@@ -532,11 +584,16 @@ export class ShiftLock implements OnStart {
 	/**
 	 * Works out whether the camera should be held, from the two things that can ask for it.
 	 *
-	 * **The round and the zone are added, and neither can undo the other.** A round being played holds the
-	 * camera for everybody and keeps holding it whatever the player does with their feet; a zone asks for
-	 * the same lock outside a round. That is what makes the zone safe to check at all times: it can *add*
-	 * the lock, but it can never take away one the round is holding — so a player who walks out of a lobby
-	 * zone mid-round is still locked, which is the rule the round exists to have.
+	 * **The round and the zone are added, and neither can undo the other.** A player who is *in* the round
+	 * is held for the whole of it and stays held whatever they do with their feet; a zone asks for the same
+	 * lock outside a round. That is what makes the zone safe to check at all times: it can *add* the lock,
+	 * but it can never take away one the round is holding — so a player who walks out of a lobby zone
+	 * mid-round is still locked, which is the rule the round exists to have.
+	 *
+	 * **The first input is "in the round", not "a round is on", and that narrowing is the user's rule.** It
+	 * used to be the phase alone, which held the camera for a player in the lobby who had opted into nothing
+	 * and was in nothing; see the field's own comment. What is unchanged is the reading order below, so the
+	 * line still names the round when the round is why.
 	 *
 	 * **There used to be a third input, and it could refuse both.** It was the player's `~` release, and it
 	 * outranked these two, which was the only way to get the ordinary camera back in the middle of a round.
@@ -549,9 +606,9 @@ export class ShiftLock implements OnStart {
 	 * for their camera back — there is no such ask any more.
 	 */
 	private refresh(): void {
-		const asking = this.phaseLocked ? "the round" : this.inZone ? "the zone" : "nothing is asking for it";
+		const asking = this.roundLocked ? "the round" : this.inZone ? "the zone" : "nothing is asking for it";
 
-		if (this.phaseLocked || this.inZone) {
+		if (this.roundLocked || this.inZone) {
 			this.lock(asking);
 		} else {
 			this.unlock(asking);

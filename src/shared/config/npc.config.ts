@@ -128,6 +128,58 @@ export const NPC_CONFIG = {
 	THROW_ANGLE_DEGREES: 45,
 
 	/**
+	 * How often a rig throws **deliberately wide** — the chance that a throw is aimed a few studs to one
+	 * side of its target instead of at it.
+	 *
+	 * **A perfectly accurate rig is not a player, and that is the whole reason this exists.** Every throw
+	 * a rig makes is a solved shot to the target's own position, so at any range where the angle gate
+	 * passes the ball lands on the body: a round against rigs is a round against an opponent who cannot
+	 * miss, which reads as a machine rather than as dodgeball. The user's words were "these NPCs are way
+	 * too accurate and difficult for players — add some randomness to make them intentionally throw a few
+	 * studs to the left or right, to simulate real player misclicks". This is that.
+	 *
+	 * **The miss is a *release* offset, not a posture one.** The rig still turns to face the body it is
+	 * aiming at, and only the ball goes wide — see `ThrowBehavior`'s `aimWithMiss`, which is the one place
+	 * this is applied. That is what makes it read as a misclick rather than as a rig that cannot aim, and
+	 * it is why the turn is untouched by this value.
+	 *
+	 * **Placeholder — one in three, which lands nearer one in four once the body is accounted for.** The
+	 * roll decides whether the aim is offset *at all*; whether the ball then misses depends on the offset
+	 * against the width of a body (see {@link NPC_CONFIG.THROW_MISS_STUDS_MAX}). At a third and the range
+	 * below, roughly a quarter to a third of throws go wide of a standing player. Raise it to make the
+	 * rigs read as worse shots, lower it to tighten them; 0 is exactly the old behaviour, and it is the
+	 * value to set when comparing two runs.
+	 */
+	THROW_MISS_CHANCE: 2 / 3,
+
+	/**
+	 * The shortest deliberate miss, in studs. **Placeholder — 0.5.**
+	 *
+	 * **Not zero, and the floor is doing a job rather than being tidy.** A roll can come out anywhere in
+	 * this range, and a "miss" of zero studs would be a throw that was aimed straight at the body, logged
+	 * as having gone wide — a line that contradicts itself. Half a stud is small enough to read as a
+	 * flinch and large enough that the line about it is true.
+	 */
+	THROW_MISS_STUDS_MIN: 5,
+
+	/**
+	 * The longest deliberate miss, in studs — **the user's "a few 4 studs to the left or right"**.
+	 *
+	 * **A range rather than a fixed offset, which is the difference between a mistake and a rule.** A
+	 * rig that misses by exactly four studs every time it misses has a *tell*: the wide throws all look
+	 * identical, and a player learns the shape of them instead of reading them as error. Spread across
+	 * this range, most misses are small and a full-width one is occasional, which is what a person's
+	 * misclicks actually look like.
+	 *
+	 * **Four studs is a clean miss of a standing body and a near miss of a moving one**, which is the
+	 * intended reading: a player's torso is about two studs wide, so an offset past one stud leaves the
+	 * body's own width and anything past two is a miss even against the ball's radius. That is where the
+	 * "roughly a quarter to a third of throws" estimate in {@link NPC_CONFIG.THROW_MISS_CHANCE} comes
+	 * from. **Placeholder.**
+	 */
+	THROW_MISS_STUDS_MAX: 10,
+
+	/**
 	 * The chance that the **gated** dodger commits to dodging **a ball that is coming at it**.
 	 *
 	 * **Per ball, and that is a reversal recorded rather than tidied away.** This was a *rate* — a
@@ -137,8 +189,9 @@ export const NPC_CONFIG = {
 	 * second was dodged a little over 40 % of the time, because a half-second flight is only five
 	 * turns. The knob was measuring *exposure* while everybody — including whoever wrote it — read it
 	 * as a percentage. **The number is now the number**: one roll per ball, held for as long as that
-	 * ball is on course. See `AlwaysDodgeBehavior` for the bookkeeping that makes that true, and
-	 * `DodgeBehavior` for the tag that reads this.
+	 * on course. See `DodgeBehavior` for the bookkeeping that makes that true and for the tag that reads
+	 * this — the body of the pair lives in the file named for the gated tag, and the `Always*` file is the
+	 * wrapper over it.
 	 *
 	 * **`Behavior_AlwaysDodging` does not read this at all** — that is the whole point of the split.
 	 * This is the *gated* dodger's knob, and a rig meant to dodge everything is a tag now rather than
@@ -148,7 +201,7 @@ export const NPC_CONFIG = {
 	 * players cannot hit; **0.5 is half the throws aimed at it**, and is where this sits. What it still
  * cannot do is *dash* with something in the way, or *dash* twice inside `DODGE_CONFIG.COOLDOWN` — and of
  * those, only the blocked direction still leaves the rig standing, because a rig that did commit and was
- * turned away now runs instead (see `AlwaysDodgeBehavior`'s `runAway`). **This number is the odds of the
+	 * turned away now runs instead (see `DodgeBehavior`'s `runAway`). **This number is the odds of the
  * rig picking a ball to get out of the way of, not the odds of it moving at all.**
  *
  * **And a *declined* roll is the one case where a rig still stands on purpose.** A roll that says "let

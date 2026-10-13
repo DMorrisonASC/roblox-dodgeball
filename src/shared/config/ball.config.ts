@@ -258,6 +258,46 @@ export const BALL_CONFIG = {
 	THROW_MUZZLE_DISTANCE: 2,
 
 	/**
+	 * How long a body stays marked as **mid-throw** after the ball leaves its hand, in seconds.
+	 *
+	 * **Placeholder.** This is the length of the throw's own animation as far as the code is concerned:
+	 * `BallService` writes the mark when the ball is released, clears it after this long, and every client
+	 * dresses the body with the throw clip for exactly that window. Nothing here knows how long the asset
+	 * actually is — the clip streams in behind the throw, and a clip shorter than this window holds its
+	 * last frame for the remainder while a longer one is cut off when the mark clears.
+	 *
+	 * **The alternative was to let the clip decide its own end**, which needs a fact only the client has
+	 * (the track's own length, after the asset arrives) and a way for the client to tell the server —
+	 * a remote, for a number the server does not need for anything else. One tuned duration is the cheaper
+	 * shape, and it is the same one the dodge uses from the other direction (`DODGE_CONFIG.DURATION` is the
+	 * dash's length, and the dodge clip is played for it). Raise this if throws look cut off; a value
+	 * longer than the clip is visible as a body holding a pose it has finished.
+	 */
+	THROW_ANIMATION_SECONDS: 0.4,
+
+	/**
+	 * The clip a **throw** plays, per rig type — the same pair for every body that throws.
+	 *
+	 * **A rig and a player throw with the same animation, and this is where that is decided.** The clips
+	 * were supplied "for all models", which is the animation editor's phrase for an R6 export, and the
+	 * intent is that a rig's throw and a player's are the same motion: a rig reads these through
+	 * `RIG_ANIMATION.throw`, which borrows them rather than repeating the ids, and a player's throw is
+	 * played from `BallService` itself (a track started on the server, so the other players see it — a
+	 * client-started one would be that client's private flourish). One table means swapping the throw clip
+	 * is one edit, and no body can end up throwing differently for no visible reason.
+	 *
+	 * **A pair rather than a record, because there is one state here.** The dodge has four clips and keeps
+	 * a table keyed by direction (`DODGE_ANIMATION`); a throw has one, and an id per rig type is the
+	 * smallest thing that can be read correctly. The choice is not cosmetic: an R6 clip never loads onto an
+	 * R15 rig, so the wrong one is a throw that silently plays nothing.
+	 *
+	 * **An empty id is the *off* switch**, as everywhere else — the throw happens and the body keeps
+	 * whatever it was wearing.
+	 */
+	THROW_ANIMATION_R6: "rbxassetid://93233830971715",
+	THROW_ANIMATION_R15: "rbxassetid://126614918987928",
+
+	/**
 	 * Floor on the launch speed, in studs per second.
 	 *
 	 * **A floor, not the speed a ball is thrown at.** Every arc solves its own speed from the
@@ -383,16 +423,25 @@ export const BALL_CONFIG = {
 	 * only decides how fast a player's own hold fills up. The server's half of the rule is the four numbers
 	 * below, which are what turn that number into a launch.
 	 *
-	 * **One second, and the choice is a competition between two failures.** Too short and the middle of the
-	 * range is unreachable: a power you cannot hold is a power you cannot learn, and learning the lengths is
-	 * the whole point of replacing "click the sky" with a known maximum. Too long and the throw stops being
-	 * a throw — a full-power shot costs a second of standing with a ball in hand and, until the release, no
-	 * ball in the air. One second is about the longest hold that still reads as drawing an arm back rather
-	 * than as hesitating.
+	 * **Three seconds, which is a reversal of the argument that used to stand here.** It said one second
+	 * was the longest hold that still reads as drawing an arm back rather than hesitating — and against a
+	 * *throw*, that is still true: a full-power shot now costs three seconds of standing with a ball in hand
+	 * and, until the release, no ball in the air. What that argument was really choosing between is which
+	 * failure the hold has, and the user has picked the other one. At one second the **middle of the range**
+	 * is the failure: the whole span from a tap to full power is under a second of finger, so a half-power
+	 * throw is a timing trick rather than a decision, and the power the player meant is not one they can
+	 * reproduce. Three seconds is long enough that each of the levels in between is a length a person can
+	 * hold on purpose, which is what a charge is *for*.
+	 *
+	 * **What it costs, stated so it is not a surprise.** The charge sound is stretched to fit — see
+	 * {@link BALL_CONFIG.CHARGE_SECONDS} in `audio.config.ts`, which plays the clip at
+	 * `TimeLength / CHARGE_SECONDS`, so a two-second clip now runs at two thirds speed and sounds a third
+	 * lower. A clip recorded at about three seconds would play unshifted; that is an asset decision rather
+	 * than a code one, and `[Throw] charge sound loaded` prints the speed on every run.
 	 *
 	 * It is not a rate: nothing accumulates, and the mapping is one division. See `ChargeRequest`.
 	 */
-	CHARGE_SECONDS: 1,
+	CHARGE_SECONDS: 1.25,
 
 	/**
 	 * How high above the thrower's hand a charged throw arcs, in studs. **A peak rather than an angle, and it
@@ -400,8 +449,9 @@ export const BALL_CONFIG = {
 	 *
 	 * **Placeholder, and the value is a real throw rather than a round number.** The log's own figures put the
 	 * launch point about four and a half studs above the floor (`launch … y 210.96` against a landing at
-	 * `y 206.5`), so a peak of three above the hand puts the apex at roughly seven and a half studs — a little
-	 * over a character's head, which is where a thrown ball goes.
+	 * `y 206.5`), so the apex sits this far above that — a little over a character's head, which is where a
+	 * thrown ball goes. Both values this has held were chosen that way rather than as round numbers; the note at
+	 * the end of this block says which one it holds now and what moving it costs.
 	 *
 	 * **What this replaces, measured.** The arc used to be built by *lerping between two launch angles*, and
 	 * the peak heights that produced, from the same solve, were **9.5 studs at a tap, 21 at mid charge and 17
@@ -415,8 +465,15 @@ export const BALL_CONFIG = {
 	 * the two are not interchangeable: at full charge the reach is about `2·v·sqrt(2·g·h)/g`, which is linear in
 	 * the speed and only in the *root* of the peak. See `planChargedThrow` for the table this produces and for
 	 * the arithmetic behind "restore the old range".
+	 *
+	 * **Lowered from three to two at the user's request — "make the arc one stud lower".** The apex is now about
+	 * six and a half studs above the floor rather than seven and a half, which is a flatter, more direct-looking
+	 * throw. The cost is reach, and it is worth knowing which way it moves: full charge loses about a fifth of
+	 * its range, because the reach goes with the square *root* of this number — `sqrt(3)` against `sqrt(2)` is
+	 * the 1.22 that a fifth is measured against. Nothing else reads it, so the aim guide and the ball move
+	 * together by construction: the client draws the solve from the same constant.
 	 */
-	CHARGE_PEAK_HEIGHT: 3,
+	CHARGE_PEAK_HEIGHT: 2,
 
 	/**
 	 * The launch speed at zero charge, in studs per second. **Placeholder.**

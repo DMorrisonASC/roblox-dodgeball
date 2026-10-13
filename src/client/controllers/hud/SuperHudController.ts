@@ -47,7 +47,8 @@ const STACK_BOTTOM_OFFSET = 12;
  * **Between the HUDs and the furniture.** `DockController` documents the dock at 5 and the panels at 10,
  * and describes everything else as "every toast and HUD label (1)" — this is a HUD label, so it takes 1,
  * which puts it under the dock and the panels without either of those numbers having to know about this
- * one. Nothing overlaps in either direction today: the dock shows during an intermission and this shows
+ * one. Nothing overlaps in either direction today: the dock shows whenever this player is *not* in a
+ * round and this shows
  * only while a player can act, and the toasts are above this rather than over it. The ordering is there for
  * the day somebody opens a panel mid-round with a toast up.
  */

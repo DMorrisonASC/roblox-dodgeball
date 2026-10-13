@@ -75,6 +75,83 @@ interface Aim {
 }
 
 /**
+ * A deliberate miss: how far off this throw is aimed, which way, and the point that produces.
+ *
+ * **Precomputed into a target rather than left as a vector and a description**, because the two readers of
+ * it want different things — `throwBall` wants the point to solve to, and the log line wants the studs and
+ * the side in the words a person reads — and deriving either from the other at the call site is how the
+ * line and the ball would come to disagree about the same throw.
+ */
+interface Miss {
+	/** How far off the aim is, in studs. Never zero — see `THROW_MISS_STUDS_MIN`. */
+	readonly studs: number;
+
+	/** Which way, in the rig's own terms: `1` is its right, `-1` its left. */
+	readonly side: number;
+
+	/** The point to aim at instead: the true target moved sideways by {@link Miss.studs}. */
+	readonly target: Vector3;
+}
+
+/**
+ * Rolls for this throw's aim: nothing at all when it is aimed true, or a point a few studs to one side.
+ *
+ * **A rig is fallible on purpose, and the miss is in the *release* rather than the posture.** The roll
+ * happens here, at the moment the throw fires, and it offsets the *point the ball is solved to*: the rig
+ * has already turned onto its true target and the aim constraint is already down (see the tick, which
+ * calls this after `clearAim`), so the body stays pointed at the player it meant to hit and only the ball
+ * goes wide. That is what reads as a misclick — a rig that turned *away* from its target instead would
+ * read as one that cannot aim, which is a different and worse character. **The turn is deliberately
+ * untouched by this function**: it is handed a point and returns a point, and nothing it does is visible
+ * to `aimAt`.
+ *
+ * **The design the alternative would cost.** Every throw a rig makes is a solved shot to the target's
+ * own position, so without a miss term a rig never misses at any range the angle gate passes — and a
+ * round against something that cannot miss reads as an opponent rather than as a player. The user's
+ * request was to "add some randomness to make them intentionally throw a few studs to the left or right,
+ * to simulate real player misclicks"; this is that, and the numbers are in `NPC_CONFIG`.
+ *
+ * **Left and right are the rig's own.** The offset is along the flattened `RightVector`, so a rig facing
+ * north that misses to its right sends the ball east. World-relative sides would have a rig facing east
+ * missing "right" by throwing north, which is nobody's idea of a misclick.
+ *
+ * **One roll per throw, and the structure of the tick is what makes that true rather than a promise.** It
+ * is called from the throw site and nowhere else, below every early return in the tick — a rig with no
+ * ball, no body, no target or a target out of range never reaches it, and a rig still turning returns
+ * before it — so the roll happens on exactly the tick that throws. The throw then empties the hand, so the
+ * *next* tick returns at its first check and cannot roll for the same throw again. This behaviour runs ten
+ * times a second; a roll per tick would be a ball that changed its mind on the way and a rig that read as
+ * drunk rather than as human.
+ *
+ * **It does not print, and it does not know whether the throw lands.** `throwBall` answers whether a ball
+ * actually left, and it refuses some attempts — a frozen body keeps its ball — so a line from in here
+ * would be a line per tick for the whole of a freeze, describing throws that never happened. The caller
+ * logs, once, and only for a throw that went. See the throw site.
+ *
+ * **The common case returns nothing**, so a rig that is not missing this time is throwing exactly what it
+ * threw before any of this existed.
+ */
+function rollMiss(root: BasePart, aimPoint: Vector3): Miss | undefined {
+	if (math.random() > NPC_CONFIG.THROW_MISS_CHANCE) return undefined;
+
+	// The body's own right, flattened. A rig leaning on a slope has a `RightVector` with a Y component,
+	// and keeping it would make the ball fly over the target rather than past it — which is a different
+	// miss from the one asked for, and the only one this is not allowed to produce.
+	const right = new Vector3(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z);
+	if (right.Magnitude < AIM_FLAT_EPSILON) return undefined;
+
+	const studs =
+		NPC_CONFIG.THROW_MISS_STUDS_MIN +
+		math.random() * (NPC_CONFIG.THROW_MISS_STUDS_MAX - NPC_CONFIG.THROW_MISS_STUDS_MIN);
+
+	// A coin flip for the side, so a rig is as likely to be wide one way as the other — the two-sided
+	// error a person makes, rather than a habitual bias toward one shoulder.
+	const side = math.random() < 0.5 ? -1 : 1;
+
+	return { studs, side, target: aimPoint.add(right.Unit.mul(side * studs)) };
+}
+
+/**
  * Throwing, for an NPC — **the gated variant, worn by `Behavior_Throwing`.**
  *
  * **It throws at an enemy, and it has to be facing one to do it.** Where `Behavior_AlwaysThrowing`
@@ -249,8 +326,33 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// On target: stop turning and throw at the body. The constraint comes down before the
 			// throw so the ball leaves a body that has finished moving, and the aimed solve carries
 			// it to the target from the muzzle the rig is now facing along.
+			//
+			// **And the point handed over is the only thing the miss touches.** `rollMiss` runs once,
+			// here, and answers either nothing — aim at the body — or a point a few studs to the rig's
+			// left or right. The rig has finished turning onto the true target by this line (see the
+			// `aimAt` call above, which ran whether or not this throw was going to be a wide one), so
+			// the body is aimed at the player and only the ball goes somewhere else. See that function
+			// for the rule and `NPC_CONFIG` for the numbers.
 			clearAim(model);
-			balls.throwBall(model, { kind: "aimed", target: sighting.aimPoint, arc: THROW_ARC });
+			const miss = rollMiss(rigBody.root, sighting.aimPoint);
+
+			const thrown = balls.throwBall(model, {
+				kind: "aimed",
+				target: miss?.target ?? sighting.aimPoint,
+				arc: THROW_ARC,
+			});
+
+			// **Logged once, and only for a throw that actually left** — which is the difference between
+			// one line per wide throw and a line per tick for a rig that cannot throw at all. `throwBall`
+			// answers whether a ball went, and its refusals include a frozen body: a rig frozen with a
+			// ball in hand reaches this line every tenth of a second, and a print from `rollMiss` would
+			// have described thirty throws that never happened for the length of one freeze.
+			if (thrown && miss !== undefined) {
+				print(
+					`[Rig] ${model.Name}: throwing wide — ${string.format("%.1f", miss.studs)} studs to the ` +
+						`${miss.side > 0 ? "right" : "left"} (missed on purpose)`,
+				);
+			}
 		},
 
 		// A rig killed mid-turn leaves a constraint on its root otherwise, and `RespawnBehavior`

@@ -65,6 +65,22 @@ export const MATCH_BALL_COUNT = 8;
 export const MATCH_TOUCH_DEBOUNCE_SECONDS = 0.5;
 
 /**
+ * How often the round checks the roster while it is being played, in seconds. **Placeholder — 0.1.**
+ *
+ * **A poll, because the roster's owner cannot call the round.** `RoundService` reads `MatchService` and
+ * must not be read back — that is the constructor cycle the status folder in `ReplicatedStorage` exists
+ * to avoid — so a player who touches a pad mid-round is a fact the round has to *notice*. The revision
+ * is the same one `LobbyRigService` polls for its seats, and the cost is one number read a turn, with
+ * the roster walked only on the turns where it moved.
+ *
+ * **A tenth of a second, which is the whole of the join's latency.** The round's own tick is a whole
+ * second, and a player who touched a pad and then stood in the lobby watching themselves not arrive for
+ * a second would be judging the feature on the delay rather than on the game. Ten times a second is the
+ * same cadence the catch and dodge behaviours run at. See `RoundService.watchMidRoundJoins`.
+ */
+export const MATCH_JOIN_POLL_SECONDS = 0.1;
+
+/**
  * How long a startable roster must sit still before the sides start the match by themselves.
  * **Placeholder — 5.**
  *

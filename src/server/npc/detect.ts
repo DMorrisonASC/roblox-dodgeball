@@ -169,6 +169,29 @@ function sideOf(model: Model): TeamLabel | undefined {
  * `ServerStorage` template — the same out-of-world trap `TAGS.md` records for three other readers —
  * and because the two lists are what "a body that could be on a side" actually is.
  *
+ * **A dead body is not an enemy, and that is a separate rule from the side comparison above.** A rig
+ * that is killed is kept whole for `NPC_CONFIG.RESPAWN_DELAY_SECONDS` — `RespawnBehavior` sets
+ * `BreakJointsOnDeath = false` and reads the corpse's tags and its side off it before it destroys it —
+ * and a player's character stays `player.Character` for about as long either way. So a corpse was in this
+ * candidate set for the whole of a death: still `NPC`-tagged, still holding a `Team`, still resolvable to
+ * a root, and therefore the *nearest enemy* to whoever killed it. Three seconds of a living rig turning
+ * onto a body that is already down and throwing at it, which from a seat is rigs deliberating over a
+ * corpse — and every one of those throws is spent for nothing twice over, because `NpcService`'s loop
+ * ends on the health that enemy no longer has and `BallComponent` refuses to score a body that is
+ * already dead.
+ *
+ * **`Health > 0`, which is the test the rest of the codebase already ends a life on.** `canDodge` makes
+ * it, `NpcService.run`'s loop condition makes it, `BallComponent.resolveTags` skips a corpse with it, and
+ * `RespawnBehavior` decides whether a respawn is needed with it — so every reader of "is this body alive"
+ * agrees by construction rather than by convention, and this was the one that did not.
+ *
+ * **What is deliberately *not* used is `canDodge` itself**, which also answers `false` for a model with
+ * no humanoid: that is right for a dodge (nothing without a humanoid moves itself) and wrong here, where
+ * the question is only whether a humanoid that exists has died. A bare model on a side stays exactly as
+ * visible as it was, so this changes one case rather than two — worth stating because
+ * `LobbyRigService.isDown` reads the opposite way about the same absent humanoid, and that reading is
+ * about a *seat*, which needs a body that can play, rather than about a target.
+ *
  * **The nearest, by flat distance.** A caller that wants a *different* one (the one in front, the one
  * with a ball) is a change to this function, and the angle it returns is the thing that makes such a
  * rule writable without a second scan.
@@ -195,6 +218,15 @@ export function detectEnemy(rig: Model): EnemySighting | undefined {
 
 		const other = resolveDodgeable(candidate);
 		if (!other) return;
+
+		// **A dead body is not an enemy.** A corpse keeps its `NPC` tag and its `Team` for the whole of
+		// `NPC_CONFIG.RESPAWN_DELAY_SECONDS` — `RespawnBehavior` keeps the body whole on purpose and only
+		// destroys it after the wait — so without this a living rig picks the body it has just killed as
+		// its nearest enemy, turns onto it, and throws at it. Same for a player's character, which stays
+		// `player.Character` for about as long. See the paragraph above for the whole argument, including
+		// why a body with *no* humanoid is deliberately left alone.
+		const humanoid = other.humanoid;
+		if (humanoid !== undefined && humanoid.Health <= 0) return;
 
 		// The flat offset from the rig to the candidate: the Y is dropped rather than scaled, so a
 		// candidate below or above the rig is measured across the ground as a facing question must

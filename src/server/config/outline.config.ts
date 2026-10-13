@@ -25,8 +25,12 @@ export const OUTLINE_CONFIG = {
 	 *
 	 * **A player in a round does not wear this.** `OutlineService` overpaints their outline with
 	 * their side's colour from `TEAM_COLORS`, and this is what they fall back to between
-	 * rounds. It is also what every NPC rig and every ball wears, which is what tells them apart
-	 * from somebody who is playing.
+	 * rounds. **Nor does a rig playing for a side** — that half is a reversal of what this said, which
+	 * was that every NPC rig wore the default: a rig now takes a side and fights a round, so a rig is
+	 * painted with its side's colour from the end of the round's opening hold until the round's end, and
+	 * it wears this between rounds. What wears this, then, is a ball, a body with no side, and every
+	 * player or rig whose round is not being played — which is what tells a thing that is not playing
+	 * from a thing that is. See `OutlineService.paintRig`.
 	 */
 	COLOR: Color3.fromRGB(0, 0, 0),
 } as const;

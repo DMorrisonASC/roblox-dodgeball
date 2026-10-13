@@ -6,6 +6,7 @@ import {
 	BALL_SIZE,
 	PICKUP_LOCKED_UNTIL,
 	THROWER_TOKEN,
+	THROW_ANIMATION_ATTRIBUTE,
 	THROW_ENABLED,
 } from "shared/constants";
 import { NPC_TAG } from "../../npc/Behavior";
@@ -14,6 +15,7 @@ import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
 import { abilityOn, isBallAbility, AbilityKind } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
+import { resolveDodgeable } from "shared/dodge";
 import { REMOTES } from "shared/remotes";
 import { events } from "shared/networking";
 import {
@@ -36,6 +38,71 @@ import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
 
 const DEBUG = true; // prints the mode, speed and angle of each throw
+
+/**
+ * The throw clip for a body of `rigType`, as an asset id.
+ *
+ * One id per rig type from {@link BALL_CONFIG}, so the pair that swaps out when a real clip is bought lives
+ * in one place — and it is the same pair `RIG_ANIMATION.throw` borrows for a rig, which is what makes a
+ * player's throw and a rig's the same animation rather than two that drift. An R6 clip never loads onto an
+ * R15 rig, so choosing by `Humanoid.RigType` is not cosmetic: the wrong one plays nothing at all.
+ */
+function throwAnimationId(rigType: Enum.HumanoidRigType): string {
+	return rigType === Enum.HumanoidRigType.R15
+		? BALL_CONFIG.THROW_ANIMATION_R15
+		: BALL_CONFIG.THROW_ANIMATION_R6;
+}
+
+/**
+ * Plays a **player's** throw and hands back the track for the caller to stop.
+ *
+ * **Played from the server, which is `DodgeService.playDodgeAnimation`'s arrangement and its reason**: a
+ * player's body is animated on that player's own client, so a track started here is what makes the other
+ * players see the throw. A client-started one would be that client's private flourish, and a throw is
+ * something other people need to read. **A rig does not come here at all** — every client draws it from the
+ * published mark, so a server track on top would be a second animation on the same limbs.
+ *
+ * **Never raises, and may return nothing.** The clip is a guess about an asset — an id that is not an
+ * animation, one this place does not own, one that has been moderated — and `DodgeService` states the
+ * contract this follows: a visual must never be able to take the mechanic down with it. A throw whose clip
+ * will not load is a throw with no animation, which is what it had before this existed.
+ */
+function playThrowAnimation(character: Model, humanoid: Humanoid): AnimationTrack | undefined {
+	const animationId = throwAnimationId(humanoid.RigType);
+
+	if (animationId === "") {
+		if (DEBUG) print(`[Ball] ${character.Name}: no throw animation set — the throw happens silently`);
+		return undefined;
+	}
+
+	let track: AnimationTrack | undefined;
+
+	const [ok, err] = pcall(() => {
+		const animator = humanoid.FindFirstChildOfClass("Animator") ?? new Instance("Animator");
+		if (animator.Parent === undefined) animator.Parent = humanoid;
+
+		const animation = new Instance("Animation");
+		animation.Name = "ThrowAnimation";
+		animation.AnimationId = animationId;
+
+		const loaded = animator.LoadAnimation(animation);
+
+		// Above the movement animations, so the throw draws over whatever the legs were doing — the same rung
+		// the dodge flourish plays on, and the same reason: the action owns the limbs for as long as it is on,
+		// and hands them back when it is stopped.
+		loaded.Priority = Enum.AnimationPriority.Action;
+		loaded.Play();
+
+		track = loaded;
+	});
+
+	if (!ok) {
+		warn(`[Ball] ${character.Name}: the throw animation ${animationId} would not load: ${tostring(err)}`);
+		return undefined;
+	}
+
+	return track;
+}
 
 /**
  * How far a client's claimed launch point may sit from the thrower's hand as the
@@ -275,6 +342,23 @@ export class BallService implements OnStart {
 	 * the dev flags all arrive on the remote with a player attached.
 	 */
 	private readonly heldBalls = new Map<Model, HeldBall>();
+
+	/**
+	 * Which throw each model's mid-throw mark belongs to, so a newer throw is not cleared by an older
+	 * timer.
+	 *
+	 * **The mark is written twice in quick succession in one real case**: a dev with `InfiniteBalls` — and
+	 * anybody whose hand refills fast enough — can throw again inside
+	 * {@link BALL_CONFIG.THROW_ANIMATION_SECONDS}, and two timers for one attribute means the first one to
+	 * fire clears a mark the second throw still owns. The animation is then cut off after a fraction of a
+	 * second, which looks exactly like the clip failing to load. A counter costs one map write per throw and
+	 * makes the clear conditional on "no newer throw has happened".
+	 *
+	 * **It holds only live marks, so it cannot grow.** A mark that is superseded is replaced, not added to,
+	 * and whichever throw is newest deletes its own entry when its timer fires — so the map is as large as
+	 * the number of bodies mid-throw, which is at most a handful.
+	 */
+	private readonly throwMarks = new Map<Model, number>();
 
 	constructor(
 		private readonly factory: BallFactory,
@@ -1019,6 +1103,45 @@ export class BallService implements OnStart {
 		// the catch check both read this one token.
 		ball.SetAttribute("Armed", true);
 		ball.SetAttribute("ThrowerId", this.tokenOf(model));
+
+		// **And the thrower is marked as mid-throw, which is what the throw's own clip is played from.**
+		// This is the moment the file already calls "the release", and it is the only place in the game a
+		// ball leaves a hand — a player's click and a rig's behavior both arrive at this method — so one mark
+		// here covers every body that throws. The renderer reads it on the same `AttributeChanged` connection
+		// the rest of a rig's state arrives on, so the clip costs no wiring beyond this line and the clear.
+		//
+		// **Cleared on a timer rather than when the ball lands.** The mark means "this body is in the middle
+		// of the throw *motion*", which is over long before the ball is; a mark that lasted the flight would
+		// leave a rig mid-throw for a second and a half. See `THROW_ANIMATION_ATTRIBUTE` for the pair it forms
+		// with the ball-in-hand state, and `BALL_CONFIG.THROW_ANIMATION_SECONDS` for the length and why it is
+		// a tuned number rather than the clip's own.
+		const throwMark = (this.throwMarks.get(model) ?? 0) + 1;
+		this.throwMarks.set(model, throwMark);
+		model.SetAttribute(THROW_ANIMATION_ATTRIBUTE, true);
+
+		// **And a player's throw is *played* here, while a rig's is played by each client.** That split is the
+		// dodge's own arrangement, made for the same reason: a player's body is animated on that player's
+		// client, so a track started here is what makes the other players see the throw — whereas every client
+		// draws a rig from the mark above, and a track started here as well would be two animations blended on
+		// the same limbs. See `playThrowAnimation`.
+		const humanoid = resolveDodgeable(model)?.humanoid;
+		const playerOwned = Players.GetPlayerFromCharacter(model) !== undefined;
+		const track = humanoid !== undefined && playerOwned ? playThrowAnimation(model, humanoid) : undefined;
+
+		task.delay(BALL_CONFIG.THROW_ANIMATION_SECONDS, () => {
+			// A newer throw owns the mark by now; its own timer is the one that clears it — and stops its own
+			// track — so this leaves both alone.
+			if (this.throwMarks.get(model) !== throwMark) return;
+
+			this.throwMarks.delete(model);
+			model.SetAttribute(THROW_ANIMATION_ATTRIBUTE, undefined);
+
+			// **Stopped rather than left to finish**, for the reason `DodgeService` stops its flourish: an
+			// unlooped track holds its last frame, so a body left wearing the end of a throw would be standing in
+			// a pose it has already finished. Guarded because a body can be destroyed inside the window, which
+			// takes its animator and every track on it with it.
+			if (track !== undefined && track.Parent !== undefined) track.Stop();
+		});
 		this.setPromptEnabled(ball, true);
 		// Airborne now, so the rod can start drawing behind it. Absent when the trail is
 		// switched off in config, which is the whole of what that flag does at runtime.

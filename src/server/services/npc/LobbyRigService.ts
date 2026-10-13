@@ -74,6 +74,14 @@ const SIDES: ReadonlyArray<TeamLabel> = [TEAM_A, TEAM_B];
  * (`DODGING`, `CATCHING`), and come back after dying (`RESPAWN`). Each is a tag `NpcService` already
  * implements; this list is the only new thing, and it exists so that the set is written down once.
  *
+ * **`RESPAWN` arriving with this set rather than at spawn is load-bearing, and it is not obvious.**
+ * `RespawnBehavior.prepare` records the rig's *position* as the place a replacement comes back to, and it
+ * records it on the first turn after the tag appears — so a rig given the tag while it stands in the lobby
+ * would spend the rest of the session coming back to the lobby, including after a death mid-round. The tag
+ * arriving here, at the far end of the round's cover, is what makes the recorded home the arena. **Adding
+ * respawn to a lobby rig's spawn list therefore looks like the fix for a rig that stays down and is not
+ * one** — see {@link retireHopelessCorpses}, which is where that case is actually repaired.
+ *
  * **The pair that has to travel together.** `THROWING` never issues itself a ball — it throws the one
  * in the rig's hand — so a rig wearing it and neither `SEEKING` nor `PICKUP` spends the round empty
  * handed and silent. See `ThrowBehavior`'s file comment, which says so from the other side.
@@ -211,14 +219,21 @@ export class LobbyRigService implements OnStart {
 	private revision = -1;
 
 	/**
-	 * **The seats held for players who have arrived and not yet chosen a side: the side, and nothing
-	 * else.**
+	 * **The seats held for players who are present and hold no roster seat: the side, and nothing else.**
 	 *
 	 * A player joining the lobby displaces a rig — see `reserveSeat` — and that rig's side is written down
 	 * here, because nothing else knows it: `MatchService` has never heard of a player who has not opted in,
 	 * and a seat that has been given up is visible in none of the derivations. For a rig still walking,
 	 * the side recorded is the one its destination was written for, which is the seat it was on its way to
 	 * hold.
+	 *
+	 * **The other way a record is made is the roster letting go of a player who is still here** — a round
+	 * ending and `MatchService.clear` emptying the roster. That path used to leave an opted-in player
+	 * holding neither a roster seat nor a reservation, so the seat arithmetic spawned a rig back into the
+	 * seat they were standing in; see `syncSeats`, where the carry-over lives and where the whole of that
+	 * bug is written down. The two ways are one fact, and the name is the older half of it: the seat is
+	 * pending *the player's choice*, which they may make whenever the pads are live — including during a
+	 * round, where choosing is what puts them in it. See `RoundService.admitMidRoundJoins`.
 	 *
 	 * **There is no side-less entry, and that is a decision rather than an omission.** The only join that
 	 * could produce one is a join with *no rig at all* to displace — a server whose template or lobby is
@@ -447,8 +462,9 @@ export class LobbyRigService implements OnStart {
 	/**
 	 * **The seat count: what a side accounts for. This is the predicate the whole file maintains.**
 	 *
-	 * A seat is held by a rig — arrived or walking — by an opted-in player, or by a player a rig has stood
-	 * down for and who has not chosen yet. The invariant the lobby keeps true is
+	 * A seat is held by a rig — arrived or walking — by an opted-in player, or by a player the lobby is
+	 * holding a seat for (see `pending`, whose two ways of being written are one fact). The invariant the
+	 * lobby keeps true is
 	 *
 	 * > `seatsHeld(side) === MATCH_MAX_PER_TEAM`, for both sides, whenever nothing is mid-flight.
 	 *
@@ -456,6 +472,17 @@ export class LobbyRigService implements OnStart {
 	 * player may take a minute to choose: for that minute one side's count includes a seat nobody is
 	 * standing on, which is exactly what `pending` is for. Without it this query would read that side as
 	 * short and hand the seat to a rig — and then the player would arrive on a side that was already full.
+	 *
+	 * **And the figure a person actually counts is the same invariant with the players subtracted.** A seat
+	 * is a body and every body is either a person or a placeholder, so the lobby shows
+	 * `MATCH_MAX_PER_TEAM × 2 − (everybody connected)`: eight seats and one player is seven rigs, eight
+	 * seats and two players is six, and it does not matter *where* those players are standing — in the
+	 * lobby, next to a join pad, or in a practice zone. That last one is worth stating because it is the
+	 * case a reader expects to be an exception: a practice-zone player is still a person in the server, so
+	 * they still cost the lobby a rig (counted here as an opted-in player if they opted in, and as a held
+	 * seat if they never did), *and* they are still left out of the round by `RoundService`. The two rules
+	 * are not in tension: a placeholder fills the seat of somebody who is not using it, and a practice-zone
+	 * player is somebody who is not using it.
 	 *
 	 * **What it costs.** Two tag walks plus a few attribute reads per call, and one roster read. That is
 	 * why it is not on a tick: it runs when the roster moves, when a phase changes and when a player
@@ -482,9 +509,27 @@ export class LobbyRigService implements OnStart {
 	 *
 	 * **What it deliberately does not do** is decide *which* seats. That is the invariant above, and a
 	 * rebalance that started making judgement calls would be a second place the seat rules lived.
+	 *
+	 * **And it is where the count is allowed to change, so the rule belongs here: at a boundary, the count
+	 * changes only while the cover is up.** A round start fills the short seats inside the arena's own
+	 * transition — `refillAtRoundStart` waits the cover out before it runs — and a round end releases
+	 * inside the intermission's. **A join and a leave are not boundaries**, and those two are deliberately
+	 * uncovered: `reserveSeat` exists to make a rig stand down in the same frame a player walks in, so the
+	 * lobby never holds a ninth body, and there is no cover at that moment to hide it behind. What the rule
+	 * forbids is the thing the seat count used to do to itself after a round — spawn a rig at the reveal, in
+	 * the open, to repair a seat nothing had actually freed. See `syncSeats` for that fix.
 	 */
 	private rebalance(): void {
 		const playing = this.phase() === PLAYING;
+
+		// **First, because a corpse nothing will rebuild is not a held seat — and both counts below are read
+		// after it.** A body that is down counts toward its side's seats here (see `isDown`), on the grounds
+		// that it is a body coming back: true of a rig wearing the rebuild behaviour, and false of one that is
+		// not, which is the state a lobby rig and a rig killed across a round boundary are both in. Removing
+		// the hopeless ones before the arithmetic is what makes the fill pass below see the seat as short and
+		// put a live rig in it — in the same call, rather than at the next trigger. See
+		// {@link retireHopelessCorpses}, and its doc for why the repair is not "leave respawn on".
+		this.retireHopelessCorpses();
 
 		// **Both counts are read once, at the top, and reused.** They are what this call is *about* — the
 		// one fact that decides which seats are filled and which rigs stand down — and reading them here
@@ -541,6 +586,69 @@ export class LobbyRigService implements OnStart {
 		return humanoid === undefined || humanoid.Health <= 0;
 	}
 
+	/**
+	 * **Retires every rig that is down with nothing left to stand it up, so the seat it is holding can be
+	 * filled.**
+	 *
+	 * **The rule it repairs is `isDown`'s, one step further on.** A corpse counts toward its side's seats
+	 * because a seat is not free while a body is coming back — `RespawnBehavior` waits
+	 * `NPC_CONFIG.RESPAWN_DELAY_SECONDS` and rebuilds it. That argument is conditional, and the condition is
+	 * the **tag**: `NpcService` dispatches `onDied` only to the behaviours a model wears, so a corpse
+	 * without `BEHAVIOR_RESPAWN` has no rebuild scheduled and never will have one. It then holds its seat
+	 * for the rest of the session — the refill never fires, because the seat reads as taken — and the body
+	 * itself stays where it fell, in pieces if it never met `RespawnBehavior.prepare`, which is the one
+	 * thing that sets `BreakJointsOnDeath` to `false`. The report this comes from is exactly that: a rig
+	 * left permanently down, visible from the lobby, in pieces.
+	 *
+	 * **Two rigs are in that state and both are ordinary.** A **lobby** rig wears the walk tag and nothing
+	 * else — see `spawnLobbyRig` — so it has no rebuild behaviour at any point in the intermission; and any
+	 * side-bearing rig is in that state in the moment after a round boundary, because
+	 * `setGameplayBehaviors(false)` takes the whole set off, rebuild behaviour included. A ball thrown out
+	 * of the arena reaches both: the arena is inside the lobby, and a throw's range is wider than either.
+	 *
+	 * **Why the corpse is destroyed rather than left where it is.** Its *seat* is the reason it is here, and
+	 * a body nothing will ever move is litter in a room people are standing in. Destroying it also tells the
+	 * arithmetic the truth: the holder list stops returning it, so `rebalance`'s own fill pass puts a live
+	 * rig in that seat in the same call, and `NpcService` ends the dead rig's loop on its next turn, since
+	 * the loop's condition includes `model.Parent !== undefined`.
+	 *
+	 * **Why not simply leave `RESPAWN` on every rig instead — the obvious fix, and it is wrong.**
+	 * `RespawnBehavior.prepare` records the rig's **position** as the place a replacement comes back to, and
+	 * it records it on the rig's first turn wearing the tag. A rig given that tag in the *lobby* therefore
+	 * spends the rest of the session coming home to a lobby spawn — including after a death mid-round, which
+	 * is the exact fault `GAMEPLAY_BEHAVIORS` describes. The set arriving at the far end of the round's cover
+	 * is what keeps that home in the arena, and recycling a hopeless corpse costs nothing that matters: the
+	 * replacement is made at the moment it is wanted, in the form the phase calls for.
+	 *
+	 * **What this does not cover, stated rather than left to be found.** Only `rigsOnASide()` is walked, so a
+	 * rig with **no side** — a hand-tagged practice rig — is outside this file entirely, and one of those
+	 * without `Behavior_Respawn` is still a body that stays down. That is a tag to paint; see `TAGS.md`.
+	 *
+	 * **Idempotent, and it removes nothing that is standing.** A rig it has already retired is gone from
+	 * `rigsOnASide()` on the next call, and the tag test is the whole of the decision — so a rig that *is*
+	 * coming back is never touched, however long it lies there.
+	 */
+	private retireHopelessCorpses(): void {
+		let retired = 0;
+
+		for (const { rig } of rigsOnASide()) {
+			if (!this.isDown(rig)) continue;
+
+			// **Wearing the rebuild behaviour: the body is coming back.** Taking the corpse away here is what
+			// would cancel that, and it is the one thing this method must not do. See `isDown`.
+			if (rig.HasTag(BEHAVIOR_RESPAWN)) continue;
+
+			rig.Destroy();
+			retired++;
+		}
+
+		// **Said out loud, because a rig being retired is a rig the lobby has stopped counting.** The seat is
+		// refilled in the same call, so the visible effect is one body replaced by another — and this line is
+		// what says why the body that left could not have come back, rather than leaving a reader to wonder
+		// whether a respawn was cancelled by something.
+		if (retired > 0) print(`[Rig] retired ${retired} rig(s) that had nothing left to stand them up`);
+	}
+
 	/** Gives up `count` of `side`'s seats, beginning with the rigs standing on a pad. */
 	private releaseRigs(side: TeamLabel, count: number): void {
 		if (count <= 0) return;
@@ -569,10 +677,14 @@ export class LobbyRigService implements OnStart {
 	/**
 	 * A player has arrived. **One rig stands down, and the seat it held is theirs until they choose.**
 	 *
-	 * **Nothing happens during a round**, and that is the whole of the phase distinction here: a player
-	 * arriving mid-round is a spectator with nothing to sit on — the roster is locked, so they cannot opt
-	 * in either — and killing a rig for them would take a seat out of a round that is being played. They
-	 * are dealt with at the next intermission exactly as this method would have.
+	 * **Nothing happens during a round**, and the reason is narrower than it used to be. A player arriving
+	 * mid-round has not chosen a side, so there is nothing for a rig to stand down *for*: killing one would
+	 * take a seat out of a round that is being played, and the player might spend the whole round in the
+	 * lobby. **They are not locked out of that round, though** — the pads are live, and the moment they walk
+	 * onto one they appear in the roster, which is the change this service polls for and which stands a rig
+	 * down for them in the arena. So the seat is taken when the player *chooses*, not when they arrive, and
+	 * before the pads were live during a round the second half of that never happened at all: a mid-round
+	 * joiner was a spectator holding a seat with no rig left to fill it.
 	 */
 	private onPlayerArrived(player: Player): void {
 		if (this.phase() === PLAYING) return;
@@ -784,11 +896,17 @@ export class LobbyRigService implements OnStart {
 	 * `pending` counts in {@link seatsHeld}, and the two agree for as long as the player might still walk
 	 * onto a pad.
 	 *
-	 * **The round start is the moment that stops being true, and nothing tells the seat so.** The roster
-	 * is locked at `Playing` — `MatchService.optIn` refuses before it reads the roster at all — so a
-	 * pending player *cannot* take the seat this round. The seat is therefore empty, and a side holding it
-	 * is a side one body short: it enters the round with three rigs where the lobby had four seats, which
-	 * is exactly the 4-versus-3 the log showed.
+	 * **The round start is the moment that stops being true, and nothing tells the seat so.** The roster is
+	 * taken at the whistle — `assignTeams` reads it once — so a player who has not chosen by then cannot be
+	 * in the round that starts: the seat is empty of them, and a side holding it is a side one body short,
+	 * which is exactly the 4-versus-3 the log showed.
+	 *
+	 * **And the drop is not the last word on the seat, which is the other half of the same rule.** The pads
+	 * stay live during a round, so a player who did not choose before the whistle can choose during it: they
+	 * appear in the roster, `syncSeats` spends the reservation, and `rebalance` stands a rig down in the
+	 * arena for them — within its own quarter of a second, and on top of the round's own admission of them.
+	 * So a released record is a seat the lobby has handed to a rig *for now*, not one that has been given
+	 * up. See `RoundService.admitMidRoundJoins` for the other end of that.
 	 *
 	 * **So the records are dropped here, and the drop is what the refill then sees.** The alternative —
 	 * teaching `rebalance` to ignore `pending` at round start — was rejected because the rule is not
@@ -817,8 +935,8 @@ export class LobbyRigService implements OnStart {
 		// next log wants to know whether the round absorbed a reservation or ignored it, and the count is
 		// the only place that is visible.
 		print(
-			`[Rig] round start — ${count} pending seat(s) released: the roster is locked, ` +
-				`so a player who has not chosen is holding nothing`,
+			`[Rig] round start — ${count} pending seat(s) released: the roster is taken at the whistle, ` +
+				`so a player who has not chosen by now is holding nothing until they do`,
 		);
 	}
 
@@ -829,7 +947,16 @@ export class LobbyRigService implements OnStart {
 	 * transition". The boundary publishes `Playing` and *then* runs `RoundService.transitionAround`, which
 	 * closes the cover, moves everybody into the arena and holds them there — so the sequence reachable
 	 * from here is: the phase changes, the cover takes `TRANSITION_COVER_SECONDS` to close, the bodies are
-	 * moved, and the cover stays up for the whole of the arena's freeze.
+	 * moved, and the hold runs for `ARENA_FREEZE_SECONDS` measured from that move.
+	 *
+	 * **That is the whole of why the refill stays timed to the cover while the rigs' *playing* is timed to
+	 * the freeze.** The two are not the same deadline and must not be merged into one. A body appearing is
+	 * a thing to hide, and the cover is what hides it — but the cover is up for `TRANSITION_OPEN_SECONDS`
+	 * (~2.7 s of these numbers) and the freeze lasts `ARENA_FREEZE_SECONDS` (5), so **the cover is gone
+	 * long before the freeze is**. A spawn put at the freeze would therefore be a rig materialising in
+	 * front of everybody, which is the one thing this timing exists to prevent; the sentence here used to
+	 * claim the cover lasted the whole freeze, and it never did. Only the last step of the refill — the rig
+	 * being handed something to do — is a *rule* rather than a picture, and it moves to the release.
 	 *
 	 * **Spawning on the phase change itself would put a body into the arena with the screens still open**,
 	 * which is the one thing the timing exists to avoid: the lobby is *inside* the arena, so the team
@@ -850,11 +977,41 @@ export class LobbyRigService implements OnStart {
 	 * which is why no epsilon is added: the race is real and harmless, and a fudge factor would be a second
 	 * number pretending the two timers were one.
 	 *
-	 * **With transitions switched off there is no cover to hide behind**, so the delay is skipped and the
-	 * rigs appear when they appear — the same visibility every teleport at that boundary already has,
-	 * because `transitionAround` does nothing at all in that configuration.
+	 * **And a second wait, of a different length: the arena freeze.** The cover is not the last thing a
+	 * round does before it is played. `RoundService.transitionAround` moves everybody, holds them where
+	 * they land for `ARENA_CONFIG.ARENA_FREEZE_SECONDS`, and only then lets the clock go — and a rig has
+	 * no share of that hold, because the hold is one named contribution in a *character's* speed sum
+	 * (`WalkSpeedService`) and a rig has no such sum. Nothing the round does reaches a rig at all.
 	 *
-	 * **And it is where a pending seat stops existing.** The first of the four steps below is
+	 * **So the rig's half of the hold is here, and it is the withholding rather than a speed.** A rig with
+	 * none of the six gameplay tags does nothing, which is the whole of what a held player does. That is
+	 * the only mechanism that reaches it, and the reason it is *not* "write the rig's walk speed to zero"
+	 * is worth keeping: a rig is not moved only by walking. `PickupBehavior` takes a ball within reach
+	 * without moving, `CatchBehavior` opens a window without moving, `DodgeBehavior` dashes on a
+	 * `LinearVelocity` a walk speed does not touch, and `ThrowBehavior` needs no movement at all — so a
+	 * rig frozen to a standstill still picks up and throws, which is exactly the log this fixes. The other
+	 * candidate, adding rigs to `holdArenaEntry`, would also mean the round holding a rig through a
+	 * *speed* the rig does not have, which `holdArenaEntry`'s own doc refuses as a decision about NPCs
+	 * rather than about who is in the round. See {@link setGameplayBehaviors} for the tag set and for the
+	 * rest of the timing argument.
+	 *
+	 * **The length is read from the constant the round itself waits**, rather than asking the round when
+	 * the freeze lifts. There is no signal for "the hold has ended" any more than there is one for "the
+	 * teleport has happened" — see above for that argument — and `ARENA_CONFIG` is a shared module both
+	 * readers already import, so this is one number in one place rather than a second timer carrying a
+	 * copied duration. What it costs is what the cover's delay already costs: two timers a frame apart,
+	 * harmless in either ordering, because the difference between them is a rig acting one frame before a
+	 * player may move.
+	 *
+	 * **With transitions switched off there is no cover to hide behind**, so the cover's delay is skipped
+	 * and the rigs appear when they appear — the same visibility every teleport at that boundary already
+	 * has, because `transitionAround` does nothing at all in that configuration. **The freeze is not part
+	 * of that, and neither is its wait**: the hold runs whether or not the wipe does — see
+	 * `transitionAround`, which says a hold still runs with the cover off — so a rig is still withheld for
+	 * `ARENA_FREEZE_SECONDS` in that configuration, measured from the move rather than from a cover that
+	 * never closed.
+	 *
+	 * **And it is where a pending seat stops existing.** The first of the steps below is
 	 * {@link releasePendingSeats}, which is the correction to the seat model this boundary needed: a seat
 	 * held for a player who has not opted in is *not* held once the round starts. See that method for the
 	 * argument; see {@link setGameplayBehaviors} for the last step.
@@ -862,25 +1019,33 @@ export class LobbyRigService implements OnStart {
 	private refillAtRoundStart(): void {
 		// **The order matters, and it is this way round deliberately.** The pending seats go first, because
 		// they are what the refill is *about*; then the refill, so a seat nothing holds gets a body; then
-		// the walkers, so every body holding a seat is on the field; then the gameplay behaviours, so a rig
-		// is handed something to do only once it is standing where the round is played. Doing the walkers
-		// the other way round would have them arrive in the arena and then be counted as held seats by the
-		// refill — the same arithmetic either way, but this order means each step sees the world as the
-		// next one will.
+		// the walkers, so every body holding a seat is on the field. Doing the walkers the other way round
+		// would have them arrive in the arena and then be counted as held seats by the refill — the same
+		// arithmetic either way, but this order means each step sees the world as the next one will.
 		const fill = (): void => {
 			this.releasePendingSeats();
 			this.rebalance();
 			this.moveWalkersToArena();
-			this.setGameplayBehaviors(true);
+		};
+
+		// **And the last step, which is the rig being handed something to do — after the freeze.** The three
+		// above are about what the arena looks like when it opens, which is the cover's business; this one
+		// is about when a rig may act, which is the *hold's*, and the two lengths are different. Measured
+		// from the move, which is the same instant the round measures its own hold from, so the rig goes to
+		// work on the frame the players are released rather than a wait of its own invention.
+		const startPlaying = (): void => {
+			fill();
+
+			task.delay(ARENA_CONFIG.ARENA_FREEZE_SECONDS, () => this.setGameplayBehaviors(true));
 		};
 
 		if (!TRANSITION_CONFIG.ENABLED) {
-			fill();
+			startPlaying();
 
 			return;
 		}
 
-		task.delay(TRANSITION_COVER_SECONDS, fill);
+		task.delay(TRANSITION_COVER_SECONDS, startPlaying);
 	}
 
 	/**
@@ -993,6 +1158,13 @@ export class LobbyRigService implements OnStart {
 	 * `NpcService` already has. See `GAMEPLAY_BEHAVIORS` for what the set is and why it is the gated half
 	 * of each pair rather than the `Always*` half.
 	 *
+	 * **What the set going off costs, and where it is paid: a corpse with no rebuild behaviour is a seat the
+	 * lobby cannot fill.** A rig that dies while it wears none of the six — a lobby rig, which never wears
+	 * them, or a rig killed in the moment after a round boundary — is a body nothing will ever stand up, so
+	 * `isDown` counts it as holding its seat for the rest of the session and the refill never fires. That is
+	 * what {@link retireHopelessCorpses} exists for, and it is why the answer is not to leave `RESPAWN` on
+	 * permanently: see `GAMEPLAY_BEHAVIORS` for the home a replacement would inherit if it were.
+	 *
 	 * **Why a side is the whole test, and why the phase is not part of it.** A rig that has walked to a
 	 * pad is holding a seat, and a lobby is not a game: with throw and seek on, a rig would hoof a ball
 	 * around the lobby between rounds and `RespawnBehavior` would stand corpses back up. `detectEnemy` is
@@ -1007,13 +1179,36 @@ export class LobbyRigService implements OnStart {
 	 * about it. This is also why the whole task is possible at all: the alternative reading (a set
 	 * snapshotted when the loop started) would have made a mid-life tag change inert.
 	 *
-	 * **Why the tags go on at the far end of the cover rather than on the phase change.** One of the six
-	 * writes down where the rig is: `RespawnBehavior.prepare` records the rig's position as the place a
-	 * replacement comes back to, and it records it on the rig's first turn after the tag appears — a tenth
-	 * of a second, not a cover's length. Added on the edge, every rig would record its **lobby pad** as
-	 * home and then be teleported into the arena, so a rig killed mid-round would come back to the lobby
-	 * as a side-bearing body the round counts and cannot find. Added here, it records the spot it is
-	 * standing on when the round opens.
+	 * **Why the tags go on after the arena freeze — not on the phase change, and not at the cover either.**
+	 * Two reasons, and the second is the newer one.
+	 *
+	 * **The position, first.** One of the six writes down where the rig is: `RespawnBehavior.prepare`
+	 * records the rig's position as the place a replacement comes back to, and it records it on the rig's
+	 * first turn after the tag appears — a tenth of a second, not a cover's length. Added on the edge,
+	 * every rig would record its **lobby pad** as home and then be teleported into the arena, so a rig
+	 * killed mid-round would come back to the lobby as a side-bearing body the round counts and cannot
+	 * find. Added here, it records the spot it is standing on when the round opens.
+	 *
+	 * **And the freeze, second, which is what moved this from the cover to the lift.** A rig on a side is a
+	 * participant, and a participant may not act while the players are held: `RoundService` freezes every
+	 * player for `ARENA_CONFIG.ARENA_FREEZE_SECONDS` from the landing, and a rig has no share of that hold
+	 * — there is no speed sum for a rig to hold back — so a rig with these six on plays straight through
+	 * the freeze. What it does in that window is not a small thing: the seek walks it to a loose ball the
+	 * spawner has just put out, the pickup takes it, and the throw sends it at somebody while every human
+	 * on the field is standing still. **Withholding the six is what stops that**, and it is the only thing
+	 * that stops the rest of it too: a walk speed of zero would leave the pickup (which needs no movement),
+	 * the catch, the dodge (which is a `LinearVelocity`, not a walk) and the throw all working. See
+	 * {@link refillAtRoundStart} for the timing and for why the wait is read from the round's own constant
+	 * rather than signalled from the round.
+	 *
+	 * **What the delay costs, named.** A rig is inert from the phase change until the freeze lifts, so
+	 * nothing it wears in the six can run in the opening seconds — including `RespawnBehavior`, which means
+	 * a rig that died inside the freeze would be a rig with nobody to bring it back. That is not reachable,
+	 * and the reason is the window before it rather than a guard here: the round start follows sixteen
+	 * seconds of intermission, every ball the round put out was destroyed on the intermission edge
+	 * (`BallSpawnerService.cleanupRoundBalls`), and what a spawner puts out afterwards is loose and unarmed
+	 * until somebody picks it up — which the six being off also prevents. Written down because the day
+	 * something else can hurt a body in the opening seconds, this is the line to change.
 	 *
 	 * **The race that remains, stated rather than papered over.** This runs in the same frame as the
 	 * round's own `moveEveryone`, and the two are unordered inside that frame; a rig whose loop happens to
@@ -1072,12 +1267,32 @@ export class LobbyRigService implements OnStart {
 	 * the revision is polled, and the poll is a single field read: the rest of {@link syncSeats} runs only
 	 * on the turns where it moved.
 	 *
+	 * **It is also the only tick in the game that a *death* can be noticed on**, which is the newer half of
+	 * its job. A rig killed with nothing left to rebuild it is not a roster event, so nothing else in this
+	 * file would ever look at it again — see {@link retireHopelessCorpses}, which is swept on every turn of
+	 * this loop for that reason, and is a humanoid read per standing rig.
+	 *
 	 * **The price is named: up to one interval** between a player touching a pad and the rig they displaced
-	 * standing down. See `NPC_CONFIG.SEAT_POLL_SECONDS` for why a quarter of a second is the figure.
+	 * standing down, and up to one interval between a rig being killed with no rebuild behaviour and its seat
+	 * being handed to a live one. See `NPC_CONFIG.SEAT_POLL_SECONDS` for why a quarter of a second is the
+	 * figure.
 	 */
 	private async watchSeats(): Promise<void> {
 		while (true) {
 			task.wait(NPC_CONFIG.SEAT_POLL_SECONDS);
+
+			// **The corpse sweep runs every turn, and not only when the roster moves.** It is the one thing
+			// in this file that has to notice a *death* rather than a change to the roster, and a rig being
+			// killed is not a roster event: a quiet round — which is most of a round — moves the revision
+			// not at all, so `syncSeats` below returns on its first line and `rebalance` never runs. Without
+			// this line a lobby rig shot from the arena would lie there for the rest of the round, which is
+			// the report this fixes. Cheap by construction: a rig that is standing is one humanoid read, and
+			// there are at most eight.
+			//
+			// **And it is here rather than at the top of `rebalance` alone** for the same reason — see that
+			// method, which calls it too, so that a seat freed by it is filled in the same pass rather than a
+			// quarter of a second later.
+			this.retireHopelessCorpses();
 
 			this.syncSeats();
 		}
@@ -1097,6 +1312,35 @@ export class LobbyRigService implements OnStart {
 	 * question disappear, because what matters to the rebalance is not who moved but how many seats each
 	 * side now accounts for.
 	 *
+	 * **And the seats the clear takes away are carried over rather than dropped. That is the whole of the
+	 * fix for the extra rig in the lobby.** `pending` used to be written in exactly one place,
+	 * `reserveSeat`, which is a player *arriving* — so the record read as "a rig was destroyed for this
+	 * person". A player who then opted in spent that record, correctly: the roster paid for their seat from
+	 * that moment on. But when the round ended and `clear` emptied the roster they were left holding
+	 * *neither* — not in the roster, and no reservation — so {@link seatsHeld} read their side as one short
+	 * and spawned a rig for the seat they were standing in. **Every player who opts into a round ended it
+	 * by leaving a placeholder behind**: one opted-in player in an eight-seat lobby is seven rigs before the
+	 * round and eight after it, which is the report this comes from.
+	 *
+	 * **So a record has two ways of being made and one meaning: this player is here and holds no roster
+	 * seat.** They arrive and a rig stands down for them, or the roster lets go of the side they were on.
+	 * Both land in the same map, and the count cannot tell them apart — which is right, because the lobby
+	 * cannot either: a player standing in it is a player standing in it whether or not they played the round
+	 * that has just finished.
+	 *
+	 * **The alternative that was rejected: count *every connected player* instead of the roster plus these
+	 * records.** It reads better as a sentence and it fails on the side arithmetic. A side's seats are
+	 * filled by rigs standing at that side's pads, so a seat has to belong to a side before a rig can fill
+	 * it — and a player who has not chosen one has no side for a rig to fill. Recording the seat at the
+	 * moment its side is knowable (the rig they displaced) or was known (the side the roster had them on)
+	 * is the same total with a side attached to every body, which is what makes `rebalance`'s per-side loop
+	 * mean anything at all.
+	 *
+	 * **A player who has actually gone is not carried over**, and that is not bookkeeping. A record held for
+	 * somebody who has left the server is a seat the lobby will never fill, so that side stays one rig short
+	 * for the rest of the session. `onPlayerLeft` owns a departure — it puts a rig in the seat at once —
+	 * and the connectivity test below is what stops this pass from undoing it.
+	 *
 	 * **A player who appears in the roster has chosen**, so any reservation held for them is spent — see
 	 * `pending`. That is what makes "the player opts into the side a rig stood down from" cost nothing:
 	 * the seat they take is the seat that was being counted for them a moment earlier.
@@ -1107,9 +1351,21 @@ export class LobbyRigService implements OnStart {
 
 		this.revision = revision;
 
+		const roster = this.matches.roster();
+
+		// **Read before the snapshot is replaced**, because the question this answers is what the roster
+		// has *stopped* saying. A player it let go of is still standing in the lobby, so the seat they were
+		// holding moves columns rather than ceasing to exist. See this method's doc for the whole of it.
+		for (const [player, side] of this.seated) {
+			if (roster.has(player)) continue;
+			if (!player.IsDescendantOf(Players)) continue;
+
+			this.pending.set(player, side);
+		}
+
 		this.seated.clear();
 
-		for (const [player, side] of this.matches.roster()) {
+		for (const [player, side] of roster) {
 			this.seated.set(player, side);
 			this.pending.delete(player);
 		}
@@ -1170,6 +1426,10 @@ export class LobbyRigService implements OnStart {
 		const spawn = spawns[this.spawnCursor % spawns.size()];
 		this.spawnCursor++;
 
+		// **The walk tag and nothing else — a lobby rig wears no gameplay behaviour at all.** That is why a
+		// lobby rig has no `RespawnBehavior` either, and why a lobby rig that is killed stays down as a corpse
+		// until {@link retireHopelessCorpses} retires it: see `GAMEPLAY_BEHAVIORS` for why the tag cannot
+		// simply be added here, which is the home a replacement would come back to.
 		const rig = this.npcs.spawn(template, spawn.CFrame.add(new Vector3(0, 3, 0)), [BEHAVIOR_WALK_TO_JOIN_PAD]);
 
 		rig.Name = `${template.Name}${++this.serial}`;
