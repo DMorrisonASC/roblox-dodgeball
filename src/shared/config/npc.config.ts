@@ -52,7 +52,7 @@ export const NPC_CONFIG = {
 	 * design one: the design is the cadence below, and this is what fraction of the cadences the rig
 	 * decides to catch. If it reads as "rarely catches", move it up; if as "usually catches", down.
 	 */
-	CATCH_CHANCE: 0.1wa,
+	CATCH_CHANCE: 0.1,
 
 	/**
 	 * How long a gated catcher's decision lasts, in seconds — the cadence the chance above is rolled on.

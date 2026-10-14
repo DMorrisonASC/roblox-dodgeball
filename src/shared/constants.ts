@@ -1003,6 +1003,55 @@ export const CATCH_ANIMATION_ATTRIBUTE = "AnimCatch";
 export type CatchCause = "attempt" | "catch";
 
 /**
+ * **What a rig is winding up** — the charge it is holding, as a fraction of a full hold, for as long as it holds
+ * it. A number from `0` to `1`, written by the one behaviour that runs a windup on the body.
+ *
+ * ## Who writes it, and who reads it
+ *
+ * **Written on the server, read on every client, and the two halves are deliberately not the same code.**
+ * A rig is driven by `ThrowBehavior` (and its practice twin, `AlwaysThrowBehavior`), which is the only thing
+ * that knows a windup exists; the pixels are each client's business, and `client/chargeEffect.ts` draws the
+ * looping effect on the rig's hand for as long as this is set. Nothing is sent to describe the effect — the
+ * attribute is the whole of the client's discovery, exactly as {@link CATCH_ANIMATION_ATTRIBUTE} is for the
+ * catch and {@link DUCKING_ATTRIBUTE} is for the duck.
+ *
+ * ## A number rather than a boolean — a reversal, recorded
+ *
+ * **This was a `true` flag, and the argument for it was written out here: "the only question the effect asks is
+ * 'is one being held', and a boolean is that question."** That was right for as long as it was true, and it
+ * stopped being true when a second effect arrived that needed to know *how much* — a fire ball that overlays the
+ * hold above 90 %. **A threshold cannot be asked of a flag**, and the alternatives are both worse than widening
+ * this one: a second attribute would carry the same event in two places and could disagree with itself, and a
+ * client-side model of a rig's hold is not available at all — nothing on this side knows how long a windup lasts,
+ * because the *server* solved it from a distance.
+ *
+ * **The value costs nothing to publish because it is already in hand at the moment of the write.** The tracker
+ * solves the hold before it sets anything, so this is the same write with a number in it instead of `true`, and
+ * the client's read is unchanged in shape: absent means "not winding up", and a value means "winding up, by this
+ * much".
+ *
+ * **A rig's number is constant for the whole of its hold, and a player's is not — which is the one place the two
+ * bodies differ.** A rig's charge is *solved* rather than measured (`chargeForRange` answers a distance with one
+ * number at the instant the rig decides), so a rig is above a threshold for the whole of its windup or never;
+ * a player's rises through the hold on a clock and crosses thresholds on the way. Nothing reads this for a
+ * player — see the asymmetry below.
+ *
+ * **Absent means "not winding up"**, the convention every attribute in this block uses, written with `undefined`
+ * rather than with `0` so that "holding nothing" and "not holding" are not two spellings of one state.
+ *
+ * ## The asymmetry, stated because it is the design rather than an oversight
+ *
+ * **A player's charge is not published.** A player's hold is measured on their own machine
+ * (`client/throwing.ts` owns the start instant) and the server learns nothing until the release arrives carrying
+ * the number — so the player's *own* effects are drawn by the client that owns the body, computed from that one
+ * value, and **a player does not telegraph their charge to anybody else**. A rig's does, and that is the point of
+ * the windup: a rig holds for the length of a throw a player would have held, so a person watching sees it
+ * coming, which is what makes a rig dodgeable. Publishing a player's charge would be a new remote and new server
+ * state, and it is not this.
+ */
+export const CHARGING_ATTRIBUTE = "Charging";
+
+/**
  * Which way a body that is mid-dash went, as one of `DodgeDirection`'s four words — on the **dodging
  * model**, player or rig, for the length of the dash.
  *

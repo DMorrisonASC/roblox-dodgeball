@@ -33,7 +33,6 @@ import { LaunchPlan, leftAxis } from "shared/Trajectory";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
-import { emitWindBurst } from "./WindBurst";
 import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
 import { EconomyService } from "../economy/EconomyService";
@@ -1405,24 +1404,16 @@ export class BallService implements OnStart {
 		// this call site owes it.
 		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.THROW, THROW_EMITTER_NAME);
 
-		// **And the gust of air the throw leaves, at the same point and for the same reason.** The line above
-		// is where the throw is *heard*; this is where it is *seen*, and both are the ball at the instant it
-		// was given velocity — one moment, two senses, which is why they are adjacent rather than fired from
-		// two places that would have to agree about when a throw happens.
+		// **The gust of air that used to fire from this line is gone**, deleted with `WindBurst.ts` on
+		// 2026-10-13 at the user's instruction. It was the second thing at this point — the throw *heard* above,
+		// the throw *seen* here — and what replaced it is a Studio-authored template on the thrower's own body,
+		// drawn by every client from the throw mark this method writes at the release. See
+		// `client/windBurst.ts`, where the effect lives now, and `throwFeedback.config.ts`, which records what
+		// went with it and the one lesson it cost to learn.
 		//
-		// **Built by the server, and simulated by every client** — which is not the same claim, and is the one
-		// that turned out to be true. What replicates is the emitter: its properties. Each client then simulates
-		// the particles from them, so nothing is sent and no client is asked, and the server is still the only
-		// thing that decides a throw happened. See `WindBurst.ts`, which used to fire the gust with a single
-		// `Emit` call — an emission *event* rather than a property — and was therefore invisible to everybody
-		// but the server that made it.
-		//
-		// **A rig's throw comes through this same line**, because `ThrowBehavior` calls `throwBall` like any
-		// other thrower. That is deliberate rather than overlooked: a rig displaces air when it throws for the
-		// same reason a player does, and the alternative would be a per-caller flag whose only purpose is to
-		// make one thrower's throws look different from another's. See `WindBurst.ts`, which tidies itself
-		// away on its own timer and is owed nothing by this call site.
-		emitWindBurst(ball.CFrame, model.Name);
+		// **One property of this call site is worth keeping in mind**: a player's throw and a rig's both arrive
+		// here, so a mark written at this point is the one road by which both bodies can be given a visible
+		// release. That is why the new effect needs no per-caller flag either.
 
 		ball.CanCollide = true;
 		// **And the query half comes back with it**, which is the other end of `attachToHand`'s

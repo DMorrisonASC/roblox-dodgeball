@@ -1,4 +1,5 @@
 import { Flamework } from "@flamework/core";
+import { startChargeEffects } from "./chargeEffect";
 import { startIasTest } from "./IasTest";
 import { startHitConfirm } from "./hitConfirm";
 import { startHitVfx } from "./hitVfx";
@@ -25,3 +26,10 @@ startHitVfx();
 // a sentence rather than a burst — so it is a second subscriber rather than a call from `hitVfx`: the two
 // have nothing to say to each other, and neither should have to know the other exists. See `hitConfirm`.
 startHitConfirm();
+
+// **And the charge effect, which departs from the two above in *how* it learns its fact.** Those two watch a
+// server event; this one watches the local player's own hold (`chargeStartedAt`, a `Fusion.Value`) *and* the
+// charge a rig publishes as an attribute, because a player's charge is measured on this machine and never sent
+// while a rig's windup is the server's. One module, both drivers, and the same plain-module-because-Flamework-
+// never-loads-it reasoning as the pair above. See `chargeEffect` for the two roads and the effect they share.
+startChargeEffects();
