@@ -302,6 +302,40 @@ export const events = Net.Definitions.Create({
 	roundHit: Net.Definitions.ServerToClientEvent<[hitter: string, victim: string, direction: string]>(),
 
 	/**
+	 * Server → client: **one hit landed on a body, whoever either end was, named with the victim first.**
+	 * This is what the impact effect is drawn from, and it is a second event about a hit rather than a second
+	 * version of the one above.
+	 *
+	 * **Why it is not `roundHit` with more callers.** That event is the *feed's*, and its shape follows from
+	 * that: it carries a direction so a row can be painted in two team colours, and it is sent only for hits
+	 * with a person at both ends — `RoundService.logHit` is the sole sender and is reached only when the
+	 * thrower is a `Player` and the victim is too, because the board and the log are records about people. A
+	 * rig's throw and a ball that lands on a rig therefore produce no `roundHit` at all, and in a round played
+	 * against rigs those are most of the hits in it. **A cosmetic effect cannot live on an event that is
+	 * gated on both ends being people**, so it gets its own.
+	 *
+	 * **Two names, and one string covers both kinds of body.** The victim's *model* name is the player's name
+	 * for a character and the rig's own name for a rig, so a client compares against `Players.LocalPlayer.Name`
+	 * exactly as it would for the feed; the thrower is named the same way. What it deliberately does **not**
+	 * carry is the direction, the sides or a count: the effect's colour is which template is cloned, so none
+	 * of that is read, and a field nothing reads is a field that will be believed later.
+	 *
+	 * **Victim first, and the order is the design**: a hit is an impact *at the body it landed on*, so the
+	 * subject of the sentence is the victim and the thrower is what it is told about. A reader that is in
+	 * neither end draws nothing.
+	 *
+	 * **Sent from `RoundService.registerHit`, which is where both ends resolve to something with a name** —
+	 * the thrower arrives as a token that is a `UserId` for a player and a GUID for a rig, and matching a
+	 * rig's GUID to its rig is `throwerOf`'s job. Gated like everything else about a hit: `registerHit`
+	 * returns unless a round is being played, so a ball that touches a body outside one draws nothing.
+	 *
+	 * **It is not a record and nothing accumulates from it.** `roundHit` and `roundHitLog` remain the round's
+	 * history of a hit between two people; this is the same event told to the clients that have to draw it,
+	 * and only `hitVfx` reads it.
+	 */
+	hitImpact: Net.Definitions.ServerToClientEvent<[victim: string, thrower: string]>(),
+
+	/**
 	 * Client → server: this player wants to spend coins on a Power Chest.
 	 *
 	 * **Carries nothing, for {@link multiBall}'s reason.** The chest's price, the roster and this

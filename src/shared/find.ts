@@ -23,7 +23,10 @@
  *
  * **The folder lookup is the only one left in here.** A `findModel` sat beside it for the map
  * rotation and went with `MapService` when that was deleted — `RoundService` is the only remaining
- * caller, and it wants folders.
+ * caller, and it wants folders. A second `findModel` was written here for the catch shockwave's
+ * template and taken back out again the same day: that lookup accepts a `Model` *or* a loose
+ * `BasePart`, which is a question this file's one-class-per-helper shape cannot ask, so the walk
+ * lives beside the effect that needs it (see `findTemplate` in `client/catchShockwave.ts`).
  */
 
 /** The first descendant of `root` called `name` that is a `Folder`, or nothing. */

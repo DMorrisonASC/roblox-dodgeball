@@ -952,29 +952,55 @@ export const NPC_ANIM_THROWING_ATTRIBUTE = "AnimThrowing";
 export const THROW_ANIMATION_ATTRIBUTE = "AnimThrow";
 
 /**
- * Whether the body is **mid-catch** — a ball has just arrived in its hand — for as long as the catch's own
- * clip is worth playing.
+ * Whether the body is **mid-catch, and which half of one** — `"attempt"` while it is reaching, `"catch"` once
+ * the ball is in its hand — for as long as the catch's own clip is worth playing.
  *
- * **The second action mark, and deliberately the same shape as the throw's immediately above: an event
- * rather than a condition.** It is written where a catch is *confirmed* — `BallService.catchBall`, the one
- * place a ball ends up in a hand whoever caught it — and cleared a moment later, so the clip starts when the
- * mark appears and is left when it goes.
+ * ## The value is the cause, not a flag
  *
- * **What it is not is a catch window, and the two are one word apart.** `CATCH_READY_AT` and the window
- * behind it are the *attempt*: a press, which may catch nothing at all and which a body can hold open for
- * a second without a ball ever arriving. This is the other end of that — written only once the ball is
- * actually in the hand, which is why a wait that came to nothing plays no clip.
+ * **The type is a string rather than `true` because the two halves of a catch have to be told apart on the
+ * client, and a boolean has only one value to say them with.** An attempt and a successful catch play the same
+ * clip — they *are* the same animation, a body reaching — so nothing downstream of this attribute could
+ * distinguish them: the clip does not change when the ball arrives, which means the clip's own edge fires once,
+ * on the attempt, and the success is invisible.
  *
- * **Written for every body that catches, and read for the rigs.** A rig is dressed from it by every client
- * that can see the rig (`RigAnimationController`); a **player's** body is animated on that player's own
- * client, so the clip is played from the server beside this write rather than here — the same two-halves
- * arrangement the throw has, argued in `BallService.playActionAnimation`. See
- * {@link CATCH_CONFIG.CATCH_ANIMATION_SECONDS} for how long it stays up.
+ * **And the value has to *differ* for the second write to be seen at all.** An attribute rewritten with the
+ * value it already holds fires no `AttributeChanged` — see `catchShockwave.ts`, whose doc has said so since
+ * before this change — so two writes of `true` are one event. Writing `"catch"` over `"attempt"` is a different
+ * value, so it **does** fire, and that is the whole reason this is a string: **the type is what makes the second
+ * event observable.** A flag could not, whatever fired it.
  *
- * **Absent means "not catching"**, and a catch that lands inside the window of an earlier one restarts this
- * clock rather than stacking a second — see `BallService.catchBall`, which owns both ends.
+ * ## The two causes, and the two callers
+ *
+ * Both halves go through one writer, `BallService.markCatchAnimation(model, cause)`, and the value is its
+ * argument:
+ *
+ * - **`"attempt"`** — written by `CatchService` when a catch *window* opens, at both of its sites: the ordinary
+ *   new-window branch and the endless window a dev holds open. A press that catches nothing is still a body
+ *   reaching, and the clip is the only feedback a press has.
+ * - **`"catch"`** — written by `BallService.catchBall`, the one place a ball ends up in a hand whoever caught
+ *   it, once the ball has actually arrived.
+ *
+ * A catch landing inside an earlier mark's window restarts this clock rather than stacking a second mark — see
+ * `BallService.catchBall`, which owns both ends — so **`"catch"` written over an `"attempt"` is the ordinary
+ * sequence rather than an edge case**: a body reaches on the press and is told it succeeded a fraction of a
+ * second later.
+ *
+ * **Absent means "not catching"** and is the third value the client sees, written by the same timer that set it.
+ * See {@link CATCH_CONFIG.CATCH_ANIMATION_SECONDS} for how long it stays up, `client/bodyAnimation.ts` for the
+ * one reader and the clip, and `client/catchShockwave.ts` for the reader that acts on *which* cause it was
+ * rather than on the fact that there is one.
  */
 export const CATCH_ANIMATION_ATTRIBUTE = "AnimCatch";
+
+/**
+ * The two halves of a catch, as the values {@link CATCH_ANIMATION_ATTRIBUTE} takes.
+ *
+ * **Declared here beside the attribute and typed rather than spelled out at each end**, which is the argument
+ * `HitDirection` makes about the wire: a literal union written in two files is two places for the two strings to
+ * drift apart. `BallService` writes it, `client/bodyAnimation.ts` validates it, and `client/catchShockwave.ts`
+ * acts on it.
+ */
+export type CatchCause = "attempt" | "catch";
 
 /**
  * Which way a body that is mid-dash went, as one of `DodgeDirection`'s four words — on the **dodging

@@ -1729,6 +1729,25 @@ export class RoundService implements OnStart {
             if (victimPlayer !== undefined) this.logHit(thrower, victimPlayer);
         }
 
+        // **And everybody is told what happened to this *body*, which is not the same telling as the log
+        // above.** The log is a record about a pair of people, so a rig's throw and a ball that landed on a
+        // rig are not in it; this is about an impact, so it goes out for every hit that reaches the round —
+        // those two cases and the player-on-player one the log already covers. **Sent from here rather than
+        // from the ball** because this is where both ends have been resolved to something with a name: the
+        // token is a `UserId` for a player and a GUID for a rig, and matching a rig's GUID to its rig is
+        // `throwerOf`'s job a few lines above. A ball could not do it without a second copy of that scan.
+        //
+        // **Nothing here is a record.** No counter is raised, no entry is written and no score moves — it is
+        // the cosmetic half, drawn by each client for itself. See `networking.ts` on `hitImpact` for the two
+        // names and their order, and `hitVfx` for the only reader.
+        //
+        // **Only when the thrower resolved.** An unresolved token means a rig whose throw this round cannot
+        // attribute — one that has left, or one nobody gave a side to — and a payload with no thrower would
+        // be a sentence with half a subject. The victim still loses the health; it just is not drawn.
+        if (thrower !== undefined) {
+            events.Server.Get("hitImpact").SendToAllPlayers(victim.Name, thrower.Name);
+        }
+
         // **A mode that keeps no score is not asked what a hit is worth.** See `GameMode.scores`:
         // a scoreless mode has no hit rule to state, so asking anyway would make every mode carry a
         // method whose only correct answer is "nothing" — and would call it on every landed hit of

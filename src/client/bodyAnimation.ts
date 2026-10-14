@@ -1,7 +1,9 @@
 import { AnimationState, CYCLE_STATES, STATE_CLIP_SECONDS } from "shared/config/animation.config";
+import { playCatchShockwave } from "./catchShockwave";
 import { BodyAction, bodyClipFor, clipIdFor } from "shared/animation";
 import {
 	CATCH_ANIMATION_ATTRIBUTE,
+	CatchCause,
 	DODGE_DIRECTION_ATTRIBUTE,
 	DUCKING_ATTRIBUTE,
 	THROW_ANIMATION_ATTRIBUTE,
@@ -138,6 +140,26 @@ export function startBodyRender(
  * playing and start nothing in its place — the release, in the same shape as a state whose id is blank.
  */
 export function applyBodyRender(render: BodyRender, conditions: BodyConditions): void {
+	// **The catch's cause is handed to the effect before the clip guard rather than after it, and that ordering
+	// is the whole of the change this made to this function.** Both halves of a catch play the *same* clip — an
+	// attempt and a success are the same animation, a body reaching — so the clip's edge fires once, on the
+	// attempt, and a catch arriving while that pose is still playing changes nothing this function compares. **The
+	// cause is the only thing that distinguishes them**, so it is handed over on every call and the effect decides
+	// what is new about it. An `undefined` is not "no call": it is the attribute's third state, written when the
+	// mark expires, and it is what tells the effect to clear its record for this body so the *next* attempt fires
+	// again.
+	//
+	// **The effect keeps that record rather than this function doing it**, and the reason is that this function
+	// has no per-body state to keep it in: what it remembers is `render.playing`, a clip, and a second field here
+	// would be a second thing to keep cleared. The module that draws the effects already keys everything on the
+	// body. See `playCatchShockwave` for the guard and `catchShockwave.ts` for the two templates.
+	//
+	// **One attribute read per call rather than one per state**, which is worth saying because the line below
+	// reads the same attribute again through `publishedAction`: two reads of a value that is already local is
+	// cheaper than threading the cause through `BodyConditions`, which is a shared shape every state would then
+	// carry a field for.
+	playCatchShockwave(render.body, publishedCatchCause(render.body));
+
 	const clip = bodyClipFor({
 		speed: conditions.speed,
 		grounded: conditions.grounded,
@@ -155,6 +177,17 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	// left empty, which is how a state opts out — is not a clip that can be loaded, and remembering the attempt
 	// is what stops every change from trying again for a clip that will never exist.
 	render.playing = clip;
+
+	// **The catch's effect used to be fired here, on `clip === "catch"`, and it has moved to the top of this
+	// function.** That line was right while both halves of a catch wrote one value: the pose *was* the event, and
+	// the edge into it was the edge into the catch. It stopped being right the moment the attribute carried its
+	// cause, because the second cause arrives while this clip is already playing — the guard above returns, and
+	// this branch would never be reached. A successful catch drew nothing at all. See the hand-off at the top for
+	// what replaced it, and `bodyClipFor` for why the clip is deliberately the same for both causes.
+	//
+	// **What is deliberately *not* here** is any effect that belongs to the clip rather than to the attribute: the
+	// track lookup below is the clip's own business, and this function's other job — starting and stopping tracks
+	// — is unchanged.
 
 	// **And `undefined` is the release: the stop above has already happened and no track is started here, which
 	// is the whole of "play nothing".** The body is left to whoever else is animating it — for a player that is
@@ -264,7 +297,12 @@ function publishedDodge(body: Model): DodgeDirection | undefined {
  */
 function publishedAction(body: Model): BodyAction | undefined {
 	if (body.GetAttribute(THROW_ANIMATION_ATTRIBUTE) === true) return "throw";
-	if (body.GetAttribute(CATCH_ANIMATION_ATTRIBUTE) === true) return "catch";
+
+	// **Read through the validator below rather than tested for presence here**, so that this attribute's two
+	// words are checked in exactly one place in this file — the same shape the dodge's read has, and for the same
+	// reason. The clip is the same for both causes on purpose: an attempt and a success *are* the same animation,
+	// and telling them apart is the effect's job rather than the animation's.
+	if (publishedCatchCause(body) !== undefined) return "catch";
 
 	// **The duck is the third mark and the only one that lasts**, which is why it is read last and why it
 	// still sits above locomotion in `bodyClipFor` rather than being a condition. It is written by
@@ -274,6 +312,28 @@ function publishedAction(body: Model): BodyAction | undefined {
 	// player sees, and the exemption is what the game agrees to, and the two are deliberately different
 	// mechanisms reading the same one attribute.
 	if (body.GetAttribute(DUCKING_ATTRIBUTE) === true) return "duck";
+
+	return undefined;
+}
+
+/**
+ * Which half of a catch this body is in, read off the body, or nothing.
+ *
+ * **Validated rather than trusted**, exactly as {@link publishedDodge} is and for the same reason: an attribute
+ * is a value anything can write, so a value that is not one of the two words means something else wrote it.
+ * `undefined` is the third state and the ordinary one — a body that is not catching — and an unrecognised value
+ * is answered as `undefined` too rather than passed on, which is the safe direction: the effect is not drawn for
+ * a cause nothing published.
+ *
+ * **This is the value the catch's effect fires on, and it is read here rather than inside the effect.** This
+ * file is the only place that reads `CATCH_ANIMATION_ATTRIBUTE`, and the design keeps it that way: the effect
+ * takes the cause as an argument and discovers nothing for itself, so the number of modules that know a body
+ * exists stays at two — the two animators — rather than becoming three.
+ */
+function publishedCatchCause(body: Model): CatchCause | undefined {
+	const value = body.GetAttribute(CATCH_ANIMATION_ATTRIBUTE);
+	if (!typeIs(value, "string")) return undefined;
+	if (value === "attempt" || value === "catch") return value;
 
 	return undefined;
 }

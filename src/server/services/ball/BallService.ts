@@ -5,6 +5,7 @@ import {
 	BALL_ABILITY_ATTRIBUTE,
 	BALL_SIZE,
 	CATCH_ANIMATION_ATTRIBUTE,
+	CatchCause,
 	DUCKING_ATTRIBUTE,
 	PICKUP_LOCKED_UNTIL,
 	THROWER_TOKEN,
@@ -558,15 +559,20 @@ export class BallService implements OnStart {
 	 * older timer finds it does not and leaves it alone. This is the case a catcher actually produces — a press
 	 * after a press, or the same body catching twice inside half a second.
 	 *
-	 * **`cause` is for the log and nothing else**, which is the only place the two callers differ: it is worth
-	 * being able to tell, from the output, a body that reached and missed from one that reached and took it.
+	 * **`cause` is the value rather than a note about it, and that is a change of job rather than of wording.**
+	 * It used to be for the log and nothing else — the two callers differed only in what the output said. It is
+	 * now what the attribute *carries*, because a catch written over an attempt has to be a **second observable
+	 * event** on the client: both halves play the same clip, so the clip cannot tell them apart, and an
+	 * attribute rewritten with the value it already holds fires nothing. `true` for both was one event where
+	 * there are two. The reader that acts on it is `client/catchShockwave.ts`, which draws the white attempt and
+	 * the green catch.
 	 */
-	public markCatchAnimation(model: Model, cause: "attempt" | "catch"): void {
+	public markCatchAnimation(model: Model, cause: CatchCause): void {
 		this.clearAnimationMark(model, THROW_ANIMATION_ATTRIBUTE, this.throwMarks);
 
 		const catchMark = (this.catchMarks.get(model) ?? 0) + 1;
 		this.catchMarks.set(model, catchMark);
-		model.SetAttribute(CATCH_ANIMATION_ATTRIBUTE, true);
+		model.SetAttribute(CATCH_ANIMATION_ATTRIBUTE, cause);
 
 		// **One line per mark.** The clip itself is drawn by the client that owns the body — every client for a
 		// rig, its own for a player — and each of those prints its own line when it changes clip

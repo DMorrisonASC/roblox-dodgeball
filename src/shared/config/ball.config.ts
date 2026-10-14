@@ -321,7 +321,7 @@ export const BALL_CONFIG = {
 	 * clear. So this is the floor of the **aimed** throw, which is now made by nobody — see `planAimedThrow` —
 	 * and every throw the game actually makes is a charged one that never reads it.
 	 */
-	THROW_SPEED: 0,
+	THROW_SPEED: 50,
 
 	/**
 	 * The gravity the ball falls under, in studs per second squared — **not the world's**.
