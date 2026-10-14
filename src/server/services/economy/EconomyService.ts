@@ -176,16 +176,42 @@ export class EconomyService implements OnStart {
 	}
 
 	/**
-	 * Whether `player` owns `kind` — the one fact `BallService` asks before honouring a key.
+	 * Whether `owner` owns `kind` — the one fact `BallService` asks before honouring a key.
 	 *
-	 * **The name stays `ownsPower` now that the record's field is `items`, and that is the point of keeping
-	 * two vocabularies.** This answers a question about a *power*; where ownership is stored is `items`,
-	 * which holds powers and nothing else today. Calling this `ownsItem` would say less about what it checks
-	 * in exchange for repeating the field name, and the cascade through `BallService` and `SuperService`
-	 * would leave no reader better off.
+	 * **A rig owns everything, and the rule lands here rather than at either call site.** The user's rule is
+	 * "rigs own every item", and the way that stays one rule is that it is answered by the query that already
+	 * exists: anything that is not a `Player` owns every X. A rig has no `Player`, no record and no wallet —
+	 * it is not a participant in the economy at all — so "does it own this power" has exactly one sensible
+	 * answer, and every rig-side caller gets it without knowing anything about rigs.
+	 *
+	 * **What is deliberately not here, because each was the tempting shape and each is worse.** A rig-only
+	 * method (`ownsPowerForRig`) would be a second query beside this one, so a caller would have to know which
+	 * kind of body it was holding — the exact knowledge this signature removes. A bypass at `BallService`'s
+	 * two call sites would put the rule in two places, one per call site, free to drift. A grant method that
+	 * walked a rig's tags would be an economy write for a body with no record to write to. And a fake `Player`
+	 * would put a body into `records` that can never be saved, keyed by a `UserId` that does not exist.
+	 *
+	 * **The *name* stays `ownsPower` now that the record's field is `items`, and that is the point of keeping
+	 * two vocabularies.** This answers a question about a *power*; where ownership is stored is `items`, which
+	 * holds powers and nothing else today. Calling this `ownsItem` would say less about what it checks in
+	 * exchange for repeating the field name, and the cascade through `BallService` and `SuperService` would
+	 * leave no reader better off.
+	 *
+	 * **The widening is honest about what it does today, which is nothing yet.** No rig asks this question
+	 * while a rig's ability path does not exist — see the report on this task — so this is a *rule* that a
+	 * rig's first caller will find already true rather than a behaviour that changed under anybody's feet.
+	 * The player half is untouched to the letter: a player without the power is refused in the same words,
+	 * from the same record.
 	 */
-	public ownsPower(player: Player, kind: AbilityKind): boolean {
-		return this.records.get(player)?.items.has(kind) ?? false;
+	public ownsPower(owner: Player | Model, kind: AbilityKind): boolean {
+		// **`IsA` rather than `typeIs`, because `typeIs` cannot name a `Player`** — its class-name overload
+		// is limited to `keyof CheckableTypes`, and this build's `CheckableTypes` has no `Player` in it, so
+		// `typeIs(owner, "Player")` is a compile error rather than a narrower check. `Instance.IsA` is
+		// declared for every class name and is what narrows this union; it is also the check the rest of the
+		// project already writes by hand for the same question.
+		if (!owner.IsA("Player")) return true;
+
+		return this.records.get(owner)?.items.has(kind) ?? false;
 	}
 
 	/**
@@ -250,24 +276,31 @@ export class EconomyService implements OnStart {
 	}
 
 	/**
-	 * The trail colours `player` has equipped, or nothing for the default grey.
+	 * The trail colours `owner` is wearing, or nothing for the default grey.
 	 *
 	 * **The server answering a question the server asked.** `BallService.attachToHand` calls this on the
 	 * way to `BallTrail.attach`, and it reads the *record* rather than the attribute for
 	 * {@link equipCosmetic}'s reason: the attribute is a rendering copy, and a ball's appearance is not
 	 * something a client gets to assert.
 	 *
-	 * **`undefined` is the common answer and three different situations give it** — no player at all (an
-	 * NPC rig, or a body with no `Player` behind it), nothing equipped in the slot, and an equipped id
-	 * this build no longer catalogues. All three mean "the default", so they are deliberately not told
-	 * apart: the caller has one question and wants one answer.
+	 * **And it takes a *body* rather than a player since 2026-10-14, which is how a rig comes to wear a
+	 * trail.** The caller has a `Model` in hand — that is what a ball is attached to — and the two kinds of
+	 * body answer from two different places: a player's *character* answers from that player's record, and a
+	 * **rig has no player behind it at all**, so its answer is an attribute on the model itself, written at
+	 * spawn. One call, one read, and the caller never has to work out which kind of body it is holding; the
+	 * split lives in {@link equippedTrail}, which is the only place that has to know.
+	 *
+	 * **`undefined` is the common answer and three different situations give it** — no body at all (a
+	 * decorative prop, a corpse mid-rebuild), nothing equipped in the slot, and an equipped id this build no
+	 * longer catalogues. All three mean "the default", so they are deliberately not told apart: the caller
+	 * has one question and wants one answer.
 	 *
 	 * **It returns the def's own `colors`, which is `undefined` for every elimination cosmetic and for
 	 * every cosmetic with no colours at all** — so equipping one changes nothing yet, which is honest
 	 * rather than broken. See `COSMETICS` and the note there on the render hook.
 	 */
-	public equippedTrailColors(player: Player | undefined): CosmeticDef["colors"] {
-		return this.equippedTrail(player)?.colors;
+	public equippedTrailColors(owner: Player | Model | undefined): CosmeticDef["colors"] {
+		return this.equippedTrail(owner)?.colors;
 	}
 
 	/**
@@ -285,27 +318,76 @@ export class EconomyService implements OnStart {
 	 * nothing equipped, an id this build no longer catalogues — because the empty string is already this
 	 * project's word for "the default", and a caller that has to print one has no use for a second one.
 	 */
-	public equippedTrailId(player: Player | undefined): string {
-		return this.equippedTrail(player)?.id ?? "";
+	public equippedTrailId(owner: Player | Model | undefined): string {
+		return this.equippedTrail(owner)?.id ?? "";
 	}
 
 	/**
-	 * The trail def `player` has equipped, or nothing for the default — the single lookup behind
+	 * The trail def this *body* is wearing, or nothing for the default — the single lookup behind
 	 * {@link equippedTrailColors} and {@link equippedTrailId}.
 	 *
-	 * Private, because "which def is this player wearing" is only ever asked in order to read one field of it,
+	 * Private, because "which def is this body wearing" is only ever asked in order to read one field of it,
 	 * and the two callers want one field each.
+	 *
+	 * **Two answers in one place, and the split is the whole of what makes a rig's trail possible.** A
+	 * character resolves to its player, and the record answers — the record is the only thing that may decide
+	 * a *player's* appearance, which is why a client cannot talk its way into a trail. A rig resolves to
+	 * nobody, so the **model's own attribute** answers instead, and that is the same attribute name a player
+	 * carries a trail under (`EQUIPPED_TRAIL_ATTRIBUTE`, read through `EQUIPPED_ATTRIBUTE` so there is one
+	 * place the pairing is written down). Written at spawn by `NpcService`, and read-only here.
+	 *
+	 * **An attribute rather than a second kind of record, and the reason is that a rig has nothing to
+	 * persist.** A trail chosen at spawn is not a player's possession, it is part of the body — the same
+	 * class of fact as a rig's `ThrowerToken`, which is also an attribute written where the body is made.
+	 * A rig record would need a `UserId` that does not exist, a DataStore row that is never read twice, and
+	 * a loader that runs on a body which has no client.
+	 *
+	 * **The cosmetic is read through the same `COSMETICS` lookup for both answers**, so a rig's trail and a
+	 * player's trail are validated and coloured by one piece of code — including the `slot === "trail"` half,
+	 * which is what stops a rig wearing an id that is not a trail at all.
 	 */
-	private equippedTrail(player: Player | undefined): CosmeticDef | undefined {
-		if (player === undefined) return undefined;
+	private equippedTrail(owner: Player | Model | undefined): CosmeticDef | undefined {
+		if (owner === undefined) return undefined;
 
-		const id = this.records.get(player)?.equipped.get("trail");
+		// `IsA` rather than `typeIs` for `ownsPower`'s reason: this build's `CheckableTypes` cannot name a
+		// `Player`, so the narrowing is done by the instance method that is declared for every class name.
+		//
+		// **Written as a branch rather than as one nested ternary, and the reason is that the narrowing is
+		// what tells the two answers apart.** A body with a player behind it — a `Player`, or a *character*,
+		// which is a `Model` whose `UserId` resolves — answers from the record; a rig has no player at all,
+		// so its own attribute answers. Folding the two tests into one expression loses the narrowing that
+		// makes `trailIdOn` a `Model` call, which is the compiler telling the truth rather than being fussy:
+		// `GetPlayerFromCharacter` accepting a `Player` is not the same question.
+		let id: string | undefined;
+
+		if (owner.IsA("Player")) {
+			id = this.records.get(owner)?.equipped.get("trail");
+		} else {
+			const player = Players.GetPlayerFromCharacter(owner);
+			id = player !== undefined ? this.records.get(player)?.equipped.get("trail") : this.trailIdOn(owner);
+		}
+
 		if (id === undefined) return undefined;
 
 		const def = COSMETICS[id];
 		if (def === undefined || def.slot !== "trail") return undefined;
 
 		return def;
+	}
+
+	/**
+	 * The trail id written on a **rig's** model, or nothing.
+	 *
+	 * The `Model` half of {@link equippedTrail}, split out because it is the one place a rig's cosmetic is
+	 * read and because it has to validate the attribute's *type*: an attribute is a bag of anything, and a
+	 * model wearing a number or an empty string is a model wearing no trail rather than one wearing an id
+	 * called `0`. Nothing else about the attribute is trusted — the catalogue lookup above is what decides
+	 * whether the id means anything.
+	 */
+	private trailIdOn(model: Model): string | undefined {
+		const id = model.GetAttribute(EQUIPPED_ATTRIBUTE.trail);
+
+		return typeIs(id, "string") && id !== "" ? id : undefined;
 	}
 
 	/**

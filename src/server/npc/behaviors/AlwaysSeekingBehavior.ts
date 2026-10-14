@@ -6,6 +6,7 @@ import type { SeekRegion } from "./SeekBehavior";
 import type { BallPickupService } from "../../services/ball/BallPickupService";
 import type { BallService } from "../../services/ball/BallService";
 import type { WalkSpeedService } from "../../services/character/WalkSpeedService";
+import type { MysteryBoxService } from "../../services/mystery/MysteryBoxService";
 
 /**
  * Walking to a ball inside the practice zone, for a practice rig — **the practice half of the seek split.**
@@ -64,6 +65,7 @@ export function createAlwaysSeekBehavior(
 	speeds: WalkSpeedService,
 	pickups: BallPickupService,
 	balls: BallService,
+	mystery: MysteryBoxService,
 ): NpcBehavior {
-	return createSeekBehavior(speeds, pickups, balls, BEHAVIOR_ALWAYS_SEEKING, practiceZone);
+	return createSeekBehavior(speeds, pickups, balls, mystery, BEHAVIOR_ALWAYS_SEEKING, practiceZone);
 }

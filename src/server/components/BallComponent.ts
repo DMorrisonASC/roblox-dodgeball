@@ -395,8 +395,11 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// because a resolution turns tags into deaths and a death is credited to this.
 			const throwerId = this.instance.GetAttribute("ThrowerId");
 			const taggedAny = this.hitModels.size() > 0;
-			this.resolveTags(throwerId);
-			this.score(taggedAny);
+			// `hitAny` is what `score` decides on, and it is narrower than `taggedAny`: a tag whose
+			// body had already died is skipped by `resolveTags` and is not a hit. `taggedAny` stays
+			// for the miss splash below, which asks whether the ball tagged anybody at all.
+			const hitAny = this.resolveTags(throwerId);
+			this.score(hitAny);
 
 			// **A Freeze ball that arrived without tagging anybody splashes where it stopped**, and the
 			// flag it asks is the one this branch already reads to count the throw: `taggedAny` was taken
@@ -689,25 +692,30 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	}
 
 	/**
-	 * Counts this throw as a hit, once, at the ball's death — if it landed on anybody.
+	 * Counts this throw as a hit, once, at the ball's death — if it landed on a living body.
 	 *
-	 * **One throw, at most one entry — whether any body was tagged when the ball died decides it,
-	 * and nothing later may change its mind.** That is not a tidiness rule, it is what makes the
-	 * number mean what it says:
+	 * **One throw, at most one entry — whether any tagged body was still alive when the ball died
+	 * decides it, and nothing later may change its mind.** That is not a tidiness rule, it is what
+	 * makes the number mean what it says:
 	 *
 	 * - A single landing reports *every* part the ball overlaps, so without this a ball rolling to a
 	 *   stop would be a dozen hits.
 	 * - A ball that tagged three players and then hit the floor is one hit, not three. The throw
 	 *   landed on somebody; where it came to rest afterwards is not a second throw.
+	 * - A ball whose only tags are bodies that died while it was still in the air is no hit at all.
+	 *   Striking a corpse gains nothing — the death is the thing the hit would have caused, and
+	 *   another hand caused it first. This is also what makes one victim worth one hit across a
+	 *   MultiBall volley: the first ball to resolve kills the body, and every later ball that tags
+	 *   the same corpse resolves against a dead humanoid and adds nothing.
 	 * - A ball that is caught is counted nowhere: the catch returns before the ball dies, so nothing
 	 *   reaches here. The caught thrower's death is not this figure either — that is an out, and it
 	 *   is counted by the round, which is the only thing that knows an elimination happened.
 	 *
-	 * **Nothing is counted when nothing was tagged, and that is the rule rather than an omission.**
-	 * The record is hits against outs — outcomes, not throws — so a throw that lands on the floor is
-	 * a throw with no entry, and there is no such figure as a miss to add one to. The flag below is
-	 * still written either way: it means "this throw's accounting is done", which is worth being able
-	 * to say whether or not the answer was a hit.
+	 * **Nothing is counted when no living body was tagged, and that is the rule rather than an
+	 * omission.** The record is hits against outs — outcomes, not throws — so a throw that lands on
+	 * the floor is a throw with no entry, and there is no such figure as a miss to add one to. The
+	 * flag below is still written either way: it means "this throw's accounting is done", which is
+	 * worth being able to say whether or not the answer was a hit.
 	 *
 	 * **Taken at the death, not at the hit**, because a hit is no longer final — a catch can still
 	 * take it back. `StatsRecorded` is cleared by the same `Armed` transition that clears the tag
@@ -717,18 +725,24 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * Whether that names a person at all is `StatsService`'s question — a rig's token is a GUID and
 	 * falls out there, which is what keeps NPCs out of the record.
 	 */
-	private score(taggedAny: boolean): void {
+	private score(hitAny: boolean): void {
 		if (this.instance.GetAttribute("StatsRecorded") === true) return;
 
 		this.instance.SetAttribute("StatsRecorded", true);
 
-		// **A throw that tagged nobody is a miss, and nothing is told about it.** This branch used to
-		// report one to `SuperService`, which zeroed the thrower's run of hits. The count is "hits since
-		// you last died" now and has no miss reset, so there is nothing on the other end of that call —
-		// see `SuperService.noteHit` for what stood there and why it went.
+		// **A throw that hit nobody alive is a miss, and nothing is told about it.** This branch used
+		// to report one to `SuperService`, which zeroed the thrower's run of hits. The count is "hits
+		// since you last died" now and has no miss reset, so there is nothing on the other end of that
+		// call — see `SuperService.noteHit` for what stood there and why it went.
+		//
+		// **`hitAny` is narrower than "tagged anybody", and the narrowing is the point.** A ball that
+		// tagged a body which then died before this ball resolved has `hitAny` false: `resolveTags`
+		// skipped the corpse, and a death that already happened by another hand is not this throw's to
+		// claim. So the test is the same one `resolveTags` applied per body, reduced to "did any of
+		// them pass" — and it is what stops a MultiBall volley scoring twice for one victim.
 		//
 		// **The branch itself stays, and it is load-bearing rather than a leftover.** What follows it is
-		// the hit accounting, and that accounting does not re-test `taggedAny` — so deleting this as the
+		// the hit accounting, and that accounting does not re-test `hitAny` — so deleting this as the
 		// empty branch it now looks like would record every miss as a hit and raise the thrower's count
 		// for it. The `return` is the whole of what this does: a miss is a throw whose accounting is done,
 		// which is what `StatsRecorded` above has just said, and that is the end of it.
@@ -739,7 +753,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// the count alone in every mode. In Team Elimination and Dodge and Seek the thrower dies for it
 		// and the count goes anyway; in Score Rush the thrower survives, and that is the one mode where
 		// the difference is visible.
-		if (!taggedAny) return;
+		if (!hitAny) return;
 
 		const throwerToken = this.instance.GetAttribute("ThrowerId");
 		if (!typeIs(throwerToken, "string") || throwerToken === "") return;
@@ -751,7 +765,17 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// and neither owns it. `StatsService` keeps a career total and `SuperService` keeps a run in a row
 		// — different questions about one event, which is why they are handed the same token rather than
 		// one being worked out from the other.
-		this.abilities.noteHit(throwerToken);
+		//
+		// **And the run is gated here rather than inside `noteHit`, because the gate is a round fact and the
+		// round owns it.** The thrower is resolved through `throwerOf` — a `Player` for any account, or a rig
+		// only while it is in the round — and the run only moves when that body is *in this round*: a player
+		// in `activePlayers`, a rig on a side during `Playing`. A practice hit therefore records a career hit
+		// (above) but never a run, and the crown cannot grow out of one. `noteHit` takes the resolved body
+		// and no longer asks the phase itself — the participation gate subsumes it.
+		const thrower = this.rounds.throwerOf(throwerToken);
+		if (thrower !== undefined && this.rounds.isActive(thrower)) {
+			this.abilities.noteHit(thrower);
+		}
 	}
 
 	/**
@@ -822,7 +846,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * The list is emptied after the loop rather than during it, so nothing reads a half-resolved
 	 * throw.
 	 */
-	private resolveTags(throwerId: unknown): void {
+	private resolveTags(throwerId: unknown): boolean {
 		// **What question this answers:** whether the ball died on the world at all, and with how
 		// many tags owed. `landHit` below already prints one line per body it resolves, so this adds
 		// only the count — and, more importantly, the case of *zero*, where the method ran and had
@@ -837,15 +861,27 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		const token = typeIs(throwerId, "string") ? throwerId : "";
 
+		// **The answer this returns: did any tag resolve into a hit.** A tag whose body is already
+		// dead is skipped — see the doc above — and a throw whose only tags are corpses is not a hit
+		// at all: striking a body that has already died gains nothing, because the death is what the
+		// hit would have caused and another hand caused it first. Tracked here rather than re-derived
+		// by `score`, because this loop is the only place that reads the humanoid's health, and the
+		// answer is gone once the list is cleared below.
+		let hitAny = false;
+
 		for (const [model, part] of this.hitModels) {
 			const humanoid = model.FindFirstChildWhichIsA("Humanoid");
 			if (!humanoid || humanoid.Health <= 0) continue;
+
+			hitAny = true;
 
 			if (token !== "") this.rounds.registerHit(token, model);
 			this.landHit(model, humanoid, part);
 		}
 
 		this.hitModels.clear();
+
+		return hitAny;
 	}
 
 	/**

@@ -1,3 +1,5 @@
+import { pendingAbilityOn } from "shared/ability";
+import { PENDING_ABILITY_ATTRIBUTE } from "shared/constants";
 import { chargeForRange, getThrowMuzzle } from "shared/throw";
 import { BEHAVIOR_ALWAYS_THROWING, NpcBehavior } from "../Behavior";
 import { THROW_TICK_SECONDS, WINDUP_GAP_TURNS, createWindupTracker } from "./ThrowBehavior";
@@ -155,12 +157,26 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 				// is the half that is carried — see `windup.charge`.
 				const heading = new Vector3(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z);
 
+				// **The practice rig spends its pending ability on this throw, exactly as the gated thrower
+				// does.** A box on the practice floor is furniture this rig walks through constantly, so the
+				// slot has to be consumed here or the first box strands it for the rest of the session. Same
+				// mark-or-window before the throw, same clear after — see `ThrowBehavior`'s throw site for the
+				// argument.
+				const pending = pendingAbilityOn(model);
+				if (pending === "MultiBall") {
+					balls.activateMultiBall(model);
+				} else if (pending !== undefined) {
+					balls.markHeldBall(model, pending);
+				}
+
 				const thrown = balls.throwBall(model, {
 					kind: "charged",
 					heading,
 					charge: windup.charge,
 					curve: false,
 				});
+
+				if (pending !== undefined) model.SetAttribute(PENDING_ABILITY_ATTRIBUTE, "");
 
 				// Re-armed on every release rather than on every decision, so a hold that was cancelled or expired
 				// costs the rig a decision rather than a whole interval of standing still with a ball in hand.

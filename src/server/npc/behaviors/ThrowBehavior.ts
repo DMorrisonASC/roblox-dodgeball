@@ -1,6 +1,7 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
-import { CHARGING_ATTRIBUTE } from "shared/constants";
+import { CHARGING_ATTRIBUTE, PENDING_ABILITY_ATTRIBUTE } from "shared/constants";
+import { pendingAbilityOn } from "shared/ability";
 import { resolveDodgeable } from "shared/dodge";
 import { chargeForRange, getThrowMuzzle } from "shared/throw";
 import { BEHAVIOR_THROWING, NpcBehavior } from "../Behavior";
@@ -755,12 +756,31 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// error model is `rollMiss` instead, which moves the *aim* rather than the flight, and the two are
 			// different throws: a bending ball arrives on the mark and a missed one does not. So `false` here
 			// is the same `false` an untouched player sends, and the two bodies are doing one thing.
+			// **The rig's pending ability, applied here because this is the throw that spends it.** A box
+			// collected earlier wrote `PENDING_ABILITY_ATTRIBUTE`; Pierce and Freeze mark the ball in hand,
+			// and MultiBall opens a window. Both are applied *before* the throw so the ball that leaves
+			// carries them — and the slot is cleared *after* the throw, success or failure, because a refused
+			// mark or throw that left the slot full would strand the rig with a prize it can never use. See
+			// `BallService.markHeldBall` and `BallService.activateMultiBall`, which each re-check the slot on
+			// their own access axis.
+			const pending = pendingAbilityOn(model);
+			if (pending === "MultiBall") {
+				balls.activateMultiBall(model);
+			} else if (pending !== undefined) {
+				balls.markHeldBall(model, pending);
+			}
+
 			const thrown = balls.throwBall(model, {
 				kind: "charged",
 				heading: release.heading,
 				charge: windup.charge,
 				curve: false,
 			});
+
+			// **The slot empties on the throw, whatever the throw did.** The mark or the window above was
+			// applied before `throwBall`, so the ball already carries it whether or not the throw was refused;
+			// the slot is the *permission* and the throw is the *use*, and one use is all a box buys.
+			if (pending !== undefined) model.SetAttribute(PENDING_ABILITY_ATTRIBUTE, "");
 
 			// **Logged once, and only for a throw that actually left** — which is the difference between
 			// one line per throw and a line per tick for a rig that cannot throw at all. `throwBall`

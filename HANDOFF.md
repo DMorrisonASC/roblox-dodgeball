@@ -1,17 +1,46 @@
 # Handoff — roblox-dodgeball
 
 A guide for a fresh session. Written 2026-09-28 against a green build (`npm run build` → exit 0);
-**brought up to date 2026-10-11** against a green build at commit `9e2e971`. The previous revision
-was dated 2026-10-06 at commit `5bcc374` with the economy work uncommitted; the economy, the shop
-wiring, the practice zone, the mystery boxes, the throw rework and the NPC dodge/seek behaviours have
-all landed since, so where this file and the source disagree the source wins — and the tag count in
-§7 is deliberately no longer quoted here (it is `TAGS.md`'s own table, which is the count).
+**brought up to date 2026-10-14** against a green build with the rig-walk work in the working tree
+(the last commit is `9b47369`). Earlier revisions: 2026-10-11 at `9e2e971`, 2026-10-06 at `5bcc374`.
+Where this file and the source disagree, the source wins — and the tag count in §7 is deliberately
+not quoted here (it is `TAGS.md`'s own table, which is the count).
+
+**What has landed since the 2026-10-11 revision, because a reader of the old sections is missing it.**
+Four things, and the fourth is the one this pass added a section for:
+
+1. **One animation pipeline for both bodies.** `shared/animation.ts` is the single table and the single
+   rule (`animationFor(speed, grounded, frozen)`, `clipIdFor(state, isR15)`), and `client/bodyAnimation.ts`
+   is the one renderer both a player's controller and `RigAnimationController` drive. There is no longer
+   a rig clip table beside the player's.
+2. **The hit effects split in two.** `roundHit` is gated to hits with a player at both ends, so a rig
+   could not be drawn hitting anybody; `hitImpact` is a second server→client event from
+   `RoundService.registerHit` for exactly those hits. `CATCH_ANIMATION_ATTRIBUTE` now carries
+   `"attempt" | "catch"` rather than `true`, because the *value* is the cause and a rewrite of `true`
+   fires no change.
+3. **A throw is telegraphed, and the charge is visible.** A rig winds up for as long as a player's own
+   hold at the same distance (`createWindupTracker` in `ThrowBehavior.ts`), and publishes the charge it
+   is holding as `CHARGING_ATTRIBUTE` — **a number 0..1, which is a different thing from
+   `SUPER_CHARGE_ATTRIBUTE`**; see §11. `client/chargeEffect.ts` draws the loop on the hand, the fire
+   ball above 90 %, and the gust on release; the old server-built gust is deleted (§17).
+4. **The rigs' walk stopped being a straight line** — a run for a far ball, a hop past a body, an arc
+   towards what it is fetching, a bluff at an armed enemy, and no longer a dead stop when the ball
+   arrives. All of it is in `SeekBehavior.ts`, all of it is config in `npc.config.ts`, and **§17 is the
+   new section that describes it.**
 
 **What "brought up to date" was checked against, so a reader can tell its scope.** Tags, constants and
 attribute names, file paths, config values, the named services and methods, and the claims that
 something has been deleted were checked against the source at that commit. It is **not** a claim that
-every sentence was re-derived: §16's live-log lines come from Studio and are unchanged, and anything
-this file describes as a place-file or Studio fact is unverifiable from here and stands as it was.
+every sentence was re-derived: §16's live-log lines come from Studio rather than from the source, and
+anything this file describes as a place-file or Studio fact is unverifiable from here and stands as it
+was.
+
+**What *this* pass (2026-10-14) actually re-read.** The new §17, and everything it touches: `SeekBehavior`,
+`AlwaysSeekingBehavior`, `NpcService`, `WalkSpeedService`, `ThrowBehavior`, `detect.ts`, `npc.config.ts`,
+`shared/animation.ts` and the client's animation controller. §4, §7, §11, §15 and §16 were corrected
+where this pass found them stale — the three corrections are marked in place (the deleted
+`services/ball/WindBurst.ts`, the two charge attributes, and the new open items). **§5, §6, §8, §9,
+§12, §13 and §14 were not re-derived this time** and stand as the 2026-10-11 revision left them.
 
 **Read this file, then read the actual source.** This document describes *where* things are and *why*
 the shape is what it is; it deliberately does not reproduce code, because code copied into prose
@@ -213,8 +242,11 @@ src/server/
   services/economy/EconomyService.ts  coins, powers, cosmetics, milestones, the chest
   services/character/            RespawnService, WalkSpeedService, SpawnShield
   services/ball/                 BallService, BallFactory, BallSpawnerService, BallPickupService,
-                                 BallTrail, ballExpiry, SphereService, ThrowProbe, SoundEmitter,
-                                 WindBurst
+                                 BallTrail, ballExpiry, SphereService, ThrowProbe, SoundEmitter
+                                 — **`WindBurst.ts` was here and is deleted** (2026-10-13, with the
+                                 thirteen `WIND_BURST_*` entries in `throwFeedback.config.ts`, which is
+                                 the camera shake and nothing else now). The throw's gust is a client
+                                 effect on the thrower's body: §17
   services/actions/              ActionService, CatchService, DodgeService, FreezeService,
                                  actionLock, readyAt
   services/super/SuperService.ts streak, charge (dev-only), MultiBall window, crowns
@@ -233,6 +265,16 @@ src/client/
                                  controllers; panels.ts is the same shape for session state
   roundZone.ts                   "in a round or in a practice zone" — the client's one rule
   IasTest.ts                     finished input test, DEBUG = false, meant to be deleted
+  bodyAnimation.ts /             **the body effects and the one animation renderer, and they are plain
+  hitVfx.ts / hitConfirm.ts /    modules started by hand from `main.client.ts`** — `startHitVfx()`,
+  catchShockwave.ts /            `startHitConfirm()`, `startChargeEffects()`. Flamework loads
+  chargeEffect.ts / windBurst.ts `client/controllers` and nothing else, so anything that is not a
+                                 controller is started by a call there. `bodyAnimation` is the single
+                                 state machine both bodies are dressed by (`applyBodyRender`), and the
+                                 other four are its subscribers: the two hit effects (player-on-player
+                                 via `roundHit`, the rest via `hitImpact`), the catch's shockwave, and
+                                 the charge — a loop on the hand, the fire ball over 90 %, and the
+                                 driver for the gust at the thrower's feet. See §17
   ui/                            screenGui.ts (HudGui / SplashGui / TransitionGui), hudTheme.ts,
                                  viewportConstraint.ts, hudToast.ts, elevation.ts, panelChrome.ts
   controllers/                   CoreGuiController.ts (shared core-GUI wiring)
@@ -707,6 +749,41 @@ Roughly in commit order (`git log` from 2026-09-28):
   map rotation took it with it; `RoundService` is the only caller left in that file and it wants
   `findFolder`.
 
+### Completed since the 2026-10-11 revision (the four in the header, in detail)
+
+- **One animation pipeline for players and rigs.** `shared/animation.ts` holds the table and the rule;
+  `client/bodyAnimation.ts` holds `applyBodyRender`, which both `LocomotionAnimationController` and
+  `RigAnimationController` call. The player's four locomotion words and the rig's twelve states are one
+  table, so a state added there is a state **both** bodies can be dressed in — which is the property the
+  unification exists to buy. The walk/run line is decided by **measured speed** rather than by whether a
+  key is held (`CHARACTER_CONFIG.RUN_ANIMATION_SPEED`), a reversal recorded at that constant, because
+  the key version had no meaning for a body without a key.
+- **`hitImpact` — the second hit event.** `roundHit` is gated to hits with a player at both ends, so a
+  rig's throw and a ball that lands on a rig produced no event at all and no client could draw them.
+  `RoundService.registerHit` now sends `hitImpact` for the rest, and `hitVfx` reads it and nothing else
+  — both events would have doubled a player-on-player hit. Attacker draws gold on the victim, victim
+  draws red on their own body, a bystander draws the neutral template.
+- **The catch cause.** `CATCH_ANIMATION_ATTRIBUTE` carries `"attempt" | "catch"` instead of `true`,
+  because a catch written over an attempt is a *different value* and so fires a change where a boolean
+  rewrite does not. `bodyAnimation` hands the cause to the effect **above** the clip guard, because both
+  causes play the same clip and the clip's edge fires once, on the attempt — which is why the green
+  never drew.
+- **A rig's throw is telegraphed, and the charge is drawn.** `createWindupTracker` (in
+  `ThrowBehavior.ts`, imported by `AlwaysThrowBehavior.ts` so the two cannot disagree about what a hold
+  is) solves the charge from the distance once, publishes `CHARGING_ATTRIBUTE`, and arms a token-guarded
+  expiry timer that can only cancel — the leak a removed tag would otherwise leave, since nothing fires
+  on `RemoveTag`. The hold is `charge × CHARGE_SECONDS`, i.e. **the same duration a player's own hold
+  would have been at that distance**, so the effect on a rig's hand means what it means on a player's.
+  `AlwaysThrowBehavior` moved its cadence from a 5 s tick to a 0.1 s tick with a 5 s decision clock,
+  which is why a practice rig now throws about every 5.8 s rather than every 10 — accepted rather than
+  overlooked.
+- **The server's gust is deleted and the client's is not.** `server/services/ball/WindBurst.ts` is gone,
+  along with its call site in `BallService` (left as a note on the same line) and the thirteen
+  `WIND_BURST_*` entries in `throwFeedback.config.ts`. The lesson it was deleted with is kept there as a
+  tombstone: an emitter **built on the server** and fired with `Emit(N)` is invisible to every client,
+  because an emission is an *event* and what replicates is the emitter's **properties**. The replacement
+  runs on the client that renders it, where `Emit` is the correct call — see §17.
+
 ---
 
 ## 11. Abilities, the streak, and the crown
@@ -725,6 +802,18 @@ player, `hasCharge`/`spendCharge`/`forfeitCharge` all work, and `SuperService` s
 streak — but the streak no longer *pays*: "Nothing grants a charge any more except the dev bypass in
 `BallService`." The number that used to buy a charge (`STREAK_REQUIRED = 6`) is gone; what stands in
 its place is `CROWN_STREAK_THRESHOLD = 3`, read as a threshold for something **visible**.
+
+**There are two charge attributes now, and they are different words for different things — do not
+read one as the other.** `SUPER_CHARGE_ATTRIBUTE` is the above: a **boolean on the `Player`**, the
+ability grant that nothing currently pays out. `CHARGING_ATTRIBUTE` (since 2026-10-13) is a **number
+0..1 on a *rig's* `Model`**, written by `ThrowBehavior`'s windup and read by the client's charge
+effect: it is *how much of a throw's hold a rig is currently holding*, it has nothing to do with the
+super system, and it is deliberately not published for players (a player's own hold is measured on
+their own machine and never sent). The rig-only asymmetry is the point of it — a rig telegraphs its
+charge to everybody, which is what makes a rig's throw dodgeable — and it is argued in full at the
+constant, which also records the reversal from `true` to a number: a threshold cannot be asked of a
+flag, and the fire ball's 90 % overlay is a threshold. Anything asking "is this body charging" wants
+`CHARGING_ATTRIBUTE` if it means a throw and `SUPER_CHARGE_ATTRIBUTE` if it means an ability.
 
 **The charge is spent at different moments per ability, deliberately**: MultiBall at the press
 (a window bought is a window paid for), Pierce and Freeze at the *throw* (the charge follows the
@@ -950,6 +1039,41 @@ Carried over from the previous handoff where still live, plus what this revision
     in two files. Whether to collapse them into one shared read is a decision for a later task; recorded
     here, not fixed.
 
+**Found by this pass (2026-10-14), none of them fixed:**
+
+14. **`HitNeutral` is not in `ReplicatedStorage`, and a live log says so.**
+    `[VFX] no HitNeutral in ReplicatedStorage — that hit effect will not play`, followed by the
+    near-miss list, which shows the other vfx assets present and no `HitNeutral` among them. The
+    consequence is exact: **a bystander's hit draws nothing**, while the attacker's gold and the
+    victim's red both draw. It is a place-file fix — make the template and name it — not a code change.
+15. **`NPC_CONFIG.THROW_RANGE_STUDS` (150) promises more than the shared throw envelope delivers.**
+    The rig-only gate is the distance at which a rig will *decide* to throw; the shared law every body
+    throws under (`chargeForRange` / `chargeSpeed` / `peakAngle`, both bodies sending `kind: "charged"`)
+    reaches about **79 studs to a body's root and 65 to level ground** at a full hold. So a rig with a
+    target between roughly 79 and 150 studs telegraphs a full 1.25 s windup and then **throws short** —
+    the most visible half of the windup doing nothing. It is the last rig-only number in the throw.
+    Lowering it to about 80 would make the gate and the power agree; the alternative is leaving a
+    deliberate "throws at anything it can see" and accepting the wasted windups.
+16. **`LobbyRigService`'s doc argues from a premise that is now false.** Around line 987 it explains that
+    the arena freeze cannot reach a rig because "there is no speed sum for a rig to hold back". Since
+    2026-10-14 **a rig has a speed sum** (`Base` + `Sprint`, §17). The conclusion is unaffected —
+    `ARENA_FREEZE_KEY` is only ever applied to a player's character, so the freeze still does not reach a
+    rig — but the sentence is wrong about *why*. One-line correction, in a file that pass did not own.
+17. **`ChargeHand`'s `Core1` emitter runs at a rate of 150**, against `Energy1` and `Energy2` at 20, in
+    the log's own dump of the template. Either the author meant a core that fires five times as densely,
+    or it is a typo that only Studio can show — nothing in `src/` knows what is inside a template.
+18. **The four body effects each carry their own `findTemplate` → `carrierOf` → `templateEmitters`
+    pair.** This is deliberate and precedented (`shared/find.ts` says at length why the per-effect walk
+    lives beside the effect: the lookup accepts a `Model` *or* a loose `BasePart`, which that file's
+    one-class-per-helper shape cannot ask) — but it is also four copies, and it is the thing to look at
+    first if a template bug is ever fixed in one effect and not the others.
+19. **"I can't join the game" was reported once and never diagnosed.** It followed a build that added the
+    client charge effect, was not reproducible in the sessions afterwards, and no line of it was ever
+    captured — so there is no evidence in either direction about whether it is still there. Recorded
+    because an unexplained report is worth more than a lost one, and because the shape to suspect is
+    client-side: the charge effect is a `Heartbeat` connection plus a `CollectionService` walk over every
+    `NPC_TAG` model, which is the newest thing on the client that runs at boot.
+
 ---
 
 ## 16. What a live log has actually confirmed
@@ -974,6 +1098,21 @@ only worth anything about code that still exists.
   part(s)`, `[Match] up — MatchJoinA: 1 part(s)`, `[Collision] Barrier registered`.
 - `[Shield] <name>: 0 removed, 1s applied`, `[Walk] <name>: 20 (Base:20)`, `[Animate] <name>: R15
   body` — the per-body lines that fire when a character arrives.
+- `[Animate] prospeed1: jump` — the jump clip drawn from `animationFor`'s `!grounded` branch. **The rig
+  half of the same rule is verified by reading, not by log**: `NpcService.publishAnimation` publishes
+  `AnimGrounded` from `FloorMaterial`, and `RigAnimationController.conditionsOf` feeds the same
+  `animationFor`, so both bodies cross the line in the same place.
+- `[Dodge] Workspace.PlaceholderRig5: dodging — DodgeballBall at 24.5 studs` — a rig dodging, and the
+  shape every per-rig line in this project has: the full name, the verdict, and the distance it was
+  decided from.
+- **The throw's gust, from one per throw rather than four or five.** `chargeEffect.ts` originally hung
+  the gust off `AttributeChanged` and tested the mark's *value*, which stays `true` for the length of
+  `THROW_ANIMATION_SECONDS` (0.4 s) — so one release fired the burst four or five times. The fix is a
+  rising-edge record (`throwSeen`) seeded when the rig is first watched, and **the user's next log showed
+  one gust per throw**. What that confirms is the *cadence*; the anchor has moved twice since (root →
+  right foot → between the feet), so the placement is not what the log spoke to.
+- `[VFX] no HitNeutral in ReplicatedStorage — that hit effect will not play` — a confirmation by
+  *absence*, and the reason item 14 exists.
 
 **Observed, but about systems that no longer exist — do not treat as current:**
 
@@ -989,12 +1128,122 @@ right, but for a different reason than was stated.
 
 ---
 
+## 17. The rigs' walk, the charge, and the body effects
+
+Added 2026-10-14. Everything in it was read from the source in this pass; nothing in it has been seen
+in a live log unless it says so.
+
+### Where a rig's movement lives, and the order of the gates
+
+**`npc/behaviors/SeekBehavior.ts` is the only behaviour that moves a rig**, and `MoveTo` is the whole of
+the movement — no `PathfindingService`, deliberately, so the walk is only ever as good as the floor it
+stands on. It is **one factory** (`createSeekBehavior(speeds, pickups, balls, tag, region)`) called twice:
+`createRoundSeekBehavior` (tag `Behavior_Seeking`, region = the rig's own half) at the bottom of that
+file, and `createAlwaysSeekBehavior` (`Behavior_AlwaysSeeking`, region = `practiceZone`) in
+`AlwaysSeekingBehavior.ts`. Everything else — the candidate list, the region test, the claim, the stall
+budget, the give-up record, the arc, the sprint and the hop — is shared, which is why the two cannot
+drift apart.
+
+`tick` runs its gates in this order, and **the order is the design**: a ball in hand → `pickupWalk`
+(does not stop, see below); the loose-ball list; the ball it was walking to is no longer loose → `stand`;
+nothing choosable → return; the claim (`claim(model, ball)`, renewed every turn); arrival inside
+`BALL_CONFIG.PICKUP_RADIUS` (8) → return **without standing** (the rig keeps the claim, it is about to
+take the ball); the best-distance/stall counter, where `SEEK_STALL_TICKS` (3) turns mean give up and
+`stand`; then the sprint decision, the bluff, `MoveTo`, and the hop.
+
+**Two invariants a change here must not break.** The arrival check and the stall budget both measure the
+distance to the **ball**, never to the offset point the walk is aimed at — that is what lets the arc
+exist at all. And `stand` is the *only* stop: `MoveTo(root.Position)` is the engine's way of saying
+"stay here", so a new way to end a walk has to come through `stand` or `endWalk` rather than inventing a
+second mechanism.
+
+### The five movements, and what each one is for
+
+| What | Config (all Placeholder) | The rule in one line |
+|---|---|---|
+| **Sprint** | `SEEK_SPRINT_DISTANCE_STUDS` 30 | `distance > 30` → a `Sprint` contribution, re-read every turn so the rig is already walking as it arrives. No pool. |
+| **Arc** | `SEEK_CURVE_AMPLITUDE_DEGREES` 4, `SEEK_CURVE_PERIOD_MIN/MAX_SECONDS` 1.4/2.6 | The walk aims at a point offset **perpendicular** to the line to the ball, by `tan(4°) × distance × sin(2πt/T + φ)`. Amplitude as an **angle** so the detour shrinks as the rig arrives — 3.3 studs at 47, a third of a stud at 8. Period and phase drawn per walk. |
+| **Hop** | `SEEK_JUMP_ENEMY_RADIUS_STUDS` 24, `SEEK_JUMP_COOLDOWN_SECONDS` 6 | `Humanoid.Jump = true` on a turn the rig is walking, when an enemy is within 24 studs. Gated on grounded (`FloorMaterial !== Air`, the same read `publishAnimation` publishes), on no `PlatformStand` (a dash swallows the jump and spends the cooldown), and on no published `CHARGING_ATTRIBUTE`. |
+| **Bluff** | `PANIC_ENEMY_RADIUS_STUDS` 30, `PANIC_SHUFFLE_CHANCE` 0.20, `PANIC_SHUFFLE_SECONDS` 1, `PANIC_SIDESTEP_STUDS` 8 | One sidestep out of the line for 1 s, when the *walk* drew the 20 % roll **and** an enemy within 30 studs **has a ball in hand**. Rolled once per walk and spent on first use. **A bluff, not a dodge**: no `DodgeService`, no invulnerability, the ball still hits. Gated on no `DODGE_DIRECTION_ATTRIBUTE`. |
+| **Pickup walk** | `PICKUP_WALK_STUDS` 8, `PICKUP_WALK_SECONDS` 0.75, `PICKUP_BACKPEDAL_CHANCE` 0.4 | **A rig no longer stops dead when the ball arrives.** The walk carries on 8 studs — onwards, or on a 40 % draw *backwards away from the enemy* — and ends when the window expires or a windup begins. |
+
+**Three cross-subsystem reads make these work, and all three are reads rather than calls:**
+`CHARGING_ATTRIBUTE` is "the throw has planted" (a hold ends the pickup walk so a moving body cannot
+make a charge land short); `DODGE_DIRECTION_ATTRIBUTE` is "a dash has the body" (`DodgeService` sets it
+for the length of a dash and clears it at the end — `WalkSpeedService` reads it as its own gate, and the
+seek's bluff reads it as its own); and `detectEnemy` is silent outside a playing round, which is why a
+lobby rig never hops and a practice rig never shuffles.
+
+**The backpedal is the one movement that depends on something in another file.** `ThrowBehavior.aimAt`
+switches `Humanoid.AutoRotate = false` and holds the rig's *facing* on its target with an
+`AlignOrientation` — its own doc already argues that this "leaves the walk controller alone and takes
+only the facing". That is what lets the legs go one way and the eyes stay on the enemy. **Nothing in
+`ThrowBehavior` was changed to make the walk work**, and a change there that takes the aim constraint
+away would take the backpedal with it.
+
+### A rig has a speed sum now
+
+`WalkSpeedService` is still one owner and one sum, and a rig's speed is now two of its named
+contributions rather than a direct write: `Base` (16, set by the seek's own `prepare` from
+`NPC_CONFIG.WALK_TO_PAD_SPEED`) and `Sprint` (+15, `CHARACTER_CONFIG.SPRINT_SPEED_BONUS` — the player's
+own number, because `RUN_ANIMATION_SPEED` is the line both bodies' run clip is chosen at and a second
+number could disagree with it).
+
+**The trap that made the `prepare` necessary, and it is not obvious from the service's API:** the first
+thing to give a model a contribution **creates that model's entry, and an entry is created with
+`CHARACTER_CONFIG.BASE_WALK_SPEED` (20)**. So a rig that only ever added `Sprint` would have silently
+walked at 20 instead of 16 — a change attributed to nothing. `setBaseSpeed` is the call that avoids it,
+and the same `prepare` is why the pad walk's own `WalkSpeed` write and the seek's sum cannot be allowed
+to run on one rig (no rig wears both tags; both files say so).
+
+**And a watchdog, because a behaviour has no `onStopped`.** `LobbyRigService.setGameplayBehaviors`
+takes the six gameplay tags off every rig at a round boundary, so a rig whose `Behavior_Seeking` comes
+off mid-run would never tick again and would keep `+15` for the rest of the session. The fix is the one
+`ThrowBehavior`'s windup already uses for the same class of bug: a token-guarded timer that can only
+*undo*, re-armed on every turn of the sprint, so it cannot fire during a walk and only ever catches a rig
+that nothing is turning any more.
+
+### The body effects, which are client-side modules rather than controllers
+
+`hitVfx.ts`, `hitConfirm.ts`, `catchShockwave.ts`, `chargeEffect.ts` and `windBurst.ts` are **plain
+modules started by hand** from `main.client.ts`, because Flamework loads `client/controllers` and nothing
+else. Each is a subscriber to a fact the server already publishes, and each owns one effect:
+
+- **`chargeEffect.ts`** — the visible charge, and it has three drivers in one module because the two
+  bodies report differently: a `Heartbeat` loop over the local player's own `chargeStartedAt` (a
+  *threshold crossing is not an edge*, so a frame loop rather than an observer), the local body's throw
+  marks, and every `NPC_TAG`-tagged rig's `CHARGING_ATTRIBUTE`/`AnimThrow`. **The gust hangs off the rising
+  edge of `AnimThrow`** — `AttributeChanged` fires on every write and the mark stays set for the clip, so
+  a value test fired four or five times per throw — and it is gated on the same 0.9 the fire ball is.
+- **`windBurst.ts`** — the gust at the thrower's feet: a Studio-authored template found **by name** in
+  `ReplicatedStorage`, welded to the body, `Emit(30)` per emitter. It is placed **between the feet, at
+  ground level**, and held by the root: a `WeldConstraint` holds an *offset*, so the part that holds it
+  has to be the one that does not move relative to the body, while the *position* comes from the feet.
+  `Emit` is the correct call here and the wrong one on the server — see §10's tombstone. The line it
+  prints names the parts, so "which part did it weld to" is a fact in the log rather than an inference.
+- **The contract with a template is its name and nothing else.** Nothing may depend on where in
+  `ReplicatedStorage` it sits or what it is wrapped in; a missing template warns once per name and lists
+  what the client *can* see, and every silent exit prints a line.
+
+### What a fresh session should not assume
+
+- **`SeekBehavior`'s `MoveTo` is issued on every turn now**, and that reversed the constant's own doc:
+  the walk used to re-aim only when the ball had moved `SEEK_BALL_MOVED_STUDS` (4), which a curving walk
+  would have frozen at the first turn's offset. That constant keeps one reader (`prune`).
+- **The seek's arc is sampled at the retarget interval** (0.5 s). At a 1.8 s period the shape is drawn
+  from three or four points and the humanoid's own steering smooths the corners — so shortening the
+  period is a change to how the arc is *sampled*, not only to how it looks.
+- **`AlwaysSeekingBehavior.ts` is not in the seek's file list for a task but has to change with it**,
+  because it is the second caller of the factory.
+
+---
+
 ## Appendix — the other documents, and how far to trust them
 
 | Document | What it is | State |
 |---|---|---|
-| `HANDOFF.md` | this file | current as of 2026-10-11, against commit `9e2e971` |
-| `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of 2026-10-11. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
+| `HANDOFF.md` | this file | current as of 2026-10-14, against a green build with the rig-walk work in the working tree (last commit `9b47369`). §17 is new; §5–§14 stand as the 2026-10-11 revision left them — see the scope paragraph at the top |
+| `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of 2026-10-14. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
 | `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **stale.** It documents the retired mock; the panel was rewritten onto the economy and `ui/panelChrome.ts`. Kept as a record of the mock, not of the current shop |
 | `README.md` | upstream roblox-ts boilerplate | says nothing about this project; ignore it |
 | `tools/pattern/` | the Node renderer and PNG output used to design the ring pattern (`shared/ringPattern.ts`) | one-off design tooling, not part of the build |

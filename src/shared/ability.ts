@@ -1,4 +1,4 @@
-import { BALL_ABILITY_ATTRIBUTE } from "./constants";
+import { BALL_ABILITY_ATTRIBUTE, PENDING_ABILITY_ATTRIBUTE } from "./constants";
 
 /**
  * The vocabulary of super abilities, shared by the server that hands them out and the client that
@@ -95,6 +95,26 @@ export function isBallAbility(value: string): value is AbilityKind {
  */
 export function abilityOn(ball: Instance | undefined): AbilityKind | undefined {
 	const value = ball?.GetAttribute(BALL_ABILITY_ATTRIBUTE);
+	if (!typeIs(value, "string") || value === "") return undefined;
+
+	return isAbilityKind(value) ? value : undefined;
+}
+
+/**
+ * The power a rig's next throw will apply, or nothing.
+ *
+ * **The one reader of {@link PENDING_ABILITY_ATTRIBUTE}**, so the empty case and the bad-value case are
+ * decided in one place rather than at each caller. A rig with no pending power carries `""` — the same
+ * empty-string convention the ball ability uses — and a model carrying a word this build does not name
+ * reads as no pending power, which is the safe direction to be wrong in: a stale or malformed attribute
+ * makes the next throw ordinary rather than guessed at.
+ *
+ * **On a `Model`, not a `Player`** — the attribute is a rig's, and nothing here narrows it for the
+ * caller: `markHeldBall`, `activateMultiBall` and the mystery box's collect all ask the same question of
+ * a body, and the answer is the `AbilityKind` they dispatch on or `undefined` to mean "nothing pending".
+ */
+export function pendingAbilityOn(model: Model): AbilityKind | undefined {
+	const value = model.GetAttribute(PENDING_ABILITY_ATTRIBUTE);
 	if (!typeIs(value, "string") || value === "") return undefined;
 
 	return isAbilityKind(value) ? value : undefined;

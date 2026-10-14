@@ -2,6 +2,7 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE } from "shared/constants";
+import { pendingAbilityOn } from "shared/ability";
 import { resolveDodgeable } from "shared/dodge";
 import { claim, claimedBy, release } from "../ballClaims";
 import { detectEnemy } from "../detect";
@@ -10,6 +11,7 @@ import { BEHAVIOR_SEEKING, NpcBehavior } from "../Behavior";
 import type { BallPickupService } from "../../services/ball/BallPickupService";
 import type { BallService } from "../../services/ball/BallService";
 import type { WalkSpeedService } from "../../services/character/WalkSpeedService";
+import type { MysteryBoxService } from "../../services/mystery/MysteryBoxService";
 
 /**
  * How often the behavior looks again, in seconds: the retarget interval.
@@ -338,11 +340,18 @@ export interface SeekRegion {
  * `NpcService` gives every behaviour everything it needs — see its constructor, which builds this list — and
  * because a behaviour that resolved its own services would be a behaviour whose dependencies are invisible from
  * the place the whole set is assembled.
+ *
+ * **And the mystery service is a parameter since a box became a fetch target (2026-10-14).** The walk is no
+ * longer only to a ball: a live box inside the region outranks every ball, asked of `MysteryBoxService` the
+ * same way the floor is asked of `BallPickupService` — the seek gets the floor, and the boxes are part of what
+ * is on it. It is handed in rather than reached for for the same reason as the speed service, and it is the one
+ * dependency this file holds that has nothing to do with balls — see `nearestBox`, where it is used.
  */
 export function createSeekBehavior(
 	speeds: WalkSpeedService,
 	pickups: BallPickupService,
 	balls: BallService,
+	mystery: MysteryBoxService,
 	tag: string,
 	region: SeekRegion,
 ): NpcBehavior {
@@ -443,6 +452,45 @@ export function createSeekBehavior(
 			if (distance > bestDistance) continue;
 
 			best = ball;
+			bestDistance = distance;
+		}
+
+		return best;
+	};
+
+	/**
+	 * The nearest live box this rig may walk to, or `undefined`.
+	 *
+	 * **A box is a second kind of fetch target, and it outranks every ball** — see the `tick`, which asks
+	 * this before the ball selection and walks to the box instead of to whatever ball the rig was chasing.
+	 * The box's own gates are the same two a ball's are, asked in the same place: it must be inside the
+	 * rig's region (the same `MoveTo`-cannot-go-round reasoning as a ball), and the rig must have an empty
+	 * `PENDING_ABILITY_ATTRIBUTE` — one slot, and a second box has nothing to do. **There is deliberately no
+	 * claim on a box**: it is collected by `Touched`, and whoever reaches it first takes it, so a reservation
+	 * would be a lock on a thing that despawns the moment it is used.
+	 */
+	const nearestBox = (rig: Model, from: Vector3): BasePart | undefined => {
+		// **The slot gate first, because it is the cheap one and it is the whole of "may this rig take a
+		// box".** A rig holding a prize has no use for a second, so the walk is not even offered.
+		if (pendingAbilityOn(rig) !== undefined) return undefined;
+
+		const boxes = mystery.liveBoxes();
+		if (boxes.size() === 0) return undefined;
+
+		// The region this rig may fetch from, read once per choice — the same read `nearest` makes for balls,
+		// and the same reason: the parts are painted and a dev moves them between runs.
+		const parts = region.parts(rig);
+
+		let best: BasePart | undefined;
+		let bestDistance = math.huge;
+
+		for (const box of boxes) {
+			if (!insideZone(parts, box.Position)) continue;
+
+			const distance = box.Position.sub(from).Magnitude;
+			if (distance > bestDistance) continue;
+
+			best = box;
 			bestDistance = distance;
 		}
 
@@ -955,6 +1003,24 @@ export function createSeekBehavior(
 				return;
 			}
 
+			// **The box candidate, asked before anything else about balls — a live box outranks every ball.**
+			// A rig holding a ball never reaches this line (the gate above throws first), so "the box
+			// supersedes the walk, not the throw" falls out of the ordering: a throwing rig keeps its ball,
+			// and the box is its *next* target the turn after the hand empties. A rig mid-walk to a ball
+			// abandons the walk here — `endWalk` releases the ball's claim — and goes for the box instead.
+			const box = nearestBox(model, root.Position);
+			if (box !== undefined) {
+				if (seek.ball !== undefined) endWalk(model, seek);
+
+				// A box is walked to plain: no curve, no sprint, no hop — the five movements are the ball
+				// walk's, and a box is a short, transient walk to a thing that despawns the moment the body
+				// reaches it. `MoveTo` at the box's own position is the whole of it; the humanoid walks the
+				// XZ, and the `Touched` that collects the box is the arrival.
+				humanoid.MoveTo(box.Position);
+
+				return;
+			}
+
 			// What is on the floor, asked once per turn and used for both questions below: is the
 			// ball I set off for still there, and if not, which ball is next.
 			const loose = pickups.looseBalls();
@@ -1166,8 +1232,9 @@ export function createRoundSeekBehavior(
 	speeds: WalkSpeedService,
 	pickups: BallPickupService,
 	balls: BallService,
+	mystery: MysteryBoxService,
 ): NpcBehavior {
-	return createSeekBehavior(speeds, pickups, balls, BEHAVIOR_SEEKING, {
+	return createSeekBehavior(speeds, pickups, balls, mystery, BEHAVIOR_SEEKING, {
 		label: "its half",
 		parts: fetchRegionFor,
 	});

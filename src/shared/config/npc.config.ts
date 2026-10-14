@@ -366,7 +366,7 @@ export const NPC_CONFIG = {
 	 * *distance*, not for the walk, and a rig that ran the whole way and stopped on the ball would be a body
 	 * changing gear for no reason a person watching could name. See `SeekBehavior`.
 	 */
-	SEEK_SPRINT_DISTANCE_STUDS: 30,
+	SEEK_SPRINT_DISTANCE_STUDS: 5,
 
 	/**
 	 * How close a walking rig has to be to another body before it will hop, in studs. **Placeholder — 24.**
@@ -476,25 +476,25 @@ export const NPC_CONFIG = {
 	 * a walk can pass an armed enemy at the exact moment the roll said no, and nothing happens — which is the
 	 * honest reading of 15 %, and the alternative (a roll per turn) is a different feature wearing this number.
 	 */
-	PANIC_SHUFFLE_CHANCE: 0.15,
+	PANIC_SHUFFLE_CHANCE: 0.20,
 
 	/**
-	 * How long a rig walks its sidestep before resuming the walk to the ball, in seconds. **Placeholder — 0.6.**
+	 * How long a rig walks its sidestep before resuming the walk to the ball, in seconds. **Placeholder — 1.**
 	 *
-	 * **Longer than the sidestep takes, on purpose, and the extra is the point.** Six studs at a rig's own walk
+	 * **Longer than the sidestep takes, on purpose, and the extra is the point.** Eight studs at a rig's own walk
 	 * of {@link NPC_CONFIG.WALK_TO_PAD_SPEED} is a little under four tenths of a second, so this leaves the rig
 	 * standing at the end of the step for the rest of the window — which is what makes the movement read as
 	 * *hesitation* rather than as a body that walked sideways for no reason and then thought better of it. See
 	 * {@link NPC_CONFIG.PANIC_SIDESTEP_STUDS} for the distance and why one step rather than two.
 	 */
-	PANIC_SHUFFLE_SECONDS: 0.6,
+	PANIC_SHUFFLE_SECONDS: 1,
 
 	/**
-	 * How far to one side a rig's sidestep takes it, in studs. **Placeholder — 6.**
+	 * How far to one side a rig's sidestep takes it, in studs. **Placeholder — 8.**
 	 *
 	 * **One step, not two, and the distance is most of why.** Two sidesteps is a dance: it reads as a rig with a
 	 * movement pattern rather than as a rig reacting to something, and a pattern is the tell this whole file is
-	 * about. One step is a body half-turning away and half-turning back. Six studs is just past a body's own width
+	 * about. One step is a body half-turning away and half-turning back. Eight studs is just past a body's own width
 	 * — enough that the rig has visibly *left the line* it was walking, which is what a person does when they think
 	 * a ball is coming, and not so far that the rig has abandoned the ball it was fetching.
 	 *
@@ -502,7 +502,7 @@ export const NPC_CONFIG = {
 	 * the line rather than forwards or backwards, and the walk to the ball afterwards is short. See
 	 * `SeekBehavior.maybeShuffle`.
 	 */
-	PANIC_SIDESTEP_STUDS: 6,
+	PANIC_SIDESTEP_STUDS: 8,
 
 	/**
 	 * How far a rig keeps walking after its hand fills, in studs. **Placeholder — 8.**

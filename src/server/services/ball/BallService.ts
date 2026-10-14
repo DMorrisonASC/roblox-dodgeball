@@ -17,7 +17,7 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { abilityOn, isBallAbility, AbilityKind } from "shared/ability";
+import { abilityOn, isBallAbility, pendingAbilityOn, AbilityKind } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import { resolveDodgeable } from "shared/dodge";
 import { REMOTES } from "shared/remotes";
@@ -672,9 +672,11 @@ export class BallService implements OnStart {
 			// still see and act on.
 			this.heldBalls.delete(model);
 
-			// The dropper, when there is one. A rig can never mark a ball — it has no key to press —
-			// so this is the ordinary path with a guard rather than a case being handled: an NPC
-			// dropping a ball forfeits nothing because there is nothing on it to forfeit.
+			// The dropper, when there is one. A rig can now mark a ball — its next throw after a mystery box
+			// applies the pending ability — but it still forfeits nothing here: a rig holds no charge, and its
+			// pending slot is the *throw's* to clear, not this path's. So the guard stays the ordinary path:
+			// an NPC dropping a marked ball destroys it exactly as a player's does, and `forfeitCharge` is the
+			// one thing a rig skips, because there is nothing of its own on the ball to forfeit.
 			const player = Players.GetPlayerFromCharacter(model);
 			if (player) this.abilities.forfeitCharge(player);
 
@@ -952,12 +954,18 @@ export class BallService implements OnStart {
 		// sets on one ball would be twice the density at twice the cost, and would throw off
 		// the angles the cross-section is built from. Nothing is built at all when the trail
 		// is switched off — see `BallTrail.attach`.
-		// **And the trail the holder brings to it, which is the one thing here that is about a player
-		// rather than about a ball.** The colours come from the record rather than from an attribute, so
+		// **And the trail the holder brings to it, which is the one thing here that is about a *body* rather
+		// than about a ball.** The colours come from the record rather than from an attribute for a player, so
 		// a client cannot talk its way into a trail — see `EconomyService.equippedTrailColors`. Handing
 		// them in on every attach, including the adopt-existing branch, is what makes a ball picked up
 		// from somebody else change its trail to its new holder's rather than keeping the last one's.
-		const trail = BallTrail.attach(ball, this.economy.equippedTrailColors(owner));
+		//
+		// **The model is handed over rather than the player resolved from it, and that is the change that lets
+		// a rig wear one.** `owner` above is `Players.GetPlayerFromCharacter(model)` and is therefore `undefined`
+		// for every rig — which is how this line used to read a rig as "nothing equipped, use the grey default".
+		// The question being asked is about the *body holding the ball*, and a body is what this function has;
+		// the economy works out which kind it is. See `EconomyService.equippedTrail` for the two answers.
+		const trail = BallTrail.attach(ball, this.economy.equippedTrailColors(model));
 
 		// **The one line that says which trail this ball actually got**, and its three facts are the three the
 		// appearance depends on: who is holding it, what the *record* says they are wearing, and whether the
@@ -1216,7 +1224,7 @@ export class BallService implements OnStart {
 		// way it is resolvable here: `throwForPlayer` knows the `Player` and hands this method a character, and
 		// the hand's own record holds no owner. A rig answers `undefined`, which is the default, which is what
 		// a rig's ball should be. A repaint of the live trail, never a rebuild — see `BallTrail.setColors`.
-		held.trail?.setColors(this.economy.equippedTrailColors(Players.GetPlayerFromCharacter(model)));
+		held.trail?.setColors(this.economy.equippedTrailColors(model));
 		held.trail?.setArmed(true);
 
 		// The client runs this exact same plan to draw its aim guide, so the throw
@@ -1544,7 +1552,7 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * The server half of a MultiBall request: buys `player` a window.
+	 * The server half of a MultiBall request: buys `owner` a window.
 	 *
 	 * **The handler is here and the state is in `SuperService`**, which is {@link markHeldBall}'s split
 	 * for its reason — this service owns hands and holds the dev flags, and that service counts charges
@@ -1554,108 +1562,138 @@ export class BallService implements OnStart {
 	 *
 	 * **Two ways in, and neither of them is spelled as a key in this file.** A dev's own MultiBall key
 	 * comes straight here, and a mystery box reaches it through {@link useMysteryPower}, which asks the
-	 * window which power it is paying for. Naming a key here would be a second copy of a binding that
+	 * window which power it is paying for. A rig reaches it from `ThrowBehavior`, with the kind read off
+	 * its `PENDING_ABILITY_ATTRIBUTE` slot. Naming a key here would be a second copy of a binding that
 	 * lives in the controller which owns it — and a comment that says "press `4`" goes stale, silently,
 	 * on the day the binding moves. This one did.
 	 *
-	 * **Four questions, in the order that costs least to answer, and every refusal is a print** rather
-	 * than a thrown error, for `markHeldBall`'s reason: a key press is not a fault, and the log is where
-	 * the reason belongs.
+	 * **Four questions for a player, in the order that costs least to answer, and every refusal is a
+	 * print** rather than a thrown error, for `markHeldBall`'s reason: a key press is not a fault, and the
+	 * log is where the reason belongs. The same split {@link markHeldBall} now has applies here: the rule
+	 * preconditions — a living body, a window that is not already open — run for every owner through one
+	 * code path, and the access preconditions — ownership, the round-or-zone gate, a charge or a prize, the
+	 * dev bypass — are the only place a `Player`/`Model` branch exists. A rig's access is the pending slot
+	 * and nothing else.
 	 *
 	 * **What a press commits the player to is the one place the two abilities part company.** A mark
-	 * waits for a ball and spends nothing; this spends the charge on the spot and starts the clock, so a
-	 * player who asks for a window and throws nothing has still paid for the ten seconds they did not use.
-	 * See `SuperService.activateMultiBall`, where that decision is argued.
+	 * waits for a ball and spends nothing; this spends the charge on the spot and starts the window, so a
+	 * player who asks for a window and throws nothing has still paid for the throws they did not use. A
+	 * rig's slot is spent by the throw site, so it too pays on the throw rather than on this call.
+	 * See `SuperService.activateMultiBall`, where the window itself is decided.
 	 */
-	private activateMultiBall(player: Player): void {
+	public activateMultiBall(owner: Player | Model): void {
 		// **A living body**, the same test the mark makes and the throw makes in effect: there is no hand
-		// to fill and no player to put a clock on.
-		const character = player.Character;
+		// to fill and no body to put a window on. The owner is narrowed only to find the body — a rig is its
+		// own character, the `Model` the ball is a child of.
+		const character = owner.IsA("Player") ? owner.Character : owner;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		if (!character || !humanoid || humanoid.Health <= 0) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no living body`);
+			if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no living body`);
 
 			return;
 		}
 
-		const dev = this.dev.isDev(player);
+		// **The access preconditions — the only owner-type branch in this method.** A player is asked for
+		// ownership, the round-or-zone gate and a charge or a prize (or the dev bypass); a rig is asked only
+		// that its pending slot names MultiBall. The rule axis above — a living body — and the rule axis
+		// below — a window already open — run for both bodies through one code path.
+		if (owner.IsA("Player")) {
+			const dev = this.dev.isDev(owner);
 
-		// **MultiBall has to be owned too**, which is the same lock the marks carry: the window is a power
-		// unlocked by the chest, and this is where an unowned one is refused. A dev bypasses it as they
-		// bypass the round-or-zone gate and the charge below.
-		if (!dev && !this.economy.ownsPower(player, "MultiBall")) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — not owned`);
+			// **MultiBall has to be owned too**, which is the same lock the marks carry: the window is a power
+			// unlocked by the chest, and this is where an unowned one is refused. A dev bypasses it as they
+			// bypass the round-or-zone gate and the charge below.
+			if (!dev && !this.economy.ownsPower(owner, "MultiBall")) {
+				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — not owned`);
 
-			return;
+				return;
+			}
+
+			// **A dev is exempt from the round-or-zone gate, and that exemption is the shortcut's whole point**
+			// — a standing start in Studio is usually an intermission in the lobby, where a power has nothing to
+			// act on. Asked of `SuperService` rather than read from the status folder here, so the rule that
+			// grants a charge and the rule that lets one be spent stay one line in one file, exactly as the mark
+			// does it — and see `SuperService.inRoundOrZone` for why that one line is now a round *or a practice
+			// zone* rather than a round alone.
+			if (!dev && !this.abilities.inRoundOrZone(owner)) {
+				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no round and no practice zone`);
+
+				return;
+			}
+
+			// **The charge, a mystery prize, or the dev bypass.** A dev opens a window holding no charge of
+			// their own, which is what makes this testable from a standing start — the mark handler's shortcut,
+			// on the other key.
+			//
+			// **The second term is the whole of what the mystery box does to a game.** While a prize is held the
+			// charge test is satisfied without a charge existing, so the power is paid for by the box. It is
+			// one `||` rather than a branch because there is nothing else about the request that changes:
+			// ownership above, and the round-or-zone gate above that, are asked exactly as they were, which is
+			// what keeps a box from being a way to use a power in the lobby or without owning it. See
+			// `SuperService.isMysteryActive`, and `markHeldBall` below for the mark's half of the same rule.
+			//
+			// **And `isMysteryActive` no longer means "the clock is still running".** It means a prize is held,
+			// which is the difference between a power that is free *for ten seconds* and one that is free *until
+			// it is used*: the box's power is available from the moment it is collected until the player spends
+			// it, however long that takes. The spend is below.
+			const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
+			if (!charged && !dev) {
+				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no charge and no mystery prize`);
+
+				return;
+			}
+		} else {
+			// **A rig's access is the pending slot, and it is the whole of the access axis for a rig.** No
+			// charge, no mystery prize, no dev bypass — the slot is what pays, and it must name MultiBall. The
+			// round-or-zone gate is deliberately not asked of a rig: a rig reaches this method only from its
+			// throw behaviours, which are themselves gated to a round or a practice zone by the tags they wear,
+			// so a rig that is here is already somewhere a power can act.
+			if (pendingAbilityOn(owner) !== "MultiBall") {
+				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no pending MultiBall`);
+
+				return;
+			}
 		}
 
-		// **A dev is exempt from the round-or-zone gate, and that exemption is the shortcut's whole point**
-		// — a standing start in Studio is usually an intermission in the lobby, where a power has nothing to
-		// act on. Asked of `SuperService` rather than read from the status folder here, so the rule that
-		// grants a charge and the rule that lets one be spent stay one line in one file, exactly as the mark
-		// does it — and see `SuperService.inRoundOrZone` for why that one line is now a round *or a practice
-		// zone* rather than a round alone.
-		if (!dev && !this.abilities.inRoundOrZone(player)) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no round and no practice zone`);
-
-			return;
-		}
-
-		// **The charge, a mystery prize, or the dev bypass.** A dev opens a window holding no charge of
-		// their own, which is what makes this testable from a standing start — the mark handler's shortcut,
-		// on the other key.
-		//
-		// **The second term is the whole of what the mystery box does to a game.** While a prize is held the
-		// charge test is satisfied without a charge existing, so the power is paid for by the box. It is
-		// one `||` rather than a branch because there is nothing else about the request that changes:
-		// ownership above, and the round-or-zone gate above that, are asked exactly as they were, which is
-		// what keeps a box from being a way to use a power in the lobby or without owning it. See
-		// `SuperService.isMysteryActive`, and `markHeldBall` below for the mark's half of the same rule.
-		//
-		// **And `isMysteryActive` no longer means "the clock is still running".** It means a prize is held,
-		// which is the difference between a power that is free *for ten seconds* and one that is free *until
-		// it is used*: the box's power is available from the moment it is collected until the player spends
-		// it, however long that takes. The spend is below.
-		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
-		if (!charged && !dev) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no charge and no mystery prize`);
-
-			return;
-		}
-
-		// **A second press is refused rather than restarted**, and the answer is the "no" the mark handler
-		// gives a second mark: the player has asked for something they already have, and one charge does
+		// **A second ask is refused rather than restarted**, and the answer is the "no" the mark handler
+		// gives a second mark: the owner has asked for something they already have, and one charge does
 		// not buy two windows. Returned as a boolean by the service rather than asked as a question here,
-		// because opening a window and answering whether one was opened are the same act.
-		if (!this.abilities.activateMultiBall(player)) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — a window is already open`);
+		// because opening a window and answering whether one was opened are the same act — and it is the
+		// "no stacking" rule precondition, asked of both bodies through the one call.
+		if (!this.abilities.activateMultiBall(owner)) {
+			if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — a window is already open`);
 
 			return;
 		}
 
-		// **A dev opens windows without earning them**, so there is nothing of theirs to spend — the same
-		// bypass `throwForPlayer` applies to a mark, applied here to the same kind of press. Asked at the
-		// call site rather than inside `SuperService` for the reason that one gives: only the caller knows
-		// who pressed.
-		//
-		// **Both currencies are settled here, and only the charge is a dev's to bypass.** The box's prize is
-		// real state, so a dev spends it like anybody — exempting them is what let a box's power be used
-		// over and over, and the person who notices that is the person testing. See
-		// `SuperService.spendMysteryPrize` for the argument.
-		//
-		// **The kind is passed, so a press for a power the box did not roll leaves the prize alone.** A dev
-		// opening a MultiBall window while holding a Pierce does not spend the Pierce; a player using the
-		// box's own key always matches, because it uses the kind it just read from `mysteryPowerOf`.
-		//
-		// **The prize is asked about the charge before `spendCharge` takes it away**, which is the order
-		// that makes "a charge paid, so the box is kept" true. Called the other way round, the prize would
-		// read "no charge" and be eaten by a press the charge had already paid for.
-		this.abilities.spendMysteryPrize(player, "MultiBall");
-		if (!dev) this.abilities.spendCharge(player);
+		// **A player spends the currencies that paid for the window; a rig spends nothing here**, because a
+		// rig has no charge and no mystery prize to spend, and its slot is cleared by the throw site after
+		// the throw — the counterpart to the spend below. Only the player's half touches `SuperService`'s
+		// spend methods, which remain `Player`-keyed.
+		if (owner.IsA("Player")) {
+			// **A dev opens windows without earning them**, so there is nothing of theirs to spend — the same
+			// bypass `throwForPlayer` applies to a mark, applied here to the same kind of press. Asked at the
+			// call site rather than inside `SuperService` for the reason that one gives: only the caller knows
+			// who pressed.
+			//
+			// **Both currencies are settled here, and only the charge is a dev's to bypass.** The box's prize is
+			// real state, so a dev spends it like anybody — exempting them is what let a box's power be used
+			// over and over, and the person who notices that is the person testing. See
+			// `SuperService.spendMysteryPrize` for the argument.
+			//
+			// **The kind is passed, so a press for a power the box did not roll leaves the prize alone.** A dev
+			// opening a MultiBall window while holding a Pierce does not spend the Pierce; a player using the
+			// box's own key always matches, because it uses the kind it just read from `mysteryPowerOf`.
+			//
+			// **The prize is asked about the charge before `spendCharge` takes it away**, which is the order
+			// that makes "a charge paid, so the box is kept" true. Called the other way round, the prize would
+			// read "no charge" and be eaten by a press the charge had already paid for.
+			this.abilities.spendMysteryPrize(owner, "MultiBall");
+			if (!this.dev.isDev(owner)) this.abilities.spendCharge(owner);
+		}
 
-		// **And the hand is filled on the way in**, which is one of the two free refills: a player who
-		// opens a window on an empty hand cannot use the ten seconds they have just paid for. See
-		// {@link refillFromBuff}.
+		// **And the hand is filled on the way in**, which is one of the two free refills: a body who opens
+		// a window on an empty hand cannot use the throws they have just paid for. See {@link refillFromBuff}.
 		this.refillFromBuff(character, false);
 	}
 
@@ -1731,14 +1769,17 @@ export class BallService implements OnStart {
 	 * answers.
 	 */
 	private refillFromBuff(model: Model, spent: boolean): boolean {
-		const player = Players.GetPlayerFromCharacter(model);
-		if (!player) return false;
+		// **The owner of the window is whoever this body is, and that is a `Player` *or* the rig itself.**
+		// `GetPlayerFromCharacter` answers `undefined` for a rig, so the owner falls back to the model — which
+		// is exactly how a rig's window, keyed on its `Model`, is found. This was the line that used to read a
+		// rig as "no window to answer from", and the fallback is the whole of the widening.
+		const owner = Players.GetPlayerFromCharacter(model) ?? model;
 
 		// Nothing to fill. A hand holding a ball is not a hand this has any business in — which is also
-		// what stops a window opened by a player who is already holding one from spending the count.
+		// what stops a window opened by a body who is already holding one from spending the count.
 		if (this.getHeldBall(model)) return false;
 
-		if (spent && !this.abilities.consumeMultiBallBall(player)) return false;
+		if (spent && !this.abilities.consumeMultiBallBall(owner)) return false;
 
 		// Asked after the spend: the throw is paid for either way, and what the window still holds decides
 		// whether this ball is replaced. See this method's doc for why `5` has to mean five throws.
@@ -1746,7 +1787,7 @@ export class BallService implements OnStart {
 		// **`isMultiBallActive` rather than a separate "has it balls left" test**, which is the rename that
 		// followed the window losing its clock: an open window and a window with a throw in it are the same
 		// condition now, so the second name was one test written twice. See `SuperService.isMultiBallActive`.
-		if (!this.abilities.isMultiBallActive(player)) return false;
+		if (!this.abilities.isMultiBallActive(owner)) return false;
 
 		this.giveBall(model);
 
@@ -1862,23 +1903,33 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * Marks the ball `player` is holding as carrying `kind`.
+	 * Marks the ball `owner` is holding as carrying `kind`.
 	 *
-	 * **The handler for the ability key, and the whole of what a press does.** Four questions, asked in
-	 * the order that costs least to answer, and every refusal is a print rather than a thrown error — a
-	 * key press is not a fault, and the log is where the reason belongs.
+	 * **The handler for the ability key, and the rig's throw path, both arrive here.** For a player this
+	 * is the whole of what a press does — the questions below, asked in the order that costs least to
+	 * answer, and every refusal is a print rather than a thrown error, because a key press is not a fault
+	 * and the log is where the reason belongs. A rig reaches it from `ThrowBehavior` with a kind read off
+	 * its `PENDING_ABILITY_ATTRIBUTE` slot, and the two bodies differ on one axis only.
 	 *
-	 * **Why the handler is here and not in `SuperService`.** Two of the four questions are this
-	 * service's: where the ball is (it owns hands, and `getHeldBall` exists for this) and what a player
-	 * may do (the dev flags are already held here). Putting it there would mean `SuperService` depending
-	 * on hands — the wrong direction for a service whose whole job is to count two things. As it stands
-	 * that service is asked one question, `hasCharge`, and never has to find a ball.
+	 * **Two axes, and the split is the design.** The *rule* preconditions — the kind is a ball ability, the
+	 * body is alive, the held ball is unmarked — run for every owner before the owner is known, so a future
+	 * rule of that shape (a "no stacking" rule is the standing example) lands on a rig and a player through
+	 * one code path. The *access* preconditions are the only place a `Player`/`Model` branch exists: a
+	 * player is asked for ownership, the round-or-zone gate and a charge or a prize (or the dev bypass),
+	 * and a rig is asked only that its pending slot names `kind`.
+	 *
+	 * **Why the handler is here and not in `SuperService`.** Two of the questions are this service's: where
+	 * the ball is (it owns hands, and `getHeldBall` exists for this) and what a body may do (the dev flags
+	 * are already held here). Putting it there would mean `SuperService` depending on hands — the wrong
+	 * direction for a service whose whole job is to count two things. As it stands that service is asked one
+	 * question, `hasCharge`, and never has to find a ball.
 	 *
 	 * **The charge is not spent here, deliberately.** See `SuperService.spendCharge`: the charge follows
 	 * the ball, so a mark that is never thrown costs nothing, and a player who marks a ball and changes
-	 * their mind has not paid for a throw they did not make.
+	 * their mind has not paid for a throw they did not make. A rig's slot is likewise not spent here — it is
+	 * cleared by the throw site after the throw, so a refused mark cannot strand it.
 	 */
-	private markHeldBall(player: Player, kind: unknown): void {
+	public markHeldBall(owner: Player | Model, kind: unknown): void {
 		// **The wire is not typed**, so what arrives is checked rather than trusted — the same treatment
 		// `WalkSpeedService.setSprinting` gives its own argument, and for its reason: a client can send
 		// anything, and this is the line that turns a string into a value the rest of the code can use.
@@ -1889,134 +1940,176 @@ export class BallService implements OnStart {
 		// to write an ability onto a ball needs to know. Without the narrower check, a client could send
 		// the word for a player-level buff and have it stamped on a ball, where the HUD would then report
 		// it as a loaded ability that nothing implements.
+		//
+		// **A rule precondition, and the first of three that run before the owner is known.** Whether a
+		// word is a ball ability is the same question for a rig as for a player, so it sits ahead of every
+		// `Player`/`Model` branch — which is the whole of the split this method now has.
 		if (!typeIs(kind, "string") || !isBallAbility(kind)) {
-			warn(`[Super] ${player.Name}: mark refused — not an ability a ball can carry (${tostring(kind)})`);
+			warn(`[Super] ${owner.Name}: mark refused — not an ability a ball can carry (${tostring(kind)})`);
 			return;
 		}
 
-		// **A living body**, which is the same test the throw makes in effect: a player with no character
+		// **A living body**, which is the same test the throw makes in effect: a body with no character
 		// has no hand to be holding anything in. Not a poll of the *round's* roster either — a player who is
 		// out of the round has a dead body or none, and the ball is a child of the body either way, so the
 		// body is the honest question and the roster would be a second answer to it. (This used to name the
 		// spectator attribute to say the same thing; that state is gone and the test is unchanged.)
-		const character = player.Character;
+		//
+		// **The second rule precondition, and the owner is narrowed only to *find the body*.** A rig is its
+		// own character — its `Model` is the thing the ball is a child of — so `character` is the player's
+		// character for a player and the rig itself for a rig, and everything after this treats the two
+		// identically.
+		const character = owner.IsA("Player") ? owner.Character : owner;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		if (!character || !humanoid || humanoid.Health <= 0) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no living body`);
-
-			return;
-		}
-
-		// **A dev is exempt from the round-or-zone gate, and that exemption is the point of the shortcut.**
-		// The rule the key exists for is "a dev can exercise this from a standing start", and a standing
-		// start in Studio is usually an intermission in the lobby — where a power has nothing to act on,
-		// which is the same reason the gate itself refuses there.
-		const dev = this.dev.isDev(player);
-
-		// **The power has to be owned, which is the newest gate and sits before the round's.** A key that
-		// marks a ball is a request to use a power the player may not have unlocked yet: the chest grants
-		// powers, and this is the lock the chest opens. Asked of `EconomyService`, which owns the roster —
-		// the dev bypass skips it exactly as it skips the round-or-zone gate and the charge.
-		if (!dev && !this.economy.ownsPower(player, kind)) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — ${kind} not owned`);
-
-			return;
-		}
-
-		// **Otherwise, only where a power can do anything: a round is being played, or this body is standing
-		// in a practice zone.** Asked of `SuperService` rather than read from the status folder here, so the
-		// rule that grants a charge and the rule that lets one be spent stay one line in one file — a second
-		// copy could let a charge be earned in a round a ball could not be marked in. The zone half is
-		// `DodgeService.requestDodge`'s rule; see `SuperService.inRoundOrZone` for why the two actions share
-		// it, and for the bug that came of this one half being missing here.
-		if (!dev && !this.abilities.inRoundOrZone(player)) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no round and no practice zone`);
+			if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no living body`);
 
 			return;
 		}
 
 		const ball = this.getHeldBall(character);
 
-		// **No ball in hand, and a dev: the arm goes on the player instead.**
-		//
-		// This is the whole of the shortcut. A dev in Studio usually has nothing to mark — the arena's
-		// spawners only stock the floor while a round is playing, so outside one there is no ball to pick
-		// up, and `InfiniteBalls` is a flag they have to find first — so "mark the held ball" is a rule
-		// that cannot be exercised from a standing start. Arming the *player* moves the
-		// ability one step earlier: it waits on them, and the next ball that arrives in their hand takes it
-		// up. See `attachToHand`, which is where that happens, and {@link ARMED_ABILITY_ATTRIBUTE} for why
-		// the arm lives on the player rather than the body.
-		//
-		// **A non-dev is refused here exactly as before.** The arm is not a second way to mark a ball, it is
-		// the dev bypass's second shape — so the refusal below is unchanged, and the order of the two
-		// branches does not matter to anybody who cannot already use the shortcut.
-		//
-		// **And a mystery prize outranks the arm, which stands down rather than replacing it.** Both are the
-		// same slot in a player's hands — "the power my next press uses" — so they cannot both be held, and
-		// the tie goes to the one that cost something: a box is consumed the moment it is walked into, so
-		// destroying its prize to arm a shortcut would throw away a power the player went and collected,
-		// while the arm costs nothing and can be asked for again a second later. This is also what
-		// `useMysteryPower` promises for an empty hand: press the key early and the player is *still holding
-		// their power* when they pick a ball up. The prize itself clears any arm already set, from the other
-		// end — see `SuperService.holdMysteryPrize`.
-		if (!ball) {
-			if (!dev) {
-				if (DEBUG) print(`[Super] ${player.Name}: mark refused — no ball in hand`);
-
-				return;
-			}
-
-			if (this.abilities.isMysteryActive(player)) {
-				if (DEBUG) print(`[Super] ${player.Name}: mark refused — a mystery prize is waiting on a ball`);
-
-				return;
-			}
-
-			player.SetAttribute(ARMED_ABILITY_ATTRIBUTE, kind);
-
-			if (DEBUG) {
-				print(`[Super] ${player.Name}: armed ${kind} — the next ball they take up will carry it`);
-			}
+		// **Already carrying something, which is a second press of the same key or two presses close
+		// together. Not a second ability, and the first mark is not overwritten either** — the third rule
+		// precondition, "no stacking", and it runs for both bodies before any access question: a second
+		// mark is refused whoever is asking, because the rule is about the *ball* and not about the owner.
+		if (ball !== undefined && abilityOn(ball) !== undefined) {
+			if (DEBUG) print(`[Super] ${owner.Name}: mark refused — the held ball is already marked`);
 
 			return;
 		}
 
-		// Already carrying something, which is a second press of the same key or two presses close
-		// together. Not a second ability, and the first mark is not overwritten either: the player has
-		// asked for the same thing twice and the answer to that is no.
-		if (abilityOn(ball) !== undefined) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — the held ball is already marked`);
+		// **The access preconditions — the only place this method has an owner-type branch.** What a body
+		// must bring to be allowed to mark is a per-owner fact. A player brings ownership, the round-or-zone
+		// gate, and a charge or a mystery prize, with the dev bypass sitting in for all three; a rig brings
+		// its pending-ability slot and nothing else. The two arms substitute one access story for the other,
+		// and the mark below is one line they share.
+		if (owner.IsA("Player")) {
+			// **A dev is exempt from the round-or-zone gate, and that exemption is the point of the shortcut.**
+			// The rule the key exists for is "a dev can exercise this from a standing start", and a standing
+			// start in Studio is usually an intermission in the lobby — where a power has nothing to act on,
+			// which is the same reason the gate itself refuses there.
+			const dev = this.dev.isDev(owner);
 
-			return;
-		}
+			// **The power has to be owned, which is the newest gate and sits before the round's.** A key that
+			// marks a ball is a request to use a power the player may not have unlocked yet: the chest grants
+			// powers, and this is the lock the chest opens. Asked of `EconomyService`, which owns the roster —
+			// the dev bypass skips it exactly as it skips the round-or-zone gate and the charge.
+			if (!dev && !this.economy.ownsPower(owner, kind)) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — ${kind} not owned`);
 
-		// **The charge, a mystery prize, or the dev bypass.** A dev marks a ball holding no charge of their
-		// own, which is what makes this testable without six hits in a row first.
-		//
-		// **Written out at both sites rather than inside `SuperService`, and the line it draws is worth the
-		// repetition.** The two sites differ in what they do next (a mark, a window) and agree only on this
-		// test — and this test is not the whole gate either: ownership and `inRoundOrZone` above are asked
-		// before it, so a helper named for the question a caller has ("may this player use a power") would
-		// read as the whole of it while being one term of it. What *is* shared is the part that is one rule
-		// rather than one sentence — see `SuperService.inRoundOrZone`.
-		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
-		if (!charged && !dev) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no charge and no mystery prize`);
+				return;
+			}
 
-			return;
+			// **Otherwise, only where a power can do anything: a round is being played, or this body is standing
+			// in a practice zone.** Asked of `SuperService` rather than read from the status folder here, so the
+			// rule that grants a charge and the rule that lets one be spent stay one line in one file — a second
+			// copy could let a charge be earned in a round a ball could not be marked in. The zone half is
+			// `DodgeService.requestDodge`'s rule; see `SuperService.inRoundOrZone` for why the two actions share
+			// it, and for the bug that came of this one half being missing here.
+			if (!dev && !this.abilities.inRoundOrZone(owner)) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no round and no practice zone`);
+
+				return;
+			}
+
+			// **No ball in hand, and a dev: the arm goes on the player instead.**
+			//
+			// This is the whole of the shortcut. A dev in Studio usually has nothing to mark — the arena's
+			// spawners only stock the floor while a round is playing, so outside one there is no ball to pick
+			// up, and `InfiniteBalls` is a flag they have to find first — so "mark the held ball" is a rule
+			// that cannot be exercised from a standing start. Arming the *player* moves the
+			// ability one step earlier: it waits on them, and the next ball that arrives in their hand takes it
+			// up. See `attachToHand`, which is where that happens, and {@link ARMED_ABILITY_ATTRIBUTE} for why
+			// the arm lives on the player rather than the body.
+			//
+			// **A non-dev is refused here exactly as before.** The arm is not a second way to mark a ball, it is
+			// the dev bypass's second shape — so the refusal below is unchanged, and the order of the two
+			// branches does not matter to anybody who cannot already use the shortcut.
+			//
+			// **And a mystery prize outranks the arm, which stands down rather than replacing it.** Both are the
+			// same slot in a player's hands — "the power my next press uses" — so they cannot both be held, and
+			// the tie goes to the one that cost something: a box is consumed the moment it is walked into, so
+			// destroying its prize to arm a shortcut would throw away a power the player went and collected,
+			// while the arm costs nothing and can be asked for again a second later. This is also what
+			// `useMysteryPower` promises for an empty hand: press the key early and the player is *still holding
+			// their power* when they pick a ball up. The prize itself clears any arm already set, from the other
+			// end — see `SuperService.holdMysteryPrize`.
+			if (ball === undefined) {
+				if (!dev) {
+					if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no ball in hand`);
+
+					return;
+				}
+
+				if (this.abilities.isMysteryActive(owner)) {
+					if (DEBUG) {
+						print(`[Super] ${owner.Name}: mark refused — a mystery prize is waiting on a ball`);
+					}
+
+					return;
+				}
+
+				owner.SetAttribute(ARMED_ABILITY_ATTRIBUTE, kind);
+
+				if (DEBUG) {
+					print(`[Super] ${owner.Name}: armed ${kind} — the next ball they take up will carry it`);
+				}
+
+				return;
+			}
+
+			// **The charge, a mystery prize, or the dev bypass.** A dev marks a ball holding no charge of their
+			// own, which is what makes this testable without six hits in a row first.
+			//
+			// **Written out at both sites rather than inside `SuperService`, and the line it draws is worth the
+			// repetition.** The two sites differ in what they do next (a mark, a window) and agree only on this
+			// test — and this test is not the whole gate either: ownership and `inRoundOrZone` above are asked
+			// before it, so a helper named for the question a caller has ("may this player use a power") would
+			// read as the whole of it while being one term of it. What *is* shared is the part that is one rule
+			// rather than one sentence — see `SuperService.inRoundOrZone`.
+			const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
+			if (!charged && !dev) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no charge and no mystery prize`);
+
+				return;
+			}
+		} else {
+			// **A rig's access is the pending slot, and it is the whole of the access axis for a rig.** No
+			// charge, no mystery prize, no dev bypass, no arm — the slot is what pays, and it must name the
+			// same kind this call asks for. A rig reaches here only from its throw behaviours, which read the
+			// slot first, so this is the same test read from the other end; it exists so that no other caller
+			// can mark a rig's ball without a box behind it.
+			if (ball === undefined) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no ball in hand`);
+
+				return;
+			}
+
+			if (pendingAbilityOn(owner) !== kind) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no pending ${kind}`);
+
+				return;
+			}
 		}
 
 		this.setBallAbility(ball, kind);
 
-		// **The tag says which of the two paid, and it used to name only the charge.** Both are true of
-		// `charged` here, so a line that said "the charge is still held" about a player the *box* paid for
-		// would be a log asserting a charge that does not exist — and the spend below removes the box's
-		// prize and never a charge it never had.
+		// **The line says which of the two paid, and it used to name only the charge.** For a player both
+		// terms of `charged` are in play, so the line that names the charge or the prize for a player is kept
+		// word for word; a rig has no charge and no prize to name, so its line names the slot instead. The
+		// branch here is a log line's, not a rule's — the mark itself is one code path above it.
 		if (DEBUG) {
-			print(
-				`[Super] ${player.Name}: ${ball.Name} marked as ${kind}` +
-					`${charged ? " — paid for, and the charge or the prize will be spent" : " — dev bypass, nothing held"}`,
-			);
+			if (owner.IsA("Player")) {
+				const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
+
+				print(
+					`[Super] ${owner.Name}: ${ball.Name} marked as ${kind}` +
+						`${charged ? " — paid for, and the charge or the prize will be spent" : " — dev bypass, nothing held"}`,
+				);
+			} else {
+				print(`[Super] ${owner.Name}: ${ball.Name} marked as ${kind} — the pending prize paid`);
+			}
 		}
 	}
 

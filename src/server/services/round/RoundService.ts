@@ -1611,8 +1611,13 @@ export class RoundService implements OnStart {
      * **Only rigs in the round are considered** — `rigsInRound()`'s `Playing` gate and its side test
      * together. A rig with no side has no side to be credited, so a token matching one resolves to nothing
      * and the hit is unattributed, exactly as an unknown token is.
+     *
+     * **Public since a rig's hit began counting toward the crown (2026-10-14).** `BallComponent.score`
+     * asks this to resolve the thrower it is about to credit, so the streak's round-participation gate can
+     * be asked of the resolved body — the same resolution the hit records already use, lent out rather than
+     * copied.
      */
-    private throwerOf(throwerToken: string): RoundParticipant | undefined {
+    public throwerOf(throwerToken: string): RoundParticipant | undefined {
         const player = playerFromToken(throwerToken);
         if (player !== undefined) return player;
 
@@ -1621,6 +1626,30 @@ export class RoundService implements OnStart {
         }
 
         return undefined;
+    }
+
+    /**
+     * Whether `participant` is in *this* round — **the round-participation gate the streak reads.**
+     *
+     * **The same read {@link handleDeath} makes of a dying player, asked of the whole union now.** A
+     * player is a participant exactly while they are in `activePlayers` — the set `assignTeams` fills at
+     * the opening whistle and `eliminate` empties — and a rig while it is in {@link rigsInRound}, which is
+     * the `Playing`-gated list of side-bearing rigs. A practice player, a lobby spectator and a rig with no
+     * side all answer `false`, which is the whole of the rule that keeps a hit outside a round from moving
+     * a run.
+     *
+     * **A rig resolved by {@link throwerOf} is always in `rigsInRound` already**, so the rig half of this
+     * test is about a body handed in some other way; the player half is the half that matters, because
+     * `throwerOf`'s player arm does not phase-gate.
+     */
+    public isActive(participant: RoundParticipant): boolean {
+        if (participant.IsA("Player")) return this.activePlayers.has(participant);
+
+        for (const rig of this.rigsInRound()) {
+            if (rig === participant) return true;
+        }
+
+        return false;
     }
 
     /**

@@ -9,6 +9,8 @@ import {
 	THROWER_TOKEN,
 } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import { COSMETICS } from "shared/config/economy.config";
+import { EQUIPPED_TRAIL_ATTRIBUTE } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { NPC_TAG, NpcBehavior } from "../../npc/Behavior";
 import { createAlwaysCatchBehavior } from "../../npc/behaviors/AlwaysCatchBehavior";
@@ -28,6 +30,8 @@ import { CatchService } from "../actions/CatchService";
 import { DodgeService } from "../actions/DodgeService";
 import { FreezeService } from "../actions/FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
+import { MysteryBoxService } from "../mystery/MysteryBoxService";
+import { SuperService } from "../super/SuperService";
 
 /** Prints each model as it is picked up. A print per tick would flood the output. */
 const DEBUG = true;
@@ -96,6 +100,8 @@ export class NpcService implements OnStart {
 		private readonly freezes: FreezeService,
 		private readonly dodges: DodgeService,
 		private readonly speeds: WalkSpeedService,
+		private readonly mystery: MysteryBoxService,
+		private readonly abilities: SuperService,
 	) {
 		this.behaviors = [
 			// **Both catchers come before the dodge, and the order is not cosmetic.** The behaviors share
@@ -143,8 +149,13 @@ export class NpcService implements OnStart {
 			// contribution a player's sprint is — so the service that keeps the sum is handed to the behaviour
 			// that walks. See `SeekBehavior` for what a rig does with it and for what it costs (a rig has a
 			// speed sum now, where before this only the pad walk's direct write ever touched one).
-			createRoundSeekBehavior(speeds, pickups, balls),
-			createAlwaysSeekBehavior(speeds, pickups, balls),
+			//
+			// **And both take the mystery service since 2026-10-14**, because a box became a fetch target and
+			// the seek is what walks to it — the walk to a box and the walk to a ball are one tick, ranked
+			// there, and the box's source is asked of the service that owns the boxes. See
+			// `SeekBehavior.nearestBox`.
+			createRoundSeekBehavior(speeds, pickups, balls, mystery),
+			createAlwaysSeekBehavior(speeds, pickups, balls, mystery),
 			// The one behavior that needs something no other one does: the ball the rig was
 			// holding, so it can be taken out of the copy this makes. It re-enters this service
 			// the way any other rig does — by putting `NPC` on a model and letting the
@@ -240,10 +251,71 @@ export class NpcService implements OnStart {
 		// write to a model that is not in the world, which is how the token got into the template.
 		model.SetAttribute(THROWER_TOKEN, HttpService.GenerateGUID(false));
 
+		// **And a trail, chosen at random, which is the one cosmetic a rig wears.** See {@link dressRig}, which
+		// is the same call the loop makes for a rig nobody spawned — a Studio-painted rig has no `spawn` to go
+		// through, and giving it a trail only when it is cloned would make the place file the one route that
+		// produces a bare body.
+		this.dressRig(model);
+
 		for (const tag of behaviorTags) model.AddTag(tag);
 		model.AddTag(NPC_TAG);
 
 		return model;
+	}
+
+	/**
+	 * Gives a rig a randomly chosen trail, unless it is already wearing one.
+	 *
+	 * **Why a rig wears a trail at all, since it owns nothing and has no client to see it.** Three reasons and
+	 * the third is the real one: a ball's trail is the most legible thing about a throw, so a rig whose ball
+	 * flies the grey default is visibly the same every time while a player's is whoever they are; the user's
+	 * rule is that a rig should be hard to tell from a person, and a default trail is one more tell; and
+	 * **the trail is read from the body that threw**, so a rig wearing one exercises the same read a player's
+	 * does rather than leaving a second path untested until the day somebody adds one.
+	 *
+	 * **Randomly, per rig, and drawn from the whole catalogue rather than from what a player could own.** A
+	 * rig is not a player: it has no wallet, no milestones and no chest, so "what may this body wear" is the
+	 * catalogue and nothing else. Randomly rather than fixed because a fixed trail would be a uniform — eight
+	 * rigs flying one colour reads as a team, which is a statement, where eight rigs flying eight colours
+	 * reads as eight bodies.
+	 *
+	 * **The id is what is written, and the colours are looked up from it.** An attribute cannot hold the
+	 * `colors` object a def carries — it is an array of `Color3`s and an attribute holds no tables — so the
+	 * model carries the *id* and `EconomyService.equippedTrail` resolves the def through the same `COSMETICS`
+	 * lookup a player's trail goes through. That also keeps the catalogue the single source of truth: a def
+	 * whose colours are retuned repaints every rig wearing it, which is what you want and the opposite of what
+	 * a copied colour would do.
+	 *
+	 * **A record of *cosmetics* rather than of one trail, in the shape it needs to be for that to stay true.**
+	 * Today a trail is the only slot with a reader — the elimination slot has an attribute and nothing that
+	 * reads it (`HANDOFF.md`'s open item) — so this writes one attribute and stops. What makes it a record
+	 * rather than a special case is that the name is the *same attribute name a `Player` carries a trail
+	 * under*, so the next cosmetic slot is that slot's attribute written here too and no second mechanism.
+	 * **What this deliberately is not:** a per-cosmetic grant system, a reader for a slot nothing wears, or a
+	 * table of "what rigs are allowed to wear" — the catalogue is the whole list.
+	 *
+	 * **Idempotent, so it is safe to call on every turn of a loop.** A rig already wearing something is left
+	 * exactly as it is, which is what makes the respawn path work without a second thought: `RespawnBehavior`
+	 * clones the corpse, a `Clone` copies attributes, so the replacement arrives already wearing the dead
+	 * rig's trail — the same colour, which is the right answer for a body that is meant to be the same rig.
+	 */
+	private dressRig(model: Model): void {
+		const existing = model.GetAttribute(EQUIPPED_TRAIL_ATTRIBUTE);
+		if (typeIs(existing, "string") && existing !== "") return;
+
+		// **Every trail in the catalogue, and `pairs` rather than `Object.values`** — this build has no
+		// `Object.values`, which is the same footgun `economy.config.ts` records at the top of its own file.
+		const ids: string[] = [];
+		for (const [, def] of pairs(COSMETICS)) {
+			if (def.slot === "trail") ids.push(def.id);
+		}
+
+		// A catalogue with no trails in it is a build mid-edit rather than a state to handle; a rig wearing
+		// nothing is the default grey, which is exactly what the old behaviour was.
+		if (ids.size() === 0) return;
+
+		// `math.random(1, n)` is inclusive at both ends, so the index is the whole array and never its end.
+		model.SetAttribute(EQUIPPED_TRAIL_ATTRIBUTE, ids[math.random(1, ids.size()) - 1]);
 	}
 
 	/**
@@ -448,6 +520,13 @@ export class NpcService implements OnStart {
 		}
 
 		const period = this.fastestInterval();
+
+		// **A rig nobody spawned gets its trail here, once, on the turn it starts being run.** `spawn` dresses
+		// a rig it makes, which is every rig `LobbyRigService` puts in the lobby and everything else that goes
+		// through that door — but a rig painted by hand in Studio, or one dragged out of `ServerStorage` while
+		// the server is running, never went through it. This is the same call at the same place the rest of a
+		// rig's setup happens, and it is idempotent, so the spawned route pays one attribute read for it.
+		this.dressRig(model);
 		/** When each behavior last ran, so periods are honoured per behavior. */
 		const lastRan = new Map<string, number>();
 		/** Behaviors that have had their `prepare`, so it happens once and not per tick. */
@@ -629,6 +708,14 @@ export class NpcService implements OnStart {
 		if (model.Parent === undefined) return;
 
 		if (DEBUG) print(`[NPC] ${model.Name}: died`);
+
+		// **A rig's run of hits dies with it, through the same reset a player's death uses.** A player's
+		// death is resolved by the round and reaches `SuperService.noteDeath` from `RoundService.handleDeath`;
+		// a rig's is resolved here, because a rig has no `Player` for the round's handler to be handed. The
+		// call is the same either way — the streak row goes to nought and the crown is recomputed — and the
+		// one difference is bookkeeping inside `noteDeath`: a rig's row is *deleted*, because the key is a
+		// model that `RespawnBehavior` is about to destroy.
+		this.abilities.noteDeath(model);
 
 		for (const behavior of this.behaviors) {
 			if (model.HasTag(behavior.tag)) behavior.onDied?.(model);

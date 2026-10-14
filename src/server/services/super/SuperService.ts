@@ -17,6 +17,7 @@ import {
 	SUPER_STREAK_ATTRIBUTE,
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
+import { rigsOnASide } from "../../npc/rigs";
 
 /** Prints the mount line, and every grant, spend and forfeit. */
 const DEBUG = true;
@@ -110,8 +111,17 @@ interface MysteryPrize {
  */
 @Service()
 export class SuperService implements OnStart {
-	/** Every player's current streak. Absent means zero — a player who has not hit anybody yet. */
-	private readonly streaks = new Map<Player, number>();
+	/**
+	 * Every body's current streak. Absent means zero — a body that has not hit anybody yet.
+	 *
+	 * **Keyed on a `Player` for a player and on a `Model` for a rig, and the two keys are the two kinds of
+	 * body a hit can be credited to.** A player's streak belongs to the *player* — it outlives the body, and
+	 * a respawn keeps it, which is the whole reason the death reset is explicit rather than a side effect of
+	 * the character going away. A rig's streak belongs to its *model* — a rig has no `Player` behind it, and
+	 * its body *is* its identity, so a rig's streak dies with the body and the death reset is the *delete*
+	 * that would otherwise leak. The map holds both, and {@link refreshCrowns} walks both the same way.
+	 */
+	private readonly streaks = new Map<Player | Model, number>();
 
 	/**
 	 * Who is holding a charge.
@@ -123,12 +133,16 @@ export class SuperService implements OnStart {
 	private readonly charged = new Set<Player>();
 
 	/**
-	 * Every player with a MultiBall window open, and what is left of it.
+	 * Every body with a MultiBall window open, and what is left of it.
 	 *
-	 * **Keyed on the `Player` and not on the character**, for the reason `ARMED_ABILITY_ATTRIBUTE` gives
-	 * about the dev's arm: a window belongs to the *player*, and a respawn replaces the body it was
-	 * opened in. Whether a death should close one is a separate decision, and it is made where deaths are
-	 * handled rather than here — this service is told about states and never about bodies.
+	 * **Keyed on the `Player` for a player, and on the `Model` for a rig**, and the two have different
+	 * reasons for the same key shape. A player's window belongs to the *player* — the reason
+	 * `ARMED_ABILITY_ATTRIBUTE` gives about the dev's arm — and a respawn replaces the body it was opened
+	 * in; a rig's window belongs to the *model*, because a rig has no `Player` behind it and its body *is*
+	 * its identity. The map holds both, and the only owner-type difference in this file is that a player's
+	 * window is published to their attributes while a rig's is not — see {@link publish}, which is still
+	 * `Player`-keyed. Whether a death should close one is a separate decision, and it is made where deaths
+	 * are handled rather than here — this service is told about states and never about bodies.
 	 *
 	 * **It used to be the one container here with a *clock* on its rows, and the sentence that said so is
 	 * replaced rather than deleted because the reversal is the part worth reading.** The rows carried a
@@ -136,9 +150,9 @@ export class SuperService implements OnStart {
 	 * consequence that matters when reading the rest of this file is that **a window can outlive a round** —
 	 * nothing about it is measured in seconds. That is why the two callers that close one anyway, a death and
 	 * the end of a round, are load-bearing rather than tidy-up: they are now the only endings the ability has
-	 * other than a player spending all five throws.
+	 * other than a body spending all five throws.
 	 */
-	private readonly multiBalls = new Map<Player, MultiBallWindow>();
+	private readonly multiBalls = new Map<Player | Model, MultiBallWindow>();
 
 	/**
 	 * Every player holding a mystery-box prize, and what it rolled.
@@ -198,7 +212,7 @@ export class SuperService implements OnStart {
 		if (DEBUG) {
 			print(
 				`[Super] up — crowning at ${SUPER_CONFIG.CROWN_STREAK_THRESHOLD} hits,` +
-					` or the most on a side; nothing grants a charge but the dev bypass`,
+					` and the most on a side; nothing grants a charge but the dev bypass`,
 			);
 		}
 	}
@@ -219,37 +233,34 @@ export class SuperService implements OnStart {
 	 * charge row are all still here and all still work. **Power-up boxes are the intended source**, and
 	 * until they exist a charge is something only a dev can obtain.
 	 *
-	 * **A token and not a `Player`, which is forced rather than chosen.** A hit arrives from a ball,
-	 * and the token stamped on it at release is the whole of what that ball knows about who threw it —
-	 * the same fact `StatsService.recordHit` takes, for the same reason, so the two are deliberately
-	 * the same shape. Whether the token names a person at all is answered by {@link playerOf}, and a
-	 * rig's GUID falls out there rather than being special-cased here.
+	 * **A body and not a token, and the change is the widening that lets a rig's kill count.** The token
+	 * used to arrive here and be resolved to a `Player` by {@link playerOf}, which answers nothing for a
+	 * rig's GUID — so a rig's throw killed the body it landed on but never moved a run. The thrower is now
+	 * resolved by the caller (`BallComponent.score`, through `RoundService.throwerOf`), and the caller is
+	 * also where the round-participation gate lives: a hit reaches this method only if the thrower is a
+	 * body the round is actually playing — a player in `activePlayers`, or a rig on a side during
+	 * `Playing`. That gate is what keeps a practice hit out of the run, and it subsumes the old
+	 * `isRoundActive` read, which this method no longer makes.
 	 */
-	public noteHit(throwerToken: unknown): void {
-		const player = playerOf(throwerToken);
-		if (player === undefined) return;
+	public noteHit(thrower: Player | Model): void {
+		const streak = (this.streaks.get(thrower) ?? 0) + 1;
 
-		// **Only a round counts.** The rule `StatsService` applies to its own figures, read from the
-		// same channel — see {@link isRoundActive}. Without it, a hit in the lobby would count towards a
-		// crown, which is a reward for practising while nothing is at stake.
-		if (!this.isRoundActive()) return;
+		this.streaks.set(thrower, streak);
 
-		const streak = (this.streaks.get(player) ?? 0) + 1;
-
-		this.streaks.set(player, streak);
-		this.publish(player);
+		// A rig publishes no readout; a player's streak goes out with the rest of the HUD's state.
+		if (thrower.IsA("Player")) this.publish(thrower);
 
 		// **And the crown is decided after the count, never before.** Whether this hit crowned anybody
-		// depends on the count it has just made and on every other player's count and side, so the
+		// depends on the count it has just made and on every other body's count and side, so the
 		// recomputation has to follow the write — and it carries the other half of the rule as well: this
-		// hit may have taken the crown off the player who used to be their side's highest.
+		// hit may have taken the crown off the body who used to be their side's highest.
 		this.refreshCrowns();
 
-		if (DEBUG) print(`[Super] ${player.Name}: hits ${streak}`);
+		if (DEBUG) print(`[Super] ${thrower.Name}: hits ${streak}`);
 	}
 
 	/**
-	 * A player died, so the count goes back to zero. **The charge does not.**
+	 * A body died, so the count goes back to zero. **The charge does not.**
 	 *
 	 * **This is now the only thing outside the round boundary that resets the count.** A throw that
 	 * landed on nobody used to reset it too, through a `noteMiss` that used to stand here; that method is
@@ -257,35 +268,51 @@ export class SuperService implements OnStart {
 	 * that has to be defended. See `BallComponent.score`, which still refuses to record a hit for a miss
 	 * and simply no longer reports one.
 	 *
-	 * **A `Player` and not a token, and that is the difference between this and the hit above.** A
-	 * death is a fact about somebody the round has already resolved — `RoundService.handleDeath` is
-	 * handed the player and nothing else — where a hit arrives from a ball that knows only who threw
-	 * it. `StatsService` draws the same line between `recordHit` and `recordOut`, in its own words.
+	 * **A body rather than a token, and the widening is what makes a rig's death reset its run.** A
+	 * player's death is resolved by `RoundService.handleDeath`, which hands over the `Player`; a rig's
+	 * death is resolved by `NpcService`, which hands over the `Model`. Both arrive here and both end the
+	 * same way — the count is nought and the crown is recomputed. The one difference is bookkeeping, not
+	 * rule: a player's row is *zeroed* (the player outlives the body and the HUD reads the row), while a
+	 * rig's row is *deleted* (the model is about to be destroyed, and a row keyed on it is a leak).
 	 *
-	 * **No round check here, deliberately.** The round's own guard sits upstream of the call: a death
-	 * outside a playing phase returns before reaching it, and one for a player already out returns
-	 * before that. A second check here would be a copy of a rule the caller has already applied, which
-	 * is the thing this codebase refuses to write twice.
+	 * **No round check here, deliberately.** The caller's own guard sits upstream: a player's death
+	 * outside a playing phase returns before reaching it, and a rig's death is only announced for a rig
+	 * that was actually in the world. A second check here would be a copy of a rule the caller has
+	 * already applied, which is the thing this codebase refuses to write twice.
 	 */
-	public noteDeath(player: Player): void {
-		this.resetStreak(player, "died");
+	public noteDeath(owner: Player | Model): void {
+		if (owner.IsA("Player")) {
+			this.resetStreak(owner, "died");
 
-		// **A death loses the box's prize, and this method closes no MultiBall one.** Read the body
-		// above: it resets the streak and recomputes the crown, and nothing else. `clearMultiBall` is
-		// called from its own timer and from two places in `RoundService`, and a death reaches neither —
-		// so a player who dies with a MultiBall window open keeps it, despite that window's own comment
-		// saying a death closes one. Whether MultiBall should be closed here is its author's question and
-		// not this one's; for a prize the answer is that it goes, because a fresh body in a fresh position
-		// is not the player who collected it. Divergence reported rather than copied either way.
-		//
-		// **"Lose it" is what this half of use-it-or-lose-it means**, and it is the reason the prize has no
-		// clock: without one, the only way to lose it is to be killed, which is a thing the game is already
-		// about. See {@link releaseMysteryPrize} for the other endings.
-		this.releaseMysteryPrize(player, "died");
+			// **A death loses the box's prize, and this method closes no MultiBall one.** Read the body
+			// above: it resets the streak and recomputes the crown, and nothing else. `clearMultiBall` is
+			// called from its own timer and from two places in `RoundService`, and a death reaches neither —
+			// so a player who dies with a MultiBall window open keeps it, despite that window's own comment
+			// saying a death closes one. Whether MultiBall should be closed here is its author's question and
+			// not this one's; for a prize the answer is that it goes, because a fresh body in a fresh position
+			// is not the player who collected it. Divergence reported rather than copied either way.
+			//
+			// **"Lose it" is what this half of use-it-or-lose-it means**, and it is the reason the prize has no
+			// clock: without one, the only way to lose it is to be killed, which is a thing the game is already
+			// about. See {@link releaseMysteryPrize} for the other endings.
+			this.releaseMysteryPrize(owner, "died");
+		} else {
+			// A rig's prize is its `PENDING_ABILITY_ATTRIBUTE` slot, not a row here, and its streak row dies
+			// with the body it is keyed on — `RespawnBehavior` is about to destroy the model. The delete is
+			// the whole of the rig half: the observable rule is the same as a player's (nought, crown off),
+			// and the only difference is that a rig's key cannot be kept the way a player's can.
+			//
+			// **The delete's answer is the print's gate, and that makes the rig half read like the player
+			// half.** `Map.delete` answers whether a row existed, which is exactly the test `resetStreak`
+			// applies before its own line — so a rig that died with nothing to clear stays silent, and a
+			// rig whose run actually ends says so in the same words a player's does.
+			const had = this.streaks.delete(owner);
+			if (DEBUG && had) print(`[Super] ${owner.Name}: streak reset — died`);
+		}
 
-		// **And a death can move a crown that is not this player's.** The count has just gone to nought,
+		// **And a death can move a crown that is not this body's.** The count has just gone to nought,
 		// which changes the maximum it was measured against — so the answer is recomputed even though the
-		// player who died is certainly not wearing it any more.
+		// body who died is certainly not wearing it any more.
 		this.refreshCrowns();
 	}
 
@@ -313,7 +340,7 @@ export class SuperService implements OnStart {
 	}
 
 	/**
-	 * Opens a MultiBall window for `player`, or refuses because one is already running.
+	 * Opens a MultiBall window for `owner`, or refuses because one is already running.
 	 *
 	 * **A buff on the player rather than a property of a ball, and that is the whole of this ability.**
 	 * Pierce marks a ball: the ability travels with the thing that flies, which is why putting a marked
@@ -337,21 +364,25 @@ export class SuperService implements OnStart {
 	 * Returns whether a window was opened, so the caller can tell an accepted press from a refused
 	 * second one.
 	 */
-	public activateMultiBall(player: Player): boolean {
-		if (this.multiBalls.has(player)) return false;
+	public activateMultiBall(owner: Player | Model): boolean {
+		if (this.multiBalls.has(owner)) return false;
 
-		this.multiBalls.set(player, { remaining: SUPER_CONFIG.MULTI_BALL_BALL_COUNT });
-		this.publish(player);
+		this.multiBalls.set(owner, { remaining: SUPER_CONFIG.MULTI_BALL_BALL_COUNT });
+
+		// **A player's window is published to their attributes; a rig's is not**, because a rig has no HUD
+		// to read it. The row itself is the same for both — one map, one count — and the publish is the only
+		// owner-type difference here.
+		if (owner.IsA("Player")) this.publish(owner);
 
 		// **There is no timer here any more, and its absence is the change.** A `task.delay` used to be
 		// scheduled for the length of the window, so the row went away when the clock did — the row was the
 		// convenience and the clock in {@link isMultiBallActive} was the rule. **The count is the rule now**,
 		// and what closes the window is the throw that spends the last of it: see
 		// {@link consumeMultiBallBall}, which is where the row is dropped. Nothing has to run later, which
-		// also means nothing can be left scheduled for a player who has since died or left the game.
+		// also means nothing can be left scheduled for a body who has since died or left the game.
 		if (DEBUG) {
 			print(
-				`[Super] ${player.Name}: MultiBall window open — ` +
+				`[Super] ${owner.Name}: MultiBall window open — ` +
 					`${SUPER_CONFIG.MULTI_BALL_BALL_COUNT} throws, until they are spent`,
 			);
 		}
@@ -360,7 +391,7 @@ export class SuperService implements OnStart {
 	}
 
 	/**
-	 * Whether `player` has a window open right now — **which is now the same question as whether they have a
+	 * Whether `owner` has a window open right now — **which is now the same question as whether they have a
 	 * throw left.**
 	 *
 	 * **The count is the rule and the `Map` is only where the row is kept.** There is no clock to compare
@@ -375,8 +406,8 @@ export class SuperService implements OnStart {
 	 * count *is* an active window**, which is what lets the HUD draw the MultiBall icon from the count alone.
 	 * See `SuperHudController`.
 	 */
-	public isMultiBallActive(player: Player): boolean {
-		const window = this.multiBalls.get(player);
+	public isMultiBallActive(owner: Player | Model): boolean {
+		const window = this.multiBalls.get(owner);
 		if (!window) return false;
 
 		return window.remaining > 0;
@@ -392,34 +423,36 @@ export class SuperService implements OnStart {
 	 * caller and where that rule is written down with the reason for it.
 	 *
 	 * **Dropping the row on the way out is the window's new ending.** The fifth throw is spent here, so the
-	 * row goes here: that publishes the count as `0`, which is the empty case the HUD reads as "no window" and
-	 * which stops the MultiBall icon being drawn — and it is what makes "the count is the only limit" true in
-	 * one place rather than a rule the reader has to assemble from three separate tests. The order matters in
-	 * one direction only: the row is deleted *after* the decrement and the publish, so the log line above is
-	 * the last thing that ever sees the count at nought.
+	 * row goes here: for a player that publishes the count as `0`, which is the empty case the HUD reads as
+	 * "no window" and which stops the MultiBall icon being drawn — and it is what makes "the count is the only
+	 * limit" true in one place rather than a rule the reader has to assemble from three separate tests. The
+	 * order matters in one direction only: the row is deleted *after* the decrement and the publish, so the
+	 * log line above is the last thing that ever sees the count at nought.
 	 */
-	public consumeMultiBallBall(player: Player): boolean {
-		if (!this.isMultiBallActive(player)) return false;
+	public consumeMultiBallBall(owner: Player | Model): boolean {
+		if (!this.isMultiBallActive(owner)) return false;
 
-		const window = this.multiBalls.get(player);
+		const window = this.multiBalls.get(owner);
 		if (!window) return false;
 
 		window.remaining -= 1;
-		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: MultiBall throw spent — ${window.remaining} left`);
+		// A rig's window is not published, for the reason `activateMultiBall` gives.
+		if (owner.IsA("Player")) this.publish(owner);
 
-		if (window.remaining <= 0) this.clearMultiBall(player);
+		if (DEBUG) print(`[Super] ${owner.Name}: MultiBall throw spent — ${window.remaining} left`);
+
+		if (window.remaining <= 0) this.clearMultiBall(owner);
 
 		return true;
 	}
 
 	/**
-	 * Closes `player`'s window: **the last throw was spent**, they died, or the round ended.
+	 * Closes `owner`'s window: **the last throw was spent**, they died, or the round ended.
 	 *
 	 * **Nothing outside this service is touched, and "the ball in the hand stays" is a rule rather than
 	 * an omission.** Closing a window takes the *supply* away — no more balls are handed over — and
-	 * leaves whatever the player is holding exactly where it is, because a ball in a hand when the
+	 * leaves whatever the body is holding exactly where it is, because a ball in a hand when the
 	 * window ends was not lent to them by the window. **The new ending makes that visible rather than
 	 * theoretical**: spending the fifth throw closes the window on the same frame, and that throw still
 	 * flies — the ball left the hand as the count reached nought, and nothing here takes a ball back.
@@ -430,12 +463,12 @@ export class SuperService implements OnStart {
 	 * things can close a window and any of them can arrive first, which is why the guard is a `delete` that
 	 * reports whether it deleted rather than a test followed by a delete.
 	 */
-	public clearMultiBall(player: Player): void {
-		if (!this.multiBalls.delete(player)) return;
+	public clearMultiBall(owner: Player | Model): void {
+		if (!this.multiBalls.delete(owner)) return;
 
-		this.publish(player);
+		if (owner.IsA("Player")) this.publish(owner);
 
-		if (DEBUG) print(`[Super] ${player.Name}: MultiBall window closed`);
+		if (DEBUG) print(`[Super] ${owner.Name}: MultiBall window closed`);
 	}
 
 	/**
@@ -726,38 +759,42 @@ export class SuperService implements OnStart {
 	}
 
 	/**
-	 * Recomputes who wears the crown, and writes {@link CROWN_ATTRIBUTE} on every player.
+	 * Recomputes who wears the crown, and writes {@link CROWN_ATTRIBUTE} on every body.
 	 *
-	 * **The rule, and both halves of it.** A player is crowned if `hits >= CROWN_STREAK_THRESHOLD` — hot
-	 * on their own, whatever anybody else is doing — **or** if their count equals the highest on their
-	 * side and is at least `1`. The floor is the half that says a side where nobody has hit anybody
-	 * crowns nobody, rather than crowning whoever happens to be sitting at nought. **A tie at the top
-	 * crowns both**, because the two halves are independent tests and a tiebreak would mean inventing a
-	 * reason why one of two equal players is the hot one.
+	 * **The rule, as one condition now.** A body is crowned if its count is at least
+	 * `CROWN_STREAK_THRESHOLD` **and** equals the highest count on its side. The two halves are no longer
+	 * alternatives: a body with three hits on a side whose leader has five is not hot, and a body with one
+	 * hit is never hot, whatever its side is doing. **A tie at the top crowns both**, because the test is
+	 * `count === best` and a tiebreak would mean inventing a reason why one of two equal bodies is the hot
+	 * one. The floor of the threshold is what says a side where nobody has reached three crowns nobody,
+	 * rather than crowning whoever happens to be sitting at nought.
 	 *
-	 * **Computed here rather than in the client, because "the highest on their team" is not a question
-	 * one client can answer.** It needs every player's count *and* every player's side at the same
-	 * instant, and a client would be reading a replica of two tables this file owns, a message behind —
-	 * so two clients could disagree about who is wearing a crown, and the player being crowned would be
-	 * watching a third answer. The count and the side are decided here, so the answer is decided here and
-	 * sent; that is the same argument that puts the streak itself on the player rather than letting each
-	 * HUD count its own hits, one step further out.
+	 * **The crown is live, not an award.** It is recomputed on every hit and every death, so the body that
+	 * was the best stops wearing it the moment another body passes them, and a body that drops below three
+	 * — through the death reset — has the crown come off with the count.
 	 *
-	 * **Called from every event that can change an answer, which is why it is a method rather than
-	 * something worked out where the attribute is read.** A hit and a death change one row; a round
-	 * opening zeroes every row; a roster assignment changes who is compared against whom; a player
-	 * leaving can hand the crown to whoever was second. There is no cheaper incremental version of this
-	 * that is not a second copy of the rule, and the list it walks is as long as the server's player list.
+	 * **Computed here rather than in the client, because "the highest on their side" is not a question one
+	 * client can answer.** It needs every body's count *and* every body's side at the same instant, and a
+	 * client would be reading a replica of two tables this file owns, a message behind — so two clients
+	 * could disagree about who is wearing a crown, and the body being crowned would be watching a third
+	 * answer. The count and the side are decided here, so the answer is decided here and sent.
+	 *
+	 * **Called from every event that can change an answer.** A hit and a death change one row; a round
+	 * opening zeroes every row; a roster assignment changes who is compared against whom; a player leaving
+	 * can hand the crown to whoever was second. There is no cheaper incremental version of this that is
+	 * not a second copy of the rule.
 	 *
 	 * **Silent when nothing changed.** This runs on every hit in the game, so the write is guarded rather
 	 * than unconditional — an attribute set to the value it already holds is at best a no-op the engine
-	 * has to look at, and at worst a replication of nothing to every client. The print is only for a
-	 * player being crowned, since a crown coming off is the ordinary case of a count coming off.
+	 * has to look at, and at worst a replication of nothing to every client. The print is only for a body
+	 * being crowned, since a crown coming off is the ordinary case of a count coming off.
 	 */
 	public refreshCrowns(): void {
-		// **One pass to find each side's best, one to decide.** The two cannot be one pass: a player's
+		// **One pass to find each side's best, one to decide.** The two cannot be one pass: a body's
 		// answer depends on a maximum that may belong to somebody further down the list, so the whole
-		// comparison has to be finished before anybody is judged against it.
+		// comparison has to be finished before anybody is judged against it. Two walks — the players, then
+		// the rigs — because a side's best is the best of *both* kinds of body, and neither list knows the
+		// other.
 		const bests = new Map<string, number>();
 
 		for (const player of Players.GetPlayers()) {
@@ -765,17 +802,37 @@ export class SuperService implements OnStart {
 			bests.set(team, math.max(bests.get(team) ?? 0, this.streaks.get(player) ?? 0));
 		}
 
-		for (const player of Players.GetPlayers()) {
-			const count = this.streaks.get(player) ?? 0;
-			const crowned =
-				count >= SUPER_CONFIG.CROWN_STREAK_THRESHOLD || (count >= 1 && count === bests.get(teamOf(player)));
-
-			if (player.GetAttribute(CROWN_ATTRIBUTE) === crowned) continue;
-
-			player.SetAttribute(CROWN_ATTRIBUTE, crowned);
-
-			if (DEBUG && crowned) print(`[Super] ${player.Name}: crowned at ${count} hit(s)`);
+		for (const { rig, team } of rigsOnASide()) {
+			bests.set(team, math.max(bests.get(team) ?? 0, this.streaks.get(rig) ?? 0));
 		}
+
+		for (const player of Players.GetPlayers()) {
+			this.applyCrown(player, teamOf(player), bests);
+		}
+
+		for (const { rig, team } of rigsOnASide()) {
+			this.applyCrown(rig, team, bests);
+		}
+	}
+
+	/**
+	 * Writes the crown onto one body — **the single place the rule is decided, for a player and a rig
+	 * alike.**
+	 *
+	 * **One function rather than two loops carrying the comparison**, so a change to the rule cannot reach
+	 * one kind of body and miss the other. The attribute is the same name on both — `CROWN_ATTRIBUTE` —
+	 * which is the whole of "a rig wears the crown the way a player does": the server writes one flag, the
+	 * client reads one flag, and neither asks what kind of body it is on.
+	 */
+	private applyCrown(body: Player | Model, team: string, bests: ReadonlyMap<string, number>): void {
+		const count = this.streaks.get(body) ?? 0;
+		const crowned = count >= SUPER_CONFIG.CROWN_STREAK_THRESHOLD && count === (bests.get(team) ?? 0);
+
+		if (body.GetAttribute(CROWN_ATTRIBUTE) === crowned) return;
+
+		body.SetAttribute(CROWN_ATTRIBUTE, crowned);
+
+		if (DEBUG && crowned) print(`[Super] ${body.Name}: crowned at ${count} hit(s)`);
 	}
 
 	/** Zeroes `player`'s streak and says why, unless it is already zero. */

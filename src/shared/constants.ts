@@ -1052,6 +1052,35 @@ export type CatchCause = "attempt" | "catch";
 export const CHARGING_ATTRIBUTE = "Charging";
 
 /**
+ * Attribute on a **rig's `Model`** holding the power a collected mystery box is paying for, or `""` for
+ * none.
+ *
+ * **The rig's half of the mystery prize, and deliberately a different mechanic wearing a related name.** A
+ * player's box writes a prize in `SuperService` and that prize is consumed by a *press*; a rig has no key to
+ * press, so its prize waits here on the model and is consumed by the rig's *next throw* — see `ThrowBehavior`
+ * and `AlwaysThrowBehavior`, which read this and hand it to `BallService.markHeldBall` or
+ * `BallService.activateMultiBall`. The two prizes are different mechanics sharing a noun; a reader must not
+ * treat this as the player's mystery prize under another spelling.
+ *
+ * **One slot, and `""` is the empty case.** A rig with a full slot ignores a box — no queue, no overwrite —
+ * and the slot is cleared after the throw that spends it, success or failure, so a refused mark or a refused
+ * throw cannot strand the rig with a prize it can never use. The value is one of the words in
+ * `shared/ability.ts`, the same vocabulary a player's prize speaks, and `pendingAbilityOn` is the one reader
+ * that narrows the raw string back to that vocabulary.
+ *
+ * **On the model rather than in a record, because a rig has nothing to persist.** It is a fact about the
+ * body — the same class of fact as {@link CHARGING_ATTRIBUTE}, which is also a rig-model attribute — and it
+ * dies with the body it is written on. It is *not* the player's {@link SUPER_CHARGE_ATTRIBUTE}, a boolean on
+ * a `Player`; the two differ in the same way {@link CHARGING_ATTRIBUTE} and {@link SUPER_CHARGE_ATTRIBUTE}
+ * do, and a reader asking "is this body charging a throw" is not asking the question this answers.
+ *
+ * **A client could read it, and nothing does yet.** It is a string a rig wears like the rest of its published
+ * state, so the day a rig's pending power should show on its body — a glow, an icon — the fact is already on
+ * the model and needs no remote to be seen.
+ */
+export const PENDING_ABILITY_ATTRIBUTE = "PendingAbility";
+
+/**
  * Which way a body that is mid-dash went, as one of `DodgeDirection`'s four words — on the **dodging
  * model**, player or rig, for the length of the dash.
  *
