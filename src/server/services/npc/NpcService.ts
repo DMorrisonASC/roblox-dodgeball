@@ -27,6 +27,7 @@ import { BallService } from "../ball/BallService";
 import { CatchService } from "../actions/CatchService";
 import { DodgeService } from "../actions/DodgeService";
 import { FreezeService } from "../actions/FreezeService";
+import { WalkSpeedService } from "../character/WalkSpeedService";
 
 /** Prints each model as it is picked up. A print per tick would flood the output. */
 const DEBUG = true;
@@ -94,6 +95,7 @@ export class NpcService implements OnStart {
 		private readonly pickups: BallPickupService,
 		private readonly freezes: FreezeService,
 		private readonly dodges: DodgeService,
+		private readonly speeds: WalkSpeedService,
 	) {
 		this.behaviors = [
 			// **Both catchers come before the dodge, and the order is not cosmetic.** The behaviors share
@@ -136,8 +138,13 @@ export class NpcService implements OnStart {
 			// wears the first because `LobbyRigService` put it there, and the practice rigs wear the second
 			// because a person painted it — so a practice tag on a side-bearing rig would be honoured rather
 			// than corrected, and that is the same rule every behaviour tag has always had.
-			createRoundSeekBehavior(pickups, balls),
-			createAlwaysSeekBehavior(pickups, balls),
+			// **Both seek behaviours, and both take the speed service since 2026-10-13.** A rig's walk now
+			// contributes to its speed like a player's does — a run for a distant ball, on the same named
+			// contribution a player's sprint is — so the service that keeps the sum is handed to the behaviour
+			// that walks. See `SeekBehavior` for what a rig does with it and for what it costs (a rig has a
+			// speed sum now, where before this only the pad walk's direct write ever touched one).
+			createRoundSeekBehavior(speeds, pickups, balls),
+			createAlwaysSeekBehavior(speeds, pickups, balls),
 			// The one behavior that needs something no other one does: the ball the rig was
 			// holding, so it can be taken out of the copy this makes. It re-enters this service
 			// the way any other rig does — by putting `NPC` on a model and letting the

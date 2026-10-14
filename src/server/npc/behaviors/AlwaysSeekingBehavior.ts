@@ -5,6 +5,7 @@ import { createSeekBehavior } from "./SeekBehavior";
 import type { SeekRegion } from "./SeekBehavior";
 import type { BallPickupService } from "../../services/ball/BallPickupService";
 import type { BallService } from "../../services/ball/BallService";
+import type { WalkSpeedService } from "../../services/character/WalkSpeedService";
 
 /**
  * Walking to a ball inside the practice zone, for a practice rig — **the practice half of the seek split.**
@@ -38,6 +39,12 @@ import type { BallService } from "../../services/ball/BallService";
  * rule about the pickup — `Behavior_Pickup`'s reach is `BALL_CONFIG.PICKUP_RADIUS` from wherever the rig
  * stands, so a ball just outside the zone beside the rig can still be taken, which is the picker's rule and
  * not the fetch's.
+ *
+ * **It takes the speed service, as its round sibling does, and the practice rig gets every part of that too.**
+ * The sprint, the arc and the hop all live in the shared factory, so a practice rig runs for a distant ball and
+ * curves towards it exactly as a round rig does. The one thing it will not do is hop: `detectEnemy` is silent
+ * outside a round — see its own rule — and a rig in the practice court has no side and no enemy, which is the
+ * rule rather than an omission here.
  */
 
 /**
@@ -53,6 +60,10 @@ const practiceZone: SeekRegion = {
 };
 
 /** The practice variant: one call to the shared factory, with the tag and the region that make it this one. */
-export function createAlwaysSeekBehavior(pickups: BallPickupService, balls: BallService): NpcBehavior {
-	return createSeekBehavior(pickups, balls, BEHAVIOR_ALWAYS_SEEKING, practiceZone);
+export function createAlwaysSeekBehavior(
+	speeds: WalkSpeedService,
+	pickups: BallPickupService,
+	balls: BallService,
+): NpcBehavior {
+	return createSeekBehavior(speeds, pickups, balls, BEHAVIOR_ALWAYS_SEEKING, practiceZone);
 }

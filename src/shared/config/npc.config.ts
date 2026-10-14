@@ -347,4 +347,214 @@ export const NPC_CONFIG = {
 	 * radius the dash exists to escape.
 	 */
 	DODGE_RUN_STUDS: 12,
+
+	/**
+	 * How far from its ball a seeking rig has to be to *run* for it, in studs. **Placeholder — 30.**
+	 *
+	 * **A distance gate rather than a roll, and that is the whole shape of the rule.** A rig that sprinted at
+	 * random would sprint when there was nothing to sprint for: a person runs for a ball that is *far away*,
+	 * which is the same decision every time from the same fact. So a rig walks to a ball inside this distance
+	 * and runs to one beyond it, and nothing else about the walk decides.
+	 *
+	 * **Sized so the run reads as effort rather than as a twitch.** A rig walks at {@link NPC_CONFIG.WALK_TO_PAD_SPEED}
+	 * (16), so thirty studs is a little under two seconds of walking: shorter and the sprint is over before
+	 * anyone has seen it start, which reads as a stumble; longer and the sprint is most of the trip, which is
+	 * what makes it legible. It is also about a third of the arena across, so the ball a rig runs for is one it
+	 * has to cross ground for.
+	 *
+	 * **The gate is re-read on every turn of the walk, so a rig slows as it arrives** — the run is for the
+	 * *distance*, not for the walk, and a rig that ran the whole way and stopped on the ball would be a body
+	 * changing gear for no reason a person watching could name. See `SeekBehavior`.
+	 */
+	SEEK_SPRINT_DISTANCE_STUDS: 30,
+
+	/**
+	 * How close a walking rig has to be to another body before it will hop, in studs. **Placeholder — 24.**
+	 *
+	 * **A hop is a thing a person does near somebody, so the radius is small and it is about legibility rather
+	 * than about effect.** At this range the body the rig is passing is the nearest thing in the frame and the
+	 * jump reads as *at* that body; at `DETECTION_RADIUS` (60) it would be a rig hopping on its own in the middle
+	 * of the floor, which is the one reading that looks like a fault rather than like a person.
+	 *
+	 * **What it is measured against is the throw, not the dodge.** Twenty-four studs is inside
+	 * {@link NPC_CONFIG.THROW_RANGE_STUDS} several times over, so the body a rig hops past is one it could
+	 * actually throw at — which is the reason a person would be moving like that in the first place. See
+	 * `detectEnemy` for what counts as an enemy, which is a *side* question and not a distance one.
+	 */
+	SEEK_JUMP_ENEMY_RADIUS_STUDS: 24,
+
+	/**
+	 * How long a rig waits after a hop before it will hop again, in seconds. **Placeholder — 6.**
+	 *
+	 * **Per rig, and that is the whole reason it is a cooldown rather than a chance.** A roll would let two rigs
+	 * hopping in the same second hop again together, and a rig that failed a roll would hop at the next
+	 * opportunity it was offered — so a chance ends up meaning *how often the trigger comes up*, which is already
+	 * decided by where the bodies are. A clock on the rig says the thing that is meant: **this rig hops
+	 * occasionally**, whatever the floor around it is doing.
+	 *
+	 * **Six seconds is sized against the jump itself rather than against the walk.** A hop is about a second in
+	 * the air at this game's gravity, so this leaves five seconds of walking between them — long enough that a
+	 * rig crossing a floor does not look like it is bouncing, short enough that two rigs meeting twice in a round
+	 * are not a coincidence nobody sees. See `SEEK_SPRINT_DISTANCE_STUDS` for the walk a cooldown has to sit
+	 * inside: a rig sprints thirty studs in about a second and a half, which is *faster* than this, so a hop is
+	 * not a thing that happens once per walk by construction — it is rarer than that.
+	 */
+	SEEK_JUMP_COOLDOWN_SECONDS: 6,
+
+	/**
+	 * How far off a straight line a rig's walk to a ball may stray, as an angle from the line. **Placeholder — 4.**
+	 *
+	 * **An angle rather than a distance, and the choice does two jobs at once.** What a person walking an arc
+	 * deviates by is a *direction* — they are watching the ball and the ball is over there — so an angle is the
+	 * honest primitive; and because the offset it produces is `tan(angle) × distance`, a rig's detour **shrinks as
+	 * it arrives**. That second half is load-bearing rather than tidy: a fixed lateral offset would leave a rig
+	 * eight studs from the ball still heading three studs to one side, which is exactly the distance at which the
+	 * arrival check and the PICKUP_RADIUS live, and a curve is not allowed to cost the rig its ball.
+	 *
+	 * **Four degrees is what it means in studs:** `tan(4°)` is `0.07`, so the walk swings about **3.3 studs** to
+	 * either side of the line on a 47-stud walk and about **1.4 studs** on a 20-stud one. That is a body's width
+	 * of drift over an arena crossing — visible as a curve at a distance, and small enough that the rig is still
+	 * plainly walking to the ball rather than wandering. See `SEEK_CURVE_PERIOD_MIN_SECONDS`.
+	 */
+	SEEK_CURVE_AMPLITUDE_DEGREES: 4,
+
+	/**
+	 * The shortest full left-right cycle of a curving walk, in seconds. **Placeholder — 1.4.**
+	 *
+	 * **A period rather than a distance, because the curve is a motion and motions are measured in time.** The
+	 * walk it is laid over is a different length every time, so a curve expressed in studs would be one cycle on
+	 * a short walk and a third of one on a long walk, which is a different shape of detour for the same rule.
+	 *
+	 * **A range rather than a value, drawn once per walk** — see {@link NPC_CONFIG.SEEK_CURVE_PERIOD_MAX_SECONDS}
+	 * — so that two rigs setting off in the same second do not trace the same path. At a rig's own 16 studs/s a
+	 * 1.4-second cycle covers about 22 studs of walking, so a 47-stud trip is two gentle swings: enough for the
+	 * shape to be *there* without the rig reading as drunk.
+	 */
+	SEEK_CURVE_PERIOD_MIN_SECONDS: 1.4,
+
+	/**
+	 * The longest full left-right cycle of a curving walk, in seconds. **Placeholder — 2.6.**
+	 *
+	 * **The other end of the draw, and the spread is the point rather than the difference.** Two rigs walking to
+	 * two balls are the ordinary case in this game, and a single period would make them two bodies tracing one
+	 * identical arc a moment apart — which is a *new* tell, and a worse one than the straight line this replaces.
+	 * With a period drawn from this range and a phase drawn per walk (see `SeekBehavior`), two walks made at the
+	 * same instant by the same rule are visibly different paths.
+	 */
+	SEEK_CURVE_PERIOD_MAX_SECONDS: 2.6,
+
+	/**
+	 * How close an enemy has to be for a walking rig to bother bluffing it, in studs. **Placeholder — 30.**
+	 *
+	 * **This is the distance at which a ball could arrive, not the distance at which a body is interesting.** The
+	 * bluff exists because the rig is about to be thrown at, so the radius has to be inside an armed body's own
+	 * throw: thirty studs is about half a second of flight at the slowest charged throw the game makes, which is
+	 * the window in which a sidestep can plausibly be a reaction to the throw rather than a movement with no cause.
+	 * Outside it, the rig would be shuffling at somebody who cannot reach it yet and the movement would read as a
+	 * rig that walks badly rather than as a rig that knows what is coming.
+	 *
+	 * **Smaller than {@link NPC_CONFIG.SEEK_JUMP_ENEMY_RADIUS_STUDS} deliberately**, and the two are not the same
+	 * question: a hop is a body being *near* the rig, which is a fact about the floor, while a shuffle is a threat
+	 * that is *armed and could reach it*, which is a fact about danger. A rig therefore hops at bodies it is
+	 * passing and shuffles at bodies that are about to throw, and the second circle sits inside the first.
+	 */
+	PANIC_ENEMY_RADIUS_STUDS: 30,
+
+	/**
+	 * The chance that a rig walking to a ball decides to bluff an armed enemy, **rolled once per walk**.
+	 * **Placeholder — 0.15, the user's own number.**
+	 *
+	 * **Once per walk rather than per turn, and that is the whole of the design.** A 15 % roll at the seek's
+	 * cadence would be a rig that shuffles on *every* walk to *every* ball, because two turns is all the larger of
+	 * 1 − 0.85² = 28 %; the event would stop being occasional in the first second and the number would mean
+	 * nothing. Rolled once, it is the chance of *this approach* being a cautious one, which is what the user asked
+	 * for. The roll happens when the walk is chosen and the movement itself waits for an enemy to be armed and
+	 * near — see `SeekBehavior`.
+	 *
+	 * **A rig that fails the roll does not re-roll**, which is the same fact said the other way: the roll is
+	 * stored on the walk, so a rig cannot eventually shuffle by being persistent. What that costs is stated:
+	 * a walk can pass an armed enemy at the exact moment the roll said no, and nothing happens — which is the
+	 * honest reading of 15 %, and the alternative (a roll per turn) is a different feature wearing this number.
+	 */
+	PANIC_SHUFFLE_CHANCE: 0.15,
+
+	/**
+	 * How long a rig walks its sidestep before resuming the walk to the ball, in seconds. **Placeholder — 0.6.**
+	 *
+	 * **Longer than the sidestep takes, on purpose, and the extra is the point.** Six studs at a rig's own walk
+	 * of {@link NPC_CONFIG.WALK_TO_PAD_SPEED} is a little under four tenths of a second, so this leaves the rig
+	 * standing at the end of the step for the rest of the window — which is what makes the movement read as
+	 * *hesitation* rather than as a body that walked sideways for no reason and then thought better of it. See
+	 * {@link NPC_CONFIG.PANIC_SIDESTEP_STUDS} for the distance and why one step rather than two.
+	 */
+	PANIC_SHUFFLE_SECONDS: 0.6,
+
+	/**
+	 * How far to one side a rig's sidestep takes it, in studs. **Placeholder — 6.**
+	 *
+	 * **One step, not two, and the distance is most of why.** Two sidesteps is a dance: it reads as a rig with a
+	 * movement pattern rather than as a rig reacting to something, and a pattern is the tell this whole file is
+	 * about. One step is a body half-turning away and half-turning back. Six studs is just past a body's own width
+	 * — enough that the rig has visibly *left the line* it was walking, which is what a person does when they think
+	 * a ball is coming, and not so far that the rig has abandoned the ball it was fetching.
+	 *
+	 * **The sidestep is perpendicular to the approach, at the moment the shuffle starts**, so the rig steps out of
+	 * the line rather than forwards or backwards, and the walk to the ball afterwards is short. See
+	 * `SeekBehavior.maybeShuffle`.
+	 */
+	PANIC_SIDESTEP_STUDS: 6,
+
+	/**
+	 * How far a rig keeps walking after its hand fills, in studs. **Placeholder — 8.**
+	 *
+	 * **The walk does not end the instant the ball arrives, and that is the whole of this block.** A rig used to
+	 * stop on the turn the pickup took its ball — not because anything about throwing wanted a still body, but
+	 * because `SeekBehavior`'s first stop condition is "is a ball in hand", and a rig with a full hand has nothing
+	 * left to *fetch*. From a seat that is a body that stops dead at the ball it just took and then turns, which is
+	 * the one part of a rig's cycle that a player's does not have: a person arrives moving, and the throw comes out
+	 * of a body that is still going somewhere.
+	 *
+	 * **Eight studs is a little over a body's own width, which is the size at which it reads as a carry-through
+	 * rather than as a stutter.** At {@link NPC_CONFIG.WALK_TO_PAD_SPEED} it is half a second of walking — long
+	 * enough to be seen, short enough that it is over by the time the rig has finished turning. Which *way* the
+	 * eight studs go is the interesting half and it is not here: see
+	 * {@link NPC_CONFIG.PICKUP_BACKPEDAL_CHANCE} and `SeekBehavior`'s `pickupWalk`.
+	 */
+	PICKUP_WALK_STUDS: 8,
+
+	/**
+	 * How long a rig keeps walking after its hand fills, in seconds. **Placeholder — 0.75.**
+	 *
+	 * **Longer than the distance takes, on purpose, for the reason the shuffle's window is longer than its step:**
+	 * eight studs at a rig's own walk is half a second, so this leaves the walk to *arrive* at its point and then
+	 * the body to stand there for a beat before the throw. A window that ended exactly on arrival would make the
+	 * carry-through a movement with no end, and the point of it is that a body comes to rest somewhere and then
+	 * throws.
+	 *
+	 * **This is also the window in which a windup may begin**, and that is not a coincidence to be tidied away: the
+	 * rig turns onto its target over a few tenths of a second, so the throw usually decides *during* the
+	 * carry-through and plants the body on the same turn it does — see `Charging` below and `SeekBehavior`.
+	 */
+	PICKUP_WALK_SECONDS: 0.75,
+
+	/**
+	 * The chance that a rig's walk after a pickup is **backwards** rather than onwards. **Placeholder — 0.4.**
+	 *
+	 * **The user's own addition, and it is the one movement in this file that a person does and a rig did not:**
+	 * backing away from the body you are about to throw at, with your face still on it. What makes it work is
+	 * already in the code and was not put there for this — `ThrowBehavior`'s `AlignOrientation` holds the rig's
+	 * facing on its target with `AutoRotate = false`, which is exactly what leaves the *walk* free to go somewhere
+	 * else. So the two halves are the same two halves a person uses: the legs go one way and the eyes do not move.
+	 *
+	 * **Gated on there being a body to face**, and that gate is not this number — see `SeekBehavior.pickupWalk`,
+	 * which only draws the backwards version when the enemy is inside {@link NPC_CONFIG.THROW_RANGE_STUDS}, the
+	 * same distance inside which the throw is holding an aim on it. Outside that the rig is not facing anybody, and
+	 * a rig walking backwards while looking where it is going is a moonwalk rather than a backpedal.
+	 *
+	 * **Forty per cent, which is "sometimes" rather than a coin.** Half would make the two cases a choice nobody
+	 * could tell apart from a bug; a tenth would make the backpedal a rare event that a player never learns to
+	 * read. At this rate a rig backs off about two pickups in five, which is often enough to be a behaviour and
+	 * rare enough to still be a decision.
+	 */
+	PICKUP_BACKPEDAL_CHANCE: 0.4,
 } as const;
