@@ -865,7 +865,7 @@ export const AFTERIMAGE_WINDOW_ATTRIBUTE = "AfterimageWindow";
 export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
 
 /**
- * The four attributes a **rig `Model`** carries while it is doing something, which are what a client
+ * The five attributes a **rig `Model`** carries while it is doing something, which are what a client
  * animates it from. Together they are the rig's animation state, published by the server.
  *
  * **A rig is animated by the clients looking at it, and these are what they are told.** The server does
@@ -875,27 +875,29 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * and each client dresses the rig it can see. See `NpcService.publishAnimation` for the writer and
  * `RigAnimationController` for the reader.
  *
- * **These four are the facts `animationFor` branches on, and `DODGE_DIRECTION_ATTRIBUTE` below is the
- * exception that proves the rule rather than a fifth member of the set.** That function's vocabulary is
- * exactly these four because a *shared* mapping between a player and a rig can only branch on facts both
- * of them have — a state that existed on one side and not the other would be a mapping that could not be
- * shared, which is the whole point of it. A dash direction is a fact neither side's locomotion decision
- * has any use for: it does not change which locomotion clip a body wears, it changes which *action* clip
- * draws over it, and it is published by the service that runs the dash rather than by `NpcService`. So it
- * lives beside these rather than among them, and an animation state added here still has to justify
- * itself against `animationFor`.
+ * **These are the facts a clip is decided from, and `DODGE_DIRECTION_ATTRIBUTE` below is the exception that
+ * proves the rule rather than a sixth member of the set.** `animationFor`'s vocabulary is smaller still — the
+ * facts *it* branches on are the two requests, the ground and the freeze — because a *shared* mapping between
+ * a player and a rig can only branch on facts both of them have: a state that existed on one side and not the
+ * other would be a mapping that could not be shared, which is the whole point of it. A dash direction is a fact
+ * neither side's locomotion decision has any use for: it does not change which locomotion clip a body wears, it
+ * changes which *action* clip draws over it, and it is published by the service that runs the dash rather than
+ * by `NpcService`. So it lives beside these rather than among them, and an animation state added here still has
+ * to justify itself against `animationFor`.
  *
- * **The published *speed* is banded before it is written** — see `ANIMATION_SPEED_BAND` — because a state
- * carrying a measurement would publish continuously, and this arrangement's entire economics is that it
- * publishes on change.
+ * **Every fact here is a *request* or a *window*, and never a measurement, which is the property that replaced a
+ * published speed.** A measurement has no natural edge to be written on: it would have to be banded to satisfy
+ * the guard in {@link NpcService.writeAttribute}, and a band floored to zero cannot tell "creeping" from
+ * "standing". The two movement facts come from what the server *asked the rig to do* — see
+ * `NPC_ANIM_MOVING_ATTRIBUTE` — and the rest are edges by construction.
  *
- * **Four attributes rather than one packed value.** Each is a scalar, so Roblox replicates only the one
+ * **Five attributes rather than one packed value.** Each is a scalar, so Roblox replicates only the one
  * that changed, which is exactly what "bytes per rig per change" means; and none of them needs a packing
  * convention that a reader on the other side could get wrong. The alternative considered and rejected was
  * one integer of bit fields, or one delimited string: it saves nothing on the wire — a change is one
  * scalar either way — and it puts an unpacking step, and that step's bugs, on every client. The project's
  * own convention is the same one, an attribute per fact, as {@link ROUND_SCORE_A_ATTRIBUTE} beside its
- * sibling, and the client renderer asks for four names it can see.
+ * sibling, and the client renderer asks for five names it can see.
  *
  * **On the rig rather than on a folder or the wire**, for the reason the round's attributes are on a
  * folder: attributes replicate on their own, so the renderer needs no remote, no reply and no reference
@@ -903,7 +905,39 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * is for. A rig that is out of the world is not published at all (the gate `NpcService.run` keeps), so a
  * parked template in `ServerStorage` wears no state and no client animates it.
  */
-export const NPC_ANIM_SPEED_ATTRIBUTE = "AnimSpeed";
+
+/**
+ * **Whether the server has asked the rig to move** — the request, published as a fact, and the attribute this
+ * set was rebuilt around.
+ *
+ * **There was a banded *speed* here (`"AnimSpeed"`), and this is what replaced it.** The speed was the rig's
+ * measured velocity, floored into five-stud bands so that `writeAttribute`'s change guard could hold — and the
+ * floor meant every speed under five studs a second was published as *nought*, which is the same value a rig
+ * standing perfectly still publishes. A rig creeping to a ball, sliding out of a hit, or nudging itself into
+ * position therefore slid along in the standing clip, and no client could tell. The other end of the same
+ * arithmetic was worse: with the line drawn anywhere on that range, a rig's clip changed when its *velocity*
+ * wobbled rather than when it was told to do something, and every change costs a crossfade — so a rig could walk
+ * with neither clip fully worn. See `animationFor` in `shared/animation.ts` for the whole of the record.
+ *
+ * **A request is the fact, and the server is the only one who can answer it.** `Humanoid.MoveDirection` is what
+ * the behaviours' own `Move` calls asked the rig to do, so it is stable in the way a velocity is not, it changes
+ * exactly when the game changes its mind, and a rig nobody has asked to walk reads as standing — which is also
+ * the right default for a body whose state has not replicated yet.
+ */
+export const NPC_ANIM_MOVING_ATTRIBUTE = "AnimMoving";
+
+/**
+ * **Whether the request above is a sprint** — the other half of `NPC_ANIM_MOVING_ATTRIBUTE`, and the only thing
+ * that can separate the two moving clips once the request decides *whether* a body is moving.
+ *
+ * **Asked of `WalkSpeedService` rather than worked out here, and that is the correction.** The obvious reading
+ * would be "is the walk speed above its base", which needs to know the base — and the base is a per-rig number
+ * (16 for a rig, 20 for a player), so that comparison is a threshold that a reader has to keep in step with a
+ * config. The sprint is a *named contribution* on the walk speed, the service that owns the sum is the one that
+ * knows which contributions are on, and the rig's sprint is the same key a player's is. See
+ * `WalkSpeedService.isSprinting`.
+ */
+export const NPC_ANIM_SPRINTING_ATTRIBUTE = "AnimSprinting";
 
 /** Whether the rig is standing on something. Part of the state above; see it for the whole. */
 export const NPC_ANIM_GROUNDED_ATTRIBUTE = "AnimGrounded";

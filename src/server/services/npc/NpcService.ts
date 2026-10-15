@@ -1,10 +1,10 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, HttpService, Workspace } from "@rbxts/services";
-import { ANIMATION_SPEED_BAND } from "shared/animation";
 import {
 	NPC_ANIM_FROZEN_ATTRIBUTE,
 	NPC_ANIM_GROUNDED_ATTRIBUTE,
-	NPC_ANIM_SPEED_ATTRIBUTE,
+	NPC_ANIM_MOVING_ATTRIBUTE,
+	NPC_ANIM_SPRINTING_ATTRIBUTE,
 	NPC_ANIM_THROWING_ATTRIBUTE,
 	THROWER_TOKEN,
 } from "shared/constants";
@@ -647,15 +647,21 @@ export class NpcService implements OnStart {
 	 * humanoid and the freeze answer, so the whole state is one call in the one place that runs per rig.
 	 *
 	 * **On change only, and the *instance* is the record.** Every attribute is read before it is
-	 * written, so a rig walking in a straight line publishes its speed once and then says nothing at
-	 * all — and there is no second copy of "what did I last publish" to keep in step, because the rig
-	 * carries it. The speed is banded before it is written for exactly that reason: see
-	 * `ANIMATION_SPEED_BAND`, which also explains why the two thresholds downstream sit where they do.
+	 * written, so a rig asked to walk a straight line publishes its request once and then says nothing
+	 * at all — and there is no second copy of "what did I last publish" to keep in step, because the
+	 * rig carries it. **That guard is the whole of this arrangement's economics, and it is why the
+	 * facts published here are *requests*.** A measurement has to be banded to satisfy it and never has
+	 * a natural edge to write on; a request changes when the game changes its mind and not before. See
+	 * `NPC_ANIM_MOVING_ATTRIBUTE` for the banded speed this replaced and for what it cost.
 	 *
-	 * **The speed is measured the way the player's own controller measures its body** —
-	 * `HumanoidRootPart.AssemblyLinearVelocity`, horizontally — so both callers of `animationFor` are
-	 * reading the same quantity off the same kind of part. On the server that figure is only true while
-	 * the server owns the rig, which is what {@link ownForServer} is for.
+	 * **The two facts are the same two a player's own client gathers for its body** — "somebody has
+	 * asked this body to walk", and "and to sprint" — so the two callers of `animationFor` answer the
+	 * same question from the same kind of fact, which is the property the shared decision exists for.
+	 * The request is `Humanoid.MoveDirection`, which is what the behaviours' own `Move` calls set; the
+	 * sprint is asked of {@link WalkSpeedService} rather than derived from the walk speed here, because
+	 * the base speed is a per-rig number and the *contribution* is the fact. A rig's own speed is only
+	 * true while the server owns it, which is what {@link ownForServer} is for — and is now a fact
+	 * about the walk rather than about the animation.
 	 *
 	 * **Ownership is re-asserted from here, on a throttle**, because this is the one function that
 	 * already runs per rig on a clock. See `NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS` for what the
@@ -663,10 +669,8 @@ export class NpcService implements OnStart {
 	 * rig that cannot be owned says so once at setup and not every few seconds.
 	 */
 	private publishAnimation(model: Model, humanoid: Humanoid, frozen: boolean, loop: NpcLoop, now: number): void {
-		const velocity = humanoid.RootPart?.AssemblyLinearVelocity;
-		const speed = velocity === undefined ? 0 : math.sqrt(velocity.X * velocity.X + velocity.Z * velocity.Z);
-
-		this.writeAttribute(model, NPC_ANIM_SPEED_ATTRIBUTE, math.floor(speed / ANIMATION_SPEED_BAND) * ANIMATION_SPEED_BAND);
+		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, humanoid.MoveDirection.Magnitude > 0);
+		this.writeAttribute(model, NPC_ANIM_SPRINTING_ATTRIBUTE, this.speeds.isSprinting(model));
 		this.writeAttribute(model, NPC_ANIM_GROUNDED_ATTRIBUTE, humanoid.FloorMaterial !== Enum.Material.Air);
 		this.writeAttribute(model, NPC_ANIM_FROZEN_ATTRIBUTE, frozen);
 		this.writeAttribute(model, NPC_ANIM_THROWING_ATTRIBUTE, this.balls.getHeldBall(model) !== undefined);

@@ -18,8 +18,8 @@ import Fusion from "@rbxts/fusion-3.0";
  *
  * **The key rather than the sprint the server granted, and those are different facts.** The server owns
  * the pool and refuses a sprint it will not pay for; the client owns the key. This is the key, because
- * that is what the animation is showing — see `LocomotionAnimationController.wantedClip` for the rule it
- * drives, and for what that choice knowingly costs.
+ * that is what the animation is showing — see `shared/animation.ts`'s `animationFor` for the rule it drives,
+ * and for what that choice knowingly costs.
  *
  * A `Value` and not a plain variable, for `aiming.ts`'s reason: it is a signal in the Fusion sense. It is
  * never *observed* — the animation polls it with `Fusion.peek`, which builds no graph edge and so cannot

@@ -77,11 +77,14 @@ const SEEK_STALL_TICKS = 3;
  * character is never a rig — so the same word on two bodies is two contributions, and the day something asks the
  * service "is this body sprinting" it gets one answer for both rather than a name it has to know per body kind.
  *
- * **What a rig's sprint adds is `CHARACTER_CONFIG.SPRINT_SPEED_BONUS` rather than a number of its own, and there
- * is no constant here because a second number would be a number that could disagree with a clip.** The run
- * animation starts at `CHARACTER_CONFIG.RUN_ANIMATION_SPEED` (25), which sits between the walk speed and the
- * sprint speed of both bodies, so a rig that adds anything other than the player's 15 is a rig that may not cross
- * the line its own clip is chosen at. See `animationFor`, which is the one rule both bodies are dressed by.
+ * **What a rig's sprint adds is `CHARACTER_CONFIG.SPRINT_SPEED_BONUS` rather than a number of its own.** The
+ * reason used to be the run clip: a bonus that did not carry the body's speed past
+ * `CHARACTER_CONFIG.RUN_ANIMATION_SPEED` was a rig whose legs did not agree with its speed. **The clip no longer
+ * reads a speed at all** — a body's moving clip is chosen from the request, and the *sprint* is chosen from this
+ * contribution being present, which `WalkSpeedService.isSprinting` answers for the publisher — so there is
+ * nothing left here for a number to disagree with. The 15 stays because a sprint is the same sprint whoever
+ * takes it, and because a rig sprinting should move at a sprinting speed. See `animationFor`, which is the one
+ * rule both bodies are dressed by.
  *
  * **What a rig does *not* have is the pool.** `STAMINA_MAX_SECONDS` belongs to a `Player`, is drained by
  * `WalkSpeedService.step` on the keys that player holds, and exists to make *choosing* to sprint cost something.

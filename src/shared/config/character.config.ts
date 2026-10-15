@@ -156,24 +156,17 @@ export const CHARACTER_CONFIG = {
     JUMP_ANIMATION_R15: "rbxassetid://134059415042386",
 
     /**
-     * The speed at or above which a body wears the sprint clip, in studs per second.
+     * **There was a `RUN_ANIMATION_SPEED` line here, and there is not one any more.**
      *
-     * **A third number between the two above it, rather than either of them used directly.** The
-     * sprint's clip is the sprint's *speed*'s clip — see the block above, where a clip and a speed
-     * are one decision — but neither end of that pair can serve as the line: at
-     * {@link CHARACTER_CONFIG.BASE_WALK_SPEED} a walking body measures slightly *above* its own walk
-     * speed (20.3 against a walk speed of 20.0 is what the animation output shows, because
-     * `WalkSpeed` is what the mover is asked for and the assembly is what actually moves), so a line
-     * drawn at 20 would put a walking body in the running clip; and a line drawn at the sprint's own
-     * 35 is crossed late, leaving a body that is clearly sprinting in the walking clip while it
-     * accelerates.
+     * It was the speed at or above which a body wore the sprint clip: a third number sitting between
+     * {@link CHARACTER_CONFIG.BASE_WALK_SPEED} and the sprint speed, because neither end of that pair could
+     * serve as the line on its own — a walking body *measures* slightly above its own walk speed (20.3 against
+     * a walk speed of 20.0, because `WalkSpeed` is what the mover is asked for and the assembly is what
+     * actually moves), so a line drawn at 20 would have put a walking body in the running clip.
      *
-     * **Read by `animationFor`, which is the only reader** — a shared rule, so both the player's
-     * controller and the rig renderer cross this line in the same place.
-     *
-     * **Placeholder.** 25 sits between them with room on both sides: a walking body is 4 studs below
-     * it, a sprinting one 10 above, and a body *pushed* past a walk keeps the walking clip until it
-     * is pushed most of the way to a sprint.
+     * **That measurement is the reason the line is gone rather than retuned.** A clip is now chosen from what a
+     * body was *asked* to do, and a request has no gradient for a threshold to sit in: see `animationFor` in
+     * `shared/animation.ts` for the rule and for the full record of what the speed comparison cost while it was
+     * here. The two speeds above stay, of course — they are what a body actually moves at.
      */
-    RUN_ANIMATION_SPEED: 25,
 } as const;

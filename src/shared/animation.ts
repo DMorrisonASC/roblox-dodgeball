@@ -1,5 +1,4 @@
 import { AnimationState, BODY_ANIMATION } from "./config/animation.config";
-import { CHARACTER_CONFIG } from "./config/character.config";
 import { DodgeDirection } from "./dodge";
 
 /**
@@ -35,35 +34,30 @@ import { DodgeDirection } from "./dodge";
 export type AnimationClip = "idle" | "walk" | "run" | "jump";
 
 /**
- * The speed at or below which a body counts as standing still, in studs per second.
+ * **There was a speed line here, and there is not one any more** — this is the record of why, because the
+ * argument for it was a good one and what it bought was not.
  *
- * **The engine's own figure rather than a second opinion about it.** It is the number Roblox's own
- * animation script draws this line at — `speed > 0.01` in its `onRunning` — and this module is
- * making the same decision from the same measurement, so it draws it in the same place. It lived in
- * `LocomotionAnimationController` until the rule became shared, and it moved here because the rule
- * did: a caller that has to know this number is a caller that is making half of this decision.
+ * **It was `STANDING_SPEED`, and everything downstream of it came from the same place.** The line was Roblox's
+ * own animation script's (`speed > 0.01` in its `onRunning`) drawn in the same place here, which was right as
+ * far as it went — and what it went on to cost is a family of faults with one cause: **a threshold on a
+ * measurement is a decision that changes its mind for reasons the game never asked for.** A player's body is
+ * asked twenty times a second from a *sample*, so a number that dips for a single tick changed the clip, and a
+ * clip change is a crossfade — so a body walked with neither clip fully worn. Smoothing that needed a grace,
+ * and the grace bought its own fault the other way: a walk that outlived its stop. The same line on a rig
+ * needed the published speed *banded* so the attribute would not be rewritten every frame — and the band
+ * floored to zero, so every rig moving slower than five studs a second published "standing". And the last
+ * straw: a body's velocity is not what it was asked to do — `WalkSpeed` 20 with a measured 20.3 is what the
+ * animation output showed — so a walking body sat a hair away from the running clip.
+ *
+ * **What replaced it is not a better threshold but a different fact: whether the body has been *asked* to
+ * move.** `MoveDirection` for a player's own body, the same fact published by the server for a rig. A request
+ * has no line to sit on — a body either is asked or is not — so there is no jitter to smooth, no band, no
+ * grace, and no threshold to tune. See {@link animationFor} for the rule the two facts make together.
+ *
+ * **What this is not:** not a claim that measurement is useless. It is what `WalkSpeedService`,
+ * `SeekBehavior`'s distance gates and every physics question in this game are about. It is simply not what a
+ * *clip* is chosen from — a body's legs answer to what it was told to do.
  */
-export const STANDING_SPEED = 0.01;
-
-/**
- * How coarsely a rig's speed is rounded before it is published, in studs per second.
- *
- * **A band, because the alternative is an attribute write per frame.** The published state is
- * written on change and not per frame — that is the whole economics of the architecture — so a
- * state carrying a *measurement* would publish continuously: a body's speed never stops wobbling,
- * and a rig walking a straight line would write its speed several times a second for a distinction
- * nothing downstream can see.
- *
- * **5 studs, because the two thresholds this module compares against are 0.01 and 25.** A body
- * walks at 20 and sprints at 35, so bands of 5 put a walking body and a sprinting body in different
- * buckets and neither of them near a boundary: the walking bucket is 20–24, the sprinting one is
- * 35–39, and the gap between them is where `CHARACTER_CONFIG.RUN_ANIMATION_SPEED` sits. A walking
- * body therefore publishes once, when it starts walking, and then says nothing at all until it
- * stops or sprints — which is the behaviour the whole arrangement is for.
- *
- * **Placeholder.**
- */
-export const ANIMATION_SPEED_BAND = 5;
 
 /**
  * The **locomotion** clip a body in this physical state should wear, or `undefined` for "none".
@@ -77,37 +71,50 @@ export const ANIMATION_SPEED_BAND = 5;
  * and not standing, so it has no clip from here. What a caller does with it is {@link RESTING_STATE}'s
  * question, and it has one answer for both bodies now.
  *
- * **Frozen outranks everything below it.** A held body is being held rather than choosing where to go, and
- * the honest answer for its legs is to stop playing one. Only a rig ever reaches this branch today: a
- * player's freeze is a walk-speed key and an anchored root, which arrive at the caller as "no speed and no
- * ground" and are answered by the branches below.
+ * **Frozen outranks everything below it.** A held body is being held rather than choosing where to go, and the
+ * honest answer for its legs is to stop playing one. Only a rig reaches this branch with the flag: a player's
+ * freeze is a walk-speed key and an anchored root, and the *key* is the half this rule sees — a body whose walk
+ * speed has been taken away is not a body anyone asked to walk, which is why
+ * `LocomotionAnimationController` folds the two together into one request. See `BodyState.moving`.
  *
- * **Off the ground outranks speed.** A body in the air wears the jump clip whatever it is doing and however
- * fast it is travelling, because the alternative is a falling body whose legs are walking.
+ * **Off the ground outranks the request.** A body in the air wears the jump clip whatever it is being asked to
+ * do, because the alternative is a falling body whose legs are walking.
  *
- * **Walk and run are decided by the measurement, and that is a reversal worth recording.** The player's
- * controller used to decide between them from *whether the sprint key was held*, on the argument that the key
- * is the player's intent and that a measured speed dips when a sprint turns a corner. That argument does not
- * survive being shared with a rig, which has no key — and the cost it knowingly accepted (a sprint the server
- * refused, worn as a sprint at walking pace, "running on the spot in the sense that matters") was the
- * animation disagreeing with the server. Speed is the fact both bodies have, so speed is what decides, and
- * the disagreement is gone: a refused sprint now looks like walking, which is what it was.
+ * **Walk and run are decided by the request, and this rule has now been on both sides of that line.** It began
+ * as the sprint key; it went to the measurement on the argument that is worth keeping (the key is intent, but a
+ * measured speed dips when a sprint turns a corner, and a rig has no key at all); and it has come back to the
+ * request, because the measurement turned out to be the thing that could not be shared *faithfully*. It is a
+ * sample, so it jittered, and everything that followed — a grace for how long a body must read as slow, a band
+ * so a rig's attribute would not be rewritten every frame, a line drawn at 25 to sit between a walk speed of 20
+ * and a measured 20.3 — was a patch on the same wound. **The cost is the one that was named then, and it is
+ * accepted now:** a sprint the server refuses is worn as a sprint anyway. It is smaller than it was, because
+ * the client's sprint state is the key *and* the pool, so a body with nothing left in it stops asking; and it
+ * buys a rule with no line in it at all, which is the property this module was rebuilt for.
  *
  * **A body carrying a ball may walk, run or stand exactly as if it were not.** There used to be a fourth
  * parameter here — `throwing`, "this body has a ball and its next act is to throw it" — which stood a rig
  * still in a hold pose while it carried one. It is gone: a ball in a hand is not an animation state, and a
  * rig wearing a hold pose while the player beside it walked normally with a ball was the two bodies
  * disagreeing about the same thing. See `BodyState` for the rule.
+ *
+ * **And there is no memory in this function, which is the whole of what the two facts buy.** Both are
+ * *requests* — a body is asked to move, and asked to sprint — so there is no line to cross, nothing to smooth
+ * and no grace: a body that is asked to walk walks on the tick the request arrives, and stops on the tick it
+ * is withdrawn. The crossfade in the renderer is still there and still wanted, but it is now the only thing
+ * between a key and a clip.
  */
-export function animationFor(speed: number, grounded: boolean, frozen: boolean): AnimationClip | undefined {
+export function animationFor(
+	moving: boolean,
+	sprinting: boolean,
+	grounded: boolean,
+	frozen: boolean,
+): AnimationClip | undefined {
 	if (frozen) return undefined;
 	if (!grounded) return "jump";
+	if (!moving) return "idle";
 
-	// At or above the sprint's own line, which is a number about *clips* rather than about speed:
-	// see `CHARACTER_CONFIG.RUN_ANIMATION_SPEED` for why it is not simply the base walk speed.
-	if (speed >= CHARACTER_CONFIG.RUN_ANIMATION_SPEED) return "run";
-
-	return speed > STANDING_SPEED ? "walk" : "idle";
+	// The two moving clips, and the only question left between them: was this body asked to sprint?
+	return sprinting ? "run" : "walk";
 }
 
 /**
@@ -161,14 +168,34 @@ export type BodyAction = "throw" | "catch" | "duck";
  *
  * **The seam between the two machines, and the reason this is a value rather than a set of parameters.** Who
  * *knows* these facts differs between the bodies — a rig's are published by the server and read off the rig,
- * a player's own body is measured by the client that owns it — and who *decides* from them must not. So the
+ * a player's own body is answered by the client that owns it — and who *decides* from them must not. So the
  * facts are gathered by the caller and handed over, and this module stays a pure function of them: no
  * `Humanoid`, no `Players`, no attribute read, nothing that would make one body's answer depend on which
  * machine was asking.
  */
 export interface BodyState {
-	/** Ground speed in studs per second — the measurement `animationFor` bands. */
-	readonly speed: number;
+	/**
+	 * **Whether this body has been *asked* to move** — a request rather than a measurement, and the fact the
+	 * whole of the locomotion answer now turns on. A player's own body answers it from `Humanoid.MoveDirection`
+	 * together with the walk speed it has been given; a rig is handed the server's answer as an attribute.
+	 *
+	 * **A request rather than a speed, and that is what makes the rule stateless.** A body is asked or it is
+	 * not, so there is no line in the middle of a range for a sample to wander across — and therefore no
+	 * jitter, no band and no grace. See `animationFor`, and the note where the speed line used to be for what
+	 * the measurement cost while it was here.
+	 */
+	readonly moving: boolean;
+
+	/**
+	 * **Whether the moving it has been asked for is the sprint** — the request's other half, and the one thing
+	 * `moving` cannot say: a body that has been told to move has been told *how* as well, and this is that
+	 * answer. The only question left between the two moving clips.
+	 *
+	 * **For a player this is the key rather than the sprint the server granted**, which is a choice with a cost
+	 * that `animationFor` records; for a rig it is the sprint's own contribution on the walk speed, asked of
+	 * the service that keeps it.
+	 */
+	readonly sprinting: boolean;
 
 	/** Whether the body is standing on something. Off the ground outranks everything but an event. */
 	readonly grounded: boolean;
@@ -274,5 +301,5 @@ export function bodyClipFor(state: BodyState): AnimationState | undefined {
 	// body that is sitting on a bench. See `BodyState.deferToDefault`.
 	if (state.deferToDefault) return undefined;
 
-	return animationFor(state.speed, state.grounded, state.frozen) ?? RESTING_STATE;
+	return animationFor(state.moving, state.sprinting, state.grounded, state.frozen) ?? RESTING_STATE;
 }

@@ -1,0 +1,13 @@
+default_model = "platform/kimi-k3"
+
+[providers.kimi-platform]
+type = "kimi"
+base_url = "https://api.moonshot.ai/v1"
+api_key = "sk-t61pBo1ijzPMp8q1LSELqPU7JnPcmNn2GVUjIz5POq0A52t1"
+
+[models.platform-kimi-k3]
+provider = "kimi-platform"
+model = "kimi-k3"
+max_context_size = 1048576
+capabilities = ["thinking", "image_in", "tool_use"]
+display_name = "Kimi K3"

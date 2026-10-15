@@ -1,7 +1,9 @@
 import { Controller, OnStart } from "@flamework/core";
+import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { AnimationClip, clipIdFor } from "shared/animation";
 import { BodyRender, applyBodyRender, bodyRenderPlays, destroyBodyRender, startBodyRender } from "../../bodyAnimation";
+import { sprinting } from "../../sprinting";
 
 /** Prints the write once per body, and each body that was left alone and why. */
 const DEBUG = true;
@@ -116,17 +118,17 @@ const OWNED_STATES: ReadonlyArray<Enum.HumanoidStateType> = [
 /**
  * How often the body is re-dressed, in seconds.
  *
- * **A poll rather than an event, and twenty times a second.** The things being watched — the body's state and
- * the speed it is travelling at — change for reasons that do not announce themselves to this file: a sprint
- * ends when the pool empties, a jump interrupts a run, a dodge finishes. Fifty milliseconds is short enough
- * that none of those reads as late, and the work is a state read, a comparison and (almost always) nothing
- * else.
+ * **A poll rather than an event, and twenty times a second.** The things being watched — the body's state, the
+ * direction it is being walked in and the sprint key — change for reasons that do not announce themselves to
+ * this file: a sprint ends when the pool empties, a jump interrupts a run, a dodge finishes. Fifty milliseconds
+ * is short enough that none of those reads as late, and the work is three reads, a comparison and (almost
+ * always) nothing else.
  *
  * **The events do not need the poll**, and that is worth knowing when reading a log: a throw, a catch and a
  * dodge are attributes on the body, and the renderer reads them on every call — so a tick that finds one up
  * plays its clip at the next tick, up to fifty milliseconds after the mark was written. That is the cost of
- * one clock for a body whose speed cannot be published to it; a rig has no such clock, because every fact it
- * needs arrives as an attribute change instead. See `BodyAnimator`.
+ * one clock for a body whose request cannot be published to it; a rig has no such clock, because every fact it
+ * needs arrives as an attribute change instead. See `client/bodyAnimation.ts`.
  */
 const MOVEMENT_TICK_SECONDS = 0.05;
 
@@ -189,21 +191,25 @@ interface OwnedBody {
  * can load at all — an R6 clip on an R15 rig does not load, and the reverse — so the two ids are
  * not variants of one animation but the two animations, and a body is handed the one it can wear.
  * `DodgeService` picks its flourish the same way, for the same reason; `BallFactory` looks up a
- * hand the same way. See {@link CHARACTER_CONFIG.IDLE_ANIMATION_R6}, where the R6 column is filled
- * in for two of the four sets and blank for the other two.
+ * hand the same way. See {@link CHARACTER_CONFIG.IDLE_ANIMATION_R6} for the pair of columns: every
+ * row is filled in for both rig types, so which of the two a body wears is the only question left.
  *
  * **The choice between the walk and the sprint is this file's, not the script's.** Roblox's script
  * picks between its two moving sets by how fast the body is going, and its threshold does not fall
  * between this game's two speeds: at the base walk speed it was already choosing the same set it
  * chooses while sprinting, so one of the two clips was never seen at all. The moving clip is
  * therefore played here — on the local body, at `Movement` priority, with the script's own attempt
- * stopped — and the decision is made **by `animationFor` in `shared/animation.ts`**, from the body's
- * ground speed against {@link CHARACTER_CONFIG.RUN_ANIMATION_SPEED}, which sits between this game's
- * two speeds. That function being shared rather than written here is the newer half of this
- * paragraph: an NPC rig's clips are played by a client renderer with no `Humanoid` of its own, and
- * the two must not answer the same question differently. The claimed sets stay, and they are
- * load-bearing rather than left over: they are what the script plays in the moment before this file
- * has chosen, and they are how the script's own attempt is recognised when it makes one.
+ * stopped — and the decision is made **by `animationFor` in `shared/animation.ts`**, from the two
+ * facts this file is the only one able to gather: **whether the body has been asked to move at all,
+ * and whether the sprint key is down.** The measured speed is deliberately not consulted — see that
+ * function for the record of why, and for what the measurement cost while it was here. The sprint is
+ * the *key* rather than the sprint the server granted, which is the cost that function names and
+ * this file accepts; `client/sprinting.ts` is where the key is read, by the two files that need it.
+ * `animationFor` being shared rather than written here is the other half of this paragraph: an NPC
+ * rig's clips are played by a client renderer with no `Humanoid` of its own, and the two must not
+ * answer the same question differently. The claimed sets stay, and they are load-bearing rather than
+ * left over: they are what the script plays in the moment before this file has chosen, and they are
+ * how the script's own attempt is recognised when it makes one.
  *
  * **The local player's body, and only that one.** An animation track is started by the client that
  * owns the body and replicated from its `Animator`, which is why the default script animating one
@@ -397,16 +403,22 @@ export class LocomotionAnimationController implements OnStart {
 	 * is not invisible is it choosing a *different* set from ours, which is what this line prevents. See
 	 * {@link suppressScript}.
 	 *
-	 * **The state is gathered here and nowhere else, because these are the facts only this client can read.**
-	 * Its own body's speed, measured from the physics rather than taken from the humanoid's `Running` event (see
-	 * {@link measuredSpeed}), and whether it is standing on something. The **events** the renderer needs — a
-	 * throw, a catch, a dash — are attributes on the body, written by the server, and the renderer reads those
-	 * for itself.
+	 * **The facts are gathered here and nowhere else, because they are the facts only this client can answer
+	 * for.** What this body has been asked to do, whether it is standing on something, and which of the
+	 * humanoid's states the game has a clip for — none of which a renderer holding a body could work out for
+	 * itself. The **events** the renderer needs — a throw, a catch, a dash — are attributes on the body, written
+	 * by the server, and the renderer reads those for itself.
+	 *
+	 * **And the two facts gathered here are the *request*, not the body's traffic.** `moving` and `sprinting`
+	 * are read fresh on every tick — the humanoid's own `MoveDirection`, the walk speed it has been given, and
+	 * the sprint key — and neither needs a clock, a history or a threshold, because a request either stands or
+	 * it does not. See `animationFor`: there is nothing here left to smooth.
 	 *
 	 * **`frozen` is passed `false`, and that is a reading rather than an omission.** A player's freeze is a
-	 * walk-speed key and an anchored root (`FreezeService`), which arrive at this measurement as a body that is
-	 * not moving and cannot move, so the speed already answers it. Publishing a flag for it would be a second
-	 * answer to a question this one has answered, and the two could disagree.
+	 * walk-speed key and an anchored root (`FreezeService`), and the *key* is where this file already sees it: a
+	 * pinned body is not a body anyone has asked to walk, so `moving` is false and its legs stop. Publishing a
+	 * flag for it as well would be a second answer to a question this one has answered, and the two could
+	 * disagree. A *rig* has no such key and is published a flag instead — see `BodyState.moving`.
 	 *
 	 * **And the state is read here too, because it is the one fact this file has that the renderer must not
 	 * learn.** `OWNED_STATES` answers it, the answer travels as `deferToDefault`, and the humanoid's own
@@ -432,42 +444,46 @@ export class LocomotionAnimationController implements OnStart {
 			);
 		}
 
+		// **The request, and the whole of it: is this body being walked, and is the sprint key down.** A
+		// `MoveDirection` is the direction the last writer of the frame asked for — Roblox's own control module,
+		// and this game's `AlternativeMovementController` while the `UHJK` keys are held — so it is exactly
+		// "somebody asked this body to move", and it is stable in the way a velocity is not: a body pressed
+		// against a barrier keeps asking, and a body that has stopped stops asking on the frame its keys come up.
+		//
+		// **And the walk speed is folded in, which is the one judgement in this line.** A frozen player — a
+		// round's freeze, a duck, a hold — is still *pressing* keys, so `MoveDirection` alone would put a pinned
+		// body into the walking clip. The freeze is a walk-speed key and an anchored root; the key is what says
+		// the game has taken the legs away, and that is a different thing from a wall being in the way, which is
+		// why only the former stops the request.
+		const humanoid = owned.humanoid;
+		const moving = humanoid.MoveDirection.Magnitude > 0 && humanoid.WalkSpeed > 0;
+
 		applyBodyRender(owned.body, {
-			speed: this.measuredSpeed(owned.humanoid),
-			grounded: owned.humanoid.FloorMaterial !== Enum.Material.Air,
+			moving,
+			sprinting: Fusion.peek(sprinting),
+			grounded: humanoid.FloorMaterial !== Enum.Material.Air,
 			frozen: false,
 			deferToDefault: deferring,
 		});
 	}
 
 	/**
-	 * How fast the body is travelling across the ground at this instant, in studs per second.
+	 * **The speed that used to be measured here, and why it is gone.**
 	 *
-	 * **Measured from the physics rather than taken from the humanoid's `Running` event, and that is a
-	 * fix rather than a preference.** The event was the earlier source, on the argument that it is the
-	 * engine's own figure and costs nothing — but it fires when the running speed *changes*, so
-	 * between two of them the value a listener is holding is the last thing it was told. Nothing about
-	 * a jump goes through it, and what it reports on the way back down is not the body's speed at that
-	 * instant. The two symptoms were a body standing still wearing the walk clip — legs running in
-	 * place after a landing — and a body travelling at twenty studs wearing no moving clip at all.
-	 * Both are the same fault: a number that was true when it was written and is not true now.
+	 * This method read `RootPart.AssemblyLinearVelocity` — horizontally, never the fall speed — and the decision
+	 * took its magnitude. It was written to replace the humanoid's `Running` event, and the argument still reads
+	 * well: the event fires when the running speed *changes*, so between two of them a listener holds a number
+	 * that was true when it was written. **What replaced the event is exactly what the event was criticised for,
+	 * one layer down.** A velocity read on a tick is a *sample*, so a body that is barely moving crosses any line
+	 * drawn near zero several times a second — the walk speed is 20 and the measured figure for a body walking is
+	 * 20.3, which is the whole of the reason a line at 25 had to be invented — and the two faults this method's
+	 * old doc recorded ("a body standing still wearing the walk clip", "a body travelling at twenty studs wearing
+	 * no moving clip at all") were the two ends of one threshold that could not be drawn anywhere good.
 	 *
-	 * **Horizontal only, which is what the event's figure meant too.** A body's fall speed is not a
-	 * walking speed, and a body dropping off the arena wall with no keys held must not read as a body
-	 * walking.
-	 *
-	 * A body with no root part reads as still, which is the safe direction to be wrong in — a body
-	 * still being assembled has no legs to move yet either.
-	 *
-	 * **Takes the humanoid rather than the row**, because it is a question about a body and nothing else: the
-	 * renderer is not asked, the row is not read, and the one caller has the humanoid in hand already.
+	 * **So the body is asked instead of measured.** `Humanoid.MoveDirection` is what the last writer of the frame
+	 * requested — an *intent*, with no line in it — and `step` turns it and the walk speed into the two facts the
+	 * decision takes. Nothing in this file reads a velocity any more.
 	 */
-	private measuredSpeed(humanoid: Humanoid): number {
-		const velocity = humanoid.RootPart?.AssemblyLinearVelocity;
-		if (velocity === undefined) return 0;
-
-		return math.sqrt(velocity.X * velocity.X + velocity.Z * velocity.Z);
-	}
 
 	/**
 	 * Stops the engine's animation script from playing a clip this game has claimed.

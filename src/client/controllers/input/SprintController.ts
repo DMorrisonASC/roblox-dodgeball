@@ -34,21 +34,31 @@ const DEBUG = true;
  * lock is a `LeftShift` toggle, and it is disabled in the place file — see `ShiftLock`, which says so,
  * and which is the reason this game has a shift lock of its own at all. If that setting is ever turned
  * back on, this binding starts toggling the engine's mouse lock as well and the two shift locks will
- * fight over the camera.
+ * fight over the camera. **That hazard belongs to the shift key rather than to the left one**, which is
+ * why the second key below adds no new way to trip it: whichever shift the engine listens for, the pair
+ * already contains it, and the place file's switch remains the one fact both bindings depend on.
  *
- * **`M`, and it was `RightAlt` first.** `RightAlt` is the obvious right-hand answer — it is the key
- * beside the arrow cluster — and it was bound and tried. **It did not sprint.** The cause was not
- * chased, deliberately: a key that does nothing is a key to replace, and `M` sits on the same side of
- * the board and was unbound. What that binding turned out to have in common with `LeftAlt` is the
- * paragraph above: on a layout with `AltGr`, the right-hand Alt is the operating system's
+ * **`RightShift`, and before it `M`.** `M` was picked because it was the nearest unbound key on that
+ * side of the board, on the failure of the Alt below; it is replaced at the user's request, and what
+ * that buys is that the pair is now **one shift per hand** — which is what the first paragraph of this
+ * block has been describing all along. Everything below is about the pair rather than about either key,
+ * so nothing else moves with it.
+ *
+ * **The right-hand key was `RightAlt` before `M`, and that history is kept deliberately.** `RightAlt` is
+ * the obvious right-hand answer — it is the key beside the arrow cluster — and it was bound and tried.
+ * **It did not sprint.** The cause was not chased, deliberately: a key that does nothing is a key to
+ * replace. What that binding turned out to have in common with `LeftAlt` is the rule the `LeftAlt`
+ * paragraph above states: on a layout with `AltGr`, the right-hand Alt is the operating system's
  * character-composition key, and whether it is delivered as `RightAlt` at all is the OS's decision
- * rather than the engine's. Neither Alt key survives in this list, for that reason.
+ * rather than the engine's. Neither Alt key survives in this list, for that reason — and **`RightShift`
+ * is not an Alt, which is the whole of why it is a better answer to the same question than either of
+ * them was.**
  *
  * Annotated rather than inferred, for the reason the movement controller's key list is: a bare array
  * of two key codes is narrowed to those two literals, and `includes` then refuses the general
  * `KeyCode` that an input event carries.
  */
-const SPRINT_KEYS: Array<Enum.KeyCode> = [Enum.KeyCode.LeftShift, Enum.KeyCode.M];
+const SPRINT_KEYS: Array<Enum.KeyCode> = [Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift];
 
 /** The client half of the sprint remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -63,7 +73,7 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
  * engine re-announcing a key that never came up.
  *
  * **Two keys and one flag, which is why the keys held are counted rather than remembered one at a
- * time.** The pair can overlap: hold `LeftShift`, press `M`, release `LeftShift` — the *sprint* has not
+ * time.** The pair can overlap: hold `LeftShift`, press `RightShift`, release `LeftShift` — the *sprint* has not
  * changed, and a controller holding a single "is it down" flag would report a release on that last
  * event and stop a sprint the player is still asking for with the other hand. So what goes to the
  * server is whether *any* of the two is down, and a set is what makes that answerable. It is the same

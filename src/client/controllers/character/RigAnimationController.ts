@@ -3,7 +3,8 @@ import { CollectionService, Workspace } from "@rbxts/services";
 import {
 	NPC_ANIM_FROZEN_ATTRIBUTE,
 	NPC_ANIM_GROUNDED_ATTRIBUTE,
-	NPC_ANIM_SPEED_ATTRIBUTE,
+	NPC_ANIM_MOVING_ATTRIBUTE,
+	NPC_ANIM_SPRINTING_ATTRIBUTE,
 	NPC_TAG,
 } from "shared/constants";
 import { BodyConditions, BodyRender, applyBodyRender, destroyBodyRender, startBodyRender } from "../../bodyAnimation";
@@ -280,15 +281,21 @@ export class RigAnimationController implements OnStart {
 	}
 
 	/**
-	 * The four facts a rig cannot measure for itself, as the server published them — **and the one it answers by
+	 * The facts a rig cannot measure for itself, as the server published them — **and the one it answers by
 	 * construction.**
 	 *
 	 * **Absent reads as an ordinary standing body, and that is the safe direction.** A rig whose replacement
-	 * body has just replicated, or one whose first publish is a turn away, is a body standing still on the
-	 * ground: speed `0` and grounded `true` land on the standing clip, whereas the alternative — the other
-	 * default — is a rig that reads as falling for a turn, which every player would see as a different bug.
-	 * The frozen flag is the one that defaults the other way, because a rig whose freeze state is unknown is
-	 * a rig that has not been frozen yet.
+	 * body has just replicated, or one whose first publish is a turn away, is a body nobody has asked to move
+	 * yet: `moving` false and grounded `true` land on the standing clip, whereas the alternative — the other
+	 * default — is a rig that reads as falling for a turn, which every player would see as a different bug. The
+	 * frozen flag is the one that defaults the other way, because a rig whose freeze state is unknown is a rig
+	 * that has not been frozen yet.
+	 *
+	 * **`moving` and `sprinting` are the server's *requests*, and they stand where a banded speed used to.** That
+	 * speed had to be banded so a rig walking a straight line would not rewrite the attribute every frame — and
+	 * because the band was floored, every rig moving slower than five studs a second published "standing", so a
+	 * rig creeping to a ball slid along in the standing clip. A request has no such seam: the server either asked
+	 * the rig to walk or it did not. See `NPC_ANIM_MOVING_ATTRIBUTE` for the whole of that argument.
 	 *
 	 * **`deferToDefault` is `false` for a rig, and it is a fact rather than a default.** The deferral exists for
 	 * a body that can be *sat on*: Roblox's own `Animate` script supplies `sit`, `climb` and `swim`, and a player
@@ -300,7 +307,8 @@ export class RigAnimationController implements OnStart {
 	 */
 	private conditionsOf(model: Model): BodyConditions {
 		return {
-			speed: this.numberOf(model, NPC_ANIM_SPEED_ATTRIBUTE),
+			moving: this.flagOf(model, NPC_ANIM_MOVING_ATTRIBUTE, false),
+			sprinting: this.flagOf(model, NPC_ANIM_SPRINTING_ATTRIBUTE, false),
 			grounded: this.flagOf(model, NPC_ANIM_GROUNDED_ATTRIBUTE, true),
 			frozen: this.flagOf(model, NPC_ANIM_FROZEN_ATTRIBUTE, false),
 			deferToDefault: false,
@@ -353,13 +361,6 @@ export class RigAnimationController implements OnStart {
 		if (body !== undefined) destroyBodyRender(body);
 
 		rig.body = undefined;
-	}
-
-	/** A number attribute, or `0` where it is absent or is not a number. See `conditionsOf` for the default. */
-	private numberOf(model: Model, name: string): number {
-		const value = model.GetAttribute(name);
-
-		return typeIs(value, "number") ? value : 0;
 	}
 
 	/** A boolean attribute, or `fallback` where it is absent or is not a boolean. */

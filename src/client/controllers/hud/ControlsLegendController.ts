@@ -160,8 +160,11 @@ const ROWS: LegendRow[] = [
 	},
 	{
 		label: "Sprint",
-		keys: "Left Shift, M",
-		held: () => UserInputService.IsKeyDown(Enum.KeyCode.LeftShift) || UserInputService.IsKeyDown(Enum.KeyCode.M),
+		keys: "Left Shift, Right Shift",
+		// Both shifts, which is what `SPRINT_KEYS` binds: the key that sprints is the pair rather than
+		// either of them, so the chip lights for either hand. See that list for why there are two.
+		held: () =>
+			UserInputService.IsKeyDown(Enum.KeyCode.LeftShift) || UserInputService.IsKeyDown(Enum.KeyCode.RightShift),
 	},
 	{ label: "Catch", keys: "E", held: () => UserInputService.IsKeyDown(Enum.KeyCode.E) },
 	{ label: "Drop", keys: "1", held: () => UserInputService.IsKeyDown(Enum.KeyCode.One) },
@@ -419,7 +422,7 @@ export class ControlsLegendController implements OnStart {
 	 * pair a *panel* and its cards are made of — a light surface on a lighter one — and a key is not a card,
 	 * it is the one field of colour on the row. The accent is what the theme keeps for exactly this.
 	 *
-	 * The chip hugs its key, so a one-letter key is a small box and a key like `Left Shift, M` is a wide one.
+	 * The chip hugs its key, so a one-letter key is a small box and a key like `Left Shift, Right Shift` is a wide one.
 	 * A `UISizeConstraint` floor stops a very short key collapsing the chip to nothing — §9's constraint rule,
 	 * and the same shape `addViewportConstraint` uses one level up.
 	 *

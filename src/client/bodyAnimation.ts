@@ -60,18 +60,29 @@ export interface BodyRender {
 }
 
 /**
- * The facts a caller measures, because a body cannot read them for itself.
+ * The facts a caller gathers, because a body cannot answer them for itself.
  *
- * **Four of `BodyState`'s six, and the split is the point of the type.** A body cannot measure its own
- * ground speed, tell whether it is held, or say whether the game has a clip for what it is doing — for a rig,
- * the machine that *is* the body (the server) measures and publishes those facts; for a player's own body, the
- * client that owns it measures them directly. Both then hand the same four facts to {@link applyBodyRender},
+ * **Five of `BodyState`'s seven, and the split is the point of the type.** A body cannot say what it has been
+ * asked to do, tell whether it is held, or say whether the game has a clip for what it is doing — for a rig,
+ * the machine that *is* the body (the server) knows and publishes those facts; for a player's own body, the
+ * client that owns it knows them directly. Both then hand the same five facts to {@link applyBodyRender},
  * which adds the two any body can always answer for itself, because those are the events it carries as
  * attributes.
  */
 export interface BodyConditions {
-	/** Ground speed in studs per second. */
-	readonly speed: number;
+	/**
+	 * **Whether this body has been asked to move** — a request rather than a speed, and the fact the moving
+	 * clips hang on. The same fact as `BodyState.moving`.
+	 *
+	 * **Gathered by the caller because it is a fact about the machine rather than about the body.** A player's
+	 * own client is where movement keys become a `MoveDirection`; a rig's request is made by the server, which
+	 * is why only the server can answer for it. That is the same seam every field here sits on, and the reason
+	 * this type exists at all rather than the renderer reading a body.
+	 */
+	readonly moving: boolean;
+
+	/** **Whether the moving it is asked for is the sprint** — the other half of the request. See `BodyState`. */
+	readonly sprinting: boolean;
 
 	/** Whether the body is standing on something. */
 	readonly grounded: boolean;
@@ -161,7 +172,8 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	playCatchShockwave(render.body, publishedCatchCause(render.body));
 
 	const clip = bodyClipFor({
-		speed: conditions.speed,
+		moving: conditions.moving,
+		sprinting: conditions.sprinting,
 		grounded: conditions.grounded,
 		frozen: conditions.frozen,
 		deferToDefault: conditions.deferToDefault,

@@ -248,7 +248,7 @@ export class WalkSpeedService implements OnStart {
         // took, which is the same reason `Trajectory` integrates by step rather than assuming a rate.
         RunService.Heartbeat.Connect((dt) => this.onHeartbeat(dt));
 
-        if (DEBUG) print(`[Sprint] up — LeftShift/M, ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s pool`);
+        if (DEBUG) print(`[Sprint] up — LeftShift/RightShift, ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s pool`);
     }
 
     /**
@@ -268,6 +268,25 @@ export class WalkSpeedService implements OnStart {
 
         this.entryFor(model, humanoid).set(BASE_KEY, speed);
         this.recalculateSpeed(model, humanoid);
+    }
+
+    /**
+     * **Whether this model is wearing the sprint's contribution right now** — the sprint fact, asked of the one
+     * service that owns it.
+     *
+     * **Asked as a contribution rather than read off the walk speed**, which is the arithmetic
+     * `NpcService.publishAnimation` used to do with a constant of its own: the base speed is a per-rig number
+     * (16 for a rig, 20 for a player), so "is it sprinting" is not a threshold on the total but the presence of
+     * a named key. This is the key the sprint was added under, and removing it is what ends a sprint — so nothing
+     * here has to know what a sprint costs.
+     *
+     * **A rig's key is the same word.** `SeekBehavior` declares its own `SPRINT_KEY` with this spelling,
+     * deliberately, so that a question like this one gets one answer for both kinds of body rather than a name
+     * the caller has to know per body kind. A key is scoped to a *model* and a player's character is never a
+     * rig, so the same word on two bodies is two contributions and cannot collide.
+     */
+    public isSprinting(model: Model): boolean {
+        return this.speeds.get(model)?.has(SPRINT_KEY) === true;
     }
 
     /**
