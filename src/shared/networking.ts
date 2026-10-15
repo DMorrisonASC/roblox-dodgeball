@@ -125,17 +125,6 @@ export const events = Net.Definitions.Create({
 	drop: Net.Definitions.ClientToServerEvent<[]>(),
 
 	/**
-	 * Client → server: this player wants the opposite of whatever their throwing setting
-	 * currently is.
-	 *
-	 * **A request to flip, not a value to set.** Sending the setting itself would make the
-	 * wire the description of a state, and a client that lost track of it — after a
-	 * respawn, say — could switch throwing on for a player who had it off. Flipping what
-	 * the server holds cannot disagree with the server, whatever the client believes.
-	 */
-	toggleThrow: Net.Definitions.ClientToServerEvent<[]>(),
-
-	/**
 	 * Client → server: this player wants to use whatever power the mystery box gave them.
 	 *
 	 * **Carries nothing on purpose, and unlike `markHeldBall` that is not merely a preference.** The mark
@@ -172,13 +161,13 @@ export const events = Net.Definitions.Create({
 	 * Client → server: whether this player is now holding the sprint key.
 	 *
 	 * **A level, and the only event here that sends a value the server could not work out for
-	 * itself.** `toggleThrow` above argues the opposite case at length — a request to flip rather
-	 * than a value to set, because the server owns the setting and a client that had lost track of
-	 * it could otherwise switch throwing *on* for somebody who had it off. The reasoning there is
-	 * about *authority*, not about values on the wire, and it does not reach this event: the server
-	 * holds no opinion about whether a key is down, and no way to discover it. That is a fact only
-	 * the client has, so the client is the only thing that can report it, and the honest shape of a
-	 * held key is a boolean that stays true until it is false.
+	 * itself.** Every other request on this wire either carries nothing or names something the
+	 * server then checks, because the server owns the state and a client that had lost track of it
+	 * must not be able to assert it. That reasoning is about *authority*, not about values on the
+	 * wire, and it does not reach this event: the server holds no opinion about whether a key is
+	 * down, and no way to discover it. That is a fact only the client has, so the client is the only
+	 * thing that can report it, and the honest shape of a held key is a boolean that stays true
+	 * until it is false.
 	 *
 	 * Nothing is validated on the far side and nothing needs to be: an untrue `true` buys a player
 	 * fifteen studs per second for as long as their stamina lasts, which is what the same player
@@ -415,18 +404,18 @@ export const events = Net.Definitions.Create({
 	 * three different sentences a player cannot distinguish by watching nothing happen; an equip's
 	 * refusals are all "that request was not valid", which a correct client never sends and which is not
 	 * worth a sentence. The acknowledgement is the attribute changing, which replicates on its own — the
-	 * same shape `toggleThrow` and `markHeldBall` use.
+	 * same shape `markHeldBall` uses.
 	 */
 	equipCosmetic: Net.Definitions.ClientToServerEvent<[slot: string, id: string]>(),
 
 	/**
 	 * Client → server: this player wants the named power in or out of their item-box pool.
 	 *
-	 * **A toggle rather than a setter, on {@link toggleThrow}'s precedent and for its exact reason.** The
-	 * wire carries a request to *flip* one power, not a pool to install, so a client that has lost track
-	 * of what it has — which is any client that has just joined, or joined back — cannot assert a pool the
-	 * server disagrees with. Flipping what the server already holds is a change the server can make
-	 * correctly whatever the client believes, which is the property a setter does not have.
+	 * **A toggle rather than a setter.** The wire carries a request to *flip* one power, not a pool to
+	 * install, so a client that has lost track of what it has — which is any client that has just joined,
+	 * or joined back — cannot assert a pool the server disagrees with. Flipping what the server already
+	 * holds is a change the server can make correctly whatever the client believes, which is the property a
+	 * setter does not have.
 	 *
 	 * **The pool is not ownership, and this cannot grant anything.** The named power must be one the player
 	 * already owns, checked against the record — so the worst a malicious client can do is put something it

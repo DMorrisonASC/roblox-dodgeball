@@ -11,7 +11,7 @@ import {
 import { teamColourOf } from "shared/gameMode";
 import type { GameModeId } from "shared/gameMode";
 import { getHudScreenGui } from "../../ui/screenGui";
-import { hudTheme } from "../../ui/hudTheme";
+import { hudTheme, outlineText } from "../../ui/hudTheme";
 import type { HudTheme } from "../../ui/hudTheme";
 import { raiseZIndex } from "../../ui/panelChrome";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
@@ -43,7 +43,7 @@ const SCORE_Z_INDEX = 4;
  * rung below every other GUI, so it loses the overlap rather than winning it — the score plate ends up drawn
  * across the clock. If this bar should sit lower, this number and the band's are raised together.
  */
-const SCORE_TOP_INSET = 0;
+const SCORE_TOP_INSET = 14;
 
 /** The circle's diameter, in pixels. Big enough to read as a side, small enough not to be a button. */
 const CIRCLE_SIZE = 14;
@@ -317,6 +317,7 @@ export class ScoreHudController implements OnStart {
 		});
 		label.Name = "Score";
 		label.TextColor3 = theme.colors.textPrimary;
+		outlineText(label);
 		// **This override is the whole fix for a bar that drew as a full-width banner.** big-ui's `Text`
 		// defaults to `Size = (1, 0, lineHeight)` — a *scale-1* width — and this bar's plate is sized by its
 		// contents. A scale-1 child inside a content-sized row is a measurement cycle: the label asks the plate

@@ -216,3 +216,94 @@ export function hudTheme(): HudTheme {
 		},
 	};
 }
+
+/**
+ * Where the outline rule flips from white to black, on the 0-to-1 luminance scale. **Placeholder — one
+ * half.**
+ *
+ * The halfway point, which is the only value that makes "the opposite of the text" true in both
+ * directions: a colour above it is closer to white than to black and takes a black outline, one below it
+ * takes a white one. Named rather than written inline because it is the one number in the rule that is a
+ * judgement rather than a definition, and therefore the one place to move if the line between the two
+ * cases ever wants a different answer.
+ */
+const STROKE_MIDPOINT = 0.5;
+
+/**
+ * The outline colour for a piece of text, from the text's own colour. **The rule, and the only place it is
+ * written.**
+ *
+ * A dark colour gets a **white** outline and a light colour gets a **black** one, so the outline always
+ * does work against whatever the text lands on: a HUD surface, the arena floor, or a body in the middle
+ * distance. It is a rule about the **text**, not about the background — nothing here reads what is behind
+ * the label, because nothing can. The consequence is worth stating plainly rather than discovering: on
+ * this light theme most text is near-black, so most outlines are white, and a white outline on black text
+ * over a cream panel is invisible. That is not a failure — the panels already guarantee their own
+ * contrast, and the outline earns its keep over 3D, where the background is whatever the camera is
+ * pointed at.
+ *
+ * **Why it lives here rather than in `panelChrome.ts`.** That module is the builder set, and eight of its
+ * builders do construct text — but most text in the client never goes through it: the controls legend,
+ * the score bar, the stat billboard, the loading screen and every big-ui `Button` and `Alert` build their
+ * labels somewhere else. What every text site *does* share is a colour from this module, so the rule that
+ * turns a text colour into a stroke colour belongs where the colours are named. This is also the only
+ * module that may reach big-ui's `Palette` for the rule's two ends without adding a palette entry — and
+ * it adds none: white and black are the palette's own, which `ThemeController` has already set.
+ *
+ * **Luminance with Rec. 601's weights, not a channel mean.** A plain average reads a saturated blue as
+ * lighter than it looks and a saturated green as darker, which is the wrong answer for exactly the
+ * colours this theme is built from — Aoi's blue and Giant Goldfish's orange sit a tenth apart on the mean
+ * and a quarter apart here, on opposite sides of the line.
+ */
+export function strokeFor(textColour: Color3): Color3 {
+	const luminance = 0.299 * textColour.R + 0.587 * textColour.G + 0.114 * textColour.B;
+
+	return luminance >= STROKE_MIDPOINT ? Palette.common.black : Palette.common.white;
+}
+
+/**
+ * Gives `root` the outline, and everything under it — at the colour each label's own text asks for.
+ *
+ * **`GetDescendants()` does not include the instance it was called on, so the root is styled explicitly
+ * *and* walked, in that order.** A walk-only version silently does nothing when handed the label itself,
+ * which is the most common case by far; this project has already paid for that footgun once (a "walk the
+ * clone for its parts" loop that found nothing because the clone *was* the part).
+ *
+ * **A subtree rather than a label, because a builder's return value is not always its text.** big-ui's
+ * `Text` hands back the label it made, but `Button` builds its caption as a child named `Label` inside a
+ * `Content` frame and leaves the button's own `Text` empty, and `Alert` builds a title label and a message
+ * label inside its frame. One call on any of those covers the whole thing; a per-`Text` call would not.
+ *
+ * **Written rather than bound, because there is nothing to bind it through.** big-ui's `Text` takes
+ * `text | variant | color | align | size | wrap | layoutOrder` and no stroke of any kind (`Text.d.ts`), so
+ * a stroke can only be a property assignment on the returned instance — which is exactly how every other
+ * colour in this client already works. Two cases therefore need more than this one call, and both are
+ * named at their sites: a label whose **colour** changes later has its stroke derived again where the
+ * colour is written, and a label whose **transparency** changes needs the stroke's transparency moved with
+ * it.
+ *
+ * **The stroke's transparency mirrors the text's rather than being set to nought.** A label built
+ * invisible — `ArenaFreezeCountdownController` builds two and fades them in — would otherwise be drawn as
+ * hollow letter outlines around text that is not there yet. Mirroring means an invisible label is
+ * invisible, and it costs nothing at the twenty-odd sites whose text is opaque from the start.
+ */
+export function outlineText(root: Instance): void {
+	styleText(root);
+
+	for (const descendant of root.GetDescendants()) styleText(descendant);
+}
+
+/** The rule applied to one instance, if it is the kind of instance that has text. */
+function styleText(instance: Instance): void {
+	// Three guards rather than one union test: each narrows `Instance` to a concrete class, and all three
+	// carry the two properties being written. `panelChrome.wrapLabels` narrows the same way.
+	if (instance.IsA("TextLabel")) styleLabel(instance);
+	else if (instance.IsA("TextButton")) styleLabel(instance);
+	else if (instance.IsA("TextBox")) styleLabel(instance);
+}
+
+/** One label's outline, from that label's own colour and transparency. See {@link strokeFor}. */
+function styleLabel(label: TextLabel | TextButton | TextBox): void {
+	label.TextStrokeColor3 = strokeFor(label.TextColor3);
+	label.TextStrokeTransparency = label.TextTransparency;
+}

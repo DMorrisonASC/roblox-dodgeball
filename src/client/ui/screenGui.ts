@@ -82,7 +82,7 @@ export function getHudScreenGui(): ScreenGui {
 	const existing = playerGui.FindFirstChild(GUI_NAME);
 	if (existing?.IsA("ScreenGui")) {
 		existing.ResetOnSpawn = false;
-		existing.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets;
+		existing.ScreenInsets = Enum.ScreenInsets.None;
 		return existing;
 	}
 

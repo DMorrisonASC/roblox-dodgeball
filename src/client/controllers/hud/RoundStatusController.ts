@@ -1,11 +1,11 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, ReplicatedStorage } from "@rbxts/services";
-import { ARENA_CONFIG } from "shared/config/arena.config";
+import { ReplicatedStorage } from "@rbxts/services";
 import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { GAME_MODE_NAMES, isGameModeId } from "shared/gameMode";
 import { PLAYING } from "../../panels";
+import { outlineText } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -31,7 +31,7 @@ const HUD_WIDTH = 360;
  * order a scoreboard is read in, the score changing with the clock counting down underneath it. A larger
  * number is simply the band lower down.
  */
-const HUD_TOP_INSET = 44;
+const HUD_TOP_INSET = 14;
 
 /**
  * How opaque the board behind the line is between rounds: the number this HUD has always used.
@@ -95,27 +95,6 @@ export class RoundStatusController implements OnStart {
 		const time = Fusion.Value(scope, 0);
 		const mode = Fusion.Value(scope, "");
 
-		/**
-		 * How many players are in the server, for the "waiting for players" line.
-		 *
-		 * **Counted here rather than published by the server.** The client already has the whole
-		 * `Players` list, so a copy of that number on an attribute would be a second answer to a
-		 * question the engine is already answering — and the client's copy is the one that matches
-		 * what the player can actually see on the scoreboard. This is display only: whether a round
-		 * may *start* is the server's decision, and this reads the count to explain a clock that has
-		 * stopped moving.
-		 */
-		const playerCount = Fusion.Value(scope, Players.GetPlayers().size());
-
-		const recount = () => playerCount.set(Players.GetPlayers().size());
-
-		scope.push(Players.PlayerAdded.Connect(recount));
-
-		// **Deferred, because `PlayerRemoving` fires *before* the player leaves `GetPlayers`.** A
-		// direct count in the handler reads one too many, and the label would sit at `2/2` — or keep
-		// counting a round as viable — after the second player had already gone.
-		scope.push(Players.PlayerRemoving.Connect(() => task.defer(recount)));
-
 		// Subscribed *before* seeding, so a change landing between the two is not lost — the seed
 		// then reads the newer value and wins, which is the order that cannot go wrong either way.
 		//
@@ -157,7 +136,7 @@ export class RoundStatusController implements OnStart {
 		const initialMode = status.GetAttribute(ROUND_MODE_ATTRIBUTE);
 		if (typeIs(initialMode, "string")) mode.set(initialMode);
 
-		// The HUD's entire content, derived rather than assembled: it re-reads all four values
+		// The HUD's entire content, derived rather than assembled: it re-reads all three values
 		// whenever any of them changes, and never has to be told that it should.
 		//
 		// **The wording is built here, on the client.** The server publishes a phase, a clock and a
@@ -167,35 +146,18 @@ export class RoundStatusController implements OnStart {
 		const text = Fusion.Computed(scope, (use) => {
 			// **Every value is read before any branching, and that is not tidiness.** Fusion decides
 			// what a `Computed` depends on from the `use` calls that actually *run*, so a read placed
-			// inside an `if` is a subscription that only exists while that branch is taken. Reading
-			// the clock inside the non-waiting branch — as this used to — meant the label stopped
-			// watching it for as long as it was saying "waiting for players", and was only rescued
-			// because the player count changing re-runs the whole thing. All four up front makes the
-			// subscription set fixed, whatever the line ends up saying.
+			// inside an `if` is a subscription that only exists while that branch is taken. All three
+			// up front makes the subscription set fixed, whatever the line ends up saying.
 			const phase = use(state);
-			const players = use(playerCount);
 			const seconds = use(time);
 			const modeId = use(mode);
 
-			// **Below the minimum, the countdown is not the interesting number.** The intermission is
-			// frozen and will not move until somebody else arrives, so `Intermission — 30s` would be a
-			// clock that has stopped for a reason the reader cannot see. The count is the reason.
-			//
-			// **It replaces the clock and nothing else, and the winner is no longer one of the things
-			// it has to leave room for.** This used to `return` early, which silently dropped both
-			// the mode and the winner: the commonest way a server drops below the minimum is a
-			// leaver deciding the round, so the line was at its least informative exactly when there
-			// was most to say. The winner has since moved off this line altogether — see
-			// `RoundResultController` — which leaves the mode as the only segment the shape below now
-			// protects. The shape stays anyway: a face with segments appended is what makes the next
-			// one of them a line rather than a rewrite.
-			const waiting = phase === "Intermission" && players < ARENA_CONFIG.MIN_PLAYERS;
-
-			const face = waiting
-				? `Waiting for players — ${players}/${ARENA_CONFIG.MIN_PLAYERS}`
-				: `${phase} — ${seconds}s`;
-
-			let line = face;
+			// **The line is the phase and the clock, and the mode is appended to it.** There used to
+			// be a third face here — `Waiting for players — n/min`, shown when the intermission had
+			// frozen below the minimum — and it is gone: the intermission clock is what this line
+			// shows, frozen or not. That is the user's decision, and the shape below does not argue
+			// with it.
+			let line = `${phase} — ${seconds}s`;
 
 			// The mode, once a vote has named one. Between the vote closing and the round beginning
 			// this names the round *to come*, which is exactly when a player wants to read it. The
@@ -234,15 +196,21 @@ export class RoundStatusController implements OnStart {
 		// off, which is what a second line of text then falls out of. So the card is as tall as its
 		// line, and the wrapper follows it, and no amount of text can be clipped by a box that was
 		// sized before the text existed.
+		// **The label is built into a name before the card takes it, and that is forced by the outline.** The
+		// `Text` used to be constructed inline inside the `children` array, where the call that returns it is the
+		// only place it exists and there is nothing to hand to `outlineText`. big-ui's `Card` parents its children
+		// for the caller, so nothing about the order changes — the label is built, styled, and then given to the
+		// card. See `hudTheme.outlineText`.
+		const label = Text(scope, {
+			text,
+			variant: "button",
+			align: Enum.TextXAlignment.Center,
+		});
+		outlineText(label);
+
 		const card = Card(scope, {
 			padding: 4,
-			children: [
-				Text(scope, {
-					text,
-					variant: "button",
-					align: Enum.TextXAlignment.Center,
-				}),
-			],
+			children: [label],
 		});
 
 		card.Parent = wrapper;
@@ -257,8 +225,8 @@ export class RoundStatusController implements OnStart {
 		 * and the mode is already known.
 		 *
 		 * **Between rounds the board stays, and it is doing a different job there.** The line then carries
-		 * what a player is waiting on — `Waiting for players — 1/2`, or the mode a vote has just chosen —
-		 * and the lobby behind it is not the thing being watched. It is the same reason a card is right for
+		 * what a player is waiting on — the intermission clock, or the mode a vote has just chosen — and
+		 * the lobby behind it is not the thing being watched. It is the same reason a card is right for
 		 * the rest of the HUD: a board is *information grouping*, and there is nothing left to group once
 		 * the round is running.
 		 *

@@ -3,7 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { ContentProvider, Players, ReplicatedStorage } from "@rbxts/services";
 import { ROUND_STATUS_FOLDER } from "shared/constants";
-import { hudTheme } from "../../ui/hudTheme";
+import { hudTheme, outlineText } from "../../ui/hudTheme";
 import { getSplashScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -323,6 +323,7 @@ export class LoadingScreenController implements OnStart {
 		title.LayoutOrder = 1;
 		title.ZIndex = LOADING_Z_INDEX;
 		title.TextColor3 = theme.colors.textPrimary;
+		outlineText(title);
 		// Sized to its own text, for the reason `ControlsLegendController` gives: big-ui's default is
 		// a label the full width of its parent, and a parent sized to the label and a label sized to
 		// the parent is a circle that Roblox resolves by guessing.
@@ -337,6 +338,7 @@ export class LoadingScreenController implements OnStart {
 		statusLabel.LayoutOrder = 2;
 		statusLabel.ZIndex = LOADING_Z_INDEX;
 		statusLabel.TextColor3 = theme.colors.textSecondary;
+		outlineText(statusLabel);
 		statusLabel.Size = UDim2.fromOffset(0, 0);
 		statusLabel.AutomaticSize = Enum.AutomaticSize.XY;
 		statusLabel.Selectable = false;
@@ -346,6 +348,10 @@ export class LoadingScreenController implements OnStart {
 		spinnerLabel.LayoutOrder = 3;
 		spinnerLabel.ZIndex = LOADING_Z_INDEX;
 		spinnerLabel.TextColor3 = theme.colors.accent;
+		// **The one label on this screen whose outline is not white.** `accent` is Aoi's light blue — a
+		// luminance of 0.71 — so the rule gives it a *black* outline, which is also the case where the outline is
+		// most visible: light-blue ink on the cream surface would otherwise be its own hardest contrast problem.
+		outlineText(spinnerLabel);
 		spinnerLabel.Size = UDim2.fromOffset(0, 0);
 		spinnerLabel.AutomaticSize = Enum.AutomaticSize.XY;
 		spinnerLabel.Selectable = false;

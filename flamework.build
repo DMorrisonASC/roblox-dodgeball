@@ -23,7 +23,6 @@
 		"roblox-dodgeball:out/client/controllers/hud/StatsBillboardController@StatsBillboardController": "client/controllers/hud/StatsBillboardController@StatsBillboardController",
 		"roblox-dodgeball:out/client/controllers/hud/SuperHudController@SuperHudController": "client/controllers/hud/SuperHudController@SuperHudController",
 		"roblox-dodgeball:out/client/controllers/hud/ThemeController@ThemeController": "client/controllers/hud/ThemeController@ThemeController",
-		"roblox-dodgeball:out/client/controllers/hud/ThrowStateToastController@ThrowStateToastController": "client/controllers/hud/ThrowStateToastController@ThrowStateToastController",
 		"roblox-dodgeball:out/client/controllers/input/ActionController@ActionController": "client/controllers/input/ActionController@ActionController",
 		"roblox-dodgeball:out/client/controllers/input/AimTargetController@AimTargetController": "client/controllers/input/AimTargetController@AimTargetController",
 		"roblox-dodgeball:out/client/controllers/input/AlternativeMovementController@AlternativeMovementController": "client/controllers/input/AlternativeMovementController@AlternativeMovementController",

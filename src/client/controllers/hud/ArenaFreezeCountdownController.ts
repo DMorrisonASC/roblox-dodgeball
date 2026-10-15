@@ -9,7 +9,7 @@ import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shar
 import { PLAYING } from "../../panels";
 import { onASide } from "../../roundZone";
 import { getHudScreenGui } from "../../ui/screenGui";
-import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { HudTheme, hudTheme, outlineText } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints on mount — the line that says the controller ran at all. */
@@ -271,10 +271,10 @@ export class ArenaFreezeCountdownController implements OnStart {
 	/**
 	 * Which run is current, so a callback that outlives its run can tell.
 	 *
-	 * **The token `ShiftLock` cites `ThrowStateToastController` for**, and the case is the same shape: the fade
-	 * at the end of a run finishes on a timer, and a run that began during that timer would be hidden by the
-	 * previous run's parting shot. A late callback that finds a different number does nothing at all, where a
-	 * boolean "is it running" would be true for the *new* run and hide it.
+	 * **The token `ShiftLock` names**, and the case is the same shape: the fade at the end of a run finishes on
+	 * a timer, and a run that began during that timer would be hidden by the previous run's parting shot. A
+	 * late callback that finds a different number does nothing at all, where a boolean "is it running" would
+	 * be true for the *new* run and hide it.
 	 */
 	private runId = 0;
 
@@ -605,6 +605,12 @@ export class ArenaFreezeCountdownController implements OnStart {
 		label.TextYAlignment = Enum.TextYAlignment.Center;
 		label.TextColor3 = theme.colors.onAccent;
 		label.TextTransparency = 1;
+		// **Styled while it is still invisible, and that is the case that makes this builder different from every
+		// other one.** `outlineText` mirrors the text's own transparency onto the stroke, so an invisible label is
+		// invisible rather than a set of hollow outlines around text that is not there yet — which is what a
+		// stroke at transparency 0 would draw for the frame between this call and the first tween. The cost is the
+		// four crossings below: a fade moves both properties or it leaves the outline behind.
+		outlineText(label);
 		label.Visible = false;
 		// Carried on the labels as well as the card — see the note where the card's own `ZIndex` is set.
 		label.ZIndex = COUNTDOWN_Z_INDEX;
@@ -783,7 +789,9 @@ export class ArenaFreezeCountdownController implements OnStart {
 		const away = new TweenInfo(OUT_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In);
 
 		TweenService.Create(leavingScale, away, { Scale: OUT_SCALE }).Play();
-		TweenService.Create(leaving, away, { TextTransparency: 1 }).Play();
+		// The stroke twins the text: a fade that moved only the fill would leave the number's outline on screen
+		// after the number had gone. See `hudTheme.outlineText`.
+		TweenService.Create(leaving, away, { TextTransparency: 1, TextStrokeTransparency: 1 }).Play();
 
 		task.delay(OUT_SECONDS, () => {
 			// A run that ended inside the delay, or a later crossing that somehow overtook this one: neither can
@@ -831,6 +839,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 		arriving.Text = text;
 		arriving.Visible = true;
 		arriving.TextTransparency = 1;
+		arriving.TextStrokeTransparency = 1;
 
 		const arrivingScale = this.scales[this.labels.indexOf(arriving)];
 		arrivingScale.Scale = IN_SCALE;
@@ -838,7 +847,8 @@ export class ArenaFreezeCountdownController implements OnStart {
 		const into = new TweenInfo(IN_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
 
 		TweenService.Create(arrivingScale, into, { Scale: 1 }).Play();
-		TweenService.Create(arriving, into, { TextTransparency: 0 }).Play();
+		// Both properties, for the reason the departure tween gives: the number fades in whole.
+		TweenService.Create(arriving, into, { TextTransparency: 0, TextStrokeTransparency: 0 }).Play();
 	}
 
 	/**
@@ -846,9 +856,9 @@ export class ArenaFreezeCountdownController implements OnStart {
 	 *
 	 * **The hide is on a timer rather than on the tween's signal**, with {@link runId} as the guard. A run that
 	 * began during the fade must not be hidden by the previous run's parting shot, and a token check is the
-	 * smallest thing that says so — `ShiftLock` cites `ThrowStateToastController` for the same pattern and the
-	 * same reason. A callback that arrives to find a different run does nothing at all, where a boolean "is it
-	 * running" would be true of the new run and would hide it.
+	 * smallest thing that says so — `ShiftLock` names the same pattern for the same reason. A callback that
+	 * arrives to find a different run does nothing at all, where a boolean "is it running" would be true of
+	 * the new run and would hide it.
 	 */
 	private finish(token: number): void {
 		this.stopLoop();
@@ -856,7 +866,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 		const label = this.labels[this.front];
 		const leaving = new TweenInfo(START_FADE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In);
 
-		TweenService.Create(label, leaving, { TextTransparency: 1 }).Play();
+		TweenService.Create(label, leaving, { TextTransparency: 1, TextStrokeTransparency: 1 }).Play();
 
 		task.delay(START_FADE_SECONDS, () => {
 			if (token !== this.runId) return;
@@ -904,6 +914,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 
 			label.Visible = false;
 			label.TextTransparency = 1;
+			label.TextStrokeTransparency = 1;
 			this.scales[index].Scale = 1;
 		}
 	}

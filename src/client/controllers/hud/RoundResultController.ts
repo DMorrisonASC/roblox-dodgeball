@@ -5,7 +5,7 @@ import { Players, ReplicatedStorage } from "@rbxts/services";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { isGameModeId, sideNameOf } from "shared/gameMode";
 import { events, RoundResultRow } from "shared/networking";
-import { hudTheme } from "../../ui/hudTheme";
+import { hudTheme, outlineText } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -265,13 +265,20 @@ export class RoundResultController implements OnStart {
 			layoutOrder: 1,
 			onActivate: () => this.dismiss(),
 		});
+		// big-ui's caption, so a subtree call — see `hudTheme.outlineText`.
+		outlineText(dismiss);
 		dismiss.Parent = header;
-
 		// The title observes the `Value` directly — a big-ui label takes a `UsedAs<string>`, so a
 		// `Value` is already the right shape and a `Computed` wrapping one would be a graph built to
 		// do nothing. The heading is the one label here whose text changes, which is why it is fed
 		// rather than written at construction like the rows are.
-		Text(this.scope, { text: this.title, variant: "h5", layoutOrder: 2 }).Parent = header;
+		// **Built into a name rather than chained straight into its parent, because the outline is a property and
+		// a chained call has nowhere to put a second statement.** The title observes a `Value` for its text, which
+		// is why it is fed rather than written; its colour is big-ui's default, so the stroke is derived after
+		// construction like every other label's. See `hudTheme.outlineText`.
+		const title = Text(this.scope, { text: this.title, variant: "h5", layoutOrder: 2 });
+		outlineText(title);
+		title.Parent = header;
 
 		return header;
 	}
@@ -465,6 +472,7 @@ export class RoundResultController implements OnStart {
 		// with an automatic height, which is precisely what a flex item in a row wants — the flex
 		// mode overrules the width and the height comes from the variant.
 		const name = Text(this.scope, { text: row.name, variant: "body1", layoutOrder: 2 });
+		outlineText(name);
 		Fusion.New(this.scope, "UIFlexItem")({ Parent: name, FlexMode: Enum.UIFlexMode.Fill });
 		name.Parent = item;
 
@@ -479,6 +487,7 @@ export class RoundResultController implements OnStart {
 			size: UDim2.fromOffset(FIGURE_WIDTH, 0),
 			layoutOrder: 3,
 		});
+		outlineText(figure);
 
 		// **The automatic axis, put back on the height.** big-ui takes `AutomaticSize` off entirely
 		// when a `Text` is given a size, so a label given a width and no height would be zero pixels

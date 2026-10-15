@@ -32,10 +32,12 @@
  * every ball in the world the instant it is written, and undoing it is writing the group back.
  *
  * **What the group is not allowed to change.** A ducking body still collides with the world, with the
- * midline wall, with props and with every other character — the only row that says otherwise is the
- * one against {@link BALL_GROUP}, so a duck is a body that balls pass through the head and arms of
- * and nothing else. See `CollisionGroups` for where that row is set, and `PracticePlayer` for the
- * other group this codebase built for the same kind of reason.
+ * midline wall and with props — the only row that says otherwise is the one against
+ * {@link BALL_GROUP}, so a duck is a body that balls pass through the head and arms of and nothing
+ * else. A ducking body's not colliding with other characters is the general character rule
+ * (`Character` against `DuckUpper` and friends, in `CollisionGroups`) rather than anything this group
+ * adds. See `CollisionGroups` for where the rows are set, and `PracticePlayer` for the other group
+ * this codebase built for the same kind of reason.
  */
 export const DUCK_GROUP = "DuckUpper";
 

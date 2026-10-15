@@ -68,11 +68,10 @@ export function startHitConfirm(): void {
 	/**
 	 * Bumped by every confirmation, and captured by every dismissal timer.
 	 *
-	 * **The house pattern for a timer that cannot be cancelled** — `ThrowStateToastController` documents it at
-	 * length: a `task.delay` already in flight can only be *ignored*, so a timer acts only while the token it
-	 * captured is still current. Without it, two hits inside {@link CONFIRM_SECONDS} would have the first
-	 * one's clock hide the second one's toast: a message about the hit you just landed, taken off the screen
-	 * by a clock that started before it existed.
+	 * **The house pattern for a timer that cannot be cancelled**: a `task.delay` already in flight can only be
+	 * *ignored*, so a timer acts only while the token it captured is still current. Without it, two hits inside
+	 * {@link CONFIRM_SECONDS} would have the first one's clock hide the second one's toast: a message about the
+	 * hit you just landed, taken off the screen by a clock that started before it existed.
 	 */
 	let dismissToken = 0;
 
@@ -116,41 +115,38 @@ export function startHitConfirm(): void {
 const TOAST_NAME = "HitConfirmToast";
 
 /**
- * Which slot of the bottom-centre column this toast occupies — **slot 1, the row directly above the throw
- * toggle's, which is slot 0.**
+ * Which slot of the bottom-centre column this toast occupies — **slot 0, the bottom row.**
+ *
+ * **It was slot 1, and it moved down when slot 0 came free.** The bottom row belonged to the throw toggle's
+ * two toasts, and the argument for keeping this one out of it was that a confirmation about something this
+ * player just did should not share a row with a statement about the game's state — nor be read as one message
+ * with two lines. When the toggle retired, its row emptied; a toast 69 pixels up the screen with nothing
+ * beneath it is a gap rather than a stack, and the column is built from the bottom, so the bottom is where
+ * the last remaining toast belongs.
  *
  * **What "above the power-up HUD" means, in pixels.** `SuperHudController` anchors its stack at
  * `UDim2.new(0.5, 0, 1, -12)` with `AnchorPoint (0.5, 1)`, and the stack is `ICON_SIZE` 56 plus `STACK_GAP` 10
  * plus a 10px segment row = 76px tall, so it occupies the 12th to the 88th pixel up from the bottom edge. The
- * column's own bottom row starts at `TOAST_BOTTOM_OFFSET` 96 and `toastOffset(1)` puts this one at 165 — above
- * the stack, above the throw toast, with the whole of `hudToast`'s arithmetic between it and the screen edge.
- * **Nothing here is a new number**: the column's width, height and gap belong to `hudToast`, and the only
- * decision this file makes is which row of it to stand in.
- *
- * **A row of its own rather than the throw toast's, and that is what "near the thing it confirms" means
- * here.** Both rows are bottom-centre and both are above the power stack, so the choice is not *where on the
- * screen* but *what it is drawn beside*: **a personal confirmation belongs near the thing it confirms — the
- * abilities you just spent — not with the general output.** Slot 0 is the throw toggle's, which is a statement
- * about the game's state rather than about anything this player just did, and a hit landing while it is up
- * would be two different kinds of message reading as one toast with two lines. Slot 1 is free —
- * `ThrowStateToastController` records that it is the camera toast's old row, and that a shorter stack is not a
- * gap.
+ * column's own bottom row starts at `TOAST_BOTTOM_OFFSET` 96 — above the stack, with the whole of
+ * `hudToast`'s arithmetic between it and the screen edge. **Nothing here is a new number**: the column's
+ * width, height and gap belong to `hudToast`, and the only decision this file makes is which row of it to
+ * stand in.
  *
  * **Pixel-based rather than scale-based, because the thing it sits above is.** The stack's inset and the
  * column's offset are both pixels measured from the bottom edge, so the toast tracks the Super HUD at every
  * screen size without either being a fraction of the viewport. A `YScale` here would be a fraction of the
  * *safe* region rather than of the screen — see `screenGui.ts` on `ScreenInsets`.
  */
-const SLOT = 1;
+const SLOT = 0;
 
 /**
  * How long the confirmation stays up, in seconds. **Placeholder — 2.**
  *
- * **Shorter than the throw toggle's five, because it is a different kind of sentence.** That one confirms a
- * state a player deliberately entered — they pressed a key, and the toast is the receipt for a decision — so
- * it can afford to sit there. This one is about a moment in the world: the ball has landed, the body it
- * landed on is already wearing a 0.9-second effect, and the round has moved on by the time four words have
- * been read. Two seconds is about how long it takes to read them and look back at the arena.
+ * **Short, because this is not the receipt for a decision.** A toast confirming a state a player deliberately
+ * entered can afford to sit there — they made the decision, and the message is the acknowledgement of it.
+ * This one is about a moment in the world: the ball has landed, the body it landed on is already wearing a
+ * 0.9-second effect, and the round has moved on by the time four words have been read. Two seconds is about
+ * how long it takes to read them and look back at the arena.
  *
  * **The two ways to be wrong are asymmetric.** Too short and the player misses it while watching the impact
  * they just caused; too long and a stale "You hit" is still up after that player has been hit back, which

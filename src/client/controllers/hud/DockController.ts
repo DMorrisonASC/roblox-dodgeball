@@ -6,7 +6,7 @@ import { PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TE
 import { inPracticeZone, participating, roundPhase, togglePanel } from "../../panels";
 import { isParticipant } from "../../roundZone";
 import { addElevation, wireInteraction } from "../../ui/elevation";
-import { hudTheme } from "../../ui/hudTheme";
+import { hudTheme, outlineText } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -288,6 +288,11 @@ export class DockController implements OnStart {
 			onActivate,
 		});
 		button.Name = `${label}Button`;
+		// **A button's text is not where a reader would look for it**, which is why this is a subtree call and
+		// not a label one: big-ui builds the caption as a child called `Label` inside a `Content` frame and
+		// leaves the button's own `Text` empty. One call covers it, and covers the icon labels too if one is
+		// ever passed. See `hudTheme.outlineText`.
+		outlineText(button);
 		Fusion.New(this.scope, "UISizeConstraint")({
 			Parent: button,
 			MinSize: new Vector2(BUTTON_MIN_WIDTH, 0),

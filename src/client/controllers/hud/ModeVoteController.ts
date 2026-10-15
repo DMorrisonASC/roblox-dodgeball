@@ -11,6 +11,7 @@ import {
 } from "shared/constants";
 import { decodeModeIds, GAME_MODE_NAMES, GameModeId } from "shared/gameMode";
 import { events } from "shared/networking";
+import { outlineText } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -244,6 +245,9 @@ export class ModeVoteController implements OnStart {
 				layoutOrder: 1,
 				onActivate: () => this.cast(id, status),
 			});
+			// The caption is big-ui's, not this file's — see `hudTheme.outlineText` for why a button takes a
+			// subtree call rather than a label one.
+			outlineText(button);
 
 			// big-ui ships the button hugging its own label — `AutomaticSize = X` — and an automatic
 			// axis wins over a size, so it fights the flex item below for control of the width. The
@@ -274,6 +278,7 @@ export class ModeVoteController implements OnStart {
 				size: UDim2.fromOffset(COUNT_WIDTH, 0),
 				layoutOrder: 2,
 			});
+			outlineText(count);
 
 			// **The automatic axis, put back on the height.** big-ui takes `AutomaticSize` off
 			// entirely when a `Text` is given a size, so a label given a width and no height would be

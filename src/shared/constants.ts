@@ -287,20 +287,6 @@ export const MATCH_SPAWNER_TAG = "MatchSpawner";
 export const THROWER_TOKEN = "ThrowerToken";
 
 /**
- * Attribute on a **`Player`** saying whether their clicks may throw.
- *
- * Read by the throw handler in `BallService` and written by the `2` key. On the player
- * rather than the character because it is a *preference*: a character is replaced on every
- * death, and a setting that switched itself back on when you respawned would be worse than
- * not having one — you would die, click, and throw while still looking for the ball.
- *
- * **Only an explicit `false` blocks.** A player who has never pressed the key has no
- * attribute and throws as before, so there is no default to write anywhere and no state
- * that can get stuck in a value nobody chose.
- */
-export const THROW_ENABLED = "ThrowEnabled";
-
-/**
  * Attribute on a **`Player`** naming the team they are on for the round in progress.
  *
  * Written by `RoundService` at the start of every playing phase, and read by anything that
@@ -852,10 +838,10 @@ export const BALL_SIZE = 2;
  * every machine and its client draws nothing. The attribute itself is unchanged — it answers about whoever
  * opens a window, and that is the dodge alone.
  *
- * **On the character rather than on the player**, which is the opposite of `THROW_ENABLED`'s choice and for
- * the opposite reason: a throw preference has to survive a death, and a window must not. An attribute on the
- * body dies with the body it describes, so there is no state to clear on a respawn and none a new body could
- * inherit from an old one.
+ * **On the character rather than on the player, and that is what makes it self-clearing.** A window is a fact
+ * about a *body*: an attribute on the body dies with the body it describes, so there is no state to clear on
+ * a respawn and none a new body could inherit from an old one. A fact that has to outlive a death belongs on
+ * the player instead — `TEAM_ATTRIBUTE` is that choice, made for that reason.
  *
  * **Absent means "no window", and only a body a player owns is ever given one** — a rig has no client
  * watching it, and a catching rig opens a window every tick. Written `false` when a window closes rather than

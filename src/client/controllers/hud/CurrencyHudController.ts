@@ -3,6 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { COINS_ATTRIBUTE } from "shared/constants";
+import { outlineText } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints once, when the readout is up — the line that says the controller ran at all. */
@@ -38,6 +39,9 @@ export class CurrencyHudController implements OnStart {
 			align: Enum.TextXAlignment.Left,
 		});
 
+		// No colour is set on this label, so the rule answers from big-ui's default — the theme's near-black —
+		// and the outline comes out white. See `hudTheme.outlineText`.
+		outlineText(label);
 		label.Name = "CoinReadout";
 		label.Position = new UDim2(0, 12, 0, 64);
 		label.Size = new UDim2(0, 160, 0, 22);

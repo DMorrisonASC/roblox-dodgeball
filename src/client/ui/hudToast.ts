@@ -1,6 +1,7 @@
 import { Alert } from "@rbxts/big-ui";
 import type { AlertSeverity } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
+import { outlineText } from "./hudTheme";
 import { getHudScreenGui } from "./screenGui";
 import { addViewportConstraint } from "./viewportConstraint";
 
@@ -69,8 +70,8 @@ export const TOAST_GAP = 8;
  * Slot `0` is the bottom of the column and slot `1` sits directly above it. **A toast that can be up
  * at the same time as another takes a slot of its own rather than sharing one** — two toasts in the
  * same slot are two toasts drawn on top of each other, which reads as one toast with garbled text
- * rather than as two things happening at once. Toasts that can never both be up (the throw warning and
- * the throw confirmation) deliberately share a slot, which is why this is numbered rather than named.
+ * rather than as two things happening at once. A toast that can never be up at the same time as another
+ * may share one deliberately, which is why this is numbered rather than named.
  */
 export function toastOffset(slot: number): number {
 	return TOAST_BOTTOM_OFFSET + slot * (TOAST_HEIGHT + TOAST_GAP);
@@ -109,11 +110,10 @@ export interface ToastOptions {
  * that already exists is the shape that silently does nothing.
  *
  * **It returns the wrapper, and that is for the one caller whose content changes.** big-ui's `Alert` reads
- * `title` and `message` once, while it is being built — its content *is* its construction, as
- * `ThrowStateToastController` records at length — so a toast that has to say something different next time
- * cannot be told to; it has to be replaced. A caller that replaces its own toast therefore needs the thing
- * to destroy, and asking for it back from the GUI by name would be the same fact written twice. Every
- * existing caller ignores this.
+ * `title` and `message` once, while it is being built — its content *is* its construction — so a toast that
+ * has to say something different next time cannot be told to; it has to be replaced. A caller that replaces
+ * its own toast therefore needs the thing to destroy, and asking for it back from the GUI by name would be
+ * the same fact written twice. Every existing caller ignores this.
  */
 export function mountToast(scope: Fusion.Scope<unknown>, options: ToastOptions): Frame {
 	const wrapper = Fusion.New(scope, "Frame")({
@@ -134,6 +134,14 @@ export function mountToast(scope: Fusion.Scope<unknown>, options: ToastOptions):
 	addViewportConstraint(scope, wrapper);
 
 	const alert = Alert(scope, { severity: options.severity, title: options.title, message: options.message });
+
+	// **One call on the alert covers both of its labels, and it has to be a subtree call to do it.** big-ui's
+	// `Alert` builds a title `TextLabel` and a message `TextLabel` inside its own frame — the frame it returns
+	// carries no text at all — so a call aimed at a label would style nothing and a call aimed at the root has
+	// to walk. This is also how `hitConfirm.ts` gets an outline without ever naming a stroke: it builds its text
+	// through this function.
+	outlineText(alert);
+
 	// `Alert` names its root "Alert", and two of those in the Explorer say nothing about which
 	// is which — the same reason the containers elsewhere are renamed off their component name.
 	alert.Name = `${options.name}Body`;

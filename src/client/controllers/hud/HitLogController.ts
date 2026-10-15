@@ -7,7 +7,7 @@ import { events, HitDirection } from "shared/networking";
 import { PLAYING, roundPhase } from "../../panels";
 import { raiseZIndex } from "../../ui/panelChrome";
 import { getHudScreenGui } from "../../ui/screenGui";
-import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { HudTheme, hudTheme, outlineText } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints on mount, and one line per hit that lands in the feed. */
@@ -393,6 +393,7 @@ export class HitLogController implements OnStart {
 		// heading over a bright arena wants all of its ink.
 		heading.TextColor3 = theme.colors.textPrimary;
 		heading.TextTransparency = 0;
+		outlineText(heading);
 
 		const cards: HitCard[] = [];
 
@@ -580,6 +581,7 @@ export class HitLogController implements OnStart {
 		separator.LayoutOrder = 2;
 		separator.TextColor3 = theme.colors.textPrimary;
 		separator.TextTransparency = 0;
+		outlineText(separator);
 		separator.Parent = row;
 
 		const victim = Text(scope, { text: "", variant: NAME_VARIANT });
@@ -670,6 +672,13 @@ export class HitLogController implements OnStart {
 			held.hitter.TextColor3 = hitterColour ?? theme.colors.textPrimary;
 			held.victim.Text = entry.victim;
 			held.victim.TextColor3 = victimColour ?? theme.colors.textPrimary;
+			// **The stroke is derived here as well as at construction, and this is the second place a colour is
+			// written.** The two names are empty when `buildRow` makes them — their ink is `paint`'s, and it changes
+			// with every pair — so the stroke has to be re-derived from the colour that was just chosen. A stroke
+			// left as it was built would be white for a name drawn in a light team colour, which is the rule applied
+			// to the wrong fact. See `hudTheme.strokeFor`.
+			outlineText(held.hitter);
+			outlineText(held.victim);
 		}
 	}
 

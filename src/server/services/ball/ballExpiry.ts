@@ -6,9 +6,8 @@ const DEBUG = true;
  * ball, and it is the *newest* clock's token that is in it.
  *
  * **A token rather than a `task.delay` handle, because a pending `task.delay` cannot be cancelled — only
- * ignored.** `ThrowStateToastController` says the same thing about the same problem and solves it the same
- * way: the callback compares the token it captured against the current one and gives up if they differ.
- * That comparison *is* the cancellation, and it is the whole of what was missing here.
+ * ignored.** The callback compares the token it captured against the current one and gives up if they
+ * differ. That comparison *is* the cancellation, and it is the whole of what was missing here.
  *
  * **The counter is global and monotonic, not per-ball.** A per-ball counter that restarted at nought could
  * hand a live token back to an older timer — the row is deleted on some paths, so "the ball's next token"

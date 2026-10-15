@@ -10,7 +10,6 @@ import {
 	PICKUP_LOCKED_UNTIL,
 	THROWER_TOKEN,
 	THROW_ANIMATION_ATTRIBUTE,
-	THROW_ENABLED,
 } from "shared/constants";
 import { NPC_TAG } from "../../npc/Behavior";
 import { BALL_CONFIG } from "shared/config/ball.config";
@@ -364,15 +363,6 @@ export class BallService implements OnStart {
 	onStart() {
 		this.throwRemote = this.createThrowRemote();
 		this.throwRemote.OnServerEvent.Connect((player, heading, charge, curve, claim) => {
-			// Whether this player throws at all, asked before anything else in here: a click that
-			// is not meant to throw should not reach the part of this that reads a direction and
-			// solves an arc. Only an explicit `false` blocks — a player who has never pressed the
-			// key has no attribute and throws as before. See `THROW_ENABLED`.
-			if (player.GetAttribute(THROW_ENABLED) === false) {
-				if (DEBUG) print(`[Ball] ${player.Name}: throw refused — throwing is switched off`);
-				return;
-			}
-
 			// **The heading: a vector, and otherwise any vector at all.** This is the one argument that
 			// cannot be *wrong*, because a player may aim wherever they like and the solve answers a heading by
 			// flattening it and taking its compass direction — a lexicographic "valid range" here would be a

@@ -279,8 +279,8 @@ export class ShiftLock implements OnStart {
 		// **Nothing but the folder is captured**, so a timer that fires after the phase has moved on reads
 		// the *current* attribute rather than the one that scheduled it — and two timers that fire in an
 		// unexpected order cannot disagree, because `applyState` does nothing when the state is already the
-		// one asked for. That is what makes this safe without the token `ThrowStateToastController` needs:
-		// a late timer there would *hide* a message; here it recomputes the same answer.
+		// one asked for. That is what makes this safe without a dismissal token: a late timer in a HUD would
+		// *hide* a message; here it recomputes the same answer.
 		scope.push(
 			status.GetAttributeChangedSignal(ROUND_STATE_ATTRIBUTE).Connect(() => {
 				task.delay(this.phaseDelay(phaseOf(status)), () => this.applyRound());
