@@ -21,7 +21,7 @@ import {
 import { events } from "shared/networking";
 import { inventoryOpen, participating } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
-import { hudTheme, outlineText } from "../../ui/hudTheme";
+import { hudTheme } from "../../ui/hudTheme";
 import type { HudTheme } from "../../ui/hudTheme";
 import {
 	addCentredMessage,
@@ -696,7 +696,6 @@ export class InventoryController implements OnStart {
 			wrap: false,
 		});
 		count.TextColor3 = theme.colors.textPrimary;
-		outlineText(count);
 		count.Size = UDim2.fromOffset(0, 0);
 		count.AutomaticSize = Enum.AutomaticSize.XY;
 		count.LayoutOrder = 2;

@@ -7,7 +7,7 @@ import { events, HitDirection } from "shared/networking";
 import { PLAYING, roundPhase } from "../../panels";
 import { raiseZIndex } from "../../ui/panelChrome";
 import { getHudScreenGui } from "../../ui/screenGui";
-import { HudTheme, hudTheme, outlineText } from "../../ui/hudTheme";
+import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints on mount, and one line per hit that lands in the feed. */
@@ -131,9 +131,10 @@ const CARD_ELEVATION: 0 | 1 | 2 | 3 = 1;
  *
  * **`body1` is 16px with a 24px line height**, read out of big-ui's own `Typography` (`body1.size` and
  * `body1.lineHeight` in big-ui's `ui/theme`). It was `caption` — 12px — and that is the whole of what "too
- * small" meant: this is the smallest step up that is still a step, and the two above it are `subtitle1`
- * (16px in GothamMedium, the same size in a heavier face) and `h5` (24px), which is more than a two-name
- * row can afford.
+ * small" meant: this is the smallest step up that is still a step, and the next one up is `h5` (24px),
+ * which is more than a two-name row can afford. **`subtitle1` is 16px as well, and it is no longer a step
+ * of any kind**: that variant used to be distinguished by a heavier face, and with one font for the whole
+ * game (`UI_FONT`) the two are the same type — so the ladder above this line is sizes, not weights.
  *
  * **Naming it costs nothing and buys the whole of the size knob**: a variant is the *only* thing that
  * decides the glyph height here, so changing this line changes the names, the row heights, the card heights
@@ -393,7 +394,6 @@ export class HitLogController implements OnStart {
 		// heading over a bright arena wants all of its ink.
 		heading.TextColor3 = theme.colors.textPrimary;
 		heading.TextTransparency = 0;
-		outlineText(heading);
 
 		const cards: HitCard[] = [];
 
@@ -581,7 +581,6 @@ export class HitLogController implements OnStart {
 		separator.LayoutOrder = 2;
 		separator.TextColor3 = theme.colors.textPrimary;
 		separator.TextTransparency = 0;
-		outlineText(separator);
 		separator.Parent = row;
 
 		const victim = Text(scope, { text: "", variant: NAME_VARIANT });
@@ -672,13 +671,6 @@ export class HitLogController implements OnStart {
 			held.hitter.TextColor3 = hitterColour ?? theme.colors.textPrimary;
 			held.victim.Text = entry.victim;
 			held.victim.TextColor3 = victimColour ?? theme.colors.textPrimary;
-			// **The stroke is derived here as well as at construction, and this is the second place a colour is
-			// written.** The two names are empty when `buildRow` makes them — their ink is `paint`'s, and it changes
-			// with every pair — so the stroke has to be re-derived from the colour that was just chosen. A stroke
-			// left as it was built would be white for a name drawn in a light team colour, which is the rule applied
-			// to the wrong fact. See `hudTheme.strokeFor`.
-			outlineText(held.hitter);
-			outlineText(held.victim);
 		}
 	}
 

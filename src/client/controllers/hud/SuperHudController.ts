@@ -12,7 +12,7 @@ import {
 	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
 } from "shared/constants";
 import { sessionHudVisible } from "../../panels";
-import { HudTheme, hudTheme, outlineText } from "../../ui/hudTheme";
+import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -591,7 +591,6 @@ export class SuperHudController implements OnStart {
 
 		label.Name = "UsesLeft";
 		label.TextColor3 = theme.colors.textPrimary;
-		outlineText(label);
 		label.Size = UDim2.fromOffset(0, 0);
 		label.AutomaticSize = Enum.AutomaticSize.XY;
 		// Right edge at the slot's left edge, less the gap; vertically centred on the slot. Relative in both

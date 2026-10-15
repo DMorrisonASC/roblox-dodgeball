@@ -3,7 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { RunService, UserInputService } from "@rbxts/services";
 import { makePressResponse } from "../../ui/elevation";
-import { HudTheme, hudTheme, outlineText } from "../../ui/hudTheme";
+import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -496,12 +496,7 @@ export class ControlsLegendController implements OnStart {
 	 * take a colour from outside its palette — it picks its colours from the theme and hands back a
 	 * plain `TextLabel` — so that part is done here: the colour is written once.
  *
-	 * **The outline is the second thing done here, and it is the whole card's.** A legend key sits on a
-	 * coloured chip and the chip sits on a panel, so this text never stands over 3D — but the rule is the
-	 * game's rule rather than this card's, and a HUD that opted out would be the one place a reader could
-	 * not predict. `outlineText` derives the stroke from whatever colour the label was just given, so the
-	 * legend's two colours (`textPrimary` on a row, `onAccent` on a chip) each get their own answer.
-	 *
+
 	 * **The transparency used to be the other half of this, and it went with the throw toggle.** A row that
 	 * mirrored a server attribute had its `TextTransparency` bound through a `Computed` off the dimming
 	 * `Value`; with no row mirroring anything, every label on the card is drawn at full strength, so the
@@ -518,8 +513,6 @@ export class ControlsLegendController implements OnStart {
 		label.AutomaticSize = Enum.AutomaticSize.XY;
 		label.TextColor3 = color;
 		label.TextTransparency = 0;
-		// After the colour, never before: the stroke is derived from what the label now holds.
-		outlineText(label);
 
 		return label;
 	}

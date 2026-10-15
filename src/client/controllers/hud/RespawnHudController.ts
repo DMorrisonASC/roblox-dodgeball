@@ -3,7 +3,6 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { RESPAWN_AT_ATTRIBUTE } from "shared/constants";
-import { outlineText } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -123,7 +122,6 @@ export class RespawnHudController implements OnStart {
 			align: Enum.TextXAlignment.Center,
 		});
 
-		outlineText(label);
 		label.Parent = wrapper;
 		wrapper.Parent = getHudScreenGui();
 

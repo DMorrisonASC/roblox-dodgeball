@@ -2,7 +2,6 @@ import { Button, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { SHOP_CONFIG } from "shared/config/shop.config";
 import { addElevation, wireInteraction } from "./elevation";
-import { outlineText, strokeFor } from "./hudTheme";
 import type { HudTheme } from "./hudTheme";
 import { addViewportConstraint } from "./viewportConstraint";
 
@@ -334,10 +333,6 @@ export function addHeaderBand(
 	const titleLabel = Text(scope, { text: title, variant: "h4", wrap: false });
 	titleLabel.Name = TITLE_NAME;
 	titleLabel.TextColor3 = theme.colors.textPrimary;
-	// The outline, at the rule's colour for this label's own ink — see `hudTheme.outlineText`. Every builder
-	// in this module that makes a label does this immediately after setting the colour, and it has to be
-	// *after*: the stroke is derived from what the label now holds.
-	outlineText(titleLabel);
 	// Hugs its own text rather than filling its parent — the h4 line box decides the band's height.
 	titleLabel.Size = UDim2.fromOffset(0, 0);
 	titleLabel.AutomaticSize = Enum.AutomaticSize.XY;
@@ -563,18 +558,10 @@ export function addTabStrip<T extends string>(
 		// is what the near-black unselected tabs take. The two are the theme's rule read straight across; see the
 		// pair's docs in `hudTheme`. Written through `Hydrate` because a `Text` built by big-ui reads its props at
 		// construction.
-		// **The colour is hoisted so the outline can be derived from the same source rather than repeated.**
-		// A tab's ink inverts with its fill, which makes this one of the few labels in the client whose colour
-		// is a graph object rather than a constant — and a stroke written once would be right for whichever
-		// state the tab happened to be built in and wrong for the other. Two `Computed`s over one colour cannot
-		// disagree; see `hudTheme.strokeFor` for the rule they both read.
-		const textColour = Fusion.Computed(scope, (use) =>
-			use(selected) ? theme.colors.textSecondary : theme.colors.onAccent,
-		);
-
 		Fusion.Hydrate(scope, label)({
-			TextColor3: textColour,
-			TextStrokeColor3: Fusion.Computed(scope, (use) => strokeFor(use(textColour))),
+			TextColor3: Fusion.Computed(scope, (use) =>
+				use(selected) ? theme.colors.textSecondary : theme.colors.onAccent,
+			),
 		});
 
 		// **The tabs get the same response as everything else pressable**, which is what makes one shared helper
@@ -771,10 +758,6 @@ export function addTile(
 	});
 	const statusLabel = Text(scope, { text: "", variant: "caption", wrap: false });
 	statusLabel.TextColor3 = theme.colors.textSecondary;
-	// **And a caller that re-colours this label has to re-derive the stroke**, which is the one thing about
-	// this builder a reader cannot see from inside it: `ShopController` writes a status colour per tile as
-	// the player's ownership changes, and it calls `outlineText` again there for exactly this reason.
-	outlineText(statusLabel);
 	statusLabel.Size = new UDim2(1, 0, 1, 0);
 	statusLabel.AutomaticSize = Enum.AutomaticSize.None;
 	statusLabel.TextXAlignment = Enum.TextXAlignment.Center;
@@ -807,10 +790,6 @@ export function addTile(
 
 	const nameLabel = Text(scope, { text: name, variant: "subtitle2", wrap: false });
 	nameLabel.TextColor3 = theme.colors.onAccent;
-	// White ink on the near-black bar, so the rule gives this one a *black* outline — which on that bar is
-	// almost invisible and is meant to be: the bar is the theme's darkest surface and the name needs no help
-	// on it. The outline is here because the rule is the game's, not because this label wants one.
-	outlineText(nameLabel);
 	nameLabel.Size = new UDim2(1, -8, 1, 0);
 	nameLabel.Position = UDim2.fromOffset(4, 0);
 	nameLabel.AutomaticSize = Enum.AutomaticSize.None;
@@ -904,7 +883,6 @@ export function addMessageLine(
 	label.Size = new UDim2(1, 0, 0, 20);
 	label.AutomaticSize = Enum.AutomaticSize.None;
 	label.TextColor3 = theme.colors.textSecondary;
-	outlineText(label);
 	label.TextXAlignment = Enum.TextXAlignment.Center;
 	label.LayoutOrder = order;
 	label.Parent = parent;
@@ -1077,7 +1055,6 @@ export function addColumnHeading(
 ): void {
 	const label = Text(scope, { text, variant: "subtitle2", wrap: false });
 	label.TextColor3 = theme.colors.textSecondary;
-	outlineText(label);
 	label.Size = new UDim2(1, 0, 0, COLUMN_HEADING_HEIGHT);
 	label.AutomaticSize = Enum.AutomaticSize.None;
 	label.TextXAlignment = Enum.TextXAlignment.Center;
@@ -1285,7 +1262,6 @@ export function addCentredMessage(
 	label.Size = new UDim2(1, -24, 0, 44);
 	label.AutomaticSize = Enum.AutomaticSize.None;
 	label.TextColor3 = theme.colors.textSecondary;
-	outlineText(label);
 	label.TextXAlignment = Enum.TextXAlignment.Center;
 	label.TextYAlignment = Enum.TextYAlignment.Center;
 	label.TextScaled = true;
@@ -1321,7 +1297,6 @@ export function addNoteLine(
 	const label = Text(scope, { text, variant: "caption" });
 
 	label.TextColor3 = theme.colors.textSecondary;
-	outlineText(label);
 	label.TextXAlignment = Enum.TextXAlignment.Center;
 	label.TextYAlignment = Enum.TextYAlignment.Top;
 	// Scale padding, so the text never touches a column's edge on a narrow screen — the same relative-inset

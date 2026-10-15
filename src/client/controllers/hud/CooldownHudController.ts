@@ -7,7 +7,7 @@ import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { sessionHudVisible } from "../../panels";
-import { HudTheme, hudTheme, outlineText } from "../../ui/hudTheme";
+import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -243,11 +243,6 @@ export class CooldownHudController implements OnStart {
 		layout.Parent = row;
 
 		const label = Text(scope, { text: name, variant: "body1" });
-		// **The one label in this file that sets no colour at all, and it still gets an outline.** big-ui's
-		// `Text` defaults to `Palette.text.primary` and this theme's `text.primary` is black, so the rule
-		// answers "white" without a call site ever naming a colour — which is the point of deriving the stroke
-		// from the label rather than asking the caller for one.
-		outlineText(label);
 		label.LayoutOrder = 1;
 		label.Parent = row;
 

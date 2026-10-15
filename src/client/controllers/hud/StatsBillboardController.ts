@@ -2,7 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { HudTheme, hudTheme, outlineText } from "../../ui/hudTheme";
+import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { STATS_CONFIG } from "shared/config/stats.config";
 import {
 	CROWN_ATTRIBUTE,
@@ -210,11 +210,6 @@ export class StatsBillboardController implements OnStart {
 		// big-ui's default is `Palette.text.primary`; the assignment is here so the choice is visible
 		// and so moving to another theme colour is one word rather than a discovery.
 		label.TextColor3 = theme.colors.onAccent;
-		// **The one place in the client where the outline is doing the job it exists for.** This label is
-		// drawn over a body standing in the arena, and the background behind it is whatever the camera happens
-		// to be pointed at — a pale wall, a green floor, another player. White text takes a black outline by
-		// the rule, which is the case that reads best of all; the panels above do not need it and this does.
-		outlineText(label);
 		label.Parent = billboard;
 
 		// **And the crown, which is the same machinery pointed at a different source.** The flag is watched

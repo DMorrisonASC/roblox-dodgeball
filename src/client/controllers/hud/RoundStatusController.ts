@@ -5,7 +5,6 @@ import { ReplicatedStorage } from "@rbxts/services";
 import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { GAME_MODE_NAMES, isGameModeId } from "shared/gameMode";
 import { PLAYING } from "../../panels";
-import { outlineText } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -196,21 +195,15 @@ export class RoundStatusController implements OnStart {
 		// off, which is what a second line of text then falls out of. So the card is as tall as its
 		// line, and the wrapper follows it, and no amount of text can be clipped by a box that was
 		// sized before the text existed.
-		// **The label is built into a name before the card takes it, and that is forced by the outline.** The
-		// `Text` used to be constructed inline inside the `children` array, where the call that returns it is the
-		// only place it exists and there is nothing to hand to `outlineText`. big-ui's `Card` parents its children
-		// for the caller, so nothing about the order changes — the label is built, styled, and then given to the
-		// card. See `hudTheme.outlineText`.
-		const label = Text(scope, {
-			text,
-			variant: "button",
-			align: Enum.TextXAlignment.Center,
-		});
-		outlineText(label);
-
 		const card = Card(scope, {
 			padding: 4,
-			children: [label],
+			children: [
+				Text(scope, {
+					text,
+					variant: "button",
+					align: Enum.TextXAlignment.Center,
+				}),
+			],
 		});
 
 		card.Parent = wrapper;

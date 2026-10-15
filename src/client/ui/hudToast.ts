@@ -1,7 +1,7 @@
 import { Alert } from "@rbxts/big-ui";
 import type { AlertSeverity } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { outlineText } from "./hudTheme";
+import { applyUiFont } from "./hudTheme";
 import { getHudScreenGui } from "./screenGui";
 import { addViewportConstraint } from "./viewportConstraint";
 
@@ -135,12 +135,12 @@ export function mountToast(scope: Fusion.Scope<unknown>, options: ToastOptions):
 
 	const alert = Alert(scope, { severity: options.severity, title: options.title, message: options.message });
 
-	// **One call on the alert covers both of its labels, and it has to be a subtree call to do it.** big-ui's
-	// `Alert` builds a title `TextLabel` and a message `TextLabel` inside its own frame — the frame it returns
-	// carries no text at all — so a call aimed at a label would style nothing and a call aimed at the root has
-	// to walk. This is also how `hitConfirm.ts` gets an outline without ever naming a stroke: it builds its text
-	// through this function.
-	outlineText(alert);
+	// **The one place in the client where the project's font has to be applied by hand.** big-ui's `Alert` builds
+	// its title and message as labels inside the frame it returns, each with a face of its own hard-coded rather
+	// than read from the typography table — see `hudTheme.applyUiFont` for that argument, and `UI_FONT` for the
+	// value. This call site covers every toast in the game, the hit confirmation's included, because they all
+	// come through this function.
+	applyUiFont(alert);
 
 	// `Alert` names its root "Alert", and two of those in the Explorer say nothing about which
 	// is which — the same reason the containers elsewhere are renamed off their component name.

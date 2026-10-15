@@ -11,7 +11,7 @@ import type { ChestItem, CosmeticDef } from "shared/config/economy.config";
 import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
 import { participating, shopOpen } from "../../panels";
-import { hudTheme, outlineText, strokeFor } from "../../ui/hudTheme";
+import { hudTheme } from "../../ui/hudTheme";
 import type { HudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import {
@@ -262,8 +262,6 @@ export class ShopController implements OnStart {
 			wrap: false,
 		});
 		amount.TextColor3 = theme.colors.coin;
-		// Amber, luminance 0.61 — so the rule gives the one colour in the economy its black outline.
-		outlineText(amount);
 		amount.Size = UDim2.fromOffset(0, 0);
 		amount.AutomaticSize = Enum.AutomaticSize.XY;
 		amount.LayoutOrder = 2;
@@ -294,21 +292,13 @@ export class ShopController implements OnStart {
 		POWER_ROSTER.forEach((kind, index) => {
 			const tile = addTile(this.scope, grid, theme, ABILITY_NAMES[kind], index, true);
 
-			// **The colour is hoisted so the outline can be derived from the same source rather than repeated.** A
-			// tile's status line changes ink as ownership arrives, so this is one of the labels whose colour is a
-			// graph rather than a constant — and a stroke written once would be right for whichever state the panel
-			// happened to be mounted in and wrong for the other. Two `Computed`s over one colour cannot disagree;
-			// see `hudTheme.strokeFor` for the rule they both read.
-			const statusColour = Fusion.Computed(this.scope, (use) =>
-				ownsPower(use(this.powers), kind) ? theme.colors.success : theme.colors.textDisabled,
-			);
-
 			Fusion.Hydrate(this.scope, tile.statusLabel)({
 				Text: Fusion.Computed(this.scope, (use) =>
 					ownsPower(use(this.powers), kind) ? "Owned" : "Locked",
 				),
-				TextColor3: statusColour,
-				TextStrokeColor3: Fusion.Computed(this.scope, (use) => strokeFor(use(statusColour))),
+				TextColor3: Fusion.Computed(this.scope, (use) =>
+					ownsPower(use(this.powers), kind) ? theme.colors.success : theme.colors.textDisabled,
+				),
 			});
 		});
 	}
@@ -359,32 +349,23 @@ export class ShopController implements OnStart {
 			const tile = addTile(this.scope, grid, theme, def.name, order, true, () => this.requestPurchase(def));
 			order += 1;
 
-			// The same hoist as the powers shelf above, and for the same reason: this colour flips from the theme's
-			// ordinary ink to `success` the moment the item is owned.
-			const statusColour = Fusion.Computed(this.scope, (use) =>
-				ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id) ? theme.colors.success : theme.colors.textPrimary,
-			);
-
 			Fusion.Hydrate(this.scope, tile.statusLabel)({
 				Text: Fusion.Computed(this.scope, (use) =>
 					ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id)
 						? "Owned"
 						: `Buy · ${withCommas(def.coinPrice ?? 0)} coins`,
 				),
-				TextColor3: statusColour,
-				TextStrokeColor3: Fusion.Computed(this.scope, (use) => strokeFor(use(statusColour))),
+				TextColor3: Fusion.Computed(this.scope, (use) =>
+					ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id)
+						? theme.colors.success
+						: theme.colors.textPrimary,
+				),
 			});
 		}
 
 		for (const def of PREMIUM_COSMETICS) {
 			const tile = addTile(this.scope, grid, theme, def.name, order, true);
 			order += 1;
-
-			// The third hoist of the same shape, and the widest swing of the three: this status line is the theme's
-			// ordinary ink while the item is unbuyable and `textDisabled` once it is merely not-yet-purchasable.
-			const statusColour = Fusion.Computed(this.scope, (use) =>
-				ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id) ? theme.colors.success : theme.colors.textDisabled,
-			);
 
 			Fusion.Hydrate(this.scope, tile.statusLabel)({
 				// Owned wins over the not-yet notice: once a grant path exists, an item a player already
@@ -396,8 +377,11 @@ export class ShopController implements OnStart {
 						? `${price} · Owned`
 						: `${price} · Not yet purchasable`;
 				}),
-				TextColor3: statusColour,
-				TextStrokeColor3: Fusion.Computed(this.scope, (use) => strokeFor(use(statusColour))),
+				TextColor3: Fusion.Computed(this.scope, (use) =>
+					ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id)
+						? theme.colors.success
+						: theme.colors.textDisabled,
+				),
 			});
 		}
 	}
@@ -427,13 +411,6 @@ export class ShopController implements OnStart {
 		const outcome = addMessageLine(this.scope, theme, footer, 1);
 		outcome.Name = "ChestOutcome";
 
-		// **The fourth hoist, and the one whose colour is not a pair of states but an outcome.** This line is the
-		// chest's answer, so its ink is a warning while the server is refusing and a success when something was
-		// granted — a colour that belongs to a reply rather than to a setting.
-		const outcomeColour = Fusion.Computed(this.scope, (use) =>
-			use(this.chestReason) !== "" ? theme.colors.warning : theme.colors.success,
-		);
-
 		Fusion.Hydrate(this.scope, outcome)({
 			Text: Fusion.Computed(this.scope, (use) => {
 				// Both reads first, unconditionally — a read inside a branch is a subscription that only
@@ -454,8 +431,9 @@ export class ShopController implements OnStart {
 					? `You unlocked ${ABILITY_NAMES[granted]}!`
 					: `You unlocked ${granted}!`;
 			}),
-			TextColor3: outcomeColour,
-			TextStrokeColor3: Fusion.Computed(this.scope, (use) => strokeFor(use(outcomeColour))),
+			TextColor3: Fusion.Computed(this.scope, (use) =>
+				use(this.chestReason) !== "" ? theme.colors.warning : theme.colors.success,
+			),
 			Visible: Fusion.Computed(
 				this.scope,
 				(use) => use(this.chestGranted) !== "" || use(this.chestReason) !== "",
@@ -484,11 +462,6 @@ export class ShopController implements OnStart {
 		complete.Name = "ChestComplete";
 		complete.Text = "Nothing left in the chest to win.";
 		complete.TextColor3 = theme.colors.success;
-		// `addMessageLine` styles this label as it builds it, and this line is a **second** colour written onto the
-		// same label — so the stroke is derived again here rather than left as the builder's `textSecondary` answer.
-		// It also changes side: `success` is Pondwater and light, so this label's outline is black where the same
-		// builder's is white for every other caller.
-		outlineText(complete);
 		Fusion.Hydrate(this.scope, complete)({
 			Visible: Fusion.Computed(this.scope, (use) => {
 				const onPowerTab = use(this.currentTab) === "Power & Items";
@@ -508,8 +481,6 @@ export class ShopController implements OnStart {
 			onActivate: () => this.requestChest(),
 		});
 		open.Name = "OpenChestButton";
-		// A big-ui caption again, so a subtree call — see `hudTheme.outlineText`.
-		outlineText(open);
 		open.Parent = footer;
 		Fusion.Hydrate(this.scope, open)({
 			Visible: Fusion.Computed(this.scope, (use) => {
