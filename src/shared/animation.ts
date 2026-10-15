@@ -50,9 +50,12 @@ export type AnimationClip = "idle" | "walk" | "run" | "jump";
  * animation output showed — so a walking body sat a hair away from the running clip.
  *
  * **What replaced it is not a better threshold but a different fact: whether the body has been *asked* to
- * move.** `MoveDirection` for a player's own body, the same fact published by the server for a rig. A request
- * has no line to sit on — a body either is asked or is not — so there is no jitter to smooth, no band, no
- * grace, and no threshold to tune. See {@link animationFor} for the rule the two facts make together.
+ * move.** For a player's own body that is `MoveDirection`, which the client's own input writes — a request with
+ * no line to sit on, so there is no jitter to smooth, no band, no grace, and no threshold to tune. **A rig has
+ * no request to give**: its body is driven by `Humanoid:MoveTo()` and its half of this fact is the humanoid's
+ * own running speed, which *is* a measurement — taken from an edge rather than sampled per turn, with the
+ * reasoning and the cost written out in `NpcService.publishAnimation` and in `NPC_ANIM_MOVING_ATTRIBUTE`. See
+ * {@link animationFor} for the rule the two facts make together.
  *
  * **What this is not:** not a claim that measurement is useless. It is what `WalkSpeedService`,
  * `SeekBehavior`'s distance gates and every physics question in this game are about. It is simply not what a

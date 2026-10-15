@@ -57,6 +57,26 @@ interface NpcLoop {
 	 * `NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS` for why ownership is re-asserted at all.
 	 */
 	ownershipCheckedAt: number;
+
+	/**
+	 * The last speed `Humanoid.Running` reported for this rig, in studs per second.
+	 *
+	 * **Recorded as it arrives rather than sampled, because the engine already owns this question and answers
+	 * it on an edge.** `Humanoid.Running` fires when the running speed changes and fires `0` when the body
+	 * stops, so the loop keeps the answer and `publishAnimation` compares it against
+	 * `NPC_CONFIG.RIG_MOVING_SPEED` — no per-turn velocity read and nothing to band. Kept on the loop for
+	 * `ownershipCheckedAt`'s reason: this object is already one per rig and already dies with the rig.
+	 */
+	runningSpeed: number;
+
+	/**
+	 * The `Running` subscription, **held so {@link forget} can drop it with the loop**.
+	 *
+	 * A connection outlives the loop that made it unless somebody disconnects it, and a loop that has ended is
+	 * a loop nobody is publishing from — so this is the one thing a loop owns that has to be hung up rather
+	 * than left to be collected.
+	 */
+	running?: RBXScriptConnection;
 }
 
 /**
@@ -364,7 +384,7 @@ export class NpcService implements OnStart {
 
 		if (!prepared) warn(`[NPC] ${model.Name}: setup failed — ${tostring(err)}`);
 
-		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: os.clock() };
+		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: os.clock(), runningSpeed: 0 };
 		this.loops.set(model, loop);
 
 		task.spawn(() => this.run(model, loop));
@@ -527,6 +547,18 @@ export class NpcService implements OnStart {
 		// the server is running, never went through it. This is the same call at the same place the rest of a
 		// rig's setup happens, and it is idempotent, so the spawned route pays one attribute read for it.
 		this.dressRig(model);
+
+		// **The walking fact is subscribed to, and this is its third shape.** `Humanoid.MoveDirection` read zero
+		// for every rig in the game, and so did `Humanoid:GetMoveVelocity()` when it replaced it: they are the
+		// *input*-driven pair, and a behaviour has no input — it has a `MoveTo`. What the engine does publish
+		// about a `MoveTo` body is its running speed, and `Humanoid.Running` is the documented way to tell a
+		// walking humanoid from a standing one, because there is no idle *state* to ask about. It fires on the
+		// edge — the speed changes, or the body stops and it fires `0` — so the loop holds the answer and the
+		// publisher never reads a velocity per turn. See `publishAnimation` for the whole of the reasoning.
+		loop.running = humanoid.Running.Connect((speed) => {
+			loop.runningSpeed = speed;
+		});
+
 		/** When each behavior last ran, so periods are honoured per behavior. */
 		const lastRan = new Map<string, number>();
 		/** Behaviors that have had their `prepare`, so it happens once and not per tick. */
@@ -649,19 +681,50 @@ export class NpcService implements OnStart {
 	 * **On change only, and the *instance* is the record.** Every attribute is read before it is
 	 * written, so a rig asked to walk a straight line publishes its request once and then says nothing
 	 * at all — and there is no second copy of "what did I last publish" to keep in step, because the
-	 * rig carries it. **That guard is the whole of this arrangement's economics, and it is why the
-	 * facts published here are *requests*.** A measurement has to be banded to satisfy it and never has
-	 * a natural edge to write on; a request changes when the game changes its mind and not before. See
-	 * `NPC_ANIM_MOVING_ATTRIBUTE` for the banded speed this replaced and for what it cost.
+	 * rig carries it. **That guard is the whole of this arrangement's economics, and it is why every
+	 * fact published here arrives on an edge.** These were chosen as *requests* because a request
+	 * changes when the game changes its mind and not before, while a *measured* speed has to be banded
+	 * to satisfy the guard and rarely has an edge to write on. See `NPC_ANIM_MOVING_ATTRIBUTE` for the
+	 * banded speed this replaced and for what it cost — and for the one fact here that had to be a
+	 * measurement anyway, taken from an engine edge rather than from a per-turn sample.
 	 *
 	 * **The two facts are the same two a player's own client gathers for its body** — "somebody has
 	 * asked this body to walk", and "and to sprint" — so the two callers of `animationFor` answer the
 	 * same question from the same kind of fact, which is the property the shared decision exists for.
-	 * The request is `Humanoid.MoveDirection`, which is what the behaviours' own `Move` calls set; the
-	 * sprint is asked of {@link WalkSpeedService} rather than derived from the walk speed here, because
+	 * The sprint is asked of {@link WalkSpeedService} rather than derived from the walk speed here, because
 	 * the base speed is a per-rig number and the *contribution* is the fact. A rig's own speed is only
 	 * true while the server owns it, which is what {@link ownForServer} is for — and is now a fact
 	 * about the walk rather than about the animation.
+	 *
+	 * **The walk was written as a request twice, and the engine publishes no request for a `MoveTo` body.** It
+	 * read `Humanoid.MoveDirection` first — "the direction the body is walking in" — on the reading that it
+	 * describes movement. It is documented as the property `Humanoid:Move()` writes, and every walk in this game
+	 * is a `Humanoid:MoveTo()`, which the engine documents as setting `WalkToPoint` and `WalkToPart` and says
+	 * nothing about a direction. `Humanoid:GetMoveVelocity()` replaced it and is documented verbatim as the
+	 * "*input*-driven" velocity — the same family, so the same zero. Two play sessions say the same thing: no rig
+	 * in the game ever prints a `walk` or a `run` line while the server prints it walking and sprinting, and every
+	 * rig wore its idle clip.
+	 *
+	 * **What a `MoveTo` body does publish is its running speed, and `Humanoid.Running` is the engine's own answer
+	 * — on an edge.** Its notes name the event as *the* way to tell a walking humanoid from a standing one ("as
+	 * there is no 'idle' humanoid state"); it fires when the speed changes, and it fires `0` when the body stops,
+	 * which is the edge the `writeAttribute` guard wants. `NPC_CONFIG.RIG_MOVING_SPEED` is Roblox's own `0.01` —
+	 * the number its own `Animate` script branches on in `onRunning` — and the loop records each speed as it
+	 * arrives, so nothing here samples a velocity per turn and there is no band to tune.
+	 *
+	 * **The cost, named, and this is the reversal: the rig's half of this fact is now a measurement.** A rig
+	 * leaning on a wall it cannot pass reports *not moving* where a blocked player reports a walk, and a rig
+	 * shoved by another body reports moving where a shoved player reports whatever its keys say. That is the right
+	 * direction of error for a rig — one that cannot move is not walking anywhere — and it was accepted because
+	 * the only request-shaped alternative is worse. **`WalkToPoint` against the root's position was the other
+	 * candidate and is refused**: before the first `MoveTo` that property holds no position at all, so a rig
+	 * nobody has ever asked to walk is indistinguishable from one asked to walk three hundred studs away — and a
+	 * rig teleported into the arena with a stale target would publish *walking* through the opening freeze,
+	 * exactly while the rigs are being watched line up. The size of the threshold is what makes the measurement
+	 * survivable: the fault this replaced was a **five-stud** floor that published creeping rigs as standing, and
+	 * `0.01` from an edge-fired source cannot reproduce it. **If `Running` should fire nothing for our rigs, the
+	 * symptom is the one we already have** — an idle clip on a walking rig, because the flag then stays at the
+	 * `0` it was seeded with — so this is a no-regression bet rather than a new mechanism to debug.
 	 *
 	 * **Ownership is re-asserted from here, on a throttle**, because this is the one function that
 	 * already runs per rig on a clock. See `NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS` for what the
@@ -669,7 +732,7 @@ export class NpcService implements OnStart {
 	 * rig that cannot be owned says so once at setup and not every few seconds.
 	 */
 	private publishAnimation(model: Model, humanoid: Humanoid, frozen: boolean, loop: NpcLoop, now: number): void {
-		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, humanoid.MoveDirection.Magnitude > 0);
+		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED);
 		this.writeAttribute(model, NPC_ANIM_SPRINTING_ATTRIBUTE, this.speeds.isSprinting(model));
 		this.writeAttribute(model, NPC_ANIM_GROUNDED_ATTRIBUTE, humanoid.FloorMaterial !== Enum.Material.Air);
 		this.writeAttribute(model, NPC_ANIM_FROZEN_ATTRIBUTE, frozen);
@@ -752,13 +815,19 @@ export class NpcService implements OnStart {
 	}
 
 	/**
-	 * Drops the record of a loop that has ended.
+	 * Drops the record of a loop that has ended, **and hangs up the subscription it was holding**.
 	 *
 	 * Only if it is still *this* loop: a model can be re-tagged while its old loop
 	 * is waiting out its period, and the old one must not delete the new one's
-	 * entry on its way out.
+	 * entry on its way out. The `Running` connection is dropped unconditionally, because it belongs to the loop
+	 * rather than to the model — a loop that has ended is a loop nobody publishes from, whether or not a newer
+	 * loop has already taken the rig. The early return for a humanoid that never appeared reaches this with no
+	 * connection, which is what the optional field is for.
 	 */
 	private forget(model: Model, loop: NpcLoop): void {
+		loop.running?.Disconnect();
+		loop.running = undefined;
+
 		if (this.loops.get(model) === loop) this.loops.delete(model);
 	}
 

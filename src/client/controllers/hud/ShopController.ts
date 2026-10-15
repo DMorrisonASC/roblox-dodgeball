@@ -8,6 +8,7 @@ import { COINS_ATTRIBUTE, OWNED_COSMETICS_ATTRIBUTE, OWNED_ITEMS_ATTRIBUTE } fro
 import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { CHEST_POOL, ECONOMY_CONFIG, POWER_ROSTER, PREMIUM_COSMETICS, PURCHASE_COSMETICS } from "shared/config/economy.config";
 import type { ChestItem, CosmeticDef } from "shared/config/economy.config";
+import { IMAGES_CONFIG } from "shared/config/images.config";
 import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
 import { participating, shopOpen } from "../../panels";
@@ -20,17 +21,20 @@ import {
 	addGlyph,
 	addGrid,
 	addHeaderBand,
+	addIcon,
 	addMessageLine,
 	addPane,
 	addPanelFrame,
 	addPill,
 	addTabStrip,
 	addTile,
+	addTrailStrip,
 	PANEL_Z_INDEX,
 	raiseZIndex,
 	withCommas,
 	wrapLabels,
 } from "../../ui/panelChrome";
+import type { Tile } from "../../ui/panelChrome";
 
 /** Prints the mount line, every tab change, every chest request, and every answer. */
 const DEBUG = true;
@@ -292,6 +296,17 @@ export class ShopController implements OnStart {
 		POWER_ROSTER.forEach((kind, index) => {
 			const tile = addTile(this.scope, grid, theme, ABILITY_NAMES[kind], index, true);
 
+			// **The picture comes from the one record that knows the ids, and this shelf lists no powers of its
+			// own.** `IMAGES_CONFIG.ABILITY_ICONS` is a `Record<AbilityKind, string>`, so a fourth power cannot
+			// reach a tile with an empty face — the compiler refuses it before the tile exists — and adding one
+			// is a line in `shared/ability.ts` and a line in `images.config.ts`. This pane, and the inventory's,
+			// then draw it with no edit at all: both walk `POWER_ROSTER` and ask that record per entry.
+			//
+			// **`true`, because this tile writes a status line** — `Owned` or `Locked`, two lines below — and a
+			// picture centred on the whole face would have that sentence written across its lower half. The
+			// inventory's power tile passes `false` for the same reason in reverse: nothing is written there.
+			addIcon(this.scope, tile.art, IMAGES_CONFIG.ABILITY_ICONS[kind], true);
+
 			Fusion.Hydrate(this.scope, tile.statusLabel)({
 				Text: Fusion.Computed(this.scope, (use) =>
 					ownsPower(use(this.powers), kind) ? "Owned" : "Locked",
@@ -348,6 +363,7 @@ export class ShopController implements OnStart {
 			// tab puts the chest up: the clickable half comes before the one that is only there to be looked at.
 			const tile = addTile(this.scope, grid, theme, def.name, order, true, () => this.requestPurchase(def));
 			order += 1;
+			this.addStrip(tile, def);
 
 			Fusion.Hydrate(this.scope, tile.statusLabel)({
 				Text: Fusion.Computed(this.scope, (use) =>
@@ -366,6 +382,7 @@ export class ShopController implements OnStart {
 		for (const def of PREMIUM_COSMETICS) {
 			const tile = addTile(this.scope, grid, theme, def.name, order, true);
 			order += 1;
+			this.addStrip(tile, def);
 
 			Fusion.Hydrate(this.scope, tile.statusLabel)({
 				// Owned wins over the not-yet notice: once a grant path exists, an item a player already
@@ -384,6 +401,26 @@ export class ShopController implements OnStart {
 				),
 			});
 		}
+	}
+
+	/**
+	 * Draws a trail's own colours into a tile's picture slot, and draws nothing at all onto anything else.
+	 *
+	 * **The slot is the question, rather than whether the def has colours.** `CosmeticDef.colors` is documented
+	 * as present only on trails, so asking it would work today — but it answers "does this have a palette",
+	 * and what is wanted is "is this a trail", which is the question the inventory's tab builder and
+	 * `SLOT_PRESENTATION` ask of the same field. A trail def with no `colors` still gets a strip, in
+	 * `BALL_CONFIG`'s grey — that is what a ball nobody has equipped anything on flies, so a tile showing it is
+	 * showing the truth rather than an empty box.
+	 *
+	 * **This is the only thing in the shop that touches the picture slot**, and it stays that way until there
+	 * is art for a power. `addTile` fills that slot with the tile's own card colour, which is what makes a
+	 * shelf read as one surface, so the strip is a child of the slot rather than a replacement for it.
+	 */
+	private addStrip(tile: Tile, def: CosmeticDef): void {
+		if (def.slot !== "trail") return;
+
+		addTrailStrip(this.scope, tile.art, def.colors);
 	}
 
 	// ---------- footer ----------

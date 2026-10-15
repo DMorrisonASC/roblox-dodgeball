@@ -40,6 +40,22 @@ export const NPC_CONFIG = {
 	NETWORK_OWNERSHIP_RECHECK_SECONDS: 5,
 
 	/**
+	 * The running speed above which a rig counts as walking, in studs per second.
+	 *
+	 * **Roblox's own number, from Roblox's own animation script.** Its `onRunning` handler branches on
+	 * `speed > 0.01`, against exactly the fact this reads — the speed `Humanoid.Running` reports — so this is a
+	 * cited precedent rather than a tuned value, and it is deliberately *tiny*: the fault this half of the
+	 * locomotion decision replaced was a **five-stud** band floor, which published every rig moving slower than
+	 * that as standing, creeping rigs included.
+	 *
+	 * **What it is not:** not a band, and not a claim that a measurement is as good as a request. A rig is
+	 * published as moving the moment it is moving at all and reads exactly zero when it is still, and it is a
+	 * measurement only because a `MoveTo`-driven body has no readable request — see
+	 * `NpcService.publishAnimation` for the two properties that were tried before this and why both were zero.
+	 */
+	RIG_MOVING_SPEED: 0.01,
+
+	/**
 	 * The chance that a gated catcher decides it *is* a catcher for one decision.
 	 *
 	 * **Read once per decision, not once per tick, and that is the whole point of it.** A 50 % roll at

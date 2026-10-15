@@ -919,10 +919,19 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * wobbled rather than when it was told to do something, and every change costs a crossfade — so a rig could walk
  * with neither clip fully worn. See `animationFor` in `shared/animation.ts` for the whole of the record.
  *
- * **A request is the fact, and the server is the only one who can answer it.** `Humanoid.MoveDirection` is what
- * the behaviours' own `Move` calls asked the rig to do, so it is stable in the way a velocity is not, it changes
- * exactly when the game changes its mind, and a rig nobody has asked to walk reads as standing — which is also
- * the right default for a body whose state has not replicated yet.
+ * **The fact is the humanoid's running speed, and this attribute's name now says a little more than it should.**
+ * A *request* is what a player's body has — `MoveDirection`, written by the client's own input — and a rig's
+ * half was written as one twice before landing here: `Humanoid.MoveDirection` and `Humanoid:GetMoveVelocity()`
+ * are both documented as the *input*-driven pair, and both read zero for every rig in this game, because every
+ * walk here is a `Humanoid:MoveTo()` and a behaviour has no input to report. Two play sessions of every rig
+ * wearing its idle clip while walking is what that cost. What a rig has instead is `Humanoid.Running`'s speed,
+ * which the engine's own notes name as the way to tell a walking humanoid from a standing one because there is
+ * no idle *state* to ask about. See `NpcService.publishAnimation` for the whole of the reasoning and for the
+ * cost it accepts, and `NPC_CONFIG.RIG_MOVING_SPEED` for the threshold.
+ *
+ * **The name is kept although it is a slight lie.** "Asked to move" is what a *player* is, and the two bodies
+ * still answer one question for one decision (`animationFor`), which is the property this set of attributes
+ * exists to give; renaming it would touch both sides of the wire to fix a word.
  */
 export const NPC_ANIM_MOVING_ATTRIBUTE = "AnimMoving";
 

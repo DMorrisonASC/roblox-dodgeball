@@ -3,7 +3,7 @@ default_model = "platform/kimi-k3"
 [providers.kimi-platform]
 type = "kimi"
 base_url = "https://api.moonshot.ai/v1"
-api_key = "sk-t61pBo1ijzPMp8q1LSELqPU7JnPcmNn2GVUjIz5POq0A52t1"
+api_key = "sk-"
 
 [models.platform-kimi-k3]
 provider = "kimi-platform"

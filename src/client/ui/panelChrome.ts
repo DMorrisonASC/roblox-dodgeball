@@ -1,5 +1,6 @@
 import { Button, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { SHOP_CONFIG } from "shared/config/shop.config";
 import { addElevation, wireInteraction } from "./elevation";
 import type { HudTheme } from "./hudTheme";
@@ -65,6 +66,31 @@ const TILE_NAME_HEIGHT = 30;
 const TILE_STATUS_HEIGHT = 20;
 
 /**
+ * The top of a tile's status line, in pixels, measured up from the tile's bottom edge.
+ *
+ * **A tile's face covers the whole tile — including the strips the name bar and the status line are drawn over
+ * — so a picture laid on that face has to be able to say where *its* part of it ends.** This is that answer for
+ * a tile that writes a status line: the name bar, the gap above it, and the line itself. It is read by
+ * {@link addIcon} and by nothing else, and the `6` is `addTile`'s own gap rather than a fact of its own — it is
+ * summed here only because a picture needs one number where the bands needed three.
+ *
+ * **The tile that writes no status line reserves the name bar and nothing else**, which is the other half of
+ * the same answer and is passed rather than derived: see {@link addIcon}'s `statusLine`.
+ */
+const TILE_STATUS_TOP = TILE_NAME_HEIGHT + 6 + TILE_STATUS_HEIGHT;
+
+/**
+ * How far a picture stands off the edges of the face it is drawn on, in pixels. **Placeholder.**
+ *
+ * **A margin at all, because a picture against the tile's edge reads as a picture that has been cut.** The
+ * shelf tile's face is 92 pixels tall with a 30-pixel name bar across the bottom of it and a 20-pixel status
+ * line above that, so a picture sized to the space it is allowed and then drawn flush fills that space exactly
+ * — which on the smallest face either panel draws is an icon whose top row of pixels is the tile's top row.
+ * Nothing is being clipped; it only looks it.
+ */
+const ICON_MARGIN = 6;
+
+/**
  * One tab: what it says.
  *
  * **It used to carry a colour *job* as well, and that is gone — not deprecated, removed.** The job existed
@@ -85,6 +111,17 @@ export interface TabDef {
 export interface Tile {
 	/** The tile box itself — for a caller outside a grid, which has to say how big it is. */
 	readonly frame: Frame;
+	/**
+	 * The tile's face — the picture slot the name bar is drawn over.
+	 *
+	 * **Handed back because a caller with art finally has somewhere to put it**, which is what this slot has
+	 * been waiting for since the tiles were built: `addTile` fills it with the tile's own card colour and
+	 * paints nothing onto it. The art goes *inside* this rather than replacing it — see the note beside its
+	 * creation for why turning it into an `ImageLabel` would bring the mat back — so a caller adds a child
+	 * sized to it and changes nothing else. There are two such callers, and they are the two kinds of art this
+	 * project has: {@link addIcon} for a power, {@link addTrailStrip} for a trail.
+	 */
+	readonly art: Frame;
 	/** The name bar's label. */
 	readonly nameLabel: TextLabel;
 	/** The status line over the artwork — `Owned`/`Locked`, a goal, a price. */
@@ -725,8 +762,10 @@ export function addTile(
 		Visible: visible,
 	});
 
-	// The picture slot. A `Frame` today and an `ImageLabel` the day there is art — same size, same
-	// position, and nothing around it moves.
+	// The picture slot, and **it is still a `Frame` now that there is art** — the sentence this comment used to
+	// carry ("an `ImageLabel` the day there is art") was the wrong prediction, for the reason three lines down:
+	// the fill here *is* the tile's face, so the picture is a child of it rather than a replacement for it. See
+	// {@link addIcon} for a power's, and {@link addTrailStrip} for a trail's.
 	//
 	// **It covers the whole tile, and that is what "the grey reaches the edges" means.** It used to be inset by
 	// 4px on three sides, which left the tile's own lighter colour showing as a mat around the artwork — the
@@ -835,7 +874,7 @@ export function addTile(
 		wireInteraction(scope, hit, { visual: tile });
 	}
 
-	return { frame: tile, nameLabel, statusLabel, nameBar };
+	return { frame: tile, art, nameLabel, statusLabel, nameBar };
 }
 
 /** The last band: whatever one panel has to say, above nothing else. */
@@ -1153,12 +1192,20 @@ export function addShelf(
  *
  * Returns the holder, which is what a caller would write to if the preview ever had contents of its own.
  */
+/** What {@link addShowcase} hands back: the column's flex item, and the face inside it. */
+export interface Showcase {
+	/** The holder — the flex item that fills whatever the column leaves it, and that clips the preview. */
+	readonly holder: Frame;
+	/** The preview's face, and where a caller with art puts it. Full bleed, exactly as a tile's is. */
+	readonly art: Frame;
+}
+
 export function addShowcase(
 	scope: Fusion.Scope<unknown>,
 	parent: Frame,
 	theme: HudTheme,
 	order: number,
-): Frame {
+): Showcase {
 	const holder = Fusion.New(scope, "Frame")({
 		Name: "ShowcaseHolder",
 		Parent: parent,
@@ -1213,10 +1260,10 @@ export function addShowcase(
 		// four sides. The floor stays: it is what keeps the preview readable on a narrow panel, and it is the
 		// case the holder's `ClipsDescendants` is there for.
 	});
-	// The picture slot, exactly as `addTile` has it — a `Frame` today, an `ImageLabel` the day there is
-	// art, and nothing around it moves when that happens. **Full bleed, like the shelf's**, and here it is the
-	// whole of the preview: with no name bar over it, the face is all there is to look at.
-	Fusion.New(scope, "Frame")({
+	// The picture slot, exactly as `addTile` has it — a `Frame`, and it stays one now that there is art: the
+	// fill here is the preview's face, so a picture is a child of it. **Full bleed, like the shelf's**, and here
+	// it is the whole of the preview: with no name bar over it, the face is all there is to look at.
+	const art = Fusion.New(scope, "Frame")({
 		Name: "Art",
 		Parent: tile,
 		Position: UDim2.fromOffset(0, 0),
@@ -1231,7 +1278,260 @@ export function addShowcase(
 	// says the column is about the equipped one. What the bar cost was height — a third of the tile, on the one
 	// tile in the panel whose whole purpose is to be looked at — so it is gone and the face fills that space.
 
-	return holder;
+	return { holder, art };
+}
+
+/**
+ * The three colours one trail's ribbon is drawn in, in the direction the eye reads it — **the core, and only
+ * the core.**
+ *
+ * Declared here rather than imported from the catalogue, which is the trick `BallTrail.CoreColors` plays for
+ * the same reason: a trail def is structurally this, so the economy hands its colours to a UI builder without
+ * either file importing the other, and the two cannot drift apart without the compiler saying so at the call
+ * site. This module has no opinion about ids, slots or prices.
+ *
+ * **A def's `halo` pair is deliberately not here.** The haze is a *soft edge* around a bright one — two
+ * ribbons at two spreads — and its whole job is to soften a silhouette. A strip has no silhouette any more
+ * (see {@link addTrailStrip}), so a second colour over the same rectangle would be a haze drawn on a haze.
+ * The pair is still read by the server, which draws both ribbons; what is not read is what nothing paints.
+ */
+export interface TrailStripColors {
+	readonly leading: Color3;
+	readonly middle: Color3;
+	readonly trailing: Color3;
+}
+
+/**
+ * The core's colours when nobody has equipped anything: `BALL_CONFIG`'s own three, which is what the ball a
+ * player flies with no cosmetic on it is drawn in.
+ *
+ * **A plain object of references rather than a prepared `ColorSequence`, and that is a rule about this
+ * project's loading rather than a preference** — `BallTrail.DEFAULT_CORE_COLORS` says why at length: a
+ * top-level initializer that *calls a function* runs before that function's body has been assigned in the
+ * emitted Luau, so a sequence built here would be `nil` and take the module down. Three property reads off a
+ * table cannot fail that way, and the sequence is built inside {@link coreRamp}, which runs long after both
+ * modules have loaded.
+ */
+const DEFAULT_CORE_COLORS: TrailStripColors = {
+	leading: BALL_CONFIG.TRAIL_COLOR_LEADING,
+	middle: BALL_CONFIG.TRAIL_COLOR_MIDDLE,
+	trailing: BALL_CONFIG.TRAIL_COLOR_TRAILING,
+};
+
+/**
+ * The core's transparency where it leaves the ball, at keypoint `0` of its segment.
+ *
+ * **The one number in this file that restates the server's construction rather than reading config**, and it
+ * is named rather than inlined so it can be found: `BallTrail.createRibbons` writes the core's transparency
+ * as the literal `0 → 1`, and neither end is a `BALL_CONFIG` entry. It is the same weight of duplication
+ * {@link TrailStripColors} accepts: a fact about the shape of a trail, restated on this side of the wire
+ * because the server's module is not reachable from the client's half of the tree.
+ */
+const CORE_HEAD_TRANSPARENCY = 0;
+
+/**
+ * How much of the wake a strip shows, as a fraction of the core's own lifetime. **Placeholder.**
+ *
+ * **The crop is what makes a strip read as the effect rather than as a swatch of it.** The core's colour ramp
+ * has one break in it, at `TRAIL_COLOR_MIDDLE_AT`, and a rectangle showing the whole wake would put that break
+ * near its left edge with the rest of the colour run packed against the far right — a picture of a wake a
+ * hundred studs long, which is not a thing a shelf tile can be. Half of it is the stretch that carries the
+ * information: the colour the ball is at launch, the break, and the first run of what it settles into.
+ *
+ * **A share of a lifetime rather than a stud count**, which is what keeps it honest on a ball of any speed:
+ * the strip is not claiming a length, it is claiming an *age*, and it is the same age for every trail because
+ * every trail lives `TRAIL_LIFETIME`. That is also why nothing divides by a second lifetime here any more —
+ * the haze, which lives longer, is not drawn.
+ */
+const STRIP_WAKE = 0.5;
+
+/**
+ * The share of a strip's own length spent fading to nothing at its right edge. **Placeholder.**
+ *
+ * **The crop cuts the wake at an age where the effect is still half visible, so the cut has to be hidden.** A
+ * gradient that simply stopped would leave a hard vertical edge at the strip's end — three times as
+ * conspicuous as the trail beside it. The last fifth therefore falls to fully transparent, which is a fade
+ * the *effect* does not have, over a stretch of wake the effect does not end at. It is the one place the
+ * strip draws something the ball never does, and it is the price of ending the picture inside the wake
+ * instead of at a real edge of one.
+ */
+const STRIP_EDGE_FADE = 0.18;
+
+/**
+ * The strip's fade: opaque at the ball, at whatever transparency the effect has run out to by the crop, then
+ * nothing.
+ *
+ * **The middle keypoint is the effect's own value at the crop point rather than a chosen one.** A `Trail`'s
+ * ramps run linearly in age and {@link STRIP_WAKE} is an age, so the effect's ramp read at that age is the
+ * whole of the arithmetic — and it is the fade that makes the rectangle read as a wake rather than as a
+ * coloured panel, because the colour alone would end at a hard vertical edge. The last keypoint is
+ * {@link STRIP_EDGE_FADE}'s and belongs to the strip rather than to the effect.
+ */
+function stripFade(): NumberSequence {
+	const atCut = CORE_HEAD_TRANSPARENCY + (1 - CORE_HEAD_TRANSPARENCY) * STRIP_WAKE;
+
+	return new NumberSequence([
+		new NumberSequenceKeypoint(0, CORE_HEAD_TRANSPARENCY),
+		new NumberSequenceKeypoint(1 - STRIP_EDGE_FADE, atCut),
+		new NumberSequenceKeypoint(1, 1),
+	]);
+}
+
+/**
+ * The core's colour ramp, moved into the crop's own coordinates.
+ *
+ * **Three keypoints, exactly as `BallTrail.coreLook` builds them** — the def's `leading`, its `middle` at
+ * `TRAIL_COLOR_MIDDLE_AT`, its `trailing` — with only the *positions* changed: the strip spans ages `0` to
+ * {@link STRIP_WAKE}, so the middle keypoint stands at `MIDDLE_AT / STRIP_WAKE` of the strip's width. **The
+ * positions are the second copy of that ramp, and the one thing here that has to be kept in step with the
+ * server**; the middle keypoint is dropped rather than clamped if the crop is ever retuned shorter than the
+ * break, which is the only way a sequence built here could come out out of order.
+ */
+function coreRamp(colors?: TrailStripColors): ColorSequence {
+	const look = colors ?? DEFAULT_CORE_COLORS;
+	const points = [new ColorSequenceKeypoint(0, look.leading)];
+
+	if (BALL_CONFIG.TRAIL_COLOR_MIDDLE_AT < STRIP_WAKE) {
+		points.push(new ColorSequenceKeypoint(BALL_CONFIG.TRAIL_COLOR_MIDDLE_AT / STRIP_WAKE, look.middle));
+	}
+
+	points.push(new ColorSequenceKeypoint(1, look.trailing));
+
+	return new ColorSequence(points);
+}
+
+/**
+ * A trail, drawn: **the def's own colours, laid across whatever it is handed.**
+ *
+ * **A rectangle rather than a silhouette, and that is a reversal of this function's first shape.** It was two
+ * `ImageLabel`s with a gradient each — a white PNG's *alpha* carrying the flare, the neck and the taper, so a
+ * tile showed the shape a `Trail` draws — and the art never existed. What stood in for it in the meantime is
+ * what showed the arrangement's cost: a `UIGradient` is blended *into* the pixels underneath it, so a picture
+ * carrying colour of its own can only take a def's colours down toward its own, never take them on. What is
+ * exact with no art at all is the part a player is actually choosing between — the **colours**, in the order
+ * and at the ratio the ribbon shows them — so the container is painted and the shape is not drawn.
+ *
+ * **Why nothing is rendered, in three sentences, so it does not have to be re-litigated.** `CosmeticDef`'s
+ * only appearance field is `colors`, and the thirteen trail defs differ from one another in nothing else, so a
+ * rendered preview could not show a player anything this gradient does not — which is what makes drawing the
+ * colours *exact* here rather than a shortcut. What a `ViewportFrame` would buy is a slot with a model to turn
+ * around, and no slot has one (`ball` and `elimination` have no defs at all) — and a `Trail` does not render
+ * inside a `ViewportFrame` at all, which is the finding that ended that route. The general capability
+ * therefore has no second caller yet and is refused until it has one: the question is open, not answered.
+ *
+ * **What this is not: a still of a throw.** A `Trail` records where its attachments have been, so the real
+ * thing bends with a curving throw and draws *nothing* while the ball is still — neither of which a picture
+ * can say, and neither of which this says either. A shelf tile is not claiming them; watching the ball is
+ * what says it.
+ *
+ * **No camera, no frame loop, no teardown.** Nothing here moves, so a hidden panel costs exactly nothing and
+ * there is nothing to unhook. `colors` is reactive because the inventory draws what is *worn*: an equip has to
+ * repaint a strip that is already in the tree, which is one write to one gradient rather than a rebuild.
+ */
+export function addTrailStrip(
+	scope: Fusion.Scope<unknown>,
+	parent: GuiObject,
+	colors: Fusion.UsedAs<TrailStripColors | undefined>,
+): Frame {
+	const frame = Fusion.New(scope, "Frame")({
+		Name: "TrailStrip",
+		Parent: parent,
+		Size: new UDim2(1, 0, 1, 0),
+		// **White, and this is the trap the image route had, one layer along.** The gradient is blended into
+		// the colour of the thing it is attached to, so a def's colours reach the screen unaltered only if the
+		// field beneath them is white. `Frame`'s own default is a mid grey — `163, 162, 165` — which would take
+		// the top off every trail on the shelf and leave the preview a duller thing than the ball.
+		BackgroundColor3: Color3.fromRGB(255, 255, 255),
+		BorderSizePixel: 0,
+	});
+
+	// The gradient is a child of the strip and not of the slot the strip sits in, because a `UIGradient`
+	// applies to its parent and to nothing beneath it.
+	Fusion.New(scope, "UIGradient")({
+		Parent: frame,
+		Color: Fusion.Computed(scope, (use) => coreRamp(use(colors))),
+		Transparency: stripFade(),
+	});
+
+	return frame;
+}
+
+/**
+ * A picture in a tile's face: **the real thing, where {@link addGlyph}'s disc is the stand-in for it.**
+ *
+ * **It is handed the slot and not the tile, and `Tile.art` is that slot** — the frame `addTile` fills with the
+ * tile's own card colour, so a picture is a child of the face rather than a replacement for it, exactly as
+ * {@link addTrailStrip} is. The name bar and the status line are drawn *over* that face, which is what the
+ * `statusLine` flag below is about.
+ *
+ * **The picture is a square, centred in the face above the bands, and standing off every edge by
+ * {@link ICON_MARGIN}.** The art these come from is square — `IMAGES_CONFIG.ABILITY_ICONS` records that every
+ * source is 1254px square — and a tile's face is not: 104 by 92 on a shelf, and however tall the grid's
+ * arithmetic made this cell in a shop, which for a shelf of three is most of the band. Stretching is therefore
+ * not available and neither is filling it, because a picture sized to the whole face would put its lower edge
+ * under the name bar and its shape at the mercy of today's cell size.
+ *
+ * **`statusLine` is how much of the face the *tile* has spoken for, and it has to be passed because it is a
+ * fact about the caller and not about the picture.** A tile that writes one — "Owned", "Buy · 120 coins",
+ * "Unlock by playing 25 matches" — has that sentence drawn across the middle of its face, so a picture centred
+ * on the whole face would have the words over its lower half. A tile that writes none is the majority of the
+ * power tiles in both panels, and reserving the band anyway costs a fifth of the smallest face either panel
+ * draws — 20 of the 92 pixels a shelf tile is tall, which is the difference between a 36-pixel picture and a
+ * 50-pixel one. **A caller that starts writing a status line has to come back and say so**; that is the one
+ * coupling this signature asks for, and it is cheaper than the alternative of every tile reserving for a
+ * sentence most of them do not have.
+ *
+ * **A holder for that region, rather than arithmetic on the picture itself**, because "centred in the height
+ * above the bands" needs something whose middle *is* that middle — and the region is the only object here that
+ * knows where it is. The holder is invisible and exists for one number. `UIAspectRatioConstraint` squares the
+ * picture inside it, and `ScaleType.Fit` is the belt to that braces: with a square box and a square file there
+ * is nothing left to letterbox, and an id that is *not* square is fitted inside it rather than squashed.
+ *
+ * **A well is deliberately not painted behind it.** These ids are the art the HUD already draws, and the slot
+ * there is `theme.colors.trough` — black — for the reason `IMAGES_CONFIG.ABILITY_ICONS` sets out at length:
+ * the icons were authored to sit on it, and a file carrying an opaque field shows that field on any other
+ * surface. A tile's face is `theme.colors.card`, so whether these three need the alpha-bleed pass that entry
+ * describes is a question for a screen — and the answer is a fill on this one object rather than a change to
+ * either panel.
+ *
+ * **Adding a fourth power needs no edit here and none in either caller.** The two panels ask
+ * `IMAGES_CONFIG.ABILITY_ICONS` for the picture as they build each tile from `POWER_ROSTER`, and that record
+ * is a `Record<AbilityKind, string>` — so a power that has no id is a compile error before it can be a tile
+ * with an empty face.
+ */
+export function addIcon(
+	scope: Fusion.Scope<unknown>,
+	parent: GuiObject,
+	image: string,
+	statusLine: boolean,
+): ImageLabel {
+	const occupied = statusLine ? TILE_STATUS_TOP : TILE_NAME_HEIGHT;
+
+	const area = Fusion.New(scope, "Frame")({
+		Name: "IconArea",
+		Parent: parent,
+		Position: UDim2.fromOffset(ICON_MARGIN, ICON_MARGIN),
+		Size: new UDim2(1, -2 * ICON_MARGIN, 1, -(occupied + 2 * ICON_MARGIN)),
+		BackgroundTransparency: 1,
+	});
+
+	const icon = Fusion.New(scope, "ImageLabel")({
+		Name: "Icon",
+		Parent: area,
+		Image: image,
+		BackgroundTransparency: 1,
+		ScaleType: Enum.ScaleType.Fit,
+		AnchorPoint: new Vector2(0.5, 0.5),
+		Position: UDim2.fromScale(0.5, 0.5),
+		Size: new UDim2(1, 0, 1, 0),
+	});
+	Fusion.New(scope, "UIAspectRatioConstraint")({
+		Parent: icon,
+		AspectRatio: 1,
+		AspectType: Enum.AspectType.FitWithinMaxSize,
+	});
+
+	return icon;
 }
 
 /**

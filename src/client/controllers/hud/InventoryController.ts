@@ -11,6 +11,7 @@ import {
 } from "shared/constants";
 import { COSMETICS, CHEST_POOL, MILESTONES, POWER_ROSTER } from "shared/config/economy.config";
 import type { CosmeticDef, MilestoneDef } from "shared/config/economy.config";
+import { IMAGES_CONFIG } from "shared/config/images.config";
 import {
 	EQUIPPED_ATTRIBUTE,
 	equippedIdOf,
@@ -33,6 +34,7 @@ import {
 	addFooterBand,
 	addGlyph,
 	addHeaderBand,
+	addIcon,
 	addMessageLine,
 	addNoteLine,
 	addPanelFrame,
@@ -42,10 +44,12 @@ import {
 	addShowcase,
 	addTabStrip,
 	addTile,
+	addTrailStrip,
 	PANEL_Z_INDEX,
 	raiseZIndex,
 	wrapLabels,
 } from "../../ui/panelChrome";
+import type { Showcase, Tile } from "../../ui/panelChrome";
 
 /** Prints the mount line, each tab change and each equip request. */
 const DEBUG = true;
@@ -438,7 +442,8 @@ export class InventoryController implements OnStart {
 			EQUIPPED_COLUMN_MAX,
 		);
 		addColumnHeading(this.scope, theme, left, "Equipped", 1);
-		addShowcase(this.scope, left, theme, 2);
+		const showcase = addShowcase(this.scope, left, theme, 2);
+		this.addEquippedStrip(showcase, slot);
 
 		// Right: the shelf, which takes the remainder and scrolls on its own.
 		const right = addFillColumn(this.scope, columns, "ShelfColumn", 2);
@@ -446,6 +451,63 @@ export class InventoryController implements OnStart {
 
 		const shelf = addShelf(this.scope, right, theme, "Shelf", 2);
 		this.fillShelf(shelf, theme, slot);
+	}
+
+	/**
+	 * The preview's own picture: the trail this player is *wearing*, repainted whenever that changes.
+	 *
+	 * **Reactive rather than built once, and that is the whole reason `addTrailStrip` takes a `UsedAs`.** The
+	 * showcase is built at mount and everything a player equips arrives afterwards, so a strip painted from
+	 * the equipped id at construction would show what was worn when the panel was first opened and go on
+	 * showing it — a preview of the wrong item, which is a worse lie than the empty face it replaces. The
+	 * `Fusion.Value` the equip watcher already writes is what the colours are computed from, so the strip
+	 * repaints itself the moment the attribute round-trips and nothing here has to know when an equip landed.
+	 *
+	 * **A slot that is not the trail gets nothing**, on `ShopController.addStrip`'s reasoning: the slot is the
+	 * question rather than the presence of a palette, because a def carrying colours on another slot would
+	 * otherwise paint a face that has no colour of its own to speak of. The other two slots have no picture to
+	 * draw, and one of them is a sentence rather than a pane.
+	 */
+	private addEquippedStrip(showcase: Showcase, slot: string): void {
+		if (slot !== "trail") return;
+
+		const equipped = this.equipped.get(slot);
+		if (equipped === undefined) return;
+
+		addTrailStrip(
+			this.scope,
+			showcase.art,
+			Fusion.Computed(this.scope, (use) => COSMETICS[use(equipped)]?.colors),
+		);
+	}
+
+	/**
+	 * The same picture on a shelf tile, for every tile of every trail: **the trail's own colours, across the
+	 * tile's face**.
+	 *
+	 * **The shelf was the half that was missing, and it is where most of the panel's colour lives** — one
+	 * preview against a whole shelf of tiles in the same slot, so a player could see what they were wearing and
+	 * not what they were choosing between.
+	 *
+	 * **A plain value rather than the `Computed` the equipped column needs**, because a shelf tile's id is
+	 * fixed when the tile is built — the tile *is* one item — so there is nothing underneath it to react to.
+	 * The column is the one place in this panel whose subject changes while it is on screen.
+	 *
+	 * **The `Default` tile is not a special case, and that is the fallback doing its work.** Its id is the empty
+	 * string, `COSMETICS[""]` is nothing, and `addTrailStrip` paints `BALL_CONFIG`'s own three colours when it
+	 * is handed none — which is what that tile means: a ball with nothing equipped on it really is grey, and
+	 * the tile offering "nothing equipped" shows the thing itself.
+	 *
+	 * **A slot that is not the trail gets nothing**, on {@link addEquippedStrip}'s reasoning and the shop's.
+	 * **A locked tile is dressed exactly as an owned one**, deliberately: a trail's colours are its *identity*
+	 * rather than a state, the shop already shows every trail it sells in its own colours before it is bought,
+	 * and a shelf of grey tiles would say "unavailable" about items whose whole difference is colour. What
+	 * marks a tile as not-yours-yet is its status line, which is unchanged.
+	 */
+	private addTileStrip(tile: Tile, slot: string, id: string): void {
+		if (slot !== "trail") return;
+
+		addTrailStrip(this.scope, tile.art, COSMETICS[id]?.colors);
 	}
 
 	/**
@@ -484,7 +546,7 @@ export class InventoryController implements OnStart {
 					ownedCosmeticIdsOf(use(this.cosmetics)).has(def.id),
 				);
 
-				this.addLockedTile(shelf, theme, def.name, unlockText(milestone), owned, lockedOrder);
+				this.addLockedTile(shelf, theme, slot, def.name, def.id, unlockText(milestone), owned, lockedOrder);
 				lockedOrder += 1;
 			}
 
@@ -522,6 +584,9 @@ export class InventoryController implements OnStart {
 	 * it was refused on the equipped tile: it would cost the tile a line of its own to repeat what is already
 	 * written there.
 	 *
+	 * **The palette on its face is not a state and does not weaken that**, which is why `addTileStrip` dresses
+	 * this tile exactly as it dresses an owned one — see that method for the whole of the argument.
+	 *
 	 * The name bar keeps the colour every tile's bar has, deliberately. Filling it here was the first attempt,
 	 * and it put the *locked* state on the same element the accent uses for the *worn* state — one element
 	 * saying two different things, which is worse than saying one of them quietly.
@@ -529,7 +594,9 @@ export class InventoryController implements OnStart {
 	private addLockedTile(
 		shelf: ScrollingFrame,
 		theme: HudTheme,
+		slot: string,
 		name: string,
+		id: string,
 		text: string,
 		owned: Fusion.UsedAs<boolean>,
 		order: number,
@@ -537,6 +604,7 @@ export class InventoryController implements OnStart {
 		const locked = Fusion.Computed(this.scope, (use) => !use(owned));
 		const tile = addTile(this.scope, shelf, theme, name, order, locked);
 
+		this.addTileStrip(tile, slot, id);
 		tile.statusLabel.Text = text;
 		tile.statusLabel.TextColor3 = theme.colors.errorDark; // the theme's "unavailable" colour, which is what a locked tile is
 	}
@@ -563,6 +631,7 @@ export class InventoryController implements OnStart {
 		);
 
 		const tile = addTile(this.scope, shelf, theme, name, order, owned, () => this.requestEquip(slot, id));
+		this.addTileStrip(tile, slot, id);
 		tile.statusLabel.Text = status;
 		tile.statusLabel.TextColor3 = theme.colors.textSecondary;
 
@@ -680,6 +749,16 @@ export class InventoryController implements OnStart {
 		const tile = addTile(this.scope, shelf, theme, ABILITY_NAMES[kind], order, owned, () =>
 			this.requestTogglePower(kind),
 		);
+
+		// **The picture, from the one record that knows the ids** — the same line the shop's powers shelf runs,
+		// on the same field, because the two shelves are the same tile over the same list. Neither lists a power
+		// itself: both walk `POWER_ROSTER` and ask `ABILITY_ICONS` per entry, and that record is keyed by
+		// `AbilityKind`, so a fourth power has to name its picture before it can reach either panel.
+		//
+		// **`false`, because this tile writes nothing to its status line** — see this method's own note on that
+		// decision, which is the whole reason the picture here is a fifth larger than it would otherwise be. A
+		// status line added to this tile has to come back and change this argument with it.
+		addIcon(this.scope, tile.art, IMAGES_CONFIG.ABILITY_ICONS[kind], false);
 
 		const inPool = Fusion.Computed(this.scope, (use) => ownedItemsOf(use(this.pool)).has(kind));
 		this.markWhen(tile.nameBar, inPool, theme);

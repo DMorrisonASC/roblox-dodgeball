@@ -2,3 +2,4 @@
 /out
 /include
 *.tsbuildinfo
+.kimi-code/config.toml
