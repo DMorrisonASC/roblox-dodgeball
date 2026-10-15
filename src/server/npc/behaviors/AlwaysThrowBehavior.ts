@@ -234,7 +234,22 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 			// the pair has to come off one turn, and `createWindupTracker.beginWindup` for what the hold does with
 			// them.
 			const muzzle = getThrowMuzzle(model);
-			windups.beginWindup(model, chargeForRange(THROW_RANGE, root.Position.Y - muzzle.Y), THROW_RANGE);
+
+			// **`plantNow` — this rig never throws on the move, and that is a fact about its walk rather than a
+			// choice about its throw.** `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE` is for a rig that has a
+			// carry-through to keep alive, and this one never has one: `SeekBehavior.pickupWalk` draws that movement
+			// on the turn a rig *takes* a ball, and a practice rig is handed one by `prepare` and by its own refill
+			// below, so `seek.ball` is never the thing that filled its hand and the leg is never drawn. Drawing one
+			// of the other shapes here would publish a walk instruction for a body with nothing to walk and then
+			// plant it anyway — a log line that lied about every one of its throws.
+			//
+			// **What that means for a practice dummy, said because it is the user's observation rather than an
+			// omission:** this is the rig that most visibly stands still and throws, and it stands because it is
+			// never between a ball and a walk — not because anything here refuses to move it. A dummy that moved
+			// would need a walk of its own, which is a different feature: its job is to be a target that is always
+			// there. Its charge still solves from the fixed stand-in distance, so this shape is byte for byte what
+			// it was before any of the three existed.
+			windups.beginWindup(model, chargeForRange(THROW_RANGE, root.Position.Y - muzzle.Y), THROW_RANGE, "plantNow");
 		},
 
 		// **A hold dies with the rig holding it**, for the gated thrower's reason: a corpse is not winding up a

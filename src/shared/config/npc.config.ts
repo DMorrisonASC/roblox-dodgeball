@@ -196,6 +196,64 @@ export const NPC_CONFIG = {
 	THROW_MISS_STUDS_MAX: 10,
 
 	/**
+	 * The share of a rig's throws made **on the move** — the first of the two bands a throw's shape is drawn
+	 * from. **Placeholder — 0.7, the user's own "70+ of the time player moves and throws the ball".**
+	 *
+	 * **The three shapes, and the mix is the point rather than a compromise.** A rig that throws from a stand
+	 * every time reads as a turret: `SeekBehavior`'s carry-through already has it *arrive* at a ball moving, and
+	 * a throw that always stops the body has the one shape a person's cycle does not have. A rig that throws on
+	 * the move every time is a different tell — a body that never sets its feet, which no player does either. A
+	 * person does all three, and it is the *mixture* that leaves a watcher unable to name the rule. See
+	 * {@link ThrowWalk} for what each shape actually does; these two numbers only decide how often each is drawn.
+	 *
+	 * **Two bands of one draw, in this order, and the remainder is the third shape.** A throw is
+	 * `moveAndAim` when the roll is under this number, `moveThenPlant` when it is under the next one, and
+	 * `plantNow` when it is past both — so the two values are **absolute shares of every throw** rather than a
+	 * share and a conditional share, and the arrangement cannot produce a negative band. Raising both past 1 is
+	 * therefore not an error: it simply stops drawing the third shape, which is the honest reading of asking for
+	 * more than all of them.
+	 *
+	 * **Drawn once, where the rig decides to throw** — in `ThrowBehavior`'s decision turn, the same turn that
+	 * solves the charge. Never per tick: a rig that re-decided during its own windup would be a body that changed
+	 * its mind mid-throw, which reads as broken rather than as human, and the hold's whole value is that a
+	 * watcher can see it coming (see `CHARGING_ATTRIBUTE`).
+	 *
+	 * **Published as {@link THROW_WALK_ATTRIBUTE}, because the two halves are two behaviours.** The thrower draws
+	 * the shape and the *walker* is what has to act on it — a hold is what ends a rig's carry-through walk — so
+	 * the fact travels on the model. See that attribute for why a second attribute rather than a second meaning
+	 * for the charge.
+	 */
+	THROW_MOVE_AND_AIM_CHANCE: 0.7,
+
+	/**
+	 * The share of a rig's throws made **after its walk has finished** — the second band, and the shape that
+	 * exists so "plant and throw" is a choice rather than an accident. **Placeholder — 0.2, which with the band
+	 * above leaves `0.1` for the third shape.**
+	 *
+	 * **What this band is for, and what it is not.** Before there were three shapes, a planted throw was a throw
+	 * whose *timing* happened to end the walk — the hold landed inside the carry-through window and stopped the
+	 * body wherever it was. Two rigs could therefore differ only by when their target came into the angle window,
+	 * which is an accident of geometry rather than a behaviour. This band is the same walk with the opposite
+	 * instruction: **finish it, stand, then throw**, so the ball leaves a body that has come to a stop *and* has
+	 * visibly gone somewhere first.
+	 *
+	 * **The release waits for the body to stop, which is the only thing that makes this a different shape at
+	 * all.** The hold's own clock is unchanged, so a hold whose deadline arrives while the rig is still walking
+	 * simply keeps holding until `NPC_ANIM_MOVING_ATTRIBUTE` says the body has stopped — at most one carry-through
+	 * window later, which is what `ThrowBehavior` arms its expiry timer for. Without that wait the ball would
+	 * leave a walking body and the shape would be indistinguishable from the band above it.
+	 *
+	 * **Its charge is re-solved at the release, for the band above's reason.** The body has moved since it
+	 * decided — 8 studs, deliberately — so the distance it decided at is no longer the distance it is standing
+	 * at. Only the third shape throws the charge it decided with, and that is exactly why it can: a hold that
+	 * stops the body on the same turn it solves cannot make a throw land short.
+	 *
+	 * **Not a movement of its own.** Nothing new is walked: this is the carry-through the rig is already making,
+	 * left alone, and the walk's own end — arrival, or `PICKUP_WALK_SECONDS` — is what plants the rig.
+	 */
+	THROW_CARRY_THROUGH_CHANCE: 0.2,
+
+	/**
 	 * The chance that the **gated** dodger commits to dodging **a ball that is coming at it**.
 	 *
 	 * **Per ball, and that is a reversal recorded rather than tidied away.** This was a *rate* — a
@@ -397,7 +455,7 @@ export const NPC_CONFIG = {
 	 * actually throw at — which is the reason a person would be moving like that in the first place. See
 	 * `detectEnemy` for what counts as an enemy, which is a *side* question and not a distance one.
 	 */
-	SEEK_JUMP_ENEMY_RADIUS_STUDS: 24,
+	SEEK_JUMP_ENEMY_RADIUS_STUDS: 16,
 
 	/**
 	 * How long a rig waits after a hop before it will hop again, in seconds. **Placeholder — 6.**
@@ -415,24 +473,58 @@ export const NPC_CONFIG = {
 	 * inside: a rig sprints thirty studs in about a second and a half, which is *faster* than this, so a hop is
 	 * not a thing that happens once per walk by construction — it is rarer than that.
 	 */
-	SEEK_JUMP_COOLDOWN_SECONDS: 6,
+	SEEK_JUMP_COOLDOWN_SECONDS: 2,
 
 	/**
-	 * How far off a straight line a rig's walk to a ball may stray, as an angle from the line. **Placeholder — 4.**
+	 * How little a rig's walk to a ball may stray from a straight line, as an angle from the line.
+	 * **Placeholder — 6.**
 	 *
 	 * **An angle rather than a distance, and the choice does two jobs at once.** What a person walking an arc
 	 * deviates by is a *direction* — they are watching the ball and the ball is over there — so an angle is the
 	 * honest primitive; and because the offset it produces is `tan(angle) × distance`, a rig's detour **shrinks as
 	 * it arrives**. That second half is load-bearing rather than tidy: a fixed lateral offset would leave a rig
-	 * eight studs from the ball still heading three studs to one side, which is exactly the distance at which the
-	 * arrival check and the PICKUP_RADIUS live, and a curve is not allowed to cost the rig its ball.
+	 * eight studs from the ball still heading two studs to one side, which is exactly the distance at which the
+	 * arrival check and `BALL_CONFIG.PICKUP_RADIUS` live, and a curve is not allowed to cost the rig its ball.
 	 *
-	 * **Four degrees is what it means in studs:** `tan(4°)` is `0.07`, so the walk swings about **3.3 studs** to
-	 * either side of the line on a 47-stud walk and about **1.4 studs** on a 20-stud one. That is a body's width
-	 * of drift over an arena crossing — visible as a curve at a distance, and small enough that the rig is still
-	 * plainly walking to the ball rather than wandering. See `SEEK_CURVE_PERIOD_MIN_SECONDS`.
+	 * **This was one value of 4°, and a session's log is what showed it was too straight.** At 4° the walk swung
+	 * 3.3 studs to either side of a 47-stud line and 1.4 studs of a 20-stud one, and the line every walk prints
+	 * read `amplitude 4.0° (1.4 studs here)` — a body's width of drift across an arena, which at a run is a
+	 * straight line to anybody watching. **The floor is now above where the old value sat**, so no walk is as
+	 * straight as every walk used to be: at 6°, `tan(6°) = 0.105` is **4.9 studs** on a 47-stud walk and 2.1 on
+	 * a 20-stud one.
+	 *
+	 * **A floor rather than a value, drawn once per walk, on `SEEK_CURVE_PERIOD_MIN_SECONDS`'s argument.** That
+	 * constant argues a range beats a number because two rigs setting off in the same second must not trace the
+	 * same path, and the same reason holds here in its stronger form: a period and a phase make two walks
+	 * *different*, but only the amplitude makes either of them *wide*. One amplitude for every walk would give
+	 * every rig the same silhouette of a detour at the very moment two of them are side by side.
 	 */
-	SEEK_CURVE_AMPLITUDE_DEGREES: 4,
+	SEEK_CURVE_AMPLITUDE_MIN_DEGREES: 6,
+
+	/**
+	 * How far a rig's walk to a ball may stray from a straight line, as an angle from the line.
+	 * **Placeholder — 14.**
+	 *
+	 * **What it means in studs, which is the half a person watching can see:** `tan(14°)` is `0.249`, so the
+	 * widest walk swings **11.7 studs** to either side of a 47-stud line, 5.0 studs of a 20-stud one, and about
+	 * fifteen of a sixty-stud sprint — a body taking an *angle* on the ball rather than walking to a coordinate.
+	 *
+	 * **Three things set the ceiling, and all three are already in the code.** *The arrival*: the offset is
+	 * proportional to the distance, so at the eight studs where the pickup begins to matter this is two studs to
+	 * one side of a ball the rig can take from eight — the curve cannot cost it the ball. *The stall budget*: the
+	 * walk aims at the **offset point** and re-aims every `SEEK_RETARGET_SECONDS`, so the rig closes on the ball
+	 * by `cos(angle)` of its speed on every turn and never spends one getting further away — a wider curve is
+	 * therefore not a rig failing to reach its ball, which is the reading that would make this a fault. *The
+	 * cadence it is laid over*: `MoveTo` is re-issued twice a second, so one cycle is a few straight chords
+	 * rather than a smooth sine, and it is the **period** that keeps that a curve rather than a stagger — which
+	 * is why {@link NPC_CONFIG.SEEK_CURVE_PERIOD_MIN_SECONDS} is deliberately not shortened to match this.
+	 *
+	 * **Fourteen rather than more, and the failure mode past it has a name in this file: *wandering*.** A rig
+	 * that cannot be read as deciding where to go stops being a person taking a line and becomes a body with
+	 * something wrong with it. Lower both ends if a session shows that; raise the floor first, because the floor
+	 * is what decides how many walks are still nearly straight.
+	 */
+	SEEK_CURVE_AMPLITUDE_MAX_DEGREES: 14,
 
 	/**
 	 * The shortest full left-right cycle of a curving walk, in seconds. **Placeholder — 1.4.**
@@ -547,9 +639,14 @@ export const NPC_CONFIG = {
 	 * carry-through a movement with no end, and the point of it is that a body comes to rest somewhere and then
 	 * throws.
 	 *
-	 * **This is also the window in which a windup may begin**, and that is not a coincidence to be tidied away: the
-	 * rig turns onto its target over a few tenths of a second, so the throw usually decides *during* the
-	 * carry-through and plants the body on the same turn it does — see `Charging` below and `SeekBehavior`.
+	 * **This is also the window in which a windup may begin, and the two are the same window on purpose.** The rig
+	 * turns onto its target over a few tenths of a second, so the throw usually decides *during* the
+	 * carry-through — and what happens to this walk then is the whole of `THROW_MOVING_CHANCE`. A *planted* throw
+	 * ends it on the same turn it decides, with a charge solved on that very turn, which is why a plant cannot make
+	 * a throw land short (see `Charging` below and `SeekBehavior`). A throw *on the move* keeps it instead, and
+	 * this window is what the seek keeps pushing out for the length of the hold — so this number is also how long
+	 * the body carries on **after** a moving release. A window that ended exactly on arrival would make the moving
+	 * branch a body that stopped mid-windup, which is why the extra beat was already here before either branch.
 	 */
 	PICKUP_WALK_SECONDS: 0.75,
 

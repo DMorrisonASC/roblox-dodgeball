@@ -5,32 +5,31 @@ import { ReplicatedStorage } from "@rbxts/services";
 import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { GAME_MODE_NAMES, isGameModeId } from "shared/gameMode";
 import { PLAYING } from "../../panels";
-import { getHudScreenGui } from "../../ui/screenGui";
+import { getHudColumn } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, when the HUD is up — the line that says the controller ran at all. */
 const DEBUG = true;
 
-/** How wide the HUD is, and how far below the top of the safe region it sits. Its height is its content's. */
-const HUD_WIDTH = 360;
 /*
- * **This is the number that moves this band, and three revisions of `ScreenInsets` are why it is worth saying
- * so plainly.** The band spent three revisions in a `ScreenGui` of its own — `None`, then `DeviceSafeInsets`,
- * then `TopbarSafeInsets` — and each traded one problem for a worse one: the first two put it *under* Roblox's
- * chrome, and the third put it *inside* the chrome's own row, where the available area is a topbar tall and
- * the band is therefore flush with the top of the screen with no room to be anything else. **`ScreenInsets`
- * chooses the region a GUI draws in; only an offset moves something within it.** So the band is back in the
- * shared GUI, and this is the knob: `0` is the topmost row the band may occupy — the first pixel below the
- * topbar — and every pixel this grows by moves the band that much further down the screen.
+ * **The band does not position itself any more, and the number that used to say where it went is gone with the
+ * pair it belonged to.** It was `HUD_TOP_INSET`, and its doc argued at length that it was "half of a pair"
+ * whose other half was `SCORE_TOP_INSET` in `ScoreHudController` — two offsets from the same origin in the same
+ * GUI, which had to differ by the height of the score plate or the plate would be drawn across the clock. Both
+ * were `14`. **What replaced them is one offset on the column the two readouts share** — see `getHudColumn` in
+ * `ui/screenGui.ts`, which owns it and has the whole of that story — and the distance between the band and the
+ * plate above it is now the layout's business rather than a second number to keep in step.
  *
- * **It is half of a pair, and the other half is `SCORE_TOP_INSET` in `ScoreHudController`.** That one is an
- * offset from the same origin in the same GUI, so the two are the rows of one column and moving either without
- * the other is how two opaque plates end up drawn over each other. The score plate is about forty pixels tall,
- * so this wants to be roughly forty more than that one — `44` against `4` is the pair that fits, and it is the
- * order a scoreboard is read in, the score changing with the clock counting down underneath it. A larger
- * number is simply the band lower down.
+ * **The region-versus-offset lesson that doc ended with is still worth knowing, and it is written down in that
+ * file**: `ScreenInsets` chooses the region a GUI draws in, and only an offset moves something within it. It is
+ * why the band is in the shared GUI rather than in one of its own — the three revisions it spent trying are
+ * recorded there, next to the `ScreenInsets` value they settled on.
  */
-const HUD_TOP_INSET = 14;
+
+/**
+ * How wide the HUD is, and **its height is its content's**. See {@link getHudColumn} for where it sits.
+ */
+const HUD_WIDTH = 360;
 
 /**
  * How opaque the board behind the line is between rounds: the number this HUD has always used.
@@ -179,8 +178,15 @@ export class RoundStatusController implements OnStart {
 			Name: "Wrapper",
 			Size: new UDim2(0, HUD_WIDTH, 0, 0),
 			AutomaticSize: Enum.AutomaticSize.Y,
-			Position: new UDim2(0.5, 0, 0, HUD_TOP_INSET),
-			AnchorPoint: new Vector2(0.5, 0),
+			// **The band does not put itself anywhere.** It is a child of the shared readout column, which owns
+			// the offset from the top of the safe region and places the score bar first and this under it — so
+			// the `Position` and `AnchorPoint` that used to be here are gone rather than left to be
+			// overwritten. **The anchor being zero is load-bearing**: a `UIListLayout` writes a child's
+			// `Position` but does not know about its `AnchorPoint`, so a wrapper still anchored at `(0.5, 0)`
+			// would be drawn half its own width to the left of the slot the layout gave it.
+			AnchorPoint: Vector2.zero,
+			// The column's contract: `1` is the scores, `2` is the clock. See `getHudColumn`.
+			LayoutOrder: 2,
 			BackgroundTransparency: 1,
 		});
 
@@ -262,16 +268,15 @@ export class RoundStatusController implements OnStart {
 			});
 		}
 
-		// **Back in the shared GUI, which is where a panel belongs.** Every HUD here shares one `ScreenGui` so
-		// that the settings which are about the *screen* rather than about one HUD are decided once. The band
-		// had a GUI of its own for three revisions, trying to get out from under Roblox's chrome; the note at
-		// the end of `ui/screenGui.ts` records what each attempt did instead, and why the property that was
-		// reached for cannot do this job. `HUD_TOP_INSET` moves this band, and it always did.
-		wrapper.Parent = getHudScreenGui();
+		// **Into the shared readout column, which is where a HUD element belongs.** The column is in the shared
+		// `ScreenGui` — see `ui/screenGui.ts`, which owns both and records why the band is not in a GUI of its
+		// own. Its doc also carries the point this line used to make at length: `ScreenInsets` chooses the
+		// region a GUI draws in, and only an offset moves something within it.
+		wrapper.Parent = getHudColumn();
 
 		if (DEBUG) {
 			print(
-				`[HUD] round status up — ${HUD_TOP_INSET}px below the safe region, ` +
+				`[HUD] round status up — in the shared readout column, ` +
 					`reading ${ROUND_STATUS_FOLDER} in ReplicatedStorage`,
 			);
 		}

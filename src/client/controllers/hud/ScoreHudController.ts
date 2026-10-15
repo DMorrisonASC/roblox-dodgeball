@@ -10,7 +10,7 @@ import {
 } from "shared/constants";
 import { teamColourOf } from "shared/gameMode";
 import type { GameModeId } from "shared/gameMode";
-import { getHudScreenGui } from "../../ui/screenGui";
+import { getHudColumn } from "../../ui/screenGui";
 import { hudTheme } from "../../ui/hudTheme";
 import type { HudTheme } from "../../ui/hudTheme";
 import { raiseZIndex } from "../../ui/panelChrome";
@@ -28,22 +28,6 @@ const DEBUG = true;
  * rather than only the bar: a container raised above its children paints its own background over them.
  */
 const SCORE_Z_INDEX = 4;
-
-/**
- * How far below the top of the safe region the bar sits, in pixels.
- *
- * **The upper half of one stack, and the lower half is `HUD_TOP_INSET` in `RoundStatusController`.** Both are
- * offsets from the same origin in the same GUI, so these are the two rows of one column and they have to be
- * moved together: the band below is a card as tall as its line of text, so its offset wants to be around
- * forty more than this one. Four and forty-four is the pair that fits, and it is the order a scoreboard is
- * read in — the score is the thing that changes and the clock is the thing counting down underneath it.
- *
- * **`20` was tried and it is a colliding number rather than a lower bar.** Moving this one on its own walks
- * the plate down into the row the band occupies, and because both plates are opaque — and the band sits at a
- * rung below every other GUI, so it loses the overlap rather than winning it — the score plate ends up drawn
- * across the clock. If this bar should sit lower, this number and the band's are raised together.
- */
-const SCORE_TOP_INSET = 14;
 
 /** The circle's diameter, in pixels. Big enough to read as a side, small enough not to be a button. */
 const CIRCLE_SIZE = 14;
@@ -126,7 +110,7 @@ export class ScoreHudController implements OnStart {
 			print(`[HUD] score bar up — ${ROUND_SCORE_A_ATTRIBUTE}/${ROUND_SCORE_B_ATTRIBUTE} on RoundStatus, ${SCORING_MODE} only`);
 		}
 
-		bar.Parent = getHudScreenGui(); // must stay the LAST statement
+		bar.Parent = getHudColumn(); // must stay the LAST statement
 	}
 
 	/**
@@ -152,8 +136,16 @@ export class ScoreHudController implements OnStart {
 			// No size of its own: the list layout and `AutomaticSize` make it exactly as big as its contents.
 			Size: new UDim2(0, 0, 0, 0),
 			AutomaticSize: Enum.AutomaticSize.XY,
-			AnchorPoint: new Vector2(0.5, 0),
-			Position: new UDim2(0.5, 0, 0, SCORE_TOP_INSET),
+			// **The bar does not put itself anywhere.** It is a child of the shared readout column, which owns
+			// the offset from the top of the safe region and places its children one under the other — so the
+			// `Position` and `AnchorPoint` that used to be here are gone rather than left to be overwritten.
+			// **The anchor is now load-bearing in the other direction**: a `UIListLayout` writes a child's
+			// `Position` but does not know about its `AnchorPoint`, so a bar still anchored at `(0.5, 0)` would
+			// be drawn half its own width to the left of the slot the layout gave it. Zero is the value that
+			// means "where the layout put me".
+			AnchorPoint: Vector2.zero,
+			// The column's contract: `1` is the scores, `2` is the clock. See `getHudColumn`.
+			LayoutOrder: 1,
 			BackgroundColor3: theme.colors.panel,
 			BackgroundTransparency: 0,
 			BorderSizePixel: 0,

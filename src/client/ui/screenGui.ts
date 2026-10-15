@@ -1,4 +1,5 @@
-import { Players } from "@rbxts/services";
+import Fusion from "@rbxts/fusion-3.0";
+import { Players, Workspace } from "@rbxts/services";
 
 /** Named so that every HUD finds the same one and shares it instead of making another. */
 const GUI_NAME = "HudGui";
@@ -93,6 +94,147 @@ export function getHudScreenGui(): ScreenGui {
 	gui.Parent = playerGui;
 
 	return gui;
+}
+
+/**
+ * The name of the one column the round's two readouts live in.
+ *
+ * Named for the same reason `GUI_NAME` is: it is found rather than remembered, so a second call cannot make a
+ * second column.
+ */
+const COLUMN_NAME = "TopReadouts";
+
+/**
+ * How far below the top of the safe region the column sits, in pixels. **Placeholder — 14.**
+ *
+ * **This is one number where there used to be two, and the two are worth the paragraph.** The score bar sat at
+ * its own offset and the clock sat at *its* own offset, in the same GUI from the same origin — so the two were
+ * the rows of one column that nothing declared. Both files said so at length: `ScoreHudController`'s
+ * `SCORE_TOP_INSET` argued that it and the band's offset "have to be moved together", and
+ * `RoundStatusController`'s `HUD_TOP_INSET` argued the same pair from the other end, each of them naming
+ * roughly `44` against `4` as the pair that fits because the score plate is about forty pixels tall. **Both
+ * values were `14`.** So the plate was drawn from `14` to about `54` and the band from `14` to about `38` — and
+ * because the plate sits at `SCORE_Z_INDEX = 4` and the band at the default rung, the plate was drawn *across
+ * the clock* for the whole of every intermission, which is the one phase the clock exists for.
+ *
+ * **That is what a `UIListLayout` answers and what two coordinates cannot.** A column places its second child
+ * under its first, whatever either of them turns out to be tall — so the offset is decided once, here, and the
+ * distance between the two readouts is the layout's business rather than a number that has to be kept in step
+ * with a plate's height. See {@link getHudColumn}.
+ */
+const COLUMN_TOP_INSET = 14;
+
+/**
+ * The gap between the two readouts, as a **fraction of the viewport's height** with a floor in pixels.
+ *
+ * **Relative because a gap between two readouts should shrink with the screen, and derived from the *viewport*
+ * rather than from the column because the column cannot be asked.** A `UDim`'s scale component is a fraction of
+ * the size of the element it pads — and this frame is `AutomaticSize`, so its height is computed *from* the gap
+ * between its children: a scale padding there is a value that determines the size it is measured against, which
+ * is a feedback loop rather than a layout. The viewport is a number nobody in this tree is deriving, so it is
+ * the honest thing to be relative to — the same move `addViewportConstraint` makes so that a cap can be "92% of
+ * the screen" without a measurement cycle. `0.012` of a 1080-pixel viewport is 13 pixels, and the floor keeps a
+ * very short screen from closing the gap to nothing.
+ */
+const COLUMN_GAP_SCALE = 0.012;
+const COLUMN_GAP_MIN_PIXELS = 8;
+
+/**
+ * The scope the column's own reactive value lives in, and **the one thing in this module that is a graph object
+ * rather than an instance.**
+ *
+ * A module-level scope, for `panels.ts`' reason read from this side of the wire: the value is a fact about the
+ * *screen*, it outlives every controller that reads it, and the column it feeds is a session-lifetime
+ * singleton — exactly like the `ScreenGui` this module already owns. Nothing here is per-controller, so there
+ * is nothing for a controller's scope to clean up.
+ */
+const columnScope = Fusion.scoped();
+
+/** The column, once it has been made. See {@link getHudColumn} for why it is a module's to hold. */
+let column: Frame | undefined;
+
+/**
+ * The transparent column that holds **both of the round's readouts**: the score bar first, the clock under it.
+ *
+ * **One container, so the order is a fact rather than two numbers that agree.** The bar and the band were each
+ * mounted straight into the shared GUI and each carried its own offset from the same origin — see
+ * {@link COLUMN_TOP_INSET} for what the pair of offsets actually did, which was to draw one over the other.
+ * Here each readout is a child, the vertical `UIListLayout` places the second under the first, and neither
+ * knows or cares how tall the other is.
+ *
+ * **It is a module here rather than a wire between the two controllers, and this module is where it belongs.**
+ * `screenGui.ts` and `panels.ts` are the two places this client lets two HUDs share something without either of
+ * them owning it — a `ScreenGui`, or a fact about the session — and a parent is the first of those two kinds of
+ * thing. Both readouts already import this file, so the column is reachable from each of them with no new
+ * dependency and no new file; the alternative was for one controller to mount into the other's frame, which is
+ * a controller→controller edge this codebase refuses everywhere else (the phase is published for the same
+ * reason). **`panels.ts` describes this arrangement as "the same shape `client/ui/screenGui.ts` uses"**, which
+ * is this function.
+ *
+ * **The order is part of the contract and is `LayoutOrder`'s**: `1` is the scores, `2` is the clock. It is
+ * named here rather than in either readout because it is a fact about the *column* — the whole point of the
+ * layout is that the clock is below the scores, and a readout that set its own order would be deciding where it
+ * sits in somebody else's frame. **Each readout keeps its own visibility rule, which is why they are two
+ * children rather than one**: the bar is drawn only while a mode that keeps score is published, the clock in
+ * every phase. `UIListLayout` leaves an invisible child out of the layout entirely, so a hidden bar costs no
+ * gap and no height and the clock simply rises to the top of the column.
+ *
+ * **Nothing here is painted and nothing here needs a `ZIndex`.** The frame's `BackgroundTransparency` is `1`, so
+ * it cannot occlude anything, and it deliberately does *not* call `raiseZIndex` — that helper exists to lift a
+ * *painted* container over its own children, and running it here would flatten the bar's own rung
+ * (`SCORE_Z_INDEX`) into the clock's. The ZIndex question these two used to raise is answered by the layout
+ * instead: siblings in a list layout cannot be drawn over each other, because they cannot be drawn in the same
+ * place.
+ *
+ * **What this is not: a padding, a size, or a bound.** The frame has no `UIPadding` — an inset on a *container*
+ * moves its contents off its own edges, while the space *between* two children is the layout's `Padding`, which
+ * is where the gap lives ({@link COLUMN_GAP_SCALE}). It has no `UISizeConstraint` of its own either, because
+ * its width is its widest child and both children are already bounded: the bar by its own
+ * `addViewportConstraint`, the band by the one on its wrapper.
+ */
+export function getHudColumn(): Frame {
+	if (column !== undefined) return column;
+
+	const camera = Workspace.CurrentCamera;
+	const viewportHeight = Fusion.Value(columnScope, camera !== undefined ? camera.ViewportSize.Y : 0);
+
+	// Guarded rather than assumed, for `addViewportConstraint`'s reason: there is no camera before there is
+	// one, and a column that cannot measure the screen keeps its floor rather than failing to be built.
+	if (camera !== undefined) {
+		columnScope.push(
+			camera.GetPropertyChangedSignal("ViewportSize").Connect(() => viewportHeight.set(camera.ViewportSize.Y)),
+		);
+	}
+
+	const gap = Fusion.Computed(columnScope, (use) =>
+		new UDim(0, math.max(COLUMN_GAP_MIN_PIXELS, use(viewportHeight) * COLUMN_GAP_SCALE)),
+	);
+
+	const frame = Fusion.New(columnScope, "Frame")({
+		Name: COLUMN_NAME,
+		// No size of its own: the layout and `AutomaticSize` make it exactly as big as its two children, so a
+		// hidden readout costs no height. The anchor is on the *column* because its children are positioned by
+		// the layout, and an anchor on a child would be a second opinion about where that child goes.
+		Size: UDim2.fromOffset(0, 0),
+		AutomaticSize: Enum.AutomaticSize.XY,
+		AnchorPoint: new Vector2(0.5, 0),
+		Position: new UDim2(0.5, 0, 0, COLUMN_TOP_INSET),
+		BackgroundTransparency: 1,
+	});
+
+	Fusion.New(columnScope, "UIListLayout")({
+		Parent: frame,
+		FillDirection: Enum.FillDirection.Vertical,
+		SortOrder: Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment: Enum.HorizontalAlignment.Center,
+		Padding: gap,
+	});
+
+	frame.Parent = getHudScreenGui();
+
+	column = frame;
+
+	return frame;
 }
 
 /**
@@ -209,7 +351,9 @@ export function getTransitionScreenGui(): ScreenGui {
  * **The distinction to carry forward is region versus offset.** `ScreenInsets` decides *which region* a GUI
  * draws in — the safe area, the top bar's row, the whole screen — and it cannot move anything *within* the
  * region it picks. A panel that wants to be some distance down the screen wants an **offset**, in the shared
- * GUI, where every other HUD already is; `RoundStatusController`'s `HUD_TOP_INSET` is that number and always
- * was. **A second `ScreenGui` earns its name only when a panel has to draw where the nine others must not** —
- * whole-screen covers, which is exactly the three remaining here — never to reposition one of them.
+ * GUI, where every other HUD already is; {@link COLUMN_TOP_INSET} is that number for the two readouts, and the
+ * band it was written for (`RoundStatusController`'s own `HUD_TOP_INSET`) says so in the same words before
+ * moving into this file's column. **A second `ScreenGui` earns its name only when a panel has to draw where
+ * the nine others must not** — whole-screen covers, which is exactly the three remaining here — never to
+ * reposition one of them.
  */

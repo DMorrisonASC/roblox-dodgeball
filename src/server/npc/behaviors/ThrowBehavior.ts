@@ -1,6 +1,7 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
-import { CHARGING_ATTRIBUTE, PENDING_ABILITY_ATTRIBUTE } from "shared/constants";
+import { CHARGING_ATTRIBUTE, NPC_ANIM_MOVING_ATTRIBUTE, PENDING_ABILITY_ATTRIBUTE, THROW_WALK_ATTRIBUTE } from "shared/constants";
+import type { ThrowWalk } from "shared/constants";
 import { pendingAbilityOn } from "shared/ability";
 import { resolveDodgeable } from "shared/dodge";
 import { chargeForRange, getThrowMuzzle } from "shared/throw";
@@ -148,6 +149,12 @@ interface Windup {
 	 * one, and then a rig's windup would no longer be `charge × CHARGE_SECONDS` for any charge in particular —
 	 * which is the one thing acceptance rests on and the one property a reader can check. The price is stated
 	 * with the fire path: a rig that is *shoved or dashes* mid-windup releases the charge for where it was.
+	 *
+	 * **One exception, and it is the whole of {@link Windup.moving}**: a throw rolled as one made *on the move*
+	 * is a throw whose body is **deliberately** walking, so its release solves a fresh charge and this one is
+	 * only what the hold was bought with. See the release for the argument, and `NPC_CONFIG.THROW_MOVING_CHANCE`
+	 * for the roll itself. A planted throw has no exception at all, which is what keeps this paragraph true of
+	 * every rig that stands still to shoot.
 	 */
 	readonly charge: number;
 
@@ -161,6 +168,17 @@ interface Windup {
 	 * decision turn would be exactly the two-numbers-from-two-throws the comparison is meant to rule out.
 	 */
 	readonly distance: number;
+
+	/**
+	 * Which of the three shapes this hold took — see {@link ThrowWalk}, which is the vocabulary, and
+	 * `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE`, which is where it is drawn.
+	 *
+	 * **On the record rather than read back off the model at the release, and that matters.** The release is
+	 * *after* `endWindup`, which is what takes {@link THROW_WALK_ATTRIBUTE} off the body — so a release that
+	 * asked the attribute would read `undefined` on every throw and quietly throw the planted shape's charge for
+	 * all of them. A field cannot be cleared by the operation the release itself performs.
+	 */
+	readonly walk: ThrowWalk;
 
 	/**
 	 * Identifies this windup against the others this rig will hold.
@@ -344,8 +362,8 @@ export interface WindupTracker {
 	 */
 	get: (model: Model) => Windup | undefined;
 
-	/** Start a hold of `charge`, solved from `distance`. Publishes the rig as charging. */
-	beginWindup: (model: Model, charge: number, distance: number) => void;
+	/** Start a hold of `charge`, solved from `distance`, in the shape `walk`. Publishes both. */
+	beginWindup: (model: Model, charge: number, distance: number, walk: ThrowWalk) => void;
 
 	/** The hold ended by *throwing*: the row and the published charge go, and nothing is printed. */
 	endWindup: (model: Model) => void;
@@ -357,12 +375,14 @@ export interface WindupTracker {
 /**
  * Builds one behaviour's windups — the table, the token counter, and the four operations above.
  *
- * **{@link WindupTracker.endWindup} and {@link WindupTracker.cancelWindup} clear the published charge, and they
+ * **{@link WindupTracker.endWindup} and {@link WindupTracker.cancelWindup} clear everything a hold published, and they
  * are the only two things that do.** That is what makes every path that ends a hold one line rather than one line
  * plus a `SetAttribute` each, and it is why cancelling is safe to call for a rig with no hold at all — every path
- * can call it unconditionally rather than each having to know whether one ever started. The two are separate
- * because only one of them is news: a throw has its own line a few lines below, and a cancellation is a thing the
- * `[Rig]` output would otherwise never mention.
+ * can call it unconditionally rather than each having to know whether one ever started. **Two facts go with it
+ * since a throw can be rolled as one made on the move**: the charge and
+ * {@link THROW_MOVING_ATTRIBUTE}, which are cleared together and therefore cannot disagree about whether a rig is
+ * still winding up. The two are separate because only one of them is news: a throw has its own line a few lines
+ * below, and a cancellation is a thing the `[Rig]` output would otherwise never mention.
  *
  * **The reason is printed on the server rather than published**, and that is a limit of the attribute rather than
  * a choice: `CHARGING_ATTRIBUTE` is a boolean, so a client can see that a hold ended and not why. The line below
@@ -385,6 +405,7 @@ export function createWindupTracker(): WindupTracker {
 	const endWindup = (model: Model): void => {
 		windups.delete(model);
 		model.SetAttribute(CHARGING_ATTRIBUTE, undefined);
+		model.SetAttribute(THROW_WALK_ATTRIBUTE, undefined);
 	};
 
 	/** Ends a rig's hold without a throw: the same two lines, and the reason said out loud. */
@@ -413,8 +434,24 @@ export function createWindupTracker(): WindupTracker {
 	 * the case no turn can cover: a rig whose tags come off mid-hold stops being ticked, and without this its
 	 * charge would stay published for the rest of the session. See {@link WINDUP_EXPIRY_SLACK_SECONDS}, which also
 	 * argues why a timer that can only cancel cannot race the tick.
+	 *
+	 * **It publishes two facts rather than one, and the second is the walk's.** `walk` is the shape the thrower
+	 * drew — see `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE` — and it goes out as {@link THROW_WALK_ATTRIBUTE} for
+	 * `SeekBehavior`, which is the behaviour that has to act on it: keep the body walking, leave its walk alone,
+	 * or stand it where it is. Both facts are cleared together by {@link WindupTracker.endWindup}, which is what
+	 * makes this the only writer of either and removes any way for a cancelled hold to leave a body published as
+	 * walking.
+	 *
+	 * **The expiry timer is armed for the longest hold there can be, and one shape can hold well past its own
+	 * charge.** `moveThenPlant` waits for the body to stop before it releases — that wait is the whole of what
+	 * makes it a different shape — and the body may still be walking its carry-through for up to
+	 * `PICKUP_WALK_SECONDS` after the deadline, plus the beat a decelerating humanoid takes to read as stopped.
+	 * **A timer armed for the charge alone would cancel exactly the throws that shape exists to make**, so the
+	 * walk's whole window is added to the margin for every hold rather than only for that shape: a timer that can
+	 * only ever *cancel* costs nothing when it is late, and the alternative is a second branch here deciding how
+	 * long a hold may be, which is the thing this file has spent its comments refusing to have.
 	 */
-	const beginWindup = (model: Model, charge: number, distance: number): void => {
+	const beginWindup = (model: Model, charge: number, distance: number, walk: ThrowWalk): void => {
 		const now = os.clock();
 		const duration = charge * BALL_CONFIG.CHARGE_SECONDS;
 
@@ -422,8 +459,9 @@ export function createWindupTracker(): WindupTracker {
 		const token = nextWindupToken;
 
 		// The charge *and* the distance it came from, because the two are one throw's and the log line needs both
-		// of them from the same turn. See {@link Windup.distance}.
-		windups.set(model, { until: now + duration, charge, distance, token, lastTurnAt: now });
+		// of them from the same turn. See {@link Windup.distance}. `walk` rides along for the release, which runs
+		// after this row is gone — see {@link Windup.walk}.
+		windups.set(model, { until: now + duration, charge, distance, walk, token, lastTurnAt: now });
 
 		// **The whole of what a client needs, and nothing else is sent.** Every client already has this rig's body,
 		// so this one number is the effect's entire cause; a remote would be a second way for the same fact to
@@ -436,12 +474,18 @@ export function createWindupTracker(): WindupTracker {
 		// event.
 		model.SetAttribute(CHARGING_ATTRIBUTE, charge);
 
+		// **And the walk's half of the same decision, which is a fact about a body rather than about a charge.**
+		// The seek reads this on its own turn and acts on it — see {@link THROW_WALK_ATTRIBUTE} for why it cannot
+		// be folded into the number above, and `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE` for the draw that produced
+		// it.
+		model.SetAttribute(THROW_WALK_ATTRIBUTE, walk);
+
 		print(
 			`[Rig] ${model.Name}: winding up — charge ${string.format("%.2f", charge)} ` +
-				`over ${string.format("%.2f", duration)}s`,
+				`over ${string.format("%.2f", duration)}s, ${walk}`,
 		);
 
-		task.delay(duration + WINDUP_EXPIRY_SLACK_SECONDS, () => {
+		task.delay(duration + WINDUP_EXPIRY_SLACK_SECONDS + NPC_CONFIG.PICKUP_WALK_SECONDS, () => {
 			const live = windups.get(model);
 			if (live === undefined) return;
 			if (live.token !== token) return;
@@ -485,8 +529,8 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 	 * The two operations **bound to the local names the tick's own comments use**, so the calls below read as
 	 * they always did: `windups` is the state, and these two are what happens to it.
 	 */
-	const beginWindup = (model: Model, charge: number, distance: number): void =>
-		windups.beginWindup(model, charge, distance);
+	const beginWindup = (model: Model, charge: number, distance: number, walk: ThrowWalk): void =>
+		windups.beginWindup(model, charge, distance, walk);
 
 	const cancelWindup = (model: Model, reason: string): void => windups.cancelWindup(model, reason);
 
@@ -690,6 +734,23 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				// nothing more to do. Returning here rather than falling through is what keeps the release and the
 				// decision one code path each.
 				if (now < windup.until) return;
+
+				// **And one shape's hold is not over when its clock is.** `moveThenPlant` is *defined* by throwing
+				// from a body that has come to a stop, so its release waits for that stop as well as for the clock:
+				// the rig is still walking its carry-through, or decelerating out of it, and letting the ball go now
+				// would make this shape identical to `moveAndAim` — the other seventy per cent of throws. The fact
+				// is `NPC_ANIM_MOVING_ATTRIBUTE`, written by `NpcService.publishAnimation` from `Humanoid.Running`
+				// *before* this behaviour ticks, so it is this turn's answer rather than a stale one — and it is the
+				// same fact every client is already using to choose the rig's walk or idle clip, so the rule reads
+				// as "the body waits to be seen standing before it throws". A body being *shoved* does not delay
+				// this: `Humanoid.Running` reports locomotion and not physics.
+				//
+				// **Nothing here can hold forever, which is what makes waiting safe.** The seek ends the walk on its
+				// own — arrival, or its `PICKUP_WALK_SECONDS` window — and the expiry timer is armed to cover that
+				// window as well as the hold (see `beginWindup`), so the shape that waits is the shape the timer
+				// waits longest for. **The deadline is deliberately not extended**: it is what the charge was bought
+				// with, and this is the release learning something a clock cannot know.
+				if (windup.walk === "moveThenPlant" && model.GetAttribute(NPC_ANIM_MOVING_ATTRIBUTE) === true) return;
 			} else {
 				// Not yet facing it: keep turning, and do not throw. The angle was measured this tick from
 				// the rig's current facing, so this is the *turn* being watched and not a fixed pose.
@@ -701,22 +762,47 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				// the effect on its hand means what the same effect on a player's hand means. See `Windup` for
 				// why that is the only honest way to display a charge, and `beginWindup` for the hold and the
 				// published flag; the release is the code below, reached on a later turn.
+				//
+				// **And it decides, on the same turn, which of the three shapes this throw takes.** One draw,
+				// here, because here is the only moment a throw exists to draw for: everything below the angle
+				// gate is "there is a throw coming", and everything above it is a rig still turning or with
+				// nothing to throw at. Drawing per tick instead would be a body that changed its mind during its
+				// own hold — see `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE` for the three shapes and the bands, and
+				// {@link ThrowWalk} for what each one asks of the walk.
+				//
+				// **Two bands of one roll, and the order is the whole of the arithmetic.** The first band is the
+				// share that throws on the move, the second the share that finishes its walk first, and whatever
+				// is left is the shape that stops where it stands. Written as cumulative thresholds rather than as
+				// two independent draws so the three shares are absolute and cannot overlap — and so asking for
+				// more than all of them simply stops drawing the last shape rather than producing a negative one.
 				const decision = aimOf(model, rigBody.root, sighting.aimPoint);
-				beginWindup(model, chargeForRange(decision.distance, decision.rise), decision.distance);
+				const roll = math.random();
+				const walk: ThrowWalk =
+					roll < NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE
+						? "moveAndAim"
+						: roll < NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE + NPC_CONFIG.THROW_CARRY_THROUGH_CHANCE
+							? "moveThenPlant"
+							: "plantNow";
+
+				beginWindup(model, chargeForRange(decision.distance, decision.rise), decision.distance, walk);
 
 				return;
 			}
 
 			// **On target, and the hold is over: stop turning and throw at the body.** The constraint comes down
-			// before the throw so the ball leaves a body that has finished moving, and the charge — solved on the
-			// turn that *decided*, not this one — carries it to the target from the muzzle the rig is now facing
-			// along.
+			// before the throw so the ball leaves a body that has finished moving, and the charge carries it to the
+			// target from the muzzle the rig is now facing along — solved on the turn that *decided* for the shape
+			// that stops there, and on this turn for the two shapes whose body has walked since.
 			//
 			// **The hold ends here through `endWindup` rather than through `cancelWindup`, because a throw is not a
 			// cancellation.** The row and the published charge go exactly as a cancellation's do — see
 			// `createWindupTracker`, where those two operations differ by one `print` — and the difference is the
 			// line: a "cancelled" line above the throw line would describe the same event twice, and the throw line
-			// below is this throw's report.
+			// below is this throw's report. **The shape is taken off the row first**, because `endWindup` is what
+			// clears {@link THROW_WALK_ATTRIBUTE} and the branch below has to be chosen from the throw's own draw
+			// rather than from an attribute that is now gone.
+			const walk = windup.walk;
+
 			clearAim(model);
 			windups.endWindup(model);
 
@@ -743,13 +829,33 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// word is gone with it: `overhead`/`straight`/`curve` named ways of *reaching a point*, which is the
 			// axis the charge replaced, so there is no rig-only throw number left in this file.
 			//
-			// **`windup.charge` and `windup.distance` come from the decision turn, and that is the windup's
-			// whole arithmetic.** The charge is solved once, where the rig decided, because the hold it bought
-			// has to *be* that charge's hold — recomputing here would solve a fresh distance against a deadline
-			// the old one set, and then a hold would last `charge × CHARGE_SECONDS` for no charge in particular.
-			// The price is stated where it belongs: a rig that is shoved, or that dashes, between deciding and
-			// releasing throws the charge for where it *was*. See `aimOf` for the frame the two figures come off,
-			// which is the same one the solve will use a moment from now.
+			// **Two charges, and the divide is not "moving or not" but "did this body walk at all".** `plantNow`
+			// throws `windup.charge`, solved on the decision turn, because the hold it bought has to *be* that
+			// charge's hold — recomputing would solve a fresh distance against a deadline the old one set, and then a
+			// hold would last `charge × CHARGE_SECONDS` for no charge in particular. That shape can afford the
+			// decision's figures for the reason it is a shape at all: the hold stops the body on the very turn the
+			// charge was solved, so the two distances are the same one and the throw cannot land short. The price it
+			// still pays is unchanged and still named: a rig *shoved*, or that dashes, between deciding and releasing
+			// throws the charge for where it was.
+			//
+			// **The other two shapes have walked on purpose, so they solve again here.** `moveAndAim` walks through
+			// the hold, and `moveThenPlant` walks its carry-through and then stops — either way the distance it
+			// decided at is no longer the distance it is standing at, and the two differ by everything the body did
+			// in between: at a rig's own walk, up to twenty studs, which is twice the widest deliberate miss in
+			// `NPC_CONFIG`. Thrown anyway, every one of those throws would land long or short *in the same direction
+			// every time* — and that is not the shape of a person's error, which is bad aim rather than a systematic
+			// bias, so it is the one error a watcher could name and predict. The release's own figures are already in
+			// hand: `release` is measured from the muzzle to the aimed point for the *heading*, in the same frame the
+			// decision turn's solve used, so the charge it answers with is the charge for the throw about to happen.
+			//
+			// **What re-solving costs, and it is not nothing: the hold is no longer that charge's own hold.** Those
+			// throws hold for the charge they decided with and release with the charge they ended up needing, so the
+			// effect on the hand is a fraction of a beat off the ball — where `plantNow`'s is exact. Named rather
+			// than discovered. The alternative was refused: re-solving *during* the hold would republish the charge
+			// every turn, and a fire ball that visibly shrank as the rig walked closer is a rig adjusting its power,
+			// which no player does and which the windup exists to make legible.
+			//
+			// See `aimOf` for the frame both figures come off.
 			//
 			// **A rig does not bend the ball, and that is the decision rather than a missing one.** `curve`
 			// is a player's lateral control — one key, held or not — and a rig has no input of that kind. Its
@@ -770,10 +876,19 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				balls.markHeldBall(model, pending);
 			}
 
+			// **The one place the three shapes part company, and everything else about the throw is shared.** The
+			// two that walked ask the same law the same question a moment later; the one that stopped where it stood
+			// hands over the pair it decided with. All three are a *charge* and a *heading* — no arc, no rig-only
+			// speed, no second throw — so a retune of `BALL_CONFIG` still moves a rig and a player together, which
+			// is the property this whole block exists to keep.
+			const walked = walk !== "plantNow";
+			const charge = walked ? chargeForRange(release.distance, release.rise) : windup.charge;
+			const solvedAt = walked ? release.distance : windup.distance;
+
 			const thrown = balls.throwBall(model, {
 				kind: "charged",
 				heading: release.heading,
-				charge: windup.charge,
+				charge,
 				curve: false,
 			});
 
@@ -791,10 +906,14 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// **The line names the charge and the distance it was solved from, and those are the two numbers
 			// that make the shared envelope checkable rather than asserted.** "The same throw" means the same
 			// charge at the same distance; a reader with a player's `[Throw]` line and this one has both halves
-			// of that comparison. Both figures are the *decision turn's*, so the pair is one throw's rather than
-			// a charge from one and a range from the other. `BallService` prints the solved speed, the launch
-			// angle and the muzzle a moment later for both bodies, in its `[Ball]` line, so nothing about the
-			// flight is repeated here.
+			// of that comparison. Both figures come from the *same turn* — the decision's for the shape that throws
+			// where it stands, the release's for the two that walked (see above) — so the pair always describes one
+			// throw rather than a charge from one and a range from the other. `BallService` prints the solved
+			// speed, the launch angle and the muzzle a moment later for both bodies, in its `[Ball]` line, so
+			// nothing about the flight is repeated here. **And which of the three shapes it was is said out loud**,
+			// in {@link ThrowWalk}'s own words, because that is the only way to count the mix from a log: the
+			// attribute has already been cleared by the time this prints, and the three shapes are otherwise
+			// indistinguishable from the outside.
 			if (thrown) {
 				const wide =
 					miss === undefined
@@ -803,8 +922,9 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 							`${miss.side > 0 ? "right" : "left"} (missed on purpose)`;
 
 				print(
-					`[Rig] ${model.Name}: throw — charge ${string.format("%.2f", windup.charge)} at ` +
-						`${string.format("%.1f", windup.distance)} studs, heading ` +
+					`[Rig] ${model.Name}: throw ${walk} — ` +
+						`charge ${string.format("%.2f", charge)} at ` +
+						`${string.format("%.1f", solvedAt)} studs, heading ` +
 						`(${string.format("%.2f", release.heading.X)}, ${string.format("%.2f", release.heading.Y)}, ` +
 						`${string.format("%.2f", release.heading.Z)})${wide}`,
 				);

@@ -1,7 +1,8 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
-import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE } from "shared/constants";
+import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, THROW_WALK_ATTRIBUTE } from "shared/constants";
+import type { ThrowWalk } from "shared/constants";
 import { pendingAbilityOn } from "shared/ability";
 import { resolveDodgeable } from "shared/dodge";
 import { claim, claimedBy, release } from "../ballClaims";
@@ -221,6 +222,20 @@ interface Seek {
 	 */
 	pickupWalk?: Vector3;
 
+	/**
+	 * **The direction {@link pickupWalk} was drawn in**, kept so the leg can be re-issued from wherever the rig
+	 * has got to.
+	 *
+	 * **A second field rather than a re-read of the point, and the reason is a moving throw.** The leg is a
+	 * *point* eight studs ahead, and a body walking one arrives at it — at which point the point minus the rig's
+	 * own position is a vector of nearly zero length, which is a direction that cannot be drawn again. A moving
+	 * throw (`NPC_CONFIG.THROW_MOVING_CHANCE`) has to keep the body walking for the whole of its hold, which is
+	 * longer than one leg lasts, so the direction the walk was drawn in has to outlive the point it was drawn to.
+	 * It is the same direction for every leg of one carry-through, which is what makes a re-issued leg the *same
+	 * movement* rather than a new one.
+	 */
+	pickupWalkDirection?: Vector3;
+
 	/** `os.clock` at which {@link pickupWalk} is over. Only meaningful while there is one. */
 	pickupWalkUntil: number;
 }
@@ -241,7 +256,7 @@ interface Curve {
 	/** One full left-right cycle, in seconds, drawn once from the config range. */
 	period: number;
 
-	/** How far off the line this walk may stray, as an angle from it. See the config constant for why an angle. */
+	/** How far off the line this walk may stray, as an angle from it. **Drawn per walk** — see the config range. */
 	amplitudeDegrees: number;
 
 	/** Where in the cycle the walk began, in radians. Drawn once per walk, so no two walks start together. */
@@ -264,12 +279,15 @@ interface Curve {
  * rig to do something the shortest path would not.** A straight line to the ball is the tell: **it is the shape of
  * a body walking to a *coordinate*, and a person walks an arc because they are watching where the ball is going** —
  * they aim where it will be, they drift off the line and back, and no two approaches have the same shape. So every
- * walk is given a small oscillation perpendicular to the line it would otherwise walk (`curveTarget`), drawn fresh
- * per walk from `NPC_CONFIG.SEEK_CURVE_*` so that two rigs setting off together are two paths rather than one path
- * twice. It is a few studs of drift at arena distances and less as the rig closes, which is the property that keeps
- * it from costing the rig its ball. **What this is not:** not pathfinding arriving by the back door — it routes
- * around nothing, and the paragraph above about the floor still holds — and not wandering, which is the failure
- * mode to look for if the amplitude is ever raised.
+ * walk is given an oscillation perpendicular to the line it would otherwise walk (`curveTarget`), with its
+ * amplitude, period and phase all drawn fresh per walk from `NPC_CONFIG.SEEK_CURVE_*` so that two rigs setting off
+ * together are two paths rather than one path twice. **The amplitude was raised on 2026-10-15 at the user's
+ * request, after a session's log showed what the original was worth in studs**: at 4° a walk swung a body's width
+ * either side of its line, which reads as a straight line at a run — see
+ * `SEEK_CURVE_AMPLITUDE_MIN_DEGREES`, which also records the two things that bound it (the pickup's own reach, and
+ * the stall budget it must not trip) and the failure mode past the ceiling, *wandering*. **What this is not:** not
+ * pathfinding arriving by the back door — it routes around nothing, and the paragraph above about the floor still
+ * holds — and not wandering, which is the failure mode to look for if the amplitude is ever raised again.
  *
  * **Three more things hang off the same walk, and all three are in `tick` for the reason the curve is.** A rig
  * **runs** when the ball is further away than `SEEK_SPRINT_DISTANCE_STUDS` — through `WalkSpeedService`, on the
@@ -614,20 +632,30 @@ export function createSeekBehavior(
 		const span = NPC_CONFIG.SEEK_CURVE_PERIOD_MAX_SECONDS - NPC_CONFIG.SEEK_CURVE_PERIOD_MIN_SECONDS;
 		const period = NPC_CONFIG.SEEK_CURVE_PERIOD_MIN_SECONDS + math.random() * span;
 
+		// **And the amplitude is drawn here, which is the half of the shape a session actually asked for.** The
+		// period and the phase make two walks *different*; only the amplitude makes either of them *wide*, and a
+		// rule that read one number for every walk would give every rig the same silhouette of a detour — at the
+		// very moment two of them are walking side by side, which is when a shared shape is worth noticing. The
+		// range and its two ends are argued in `SEEK_CURVE_AMPLITUDE_MIN_DEGREES`; the reason the drawn value is
+		// stored on the walk rather than read from the config at each use is `Curve.amplitudeDegrees`.
+		const amplitudeSpan =
+			NPC_CONFIG.SEEK_CURVE_AMPLITUDE_MAX_DEGREES - NPC_CONFIG.SEEK_CURVE_AMPLITUDE_MIN_DEGREES;
+		const amplitude = NPC_CONFIG.SEEK_CURVE_AMPLITUDE_MIN_DEGREES + math.random() * amplitudeSpan;
+
 		seek.curve = {
 			beganAt: now,
 			period,
-			amplitudeDegrees: NPC_CONFIG.SEEK_CURVE_AMPLITUDE_DEGREES,
+			amplitudeDegrees: amplitude,
 			phase: math.random() * math.pi * 2,
 		};
 
 		seek.panic = math.random() < NPC_CONFIG.PANIC_SHUFFLE_CHANCE;
 
-		const lateral = math.tan(math.rad(NPC_CONFIG.SEEK_CURVE_AMPLITUDE_DEGREES)) * distance;
+		const lateral = math.tan(math.rad(amplitude)) * distance;
 
 		print(
 			`[Rig] ${model.Name}: walk curving — amplitude ` +
-				`${string.format("%.1f", NPC_CONFIG.SEEK_CURVE_AMPLITUDE_DEGREES)}° ` +
+				`${string.format("%.1f", amplitude)}° ` +
 				`(${string.format("%.1f", lateral)} studs here), period ${string.format("%.1f", period)} s`,
 		);
 	};
@@ -640,12 +668,16 @@ export function createSeekBehavior(
 	 * world direction that stopped being across the walk three turns ago.
 	 *
 	 * **The amplitude is an angle, so the detour shrinks as the rig arrives** — see
-	 * `NPC_CONFIG.SEEK_CURVE_AMPLITUDE_DEGREES`, where that is the argument for the whole shape. It is also what
-	 * keeps this honest against the two things the walk has to be able to do anyway: **the arrival check reads the
-	 * distance to the *ball*** (it is tested above, before this is ever called) and the stall budget counts turns
-	 * spent getting no closer to the *ball*. A fixed lateral offset would leave a rig curving three studs wide
-	 * within eight of its target and could cost it the ball on patience alone; at four degrees it is a third of a
-	 * stud by then.
+	 * `NPC_CONFIG.SEEK_CURVE_AMPLITUDE_MIN_DEGREES`, where that is the argument for the whole shape. It is also
+	 * what keeps this honest against the two things the walk has to be able to do anyway: **the arrival check
+	 * reads the distance to the *ball*** (it is tested above, before this is ever called) and the stall budget
+	 * counts turns spent getting no closer to the *ball* — and because the walk is aimed at *this* offset point
+	 * and re-aimed every turn, the rig closes on the ball on every one of them. A fixed lateral offset would
+	 * leave a rig curving three studs wide within eight of its target and could cost it the ball on patience
+	 * alone; at the widest amplitude this file draws it is two studs by then, inside the pickup's own reach.
+	 *
+	 * **The amplitude read here is the *walk's*, not the config's**, which is what lets two rigs setting off
+	 * together walk two differently-shaped detours. See `Curve.amplitudeDegrees` and `seedWalk`.
 	 *
 	 * **No offset at all is a real answer and it is the first branch**: a `Seek` with no curve is a walk that was
 	 * never seeded — which cannot happen through `tick`, since `seedWalk` runs on the same turn the ball is
@@ -838,7 +870,76 @@ export function createSeekBehavior(
 		if (seek.ball !== undefined || seek.pickupWalk !== undefined) humanoid.MoveTo(root.Position);
 
 		seek.pickupWalk = undefined;
+		seek.pickupWalkDirection = undefined;
 		endWalk(model, seek);
+	};
+
+	/**
+	 * **The direction that puts this body further from the body it is about to throw at**, or nothing when there
+	 * is nobody in range to face.
+	 *
+	 * **Two readers, and they are the two occasions a rig backs off**: the carry-through's own draw, where a coin
+	 * decides whether it walks on or backs away, and a moving throw, where it is the only direction left — see
+	 * `keepWalking`. Both need the same gate, and the gate is the throw's: outside `THROW_RANGE_STUDS` the thrower
+	 * is holding no aim on anybody, and a rig walking backwards while looking where it is going is a moonwalk
+	 * rather than a backpedal. The name and the distance come back with the direction because the carry-through's
+	 * own print says them.
+	 *
+	 * **The coin is deliberately not in here.** "Does this pickup back off" is a fact about a pickup
+	 * (`PICKUP_BACKPEDAL_CHANCE`); "which way can a body in a windup walk" is a different question with only one
+	 * answer, and folding the two together would give a moving throw a chance of having no direction at all.
+	 */
+	const awayFromEnemy = (
+		model: Model,
+		root: BasePart,
+	): { direction: Vector3; name: string; distance: number } | undefined => {
+		const enemy = detectEnemy(model);
+		if (enemy === undefined || enemy.distance > NPC_CONFIG.THROW_RANGE_STUDS) return undefined;
+
+		const away = new Vector3(root.Position.X - enemy.aimPoint.X, 0, root.Position.Z - enemy.aimPoint.Z);
+		if (away.Magnitude < CURVE_MIN_FLAT_STUDS) return undefined;
+
+		return { direction: away.Unit, name: enemy.model.Name, distance: enemy.distance };
+	};
+
+	/**
+	 * **What a moving throw does instead of stopping: the leg the rig was already making, drawn again from where
+	 * the body now is.**
+	 *
+	 * **The one thing a moving throw needs from the walk, and the reason it is not simply "do not stand".** A
+	 * carry-through is eight studs at a rig's own walk — about half a second — and a hold is `charge ×
+	 * CHARGE_SECONDS`, up to one and a quarter. A body left walking to a point it has already reached is a body
+	 * *standing* on that point with a live `MoveTo`: the point is under its feet, the engine has nothing to walk
+	 * to, and the throw would come out of a stationary body while every line in the log said it moved. Re-drawing
+	 * the leg is what makes the log line true, and it is the difference between this and the fallback the task
+	 * named — "walk until you arrive, then plant" — which is a rig that stopped to shoot.
+	 *
+	 * **The direction is the one the carry-through was drawn in, or the carry-through's other one.** A rig whose
+	 * window had already closed when the throw was decided never drew a leg, and the direction it has left is the
+	 * one that means "a body with a ball in hand and an enemy in front of it keeps moving": away from that enemy.
+	 * **That is not a sixth movement.** It is the same walk, the same distance, the same window and the same
+	 * direction rule the pickup draw uses, with its trigger moved from "the hand filled" to "the thrower drew
+	 * `moveAndAim`". A movement of its own is the thing `HANDOFF` §17 warns against: the seek owns where a rig
+	 * walks, and these are the walk's own two directions.
+	 *
+	 * **It is re-drawn on every turn of the hold, which is what keeps the body walking rather than arriving.**
+	 * The window is pushed out with each leg, so the whole hold is spent walking and the body carries on for up to
+	 * `PICKUP_WALK_SECONDS` past the release — a person does not stop on the frame they let go either. Nothing
+	 * here reads the hold's *length*: the walk is kept alive for as long as the hold is published, and the hold's
+	 * own expiry is `ThrowBehavior`'s business.
+	 */
+	const keepWalking = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek, now: number): void => {
+		const direction = seek.pickupWalkDirection ?? awayFromEnemy(model, root)?.direction;
+		if (direction === undefined) {
+			stand(model, humanoid, root, seek);
+			return;
+		}
+
+		seek.pickupWalkDirection = direction;
+		seek.pickupWalk = root.Position.add(direction.mul(NPC_CONFIG.PICKUP_WALK_STUDS));
+		seek.pickupWalkUntil = now + NPC_CONFIG.PICKUP_WALK_SECONDS;
+
+		humanoid.MoveTo(seek.pickupWalk);
 	};
 
 	/**
@@ -865,13 +966,21 @@ export function createSeekBehavior(
 	 * coin is only *spent* when there is an enemy in range to face, which also means this number reads as "of the
 	 * pickups taken under a watchful body, this many go backwards".
 	 *
-	 * **A hold ends the carry-through, and it usually ends it on the same turn.** The throw behaviour is earlier
-	 * in `NpcService`'s registry, so a windup that begins on a turn is already published by the time this runs: the
-	 * rig plants and throws from where it stands, with a charge solved on this very turn, which is why this is a
-	 * movement that cannot make a throw land short. The one case where it can is a windup that begins on a turn
-	 * this behaviour does not run on — the seek is half a second behind the throw's tenth — and that is the same
-	 * price `ThrowBehavior` already pays and documents for a shoved or dashing rig: a charge solved a moment
-	 * before the body finished moving.
+	 * **A hold ends the carry-through — unless the thrower drew one of the two shapes that does not want it
+	 * ended.** A hold is a body standing still on purpose for as long as a charge takes, which is what makes a
+	 * rig's throw legible, so `plantNow` still ends this walk and is still the shape every rig had before the
+	 * others existed. But a rig that *always* plants has the one shape a person's cycle does not: nobody who plays
+	 * this game stands still to shoot every time, and a body that does reads as a turret rather than as an
+	 * opponent. {@link THROW_WALK_ATTRIBUTE} is the thrower's draw — see `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE`
+	 * — and the other two shapes are instructions to *this* walk: one keeps it alive (`keepWalking`, so the ball
+	 * leaves a body still going somewhere), and one leaves it alone entirely, so the rig finishes what it started
+	 * and throws from a standstill.
+	 *
+	 * **A hold that is not told otherwise plants, exactly as it always has.** That is the default for a rig whose
+	 * thrower publishes nothing, and it is what makes the `plantNow` shape byte for byte the old behaviour: the
+	 * charge solved on the same turn the body stopped is a charge that cannot make a throw land short. The one case
+	 * where it can is a hold this behaviour never runs on — the seek is half a second behind the throw's tenth — and
+	 * that is unchanged and still the same price `ThrowBehavior` documents for a shoved or dashing rig.
 	 */
 	const pickupWalk = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek, now: number): void => {
 		// **The draw, on the first turn the hand is full** — which is the last turn the direction the rig was
@@ -897,22 +1006,17 @@ export function createSeekBehavior(
 
 			// **The enemy, and the range gate that makes the backwards case a backpedal rather than a moonwalk.**
 			// See the doc above; `THROW_RANGE_STUDS` is read here because it is the same number the throw's own aim
-			// is bounded by, and a rig outside it is a rig with nothing holding its face.
-			const enemy = detectEnemy(model);
-			if (enemy !== undefined && enemy.distance <= NPC_CONFIG.THROW_RANGE_STUDS) {
-				const away = new Vector3(
-					root.Position.X - enemy.aimPoint.X,
-					0,
-					root.Position.Z - enemy.aimPoint.Z,
-				);
-
-				if (away.Magnitude >= CURVE_MIN_FLAT_STUDS && math.random() < NPC_CONFIG.PICKUP_BACKPEDAL_CHANCE) {
-					direction = away.Unit;
-					reason = `backing off the pickup — ${enemy.model.Name} at ${string.format("%.0f", enemy.distance)} studs`;
-				}
+			// is bounded by, and a rig outside it is a rig with nothing holding its face. The draw is in
+			// `awayFromEnemy`, which a moving throw asks the same question through a few lines below — the two
+			// differ only in that this one is behind a coin.
+			const retreat = awayFromEnemy(model, root);
+			if (retreat !== undefined && math.random() < NPC_CONFIG.PICKUP_BACKPEDAL_CHANCE) {
+				direction = retreat.direction;
+				reason = `backing off the pickup — ${retreat.name} at ${string.format("%.0f", retreat.distance)} studs`;
 			}
 
 			seek.pickupWalk = root.Position.add(direction.mul(NPC_CONFIG.PICKUP_WALK_STUDS));
+			seek.pickupWalkDirection = direction;
 			seek.pickupWalkUntil = now + NPC_CONFIG.PICKUP_WALK_SECONDS;
 
 			print(`[Rig] ${model.Name}: ${reason}`);
@@ -923,12 +1027,31 @@ export function createSeekBehavior(
 			endWalk(model, seek);
 		}
 
-		// **A hold plants the rig, and this is the turn it happens on.** The charge was solved by the throw
-		// behaviour a moment ago — see the doc above for why this cannot make a throw short — and the body is
-		// standing where the windup began rather than wherever the walk happened to be heading.
+		// **A hold plants the rig, and this is the turn it happens on — in two of its three shapes.** The charge
+		// was solved by the throw behaviour a moment ago — see the doc above for why a plant cannot make a throw
+		// short — and the body is standing where the windup began rather than wherever the walk happened to be
+		// heading. **What the hold asks of this walk is {@link THROW_WALK_ATTRIBUTE}, and the three answers are the
+		// three shapes'**: `moveAndAim` keeps the walk alive (`keepWalking`), `moveThenPlant` is told nothing at all
+		// and falls through to the leg logic below, and `plantNow` — or an attribute that is missing, which is a rig
+		// whose thrower says nothing — stops the body here. The reading is cast because an attribute is a raw
+		// value, which is the same step `pendingAbilityOn` performs for the mystery prize's word.
+		const walk = model.GetAttribute(THROW_WALK_ATTRIBUTE) as ThrowWalk | undefined;
+
 		if (model.GetAttribute(CHARGING_ATTRIBUTE) !== undefined) {
-			stand(model, humanoid, root, seek);
-			return;
+			if (walk === "moveAndAim") {
+				keepWalking(model, humanoid, root, seek, now);
+				return;
+			}
+
+			if (walk !== "moveThenPlant") {
+				stand(model, humanoid, root, seek);
+				return;
+			}
+
+			// **`moveThenPlant` falls through on purpose, and that is the whole of what it asks for**: the leg it is
+			// already making, run to its own end — and the throw behaviour waits for the body to stop before it
+			// releases, so the ball leaves a rig that has visibly gone somewhere and then set its feet. Nothing here
+			// needs to know that the hold is waiting.
 		}
 
 		// **Or the window is simply over**, which is the ordinary end of it: the rig reaches its rest point, stands

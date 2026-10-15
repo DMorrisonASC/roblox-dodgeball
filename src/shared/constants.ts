@@ -1081,6 +1081,59 @@ export type CatchCause = "attempt" | "catch";
 export const CHARGING_ATTRIBUTE = "Charging";
 
 /**
+ * The three shapes a rig's throw can take — **the vocabulary {@link THROW_WALK_ATTRIBUTE} carries.**
+ *
+ * A rig that plants to throw is a stationary target for the whole of its windup, and a person can read and
+ * time that; so two of the three shapes walk, and they walk differently:
+ *
+ * - **`moveAndAim`** walks through the hold and throws on the move. The charge is solved again at the release
+ *   against the distance the release measured, so the ball is solved from where the body *is*.
+ * - **`moveThenPlant`** walks its carry-through and then stops, and the hold refuses to release while the body
+ *   is still moving (`NPC_ANIM_MOVING_ATTRIBUTE`). That refusal is the whole difference between this and
+ *   `moveAndAim`, and it is what makes the shape read as a body taking a step and planting.
+ * - **`plantNow`** stands and throws. This is the shape every rig had before the three-way split, and it is
+ *   still the one `AlwaysThrowBehavior` takes: that rig's hand is never filled by a pickup, so it has no
+ *   carry-through to walk and never draws a shape at all.
+ *
+ * **Drawn once, on the turn the shape is decided, and never re-decided.** See
+ * `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE` and `NPC_CONFIG.THROW_CARRY_THROUGH_CHANCE`, which are two
+ * cumulative bands of a single roll so that the three shares are absolute and cannot overlap; `ThrowBehavior`
+ * is the only place a shape is chosen.
+ */
+export type ThrowWalk = "moveAndAim" | "moveThenPlant" | "plantNow";
+
+/**
+ * Attribute on a **rig's `Model`** holding which of the three {@link ThrowWalk} shapes this hold took.
+ *
+ * **A second attribute rather than a word inside {@link CHARGING_ATTRIBUTE}, and that is forced rather than
+ * tidy.** The charge is a *number* and the client reads it as one — absent means "not winding up", a value
+ * means "winding up, by this much" — so a shape written into that attribute would be a string where every
+ * reader of it expects a number.
+ *
+ * **It travels on the body because the two halves of the question live in two behaviours.** `SeekBehavior`
+ * owns where a rig walks and `ThrowBehavior` owns the hold, and neither holds a reference to the other; the
+ * fact is about a *body* for the length of a hold, which is the same class of fact as the charge beside it and
+ * the same reason it is published rather than passed.
+ *
+ * **What each side does with it, one line each.** `ThrowBehavior.beginWindup` writes it, and the *release*
+ * reads its own copy off its own record rather than off this attribute — because the release happens after
+ * `endWindup` has cleared it. `SeekBehavior`'s pickup walk reads it on its own turn and does one of three
+ * things: keeps walking (`moveAndAim`), is told nothing at all and falls through to its ordinary leg
+ * (`moveThenPlant`, which is what lets a walking rig keep walking to wherever it was going), or stands
+ * (`plantNow`).
+ *
+ * **`endWindup` is its only clearer**, exactly as it is for the charge: a hold that ends for any reason — a
+ * release, the target going away, an expiry — ends with both attributes gone, so a rig cannot be left wearing
+ * a shape it is no longer throwing by.
+ *
+ * **Re-added after a revert dropped it and left its two readers in place**, which is why this doc is terser
+ * than its neighbours in this block: the original was lost with the revert rather than recovered, so the
+ * paragraphs above are read off `ThrowBehavior` and `SeekBehavior` — the two files that use it — rather than
+ * restored from the file it used to sit in.
+ */
+export const THROW_WALK_ATTRIBUTE = "ThrowWalk";
+
+/**
  * Attribute on a **rig's `Model`** holding the power a collected mystery box is paying for, or `""` for
  * none.
  *
