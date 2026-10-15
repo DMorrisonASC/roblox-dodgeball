@@ -219,7 +219,7 @@ export const BALL_CONFIG = {
 	 * "get rid of it". The two are separate numbers, tuned for separate reasons, and the
 	 * inequality is the only thing that binds them.
 	 */
-	PICKUP_RADIUS: 8,
+	PICKUP_RADIUS: 6,
 
 	/**
 	 * How often loose balls are looked for, in seconds.

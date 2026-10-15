@@ -29,41 +29,44 @@ const DEBUG = true;
 /**
  * How wide the HUD is, and **its height is its content's**. See {@link getHudColumn} for where it sits.
  */
-const HUD_WIDTH = 360;
+const HUD_WIDTH = 100;
 
 /**
- * How opaque the board behind the line is between rounds: the number this HUD has always used.
+ * How opaque the board behind the line is, in every phase: the number this HUD has always used between rounds.
  *
- * **`0.3` was a literal at the one place it was set, and it is named now because it has a partner
- * rather than because it was unclear.** The two below are the whole of the board's rule, and a rule
- * with one half written inline is a rule a reader has to find.
+ * **It used to be half of a pair, and the pair is what this comment is about.** The other half was
+ * `BOARD_TRANSPARENCY_IN_PLAY`, whose value was `1` — the board *removed* — and the phase chose between them:
+ * a card while a round was being waited for, bare text over the arena once it was under way. **The argument
+ * for the removal was about what is behind the line**: during a round the screen is the arena, a player is
+ * watching the pitch and this is a clock they glance at rather than read, so a cream slab pinned over that view
+ * is the loudest thing on screen for the least information on it.
+ *
+ * **What overruled it is the pair rather than that argument.** The readout above this one is a solid plate in
+ * every phase — it was the first of the two to be made permanent — so for the whole of a round the HUD was one
+ * filled slab and one bare line stacked in the same column: two treatments for two halves of one fact. And the
+ * switch itself lands at the one moment a player is looking at the pitch rather than at the HUD, which is where
+ * a shape that changes reads as the HUD breaking rather than as something being trimmed for their sake. One
+ * value, no phase in it, and nothing left to keep in step.
+ *
+ * **What this is not: a fade.** Both phase changes in this game happen behind the transition cover —
+ * `TRANSITION_CONFIG.WIPE_AT_ROUND_END` sends one at the end of a round as well as the start — so a fade would
+ * hide nothing and would leave the board *partly* there for a third of a second. Nothing here eases anything.
  */
-const BOARD_TRANSPARENCY_BETWEEN_ROUNDS = 0.3;
+const BOARD_TRANSPARENCY = 0.3;
 
 /**
- * How opaque the board behind the line is **while a round is in play: nothing at all.**
+ * The round HUD: the clock and the mode while a round is being played, and the name of the phase otherwise.
  *
- * **A name rather than a literal `1`, because what was asked for was the board *removed* rather than
- * the number `1`.** If a board turns out to be wanted during play — faint, or as a trough rather than
- * a slab — this is the one line to move, and the constant's name is what says which half of the rule
- * is being changed. An inline `1` would leave a reader working out whether it meant "gone" or "a value
- * somebody was halfway through tuning".
+ * **The number is the round's, and the first sentence of this doc used to promise it in both phases.** It is
+ * shown only while `Playing`, because that is the only phase with a length: an intermission is a wait whose
+ * clock wraps, so a figure there would be a countdown to nothing that began again every sixteen seconds. The
+ * slot it leaves is filled by the phase name, which is the one thing an intermission has to say. See the line's
+ * own comment, where that decision and the two readers of the intermission's clock are written down.
  *
- * **What this is not: a fade.** The board does not ease out as a round begins. Both phase changes in
- * this game happen behind the transition cover — `TRANSITION_CONFIG.WIPE_AT_ROUND_END` sends one at
- * the end of a round as well as the start — so there is nothing on screen for a fade to hide, and a
- * fade would leave the board *partly* there for a third of a second, which is a third of a second of
- * the exact thing being taken away. The switch is a hard one and invisible.
- */
-const BOARD_TRANSPARENCY_IN_PLAY = 1;
-
-/**
- * The round HUD: which phase the round is in, and how long is left of it.
- *
- * **It has two appearances, and the phase decides which.** Between rounds the line sits on the usual card;
- * once a round is playing the board comes off and the text floats over the arena. The argument for the split
- * is written where the paint is decided — see {@link BOARD_TRANSPARENCY_IN_PLAY} — and it is the only thing
- * about this HUD that ever differs between the two phases.
+ * **It looks the same in both phases, and that is a change.** The board under the line used to come off for the
+ * whole of a playing phase, leaving the text floating over the arena, and **that split is gone**: the card is up
+ * whenever the line is, and its paint is no longer a function of the phase at all. The argument the removal was
+ * made on, and what overruled it, are written where the value is — see {@link BOARD_TRANSPARENCY}.
  *
  * **It reads nothing but the folder it was pointed at.** The phase and the clock are two
  * attributes on `RoundStatus` in `ReplicatedStorage`, written by the server and replicated by
@@ -150,17 +153,30 @@ export class RoundStatusController implements OnStart {
 			const seconds = use(time);
 			const modeId = use(mode);
 
-			// **The line is the phase and the clock, and the mode is appended to it.** There used to
-			// be a third face here — `Waiting for players — n/min`, shown when the intermission had
-			// frozen below the minimum — and it is gone: the intermission clock is what this line
-			// shows, frozen or not. That is the user's decision, and the shape below does not argue
-			// with it.
-			let line = `${phase} — ${seconds}s`;
+			// **The line is the clock and the mode, and the phase name stands in only where there is no clock to
+			// show.** A round is a length of time and its clock is the thing a player watches; an intermission is a
+			// *wait* — the server holds one until a match is asked for, and its clock therefore **wraps** rather
+			// than reaching zero (`RoundService.gameLoop` restarts it at its full length each time it runs out), so
+			// a figure there would be a countdown to nothing. The word `Playing` is not said at all any more: it
+			// named a state nobody could be in doubt about, and leaving it out puts the figure the eye is looking
+			// for at the front of the line. **This reverses what this comment used to say** — the line was the
+			// phase with the clock hung off it, and `Intermission` was the label the figure sat under — and the
+			// reversal is the user's call rather than a correction of that argument.
+			//
+			// **The intermission's clock is still published and still read; nothing else about it moves.** Its
+			// figure is what `RoundResultController` measures its dismissal deadline against and what
+			// `MusicController` times the intermission's fade out with, so this is one sentence on one label rather
+			// than a change to the round. **And a third face used to live here** — `Waiting for players — n/min`,
+			// for an intermission frozen below the minimum — which went when the clock became the whole line; what
+			// stands here now is the opposite decision taken in the same place.
+			let line = phase === PLAYING ? `${seconds}s` : phase;
 
-			// The mode, once a vote has named one. Between the vote closing and the round beginning
-			// this names the round *to come*, which is exactly when a player wants to read it. The
-			// attribute carries an **id**, so the name on screen is looked up from it here — see
-			// `ROUND_MODE_ATTRIBUTE` for why the id is what travels rather than the sentence.
+			// The mode, appended once one has been named. **Where this comment used to say it named the round *to
+			// come* between the vote closing and the round beginning, and that stopped being true**:
+			// `ROUND_MODE_ATTRIBUTE` is written at the round boundary (`RoundService`, where the vote that could
+			// have published it earlier sits behind `VOTE_ENABLED = false`), so during an intermission the name on
+			// screen is the mode of the round that has just *finished*. That is a fact about the writer rather
+			// than about this line, and it is recorded at the attribute's own declaration.
 			const known = isGameModeId(modeId);
 
 			if (known) line = `${line} | ${GAME_MODE_NAMES[modeId]}`;
@@ -215,58 +231,36 @@ export class RoundStatusController implements OnStart {
 		card.Parent = wrapper;
 
 		/**
-		 * **The board is dropped for the whole of a playing phase, and the argument is what is behind it.**
+		 * **The board is set once, and there is no phase in it any more.**
 		 *
-		 * During a round the screen is the arena: a player is watching the pitch, the balls and the other
-		 * team, and this line is a clock they glance at rather than read. A cream slab pinned over that view
-		 * is the loudest thing on screen for the least information on it — and a round in play is the one
-		 * moment the line has nothing left to introduce, because the phase is the thing that just happened
-		 * and the mode is already known.
+		 * It used to be a `Hydrate`d `Computed` choosing between two transparencies by phase: the card between
+		 * rounds, bare text over the arena for the whole of a playing phase. **That is the decision this replaces**
+		 * — the argument for the removal was that the arena is what a player is watching during a round and a slab
+		 * over it is the loudest thing on screen for the least information — and the answer to it is at
+		 * {@link BOARD_TRANSPARENCY}, which is also where the number comes from.
 		 *
-		 * **Between rounds the board stays, and it is doing a different job there.** The line then carries
-		 * what a player is waiting on — the intermission clock, or the mode a vote has just chosen — and
-		 * the lobby behind it is not the thing being watched. It is the same reason a card is right for
-		 * the rest of the HUD: a board is *information grouping*, and there is nothing left to group once
-		 * the round is running.
+		 * **The card was never removed, only its paint, and that distinction is why this is one line.** The card is
+		 * still what pads the line and what sizes the wrapper to its content — see the note on the missing `size` at
+		 * its construction — so its box was the same box in both phases and the line sat on exactly the same pixels
+		 * either way. Nothing about that measurement changes here; only the paint stops changing.
 		 *
-		 * **The card itself is not removed, only its paint, and the distinction matters.** The card is still
-		 * what pads the line and what sizes the wrapper to its content — see the note on the missing `size`
-		 * at its construction. Its padding does not move the text when the fill goes: the card's box is the
-		 * same box either way, so the line sits on exactly the same pixels before and after a phase change
-		 * and only the paint under it changes.
+		 * **A plain assignment rather than `Hydrate`, and that is the same trap in reverse.** `Card` builds its
+		 * frame and hands it back, so a reactive value merely *assigned* to one of its properties is never tracked
+		 * as a property at all — the trap `CooldownHudController` documents at its own container, and the reason
+		 * `Hydrate` was needed here. What `Hydrate` bought was the subscription; with a constant there is nothing to
+		 * subscribe to, and a `Computed` that can only ever return the one value is a subscription that cannot fire.
 		 *
-		 * **`Hydrate` rather than an assignment, and that part is forced rather than stylistic.** `Card`
-		 * builds its frame and hands it back, so a reactive value merely *assigned* to one of its properties
-		 * is never tracked as a property at all — the trap `CooldownHudController` documents at its own
-		 * container. The number that used to be set here directly is now the between-rounds half of the rule.
+		 * **The border was hidden along with the fill, and the block that did that is deleted rather than left
+		 * holding a constant.** `Card` draws a one-pixel black `UIStroke` at big-ui's `Transparency.divider` — about
+		 * a tenth opaque, which is a hairline nobody sees around a filled card and a floating rectangle around bare
+		 * text — so while the board went away for the whole of a playing phase the stroke had to go with it, or the
+		 * result would have been the board gone and its edge still drawn. The card is up in every phase now, so the
+		 * stroke that belongs to it is up in every phase too, and it never had to be touched to get there: this is
+		 * big-ui's own border on big-ui's own card, which is the value the instance has always carried between
+		 * rounds. **A `Computed` left behind to answer one value forever is worse than no code at all**, because a
+		 * reader has to work out that it is dead.
 		 */
-		Fusion.Hydrate(scope, card)({
-			BackgroundTransparency: Fusion.Computed(scope, (use) =>
-				use(state) === PLAYING ? BOARD_TRANSPARENCY_IN_PLAY : BOARD_TRANSPARENCY_BETWEEN_ROUNDS,
-			),
-		});
-
-		/**
-		 * **The border goes with the fill, because on its own it is the board's outline.**
-		 *
-		 * `Card` draws a one-pixel black `UIStroke` at big-ui's `Transparency.divider` — about a tenth
-		 * opaque, which is a hairline nobody sees around a filled cream card and a floating rectangle around
-		 * bare text. Leaving it would be the worst of both: the board gone, its edge still drawn.
-		 *
-		 * **Found by class rather than held by name, because `Card` does not return it** — it builds its
-		 * corner, padding and layout, adds a stroke when `elevation` is above zero, and hands back the frame.
-		 * The value it takes during an intermission is *read off the instance* rather than retyped from
-		 * big-ui's theme, so the two cannot drift apart the day that divider is restyled.
-		 */
-		const stroke = card.FindFirstChildOfClass("UIStroke");
-
-		if (stroke !== undefined) {
-			const boardStroke = stroke.Transparency;
-
-			Fusion.Hydrate(scope, stroke)({
-				Transparency: Fusion.Computed(scope, (use) => (use(state) === PLAYING ? 1 : boardStroke)),
-			});
-		}
+		card.BackgroundTransparency = BOARD_TRANSPARENCY;
 
 		// **Into the shared readout column, which is where a HUD element belongs.** The column is in the shared
 		// `ScreenGui` — see `ui/screenGui.ts`, which owns both and records why the band is not in a GUI of its

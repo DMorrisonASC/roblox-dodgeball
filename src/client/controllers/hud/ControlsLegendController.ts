@@ -510,7 +510,7 @@ export class ControlsLegendController implements OnStart {
 		// and big-ui's default is a label the full width of its parent sized to wrap inside it.
 		// A parent sized to the label and a label sized to the parent is a circle, and Roblox
 		// resolves it by guessing.
-		const label = Text(scope, { text, variant: "body1", wrap: false });
+		const label = Text(scope, { text, variant: "overline", wrap: false });
 
 		label.Size = UDim2.fromOffset(0, 0);
 		label.AutomaticSize = Enum.AutomaticSize.XY;

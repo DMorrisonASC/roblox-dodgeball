@@ -208,8 +208,12 @@ export class RoundService implements OnStart {
      * Points per side, for a mode that keeps score. See {@link RoundView.scores}.
      *
      * Public because it *is* part of the view a mode is handed: modes read this service through
-     * the `RoundView` interface, so a private field would have to be copied out per call. Cleared
-     * at the opening of every round, so no score survives into the one after it.
+     * the `RoundView` interface, so a private field would have to be copied out per call.
+     *
+     * **Cleared as a round ends, and published on the spot** — see `finishRound`, which has the argument
+     * for why the clear left the round boundary. The boundary clears it as well, for a round that is
+     * discarded rather than finished; the two are reached by different events and the second is the
+     * guarantee.
      */
     public readonly scores = new Map<TeamLabel, number>();
 
@@ -1000,6 +1004,28 @@ export class RoundService implements OnStart {
         // hits — is passed here, and the service does the earning, the counters and the milestone
         // checks in one call. See `EconomyService.onRoundEnded`.
         this.economy.onRoundEnded(outcome, this.teams, this.roundHits);
+
+        // **The scoreboard is wiped as the round ends, and that moved here from the boundary.** It used to be
+        // cleared at the *opening of the next round*, on the argument that a round's final score should be
+        // readable for the whole intermission that follows — the same lifetime the result panel's rows have.
+        // **The client's score bar reads both of those attributes in every phase now, so that argument stopped
+        // paying**: what a lingering pair of numbers buys between rounds is a board that says `4 – 2` with no
+        // round in progress to have scored it, and what it costs is that the *new* round's board cannot be
+        // told from the old one's until somebody scores. Cleared here, the intermission reads `0 – 0` and the
+        // numbers on screen are always the current round's — which is what a scoreboard is. **Nothing is lost
+        // by it:** the result of a round is the winner's attribute and the result panel, not this pair, and
+        // both are written a few lines above this one.
+        //
+        // **The wipe happens behind the round-end transition cover**, which is why it will not read as a
+        // flicker: `TRANSITION_CONFIG.WIPE_AT_ROUND_END` puts the cover up for the whole boundary, and the
+        // board underneath is already `0 – 0` by the time it comes down.
+        //
+        // **The clear at the boundary below stays, and it is not redundant.** This one runs for every round
+        // that *finishes*; that one runs for a round that is discarded without finishing — a dev command, a
+        // server shut down mid-round — so the next round cannot open onto somebody else's score. The rule is
+        // stated twice because the two are reached by different events, and the second one is the guarantee.
+        this.scores.clear();
+        this.publishScores();
 
         print(`[Round] ${result}`);
     }
@@ -1883,19 +1909,20 @@ export class RoundService implements OnStart {
      * Publishes both sides' points, so the client can draw a scoreboard.
      *
      * **One writer, called wherever `scores` moves**, and that is the whole reason this is a method rather than
-     * a `SetAttribute` at each site: the map changes in three places — a hit award, a catch point, and the
-     * clear at the opening of a round — and two attributes written in three places is six chances for one side
-     * to be published without the other. A reader would then draw a scoreboard whose halves disagree, which is
-     * worse than drawing none.
+     * a `SetAttribute` at each site: the map changes in four places — a hit award, a catch point, and the
+     * clear at each end of a round's life: as it finishes and as the next one opens — and two attributes
+     * written in four places is eight chances for one side to be published without the other. A reader would
+     * then draw a scoreboard whose halves disagree, which is worse than drawing none.
      *
      * **Both sides are written on every change, including changes that move only one.** Writing an unchanged
      * value is cheap and fires no changed-signal, so the redundant write costs nothing and buys the guarantee
      * that the pair is never observable half-updated.
      *
      * **It is not gated on the mode**, deliberately. The two scoring paths are already guarded by
-     * `mode.scores`, so a scoreless mode never reaches them; the clear at a round's opening does reach here,
-     * and writes `0` for a mode that keeps no score — which is the truthful answer rather than a missing one,
-     * and it is what stops the previous round's numbers lingering into a mode that has none.
+     * `mode.scores`, so a scoreless mode never reaches them; both clears do reach here, and write `0` for a
+     * mode that keeps no score — which is the truthful answer rather than a missing one. **That matters more
+     * than it did**, because the client's bar is drawn in every mode now: it shows `0 – 0` for a mode that
+     * keeps no score, and this is the write that put it there.
      */
     private publishScores(): void {
         this.statusFolder.SetAttribute(ROUND_SCORE_A_ATTRIBUTE, this.scores.get(TEAM_A) ?? 0);
@@ -2853,19 +2880,27 @@ export class RoundService implements OnStart {
             // attributes, and the mode has to be true before the sides it paints are.
             this.statusFolder.SetAttribute(ROUND_MODE_ATTRIBUTE, this.mode.id);
 
-            // A fresh scoreboard for a fresh round: a round that inherited one would be starting
-            // in the middle of somebody else's game. The round is also un-finished here — it is
-            // exactly the flag's lifetime — so a round ended early by a leaver cannot leave the next
-            // one unable to finish at all.
+            // **The scores are cleared here as well as at the round's end, and the two are not redundant.**
+            // `finishRound` wipes them for every round that *finishes*, which is the normal path and the one
+            // the HUD reads; this clears them for a round that is discarded without finishing — a dev command,
+            // a server with rounds switched off mid-round — so a fresh round cannot open onto somebody else's
+            // numbers. The round is also un-finished here — it is exactly the flag's lifetime — so a round
+            // ended early by a leaver cannot leave the next one unable to finish at all.
             this.scores.clear();
             this.publishScores();
 
-            // **Both boards go with the scoreboard, and so does the hit log, and here rather than where
-            // the round ends.** Cleared at `finishRound` they would empty the panel that reads them one
-            // frame before the intermission they are meant to fill: a board is the round's *record*, so it
-            // has to outlive the round by exactly as long as the intermission does, and clearing it at the
-            // next round's opening is what gives it that lifetime — which is the hit log's lifetime too, by
-            // the same argument and on the same line. See `roundHits`, `roundOuts` and `roundHitLog`.
+            // **Both boards go with the hit log, and here rather than where the round ends.** Cleared at
+            // `finishRound` they would empty the panel that reads them one frame before the intermission they
+            // are meant to fill: a board is the round's *record*, so it has to outlive the round by exactly as
+            // long as the intermission does, and clearing it at the next round's opening is what gives it that
+            // lifetime — which is the hit log's lifetime too, by the same argument and on the same line. See
+            // `roundHits`, `roundOuts` and `roundHitLog`.
+            //
+            // **The scoreboard is the one that no longer goes with them, and the difference is who reads it.**
+            // These three are read by the result panel, which is drawn *between* rounds and would have nothing
+            // to draw if they were cleared as a round ended; the two score attributes are read by a scoreboard
+            // that is on screen in every phase and is *about the round being played*, so a figure left standing
+            // over an intermission is the one thing it must not show. See `finishRound` for the whole of it.
             this.roundHits.clear();
             this.roundOuts.clear();
             this.roundHitLog.clear();
