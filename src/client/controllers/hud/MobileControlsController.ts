@@ -15,215 +15,162 @@ import { ThrowController } from "../input/ThrowController";
 const DEBUG = true;
 
 /**
- * **Whether the paw can be dragged around the screen by hand — on, so the layout can be found rather than
- * guessed.** **Placeholder — a dev tool: set it to `false` to play, and the block it guards is deletable.**
+ * **The hand-move mode: drag anywhere on the cluster and the whole box follows your finger.** **Placeholder —
+ * `false`.**
  *
- * **Why it exists.** Where the toes sit is *derived*: the arc's radius comes from the toes' own size, the bearings
- * from the radius, and the whole shape from the engine's button. So every attempt to move the cluster is
- * arithmetic in this file and a rebuild, and nobody can feel where it should sit from a screenshot — including
- * whoever wrote it, twice. **This flag turns the five toes into handles**: press one and drag, and the whole paw
- * follows the finger. Nothing about the *shape* changes — still one curve at one radius, still {@link TOE_GAP}
- * apart — so what this finds is the paw's **position**, which is the one part of it with no arithmetic behind it.
+ * **Turn it on, drag the cluster where you want it, and paste the two numbers it prints into {@link BOX_NUDGE}** —
+ * that is the whole loop, and it is a live one: `rojo serve` is usually up, so flipping this and saving puts the
+ * mode into the running game in a second or two.
  *
- * **While it is on the toes do not act.** A press is a grab and no control fires — deliberately, because the
- * alternative is guessing whether a gesture is a tap or a drag, and a wrong guess throws the ball across the arena
- * while somebody is trying to move a button. **Off is the game**: the five are buttons again and a drag does
- * nothing at all.
+ * **It exists because the derivation is not something a person can nudge.** Where the box sits is computed from the
+ * engine's jump button (see {@link BOX_PAD_GAP}), which is right for every device nobody has looked at and no help
+ * at all for the one in front of you. The drag is how the delta gets found — one gesture, one number, one paste —
+ * instead of by rebuilding with a guessed constant, and the gesture *starts from where the cluster already is*, so
+ * switching the mode on never moves anything.
  *
- * **The answer comes out in the output**, in reference pixels, on the frame the finger is lifted:
+ * **While it is on, a press on a button is a grip rather than a press**: no action fires, no colour changes, and
+ * the same for all five, because the unit that moves is the *box*. That is the one thing this mode costs — the
+ * cluster cannot be played while it is being placed — which is why it is a constant in the file rather than
+ * something reachable at runtime.
  *
- * ```
- * [HUD] arrange — (37, -54)px from the pad's centre = (37.0, -54.0) reference px on a 393x852 viewport
- * ```
- *
- * Paste that pair into {@link PAW_OFFSET} and set this to `false`: that is the whole loop, one round trip instead
- * of five.
+ * **The packing pass deleted this tool, and the argument that deleted it was true in one direction only.** The
+ * claim was that a fixed box needs no drag tool: one number to tune, and the number is the box's size. True of the
+ * *size* and false of the *place* — the place is derived from something that differs per device, so the only way
+ * to disagree with it is by hand, and a tool is how a hand finds a number. See {@link BOX_NUDGE}.
  */
-const ARRANGE = true;
+const ARRANGE: boolean = false;
 
 /**
- * One toe's size, in pixels. **Placeholder — 52, up from 44.**
+ * The gap between two buttons in the box, in reference pixels. **Placeholder — 10.**
  *
- * **A thumb, not a mouse, and the thumb sets the floor.** The legend's chips are measured against a pointer that
- * is one pixel wide; this is measured against a fingertip, which is roughly twenty pixels across and needs a
- * target several times that to be hit without looking. `44` was that guideline floor and it was chosen *because
- * it had to be* — see below. `52` is the size the shape actually wants, and it is still comfortably above the
- * floor.
- *
- * **Why it was 44, and why that reason is gone.** The toes must be smaller than the pad, because that is what
- * makes this a paw rather than five buttons near a sixth: the reference this is drawn from has toes at roughly
- * two thirds of its pad. The previous pass believed the pad was ~54px, an estimate read off a landscape
- * screenshot; 44 against 54 was already nearly a match, so the toes went to the smallest size a thumb is allowed
- * and the whole shape was built there. **The log settled it: the same code draws that button at 120px on one
- * device and 70px on another** — the ControlModule scales its own touch controls to the viewport, so the pad's
- * size is a property of the phone rather than a constant. **Shrinking the pad is what lets the toes grow**: 52
- * against a 72px pad is 72%, which is the reference's proportion, where 52 against a 120px pad would have been
- * five buttons beside a beach ball. See {@link PAD_SIZE} for the shrink and for why it is derived rather than a
- * fixed scale.
- *
- * **The height of the circle is also the width of the cell**, because `UICorner` at `UDim(1, 0)` makes it a
- * circle rather than a rounded square: one number, two axes, and no way for the two to disagree.
+ * **A gap, not a packing rule.** The buttons sit on a grid whose cell is `size + gap`, so this is what is left
+ * over between two circles once the cells are as small as they can be. `10` on a 72px button is the tightness the
+ * last hand-tuning arrived at: close enough to read as one object, far enough that two half-transparent circles
+ * do not look like they touch.
  */
-const BUTTON_SIZE = 72;
+const BOX_GAP = 10;
 
 /**
- * The throw's size, in pixels, and **the one toe in the paw that is not the same size as the others.**
- * **Placeholder — 60, up from 52.**
+ * The room a button's word needs under it, in pixels. **Placeholder — 20, and it is `LABEL_GAP` plus one line.**
  *
- * **The primary action is bigger, and that is the whole of the design.** The throw is what a round is played
- * with, it is the one control a player holds for a length of time, and it is the one whose *timing* matters —
- * so it gets a target that a thumb finds without looking, and the four one-tap toes around it are sized to be
- * pressed rather than to be hunted. The size difference is also the only hierarchy this cluster has: there is no
- * colour that says "this one matters", because colour is saying which buttons are *down*.
- *
- * **Why it moved with the toes, and by the same step.** It went to `52` only because the toes had gone to `44`
- * against a pad nobody had measured — the whole cluster was at the smallest sizes the shape would allow. With the
- * pad measured and shrunk (see {@link PAD_SIZE}) the pair move together: `52` toes and a `60` throw. **`60` is
- * still below the pad**, which is the constraint that decides it: the thing a thumb rests on should be the largest
- * target in the cluster, and the throw is the largest of the ones that are *pressed*. It is also what keeps the
- * arc short — every extra pixel of the throw's diameter widens the two steps either side of it, and those are the
- * widest steps in the arc. See {@link ARC_WINDOW}.
+ * **A fixed band rather than a factor in the button's size**, which is the choice this file made and the one thing
+ * about the packing that is not pure arithmetic: the label is 12px of text under a 4px gap, so every row of
+ * buttons is really `size + 20` tall. Subtracting the band from the available height once per row is the same
+ * arithmetic as making the cells taller would be, and it has the advantage of being a number that does **not** move
+ * when the box does — the text is a fixed 12px in this design, so neither is the room it needs. See {@link pack},
+ * which takes it as an argument for exactly that reason, and {@link mount}, which reads the live line height from
+ * the theme rather than trusting this default.
  */
-const THROW_SIZE = 78;
+const LABEL_BAND = 20;
 
 /**
- * How much of the circle an icon gets, as a fraction of its diameter. **Placeholder.**
+ * How far the box sits from the screen's right edge, in reference pixels. **Placeholder — 12.**
+ *
+ * **The same 12 the rest of the furniture uses**, and it is the only screen edge this box names — the other three
+ * sides come from the box's own size or from the pad below it.
+ */
+const BOX_EDGE_GAP = 12;
+
+/**
+ * How far the box sits *above the engine's jump button*, in reference pixels. **Placeholder — 8.**
+ *
+ * **A gap from the pad rather than from the bottom edge of the screen, and this is the one thing the box could not
+ * take from a fixed corner offset.** The engine's button is not at a fixed height: this project's own logs put its
+ * top edge **90px** and **210px** above the bottom of the screen on two different runs, because the ControlModule
+ * lays its own touch controls out per device. A fixed bottom margin would therefore either overlap the pad on the
+ * tighter device or float the box most of a screen height above it on the looser one. So the box's bottom edge is
+ * derived from the pad and this is the one number in that derivation.
+ */
+const BOX_PAD_GAP = 8;
+
+/**
+ * **How far the box is moved from where the derivation puts it, in reference pixels: `X` right, `Y` down.**
+ * **Placeholder — `(0, 0)`, which is exactly where the derivation puts it.**
+ *
+ * **This is the hand's half of the position, and it is a *nudge* rather than a corner on purpose.** The derived
+ * place is right on every device — it is the pad that moves, not the layout — so a constant that *replaced* it
+ * would throw that away and have to be found again on the next phone. A delta keeps it: `new Vector2(0, 40)` reads
+ * as "40px lower than the derivation thinks, on whatever device this is", which is the sentence a person actually
+ * has in mind when they say the buttons should be lower. See {@link BOX_PAD_GAP} for the derivation it modifies.
+ *
+ * **It is also the only way to move the cluster *down*.** The derivation puts the box's bottom edge just above the
+ * pad's top edge, so below the cluster there is nothing but the engine's own button, and crossing that line is what
+ * this constant is for. **`X` right and `Y` down, both positive in that direction**, because that is the way a
+ * finger moves — a drag writes these two numbers with no sign flipped between the gesture and the file.
+ *
+ * **What a downward nudge costs: the cluster can end up on the jump.** The five buttons draw over whatever is under
+ * the box, so a button that lands on the engine's button takes its presses. That is why the derivation exists and
+ * why the pad is where it is (the module keeps it clear of the home indicator) — this constant is for overruling
+ * that deliberately, not for fixing it by accident.
+ *
+ * **Nothing here is written back to the file**, so {@link ARRANGE} can take the box anywhere and a re-sync — or
+ * simply turning the mode off — puts it back at the derivation. The number is the deliverable, not the position.
+ */
+const BOX_NUDGE = new Vector2(0, 40);
+
+/**
+ * The smallest a button may be laid out, in pixels. **Placeholder — 44.**
+ *
+ * **The tap-target floor, and it is a floor on the *clamp* rather than a target.** `pack` returns whatever size
+ * the box permits; below this one the buttons are grown to it anyway and the pack says so in the log, because two
+ * buttons that overlap are bad and a button a thumb cannot hit is worse — the overflow is the cheaper failure.
+ * **On the 393-wide phone this file is drawn against the buttons come out at 72px**, so this is a guard for small
+ * screens and short viewports rather than a number anything normal touches.
+ */
+const TAP_MIN = 44;
+
+/**
+ * How much of the circle an icon gets, as a fraction of its diameter. **Placeholder — 0.6.**
  *
  * **Reserved, not filled.** No icon is loaded here — the art is coming later — so every button today is an empty
- * circle with a word under it, and this is the box the picture will go in when it exists: centred, square, and
- * six tenths of the button across, which leaves a ring of the button's own colour visible all the way round.
- * That ring is what makes the icon read as *sitting in* something rather than as floating on the screen, and it
- * is the reason the reservation is smaller than the circle rather than the circle itself.
+ * circle with a word under it, and this is the box the picture goes in when it exists: centred, square, and six
+ * tenths of the button across, which leaves a ring of the button's own colour visible all the way round. That ring
+ * is what makes an icon read as *sitting in* something rather than as floating on the screen.
  *
- * **The day the art arrives, this file changes in one place**: `buildCell` puts an id onto the `ImageLabel`
+ * **The day the art arrives this file changes in one place**: {@link buildButton} puts an id onto the `ImageLabel`
  * it already builds, and nothing about the sizes or the layout moves.
  */
 const ICON_RATIO = 0.6;
 
 /**
- * The size the engine's jump button is shrunk to, in pixels. **Placeholder — 72.**
+ * The size the engine's jump button is drawn at by this HUD, **in reference pixels. Placeholder — 72.**
  *
  * **The pad is the engine's, at whatever size the engine drew it, and this is the one number that disagrees with
- * it.** The button arrives at **120px** on the device in the first log and **70px** on the device in the second:
- * the ControlModule scales its own touch controls to the viewport, so the pad's size is a property of the phone
- * rather than a constant, and every estimate made about it from a screenshot has been wrong. `72` is the size
- * this paw is designed around — the toes are 52 and the throw 60, so a 72px pad keeps the pad the largest target
- * in the cluster and puts the toes at the reference's two-thirds proportion.
+ * it.** The button arrives at **120px** on the device in the first log and **70px** on the device in the second —
+ * and those two are not a measure of how generous each phone is. They are a two-step rule in the module's own
+ * source, `min(viewport's short axis) <= 500 ? 70 : 120`, and that is a fact worth having in front of you: **the
+ * pad does not scale with the screen at all.** It is 70px on everything from a phone held sideways to a small
+ * tablet and 120px on everything above that, for the life of the session. A box that scales beside a pad that
+ * cannot is a cluster that comes apart on exactly the devices nobody tests on, which is what the second factor
+ * below is for.
  *
- * **It is applied as a `UIScale`, and the scale is *derived* rather than fixed.** A constant scale — the `0.6`
- * this task started from — renders 72px on the 120px device and **42px on the 70px one**, where the toes would be
- * bigger than the pad they curl around. So the scale is `min(1, PAD_SIZE ÷ the engine's own size)`: the pad comes
- * down to 72 wherever it is bigger than that, and is left exactly as the engine drew it wherever it is not.
- * **Shrink, never enlarge** — that button was sized for a thumb on *that* device, and a few pixels is not worth
- * arguing with it about.
+ * **Applied as a `UIScale` made of two factors, and both are derived rather than chosen.** A constant scale — the
+ * `0.6` that was tried first — renders 72px on the 120px device and **42px on the 70px one**. So the first factor
+ * is `min(1, PAD_SIZE ÷ the engine's own size)`: the pad comes down to 72 wherever the engine drew it bigger and
+ * is left exactly as the engine drew it wherever it is not — **shrink, never enlarge**. The second is
+ * {@link scaleFor}'s viewport multiplier, the same number the box and its buttons are built from, and it is what
+ * puts the pad back in step with them. See {@link restyleEngineJump} for the multiplication and `measure` there
+ * for why the two factors cannot feed back on each other.
  *
- * **`UIScale` and not a `Size` write, which is the other half of why this is safe.** The reference states it
- * plainly: *"A `UIScale` object simply contains a number that is used to multiply the `AbsoluteSize` of the parent
- * UI element"*, and its `Scale` example turns `{0, 200}` into `{0, 100}` at `0.5`. **So `AbsoluteSize` reports the
- * shrunk size**, and every number in {@link mount} — the pad's radius, its centre, the toes' floor — follows the
- * visual pad with no arithmetic of ours and nothing to keep in step. **And it is the one property of that button
- * the engine's module has never been seen to write**: the module sets `Size` and `Position` on every viewport
- * change (that is exactly what the per-device differences in those two logs *are*), while the discovery probe
- * reads `0 child(ren)` on a fresh button, so it ships no `UIScale` of its own to collide with. See
+ * **Why "shrink, never enlarge" is still the rule for the first factor, now that the pad is allowed to grow.** The
+ * rule was written against a *fixed* target: at a fixed 72 the second log's 70px pad would have been left alone
+ * while a 42px one would have been blown up to 72, i.e. a constant that quietly disagreed with half the fleet.
+ * The target is not fixed any more — it is the reference size times the viewport, which is the same thing the
+ * buttons get — so a *small* pad on a small screen is still left alone, and a small pad on a small screen is the
+ * case the rule is about.
+ *
+ * **`UIScale` because the reference says its `Scale` "is used to multiply the `AbsoluteSize` of the parent UI
+ * element"** — so `AbsoluteSize` reports the shrunk size and nothing else has to know about it. It is also the one
+ * property of that button the module never writes: its `TouchJump` module sets `Size`, `Position`, `Image` and
+ * `Visible` when it creates the button, and the discovery probe reads `0 child(ren)` on a fresh one. See
  * {@link restyleEngineJump}, which is where it is added.
+ *
+ * **The cluster uses the pad's size for two things and no more**: the box's bottom edge is derived from the pad's
+ * top edge, and the pad's rendered size is the number a person compares the buttons against by eye. Nothing is
+ * positioned *from* that size — see `measure` — which is the whole of the coupling that survived the arc being
+ * deleted.
  */
 const PAD_SIZE = 72;
-
-/**
- * The gap between two adjacent toes, in pixels. **Placeholder — 5, and it replaces a 20.**
- *
- * **The whole of this task is in this number.** The cluster's job is to read as *one object* rather than as five
- * circles that happen to be near each other, and the reference this shape is drawn from has its toes almost in
- * contact — a few pixels at most. `5` is the middle of the range asked for (4–6) and deliberately at the *tight*
- * end of it: a gap a little too small reads as a deliberate paw with touching toes, and a gap a little too big
- * reads as the scatter this replaces. It is the number to move first if the buttons look crowded on a device.
- *
- * **Why 20 was right before and is wrong now — the argument reversed rather than retuned.** The previous pass set
- * this to `20` because it was doing two jobs: it was the gap between the buttons *and* the space a label hangs in.
- * A cell is a circle plus a `LABEL_GAP` plus a `caption` line, and on a ring centred on the pad the upper toes'
- * words point straight *back at the pad*, so a gap smaller than a label printed those words on top of the engine's
- * own disc. **That is still true, and it is why this number no longer solves it.** The paw derives its radius from
- * the toes' own size ({@link ARC_WINDOW}), which is far enough out that every label sits in open air between the
- * pad and the arc. The label's height has moved out of *this* constant and into the radius, and what is left here
- * is the one job the word "gap" describes: how close two toes are.
- */
-const TOE_GAP = 10;
-
-/**
- * **How far the whole paw sits from the pad's centre, in reference pixels.** **Placeholder — `(0, 0)`.**
- *
- * **It exists because the paw otherwise has no position of its own.** The toes are placed *around the engine's
- * button* — which is what makes them a paw rather than a floating row — so where they land is the pad's centre
- * plus a bearing and a radius, and there was no way to say "a little up and to the left of that". This is that
- * way: one vector, added after the multiplier, so it scales with the buttons like every other reference number in
- * this file.
- *
- * **It is also what {@link ARRANGE} writes its answer into**, and it is the only number in the shape that is not
- * derived from anything — because where a paw should sit on a phone screen is a judgement about a thumb rather
- * than a measurement of one. See {@link mount} for where it lands in the placement.
- */
-const PAW_OFFSET = new Vector2(0, 0);
-
-/**
- * Where the paw's lowest toe points, in degrees off the pad's centre. **Placeholder — 177.**
- *
- * **The convention, stated once because two of them are in play**: these are `math.cos`/`math.sin` bearings on a
- * screen, so `0` is to the *right* of the pad, `90` is *below* it and `270` is *above* it — a screen's `+Y`
- * points down. **The `135°` in the brief is the same direction in the other convention** — the up-and-left
- * diagonal, measured anticlockwise from east in a maths frame — and it is `225` here.
- *
- * **Why `177` rather than `225`: the arc is not centred on the diagonal, it *spans* it.** The pad sits in the
- * corner of the screen, so the arc's two ends are the two places it can run out of room — the lowest toe's
- * *label* is the lowest thing in the cluster, and the highest toe's disc is the rightmost. **The tighter of the
- * two logged devices is what sets it**: that pad's top-left is `{1, -95}, {1, -90}` at 70px, so its centre is 60px
- * from the right edge and 55px from the bottom. At `177` the lowest toe (`Drop`, 177°) hangs its word 52.6px
- * below that centre, which is 2.4px inside the bottom edge, and the highest (`Curve`, 285°) reaches 59.2px to the
- * right of it, which is 0.8px inside the right edge. **Both are inside, and those two margins are the numbers to
- * spend if a device ever disagrees**: the arc is about 108° long (see {@link ARC_WINDOW} and the step derivation
- * in {@link mount}), and moving this bearing *up* trades the bottom margin for the right one — so `176.5` is the
- * balanced value if a run clips at the top instead.
- *
- * **It is the one fixed number in the shape while everything else is derived, and that is deliberate.** The
- * radius, the steps and the toes' sizes all come from measurements the client takes at runtime; this cannot,
- * because it encodes *where a phone is allowed to put the pad* — a fact this project has two data points for and
- * no formula. `177` is chosen so the measured geometry lands inside both edges on the tighter of those two, and
- * the mount line prints the bearings it produces, so a run that disagrees says so in one number.
- */
-const ARC_START_BEARING = 177;
-
-/**
- * **How many degrees of arc a phone actually has in that corner — the constant the radius is derived from.**
- * **Placeholder — 112.**
- *
- * **What it is: a budget, not a measurement.** Five toes have to lie on one curve around the pad, and the curve
- * has to fit the wedge of screen between the bottom edge and the right edge — the pad is in the corner, so those
- * two edges are what the arc runs into. `112` is the angular room in that wedge at the radius the toes end up at,
- * and **everything else follows from it**:
- *
- * - the *radius* is the smallest one at which the widest neighbouring pair — the throw and a toe — spans
- *   `ARC_WINDOW / 4` degrees, so five toes fit the wedge with the widest pair paid for;
- * - the *bearings* are then each pair's own chord at that radius, so the small toes sit slightly closer together
- *   than the throw's neighbours do and every gap comes out as {@link TOE_GAP}.
- *
- * **And this is the constant that says "hug the pad" cannot be combined with "toes touching", in one line of
- * arithmetic.** A radius of "the jump button plus a small gap" is `36 + 26 + 5 = 67` pixels against the 72px pad
- * of {@link PAD_SIZE} and a 52px toe. At *that* radius, one step between neighbouring toes is
- * `2·asin(57/134) ≈ 50°`, so five toes span about **200°** — more than half a circle, which is more than a screen
- * corner has and more than the joystick hand's side of the screen can give up. **The toes cannot both hug the pad
- * and touch each other**, and this constant chooses the touching, because that is the shape being asked for and
- * the whole of what was wrong with the scatter it replaces. The cost is that the toes sit on a ~126px arc rather
- * than a 67px one, which is a longer thumb reach — reported as a deviation rather than hidden.
- *
- * **The numbers in the paragraph above are the pad's and the toes', so they move when those move.** They were
- * `216°` and `100px` while the pad was believed to be 54px and the toes were 44. The arithmetic is one line either
- * way; what changed is the *pad*, because a smaller pad is what lets the toes grow without the arc running off the
- * screen. See {@link BUTTON_SIZE} and {@link PAD_SIZE}.
- *
- * **It is also where the old outer boundary went.** The previous pass had no equivalent: its ring wrapped the pad
- * at a radius of `pad + toe + 20 ≈ 83`, which is *inside* what five touching toes need, which is exactly why its
- * fifth slot had to be placed below the pad and off the bottom of the screen.
- */
-const ARC_WINDOW = 170;
 
 /**
  * The jump button's word. **`Jump` rather than a symbol**, because this HUD's rule is that a button says what
@@ -238,50 +185,179 @@ const JUMP_LABEL = "Jump";
 /**
  * The viewport this HUD's numbers were drawn against: **393 × 852, portrait — the short axis being 393.**
  *
- * Every size in this file is written in *reference* pixels and every toe is multiplied by one `UIScale` derived
- * from this — see {@link buildScale}. This pair of numbers is what decides how big a button is on somebody else's
- * phone; nothing else in the file knows the screen exists. **The arc's radius is the one number that is not in this
- * language** and it says so: one term of it is half the engine's own button, which is not scaled, and the other is
- * reference pixels times the scale.
+ * Every size in this file is written in *reference* pixels and multiplied by one multiplier derived from this —
+ * see {@link buildScale}. This pair of numbers is what decides how big a button is on somebody else's phone;
+ * nothing else in the file knows the screen exists. **It is also the arithmetic behind {@link BOX_FRACTION}**,
+ * which is the box's size divided by this pair, and that is the closest thing this corner has to a specification.
  *
  * **Both axes, and the second one is not decoration.** The obvious version measures the *short* axis alone, on
  * the argument that it reads 393 in portrait and 393 in landscape and therefore gives one phone one answer.
- * That is true and it is not sufficient: **the paw is about 210 reference pixels across** — a ~126px arc plus the
- * toes at either end — and a phone held sideways has a viewport 393 tall, so a multiplier of 1 leaves the far toe
- * over the top edge and the pad's own corner crowded. Fitting *both* axes against the reference viewport is the
- * same rule with the height added, and it is what makes "393 × 852 portrait as the primary target, in scale, so
- * it works in landscape too" true rather than hopeful.
+ * That is true and it is not sufficient: **the cluster is a rectangle with an aspect of its own**, and a phone
+ * held sideways has a viewport 393 tall. A multiplier taken from the width alone would ask for a box
+ * `0.6005 × 852 = 512px` wide on a screen whose whole height is 393 — and `pack`, handed a 512 × 90 box, would
+ * answer with `(90 − 10)/2 − 20 = 20px` buttons: below its own tap floor, so raised to 44 and then overlapping
+ * each other inside a rectangle that no longer fits on the screen. Fitting *both* axes against the reference
+ * viewport is the same rule with the height added, and it is what makes "393 × 852 portrait as the primary
+ * target, in scale, so it works in landscape too" true rather than hopeful.
  */
 const REFERENCE_VIEWPORT = new Vector2(393, 852);
 
 /**
- * How far that scale is allowed to go, either way.
+ * **The box as a fraction of the viewport**: `0.6005` of its width and `0.2277` of its height. **Placeholder.**
  *
- * **A clamp rather than arithmetic that happens to be bounded.** The scale is the largest fraction of
- * {@link REFERENCE_VIEWPORT} the viewport can hold — `1` on the reference phone, `0.9` on a slightly smaller
- * one, about `1.2` on a tablet — and the caps do the two ends of that: a portrait tablet's short axis is 768
- * and would otherwise scale the toes to twice their size, turning five thumb targets into five dinner plates,
- * while a very short viewport (a phone held sideways, where the fit above is about `0.46`) would shrink them to
- * buttons nobody can hit. **A slightly-too-large button on a small screen is the better failure**, which is what
- * the floor is choosing — and it is the *floor* that matters most here, because a phone held sideways is the case
- * a player is most likely to be in.
+ * **This is what makes the cluster the same shape on every phone.** A fraction rather than a pixel count is the
+ * only thing that behaves, because it is the only form in which "this much of the screen" survives a screen
+ * change: divided by {@link REFERENCE_VIEWPORT} and multiplied back out by the fit, the box covers the same part
+ * of every viewport, and {@link pack} turns that into a proportionally bigger or smaller button. See
+ * {@link BOX_SIZE} for what the box *is* and {@link scaleFor} for the multiplication.
+ *
+ * **Where the two numbers come from: `236 ÷ 393` and `194 ÷ 852`** — the reference box, expressed in the only
+ * language that scales. They are a **Placeholder** in the sense every first number is, and the thing to tune: a
+ * bigger fraction is a bigger cluster, and it is the *only* number that does that. What it cannot fix is the
+ * screen: see {@link SCALE_MIN}, where a sideways phone is held at a floor rather than allowed to shrink.
+ *
+ * **One fraction per axis, and one multiplier for both** — the two are not multiplied together here. A per-axis
+ * `UDim2.fromScale` box was the obvious reading of this constant and it is refused for the reason
+ * {@link REFERENCE_VIEWPORT} does the arithmetic for: a landscape phone would get a 512 × 90 box and 20px
+ * buttons. The box's aspect is a property of the design, so one number scales both axes and this pair only says
+ * what the box is at the reference screen.
  */
-const SCALE_MIN = 0.85;
-const SCALE_MAX = 1.15;
+const BOX_FRACTION = new Vector2(0.6005, 0.2277);
 
 /**
- * **That scale, as a function of the viewport** — pulled out of {@link buildScale} the day something else needed
- * the same figure, which is the arrange hook: a drag arrives in *screen* pixels and {@link PAW_OFFSET} is written
- * in reference ones, so the hook has to divide by exactly the number the cluster is multiplied by. **Two copies
- * of this expression would be two answers to one question**, and the one that went stale would be the one nobody
- * was looking at.
+ * The box the five buttons are packed into, at the reference viewport. **Placeholder — `(236, 194)`, which is
+ * {@link BOX_FRACTION} written out.**
+ *
+ * **This is the only number that decides how big the buttons are**, which is the whole point of this shape: a
+ * rectangle in the corner, and `pack` derives one button size from it. Bigger box, bigger buttons; nothing else to
+ * change. See {@link pack}.
+ *
+ * **Where the two numbers come from: they are exactly the size at which five buttons come out at 72px** — the size
+ * the cluster's toes were last tuned to by hand, so this starts from the size the game had rather than from a
+ * guess. `3` across at 72px with a {@link BOX_GAP} of 10 is `3*72 + 2*10 = 236`; two rows of a 72px circle plus a
+ * 20px label band is `2*92 + 10 = 194`. What makes them *these* numbers is that derivation; what makes a
+ * different box a different button size is that this is the only input.
+ *
+ * **In reference pixels**, like every size in this file, so the packing stays scale-free: the box is multiplied by
+ * the viewport's own fit and `pack` works in whatever unit it is handed. See {@link scaleFor}.
+ *
+ * **Declared down here rather than up with the other sizes because it is *derived* from
+ * {@link REFERENCE_VIEWPORT}** — {@link BOX_FRACTION} times the reference screen. A module-level `const` that
+ * reads one declared below it would read `nil` and take the whole controller down at require time, which is the
+ * trap this codebase has recorded from the other direction (`HANDOFF.md`'s hoisted-initializer note); file order
+ * is the only thing that fixes it, so the derivation lives beside its input. The two constants are one fact
+ * written twice and the fraction is the live copy — this one exists so that `pack`, the debug line and the log a
+ * person reads are all in the same units as the design's own numbers.
+ */
+const BOX_SIZE = new Vector2(
+	REFERENCE_VIEWPORT.X * BOX_FRACTION.X,
+	REFERENCE_VIEWPORT.Y * BOX_FRACTION.Y,
+);
+
+/**
+ * The smallest the cluster is ever *drawn*, as a fraction of the reference layout. **Placeholder — 0.85.**
+ *
+ * **A floor and no ceiling, and losing the ceiling is this pass's change.** The cap that used to be here (`1.15`)
+ * belonged to the old shape: five toes on an arc are a fixed figure at a fixed radius, so a tablet's 2×
+ * multiplier turned them into five dinner plates and the cap was the only thing between the design and a
+ * nonsensical screen. **A box packed as a fraction of the viewport has no such failure** — a bigger screen gets a
+ * bigger box and proportionally bigger buttons, which is the definition of the thing being asked for — so the
+ * cluster now keeps scaling on the screens it used to stop on. Where it used to stop is worth stating plainly,
+ * because it is the only place this constant's cap ever did anything: the fit is above `1.15` only past roughly
+ * **452 × 980**, so every phone was already proportional and only a tablet was capped.
+ *
+ * **The floor is still needed, and it is not {@link TAP_MIN} under another name.** The multiplier is the *fit* —
+ * the smaller of the two axis ratios against {@link REFERENCE_VIEWPORT} — and a phone held sideways fits at about
+ * `0.46`, which is a 33px button: below the tap floor, so `pack` would raise it to 44 and the two rows would then
+ * overlap each other *and* spill out of the bottom of the box. Holding the layout at `0.85` keeps a sideways
+ * phone at 58px buttons that still fit, which is the cheaper failure by a wide margin.
+ *
+ * **Where `0.85` comes from: it is comfortably above the point where the packing stops fitting**, and that point
+ * is arithmetic rather than taste. A row of buttons has `(194m − 10m)/2 − 20` pixels each, which reaches
+ * `TAP_MIN`'s `44` only at `m ≈ 0.7` — below that `pack` is no longer fitting anything and the rows overlap the
+ * box. `0.85` is the first round number above that edge.
+ */
+const SCALE_MIN = 0.85;
+
+/**
+ * **That scale, as a function of the viewport** — pulled out of {@link buildScale} so the cluster's own arithmetic
+ * and the thing that watches for a new viewport ask the same question. **Two copies of this expression would be
+ * two answers to one question**, and the one that went stale would be the one nobody was looking at.
+ *
+ * It is what turns {@link BOX_SIZE} and {@link PAD_SIZE} from reference pixels into the pixels this screen
+ * actually has — so the box's size, every button's size and the pad's size all come from this one number, which is
+ * the whole of why a bigger phone gets a bigger cluster rather than the same cluster with more empty screen around
+ * it. See {@link pack} for everything that follows from the box, and {@link restyleEngineJump} for the pad.
+ *
+ * **Clamped at the bottom only** — {@link SCALE_MIN} — which is why this is a `math.max` around the fit rather
+ * than the `math.clamp` it used to be: there is no longer a ceiling to express. See that constant for why the
+ * floor is not optional, and for the arithmetic that says where the packing stops fitting without it.
  */
 function scaleFor(viewport: Vector2): number {
-	return math.clamp(
+	return math.max(
 		math.min(viewport.X / REFERENCE_VIEWPORT.X, viewport.Y / REFERENCE_VIEWPORT.Y),
 		SCALE_MIN,
-		SCALE_MAX,
 	);
+}
+
+/**
+ * **One button size from one box: the whole of this cluster's layout, as a pure function.**
+ *
+ * Handed the *row counts* — `[3, 2]` today, and `[5]` or `[1, 1, 1, 1, 1]` are the same call — plus the box it has
+ * to fit, the gap between buttons and the band each row's label needs, and it returns where every button goes and
+ * how big it is. **Nothing here reads the screen, the engine's button or the scale**, which is why it can be
+ * reasoned about on paper — and why the box is the only knob: a bigger box means bigger buttons, because this is
+ * the only line that decides.
+ *
+ * **The size is the smaller of the two bounds the box imposes**: how much width a full row has per button, and how
+ * much height a row has per button once every row's label band is taken out. **Every button gets the same size,
+ * including the throw** — and that is this arrangement's whole trade, deliberately: four passes of making the
+ * primary action bigger produced arcs that had to stretch to survive it. **The pattern is the shape here, not the
+ * sizes.**
+ *
+ * **The short row is centred by construction** rather than by a special case: a row with fewer buttons than the
+ * widest one starts half of the difference in, so `[3, 2]` puts its two buttons under the *gaps* of the row above
+ * — the pattern the brief drew — and `[5]` simply centres against nothing. That is the reason the pattern is an
+ * array of row counts rather than a flag: changing `[3, 2]` to `[5]` is one number, and every formula below reads
+ * that array rather than assuming it.
+ *
+ * `x` and `y` are each button's **centre**, in the box's own coordinates from its top-left. See {@link mount} for
+ * where the box is, and {@link TAP_MIN} for what happens when the answer is too small to tap.
+ */
+function pack(
+	rows: number[],
+	box: Vector2,
+	gap: number,
+	labelBand: number,
+): Array<{ x: number; y: number; size: number }> {
+	let columns = 0;
+	for (const count of rows) columns = math.max(columns, count);
+
+	const across = (box.X - (columns - 1) * gap) / columns;
+	const down = (box.Y - (rows.size() - 1) * gap) / rows.size() - labelBand;
+
+	// **The floor is applied here rather than checked here.** A box too small for a thumb target is a box the
+	// layout grows out of — see {@link TAP_MIN} — and what the caller gets is a size that is always tappable and
+	// positions that are always the same gap apart, which is the pair of properties worth keeping.
+	const size = math.max(math.min(across, down), TAP_MIN);
+
+	const cells: Array<{ x: number; y: number; size: number }> = [];
+
+	for (let row = 0; row < rows.size(); row++) {
+		const count = rows[row];
+		const inset = ((columns - count) * (size + gap)) / 2;
+
+		for (let column = 0; column < count; column++) {
+			cells.push({
+				x: inset + column * (size + gap) + size / 2,
+				// The pitch is the circle *plus its label* plus the gap, because the label hangs inside the row.
+				y: row * (size + gap + labelBand) + size / 2,
+				size,
+			});
+		}
+	}
+
+	return cells;
 }
 
 /**
@@ -289,19 +365,38 @@ function scaleFor(viewport: Vector2): number {
  *
  * **Two numbers rather than one, and that is the whole of the design.** A single threshold is a line the stick
  * sits *on* when a thumb holds it there: the engine's thumbstick jitters by a little at rest and by more under a
- * thumb, so one `>= 0.85` test would start and stop the sprint several times a second while the player is doing
+ * thumb, so one `>= 0.75` test would start and stop the sprint several times a second while the player is doing
  * one thing — and every flip is a `setSprinting` request to the server, which is the expensive half. **The gap
  * between the two is the hysteresis**: it takes a deliberate push to start and a deliberate easing-off to stop,
  * and the `0.15` between them is the room the thumb's own noise lives in.
  *
- * **Where the numbers come from: a thumbstick's own range.** The magnitude is `0` at rest and about `1` at the
- * rim, so `0.85` reads as "pushed nearly all the way" and `0.7` as "eased off, but not back to a walk" — which is
- * what sprinting should feel like on a phone: not a mode the player switches, but what happens when they push the
- * stick to the edge. Both are guesses to be moved once a real thumb has been on them; see {@link watchStick} for
- * the loop that reads them, and for the honest statement of what cannot be known about the number until it does.
+ * **Where the numbers come from: a thumbstick's own range, and the word "far" rather than "at the wall".** The
+ * magnitude is `0` at rest and `1` at the rim, so `0.75` is three quarters of the way out — the deliberate push the
+ * requirement actually names — and `0.6` is "eased off, but not back to a walk". **`0.85` was the first value here
+ * and it asks for more than "far"**: on a 70px stick that is 30px of a 35px radius, a thumb pressed against the
+ * inside of the ring rather than one moved across it, and a threshold that demands the last sixth of the travel is
+ * one a player can fail while believing they pushed it all the way. Both values are **Placeholders** to be moved
+ * once a real thumb has been on them; see {@link watchStick} for the loop that reads them and for the line that
+ * prints how far this device's stick actually reaches.
+ *
+ * **And what the numbers *mean* depends on the device's touch mode, which is a fact about somebody else's module.**
+ * The engine's own control module computes the move vector differently per mode, and only one of the four produces
+ * a number these thresholds can be applied to honestly:
+ *
+ * - **Thumbstick** (the engine's default): the module divides the thumb's offset by the stick's radius and scales
+ *   the result from a `0.05` dead zone out to `1` at the rim. Analog, and exactly what this design assumes.
+ * - **Dynamic thumbstick**: the same shape, but the scale saturates after about `20px` of finger travel — `1.0`
+ *   arrives roughly a third of the way out, so `0.75` is met by any firm push and the sprint becomes "moving".
+ * - **Thumbpad** and **DPad**: the module ends its arithmetic with `.Unit`. The vector is a *direction* and the
+ *   magnitude is `1` whenever the pad is off centre, at any pressure, so **no threshold in this file can express
+ *   "pushed to the rim"** on those modes — the honest reading of the design there is "sprint while moving", which
+ *   is a decision for the player-facing design and not for these two constants to fake.
+ *
+ * **Which is why the loop names the crossing and the reach**: a session's log is the only thing that says which of
+ * those three behaviours this client is in, and it says it without a round trip. See {@link watchStick}.
  */
-const SPRINT_START_MAGNITUDE = 0.85;
-const SPRINT_STOP_MAGNITUDE = 0.7;
+const SPRINT_START_MAGNITUDE = 0.75;
+const SPRINT_STOP_MAGNITUDE = 0.6;
 
 /**
  * How long {@link findStick} waits for the engine's own control module before giving up on the sprint, in seconds.
@@ -312,6 +407,150 @@ const SPRINT_STOP_MAGNITUDE = 0.7;
  * never arrives gets one log line and no sprint rather than a task that lives as long as the session does.
  */
 const STICK_WAIT_SECONDS = 10;
+
+/**
+ * **The names the engine's movement module has shipped under, newest first.** See {@link findMoveModule}.
+ *
+ * **Two names because there are two layouts of the same scripts, and this file was written against only one of
+ * them.** The modern client puts a `ModuleScript` called `PlayerModule` directly in `PlayerScripts`; the older one
+ * puts `ControlScript` and `CameraScript` there instead, with the movement code in `ControlScript.MasterControl`
+ * and **no `PlayerModule` anywhere in the tree**. Both answer `GetMoveVector` — the walk, the jump and the touch
+ * stick all work identically — so a client on the older layout is not broken in any way a player could see. It is
+ * only a client this file's lookup used to miss, silently, with the sprint as the whole of the symptom.
+ *
+ * **The order is the order of likelihood, not of preference**: whichever of these exists first and is a
+ * `ModuleScript` is the answer, and the search is recursive — the same rule this codebase applies to place files,
+ * and for the same reason. The shape belongs to somebody else and it moves; a path is a guess, a search is not.
+ */
+const STICK_MODULE_NAMES = ["PlayerModule", "MasterControl"];
+
+/**
+ * **How many times the stick's growing reach may be printed in one session.** See {@link watchStick}.
+ *
+ * **A cap rather than a tuning value**, and it is the difference between an instrument and a flood. The line it
+ * bounds prints only when the peak *rises*, a tenth at a time, so a session in which a thumb is pushed to the rim
+ * and back prints five or six of them — the envelope of how far this player actually pushes the stick, which is the
+ * answer to "is the threshold reachable here". The cap is for the pathological case it cannot rule out: a stick
+ * whose reading creeps upward a hundredth at a time would otherwise print for the rest of the session.
+ */
+const STICK_PEAK_LIMIT = 12;
+
+/**
+ * **The engine's movement module, found by name anywhere under `PlayerScripts` — or `undefined`.**
+ *
+ * A hoisted function rather than a method, because it is a question about somebody else's tree and has nothing of
+ * this controller in it: two candidate names, the first one that exists *and* is a `ModuleScript` wins, and the
+ * recursive flag is the whole of the correction to this lookup's first version — see {@link STICK_MODULE_NAMES}.
+ */
+function findMoveModule(playerScripts: Instance): ModuleScript | undefined {
+	for (const name of STICK_MODULE_NAMES) {
+		const found = playerScripts.FindFirstChild(name, true);
+
+		if (found !== undefined && found.IsA("ModuleScript")) return found;
+	}
+
+	return undefined;
+}
+
+/**
+ * **The movement stick as the engine's own touch module draws it: a frame, and the thumb inside it.**
+ *
+ * Both names are the engine's, not this file's: the default touch movement mode creates
+ * `TouchControlFrame.ThumbstickFrame` with a `StickImage` in it, and the thumb is moved to
+ * `relativePosition + StickImage.AbsoluteSize/2` from the frame's top-left — which is an `AnchorPoint` of `(0, 0)`,
+ * a top-left placement. See {@link stickPointReader} for the arithmetic that makes those two worth having.
+ *
+ * **The dynamic thumbstick and the thumbpad are deliberately not named here.** The dynamic one moves its thumb
+ * against a radius it never draws (`RadiusOfMaxSpeed`, 20px, doubled on a large screen), so its GUI cannot say
+ * what "all the way out" means; the thumbpad has no thumb at all — it slides the whole pad under the finger. Both
+ * are left to the module route rather than guessed at, which is the difference between a fallback and a fib.
+ */
+const STICK_FRAME_NAME = "ThumbstickFrame";
+const STICK_THUMB_NAME = "StickImage";
+
+/**
+ * **How far the stick's thumb is from the stick's centre, as a fraction of the stick's radius — the same number
+ * the engine computes for `GetMoveVector`.**
+ *
+ * The engine's own `TouchThumbstick.DoMove` is `currentMoveVector = direction / (thumbstickSize / 2)`, where
+ * `direction` is the finger's offset from the stick's centre and `thumbstickSize` is the frame's width — and the
+ * thumb is then drawn at exactly that offset, clamped to the rim. So this reads the module's own input back out of
+ * the two instances it drew it with, and the only thing it leaves out is the module's `0.05` dead zone, which no
+ * threshold in this file ever goes near. **That is a reading, not an imitation**: nothing here re-derives the
+ * gesture, it measures the picture the engine made of the gesture.
+ *
+ * **Why it is worth a second route at all.** The module route is one untyped `require` of somebody else's tree and
+ * it *failed on a real client* — ten seconds of waiting, then no sprint at all — while the same client's jump
+ * button was being read out of the same GUI by name, without complaint. Reading the stick the way the jump button
+ * is read needs no module, no `require`, and no assumption about which of Roblox's two layouts is installed. See
+ * {@link findStick}, which prefers this route and falls back to the module.
+ *
+ * **`clamp` is not decoration.** The fixed stick clamps its thumb inside the frame, so the fraction cannot exceed
+ * `1` — but a frame mid-layout (a rotation, a device change) can briefly report a size of zero, and a division by
+ * that would be an infinity the thresholds would read as a sprint. Zero is the honest answer for a stick with no
+ * size, and it is also the answer that fails quietly.
+ */
+function stickPointReader(stick: GuiObject, thumb: GuiObject): () => number {
+	return () => {
+		const radius = stick.AbsoluteSize.X / 2;
+		if (radius <= 0) return 0;
+
+		// Both centres by hand rather than through `AbsolutePosition` alone, because both instances are placed by
+		// their top-left corner: the frame's `AnchorPoint` is `(0, 0)` and the module writes the thumb as an offset
+		// from it. See {@link STICK_FRAME_NAME}.
+		const stickCentre = stick.AbsolutePosition.add(
+			new Vector2(stick.AbsoluteSize.X / 2, stick.AbsoluteSize.Y / 2),
+		);
+		const thumbCentre = thumb.AbsolutePosition.add(
+			new Vector2(thumb.AbsoluteSize.X / 2, thumb.AbsoluteSize.Y / 2),
+		);
+
+		return math.clamp(thumbCentre.sub(stickCentre).Magnitude / radius, 0, 1);
+	};
+}
+
+/**
+ * **The stick, found in the touch GUI and returned as a reader — or `undefined` if this client does not have that
+ * shape of stick.** See {@link STICK_FRAME_NAME} and {@link stickPointReader}.
+ *
+ * **Found by waiting for `TouchGui` and then searching it, rather than by waiting for the stick itself.** The GUI
+ * is created once, early, and holds every touch control the engine has; the stick inside it is created and
+ * destroyed as the movement mode changes, so waiting for the *right* child is a wait that can time out on a client
+ * that is working perfectly. The same reason the jump button is hunted rather than waited for.
+ *
+ * **Only a visible stick counts.** The control module builds the frames of all four touch modes at once and hides
+ * the ones not in use (see Roblox's own `ControlScript`), so an invisible `ThumbstickFrame` parked at its rest
+ * position would read as a permanently centred stick — the worst kind of wrong answer, because it looks like the
+ * player never pushes the stick rather than like a failed lookup.
+ *
+ * **And it is looked for again rather than looked at once, because "visible" arrives after "exists".** The module's
+ * `Create` builds the frame hidden and its `Enable` is what shows it, so a single look can catch a perfectly
+ * healthy client in the moment between the two — the frame is there, this route rejects it for being invisible,
+ * and the whole hunt falls through to a route that may be reading nothing at all. See the loop below, which is
+ * where that patience lives and why it is bounded.
+ */
+function findStickPoint(playerGui: PlayerGui): (() => number) | undefined {
+	const touch = playerGui.WaitForChild("TouchGui", STICK_WAIT_SECONDS);
+	if (touch === undefined) return undefined;
+
+	// Ten looks a second for the same patience the module route's `WaitForChild` is given, so the whole hunt is
+	// bounded by two waits rather than by one wait and one guess. **The alternative — accepting an invisible stick —
+	// is the one thing this must not do**: a hidden frame sits at rest for the whole session, and a stick that reads
+	// `0.00` for ever looks exactly like a player who never pushes it.
+	for (let waited = 0; waited < STICK_WAIT_SECONDS * 10; waited++) {
+		const stick = touch.FindFirstChild(STICK_FRAME_NAME, true);
+
+		if (stick !== undefined && stick.IsA("GuiObject") && stick.Visible) {
+			const thumb = stick.FindFirstChild(STICK_THUMB_NAME, true);
+
+			if (thumb !== undefined && thumb.IsA("GuiObject")) return stickPointReader(stick, thumb);
+		}
+
+		task.wait(0.1);
+	}
+
+	return undefined;
+}
 
 /** The gap between a button and the word under it. */
 const LABEL_GAP = 4;
@@ -339,15 +578,17 @@ const IDLE_TRANSPARENCY = 0.6;
 const HELD_TRANSPARENCY = 0;
 
 /**
- * One button: what it says, how big it is, and what it does.
+ * One button: what it says and what it does. **Where it goes and how big it is are not in here at all.**
  *
- * **The cluster is a table of these, which is what makes the arrangement one edit.** Nothing in the layout code
- * knows what a catch is or that a throw is held — it places circles and words — so moving a control to a different
- * place on the arc, adding one, or changing a size is a change to the table rather than to any of the drawing.
+ * **The cluster is a table of these, which is what makes the controls one edit.** Nothing in the layout code knows
+ * what a catch is or that a throw is held — it places circles and words — so adding a control, or changing what
+ * one does, is a change to the table rather than to any of the drawing.
  *
- * **`size` rather than a `primary` flag.** The hierarchy on this HUD is exactly one thing — how big the circle
- * is — and there are two values of it, so a boolean would have had to be read as "which of the sizes", which is a
- * number wearing a costume. A number says what it means, and the constant it is written as says why.
+ * **Nothing here is sized, which is the fourth arrangement's central decision.** The three arc passes each gave
+ * the table a `size` per control, because the geometry had to balance against whatever the engine's jump button
+ * turned out to be; a table carrying sizes is a table that gets re-tuned whenever that geometry moves. `pack` now
+ * gives every button the same size, computed from the box, so a size in here would be a second opinion about the
+ * one number this cluster is allowed to have.
  *
  * **`up` being optional is the whole difference between a tap and a hold**, and **the throw is the last one
  * standing**: the sprint was the other, and a sprint is no longer a button on this HUD at all — it is the
@@ -359,9 +600,6 @@ interface TouchControl {
 	/** The word under the button, which on this HUD is the whole of the legend. */
 	readonly label: string;
 
-	/** The circle's diameter, in reference pixels. See {@link REFERENCE_VIEWPORT} for what that means. */
-	readonly size: number;
-
 	/** What the press does. Called once per press, and never twice without a release between them. */
 	readonly down: () => void;
 
@@ -370,20 +608,28 @@ interface TouchControl {
 }
 
 /**
- * **What arrange mode asks a toe for: two calls, and no knowledge of what a drag *is*.** See {@link ARRANGE}.
+ * **What a press becomes while {@link ARRANGE} is on: three calls, and the box does the moving.**
  *
- * **A hook rather than the flag read inside `buildCell`**, so a cell stays what it has always been — a circle, a
- * word and a press — and the only thing that knows about moving the paw is the method that places it. When
+ * **A hook rather than the flag read inside `buildButton`**, so a button stays what it has always been — a circle,
+ * a word and a press — and the only thing that knows about dragging is the code that owns the box's position. When
  * arrange mode is off the hook is `undefined` and every line of it is dead: the buttons behave exactly as they did
- * before this existed.
+ * before this existed. **One instance is shared by all five**, because the thing that moves is the box and not the
+ * button the finger happened to land on. See {@link mount}, which builds it.
  *
  * **Declared as function-typed *properties* rather than as methods**, which is this codebase's own trap recorded
- * twice: roblox-ts refuses an arrow function where an interface declares a method, and compiles a method call to a
- * colon call — right for the engine's Lua tables, wrong for a table this file builds itself.
+ * twice: roblox-ts refuses an arrow function where an interface declares a method, and it compiles a method call
+ * to a colon call — right for the engine's Lua tables, wrong for a table this file builds itself.
+ *
+ * **Screen pixels in, reference pixels out.** The pointer arrives in screen coordinates (`InputObject.Position`)
+ * and the nudge is stored in reference pixels like every other size here, so the division by the viewport
+ * multiplier happens in the hook — the one place that has both units at once.
  */
 interface ArrangeHook {
-	/** The finger moved this far since the last report, in screen pixels. */
-	move: (delta: Vector2) => void;
+	/** A finger landed on this button at `screenPoint`: this is what the drag is measured from. */
+	grab: (screenPoint: Vector2) => void;
+
+	/** The finger is now at `screenPoint`, which is how far the box has been moved from where it already was. */
+	move: (screenPoint: Vector2) => void;
 
 	/** The finger came off, which is when the numbers are worth printing. */
 	done: () => void;
@@ -392,31 +638,34 @@ interface ArrangeHook {
 /**
  * Where the engine's jump button is and how big it is — **three readings off somebody else's instance, kept live.**
  *
- * **Everything the paw is positioned from comes from here**, which is why it is a record rather than the single
- * number this file's first column asked for: an arc needs a *centre* to be drawn around and the radius needs a
- * *size* to start from, where a column standing above a button wanted only its top edge. That is the same change
- * every rework since has shared: the cluster used to be placed against one edge of an object and has been placed
- * around all of it since.
+ * **Everything the cluster is positioned from comes from here**, which is why it is a record rather than the
+ * single number this file's first column asked for: the box is placed against the pad's **top edge**, and that is
+ * a corner plus half a size — where the column that started this file wanted only the edge itself. It is also
+ * where the pad's *rendered* size comes from, which is the number a person compares the buttons beside it against.
  *
  * **Values rather than numbers, because the engine moves this button.** A rotation or a viewport change re-lays
  * out the engine's own touch GUI, and both readings are re-taken from the signals the restyle already watches — so
- * the toes follow the pad rather than being right at mount and wrong after the first rotation.
+ * the box follows the pad rather than being right at mount and wrong after the first rotation.
  *
- * **`size` is one number and not a `Vector2`**, deliberately: the pad's clearance is what the radius has to clear,
- * and the clearance from a rectangle is its larger axis. See `measure` for the `math.max` and for why a button
- * wider than it is tall must not have the toes drawn *inside* it on the short axis.
+ * **`size` is one number and not a `Vector2`**, deliberately: it is a *reading for a person* rather than a
+ * clearance to compute with — "the pad rendered at 78px" is a sentence and the pair of axes is not — and the one
+ * place a clearance is wanted is `measure`, which takes the larger axis because the engine's button is not
+ * guaranteed square. See `measure` for that `math.max` and for why nothing is placed *inside* the pad any more.
  *
- * **`found` is separate from the other two rather than a nil centre**, so that the paw can be built once and stay
- * invisible until there is something for it to wrap. See {@link mount}: the engine creates this button about a
- * second and a half after the client ignites, and a paw placed at `(0, 0)` is the top-left corner of the screen.
+ * **`found` is separate from the other two rather than a nil centre**, so that the box can be built once and stay
+ * invisible until there is something for it to sit above. See {@link mount}: the engine creates this button about
+ * a second and a half after the client ignites, and a box placed at `(0, 0)` is the top-left corner of the screen.
  */
 interface JumpGeometry {
 	/** The button's centre, in screen pixels from the top-left of the screen. */
 	readonly centre: Fusion.Value<Vector2>;
 
 	/**
-	 * The button's larger axis **as it is rendered after the shrink** — see {@link PAD_SIZE} — in screen pixels:
-	 * the radius the toes have to clear.
+	 * The button's larger axis **as it is actually rendered** — after the shrink *and* the viewport multiplier,
+	 * see {@link PAD_SIZE} — in screen pixels. It is the size a person sees when they compare the pad with the
+	 * buttons beside it, which is what everything reads it for; the box's derivation measures from the opposite
+	 * corner and cancels this number out of its own arithmetic, so nothing here can feed back into what is drawn.
+	 * See `measure` in {@link restyleEngineJump}.
 	 */
 	readonly size: Fusion.Value<number>;
 
@@ -462,33 +711,24 @@ interface MoveControls {
 }
 
 /**
- * The mobile controls: **a bear paw — five toes curled around the engine's jump button, on its upper-left.**
+ * The mobile controls: **a box of five buttons packed into the bottom-right corner, sitting above the engine's own
+ * jump button.**
  *
- * **The paw is the fourth arrangement, and each one taught the next something.** The first was a column standing
- * above a jump button of our own; the second kept the column and stood it above the engine's button, which put the
- * cluster in the *top*-right corner and cut it in half — because `AbsolutePosition.Y` measures from the top of the
- * screen and it was being spent as a margin from the bottom, so a button a thumb's width off the floor lifted the
- * column a full screen height the other way. **A margin measured from one edge and spent against another is
- * exactly the mistake a corner anchor invites**, and the third arrangement answered it by dropping the anchor
- * altogether: buttons placed at a distance and a bearing from the *button*, so there is no screen edge anywhere in
- * the arithmetic.
+ * **The cluster is a box of five buttons in the corner, packed by one formula, and that is the fourth shape.** The
+ * first three were arrangements of the *same* idea — place each button relative to the engine's jump button — and
+ * each one failed in the same direction: the buttons had to be small, because the pad they were arranged around is
+ * never the size anybody assumed, and the geometry that avoided overlapping it kept stretching. The paw was the
+ * clearest version of that: a correct derivation of a shape that could not fit a phone.
  *
- * **The third was a ring, and the paw exists because a ring does not fit — which the third arrangement's own
- * report said, and this is the fix.** Five slots spread evenly around the pad need the *whole* circle, and the pad
- * is in the corner of the screen: the slot at `90` — directly below the pad — lands below the bottom edge of any
- * phone, and in portrait the one at `0` runs off the right edge too. **A ring asks for 360° of room in a corner
- * that has about a quarter of that**, and no radius fixes it: a radius big enough to keep the toes off the pad is
- * a radius that puts the rest of the circle *further* off the screen rather than nearer. So this pass keeps the
- * third arrangement's answer — bearings and a radius, no screen edges — and changes the *shape*: one arc across
- * the wedge of screen the corner actually has, spanning the diagonal instead of circling it. See {@link mount}
- * for the arc and {@link ARC_WINDOW} for the arithmetic that fixes its length.
+ * **So this one stops deriving and starts packing.** The five buttons live in a fixed rectangle in the bottom-right
+ * corner, and `{@link pack}` computes one size for all five from the box's dimensions — three across the top, two
+ * centred underneath. **The box's size is the only thing that decides how big a button is**, so tuning is one
+ * number rather than a rebuild-and-look, which is the complaint that killed the last three arrangements.
  *
- * **Why a paw rather than three rows, in the terms a phone player would use.** A thumb on the pad does not have to
- * hunt: every toe is the same short move away, in the direction the thumb falls when it rolls off the button, and
- * the labels point into open space rather than being read one at a time. **And the cluster stops being five
- * approximations of a layout and becomes one shape** — the toes nearly touch ({@link TOE_GAP}) and sit on one
- * curve, so the group reads as a single object with the pad inside it, which is the difference between this and
- * the scatter it replaces. That is the same reason the reference's toes are drawn almost in contact.
+ * **What the pad is still for, and it is exactly one thing: the box sits above it.** The engine's button is where a
+ * thumb rests, so the box's bottom edge is its top edge plus a gap — see {@link BOX_PAD_GAP} for why that could not
+ * be a fixed margin. Beyond that the two are neighbours rather than a system, which is the whole of what changed:
+ * **no bearings, no radius, no arc, and no drag tool for finding numbers by hand.**
  *
  * **It exists because a key is not a control on a device that has no keyboard.** `ControlsLegendController` is a
  * reference card — every row on it names a key — and on a phone that card is a list of things a player cannot
@@ -532,19 +772,23 @@ interface MoveControls {
  * into a disc at any size, costs nothing to load and survives a resize without resampling — the same
  * construction `panelChrome.addGlyph` uses for its decorative discs, and the reason no image is needed for the
  * shape of anything here. The engine's jump button is given the same corner as a child, which is what makes it
- * read as the pad of this paw rather than as somebody else's instance that happens to be nearby — and the toes are
- * drawn on an arc around it, so the family it belongs to is now literally arranged around it.
+ * read as part of this cluster rather than as somebody else's instance that happens to be nearby — and since this
+ * pass it is drawn at the same rate as the five beside it, so the resemblance is a size as well as a shape. See
+ * {@link PAD_SIZE}.
  *
- * **Every size here is in reference pixels and every button multiplies itself by one scale.** See
+ * **Every size here is in reference pixels and everything multiplies itself by one multiplier.** See
  * {@link buildScale}: 393-wide portrait is the phone the numbers were drawn against, and a rotation, a wider
  * phone or a tablet is the same layout at a different multiplier. **That is why this HUD does not carry an
  * `addViewportConstraint`** like every other one — the sizes here are a function of the viewport rather than
  * values that need clamping against it, and a pixel `UISizeConstraint` under a `UIScale` would be measuring the
- * size before the multiplier, which is a cap that fires at the wrong number or never. **The engine's button is
- * outside that scale**, and the reason is now a measured one rather than a rule: the pad is shrunk by a `UIScale`
- * of its own to {@link PAD_SIZE} (see {@link restyleEngineJump}), so its radius is already a *screen* number —
- * while the toes' are reference numbers that this multiplier turns into screen ones. That is why the arc's radius
- * is a *comparison of two different kinds of number* rather than a single product. See {@link mount} for that line.
+ * size before the multiplier, which is a cap that fires at the wrong number or never.
+ *
+ * **The engine's button is inside that multiplier now, and that is this pass's change.** It used to be the one
+ * thing here outside it: its size is the module's, so it was shrunk by a `UIScale` of its own toward the fixed
+ * {@link PAD_SIZE} and left there — which made a bigger screen a bigger box beside the *same* 72px pad. And the
+ * pad cannot scale itself: the module draws it at 70px or 120px, two constants picked once from the screen's
+ * short axis rather than a proportion. So the pad's `UIScale` carries the cluster's multiplier as well as its own
+ * shrink, and the box, its buttons and the pad are now one scale with one floor. See {@link restyleEngineJump}.
  *
  * **What is deliberately not here.** No icons (the space is reserved inside each circle and the art is a later
  * change to one line), no power button (the ability HUD's slot is what asks for the power, and the throw that
@@ -553,10 +797,11 @@ interface MoveControls {
  * a control the player's other thumb is already holding — and no change to any desktop control: the keys, the
  * binds and the legend are exactly as they were.
  *
- * **Mounted into `getScreenSpaceGui` rather than the shared HUD `ScreenGui`, and the paw is what forces it.**
- * Every other HUD here mounts into the shared GUI, which is inset inside Roblox's topbar so that its contents sit
- * in the safe area; the toes cannot, because their frame's position is the engine's button's `AbsolutePosition` — a
- * *screen* coordinate, measured from the top-left of the screen — and an inset GUI has a different origin. The aim
+ * **Mounted into `getScreenSpaceGui` rather than the shared HUD `ScreenGui`, and the engine's button forces
+ * that.** Every other HUD here mounts into the shared GUI, which is inset inside Roblox's topbar so that its
+ * contents sit in the safe area; this box cannot, because its bottom edge is derived from the engine's button's
+ * `AbsolutePosition` — a *screen* coordinate, measured from the top-left of the screen — and an inset GUI has a
+ * different origin. The aim
  * sight needed the same thing for the same kind of reason, and that GUI's own doc is where the argument is written;
  * see `ui/screenGui.ts`. The shared GUI is still what the rest of this project's furniture mounts into, so this is
  * a second home for the one element that cannot live in the first rather than a departure from it.
@@ -612,314 +857,309 @@ export class MobileControlsController implements OnStart {
 		// here** — there is not one `Color3.fromRGB` in this file, which is the rule `hudTheme` exists to keep.
 		const theme = hudTheme();
 
-		// **The controls, each of which will be given a bearing on the arc.** That order is the arrangement — see
-		// `paw` below — and this is only what each one says and does. The shape they make, with the engine's button
-		// as the pad in the corner, is:
+		// **The five controls, and this is only what each one says and does.** Where they sit is {@link pack}'s
+		// business now, and this list's order is the order they fill the box — left to right, top row first, which is
+		// the order the pattern below is written in:
 		//
-		//                                  Curve
-		//                            Dodge
-		//                      Catch
-		//                Throw
-		//         Drop                  (jump)
+		//                          [Throw]  [Catch]  [Curve]
+		//                             [Dodge]  [Drop]
 		//
-		// — a diagonal of toes rising from the pad's lower-left to its upper-right, with the pad sitting inside the
-		// curve at the bottom-right. **The reference this is drawn from is the same picture with its pad in the
-		// middle of the cluster rather than in a corner of the screen**, which is the difference that decides where
-		// the arc can run: see {@link ARC_START_BEARING} for the two ends it has to stop at.
-		//
-		const curve: TouchControl = {
-			label: "Curve",
-			size: BUTTON_SIZE,
-			down: () => this.throwController.toggleCurve(),
-		};
+		// **`Throw` leads because it is the primary action** and the box's top-left is the corner a right thumb
+		// reaches first. **No control carries a size any more** — one box, one derived button size, every button the
+		// same — which is the simplification this arrangement exists for. See {@link pack}.
+		const curve: TouchControl = { label: "Curve", down: () => this.throwController.toggleCurve() };
 		const throwBall: TouchControl = {
 			label: "Throw",
-			size: THROW_SIZE,
 			// **The hold and the release, which is the same pair the mouse button produces.** `beginHold` answers
 			// whether there was a ball to charge; the answer is dropped here rather than branched on, because a
 			// press that threw nothing has to look exactly like any other press — the visual state of a button is
-			// about the finger on it, not about what the game did with the press. See `buildCell`.
+			// about the finger on it, not about what the game did with the press. See `buildButton`.
 			down: () => this.throwController.beginHold(),
 			up: () => this.throwController.endHold(),
 		};
-		const catchBall: TouchControl = {
-			label: "Catch",
-			size: BUTTON_SIZE,
-			down: () => this.catchController.press(),
-		};
+		const catchBall: TouchControl = { label: "Catch", down: () => this.catchController.press() };
 		// **The dodge's direction is the stick's**, which is the one place this cluster makes a decision the
 		// keyboard did not have to: there are no movement keys to read, so the body is asked where it is going.
 		// See `DodgeController.push` for the read and for why a centred stick refuses rather than guesses.
-		const dodge: TouchControl = { label: "Dodge", size: BUTTON_SIZE, down: () => this.dodgeController.push() };
-		const drop: TouchControl = { label: "Drop", size: BUTTON_SIZE, down: () => this.actionController.drop() };
+		const dodge: TouchControl = { label: "Dodge", down: () => this.dodgeController.push() };
+		const drop: TouchControl = { label: "Drop", down: () => this.actionController.drop() };
 
-		// **The engine's jump button is restyled rather than replaced, and it is the pad the arc is drawn around.**
-		// What comes back is the button's centre and its size in screen pixels — or nothing at all until it exists
-		// — and every number below that places anything is derived from those two. See
-		// {@link restyleEngineJump} for the hunt, the restyle and the reason the jump stopped being ours to draw.
-		const jump = this.restyleEngineJump(scope, theme);
+		const controls: TouchControl[] = [throwBall, catchBall, curve, dodge, drop];
 
-		// **The one responsive number on this HUD**, applied per cell rather than to the cluster as a whole: every
-		// circle here is written in reference pixels and this multiplies it. See {@link buildScale}.
+		/**
+		 * **The packing pattern, which is the whole description of the shape.** Three across the top and two centred
+		 * underneath; `[5]` would be one row, `[1, 1, 1, 1, 1]` a column, and nothing else in this file changes.
+		 *
+		 * **It has to total the five controls**, and the two are checked against each other after the packing rather
+		 * than trusted: `pack` counts cells from this array and knows nothing about buttons, so a pattern of `[3, 1]`
+		 * would quietly leave one control unbuilt.
+		 */
+		const rows: number[] = [3, 2];
+
+		// **The one responsive number on this HUD, and it is built *before* the pad rather than after it**: every
+		// size below is written in reference pixels and this turns them into the pixels this screen actually has —
+		// and the pad needs it too, because the engine's button is now inside the cluster's multiplier rather than
+		// beside it. The order is load-bearing rather than tidy: `restyleEngineJump` measures the button during its
+		// own sweep, and a `const` read before its initializer has run is the nil-at-load trap this file's constant
+		// block describes, one frame smaller. See {@link buildScale} for the signal it watches.
 		const scale = this.buildScale(scope);
 
-		/**
-		 * **The arrangement: the paw, ordered from the pad outward.**
-		 *
-		 * The order *is* the layout — each entry is placed one chord further along the arc than the entry before it
-		 * — so this list is where the shape is decided and `bearings` below is only the arithmetic for it. **The
-		 * order is the brief's with one forced move**: `Drop` is the lowest toe rather than a fifth button tucked
-		 * *between* `Throw` and the pad. It cannot go there, and the reason is arithmetic rather than preference:
-		 * a circle tucked into that pocket sits where the arc's own air is only {@link TOE_GAP} wide, and the
-		 * alternative radius that would open the pocket up puts its label below the bottom edge of the screen. **So
-		 * the choice was the near end of the arc or the far end**, and the near end is what the reference's picture
-		 * shows: its smallest button is the bottom-left end of the diagonal, below every other toe, with the pad to
-		 * its right.
-		 *
-		 * **`Throw` is therefore the *second* toe rather than the nearest, and that is the one thing in the brief
-		 * this file could not satisfy.** The brief asks for the throw to be closest to the pad because it is the
-		 * primary action; here `Drop` is closest, one chord (~61px at the current sizes) further from the thumb for
-		 * the throw. Swapping the first two entries of this list is the whole of the fix if the reach matters more
-		 * than the shape's lower end being the least-used control — which is what this order chooses, since `Drop`
-		 * is the rarest action in the cluster and `Throw` is still within a thumb's roll of the pad.
-		 */
-		const paw: TouchControl[] = [drop, throwBall, catchBall, dodge, curve];
+		// **The engine's jump button is restyled rather than replaced, and it is what the box sits above.** What
+		// comes back is its centre and its size in screen pixels — or nothing until it exists — and the *only* thing
+		// this cluster still takes *from it* is the top edge. It is also the second reader of the multiplier above,
+		// which is what keeps the pad the same size as the buttons beside it. See {@link restyleEngineJump} for the
+		// hunt, the restyle and the reason the jump stopped being ours to draw.
+		const jump = this.restyleEngineJump(scope, theme, scale);
 
 		/**
-		 * **The bearings, derived from the sizes rather than written down** — {@link ARC_START_BEARING} for the
-		 * first toe, then one step per neighbouring pair, where a step is the angle that pair's two discs subtend
-		 * at the radius the arc will actually use.
+		 * **The hand-move state, which is dead unless {@link ARRANGE} is on — one nudge and the drag's memory.**
 		 *
-		 * **The arithmetic contains no radius, and that is the point of it.** A step is `2·asin(chord / 2r)`, and
-		 * `r` is chosen so that the *widest* pair — the throw and one toe — spans exactly {@link ARC_WINDOW}
-		 * divided by the number of steps. Substituting that radius cancels it out: what is left is each pair's chord
-		 * as a fraction of the widest one's, times the widest one's half-angle. So **every gap in the paw comes out
-		 * as {@link TOE_GAP} whatever the toes are sized at**, and the bearings depend on nothing read at runtime —
-		 * not the scale, not the engine's button, not the screen. **A uniform step was the alternative and is
-		 * worse**: at the radius five touching toes need, an even step leaves **9px** between two small toes while
-		 * the throw's neighbours get the 5px asked for, so the four small toes would look loosely packed beside it.
+		 * `nudge` holds the same quantity {@link BOX_NUDGE} does, in the same unit, so a drag and a pasted constant
+		 * are one number rather than two spellings of it. It starts *at* the constant and **a drag is a delta from
+		 * there** — which is what makes switching the mode on a no-op: the cluster does not move until a finger does.
+		 *
+		 * **The two locals are the drag's own memory**: where the finger started and what the nudge was when it did.
+		 * `grabbedAt` being `undefined` is what makes a `move` before a `grab` do nothing — which is what stops an
+		 * `InputChanged` from a finger that never landed on a button from sliding the cluster around.
 		 */
-		const widestChord = (THROW_SIZE + BUTTON_SIZE) / 2 + TOE_GAP;
-		const stepUnit = ARC_WINDOW / (2 * (paw.size() - 1));
-
-		/**
-		 * **The radius the bearings are derived at, in reference pixels** — the smallest one at which the widest
-		 * pair spans `stepUnit`, which is the arc-length term of the radius below with the scale taken out of it.
-		 * **Kept as a named number rather than written twice**: the mount line prints it, so a session's log says
-		 * how far out the toes were actually placed, and it makes the relationship between the bearings and the
-		 * radius legible in one place instead of two.
-		 */
-		const spacingRadius = widestChord / (2 * math.sin(math.rad(stepUnit)));
-		const stepBetween = (first: number, second: number): number => {
-			const chord = (first + second) / 2 + TOE_GAP;
-
-			return 2 * math.deg(math.asin((chord * math.sin(math.rad(stepUnit))) / widestChord));
-		};
-
-		const bearings: number[] = [];
-		let bearing = ARC_START_BEARING;
-		for (let index = 0; index < paw.size(); index++) {
-			bearings.push(bearing);
-
-			// **`following` and not `next`**, which is a Lua global: roblox-ts refuses the name outright with "Cannot
-			// use identifier reserved for compiler internal usage". The same family as `type`, `local` and `self`.
-			const following = paw[index + 1];
-			if (following !== undefined) bearing += stepBetween(paw[index].size, following.size);
-		}
-
-		/**
-		 * **The arc's radius, in screen pixels, and the one line in this file where two kinds of number meet.**
-		 *
-		 * It is the larger of two requirements, and each is measured against a different thing:
-		 *
-		 * - **The pad's clearance**, `jumpSize / 2 + (THROW_SIZE / 2 + LABEL_GAP + lineHeight + TOE_GAP) * m`: the
-		 *   pad's radius is a *screen* number and deliberately not multiplied by anything of ours, because the pad
-		 *   is already rendered at {@link PAD_SIZE} by its own `UIScale` — multiplying it by this HUD's cluster
-		 *   scale as well would shrink it twice — while our own radius and the room a label needs are reference
-		 *   pixels times the scale, because being scaled is the whole point of them. **The label lives in this term
-		 *   and no longer in {@link TOE_GAP}**: a cell is a circle plus a `LABEL_GAP` plus a `caption` line, the toe
-		 *   above the pad hangs that word *straight down onto it*, and this is the term that keeps the word in open
-		 *   air.
-		 *
-		 *   **`THROW_SIZE` and not `BUTTON_SIZE`, which is the opposite choice to the one the last pass made in the
-		 *   same place** — and the reason is that these two terms are asking opposite questions. The old term was
-		 *   "how far out do the *smallest* buttons have to be so they do not touch the pad", where the small ones
-		 *   are the binding case; this one is "how much room does the toe nearest the pad need for its word", and
-		 *   the nearest toe is the *biggest* one, because the throw's disc reaches 4px closer to the pad than the
-		 *   others at the same radius. Sizing the clearance off the throw is therefore the conservative answer for
-		 *   all five, where sizing it off the toes would let the throw's label graze the pad on the one phone where
-		 *   this term wins.
-		 * - **The arc's own length**, `spacingRadius * m`: the smallest radius at which five nearly touching toes
-		 *   fit inside {@link ARC_WINDOW}. **In the ordinary case this is the term that wins**, which is what makes
-		 *   the gap between two toes exactly {@link TOE_GAP}.
-		 *
-		 * **A `Computed` over both readings, so the radius is re-derived whenever either moves** — a rotation
-		 * changes the scale and can change the pad's own size in the same frame, and a number captured at mount
-		 * would be stale after the first one. It is also why this is not a constant with a comment explaining why it
-		 * is 126: on a phone with an unusually large jump button — larger than {@link PAD_SIZE}, so the pad's own
-		 * shrink is the term that binds — the first term takes over and the toes move out to keep their labels clear
-		 * of it, which is the right direction for that to fail in.
-		 */
-		const radius = Fusion.Computed(scope, (use) => {
-			const jumpSize = use(jump.size);
-			const multiplier = use(scale);
-
-			return math.max(
-				jumpSize / 2 +
-					(THROW_SIZE / 2 + LABEL_GAP + theme.typography.caption.lineHeight + TOE_GAP) * multiplier,
-				spacingRadius * multiplier,
-			);
-		});
-
-		/**
-		 * **The drag's offset in screen pixels, and the hook that moves it** — see {@link ARRANGE}, which is
-		 * `false` in play, at which point this is two objects that nothing ever writes.
-		 *
-		 * **A `Value` rather than a plain number**, because the frame's position below is a `Computed` and this is
-		 * the one input to it that changes while the client runs for a reason that is not a viewport change. **A
-		 * local mirror beside it**, because a Fusion `Value` in this version can be *written* but not read back —
-		 * the file's own note — so the running total has to live somewhere the hook owns.
-		 */
-		const nudge = Fusion.Value(scope, Vector2.zero);
-		let dragged = Vector2.zero;
+		const nudge = Fusion.Value(scope, BOX_NUDGE);
+		let grabbedAt: Vector2 | undefined;
+		let grabbedFrom = Fusion.peek(nudge);
 
 		const arrange: ArrangeHook | undefined = ARRANGE
 			? {
-					move: (delta: Vector2) => {
-						dragged = dragged.add(delta);
-						nudge.set(dragged);
+					grab: (screenPoint) => {
+						grabbedAt = screenPoint;
+						grabbedFrom = Fusion.peek(nudge);
+					},
+					// **A finger dragged 40px down adds 40 to the nudge; dragged right, the same.** That is the whole
+					// of the gesture, and it is this short because the constant is signed the way a screen is: the only
+					// arithmetic here is the division that turns a screen measurement into a reference one, which is
+					// what keeps one drag the same distance *of layout* at every multiplier. **Nothing is clamped and
+					// nothing is written back**, so the box can be taken off the screen while a finger is down and the
+					// derivation puts it straight back the moment this mode is switched off. See {@link BOX_NUDGE}.
+					move: (screenPoint) => {
+						const from = grabbedAt;
+						if (from === undefined) return;
+
+						const multiplier = Fusion.peek(scale);
+						const across = (screenPoint.X - from.X) / multiplier;
+						const down = (screenPoint.Y - from.Y) / multiplier;
+
+						nudge.set(new Vector2(grabbedFrom.X + across, grabbedFrom.Y + down));
 					},
 					done: () => {
-						const camera = Workspace.CurrentCamera;
-						const viewport = camera !== undefined ? camera.ViewportSize : REFERENCE_VIEWPORT;
-						const multiplier = scaleFor(viewport);
+						grabbedAt = undefined;
 
-						// **The line the whole flag exists for**, and it prints the answer in the unit it has to be
-						// pasted back in: {@link PAW_OFFSET} is written in *reference* pixels, a drag arrives in
-						// *screen* pixels, and the ratio between them is the cluster's own scale — which is printed
-						// too, because a run that says the paw is in the wrong place should say which multiplier it
-						// was in the wrong place under.
+						const placed = Fusion.peek(nudge);
+
+						// **The number is the deliverable**, so it is printed in the exact form the constant wants:
+						// two numbers and the name to put them under. `%.0f` because a dragged value is a float nobody
+						// wants to read or paste, and a whole reference pixel is finer than a finger has ever been.
 						print(
-							`[HUD] arrange — (${string.format("%.0f", dragged.X)}, ` +
-								`${string.format("%.0f", dragged.Y)})px from the pad's centre = ` +
-								`(${string.format("%.1f", dragged.X / multiplier)}, ` +
-								`${string.format("%.1f", dragged.Y / multiplier)}) reference px ` +
-								`on a ${viewport.X}x${viewport.Y} viewport at scale ` +
-								`${string.format("%.2f", multiplier)}`,
+							`[HUD] the cluster's nudge — BOX_NUDGE = new Vector2(${string.format("%.0f", placed.X)}, ` +
+								`${string.format("%.0f", placed.Y)}) reference px (X right, Y down)`,
 						);
 					},
 				}
 			: undefined;
 
 		/**
-		 * The paw's frame: **a frame with no size, pinned to the engine's jump button's centre, with the toes drawn
-		 * around it.**
+		 * **The box's size in screen pixels — the number the button size is derived from, and the only one.**
 		 *
-		 * **A zero-sized frame with `AnchorPoint (0.5, 0.5)` is a point**, and a point is exactly what this needs:
-		 * every child below is positioned in offsets from it, so each number in the loop is a distance and a bearing
-		 * from the button's centre, and none of them is a distance from a screen edge. **That is the fix the second
-		 * arrangement needed, stated as a structure**: the one that broke was a frame anchored to a corner and
-		 * placed from a measurement taken from the opposite corner, and this frame has no edge to be measured from
-		 * at all. The *shape* drawn inside it has changed twice since; this part has not, which is why it survives.
+		 * {@link BOX_SIZE} times the multiplier, which is the same statement as {@link BOX_FRACTION} of the
+		 * viewport: the reference box *is* that fraction, written in the pixels of the phone the design was drawn
+		 * against. **So this is where the cluster's proportion comes from** — a bigger screen multiplies this up,
+		 * `pack` turns it into a bigger button, and nothing else in the file has to know the screen changed.
 		 *
-		 * **The centre plus {@link PAW_OFFSET} plus the drag**, and that is the whole of where the paw is. The
-		 * offset is the one part of the position that is a *choice* rather than a measurement — see its own doc —
-		 * and `nudge` is the same thing during a drag, in the units a finger moves in.
-		 *
-		 * **Invisible until the engine's button exists.** The engine creates its touch GUI about a second and a
-		 * half after the client ignites and this frame's position is `(0, 0)` until then — the top-left corner of
-		 * the screen — so its `Visible` is the restyle's own `found` flag. Five toes appearing *with* the jump
-		 * button, in the right place, rather than a second and a half before it somewhere else, is the whole of what
-		 * that buys.
+		 * Then **capped at the room above the pad**: on a phone held sideways the pad can sit half way up a
+		 * 393-tall viewport, and a box that ran off the top of the screen would put its top row where no thumb can
+		 * reach. Capping the number `pack` is handed is the self-consistent way for that to fail — the buttons come
+		 * out smaller — where a `UISizeConstraint` on the frame would clamp the rendered size *after* the packing
+		 * had been worked out for the bigger one, and the buttons would overlap instead.
 		 */
-		const pawFrame = Fusion.New(scope, "Frame")({
-			Name: "MobileControls",
-			Size: UDim2.fromOffset(0, 0),
-			BackgroundTransparency: 1,
-			AnchorPoint: new Vector2(0.5, 0.5),
-			Position: Fusion.Computed(scope, (use) => {
-				const centre = use(jump.centre);
-				const multiplier = use(scale);
-				const moved = use(nudge);
+		const boxSize = Fusion.Computed(scope, (use) => {
+			const multiplier = use(scale);
+			const centre = use(jump.centre);
+			const padSize = use(jump.size);
+			const room = centre.Y - padSize / 2 - BOX_PAD_GAP * multiplier;
 
-				return UDim2.fromOffset(
-					centre.X + PAW_OFFSET.X * multiplier + moved.X,
-					centre.Y + PAW_OFFSET.Y * multiplier + moved.Y,
-				);
-			}),
-			Visible: Fusion.Computed(scope, (use) => use(jump.found)),
+			return new Vector2(BOX_SIZE.X * multiplier, math.min(BOX_SIZE.Y * multiplier, room));
 		});
 
-		for (let index = 0; index < paw.size(); index++) {
-			const control = paw[index];
-			const radians = math.rad(bearings[index]);
-			const cell = this.buildCell(scope, theme, control, arrange);
+		/**
+		 * The box itself: **a plain frame in the bottom-right corner whose size is the layout.**
+		 *
+		 * **Its bottom edge is derived from the engine's button rather than from the screen's edge**, which is the
+		 * one thing this design could not take from a corner offset: the pad sits 90px off the floor on one of this
+		 * project's logged devices and 210px on another, so a fixed bottom margin either overlaps the pad or floats
+		 * the box into the middle of the screen. The pad's top edge, a {@link BOX_PAD_GAP} above it, is right on both
+		 * — **and that edge is a distance *down* from the screen's top, not up from its bottom**, which is why the
+		 * `Position` below spells its two axes differently. See the note there for what mixing them cost.
+		 *
+		 * **The right edge is the one screen edge it names** ({@link BOX_EDGE_GAP}); the other two come from the
+		 * size. **No layout instance goes inside it** — the buttons' positions are written by `pack` — and it has no
+		 * background, because it is a footprint rather than a surface.
+		 *
+		 * **And {@link BOX_NUDGE} moves the whole thing by hand**, which is the only way below the pad's top edge. See
+		 * that constant for what it costs and {@link ARRANGE} for finding the number with a finger.
+		 */
+		const box = Fusion.New(scope, "Frame")({
+			Name: "MobileControls",
+			Size: Fusion.Computed(scope, (use) => {
+				const size = use(boxSize);
 
-			/**
-			 * **Where one toe goes: the circle's centre on the arc, and the cell hung below it.**
-			 *
-			 * A cell is a column — the circle, then the word — read top to bottom, so the natural anchor for it is
-			 * its top-centre: `AnchorPoint (0.5, 0)` puts the cell's own origin on that point and lets the label
-			 * hang underneath without moving the circle. **The vertical offset therefore subtracts the circle's own
-			 * radius**, which is what puts the *circle's centre* on the arc rather than the top of the cell; it is
-			 * the one place a reader has to remember that a cell is taller than its button. The horizontal needs no
-			 * such correction, and that is the anchor doing it: half the cell's width is left of the anchor point,
-			 * so the cell is centred on it for free.
-			 *
-			 * **Each cell carries its own `UIScale` rather than the frame carrying one for all five.** The
-			 * alternative is one scale on the frame above — which is what this HUD used to do — and it would make
-			 * every offset in this loop depend on whether `UIScale` scales its descendants' *positions* as well as
-			 * their sizes. It does, but an arithmetic dependence on an engine behaviour is worth four more
-			 * instances to avoid when the placement can simply be stated in screen pixels. **The consequence to
-			 * know: the arc is placed in screen pixels and the buttons are in reference pixels times the scale**,
-			 * which is why `radius` above adds the two kinds rather than multiplying one of them.
-			 */
-			Fusion.Hydrate(scope, cell)({
-				AnchorPoint: new Vector2(0.5, 0),
-				Position: Fusion.Computed(scope, (use) => {
-					const arcRadius = use(radius);
+				return UDim2.fromOffset(size.X, size.Y);
+			}),
+			BackgroundTransparency: 1,
+			AnchorPoint: new Vector2(1, 1),
+			Position: Fusion.Computed(scope, (use) => {
+				// **Every `use` sits above the branch, unconditionally** — a `use()` after an early return is a
+				// subscription that exists only while that branch is taken, which this codebase has been bitten by
+				// before (`RoundStatusController`'s winner). Branching after them costs one spare subscription while
+				// the derived path is live, which is the cheaper of the two mistakes.
+				const multiplier = use(scale);
+				const centre = use(jump.centre);
+				const padSize = use(jump.size);
+				const hand = use(nudge);
 
-					return UDim2.fromOffset(
-						math.cos(radians) * arcRadius,
-						math.sin(radians) * arcRadius - (control.size / 2) * use(scale),
-					);
-				}),
-			});
+				// **The pad's top edge, in the axis it actually arrives in.** `centre` is built from an
+				// `AbsolutePosition`, so `centre.Y − padSize/2` is a distance *down from the screen's top edge* — and
+				// the box's bottom edge goes a gap above that, which is a **scale-0 Y**: an offset from the parent's
+				// *top*. `X` stays a scale-1 offset from the parent's right edge, so the two axes of this `UDim2` are
+				// deliberately spelled differently. That is the whole of the position; {@link BOX_NUDGE} is added to
+				// both afterwards, in reference pixels like every other size here.
+				//
+				// **And the bug that shape replaces is worth keeping written down, because it was invisible from the
+				// code alone.** This line used to read `UDim2.new(1, -BOX_EDGE_GAP * multiplier, 1, -(padTop + gap))`
+				// — the *same* pad number, spent as a scale-1 offset from the parent's **bottom** instead of a scale-0
+				// offset from its top. On the reference phone the pad's top edge is 642px down an 852-tall screen, so
+				// that expression put the box's bottom edge **650px above the floor**: the cluster was drawn mirrored
+				// about the screen's midline, in the top-right corner, 440px from the pad it was supposed to sit above.
+				// **Two different edges, one number** — the same mistake this corner made in its first version, and
+				// the reason the sentence above states which edge the number is measured from.
+				const padTop = centre.Y - padSize / 2;
+				const bottomEdge = padTop - BOX_PAD_GAP * multiplier + hand.Y * multiplier;
 
-			Fusion.New(scope, "UIScale")({ Parent: cell, Scale: scale });
+				return new UDim2(1, -(BOX_EDGE_GAP - hand.X) * multiplier, 0, bottomEdge);
+			}),
+			// **Drawn unconditionally while the hand-move mode is on**, so the cluster can be placed on a client the
+			// engine's button never appears on — a desktop emulator with no touch GUI is that case, and it is exactly
+			// the client somebody would tune a layout on. Otherwise it waits for the pad, because until then the pad's
+			// top edge reads `0` and the box would be drawn across the bottom of the screen. See
+			// {@link restyleEngineJump}.
+			Visible: Fusion.Computed(scope, (use) => ARRANGE || use(jump.found)),
+		});
 
-			cell.Parent = pawFrame;
+		box.Parent = getScreenSpaceGui();
+
+		/**
+		 * **The packing, recomputed whenever the box or the scale moves.**
+		 *
+		 * `pack` is handed the *drawn* box, the gap in the same units, and the label band — which is **not** scaled,
+		 * because the text is a fixed 12px in this design and so is the room it needs. **The line height is read
+		 * from the theme rather than written down**: {@link LABEL_BAND} is only the default its own doc quotes.
+		 *
+		 * **A `Computed` rather than a call**, because the box's size is itself reactive: this is the value every
+		 * button subscribes to, and each one reads its own entry out of the array. See `buildButton`.
+		 */
+		const cells = Fusion.Computed(scope, (use) => {
+			const size = use(boxSize);
+
+			return pack(rows, size, BOX_GAP * use(scale), LABEL_GAP + theme.typography.caption.lineHeight);
+		});
+
+		// **The pattern is checked against the controls before anything is built**, and the check is static: both
+		// the row counts and the control list are constants, so a pattern that does not total five is a mistake to
+		// report rather than a shape to draw. `pack` counts cells from `rows` and knows nothing about buttons, and a
+		// pattern of `[3, 1]` would quietly leave one control unbuilt — which reads as a button that does nothing.
+		let patterned = 0;
+		for (const count of rows) patterned += count;
+
+		if (patterned !== controls.size()) {
+			warn(`[HUD] the pattern ${rows.join("+")} packs ${patterned} cells for ${controls.size()} controls`);
 		}
 
-		pawFrame.Parent = getScreenSpaceGui();
+		for (let index = 0; index < controls.size(); index++) {
+			this.buildButton(scope, theme, controls[index], cells, index, arrange).Parent = box;
+		}
 
-		// **The sprint, which is no longer a button on this HUD.** Spawned rather than run here because resolving
-		// the module it reads can wait on the engine; see {@link watchStick}.
+		// **The hand-move mode announces itself**, because a cluster that does not answer a tap is otherwise
+		// indistinguishable from a broken one — and the log is where a person looks first. See {@link ARRANGE}.
+		if (DEBUG && ARRANGE) {
+			print("[HUD] arrange mode is on — drag the cluster; the nudge it prints goes into BOX_NUDGE");
+		}
+
+		// **The sprint, which is not a button on this HUD and never was one of the five.** Spawned rather than run
+		// here because resolving the module it reads can wait on the engine; see {@link watchStick}.
 		task.spawn(() => this.watchStick(scope));
 
-		// **The numbers rather than the shape, because the shape cannot be argued with from a log.** The arc's
-		// radius and its two end bearings are what decide whether the toes are on the screen and whether they clear
-		// the pad, and they are all derived — so printing them is what makes "the paw is off the bottom" a
-		// one-number answer instead of a re-derivation. The gaps are printed too: they are the number the shape is
-		// judged on, and they are exactly what the derivation promises only while the spacing term is the one that
-		// wins the `max` above.
+		/**
+		 * **The numbers rather than the shape, because a shape cannot be argued with from a log.** The button size
+		 * and the box it came out of are the two numbers this arrangement is judged on and both are derived — so
+		 * printing them makes "the buttons are too small" a one-number answer instead of a re-derivation. They are
+		 * printed at the **reference** box (`BOX_SIZE` at scale 1) rather than at the live one, because the box's
+		 * size is a `Computed` and this line runs once: the live numbers move with the viewport, and what a log
+		 * needs is the size the design produces on the phone this file is drawn against. See {@link TAP_MIN} for
+		 * the size the floor would replace it with on a screen too small to hold the box.
+		 *
+		 * **The fraction is printed beside the reference box, because the fraction is the half that scales**: the
+		 * pixel pair says what the design produces at 393 × 852, and the two fractions say what it produces
+		 * anywhere — 0.6005 and 0.2277 of the screen, whatever the screen is.
+		 *
+		 * **And the live button size is no longer printed with them, which is a correction to the first version of
+		 * this line.** It read the packing *at mount*, and at mount the engine's button has not appeared yet — so
+		 * the box is handed a height that is not merely zero but negative, `pack` answers with its tap floor, and
+		 * the line printed `44px on this screen` on a client whose buttons are 58px. **A log that lies about the
+		 * one number it exists to report is worse than a short log**, so that figure moved to its own line below,
+		 * printed when the pad exists and the number means something.
+		 */
 		if (DEBUG) {
+			const reference = pack(rows, BOX_SIZE, BOX_GAP, LABEL_BAND)[0];
+
 			print(
-				`[HUD] mobile controls up — the paw: ${paw.size()} toes, ${string.format("%.1f", bearings[0])}° to ` +
-					`${string.format("%.1f", bearings[paw.size() - 1])}°, on a ` +
-					`${string.format("%.0f", spacingRadius)}px arc, gaps ${TOE_GAP}px ` +
-					`(toes ${BUTTON_SIZE}px, throw ${THROW_SIZE}px)`,
+				`[HUD] mobile controls up — the pack: ${controls.size()} buttons, ` +
+					`${string.format("%.0f", reference !== undefined ? reference.size : 0)}px each at the reference ` +
+					`box, pattern ${rows.join("+")}, gaps ${BOX_GAP}px, ` +
+					`box ${string.format("%.0fx%.0f", BOX_SIZE.X, BOX_SIZE.Y)} reference px ` +
+					`(${BOX_FRACTION.X} x ${BOX_FRACTION.Y} of the screen), ` +
+					`viewport x${string.format("%.3f", Fusion.peek(scale))}` +
+					(reference !== undefined && reference.size <= TAP_MIN ? " — AT THE TAP FLOOR" : ""),
 			);
 		}
 
-		// **Arrange mode announces itself, loudly, because the cost of not noticing is a player who cannot throw.**
-		// It is a development flag that silently disables all five controls, so a session that starts with it on
-		// says so in the same breath as it says the cluster is up; see {@link ARRANGE}.
-		if (DEBUG && ARRANGE) {
-			print(
-				"[HUD] ARRANGE MODE — drag any toe to move the whole paw; the toes do not act while this is on. " +
-					"Set ARRANGE = false in MobileControlsController.ts to play.",
-			);
+		/**
+		 * **This screen's own numbers, printed once the engine's button exists — which is when they exist at all.**
+		 *
+		 * The box's height is capped by the room above the pad (see `boxSize`), so before the pad appears the
+		 * packing is being asked to fit a rectangle that is not there yet. That is a state, not an error — the box
+		 * is invisible until the pad exists for exactly this reason — and the honest report of it is "not yet"
+		 * rather than a number. **Bounded rather than patient**, because a client whose pad never arrives has no
+		 * cluster on screen either, and a task waiting forever for a figure nobody is looking at is the leak this
+		 * file's own notes warn about; three seconds is six times longer than the one-and-a-half the engine has
+		 * been measured taking.
+		 *
+		 * **The two lines together are the whole acceptance argument for the scaling**: the line above is what the
+		 * design produces at 393 × 852, and this one is what `pack` produced for the viewport in front of you. See
+		 * {@link BOX_FRACTION} and {@link scaleFor}.
+		 */
+		if (DEBUG) {
+			task.spawn(() => {
+				for (let waited = 0; waited < 30 && !Fusion.peek(jump.found); waited++) task.wait(0.1);
+
+				if (!Fusion.peek(jump.found)) return;
+
+				const live = Fusion.peek(cells)[0];
+				const box = Fusion.peek(boxSize);
+
+				print(
+					`[HUD] the cluster on this screen — ` +
+						`${string.format("%.0f", live !== undefined ? live.size : 0)}px buttons, ` +
+						`box ${string.format("%.0fx%.0f", box.X, box.Y)}px, ` +
+						`viewport x${string.format("%.3f", Fusion.peek(scale))}` +
+						(live !== undefined && live.size <= TAP_MIN ? " — AT THE TAP FLOOR" : ""),
+				);
+			});
 		}
 	}
 
@@ -933,16 +1173,31 @@ export class MobileControlsController implements OnStart {
 	 * it still ends at `SprintController.holdSprint`, which is the same place the shift key ends. See
 	 * {@link SPRINT_START_MAGNITUDE} for the two thresholds and for what the gap between them is for.
 	 *
-	 * **The read goes through the `PlayerModule`, which is the one door this codebase refuses everywhere else — so
-	 * here is the argument rather than a summary of it.** The stick itself is the engine's `DynamicThumbstick`,
-	 * inside `PlayerGui.TouchGui.TouchControlFrame`, and it is deliberately not addressed here: its *child*
-	 * structure is the ControlModule's own business (the frame that actually moves under the thumb is not
-	 * something this project can name without depending on that module's layout), and the supported way to ask
-	 * where a touch stick points is the control module's `GetMoveVector`. `GetControls`, `GetMoveVector` and
-	 * `PlayerScripts` all appear **nowhere** in `@rbxts/types` in this build — the same three-way absence
-	 * `restyleEngineJump` lists for the jump button's route — so this is an untyped call at both ends, made once,
-	 * wrapped in `pcall`, and reported at both ends. **It is *not* a `PlayerModule` fork**: nothing is overridden,
-	 * nothing is replaced, and the module is asked a question it exists to answer.
+	 * **The read: the stick's own thumb first, the engine's movement module second — and the reversal is the
+	 * interesting part.** This file's first version read `GetMoveVector` and nothing else, on the argument that the
+	 * stick's *child* structure is the ControlModule's own business and that the module's getter is the supported
+	 * way to ask. That argument holds right up to the point where the getter is unreachable, which is what the
+	 * first real phone log shows: ten seconds of waiting and no sprint, on a client drawing the stick perfectly
+	 * well. So the primary read is now the same *kind* of read as the jump button's — the engine's own instance
+	 * names, found by search, **measured rather than asked** — and the module is the fallback for the two movement
+	 * modes whose geometry cannot be measured. See {@link findStick}, {@link findStickPoint} and
+	 * {@link findMoveModule}.
+	 *
+	 * **`GetControls` and `GetMoveVector` appear **nowhere** in `@rbxts/types` in this build, and `PlayerScripts`
+	 * only as a *class*** — `interface PlayerScripts extends Instance` in `include/generated/None.d.ts`, with
+	 * `RegisterTouchMovementMode` and its siblings on it, and no `Player.PlayerScripts` member declared beside it, so
+	 * reaching the instance is untyped too. **That is a correction to this comment**: the earlier note claimed all
+	 * three names were absent, which was read off a search of `include/roblox.d.ts` alone — the generated class
+	 * declarations are in `None.d.ts`. So the module route is an untyped hop at every step: a property this build
+	 * does not declare, a `require` of a module it has no shape for, and a call named nowhere. Made once, wrapped in
+	 * `pcall`, and reported at both ends. Neither route is a `PlayerModule` fork: nothing is overridden, nothing is
+	 * replaced, and nothing is asked to behave differently.
+	 *
+	 * **Two layouts, one question — and this is the correction the first real phone log bought.** That route was
+	 * written against `PlayerScripts.PlayerModule` and it timed out: ten seconds and `no PlayerModule` on a client
+	 * whose jump button was in the engine's touch GUI the whole time, which is a client running the movement code
+	 * perfectly well. Roblox has shipped the same module under two trees, and the older one has no `PlayerModule`
+	 * in it at all. See {@link findMoveModule}, which searches for both names rather than trusting a path.
 	 *
 	 * **What this means for whoever reads it: this is the only part of the cluster whose failure mode is "no
 	 * sprint" rather than "a circle a few pixels off".** If the module's shape differs in this build, one log line
@@ -967,31 +1222,70 @@ export class MobileControlsController implements OnStart {
 		const read = this.findStick();
 		if (read === undefined) return;
 
+		// **The loop's own line, and it is the first thing to look for in a log.** This feature has failed silently
+		// twice, in the same way both times: nothing printed, so nothing said which step was missing. A line here
+		// means the reader resolved and the stick is being polled; no line means it did not resolve, which is the
+		// failure {@link findStick} now names for itself.
+		if (DEBUG) print("[Sprint] mobile loop started — reading the stick every frame");
+
 		// **The calibration line, and it is evidence rather than decoration.** It prints the magnitude *now* — at
 		// mount, with nobody touching the screen — so a session that sprints in place has the number that explains
-		// it, and so does a session where the stick reads `0.5` at rest. See {@link MoveControls} for why this is
-		// the reading a running client has to confirm rather than the typings.
+		// it, and so does a session where the stick reads `0.5` at rest. A stick that reads anything but `0.00` with
+		// nobody touching it is one this loop should never act on, and no other line would say so.
 		if (DEBUG) {
 			print(
-				`[HUD] sprint is the stick's own magnitude — it reads ${string.format("%.3f", read())} at rest, ` +
+				`[Sprint] mobile — the stick reads ${string.format("%.3f", read())} at rest, ` +
 					`so the sprint starts at ${SPRINT_START_MAGNITUDE} and stops at ${SPRINT_STOP_MAGNITUDE}`,
 			);
 		}
 
 		let sprinting = false;
 
+		// **The reach of the stick, printed as it grows and never as it falls.** The two edge lines below name every
+		// crossing; this one answers the question that has no crossing to name — *is the start threshold reachable
+		// on this device at all?* A stick that tops out at `0.60` never crosses `0.75` and would be silent
+		// otherwise, which is the third way this feature can fail without a trace. Monotone, so a session prints the
+		// envelope of the player's pushes — five or six lines — rather than a stream. See {@link STICK_PEAK_LIMIT}.
+		let peak = 0;
+		let peaks = 0;
+
 		scope.push(
 			RunService.Heartbeat.Connect(() => {
 				const magnitude = read();
 
+				if (DEBUG && peaks < STICK_PEAK_LIMIT && magnitude > peak + 0.1) {
+					peak = magnitude;
+					peaks += 1;
+
+					print(`[Sprint] mobile — the stick's peak so far ${string.format("%.2f", magnitude)}`);
+				}
+
 				// **Two tests and not one**, which is the hysteresis: the stick has to be pushed past the start
 				// threshold to begin and eased back below the (lower) stop threshold to end, so a thumb resting near
 				// one line cannot flip the state every frame. See {@link SPRINT_START_MAGNITUDE}.
+				//
+				// **And the state is a latch, so `holdSprint` is only ever called on an edge** — not once per frame
+				// with a value the other side merely de-duplicates. Two guards, deliberately: the latch is this
+				// loop's own account of what it last asked for, and `SprintController.setHolding` has one of its
+				// own. The line before each call is what makes the edge visible in a log, which is the whole of
+				// what was missing when this feature first failed.
 				if (!sprinting && magnitude >= SPRINT_START_MAGNITUDE) {
 					sprinting = true;
+
+					if (DEBUG) {
+						print(`[Sprint] mobile — magnitude ${string.format("%.2f", magnitude)} (over start)`);
+						print("[Sprint] mobile — hold true");
+					}
+
 					this.sprintController.holdSprint(true);
 				} else if (sprinting && magnitude < SPRINT_STOP_MAGNITUDE) {
 					sprinting = false;
+
+					if (DEBUG) {
+						print(`[Sprint] mobile — magnitude ${string.format("%.2f", magnitude)} (under stop)`);
+						print("[Sprint] mobile — hold false");
+					}
+
 					this.sprintController.holdSprint(false);
 				}
 			}),
@@ -999,12 +1293,18 @@ export class MobileControlsController implements OnStart {
 	}
 
 	/**
-	 * **The one untyped call in this file: the control module's `GetMoveVector`, or `undefined`.**
+	 * **Where the stick's reading comes from: two routes, one answer — the stick's own thumb, or the engine's
+	 * movement module.**
 	 *
-	 * Returns a *reader* rather than the object it found, and that is the whole of how the untypedness is contained:
-	 * everything below the guard is `unknown` and every step of it is checked by hand, so what leaves this method
-	 * is a `() => number` with no `any` in its type and no cast at the call site. {@link watchStick} cannot tell
-	 * that any of this is somebody else's table.
+	 * **Both routes return a *reader*, a `() => number`, and never the thing they found.** That is what keeps the
+	 * untyped half contained: everything the module route touches below is `unknown` and checked by hand, and
+	 * {@link watchStick} cannot tell which route its number came from — it polls one either way.
+	 *
+	 * **The GUI route was written second and is tried first, which reverses this method's original design.** The
+	 * module was "the supported way to ask", and on the first real phone log this project has, that ask timed out
+	 * while the same client's jump button was being read out of the same GUI by name. What a supported route is
+	 * worth is what it delivers, and this one delivers a number on a client where the other delivers nothing; the
+	 * module stays for the movement modes the GUI cannot describe. See {@link findStickPoint}.
 	 *
 	 * **Every failure returns `undefined` rather than throwing, and each one prints a line that names itself.** A
 	 * missing module, a module whose `require` fails, a controls table with no `GetMoveVector` on it — three
@@ -1018,20 +1318,57 @@ export class MobileControlsController implements OnStart {
 	 * far smaller loss than a controller that throws on start-up.
 	 */
 	private findStick(): (() => number) | undefined {
+		// **Route one: the stick's own geometry, which needs nobody's module.** It goes first because it is the only
+		// route that works on a client whose `PlayerScripts` this file turns out not to be able to read — and one
+		// such client exists, which is the whole reason this route does. See {@link findStickPoint}.
+		const fromStick = findStickPoint(Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui);
+		if (fromStick !== undefined) {
+			if (DEBUG) {
+				print(
+					`[Sprint] mobile — reading the stick's own thumb (${STICK_FRAME_NAME}.${STICK_THUMB_NAME}), ` +
+						`which is the default touch movement mode`,
+				);
+			}
+
+			return fromStick;
+		}
+
+		// **Route two: the engine's movement module**, which is what covers the movement modes the GUI cannot
+		// describe — the dynamic thumbstick's undrawn radius and the thumbpad's whole-pad slide. Everything below is
+		// that route.
+		//
 		// **Waited for with a timeout rather than yielded on forever.** Both instances are created by the engine's
 		// own scripts during boot, so they are usually there already; the timeout is what stops a client that
 		// somehow lacks them from leaving a task alive for the session. `WaitForChild` with a timeout returns
 		// `Instance | undefined`, which is the shape this whole method is written in.
 		const playerScripts = Players.LocalPlayer.WaitForChild("PlayerScripts", STICK_WAIT_SECONDS);
 		if (playerScripts === undefined) {
-			if (DEBUG) print("[HUD] no PlayerScripts — the stick cannot be read, so this client has no sprint");
+			if (DEBUG) print("[Sprint] mobile — no PlayerScripts, so the stick cannot be read at all");
 
 			return undefined;
 		}
 
-		const moduleScript = playerScripts.WaitForChild("PlayerModule", STICK_WAIT_SECONDS);
-		if (moduleScript === undefined || !moduleScript.IsA("ModuleScript")) {
-			if (DEBUG) print("[HUD] no PlayerModule — the stick cannot be read, so this client has no sprint");
+		// **Found by searching rather than by naming a path, and that is a correction this method needed.** The
+		// first version waited on `PlayerScripts.PlayerModule` — the documented route — and the first real phone log
+		// this project has shows it timing out: ten seconds, then `no PlayerModule`, on a client whose jump button
+		// was sitting in `TouchGui.TouchControlFrame` the whole time. A client with the engine's touch controls up
+		// is a client whose movement module is running, so the lookup was wrong and not the device. See
+		// {@link findMoveModule} for the two trees Roblox has shipped the same module under.
+		const moduleScript = findMoveModule(playerScripts);
+		if (moduleScript === undefined) {
+			if (DEBUG) {
+				// **What is there instead, by name and class.** "no PlayerModule" is a message that cannot tell a
+				// renamed module from a missing one and says nothing about which layout the client runs, which is
+				// exactly what made the first failure unfixable from the log it printed. This prints the tree's top
+				// level, so the next session names the layout rather than guessing at it.
+				const held: string[] = [];
+				for (const child of playerScripts.GetChildren()) held.push(`${child.Name} (${child.ClassName})`);
+
+				print(
+					`[Sprint] mobile — no ${STICK_MODULE_NAMES.join(" or ")} anywhere under PlayerScripts, and the ` +
+						`GUI has no visible stick either. It holds: ${held.join(", ")}`,
+				);
+			}
 
 			return undefined;
 		}
@@ -1058,8 +1395,8 @@ export class MobileControlsController implements OnStart {
 		if (!ok) {
 			if (DEBUG) {
 				print(
-					"[HUD] the PlayerModule would not hand over its controls — " +
-						`${tostring(controls)}; no sprint on this client`,
+					`[Sprint] mobile — ${moduleScript.GetFullName()} would not hand over its controls: ` +
+						`${tostring(controls)}`,
 				);
 			}
 
@@ -1072,9 +1409,20 @@ export class MobileControlsController implements OnStart {
 		// allowed, and that is exactly what a runtime existence check is. The table is then cast *back* to the
 		// method view to be called, because the call is the thing that has to pass `self`.
 		if (type((controls as { GetMoveVector?: unknown }).GetMoveVector) !== "function") {
-			if (DEBUG) print("[HUD] the control module has no GetMoveVector — no sprint on this client");
+			if (DEBUG) print(`[Sprint] mobile — ${moduleScript.Name} has no GetMoveVector on its controls`);
 
 			return undefined;
+		}
+
+		// **The route it was found by, printed once, because the *which layout* question is the one that cost this
+		// pass a round trip.** A path in the log also says whether the client is on the modern tree or the older one,
+		// which is the first thing to know about any future difference between them.
+		if (DEBUG) {
+			print(
+				`[Sprint] mobile — reading through ${moduleScript.GetFullName()}, which answers GetMoveVector; ` +
+					`"${moduleScript.Name}" is the ${moduleScript.Name === "PlayerModule" ? "modern" : "older"} ` +
+					`layout of the engine's controls`,
+			);
 		}
 
 		// **Bound to the object it came from, not lifted off it.** `GetMoveVector` is a method: called on the table
@@ -1089,18 +1437,21 @@ export class MobileControlsController implements OnStart {
 	/**
 	 * One button and its word: **the circle, the space reserved inside it, and the label underneath.**
 	 *
-	 * **Three things in a column, which is the whole of the button's structure.** A `TextButton` rounded into a
-	 * disc, an `ImageLabel` inside it that is empty today and will hold an icon later, and a `TextLabel` below
-	 * the disc saying what the button does — because on this HUD the word *is* the legend, which is the one thing
-	 * that separates this cluster from the keyboard's card.
+	 * **Two things and no wrapper.** A `TextButton` rounded into a disc with an `ImageLabel` inside it that is empty
+	 * today and will hold an icon later, and a `TextLabel` *child of the button* sitting below the disc saying what
+	 * the button does — because on this HUD the word *is* the legend, which is the one thing that separates this
+	 * cluster from the keyboard's card. **There is no cell frame and no layout inside the button**: the label hangs
+	 * from the button's own bottom edge (`AnchorPoint (0.5, 0)`, `Position (0.5, 1)` plus {@link LABEL_GAP}), which
+	 * is exactly how the engine's jump button carries its own word, and the button's position and size come from
+	 * {@link pack} through `slot`. That is the same simplification the box made one level up: nothing in this
+	 * cluster arranges anything at runtime any more.
 	 *
-	 * **The label is below the button rather than inside it**, deliberately: a word inside a 44px circle would
-	 * have to be tiny or wrapped, and a control whose label competes with its own icon is a control that has to be
-	 * read. Under it, the circle stays the whole target and the word annotates it — and on this shape the word also
-	 * has somewhere to go, because the arc's radius is derived so that a toe's label hangs in open space rather
-	 * than onto the pad. See {@link mount}.
+	 * **The label is below the button rather than inside it**, deliberately: a word inside a 72px circle would have
+	 * to be tiny or wrapped, and a control whose label competes with its own icon is a control that has to be read.
+	 * Under it, the circle stays the whole target and the word annotates it — and the room for it is reserved by the
+	 * packing rather than by this method. See {@link pack} and {@link LABEL_BAND}.
 	 *
-	 * **The icon's box is a `ImageLabel` with no image, not a `Frame`.** Both reserve the same space, and the one
+	 * **The icon's box is an `ImageLabel` with no image, not a `Frame`.** Both reserve the same space, and the one
 	 * that is already the right *class* is the one the art goes into: the day there is an id, this file gains one
 	 * property instead of swapping an instance. Its `BackgroundTransparency` is `1` for the reason
 	 * `SuperHudController.addIconSlot` records at its own icon — an `ImageLabel` is a rectangle that *contains* a
@@ -1113,54 +1464,68 @@ export class MobileControlsController implements OnStart {
 	 * reason every other hand-built button in this project switches it off: the engine's own darkening fights the
 	 * state this file is about to write, and the two together read as a flicker rather than as a press.
 	 *
-	 * **The state is two property writes, not a tween and not a `Computed`.** It is a *state* — a button is held
-	 * or it is not — and there is nothing in between to animate; a fade would also leave the colour somewhere
-	 * between the two states at exactly the moment the player wants to know which one they are in. And it is
-	 * written straight onto the instance rather than through the graph for `wireInteraction`'s reason: what moves
-	 * is an instance property, nothing reads it, and a `Computed` here would need an `Observer` to have any
-	 * effect at all.
+	 * **The state is two property writes, not a tween and not a `Computed`.** It is a *state* — a button is held or
+	 * it is not — and there is nothing in between to animate; a fade would also leave the colour somewhere between
+	 * the two states at exactly the moment the player wants to know which one they are in. And it is written
+	 * straight onto the instance rather than through the graph for `wireInteraction`'s reason: what moves is an
+	 * instance property, nothing reads it, and a `Computed` here would need an `Observer` to have any effect at
+	 * all.
 	 *
-	 * **And the same press is a *grab* while arrange mode is on**, which is the one branch in here that is not
-	 * about a control at all: {@link mount} hands the hook in only when {@link ARRANGE} is true, the press then
-	 * starts a drag instead of an action, and `InputChanged` — an event this file had no use for until now — is
-	 * what reports where the finger went. Nothing about the button changes except which of two things one finger
-	 * does; see {@link ArrangeHook}.
+	 * **And the press can be a grip instead of a press, which is back.** The packing pass deleted the drag tool on
+	 * the argument that a fixed box needs no hand-tuning, and the second half of that argument was wrong: the box's
+	 * *place* is derived from the engine's button, so moving the cluster down means stating a nudge by hand — and a
+	 * hand needs a tool. While {@link ARRANGE} is on, the same press that would act on the game starts a drag of the
+	 * whole box through {@link ArrangeHook}: nothing fires and nothing is painted, and the `InputChanged` connection
+	 * that feeds the drag is made **only** in that mode, so the shipped path carries no dead machinery.
 	 */
-	private buildCell(
+	private buildButton(
 		scope: Fusion.Scope<unknown>,
 		theme: HudTheme,
 		control: TouchControl,
-		arrange?: ArrangeHook,
-	): Frame {
-		const size = control.size;
+		slots: Fusion.UsedAs<Array<{ x: number; y: number; size: number }>>,
+		index: number,
+		arrange: ArrangeHook | undefined,
+	): TextButton {
+		/**
+		 * **This button's place in the packing, read through the graph rather than handed in as numbers.** `pack`
+		 * recomputes whenever the box or the scale moves, so the size and the position have to be `Computed`s of
+		 * their own — a pair of numbers captured at mount would be right on the phone they were captured on and
+		 * wrong after the first rotation. See {@link pack}.
+		 *
+		 * The fallback is unreachable while `rows` totals the controls — {@link mount} checks that — and exists so
+		 * that the two `Computed`s below have a value of the right shape to read instead of a nil case each.
+		 */
+		const slot = Fusion.Computed(scope, (use) => {
+			const packed = use(slots);
 
-		const cell = Fusion.New(scope, "Frame")({
-			Name: `${control.label}Cell`,
-			Size: UDim2.fromOffset(0, 0),
-			AutomaticSize: Enum.AutomaticSize.XY,
-			BackgroundTransparency: 1,
-		});
-
-		Fusion.New(scope, "UIListLayout")({
-			Parent: cell,
-			FillDirection: Enum.FillDirection.Vertical,
-			SortOrder: Enum.SortOrder.LayoutOrder,
-			HorizontalAlignment: Enum.HorizontalAlignment.Center,
-			Padding: new UDim(0, LABEL_GAP),
+			return packed[index] ?? { x: 0, y: 0, size: TAP_MIN };
 		});
 
 		const button = Fusion.New(scope, "TextButton")({
 			Name: control.label,
-			Size: UDim2.fromOffset(size, size),
+			// **The size from the packing, and one size for the entire cluster** — there is no per-control size any
+			// more, which is what {@link pack} traded away for a shape that always fits. See {@link BOX_SIZE}.
+			Size: Fusion.Computed(scope, (use) => {
+				const here = use(slot);
+
+				return UDim2.fromOffset(here.size, here.size);
+			}),
+			// **The position too**, in the box's own coordinates: `slot` is a button *centre*, so this anchor puts
+			// the circle's middle exactly where `pack` said it goes rather than its corner.
+			AnchorPoint: new Vector2(0.5, 0.5),
+			Position: Fusion.Computed(scope, (use) => {
+				const here = use(slot);
+
+				return UDim2.fromOffset(here.x, here.y);
+			}),
 			// **The idle state, and the two properties are the whole of the difference between the states.** See
 			// {@link IDLE_TRANSPARENCY} for the colour and the opacity and for what the alternative was.
 			BackgroundColor3: theme.colors.trough,
 			BackgroundTransparency: IDLE_TRANSPARENCY,
 			BorderSizePixel: 0,
 			AutoButtonColor: false,
-			// A button whose text is its label would draw the word in the circle; the word is a sibling below it.
+			// A button whose text is its label would draw the word in the circle; the word is a child below it.
 			Text: "",
-			LayoutOrder: 1,
 		});
 
 		// `UDim(1, 0)` — all of it — which is a circle at any size. See the class doc for why the shape is drawn
@@ -1186,12 +1551,6 @@ export class MobileControlsController implements OnStart {
 		// throw would restart its charge on each announcement, and a held sprint would send a stream of requests.
 		let held = false;
 
-		// **The grab's own latch, and where the finger was the last time it moved** — see `arrange`. A screen
-		// position rather than a running delta, so a lost frame costs nothing: the next report is measured from
-		// wherever the finger actually is rather than from where a previous frame *assumed* it would be.
-		let grabbed = false;
-		let grabLast = Vector2.zero;
-
 		const paint = (down: boolean): void => {
 			button.BackgroundColor3 = down ? theme.colors.accent : theme.colors.trough;
 			button.BackgroundTransparency = down ? HELD_TRANSPARENCY : IDLE_TRANSPARENCY;
@@ -1206,13 +1565,13 @@ export class MobileControlsController implements OnStart {
 				const kind = input.UserInputType;
 				if (kind !== Enum.UserInputType.Touch && kind !== Enum.UserInputType.MouseButton1) return;
 
-				// **In arrange mode the press grabs instead of acting, and the action does not run at all.** That
-				// is deliberate: the alternative is guessing whether a gesture is a tap or a drag, and a wrong
-				// guess throws the ball while somebody is trying to move a button. See {@link ARRANGE}.
+				// **In hand-move mode the press is a grip**, and it takes the whole press: no latch, no paint, no
+				// action. The latch matters here rather than being tidiness — a grip that set `held` would swallow
+				// the release's `control.up()` for a control that never went down. See {@link ARRANGE}.
 				if (arrange !== undefined) {
-					grabbed = true;
-					grabLast = new Vector2(input.Position.X, input.Position.Y);
-					paint(true);
+					// `InputObject.Position` is a `Vector3` — the engine's input points carry a Z — and everything
+					// here is 2D. Dropping the axis at the one place it enters is the whole conversion.
+					arrange.grab(new Vector2(input.Position.X, input.Position.Y));
 
 					return;
 				}
@@ -1221,11 +1580,10 @@ export class MobileControlsController implements OnStart {
 				held = true;
 
 				// **The press itself, printed once per press.** Every action this cluster drives already has a log
-				// line of its own inside the controller that owns it — except the jump, whose whole effect is one
-				// property write — so without this a press that reached nothing at all and a press that reached
-				// the wrong thing look the same from the outside. It is also what separates the two halves of "a
-				// button does nothing": this line missing means the *input* never arrived here, and this line
-				// followed by nothing means the action itself refused.
+				// line of its own inside the controller that owns it, so without this a press that reached nothing
+				// at all and a press that reached the wrong thing look the same from the outside. It is also what
+				// separates the two halves of "a button does nothing": this line missing means the *input* never
+				// arrived here, and this line followed by nothing means the action itself refused.
 				if (DEBUG) print(`[HUD] ${control.label} down`);
 
 				paint(true);
@@ -1233,45 +1591,21 @@ export class MobileControlsController implements OnStart {
 			}),
 		);
 
-		// **Where the drag is reported, and the one event this file did not use before.** `InputChanged` is where
-		// an input that is already down says that it moved, and for a touch that is the only place the movement
-		// exists — `InputBegan` happens once and `InputEnded` arrives when it is over. **`Position` rather than
-		// `Delta`**, with the previous position kept beside it: the delta the engine reports is per-frame, and a
-		// frame that arrives twice or not at all would make the paw drift away from the finger; two positions and
-		// a subtraction cannot.
-		scope.push(
-			button.InputChanged.Connect((input) => {
-				if (!grabbed || arrange === undefined) return;
-				if (
-					input.UserInputType !== Enum.UserInputType.Touch &&
-					input.UserInputType !== Enum.UserInputType.MouseMovement
-				) {
-					return;
-				}
-
-				const here = new Vector2(input.Position.X, input.Position.Y);
-				arrange.move(here.sub(grabLast));
-				grabLast = here;
-			}),
-		);
-
 		scope.push(
 			button.InputEnded.Connect(() => {
-				// **The release is taken however it arrives**, which is the rule `DodgeController` and
-				// `SprintController` both follow for their own releases: an ending is unambiguous, and a finger
-				// that slides off the button still has to end the hold it began. A release with no hold is a
-				// no-op, so nothing here needs to ask which kind of input ended.
-				if (grabbed) {
-					grabbed = false;
-					paint(false);
-
-					// **And the moment the numbers are worth having**: the finger has stopped, so the paw is
-					// wherever it is going to be and the offset is the answer. See {@link ARRANGE}.
-					arrange?.done();
+				// **A grip ends the same way a press does**, and ending it is when the nudge is worth printing —
+				// see {@link ArrangeHook}. Nothing to paint and no action to end, so this returns rather than
+				// falling through.
+				if (arrange !== undefined) {
+					arrange.done();
 
 					return;
 				}
 
+				// **The release is taken however it arrives**, which is the rule `DodgeController` and
+				// `SprintController` both follow for their own releases: an ending is unambiguous, and a finger that
+				// slides off the button still has to end the hold it began. A release with no hold is a no-op, so
+				// nothing here needs to ask which kind of input ended.
 				if (!held) return;
 				held = false;
 
@@ -1280,13 +1614,32 @@ export class MobileControlsController implements OnStart {
 			}),
 		);
 
+		// **The drag's own connection, made only in hand-move mode.** Every other button in this project lives
+		// without one — a press is a begin and an end and nothing between them is this file's business — so the
+		// shipped path does not pay for a feature it is not using. **The `grab`/`move` pairing is the safety here**:
+		// a `MouseMovement` that began nowhere near a button still fires this, and it does nothing because
+		// {@link ArrangeHook} has no starting point to measure it from.
+		if (arrange !== undefined) {
+			scope.push(
+				button.InputChanged.Connect((input) => {
+					const kind = input.UserInputType;
+					if (kind !== Enum.UserInputType.Touch && kind !== Enum.UserInputType.MouseMovement) return;
+
+					arrange.move(new Vector2(input.Position.X, input.Position.Y));
+				}),
+			);
+		}
+
+		// **The word, hung off the button's own bottom edge** rather than stacked by a layout — the same
+		// arrangement the engine's jump button has, and the reason there is no cell frame at all. `AnchorPoint
+		// (0.5, 0)` with `Position (0.5, 1)` puts its top-centre on the circle's bottom edge, so the word is
+		// centred under the disc at whatever size the packing gave it, plus {@link LABEL_GAP} of air.
 		const label = this.buildLabel(scope, theme, control.label);
-		label.LayoutOrder = 2;
-		label.Parent = cell;
+		label.AnchorPoint = new Vector2(0.5, 0);
+		label.Position = new UDim2(0.5, 0, 1, LABEL_GAP);
+		label.Parent = button;
 
-		button.Parent = cell;
-
-		return cell;
+		return button;
 	}
 
 	/**
@@ -1386,14 +1739,16 @@ export class MobileControlsController implements OnStart {
 	 *
 	 * **And the size is where the split has an exception, which is the `UIScale` added below.** The module owns
 	 * how big that button is, but it drew it at 120px on one phone and 70px on another (see {@link PAD_SIZE}),
-	 * and a pad that size builds a paw of five toes the size of dinner plates. **A `UIScale` is the one property
-	 * that changes how big a `GuiObject` renders without touching `Size`** — the reference's own words are that its
-	 * `Scale` "is used to multiply the `AbsoluteSize` of the parent UI element" — so the module's layout is left
-	 * completely alone and only the *rendered* size changes. It is added *after* the restyle's own children, as a
-	 * sibling of them, and it is created once rather than in `paintParts`: the look is re-asserted on every press
-	 * and the scale is not a thing a press can change. **The one assumption in it** is that the module never
-	 * writes a `UIScale` of its own — the discovery probe reads `0 child(ren)` on a fresh button, and nothing in
-	 * three passes of logs has shown it adding one.
+	 * and neither of those is the size of the cluster's own buttons. **A `UIScale` is the one property that changes
+	 * how big a `GuiObject` renders without touching `Size`** — the reference's own words are that its `Scale` "is
+	 * used to multiply the `AbsoluteSize` of the parent UI element" — so the module's layout is left completely
+	 * alone and only the *rendered* size changes. It carries **two factors**: the shrink toward {@link PAD_SIZE},
+	 * and the cluster's own viewport multiplier, which arrives here as the `scale` parameter. It is added *after*
+	 * the restyle's own children, as a sibling of them, and it is created once rather than in `paintParts`: the
+	 * look is re-asserted on every press and the scale is not a thing a press can change. **The one assumption in
+	 * it** is that the module never writes a `UIScale` of its own — the discovery probe reads `0 child(ren)` on a
+	 * fresh button, and the module's own `TouchJump` script writes `Size`, `Position`, `Image` and `Visible` when
+	 * it creates the button and nothing else.
 	 *
 	 * **The one thing this cannot promise, stated rather than discovered.** The module owns the button's
 	 * `BackgroundColor3`, `BackgroundTransparency` and `Image`, and it changes them on press to draw its own
@@ -1402,6 +1757,12 @@ export class MobileControlsController implements OnStart {
 	 * properties from a per-frame update instead of from its input handlers, the button will flick back to the
 	 * engine's colours and the fix is a re-assert on the same signal the module uses. What the log prints at
 	 * discovery is the evidence either way — see the report below.
+	 *
+	 * **The multiplier it is handed is the same one `mount` builds the box from**, and that is the whole of what
+	 * this pass changes about the pad: it used to be the one element in this corner outside the cluster's scale,
+	 * sized toward a fixed 72 while the box grew around it. Now the two are the same rate, so a bigger screen has a
+	 * bigger pad beside bigger buttons. **Handed in rather than read here** for `scaleFor`'s own reason — a second
+	 * copy of the fit would be a second answer to one question, and the copy that went stale would be the pad's.
 	 *
 	 * **Returns where the button is and how big it is, kept live** — see {@link JumpGeometry}, which carries the
 	 * three readings and why they are three. **Nothing is returned for a client with no touch GUI** (a desktop
@@ -1414,7 +1775,11 @@ export class MobileControlsController implements OnStart {
 	 * cluster in the top-right corner and cut it in half in landscape. A centre and a size cannot be spent that
 	 * way: they describe the button rather than a distance to it.
 	 */
-	private restyleEngineJump(scope: Fusion.Scope<unknown>, theme: HudTheme): JumpGeometry {
+	private restyleEngineJump(
+		scope: Fusion.Scope<unknown>,
+		theme: HudTheme,
+		scale: Fusion.UsedAs<number>,
+	): JumpGeometry {
 		const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
 
 		// **The three readings, and every one of them is written by `measure` below rather than here.** These are
@@ -1541,6 +1906,11 @@ export class MobileControlsController implements OnStart {
 			 * {@link PAD_SIZE} for the target size and for why the scale is derived rather than the `0.6` this
 			 * started as.
 			 *
+			 * **Two factors in one number: the shrink, and the cluster's viewport multiplier.** `measure` writes
+			 * their product, and that product is what puts the pad inside the same scale as the five buttons beside
+			 * it — see {@link PAD_SIZE} for why the pad cannot arrive at that size by itself (the module picks
+			 * 70px or 120px and stops) and the `scale` parameter for where the second factor comes from.
+			 *
 			 * **Created here, once, rather than in `paintParts`.** The look is re-asserted on every press because
 			 * the module repaints the button on press; the scale is not something a press can change, and a second
 			 * `UIScale` on one button would be one multiplier fighting another — the same class of mistake as two
@@ -1557,8 +1927,14 @@ export class MobileControlsController implements OnStart {
 				Scale: 1,
 			});
 
-			/** What the engine's button measured at the last report, so `measure` prints news rather than frames. */
+			/**
+			 * What the engine's button measured at the last report, so `measure` prints news rather than frames —
+			 * both of the numbers that make up the rendered size, because either can move without the other: the
+			 * engine's own size changes when it rebuilds the button for a different device class, and the multiplier
+			 * changes on every rotation.
+			 */
 			let reportedEngineSize = -1;
+			let reportedMultiplier = -1;
 
 			// **The two halves of the held state, on the button's own input.** Connected once, here — after the
 			// module created the button and bound its own handlers — so ours is the later write of the two and the
@@ -1581,52 +1957,71 @@ export class MobileControlsController implements OnStart {
 			 * **Where the button is, how big it is, and how small it has been made — kept up to date.**
 			 *
 			 * The engine moves and resizes its button on every viewport change, so all of it is re-taken from the
-			 * same two signals rather than captured once — and the toes, which are derived from it, follow the pad
-			 * instead of being right at mount and wrong after the first rotation.
+			 * same two signals rather than captured once — and this is also where the cluster's own multiplier is
+			 * applied, because a viewport change is exactly the moment that changes. The five buttons follow the
+			 * box; the pad now follows it too, rather than sitting at a fixed size beside a moving cluster.
 			 *
 			 * **The pad's own size is recovered by dividing the scale back out, and that is the subtle line here.**
 			 * `AbsoluteSize` *includes* our `UIScale` — that is what a `UIScale` is — so the engine's own size is
 			 * `rendered ÷ the scale currently applied`, and the scale this method then writes is
-			 * `min(1, PAD_SIZE ÷ that)`. Substituted, the two cancel: what is written is what was read, so the
-			 * write cannot feed itself. **That is exactly the trap a scale derived from `AbsoluteSize` alone would
-			 * fall into** — each pass would multiply the pad by `PAD_SIZE ÷ its own size` and the pad would vanish
-			 * in a couple of frames. See {@link PAD_SIZE}.
+			 * `min(1, PAD_SIZE ÷ that) × the viewport multiplier`. Substituted, the two cancel: what is written is
+			 * what was read, so the write cannot feed itself. **That is exactly the trap a scale derived from
+			 * `AbsoluteSize` alone would fall into** — each pass would multiply the pad by `PAD_SIZE ÷ its own size`
+			 * and the pad would vanish in a couple of frames. See {@link PAD_SIZE}.
+			 *
+			 * **The multiplier is on both sides and cancels for the same reason it is outside any loop**: it is a
+			 * function of the *screen*, and the screen does not read the button. That is the whole of why one
+			 * `Scale` can carry two factors — the factor that looks at `AbsoluteSize` is the shrink, and the factor
+			 * that does not is the viewport.
 			 *
 			 * **`min(1, …)` is the "shrink, never enlarge" rule**, which is why the second logged device — a 70px
-			 * pad — keeps the size the engine gave it.
+			 * pad — keeps the size the engine gave it. The multiplier sits *outside* the `min`, so a big screen
+			 * still grows the pad; what the rule protects is the comparison with the engine's own draw, not the
+			 * final size. See {@link PAD_SIZE} for why that distinction is the one that matters.
 			 *
-			 * **The centre rather than the corner, because the toes are placed around the pad's *centre*.** An
+			 * **The centre rather than the corner, because a centre is the reading both uses can be built from.** An
 			 * `AnchorPoint` of `(0, 0)` means the rendered button expands from its own top-left, so that corner is
 			 * where the engine left it and the centre is that corner plus half of the *visual* size. **The visual
 			 * size is computed rather than re-read from `AbsoluteSize`**, so this lands on the frame the scale
-			 * changes instead of one signal later.
+			 * changes instead of one signal later — and the box asks for that top-left corner back out of the same
+			 * two numbers (`centre.Y − visualSize/2`), so neither reading has to re-derive the other.
+			 *
+			 * **And the box's own derivation is untouched by any of it.** What the box hangs from is the pad's
+			 * *top-left* — `centre.Y − visualSize/2` — and the corner is where the module put the button: the
+			 * rendered size cancels out of that subtraction, so growing the pad moves its bottom edge and never the
+			 * number the box is placed from. That cancellation is what lets the pad's size depend on the viewport
+			 * at all without the box's size and the box's *position* becoming each other's inputs.
 			 *
 			 * **The larger axis rather than `X`**, because the engine's own button is not guaranteed square and a
-			 * clearance taken from the narrow axis would put toes *inside* a wide button. A button that is wider
-			 * than it is tall therefore gets a little more room than it strictly needs, which is the harmless
+			 * clearance taken from the narrow axis would put a neighbour *inside* a wide button. A button that is
+			 * wider than it is tall therefore gets a little more room than it strictly needs, which is the harmless
 			 * direction for that mistake to go in.
 			 */
 			const measure = (): void => {
 				const rendered = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y);
 				const engineSize = rendered / hudScale.Scale;
-				const visualSize = math.min(engineSize, PAD_SIZE);
+				const multiplier = Fusion.peek(scale);
+				const visualSize = math.min(engineSize, PAD_SIZE) * multiplier;
 
-				hudScale.Scale = math.min(1, PAD_SIZE / engineSize);
+				hudScale.Scale = math.min(1, PAD_SIZE / engineSize) * multiplier;
 
 				geometry.centre.set(button.AbsolutePosition.add(new Vector2(visualSize / 2, visualSize / 2)));
 				geometry.size.set(visualSize);
 
-				// **The line that makes the shrink answerable from a log**, and the one number a run needs if the
-				// paw ever comes out at the wrong scale: what the engine drew, what it is being rendered at, and by
-				// how much. Printed on the way in for this codebase's usual reason — the sizes are the fact being
-				// doubted — and guarded so that a viewport change re-reports while a press does not.
-				if (DEBUG && engineSize !== reportedEngineSize) {
+				// **The line that makes the shrink answerable from a log**, and the numbers a run needs if the pad
+				// ever comes out at the wrong size: what the engine drew, what it is being rendered at, the scale
+				// that did it, and the viewport factor inside that scale. Printed on the way in for this codebase's
+				// usual reason — the sizes are the fact being doubted — and guarded on both inputs, so that a
+				// rotation re-reports (it moves the multiplier) while a press does not.
+				if (DEBUG && (engineSize !== reportedEngineSize || multiplier !== reportedMultiplier)) {
 					reportedEngineSize = engineSize;
+					reportedMultiplier = multiplier;
 
 					print(
 						`[HUD] jump pad — the engine drew ${string.format("%.0f", engineSize)}px, ` +
 							`rendering ${string.format("%.0f", visualSize)}px at scale ` +
-							`${string.format("%.3f", hudScale.Scale)}`,
+							`${string.format("%.3f", hudScale.Scale)} ` +
+							`(the viewport's own multiplier is ${string.format("%.3f", multiplier)})`,
 					);
 				}
 			};
