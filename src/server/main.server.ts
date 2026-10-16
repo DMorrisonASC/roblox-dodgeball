@@ -40,44 +40,45 @@ print(
 );
 
 /**
- * **The engine's touch movement mode: asked once, answered, and deliberately not changed. Read this before
- * reaching for it again.**
+ * **The engine's touch movement mode: deliberately not set here, after two attempts in one day. Read this before
+ * reaching for it a third time.**
  *
- * `player.DevTouchMovementMode = Enum.DevTouchMovementMode.Scriptable` is the switch the mobile-stick design
- * wanted — the reference defines the value as *"The player's character will not respond to default controls; any
- * character movement must be defined in custom scripts"*, which is exactly what `TouchJoystickController` draws
- * for. **A client cannot throw it**: a `LocalScript` assignment is refused with *"The current thread cannot set
- * 'DevTouchMovementMode' (lacking capability `RobloxScript`)"*, because capability belongs to the *thread* rather
- * than to the peer. So a server-side, per-player write was the last route to it, and **it works** — a session on
- * 2026-10-16 printed `[main] engine touch movement — prospeed1: UserChoice -> Scriptable`, with the client reading
- * back `Scriptable` on its first mount a third of a second later.
+ * The property is `Player.DevTouchMovementMode`, whose members the reference defines as:
  *
- * **And it must not be used, because it takes the jump button with it.** That same client printed
- * `[Joystick] engine touch GUI — 0 child(ren): ; no JumpButton`: with the movement mode scripted, the engine's
- * `TouchGui` still exists but its `TouchControlFrame` is **empty** and there is **no `JumpButton` anywhere in it**.
- * **That button is the only touch jump this project has.** `MobileControlsController` *dresses* the engine's jump
- * rather than replacing it, and the history for that decision is in its own doc: a button of ours whose press wrote
- * `Humanoid.Jump = true` never produced a jump, because the `PlayerModule` also writes that flag, later in the
- * frame. So `Scriptable` buys a bigger, scripted stick and pays for it with a player who cannot jump, and in a game
- * whose whole subject is movement that is not a trade to make quietly.
+ * - `UserChoice` — *"Allows players to choose their desired control scheme from the in-experience menu. This is the
+ *   default movement mode."* **The place file is on it and this project leaves it that way**, so the mode is the
+ *   player's — which is what `UserChoice` is for.
+ * - `DynamicThumbstick` — *"a virtual thumbstick that **appears when they touch the lower portion of the screen**.
+ *   Jumping is controlled with a separate button."* That is what a phone resolves to by default, and it is the mode
+ *   that fights `TouchJoystickController`'s ring: its stick appears under a thumb anywhere on the lower screen and
+ *   writes its own movement vector every frame beside ours. A session on 2026-10-16 caught what that costs — six
+ *   consecutive `a push to 1.00 lasted 29ms, under the hold of 200ms — not a sprint` lines on one sustained hold —
+ *   because the sprint reads the body's last-written `Move` and the second writer keeps changing the answer.
+ * - `Scriptable` — *"The player's character will not respond to default controls; any character movement must be
+ *   defined in custom scripts."* **Tried first, and it works**: `[main] engine touch movement — prospeed1:
+ *   UserChoice -> Scriptable`. **It also takes the engine's `JumpButton` with it** — the client printed
+ *   `[Joystick] engine touch GUI — 0 child(ren): ; no JumpButton` — and that button is the only touch jump this
+ *   project has (`MobileControlsController` dresses the engine's jump rather than owning one, because a button of
+ *   ours that wrote `Humanoid.Jump = true` never produced a jump: the `PlayerModule` writes that flag too, later in
+ *   the frame). So `Scriptable` buys a scripted stick and pays for it with a player who cannot jump.
+ * - `Thumbstick` — a stick at a fixed place. **Tried second** (`UserChoice -> Thumbstick`, also works) and reverted
+ *   the same day, because it puts a *second* circle in the corner the ring already occupies: the client's hide
+ *   missed it, since the frame the engine draws in that mode is named `ClassicThumbstickFrame` and that name was not
+ *   in `TouchJoystickController`'s list — the probe's own line (`2 child(ren): JumpButton, ClassicThumbstickFrame`)
+ *   is what settled it. The list is fixed; the mode change is not worth its cost beside it.
  *
- * **What would have to exist first**, before this comes back: a jump this project owns end to end — either a
- * control of our own that can actually make a body leave the ground (the flag-fight above says that is a real
- * question rather than a formality — see `MobileControlsController`'s `restyleEngineJump` doc for the thirteen
- * presses that answered it once), or a movement mode that leaves the jump button alone. Neither is known to work.
- * The two lines that turn it back on, for whoever answers that:
+ * **So nothing here sets the mode, and the hiding lives entirely on the client**: a `UIScale` of `0` on whichever
+ * stick frame appears, whatever mode a player is in, which is `TouchJoystickController.hideEngineStick`'s job. **The
+ * cost that remains, stated: a hidden dynamic stick still writes movement** — a touch on the lower screen that misses
+ * the ring can still walk the character with nothing drawn under the finger. That is the price of not overriding the
+ * player's choice, and it is the one thing to revisit if a session ever reports it.
  *
- * ```ts
- * const [ok, message] = pcall(() => {
- * 	player.DevTouchMovementMode = Enum.DevTouchMovementMode.Scriptable;
- * });
- * ```
- *
- * **The joystick is unaffected by this and still draws its ring.** It wanted `Scriptable` only so the engine's own
- * stick would stop driving the body, and it wins that argument per frame anyway while a finger is on the ring: its
- * writer is bound at `Enum.RenderPriority.Character` (300), above the ControlModule's, so ours is the last write of
- * the two before physics. What is lost by not switching is that the *engine's* stick is still on screen and still
- * moves the body for a touch that starts off the ring — which is the state every session before this one ran in.
+ * **A client cannot set this property at all** — a `LocalScript` write is refused with *"The current thread cannot
+ * set 'DevTouchMovementMode' (lacking capability `RobloxScript`)"*, and `RobloxScript` is a capability of the
+ * **thread** rather than of the peer, which is why the client's own attempt was deleted from
+ * `TouchJoystickController` and why the only two routes are this file and the place file. **Per player rather than a
+ * place-file setting is also deliberate, if this is ever wanted again**: a `$properties` change to `StarterPlayer`
+ * would be the same decision taken where nobody reading the client's code would find it.
  */
 
 // **After the ignite, deliberately, and the difference from the call above is the point.** Nothing

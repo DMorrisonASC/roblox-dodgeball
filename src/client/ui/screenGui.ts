@@ -399,6 +399,65 @@ export function getScreenSpaceGui(): ScreenGui {
 }
 
 /**
+ * The name of the GUI the mobile movement stick is drawn in.
+ *
+ * **`CoreUISafeInsets`, and that is the whole reason this GUI exists as one of its own.** A touch is reported in the
+ * space of the safe region — the screen minus Roblox's topbar and the device's cutouts — which is the space a
+ * `CoreUISafeInsets` `ScreenGui` uses, and it is the mobile client's default. **A ring drawn in a
+ * `ScreenInsets.None` GUI is therefore being placed with numbers that come from a different origin, and it lands
+ * one inset up and to the left of the thumb** — which is what "the joystick is off" turned out to mean, and what a
+ * long hunt went looking for in the arithmetic. **Matching the GUI to the space the input is in removes the
+ * arithmetic rather than cancelling it**: a touch position and a ring `Position` are then the same kind of number,
+ * and the joystick controller has no conversion left to get wrong.
+ *
+ * **Why not `getHudScreenGui()`, which is also inset.** Consequence rather than taste: that GUI carries every panel,
+ * plate and readout in this client, and a HUD in it is positioned against whatever its `ScreenInsets` happen to be.
+ * Nothing else may move because the stick needed a different origin — and the day the joystick's GUI and the HUD's
+ * want to be the same GUI is the day somebody has to be sure they agree, which is a question worth never asking.
+ */
+const STICK_GUI_NAME = "StickGui";
+
+/**
+ * The stick GUI's rung on the `DisplayOrder` ladder: `0`, the HUD plane.
+ *
+ * Only `0` or below is available, for the reason {@link getScreenSpaceGui} gives about its own rung — the splash at
+ * `1` and the wipe at `2` must be able to cover a control — and of those, `0` is the one that needs no new rung:
+ * the ring is HUD furniture and it should sit on the same plane as the rest of it.
+ */
+const STICK_DISPLAY_ORDER = 0;
+
+/**
+ * The `ScreenGui` the movement stick's ring, thumb and movement zone mount into: the same find-or-create, and
+ * **inset, because a touch is reported in the inset region's space.**
+ *
+ * **Three objects, one GUI, and that is the point.** The ring, the dot inside it and the pad that sinks the zone
+ * are three answers to one question — *where is this touch?* — so they are in one coordinate space and one
+ * `ScreenGui`, and the only ordering they need is `ZIndex` among siblings, which is a mechanism that works exactly
+ * in that case and not across two GUIs. See `TouchJoystickController` for what the space is used for; the summary is
+ * that `InputObject.Position` is used untouched, everywhere.
+ */
+export function getStickScreenGui(): ScreenGui {
+	const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
+
+	const existing = playerGui.FindFirstChild(STICK_GUI_NAME);
+	if (existing?.IsA("ScreenGui")) {
+		existing.ResetOnSpawn = false;
+		existing.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets;
+		existing.DisplayOrder = STICK_DISPLAY_ORDER;
+		return existing;
+	}
+
+	const gui = new Instance("ScreenGui");
+	gui.Name = STICK_GUI_NAME;
+	gui.ResetOnSpawn = false;
+	gui.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets;
+	gui.DisplayOrder = STICK_DISPLAY_ORDER;
+	gui.Parent = playerGui;
+
+	return gui;
+}
+
+/**
  * **There was a fourth GUI here — a `ScreenGui` of the round status board's own — and it is deleted with its
  * only caller.** It existed to give one panel a `ScreenInsets` of its own, and three values were tried across
  * three revisions. All three failed the same way, and that is the thing worth keeping:
