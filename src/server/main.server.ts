@@ -53,7 +53,10 @@ print(
  *   that fights `TouchJoystickController`'s ring: its stick appears under a thumb anywhere on the lower screen and
  *   writes its own movement vector every frame beside ours. A session on 2026-10-16 caught what that costs — six
  *   consecutive `a push to 1.00 lasted 29ms, under the hold of 200ms — not a sprint` lines on one sustained hold —
- *   because the sprint reads the body's last-written `Move` and the second writer keeps changing the answer.
+ *   because the sprint reads the body's last-written `Move` and the second writer keeps changing the answer. **That
+ *   line no longer exists**: the sprint's engage hold, which was what it reported on, has since been removed, so the
+ *   same flapping reading now shows up as repeated `[Sprint] pressed` / `released` edges rather than as rejected
+ *   pushes.
  * - `Scriptable` — *"The player's character will not respond to default controls; any character movement must be
  *   defined in custom scripts."* **Tried first, and it works**: `[main] engine touch movement — prospeed1:
  *   UserChoice -> Scriptable`. **It also takes the engine's `JumpButton` with it** — the client printed

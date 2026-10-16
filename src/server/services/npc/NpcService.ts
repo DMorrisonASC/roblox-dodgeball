@@ -181,17 +181,19 @@ export class NpcService implements OnStart {
 			// the way any other rig does — by putting `NPC` on a model and letting the
 			// added-signal start its loop — so there is no callback and no hole in the registry.
 			createRespawnBehavior(balls),
-			// **Last, because nothing here reacts to it and it reacts to nothing.** Every other entry
-			// above shares a fact with another behaviour through a service — a window, a chase, a held
-			// ball — which is what makes their order worth arguing about. This one moves a rig to a point
-			// written on the rig and then stops, so its only interaction is with a rig that also wears
-			// `Behavior_Seeking`: two walkers, whichever ticks last each turn winning. That combination
-			// is documented in `WalkToJoinPadBehavior` rather than ordered around here, because the two
-			// tags are alternatives in every use this game has — a placeholder rig wears this one and
+			// **Last, and the speed service it is handed is why that is now an ordering rather than an
+			// absence.** It used to react to nothing: it moved a rig to a point written on the rig and then
+			// stopped, so its only interaction was with a rig that also wears `Behavior_Seeking` — two
+			// walkers, whichever ticks last each turn winning. **It takes the speed service now**
+			// (`createWalkToJoinPadBehavior(speeds)`), because a rig's run to its pad is a named contribution
+			// on `WalkSpeedService` exactly as a seek's run for a ball is, so the two move tags share a speed
+			// sum as well as a `MoveTo` — one more reason they are alternatives rather than a pair. That
+			// combination is documented in `WalkToJoinPadBehavior` rather than ordered around here, because
+			// the two tags are alternatives in every use this game has — a placeholder rig wears this one and
 			// nothing else. **Both seek tags are named since the 2026-10-13 split**, because the walker's
 			// interaction is with "a behaviour that moves the rig to a point" and there are now two of
 			// those: the round seek reads the rig's own half and the practice seek reads the practice zone.
-			createWalkToJoinPadBehavior(),
+			createWalkToJoinPadBehavior(speeds),
 		];
 	}
 

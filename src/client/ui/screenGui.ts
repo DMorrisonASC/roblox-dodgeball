@@ -241,6 +241,35 @@ export function getHudScreenGui(): ScreenGui {
 	return gui;
 }
 
+export function getFullScreenGui(): ScreenGui {
+	// `PlayerGui` is not a typed member of `Player` in these typings (nor is `Backpack`), so it is
+	// found like any other child and the cast names the class rather than guessing it.
+	const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
+
+	const insets = Enum.ScreenInsets.None;
+
+	// By name first, then checked for class: a `Folder` somebody happened to call `HudGui` is not
+	// this GUI, and falling through to create the real one is the right answer. The same two-step
+	// the round folder and the throw remotes already use.
+	const existing = playerGui.FindFirstChild(GUI_NAME);
+	if (existing?.IsA("ScreenGui")) {
+		existing.ResetOnSpawn = false;
+		reportDrift(existing, insets);
+		existing.ScreenInsets = insets;
+		return existing;
+	}
+
+	const gui = new Instance("ScreenGui");
+	gui.Name = GUI_NAME;
+	gui.ResetOnSpawn = false;
+	gui.ScreenInsets = insets;
+	gui.Parent = playerGui;
+
+	reportCreated(gui, `the device gate — ${deviceSentence()}`);
+
+	return gui;
+}
+
 /**
  * The name of the one column the round's two readouts live in.
  *

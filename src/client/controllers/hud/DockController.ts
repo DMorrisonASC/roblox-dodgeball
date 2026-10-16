@@ -7,7 +7,7 @@ import { inPracticeZone, participating, roundPhase, togglePanel } from "../../pa
 import { isParticipant } from "../../roundZone";
 import { addElevation, wireInteraction } from "../../ui/elevation";
 import { hudTheme } from "../../ui/hudTheme";
-import { getHudScreenGui } from "../../ui/screenGui";
+import { getFullScreenGui, getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, with the phase the dock is reading — the line that says it mounted and what it saw. */
@@ -247,7 +247,7 @@ export class DockController implements OnStart {
 		this.addDockButton(dock, "Shop", "primary", "contained", 1, () => togglePanel("shop"));
 		this.addDockButton(dock, "Inventory", "secondary", "outlined", 2, () => togglePanel("inventory"));
 
-		dock.Parent = getHudScreenGui(); // must stay the LAST statement in this method
+		dock.Parent = getFullScreenGui();
 	}
 
 	/**

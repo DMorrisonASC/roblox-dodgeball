@@ -25,7 +25,9 @@ import {
 	BEHAVIOR_WALK_TO_JOIN_PAD,
 } from "../../npc/Behavior";
 import {
+	WALK_TO_JOIN_PAD_AT_ATTRIBUTE,
 	WALK_TO_JOIN_PAD_ATTRIBUTE,
+	WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE,
 	WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE,
 } from "../../npc/behaviors/WalkToJoinPadBehavior";
 import { rigsOnASide, sideOfRig } from "../../npc/rigs";
@@ -327,8 +329,8 @@ export class LobbyRigService implements OnStart {
 			//
 			// **And the rig is built by the same call a replacement is**, which is the property worth
 			// having: this is not a second way to make a lobby rig, it is the first eight of them. See
-			// `spawnLobbyRig` for where the part comes from, why the placement is lifted, and why it writes
-			// two attributes rather than one.
+			// `spawnLobbyRig` for where the part comes from, why the placement is lifted, and why the walk it
+			// hands over is four attributes rather than one.
 			this.spawnLobbyRig(index % 2 === 0 ? TEAM_A : TEAM_B);
 		}
 
@@ -1054,13 +1056,18 @@ export class LobbyRigService implements OnStart {
 	/**
 	 * **Every seat-holder still walking is put on its side's spawn, behind the cover.**
 	 *
-	 * `RoundService.teleportTeamsToArena` moves the round's players and every rig that already has a side
-	 * — which is every rig that has *arrived*. A rig still on its way to a pad has no side on it yet, so
-	 * the round's teleport cannot see it: it would carry on walking through the opening seconds, take its
-	 * side somewhere in the lobby part-way into the round, and be counted for that side while standing
-	 * nowhere near the game. The seat would be occupied and the participant absent — which is a
-	 * correctness problem rather than a cosmetic one, because the round decides a side's fate by counting
-	 * the bodies on it.
+	 * `RoundService.teleportTeamsToArena` moves the round's players and every rig that already has a side.
+	 * **A rig on its way to a pad is two cases, not one, and the difference is whether it has played a round
+	 * yet.** A rig the lobby spawned fresh has no side on it, so the round's teleport cannot see it: it would
+	 * carry on walking through the opening seconds, take its side somewhere in the lobby part-way into the
+	 * round, and be counted for that side while standing nowhere near the game. The seat would be occupied and
+	 * the participant absent — which is a correctness problem rather than a cosmetic one, because the round
+	 * decides a side's fate by counting the bodies on it. **A rig `sendRigsToTheirPads` re-tagged at the last
+	 * round end is the other case, and it is invisible to that argument**: it keeps the `Team` it played the
+	 * previous round with, so the round's teleport *does* move it, behind the cover and to the right spawn.
+	 * What it needs is not a move but a strip — the walk tag and its lobby destination would still be on it,
+	 * and the rig would set off out of the arena the moment its delay elapsed. The loop below gives both cases
+	 * the strip and moves only the first.
 	 *
 	 * **So the refill's own rule is applied to it** — the arena, the side's spawn, the side written — plus
 	 * the one thing a rig that is *moving* needs and a rig being created does not: **the walk is taken off
@@ -1078,9 +1085,28 @@ export class LobbyRigService implements OnStart {
 	private moveWalkersToArena(): void {
 		for (const side of SIDES) {
 			for (const rig of this.seatHolders(side)) {
-				// Arrived, so the round's own teleport is about to move it — and moving it twice would put
-				// it at a second random spawn for no reason.
-				if (sideOfRig(rig) !== undefined) continue;
+				// **Arrived, so the round's own teleport is about to move it** — and moving it twice would put
+				// it at a second random spawn for no reason. **Its walk still has to come off, and that is not
+				// the same statement.**
+				//
+				// A rig that arrived through the arrival branch wears no walk tag, so this strip is a no-op for
+				// it. But a rig put back on a pad by `sendRigsToTheirPads` at the last round end *keeps its
+				// `Team`* — that attribute is the seat it holds, and nothing here clears it — so between the tag
+				// going on and the rig reaching its pad it is **both** a seat-holder and a walker. A round
+				// opening inside that window teleports it with every other side-bearing rig and leaves the walk
+				// tag on it, and the rig then walks out of the arena towards a lobby pad for the whole round with
+				// nothing in the output to say why. The walk tag and its destination were only ever removed in
+				// the arrival branch, so nothing else could have caught this.
+				//
+				// **The delay is what turns this from rare into ordinary, which is why it is fixed here rather
+				// than reported.** Rigs used to set off the instant `sendRigsToTheirPads` ran and were on their
+				// pads within a few seconds of a sixteen-second intermission; a ten-to-fifteen second wait means
+				// a rig is still walking — or still waiting — for most of the window, so the round catching one
+				// mid-walk is now the common case rather than the unlucky one.
+				if (sideOfRig(rig) !== undefined) {
+					rig.RemoveTag(BEHAVIOR_WALK_TO_JOIN_PAD);
+					continue;
+				}
 
 				rig.RemoveTag(BEHAVIOR_WALK_TO_JOIN_PAD);
 				rig.SetAttribute(TEAM_ATTRIBUTE, side);
@@ -1131,27 +1157,29 @@ export class LobbyRigService implements OnStart {
 	 *
 	 * `returnRigsToLobby` moves a side-bearing rig to a lobby spawn: a body in the right room, standing where a
 	 * player arriving would stand. This turns that into the look the lobby is supposed to have — the rig walks
-	 * to its side's join pad and stands on it — using `spawnLobbyRig`'s own two writes and its own tag, applied
-	 * to a rig that already exists. Four lines rather than a second way to make a lobby rig: the destination is
-	 * what `WalkToJoinPadBehavior` reads, and the tag is what makes it read it.
+	 * to its side's join pad and stands on it — using {@link writePadWalk}, the same four writes `spawnLobbyRig`
+	 * makes, plus the tag that makes the behaviour read them. One shared helper rather than a second way to make
+	 * a lobby rig: the destination is what `WalkToJoinPadBehavior` reads, and the tag is what makes it read it.
 	 *
 	 * **The rig keeps its `Team`, deliberately rather than by omission.** The seat it holds is a fact about the
 	 * side, this service counts it by that attribute, and the next round's opening whistle wants the same rigs
 	 * on the same sides. So wearing a side *and* a walk is the ordinary state of a lobby rig between rounds —
 	 * and it is safe, because the six behaviours that could act on the side are the ones this service has just
-	 * taken off.
+	 * taken off. **That pair is also the state `moveWalkersToArena` has to expect**, because a round can open
+	 * while such a rig is still crossing the room; see that method for why the walk has to come off a rig that
+	 * already has a side.
 	 *
 	 * **A pad is drawn per rig**, through `nextPad`'s rotation, so a side's rigs spread across its signs exactly
 	 * as they do at boot. A rig whose side has no pads is skipped rather than left somewhere odd, and the boot
-	 * line has already named that fault by then.
+	 * line has already named that fault by then — and the skip is load-bearing here rather than tidy, because
+	 * the tag below is what starts the walk and a rig wearing it with no destination spends the round warning
+	 * about an attribute nobody wrote.
 	 */
 	private sendRigsToTheirPads(): void {
 		for (const { rig, team } of rigsOnASide()) {
-			const pads = this.padsFor(team);
-			if (pads.size() === 0) continue;
+			if (this.padsFor(team).size() === 0) continue;
 
-			rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, this.nextPad(team, pads).Position);
-			rig.SetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE, team);
+			this.writePadWalk(rig, team);
 
 			rig.AddTag(BEHAVIOR_WALK_TO_JOIN_PAD);
 		}
@@ -1231,12 +1259,24 @@ export class LobbyRigService implements OnStart {
 	 * outlives its tag — the maps are module-level and nothing clears them — so a rig playing its second
 	 * round arrives with the rows from the first. Most of that is stale but harmless: `CatchBehavior`
 	 * re-decides once its window expires, `SeekBehavior` forgets a ball that has been destroyed or moved,
-	 * and `RespawnBehavior` *wants* the home and template it took at the start of the life. Two are not
-	 * harmless and are named rather than fixed here: `ThrowBehavior`'s aim constraint is destroyed on a
+	 * and `RespawnBehavior` *wants* the home and template it took at the start of the life. **One is not
+	 * harmless and is named rather than fixed here**: `ThrowBehavior`'s aim constraint is destroyed on a
 	 * death and on losing the hand but **not** on losing the tag, so a rig killed mid-turn keeps an
 	 * `AlignOrientation` on its root until its next turn with the tag back on — where an empty hand clears
-	 * it — and `WalkToJoinPadBehavior.arrived` stays `true`, which is the reason this method never puts
-	 * the walk tag back at the round's end.
+	 * it.
+	 *
+	 * **The pad walk's own leftovers are not on that list, and both are worth naming because they were
+	 * equivalent to them.** This doc used to say that `WalkToJoinPadBehavior.arrived` stayed `true` past a
+	 * tag removal, which is why this method never puts the walk tag back; the flag is gone — the tag's own
+	 * removal answers that question now — and the walk tag is not put back here because
+	 * `sendRigsToTheirPads` owns that, a cover's length later, once the rigs are actually in the lobby.
+	 * What replaced the flag is a *body* rather than a bool: a rig stopped mid-look keeps an
+	 * `AlignOrientation` and a switched-off `Humanoid.AutoRotate`, and a rig mid-run keeps a `Sprint`
+	 * contribution. Both are taken down by that behaviour's own watchdogs — a token-guarded timer per stage,
+	 * re-armed on every turn it does get — rather than by anything here, which is the same fix
+	 * `ThrowBehavior`'s windup uses for the same "nothing fires when a tag comes off" problem. **And the
+	 * strip is no longer conditional on a side**: see `moveWalkersToArena` for the between-rounds rig that
+	 * wears a side *and* a walk, which the start delay turned from rare into ordinary.
 	 */
 	private setGameplayBehaviors(on: boolean): void {
 		for (const { rig } of rigsOnASide()) {
@@ -1390,9 +1430,11 @@ export class LobbyRigService implements OnStart {
 	 *
 	 * The form a replacement takes during an intermission, and the same call the boot seeding makes — so
 	 * the seeding is not a second way to build a lobby rig, it is the first eight of them. What it writes
-	 * on the rig is the whole of the agreement with `WalkToJoinPadBehavior`: the destination as a
-	 * `Vector3`, and the side as a `TeamLabel`, because the walk can recover neither from the other — see
-	 * `WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE`.
+	 * on the rig is the whole of the agreement with `WalkToJoinPadBehavior`, and it is four attributes
+	 * rather than one because the walk can derive none of them from the others: the destination as a
+	 * `Vector3`, the side as a `TeamLabel` (see `WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE`), the other side's pad to
+	 * turn to on the way, and the instant this rig may set off. All four go through {@link writePadWalk},
+	 * which is the single site where they are drawn.
 	 *
 	 * **No `TEAM_ATTRIBUTE` is written here**, and that is what keeps a rig mid-walk out of the round: the
 	 * rig takes its own side on arrival, and until then it is a body holding a seat and nothing more.
@@ -1443,8 +1485,14 @@ export class LobbyRigService implements OnStart {
 		const rig = this.npcs.spawn(template, spawn.CFrame.add(new Vector3(0, 3, 0)), [BEHAVIOR_WALK_TO_JOIN_PAD]);
 
 		rig.Name = `${template.Name}${++this.serial}`;
-		rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, this.nextPad(side, pads).Position);
-		rig.SetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE, side);
+
+		// **The instructions go on after the rig exists, and that order is deliberate rather than incidental.**
+		// `NpcService.spawn` starts the loop on the `NPC` tag, so the attributes are written one resumption
+		// *after* the body is managed — which the behaviour tolerates by design: a rig wearing the walk tag with
+		// no destination warns once and stands where it is, and this line does not yield, so the write lands
+		// before anything could read that warning as a fault. The alternative — writing the attributes first —
+		// would mean this service deciding how a rig comes into being, which is `NpcService`'s.
+		this.writePadWalk(rig, side);
 
 		return rig;
 	}
@@ -1518,6 +1566,60 @@ export class LobbyRigService implements OnStart {
 		this.padCursor.set(side, index + 1);
 
 		return pads[index % pads.size()];
+	}
+
+	/**
+	 * **The four writes that make a rig a placeholder on its way to a pad**: where it walks, which side it
+	 * is walking to, what it turns to look at on the way, and the instant it may set off.
+	 *
+	 * **One writer, because the four are one instruction.** The destination and the side were already a pair
+	 * written from a single decision — see `WALK_TO_JOIN_PAD_ATTRIBUTE` for why the side is not derivable
+	 * from the point — and the look-at and the start instant are the same kind of thing: facts about the
+	 * *lobby* that the behaviour cannot work out for itself, which is what keeps the two-tag join-part layout
+	 * out of the machine that animates NPCs. Written out at four sites they would be four chances for a rig
+	 * to be told to look at one side's sign while walking to the other's.
+	 *
+	 * **The delay is drawn here, per rig, and that is the whole of the staggering.** Two rigs cloned a
+	 * moment apart in the boot loop must not set off in the same second, so the draw has to be per rig rather
+	 * than one number per lobby — and it is re-drawn on every walk rather than once per rig, because the
+	 * intermission that sends a rig back to its pad is a *fresh* walk and a rig that already waited once has
+	 * no claim on going first again. What the two ends of the window are sized against is argued at
+	 * `NPC_CONFIG.WALK_TO_PAD_DELAY_MAX_SECONDS`.
+	 *
+	 * **The look-at is drawn from the *other* side's pads**, through the same rotation the destination uses,
+	 * so a rig turns to a sign that is really there rather than to a coordinate this file made up. A side
+	 * with no pads has already been named by the boot line; a rig whose look-at is missing simply walks
+	 * straight, because the behaviour drops the route rather than turning to face nothing.
+	 *
+	 * **The tag is deliberately not written here.** `spawnLobbyRig` gets it from `NpcService.spawn` — the
+	 * call that makes the rig exist — and `sendRigsToTheirPads` adds it to a rig that is already in the
+	 * world. Sharing that would mean this method deciding how a rig comes into being, which is the one thing
+	 * `NpcService` owns.
+	 */
+	private writePadWalk(rig: Model, side: TeamLabel): void {
+		const pads = this.padsFor(side);
+		if (pads.size() === 0) return;
+
+		const otherSide = side === TEAM_A ? TEAM_B : TEAM_A;
+		const otherPads = this.padsFor(otherSide);
+
+		rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, this.nextPad(side, pads).Position);
+		rig.SetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE, side);
+
+		if (otherPads.size() > 0) {
+			rig.SetAttribute(WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE, this.nextPad(otherSide, otherPads).Position);
+		}
+
+		// **A uniform draw across the window, not a choice between its two ends.** `math.random()` with no
+		// arguments is the half-open `[0, 1)` interval — see `MysteryBoxService` for the same note beside the
+		// same call — which is what makes the multiplication below land anywhere in the span. The instant is
+		// written on the *server's own clock* rather than as a duration, because the behaviour compares it
+		// against that clock: a duration would be as stale as the moment it was sent, which is the same
+		// argument `DODGE_READY_AT` makes for being an instant.
+		const span = NPC_CONFIG.WALK_TO_PAD_DELAY_MAX_SECONDS - NPC_CONFIG.WALK_TO_PAD_DELAY_MIN_SECONDS;
+		const delay = NPC_CONFIG.WALK_TO_PAD_DELAY_MIN_SECONDS + math.random() * span;
+
+		rig.SetAttribute(WALK_TO_JOIN_PAD_AT_ATTRIBUTE, Workspace.GetServerTimeNow() + delay);
 	}
 
 	/**

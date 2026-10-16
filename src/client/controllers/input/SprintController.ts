@@ -83,13 +83,14 @@ const CONTEXT_PRIORITY = 2000;
  * How far the movement stick has to be pushed to start and to stop sprinting. **Placeholder — `0.9` and `0.8`, and
  * for the first time placed against a walk this feature measured rather than against a guess about one.**
  *
- * **Three numbers' worth of hysteresis, and two of them are times.** This pair is the *level* half: one line to
- * start above, and a lower one to stop below. On its own it is a spike filter with no spike filtering in it — a
- * level test's whole answer is one sample — so a reading that plateaus at `0.68` and throws a single frame at
- * `1.00` engages the sprint, and no placement of these two numbers can prevent that. {@link SPRINT_HOLD_SECONDS}
- * and {@link SPRINT_RELEASE_SECONDS} are the other half, and they are what the "too sensitive" complaint was
- * actually about. **The level pair's job is the smaller one**: it says *where* in the travel the player is asking
- * for a sprint, and the times decide whether the asking was deliberate.
+ * **Two numbers and one time.** This pair is the *level* half: one line to start above, and a lower one to stop
+ * below. On its own it is a spike filter with no spike filtering in it — a level test's whole answer is one
+ * sample — so a reading that plateaus at `0.68` and throws a single frame at `1.00` engages the sprint, and no
+ * placement of these two numbers can prevent that. **{@link SPRINT_RELEASE_SECONDS} is the other half and it is now
+ * the only time in the mechanism**, which is what the "too sensitive" complaint was actually about; the *engage*
+ * half of that answer was a hold, and it has been removed on request — see the tombstone below for the cost of its
+ * absence. **The level pair's job is the smaller one**: it says *where* in the travel the player is asking for a
+ * sprint, and one time decides when the asking stops.
  *
  * **What these two numbers are *not* a function of, and this is the correction this pass exists for: the stick's
  * drawn size.** A previous pass made the engine's touch stick 1.5× larger with a `UIScale` and then divided this
@@ -117,7 +118,7 @@ const CONTEXT_PRIORITY = 2000;
  * above it**, so neither line is anywhere near a walk; the momentary `0.83` is `0.07` short of the new start line;
  * and `0.9` sits inside the push's own `0.75`–`1.00` range, which the first log shows a deliberate push
  * traversing. The gap between them is `0.10` — see {@link SPRINT_RELEASE_SECONDS} for what that gap does once the
- * times are behind it.
+ * time is behind it.
  *
  * **The six pairs this line has carried, in order, because the sequence is the argument.** `0.75` and `0.6` (the
  * first, from the stick's radius and the word "far"), `0.9` and `0.75` (the pair the first log was recorded with —
@@ -171,45 +172,60 @@ const SPRINT_START_MAGNITUDE = 1;
 const SPRINT_STOP_MAGNITUDE = 0.9;
 
 /**
- * **How long the reading has to stay past the start line before the sprint engages. Placeholder — 0.2.**
+ * **There was a hold here — `SPRINT_HOLD_SECONDS = 0.2` — and there is not one any more. This is the record of why
+ * it existed and what removing it costs, because the argument it answered has not gone away.**
  *
- * **The half of the hysteresis that was missing, and the reason the pair above kept being raised.** The two levels
- * are *level* hysteresis: they keep a thumb resting on a line from flipping the state twice a frame, but a level
- * test's whole answer is one sample, so a walk that plateaus at `0.68` can still throw a single frame at the top of
- * the range and engage a sprint nobody asked for. **No setting of the levels fixes that**, which is why this is a
- * second mechanism rather than a sixth pair: a push that *means* it stays up — the log's own deliberate push held
- * `0.95`–`1.00` for roughly half a second, and a walking thumb's excursions are a frame or two.
+ * It was the *time* half of the engage: crossing {@link SPRINT_START_MAGNITUDE} only became a sprint once the
+ * reading had *stayed* up for a fifth of a second. The reason it existed is the one in the pair above — a level
+ * test's whole answer is one sample, so a walking thumb that throws a single frame at the top of the range would
+ * engage a sprint nobody asked for, and measured `0.95`–`1.00`-for-half-a-second pushes against one-or-two-frame
+ * excursions is what sized it. **It was removed on the user's instruction — *"Remove the 0.2 delay for
+ * sprinting"* — and an instruction is the reason, not a measurement**, so the cost is named rather than argued
+ * away: **a one-frame excursion to `1.00` now engages the sprint**, which is precisely the case the hold was
+ * built to swallow, and the reading lines in {@link watchStick} are the instrument that says how often it
+ * happens. The level pair above is the only lever left if it turns out to matter, which is part of why it sits at
+ * the clamp rather than lower down the travel.
  *
- * **Measured in game time accumulated frame by frame, not against a timestamp.** `RoundTransitionController` holds
- * the same idiom for its hold (`held += delta; if (held < HOLD_SECONDS) return;`) and it is the one to follow here:
- * `Heartbeat` hands the loop its own `deltaTime`, so the hold is frame-rate independent by construction. **The
- * obvious alternative is `os.clock()` — which this project's client frame loops do use, `chargeEffect` among them —
- * and it is the wrong clock for a duration threshold**: this build's own typings describe it as "the number of
- * seconds of CPU time for the program", and `services/ball/ThrowProbe.ts` records what that costs, having read a
- * `32ms` lag out of it that looked exactly like a physics fault. A frame loop that accumulates `deltaTime` has no
- * such clock in it at all. See {@link SPRINT_DELTA_LIMIT} for the one thing that has to be done to the delta.
+ * **What deliberately did not go with it: {@link SPRINT_RELEASE_SECONDS}.** The two times used to be asymmetric,
+ * and that asymmetry was the argument for shortening the release; with one time left, the release is judged on its
+ * own terms instead — see its own doc, which now says so rather than comparing itself to a number that no longer
+ * exists.
+ *
+ * **The clock it used is the clock the release still uses**, and it is worth keeping the reasoning because it is
+ * not the obvious choice: the time is game time accumulated frame by frame (`Heartbeat`'s own `deltaTime`), not a
+ * timestamp. `RoundTransitionController` holds the same idiom (`held += delta; if (held < HOLD_SECONDS) return;`)
+ * and it is the one to follow, because the loop then has no clock in it at all and the threshold is frame-rate
+ * independent by construction. **The obvious alternative is `os.clock()` — which this project's client frame loops
+ * do use, `chargeEffect` among them — and it is the wrong clock for a duration threshold**: this build's own
+ * typings describe it as "the number of seconds of CPU time for the program", and `services/ball/ThrowProbe.ts`
+ * records what that costs, having read a `32ms` lag out of it that looked exactly like a physics fault. See
+ * {@link SPRINT_DELTA_LIMIT} for the one thing that has to be done to a delta before it counts as evidence.
  */
-const SPRINT_HOLD_SECONDS = 0.2;
 
 /**
  * **How long the reading has to stay below the stop line before the sprint releases. Placeholder — 0.15.**
  *
- * **Shorter than the hold, and the asymmetry is deliberate.** Engaging a sprint the player did not ask for is a
- * fault they notice immediately and resent; a sprint that lingers a seventh of a second after they ease off is
- * invisible — so the cost of a slow engage is near zero while the cost of a sticky release is a player who cannot
- * stop running. `0.15` is also four frames at 60fps, which is enough to swallow a single dropped frame (`0.033`)
- * without being long enough to read as lag.
+ * **It used to be the shorter half of a pair of times; it is now the only time in this mechanism**, which changes
+ * the reasoning rather than the number. The comparison is still the point — engaging a sprint the player did not
+ * ask for is a fault they notice immediately and resent, while a sprint that lingers a seventh of a second after
+ * they ease off is invisible — so a *release* is the one place a delay is cheap, and it is the only delay left.
+ * `0.15` is also four frames at 60fps, which is enough to swallow a single dropped frame (`0.033`) and a momentary
+ * ease-off, without being long enough to read as lag.
+ *
+ * **What it deliberately is not is a second engage.** The engage has no delay at all any more — see the tombstone
+ * above — so nothing here should be read as reusable for one: this line's job is to hold a state that is already
+ * on, and holding a state that is *off* in the hope it stays off is what the removed hold did.
  */
 const SPRINT_RELEASE_SECONDS = 0.15;
 
 /**
  * **The longest frame that counts as "the input was held through it".** **A guard rather than a tuning value.**
  *
- * The two times above are accumulated from `Heartbeat`'s own `deltaTime`, and a frame can be arbitrarily long: a
- * client that stutters, a device that throttles, a window that was in the background. A four-second hitch must not
- * arrive as four seconds of *evidence* that a thumb was above the line, because nothing was reading the stick
- * through it. A tenth of a second is six frames at 60fps — far longer than any real frame, far shorter than any
- * hitch worth not counting.
+ * The time above is accumulated from `Heartbeat`'s own `deltaTime`, and a frame can be arbitrarily long: a client
+ * that stutters, a device that throttles, a window that was in the background. A four-second hitch must not arrive
+ * as four seconds of *evidence* that a thumb was past a line, because nothing was reading the stick through it. A
+ * tenth of a second is six frames at 60fps — far longer than any real frame, far shorter than any hitch worth not
+ * counting.
  */
 const SPRINT_DELTA_LIMIT = 0.1;
 
@@ -399,29 +415,16 @@ export class SprintController implements OnStart {
 	private stickSprinting = false;
 
 	/**
-	 * **How long, in game time, the reading has been past the start line — and the same for the stop line below.**
+	 * **How long, in game time, the reading has been under the stop line** — the only time in this mechanism.
 	 *
-	 * The *time* half of the hysteresis, accumulated frame by frame while the reading stays on one side of a line
-	 * and zeroed the moment it comes back, so a spike leaves no trace but its own diagnostic. Fields rather than
-	 * locals of the loop for the reason the latch is a field: {@link bindKeys}'s focus handler has to forget what
-	 * was being held, and that decision is made outside the loop. See {@link SPRINT_HOLD_SECONDS}.
-	 */
-	private stickAboveSeconds = 0;
-
-	/**
-	 * The mirror of the above, measured against {@link SPRINT_RELEASE_SECONDS} — see that constant for why the two
-	 * times differ, which is the whole of why they are not one number.
+	 * Accumulated frame by frame while the reading stays below {@link SPRINT_STOP_MAGNITUDE} and zeroed the moment
+	 * it comes back, so a momentary ease-off leaves no trace. Measured against {@link SPRINT_RELEASE_SECONDS},
+	 * which is the whole of what it is; this field used to be documented as *the mirror* of a `stickAboveSeconds`
+	 * that no longer exists, and the pair are one number apart in a different sense now — there is only one of
+	 * them. A field rather than a local of the loop for the reason the latch is a field: {@link bindKeys}'s focus
+	 * handler has to forget what was being held, and that decision is made outside the loop.
 	 */
 	private stickBelowSeconds = 0;
-
-	/**
-	 * **The highest the reading reached during a push that has not (yet) engaged the sprint.**
-	 *
-	 * Diagnostic only: it is half of what the rejected-crossing line prints, so a session reads "a push to 0.96
-	 * lasted 80ms, under the hold of 200ms" rather than "something happened once". It is reset with the two
-	 * counters, in the same three places. See {@link watchStick}.
-	 */
-	private stickPushPeak = 0;
 
 	public onStart(): void {
 		// **Resolved before any input can arrive, and out of band.** `Client.Get` waits for the
@@ -560,19 +563,19 @@ export class SprintController implements OnStart {
 		// client would never send `false`, and the server — which is told the state rather than asking for it —
 		// would go on believing it. `DodgeController` clears its held keys on this same signal for the same reason.
 		//
-		// **And all four pieces of the stick's state go with it**, which is the correction the times forced: the
-		// latch alone was enough while a crossing was the whole test, and it is not enough now. Clearing the latch
-		// and leaving the counters would mean a push that was 190ms old when the app went to the background engaging
-		// on the first frame after it came back — the "it sprinted and I did not ask" complaint arriving through a
-		// new door. With the counters cleared too, a stick still under a thumb has to *re-earn* the sprint with a
-		// fresh {@link SPRINT_HOLD_SECONDS}, which is the honest reading of a hand that left and came back.
+		// **And both pieces of the stick's state go with it**, which is the correction the times forced and which
+		// still holds with one time left. The latch is the obvious half: the sprint is being released here, so the
+		// loop's own account of what it asked for has to be made to say so. **The counter is the half that is easy
+		// to miss**: a `stickBelowSeconds` that was 140ms old when the app went to the background would release a
+		// sprint on the first frame after it came back, and the release is the one edge this mechanism still delays.
+		// The engage hold's removal changed only the other direction — a thumb still on the stick no longer has to
+		// re-earn a sprint over a fifth of a second; it re-earns it on the next frame that reads past the start
+		// line, which is what "no delay" means.
 		UserInputService.WindowFocusReleased.Connect(() => {
 			this.keysDown = false;
 
 			this.stickSprinting = false;
-			this.stickAboveSeconds = 0;
 			this.stickBelowSeconds = 0;
-			this.stickPushPeak = 0;
 
 			this.setHolding(false);
 		});
@@ -726,7 +729,7 @@ export class SprintController implements OnStart {
 			print(
 				`[Sprint] mobile — reading the stick from Humanoid:GetMoveVelocity() ÷ WalkSpeed; start ` +
 					`${SPRINT_START_MAGNITUDE}, stop ${SPRINT_STOP_MAGNITUDE} (literals — the drawn size of the ` +
-					`stick does not move them); hold ${SPRINT_HOLD_SECONDS}s, release ${SPRINT_RELEASE_SECONDS}s`,
+					`stick does not move them); press on the crossing, release ${SPRINT_RELEASE_SECONDS}s`,
 			);
 		}
 
@@ -738,22 +741,14 @@ export class SprintController implements OnStart {
 		let reported = 0;
 		let reports = 0;
 
-		/**
-		 * **How many rejected crossings have been printed, on a counter of its own** — capped at the same
-		 * {@link STICK_REPORT_LIMIT}, deliberately separate: a rejection must not be crowded out of the log by
-		 * reading lines, and a player who pushes and eases off forty times must not crowd out the reading lines
-		 * either. Two caps bound one session at twice one cap, which is still a bounded log.
-		 */
-		let rejections = 0;
-
 		// **Nothing here is disconnected, and that is the controller's own lifetime rather than an oversight**: a
 		// Flamework controller is started once and lives as long as the client does, so a connection made in
 		// `onStart` has nothing to be cleaned up against. The deleted version used a Fusion scope because it was
 		// handed one; this loop owns nothing that needs one.
 		//
 		// **And the callback takes the frame's own duration, which is this feature's clock** — `Heartbeat` hands
-		// every listener the time since the last one, so the two times above are measured in the engine's own game
-		// time and no clock has to be read. See {@link SPRINT_HOLD_SECONDS}.
+		// every listener the time since the last one, so the one time below is measured in the engine's own game
+		// time and no clock has to be read. See {@link SPRINT_RELEASE_SECONDS}.
 		RunService.Heartbeat.Connect((delta) => {
 			if (humanoid === undefined) humanoid = this.humanoidOf(this.player.Character);
 
@@ -784,68 +779,50 @@ export class SprintController implements OnStart {
 				);
 			}
 
-			// **The frame's own duration, clamped — and this is the clock the whole mechanism runs on.** See
-			// {@link SPRINT_HOLD_SECONDS} for why it is `Heartbeat`'s delta rather than `os.clock()`, and
-			// {@link SPRINT_DELTA_LIMIT} for the one thing the delta needs doing to it.
+			// **The frame's own duration, clamped — and this is the clock the whole mechanism runs on.** The reason
+			// it is `Heartbeat`'s delta rather than `os.clock()` is in the tombstone above
+			// {@link SPRINT_RELEASE_SECONDS}, and {@link SPRINT_DELTA_LIMIT} is the one thing the delta needs done
+			// to it.
 			const step = math.min(delta, SPRINT_DELTA_LIMIT);
 
-			// **Three tests, where there used to be one.** The levels say *where* the player is asking; the two
-			// times say whether they were still asking a moment later. A crossing that does not survive the hold is
-			// not news — except in the log, where it is the only evidence that the sensor moved at all.
+			// **Two tests, where there used to be three.** The levels say *where* the player is asking, and the one
+			// time left says when the asking stops. The *engage* test used to be a third — a crossing only counted
+			// once it had survived `SPRINT_HOLD_SECONDS` — and there was a log line for a crossing that did not, so
+			// both went together. See that constant's tombstone for what the absence costs.
 			//
 			// **And the state is a latch, so `holdSprint` is only ever called on an edge** — not once per frame with
 			// a value the other side merely de-duplicates. Two guards, deliberately: this latch is the loop's own
 			// account of what it last asked for, and `setHolding` has one of its own. The line before each call is
 			// what makes the edge visible in a log, which is the whole of what was missing when this feature first
-			// failed.
+			// failed. **With the hold gone the latch is doing more work than it was**: it is now the only thing
+			// standing between a reading that sits on the start line and a call every frame, because `magnitude >=
+			// SPRINT_START_MAGNITUDE` is true on *every* frame of a sustained push rather than on the last frame of
+			// a 0.2s window.
 			if (!this.stickSprinting) {
 				if (magnitude >= SPRINT_START_MAGNITUDE) {
-					this.stickPushPeak = math.max(this.stickPushPeak, magnitude);
-					this.stickAboveSeconds += step;
+					this.stickSprinting = true;
+					this.stickBelowSeconds = 0;
 
-					if (this.stickAboveSeconds >= SPRINT_HOLD_SECONDS) {
-						this.stickSprinting = true;
-						this.stickBelowSeconds = 0;
-						this.stickPushPeak = 0;
+					if (DEBUG) print(`[Sprint] pressed — stick ${string.format("%.2f", magnitude)} (over start)`);
 
-						if (DEBUG) print(`[Sprint] pressed — stick ${string.format("%.2f", magnitude)} (over start)`);
-
-						this.holdSprint(true);
-					}
-				} else if (this.stickAboveSeconds > 0) {
-					// **The one event this feature can produce that leaves no other trace.** A push that rose past
-					// the start line and came back before the hold expired changes nothing at all, so without this
-					// line a session *full* of spikes looks exactly like a session where nothing was ever pushed —
-					// and this line is named as the rejection it is, in milliseconds, with the peak it reached.
-					if (DEBUG && rejections < STICK_REPORT_LIMIT) {
-						rejections += 1;
-
-						print(
-							`[Sprint] mobile — a push to ${string.format("%.2f", this.stickPushPeak)} lasted ` +
-								`${string.format("%.0f", this.stickAboveSeconds * 1000)}ms, under the hold of ` +
-								`${string.format("%.0f", SPRINT_HOLD_SECONDS * 1000)}ms — not a sprint`,
-						);
-					}
-
-					this.stickAboveSeconds = 0;
-					this.stickPushPeak = 0;
+					this.holdSprint(true);
 				}
 			} else if (magnitude < SPRINT_STOP_MAGNITUDE) {
 				this.stickBelowSeconds += step;
 
 				if (this.stickBelowSeconds >= SPRINT_RELEASE_SECONDS) {
 					this.stickSprinting = false;
-					this.stickAboveSeconds = 0;
 
 					if (DEBUG) print(`[Sprint] released — stick ${string.format("%.2f", magnitude)} (under stop)`);
 
 					this.holdSprint(false);
 				}
 			} else if (this.stickBelowSeconds > 0) {
-				// **A dip that came back before the release time: the sprint was never in doubt.** The mirror of the
-				// rejection above, and deliberately *not* printed: the complaint this pass answers is a sprint nobody
-				// asked for, and a line for every momentary ease-off would double the log for a case no player has
-				// reported. The release edge line below is still the record of the one that mattered.
+				// **A dip that came back before the release time: the sprint was never in doubt.** It used to be the
+				// mirror of a rejection line — the engage hold's, for a push that rose past the start line and came
+				// back before the hold expired — and that line is gone with the hold. It is still deliberately *not*
+				// printed on its own account: a line for every momentary ease-off would double the log for a case no
+				// player has reported, and the release edge line is the record of the one that mattered.
 				this.stickBelowSeconds = 0;
 			}
 		});

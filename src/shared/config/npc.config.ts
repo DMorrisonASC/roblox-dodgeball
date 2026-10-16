@@ -367,6 +367,109 @@ export const NPC_CONFIG = {
 	WALK_TO_PAD_TICK_SECONDS: 0.5,
 
 	/**
+	 * The shortest a placeholder rig waits after being told to walk before it sets off, in seconds.
+	 * **Placeholder — 10.**
+	 *
+	 * **A delay at all, and the reason is a drawing rather than a pause.** Every lobby rig is spawned in
+	 * one loop at boot and re-sent to its pad in one loop at every intermission, so without a wait they
+	 * are one body: eight rigs leaving one line in the same second, in step, which is the one thing a
+	 * room of people never looks like. A draw per rig spreads the lobby out, so the room reads as
+	 * individuals crossing it rather than as a formation.
+	 *
+	 * **The floor is most of the window, so the spread is what does the work.** Ten seconds is long
+	 * enough that two rigs drawn next to each other are visibly apart, and short enough that a rig drawn
+	 * at the bottom of the range still crosses the lobby inside a normal intermission: see
+	 * {@link NPC_CONFIG.WALK_TO_PAD_DELAY_MAX_SECONDS} for the upper end and what it costs.
+	 */
+	WALK_TO_PAD_DELAY_MIN_SECONDS: 10,
+
+	/**
+	 * The longest a placeholder rig waits after being told to walk before it sets off, in seconds.
+	 * **Placeholder — 15.**
+	 *
+	 * **Sized against `ARENA_CONFIG.INTERMISSION_SECONDS` (16), and the fit is tighter than it looks.**
+	 * `LobbyRigService` starts the pads' walk `TRANSITION_COVER_SECONDS` after the phase changes — the
+	 * round's own cover, so the rigs move once the teleport has landed — which leaves about thirteen
+	 * seconds of intermission before the clock wraps. A rig drawn at fifteen therefore sets off with the
+	 * intermission already over, and one drawn at ten starts with three seconds left. Neither is a fault
+	 * — a rig still walking when a round opens is stripped and put on its side's spawn by
+	 * `LobbyRigService.moveWalkersToArena`, which is what that method is for — but it is what the delay
+	 * makes *ordinary* rather than rare, so the two numbers are a pair rather than two independent ones.
+	 * Raise this above the intermission and most rigs never walk at all in a short lobby life.
+	 */
+	WALK_TO_PAD_DELAY_MAX_SECONDS: 15,
+
+	/**
+	 * The chance that a rig **runs** to its pad rather than walking. **Placeholder — 0.5.**
+	 *
+	 * **A coin, and the coin is the point rather than a number somebody tuned.** A lobby where every rig
+	 * moves at one speed is the same tell as one where every rig sets off at once: the gait is a second
+	 * independent thing that makes two bodies beside each other read as two people. Half is the most
+	 * mixed the room can be, and it is drawn **once per rig per walk** — a roll per turn would have a rig
+	 * changing gear mid-crossing, which is a stagger rather than a choice.
+	 *
+	 * **What "run" means is a `Sprint` contribution on `WalkSpeedService`, not a walk speed of its own.**
+	 * It adds `CHARACTER_CONFIG.SPRINT_SPEED_BONUS` (15), the same bonus a player's sprint and a seeking
+	 * rig's run are, so a rig's run is the same run whoever takes it — and, because the *sprint flag* the
+	 * animation is dressed from is the presence of that contribution, the run clip comes with it for
+	 * nothing. See `WalkToJoinPadBehavior` for why this is a contribution and not a `Humanoid.WalkSpeed`
+	 * write: a write would move the body at the right speed and leave its legs playing the walk.
+	 */
+	WALK_TO_PAD_RUN_CHANCE: 0.5,
+
+	/**
+	 * The chance that a rig takes the **look-around route** instead of walking straight to its pad.
+	 * **Placeholder — 0.3.**
+	 *
+	 * **The shape of a person reading the signs.** A rig that walks straight to the pad it was given is a
+	 * body being moved to a coordinate, because nothing about the walk says it chose a side. Three in ten
+	 * of them stop short, turn to look at the *other* side's pad, turn back to their own, and then carry
+	 * on and arrive — which is the one movement that reads as *deciding*, and it costs the rig nothing:
+	 * the arrival branch is unchanged and the rig takes the same side it was always going to take.
+	 *
+	 * **Three in ten rather than a coin, so the route stays the exception.** Every rig doing it would make
+	 * the lobby a queue of bodies all stopping at the same distance, which is a worse tell than the
+	 * straight line it replaces; none would leave the walk as it is. See
+	 * {@link NPC_CONFIG.WALK_TO_PAD_LOOK_STOP_STUDS} for where the stop lands, and
+	 * {@link NPC_CONFIG.WALK_TO_PAD_LOOK_DWELL_SECONDS} for how long the two turns take.
+	 */
+	WALK_TO_PAD_LOOK_CHANCE: 0.3,
+
+	/**
+	 * How far from its pad a rig on the look-around route stops to look, in studs. **Placeholder — 30.**
+	 *
+	 * **Measure that against the two numbers either side of it, because it is the one that decides
+	 * whether the movement reads at all.** It has to be comfortably past
+	 * {@link NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS} (4), or the rig would arrive first and the route
+	 * would never run — the arrival branch is checked before this one, and a stop distance inside four
+	 * studs is a route that silently does nothing. And it has to be far enough from the pad that the rig
+	 * is visibly *short* of it: at `WALK_TO_PAD_SPEED` (16) thirty studs is a little under two seconds of
+	 * walking, so the pause lands mid-crossing, where a person glancing between two signs would hesitate.
+	 *
+	 * **The cost of it being wrong, stated:** in a lobby shorter than this the check is already true on
+	 * the first walking turn, so the rig stops where it spawned — a body hesitating on the spot rather
+	 * than on the way. That is a place-file distance against a config number, so this is the value to
+	 * move first if the pause reads as too early or too late.
+	 */
+	WALK_TO_PAD_LOOK_STOP_STUDS: 30,
+
+	/**
+	 * How long a rig on the look-around route faces each pad, in seconds. **Placeholder — 1.**
+	 *
+	 * **One beat per turn of the head, and the number is `PANIC_SHUFFLE_SECONDS`' own.** That constant
+	 * settled on a second as "long enough to read as a decision and short enough not to read as a stall",
+	 * and this is the same question about the same kind of body: a rig that turned and immediately turned
+	 * back would be a twitch, and one that held for three seconds would look stuck. A second covers the
+	 * turn itself — the facing is an `AlignOrientation`, so it is a movement over time rather than a snap
+	 * — with a moment at the end of it to stand and look.
+	 *
+	 * **It is a dwell per stage, so the whole route costs two of these plus the turn.** That is inside the
+	 * `WALK_TO_PAD_TICK_SECONDS`-sized gap it is checked on (the behaviour's own half-second), so each
+	 * stage is a whole number of turns rather than a duration the tick can step over.
+	 */
+	WALK_TO_PAD_LOOK_DWELL_SECONDS: 1,
+
+	/**
 	 * How often the lobby's seat bookkeeping checks whether the roster has moved, in seconds.
 	 * **Placeholder — 0.25.**
 	 *

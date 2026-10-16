@@ -3,7 +3,12 @@ import { BALL_NAME, TEAM_ATTRIBUTE } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { TEAM_A, TEAM_B } from "../../services/round/team";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
-import { WALK_TO_JOIN_PAD_ATTRIBUTE, WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE } from "./WalkToJoinPadBehavior";
+import {
+	WALK_TO_JOIN_PAD_AT_ATTRIBUTE,
+	WALK_TO_JOIN_PAD_ATTRIBUTE,
+	WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE,
+	WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE,
+} from "./WalkToJoinPadBehavior";
 import type { BallService } from "../../services/ball/BallService";
 
 const DEBUG = true; // prints each rig that goes down and each that comes back
@@ -305,16 +310,22 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// **And a rebuilt rig that holds a side is a round body, not a lobby walker**, so the
 				// destination it was once given goes the moment the side is written. The *tag* is already
 				// absent by then — `WalkToJoinPadBehavior` takes it off when the rig arrives, which is the fix
-				// for the bug that produced this guard — but the two *attributes* travel with the template,
+				// for the bug that produced this guard — but the walk's *attributes* travel with the template,
 				// because `prepare` strips tags from the copy it takes and not attributes. So a rebuilt rig
-				// stands there with a stale lobby pad in its pocket, and the two are halves of one instruction:
-				// "walk to this point". A round body should carry neither. **A corpse with no side is the other
-				// case and keeps both** — a lobby walker that dies and comes back still knows where its pad
-				// is, and nothing else would tell it again.
+				// stands there with a stale lobby pad in its pocket, and the four are all of one instruction:
+				// "wait, then walk to this point, and look at that one on the way". A round body should carry
+				// none of them — the two halves of the instruction that are read by name are cleared here, and
+				// `WALK_TO_JOIN_PAD_AT_ATTRIBUTE` and `WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE` with them rather
+				// than left as unread leftovers, because a comment that said "neither" over two of four would
+				// be the next reader's trap. **A corpse with no side is the other case and keeps all four** — a
+				// lobby walker that dies and comes back still knows where its pad is and that it has already
+				// waited, and nothing else would tell it again.
 				if (team !== undefined) {
 					rig.SetAttribute(TEAM_ATTRIBUTE, team);
 					rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, undefined);
 					rig.SetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE, undefined);
+					rig.SetAttribute(WALK_TO_JOIN_PAD_AT_ATTRIBUTE, undefined);
+					rig.SetAttribute(WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE, undefined);
 				}
 
 				for (const tag of tags) {

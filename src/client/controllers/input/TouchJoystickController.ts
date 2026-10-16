@@ -1446,8 +1446,9 @@ const THUMB_TRANSPARENCY = 0.5;
  *
  * **It coincides with the sprint, and that is by construction rather than by upkeep.** `SprintController`'s start
  * line is `SPRINT_START_MAGNITUDE = 1` — a reading *at the clamp* — so one full push turns the ring white and
- * engages the sprint from a single number, and the white arrives slightly *before* the sprint does, because the
- * sprint's own `SPRINT_HOLD_SECONDS` hold sits behind it. **The ring is deliberately not driven by `sprinting`
+ * engages the sprint from a single number. **The two used to be a fifth of a second apart** — the white arrived
+ * first, with the sprint's own engage hold behind it — and that hold has since been removed on request, so both
+ * now land on the same frame of the same push. **The ring is deliberately not driven by `sprinting`
  * itself**: that value is the client's *want* rather than the server's grant, so a player whose stamina pool has run
  * dry would be shown a white ring over a body that is not running — a control lying about the one thing it exists to
  * show. What the ring is allowed to be wrong about is nothing at all: it reports a finger.

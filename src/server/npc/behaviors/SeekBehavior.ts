@@ -1092,9 +1092,13 @@ export function createSeekBehavior(
 		 * as a pose carries a `WalkSpeed` of zero, and a rig whose humanoid cannot walk is a rig that agrees to be
 		 * told to walk and then does not move). **What it costs is named**: a rig's speed is now managed by two
 		 * things rather than one — this base, and the contribution the sprint adds to it — and the place the two
-		 * could fight is a rig wearing `Behavior_WalkToJoinPad` as well, which writes `WalkSpeed` *directly* and
-		 * would clobber the sum for as long as it is on. No rig in this game wears both; see
-		 * `WalkToJoinPadBehavior`'s own note on the pair, which is the same warning from the other side.
+		 * could fight is a rig wearing `Behavior_WalkToJoinPad` as well. **That fight has changed shape, and the
+		 * new shape is worth stating**: it used to be a direct `WalkSpeed` write clobbering this sum, and it is
+		 * now the same key written twice — the pad walk runs to *its* pad on a `Sprint` contribution under this
+		 * very spelling, so one `Sprint` row on one body would be owned by two behaviours, and whichever ended
+		 * its run first would take the other's contribution off with it. One walk left at base speed, and nothing
+		 * in the output to say which. No rig in this game wears both; see `WalkToJoinPadBehavior`'s own note on
+		 * the pair, which is the same warning from the other side.
 		 */
 		prepare(model) {
 			speeds.setBaseSpeed(model, NPC_CONFIG.WALK_TO_PAD_SPEED);
