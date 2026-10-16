@@ -310,6 +310,9 @@ export const TEAM_ATTRIBUTE = "Team";
  * An *instant* on the shared clock rather than a remaining time, because the reader can subtract it
  * from its own reading of that same clock. A duration would be as stale as the moment it was sent,
  * and an attribute carries no send time to correct it by.
+ *
+ * **Nothing reads it on a client any more**, since the readout that drew it as a bar was deleted; it stays
+ * published for `DUCK_READY_AT`'s reason, which is that the writer of a cooldown is the service that owns it.
  */
 export const DODGE_READY_AT = "DodgeReadyAt";
 
@@ -319,7 +322,7 @@ export const DODGE_READY_AT = "DodgeReadyAt";
  *
  * Written by `CatchService` when a catch window opens or is extended, and it covers the window
  * **plus** `ACTION_CONFIG.ACTION_LOCKOUT_SECONDS` — the tail after a catch in which a dodge is
- * refused. So the bar this feeds is the span the two actions share rather than a lock on catching:
+ * refused. So the span this covers is the one the two actions share rather than a lock on catching:
  * a catch is possible again before the instant passes, because the tail shuts the *dodge*.
  *
  * On the player for the same reason as {@link DODGE_READY_AT}: a character is replaced on every
@@ -344,8 +347,8 @@ export const DUCK_READY_AT = "DuckReadyAt";
  *
  * On the player for the same reason as {@link DODGE_READY_AT}: the pool outlives the character, so
  * dying does not hand out a fresh one. Written by `WalkSpeedService` at a throttled rate rather than
- * on every change — see the note below — and read by `CooldownHudController`, which draws it as a
- * third bar beside the two cooldowns.
+ * on every change — see the note below — and read by `SuperHudController`, which draws the pool as a
+ * row of segments.
  *
  * **A level, where the two instants above are deadlines, and the difference is deliberate.** A
  * deadline has to be converted into a fraction against a clock the reader does not share exactly,

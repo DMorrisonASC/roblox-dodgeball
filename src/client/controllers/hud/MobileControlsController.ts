@@ -1,14 +1,13 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, RunService, Workspace } from "@rbxts/services";
+import { Players, Workspace } from "@rbxts/services";
 import { isMobile } from "../../platform";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getScreenSpaceGui } from "../../ui/screenGui";
 import { ActionController } from "../input/ActionController";
 import { CatchController } from "../input/CatchController";
 import { DodgeController } from "../input/DodgeController";
-import { SprintController } from "../input/SprintController";
 import { ThrowController } from "../input/ThrowController";
 
 /** Prints the mount line, every press and every release, and the stick's own resolution. */
@@ -361,196 +360,27 @@ function pack(
 }
 
 /**
- * How far the movement stick has to be pushed to start and to stop sprinting. **Placeholder.**
+ * **The mobile sprint used to be read from here, and this is where it went.**
  *
- * **Two numbers rather than one, and that is the whole of the design.** A single threshold is a line the stick
- * sits *on* when a thumb holds it there: the engine's thumbstick jitters by a little at rest and by more under a
- * thumb, so one `>= 0.75` test would start and stop the sprint several times a second while the player is doing
- * one thing — and every flip is a `setSprinting` request to the server, which is the expensive half. **The gap
- * between the two is the hysteresis**: it takes a deliberate push to start and a deliberate easing-off to stop,
- * and the `0.15` between them is the room the thumb's own noise lives in.
+ * This file carried a polled stick reader: a recursive search of `PlayerScripts` for `PlayerModule` or
+ * `MasterControl`, a second search of `TouchGui` for `ThumbstickFrame.StickImage`, a `pcall`ed `require` of
+ * somebody else's `ModuleScript`, and a `GetMoveVector()` call on the table that came back — plus the two
+ * `interface`s (`PlayerModuleShape`, `MoveControls`) that described that table. **Two real sessions proved the
+ * two primary lookups wrong**: no module anywhere under `PlayerScripts`, and no *visible* stick in the GUI
+ * either, so both readers returned `undefined` and the feature was silent rather than wrong.
  *
- * **Where the numbers come from: a thumbstick's own range, and the word "far" rather than "at the wall".** The
- * magnitude is `0` at rest and `1` at the rim, so `0.75` is three quarters of the way out — the deliberate push the
- * requirement actually names — and `0.6` is "eased off, but not back to a walk". **`0.85` was the first value here
- * and it asks for more than "far"**: on a 70px stick that is 30px of a 35px radius, a thumb pressed against the
- * inside of the ring rather than one moved across it, and a threshold that demands the last sixth of the travel is
- * one a player can fail while believing they pushed it all the way. Both values are **Placeholders** to be moved
- * once a real thumb has been on them; see {@link watchStick} for the loop that reads them and for the line that
- * prints how far this device's stick actually reaches.
+ * **The replacement is not a fourth lookup — it is a different question, asked of a different object.** The
+ * sprint is now read from the body the engine is already walking (`Humanoid:GetMoveVelocity()`, whose own
+ * documentation names the quantity this design wants: "the product of `WalkSpeed`, the intended movement
+ * direction, and the current percent walk speed"), which needs no module, no GUI, no instance name and no
+ * `require`. It lives in `SprintController` beside the keys, because the sprint is one decision with two sensors
+ * and this file is a way in rather than a rule. See `SprintController.watchStick`.
  *
- * **And what the numbers *mean* depends on the device's touch mode, which is a fact about somebody else's module.**
- * The engine's own control module computes the move vector differently per mode, and only one of the four produces
- * a number these thresholds can be applied to honestly:
- *
- * - **Thumbstick** (the engine's default): the module divides the thumb's offset by the stick's radius and scales
- *   the result from a `0.05` dead zone out to `1` at the rim. Analog, and exactly what this design assumes.
- * - **Dynamic thumbstick**: the same shape, but the scale saturates after about `20px` of finger travel — `1.0`
- *   arrives roughly a third of the way out, so `0.75` is met by any firm push and the sprint becomes "moving".
- * - **Thumbpad** and **DPad**: the module ends its arithmetic with `.Unit`. The vector is a *direction* and the
- *   magnitude is `1` whenever the pad is off centre, at any pressure, so **no threshold in this file can express
- *   "pushed to the rim"** on those modes — the honest reading of the design there is "sprint while moving", which
- *   is a decision for the player-facing design and not for these two constants to fake.
- *
- * **Which is why the loop names the crossing and the reach**: a session's log is the only thing that says which of
- * those three behaviours this client is in, and it says it without a round trip. See {@link watchStick}.
+ * **And the keyboard's half of it stopped being an input *reader* altogether**: both shift keys are bound through
+ * the Input Action System, in that same controller, which is also where the argument is written for why the
+ * stick's magnitude could not be a third binding on that action. **Nothing about the cluster changed** — the five
+ * buttons, their packing and the engine's jump button are untouched by this.
  */
-const SPRINT_START_MAGNITUDE = 0.75;
-const SPRINT_STOP_MAGNITUDE = 0.6;
-
-/**
- * How long {@link findStick} waits for the engine's own control module before giving up on the sprint, in seconds.
- *
- * **Not a tuning value, which is why it is not marked as one.** It is the patience of a lookup, and the only thing
- * it affects is how long this controller holds a task open at mount. Ten seconds is generous for something the
- * engine's own scripts create during boot — the point is that the wait *ends*, and that a client whose module
- * never arrives gets one log line and no sprint rather than a task that lives as long as the session does.
- */
-const STICK_WAIT_SECONDS = 10;
-
-/**
- * **The names the engine's movement module has shipped under, newest first.** See {@link findMoveModule}.
- *
- * **Two names because there are two layouts of the same scripts, and this file was written against only one of
- * them.** The modern client puts a `ModuleScript` called `PlayerModule` directly in `PlayerScripts`; the older one
- * puts `ControlScript` and `CameraScript` there instead, with the movement code in `ControlScript.MasterControl`
- * and **no `PlayerModule` anywhere in the tree**. Both answer `GetMoveVector` — the walk, the jump and the touch
- * stick all work identically — so a client on the older layout is not broken in any way a player could see. It is
- * only a client this file's lookup used to miss, silently, with the sprint as the whole of the symptom.
- *
- * **The order is the order of likelihood, not of preference**: whichever of these exists first and is a
- * `ModuleScript` is the answer, and the search is recursive — the same rule this codebase applies to place files,
- * and for the same reason. The shape belongs to somebody else and it moves; a path is a guess, a search is not.
- */
-const STICK_MODULE_NAMES = ["PlayerModule", "MasterControl"];
-
-/**
- * **How many times the stick's growing reach may be printed in one session.** See {@link watchStick}.
- *
- * **A cap rather than a tuning value**, and it is the difference between an instrument and a flood. The line it
- * bounds prints only when the peak *rises*, a tenth at a time, so a session in which a thumb is pushed to the rim
- * and back prints five or six of them — the envelope of how far this player actually pushes the stick, which is the
- * answer to "is the threshold reachable here". The cap is for the pathological case it cannot rule out: a stick
- * whose reading creeps upward a hundredth at a time would otherwise print for the rest of the session.
- */
-const STICK_PEAK_LIMIT = 12;
-
-/**
- * **The engine's movement module, found by name anywhere under `PlayerScripts` — or `undefined`.**
- *
- * A hoisted function rather than a method, because it is a question about somebody else's tree and has nothing of
- * this controller in it: two candidate names, the first one that exists *and* is a `ModuleScript` wins, and the
- * recursive flag is the whole of the correction to this lookup's first version — see {@link STICK_MODULE_NAMES}.
- */
-function findMoveModule(playerScripts: Instance): ModuleScript | undefined {
-	for (const name of STICK_MODULE_NAMES) {
-		const found = playerScripts.FindFirstChild(name, true);
-
-		if (found !== undefined && found.IsA("ModuleScript")) return found;
-	}
-
-	return undefined;
-}
-
-/**
- * **The movement stick as the engine's own touch module draws it: a frame, and the thumb inside it.**
- *
- * Both names are the engine's, not this file's: the default touch movement mode creates
- * `TouchControlFrame.ThumbstickFrame` with a `StickImage` in it, and the thumb is moved to
- * `relativePosition + StickImage.AbsoluteSize/2` from the frame's top-left — which is an `AnchorPoint` of `(0, 0)`,
- * a top-left placement. See {@link stickPointReader} for the arithmetic that makes those two worth having.
- *
- * **The dynamic thumbstick and the thumbpad are deliberately not named here.** The dynamic one moves its thumb
- * against a radius it never draws (`RadiusOfMaxSpeed`, 20px, doubled on a large screen), so its GUI cannot say
- * what "all the way out" means; the thumbpad has no thumb at all — it slides the whole pad under the finger. Both
- * are left to the module route rather than guessed at, which is the difference between a fallback and a fib.
- */
-const STICK_FRAME_NAME = "ThumbstickFrame";
-const STICK_THUMB_NAME = "StickImage";
-
-/**
- * **How far the stick's thumb is from the stick's centre, as a fraction of the stick's radius — the same number
- * the engine computes for `GetMoveVector`.**
- *
- * The engine's own `TouchThumbstick.DoMove` is `currentMoveVector = direction / (thumbstickSize / 2)`, where
- * `direction` is the finger's offset from the stick's centre and `thumbstickSize` is the frame's width — and the
- * thumb is then drawn at exactly that offset, clamped to the rim. So this reads the module's own input back out of
- * the two instances it drew it with, and the only thing it leaves out is the module's `0.05` dead zone, which no
- * threshold in this file ever goes near. **That is a reading, not an imitation**: nothing here re-derives the
- * gesture, it measures the picture the engine made of the gesture.
- *
- * **Why it is worth a second route at all.** The module route is one untyped `require` of somebody else's tree and
- * it *failed on a real client* — ten seconds of waiting, then no sprint at all — while the same client's jump
- * button was being read out of the same GUI by name, without complaint. Reading the stick the way the jump button
- * is read needs no module, no `require`, and no assumption about which of Roblox's two layouts is installed. See
- * {@link findStick}, which prefers this route and falls back to the module.
- *
- * **`clamp` is not decoration.** The fixed stick clamps its thumb inside the frame, so the fraction cannot exceed
- * `1` — but a frame mid-layout (a rotation, a device change) can briefly report a size of zero, and a division by
- * that would be an infinity the thresholds would read as a sprint. Zero is the honest answer for a stick with no
- * size, and it is also the answer that fails quietly.
- */
-function stickPointReader(stick: GuiObject, thumb: GuiObject): () => number {
-	return () => {
-		const radius = stick.AbsoluteSize.X / 2;
-		if (radius <= 0) return 0;
-
-		// Both centres by hand rather than through `AbsolutePosition` alone, because both instances are placed by
-		// their top-left corner: the frame's `AnchorPoint` is `(0, 0)` and the module writes the thumb as an offset
-		// from it. See {@link STICK_FRAME_NAME}.
-		const stickCentre = stick.AbsolutePosition.add(
-			new Vector2(stick.AbsoluteSize.X / 2, stick.AbsoluteSize.Y / 2),
-		);
-		const thumbCentre = thumb.AbsolutePosition.add(
-			new Vector2(thumb.AbsoluteSize.X / 2, thumb.AbsoluteSize.Y / 2),
-		);
-
-		return math.clamp(thumbCentre.sub(stickCentre).Magnitude / radius, 0, 1);
-	};
-}
-
-/**
- * **The stick, found in the touch GUI and returned as a reader — or `undefined` if this client does not have that
- * shape of stick.** See {@link STICK_FRAME_NAME} and {@link stickPointReader}.
- *
- * **Found by waiting for `TouchGui` and then searching it, rather than by waiting for the stick itself.** The GUI
- * is created once, early, and holds every touch control the engine has; the stick inside it is created and
- * destroyed as the movement mode changes, so waiting for the *right* child is a wait that can time out on a client
- * that is working perfectly. The same reason the jump button is hunted rather than waited for.
- *
- * **Only a visible stick counts.** The control module builds the frames of all four touch modes at once and hides
- * the ones not in use (see Roblox's own `ControlScript`), so an invisible `ThumbstickFrame` parked at its rest
- * position would read as a permanently centred stick — the worst kind of wrong answer, because it looks like the
- * player never pushes the stick rather than like a failed lookup.
- *
- * **And it is looked for again rather than looked at once, because "visible" arrives after "exists".** The module's
- * `Create` builds the frame hidden and its `Enable` is what shows it, so a single look can catch a perfectly
- * healthy client in the moment between the two — the frame is there, this route rejects it for being invisible,
- * and the whole hunt falls through to a route that may be reading nothing at all. See the loop below, which is
- * where that patience lives and why it is bounded.
- */
-function findStickPoint(playerGui: PlayerGui): (() => number) | undefined {
-	const touch = playerGui.WaitForChild("TouchGui", STICK_WAIT_SECONDS);
-	if (touch === undefined) return undefined;
-
-	// Ten looks a second for the same patience the module route's `WaitForChild` is given, so the whole hunt is
-	// bounded by two waits rather than by one wait and one guess. **The alternative — accepting an invisible stick —
-	// is the one thing this must not do**: a hidden frame sits at rest for the whole session, and a stick that reads
-	// `0.00` for ever looks exactly like a player who never pushes it.
-	for (let waited = 0; waited < STICK_WAIT_SECONDS * 10; waited++) {
-		const stick = touch.FindFirstChild(STICK_FRAME_NAME, true);
-
-		if (stick !== undefined && stick.IsA("GuiObject") && stick.Visible) {
-			const thumb = stick.FindFirstChild(STICK_THUMB_NAME, true);
-
-			if (thumb !== undefined && thumb.IsA("GuiObject")) return stickPointReader(stick, thumb);
-		}
-
-		task.wait(0.1);
-	}
-
-	return undefined;
-}
 
 /** The gap between a button and the word under it. */
 const LABEL_GAP = 4;
@@ -591,10 +421,11 @@ const HELD_TRANSPARENCY = 0;
  * one number this cluster is allowed to have.
  *
  * **`up` being optional is the whole difference between a tap and a hold**, and **the throw is the last one
- * standing**: the sprint was the other, and a sprint is no longer a button on this HUD at all — it is the
- * movement stick's own magnitude, which is a thing the player's other thumb is already on. Nothing here decides
- * which control is which — the controller behind the button does, and what this table records is only whether
- * there is a second call to make.
+ * standing**: the sprint was the other, and a sprint is not a button on this HUD at all any more — it is asked for
+ * by the input itself, one sensor for the stick and one for the keys, both of them in `SprintController`. It used
+ * to be the stick's magnitude read from here; see the note above `LABEL_GAP` for why that reader is gone. Nothing
+ * here decides which control is which — the controller behind the button does, and what this table records is only
+ * whether there is a second call to make.
  */
 interface TouchControl {
 	/** The word under the button, which on this HUD is the whole of the legend. */
@@ -674,43 +505,6 @@ interface JumpGeometry {
 }
 
 /**
- * The `PlayerModule`'s shape, **as far as this file uses it: one method.**
- *
- * **Written as a method rather than as a property holding a function, and that is load-bearing rather than
- * stylistic.** The module is Lua: its `GetControls` is a function whose first parameter is `self`, and roblox-ts
- * compiles a *method* call on a table to a colon call — `playerModule:GetControls()` — which passes that `self`,
- * where calling a function-typed property would hand it over without one. **This file's own notes record the
- * refusal from the other side** (an arrow function is rejected where an interface declares a method), which is the
- * same distinction caught by the compiler instead of at runtime.
- *
- * **Nothing here is verified by the compiler, and that is the honest description of it.** `GetControls`,
- * `GetMoveVector` and even `PlayerScripts` appear nowhere in `@rbxts/types` in this build — the same absence
- * `restyleEngineJump`'s doc lists for the jump button's route — so this interface is a claim about somebody else's
- * table that only a running client can confirm. See {@link findStick}, which guards every step of it by hand and
- * reports what it found.
- */
-interface PlayerModuleShape {
-	GetControls(): unknown;
-}
-
-/**
- * The control object `GetControls` returns, **as far as this file uses it: one method, and again a method.**
- *
- * **`GetMoveVector` is the supported way to ask where a thumbstick is pointing** and it is the reason the sprint
- * could become the stick's own magnitude at all: it returns a `Vector3` whose magnitude is how far the stick is
- * pushed, which is exactly the number a sprint threshold wants.
- *
- * **The declared return type is a claim, not a fact this project can check** — a Lua function family could return
- * `nil`, a table or a number, and the typings here are the *belief* being tested. What makes it safe to write down
- * is `.Magnitude` being the *last* thing done with the value, in {@link watchStick}: if the call returns something
- * without a magnitude, that is an error inside a `ViewportSize`-independent loop, and the log line printed at
- * resolution is what a session's output pins the blame to.
- */
-interface MoveControls {
-	GetMoveVector(): Vector3;
-}
-
-/**
  * The mobile controls: **a box of five buttons packed into the bottom-right corner, sitting above the engine's own
  * jump button.**
  *
@@ -745,15 +539,12 @@ interface MoveControls {
  * here**: a copy of "a ball in the hand is what makes a press a throw" would be a rule with two homes, and the
  * server would be the one to notice.
  *
- * **The sprint is the exception, and it is the one control that is not a button.** It used to be one, wedged
- * into the middle of the ring's arrangement; it is now the movement stick's own magnitude — push the stick to
- * the rim and the character runs — which is what a phone game does and what this HUD was missing. Nothing about
- * *where* that decision lives has changed: it still ends at `SprintController.holdSprint`, the same method the
- * keyboard's shift key calls, so there is still one implementation and this file is still only a way in. What
- * moved is the sensor. See {@link watchStick} for the loop and {@link SPRINT_START_MAGNITUDE} for the two
- * thresholds it uses. **The stick is not this controller's instance and the call underneath it is not typed in
- * this build**, which is the one thing in this file that is a documented risk rather than a mechanism — it is
- * argued in full at {@link watchStick} rather than glossed here.
+ * **The sprint is the exception, and it is no longer in this file at all.** It used to be a sixth circle, and then
+ * a polled read of the stick's magnitude from here; it is now two sensors in `SprintController` — the shift keys
+ * through the Input Action System, and the mobile stick read from the body the engine is already walking — meeting
+ * at one `holdSprint`. **What that costs this file is one injected controller and one method**, and what it buys is
+ * that this HUD is now only what its own doc says it is: five buttons, each of them a way into a controller the
+ * keyboard already reaches. See the note above `LABEL_GAP` for the reader that was deleted and why.
  *
  * **The jump is the odd one out, and it is the only control here the engine runs — including its button.**
  * There is no `JumpController` in this project and there never was: the jump has always been Roblox's, from the
@@ -809,7 +600,7 @@ interface MoveControls {
 @Controller()
 export class MobileControlsController implements OnStart {
 	/**
-	 * **The five controllers this HUD drives, injected rather than reached for.**
+	 * **The four controllers this HUD drives, injected rather than reached for.**
 	 *
 	 * This is the project's own mechanism — `HANDOFF.md`: *"constructor injection everywhere"*, which is how
 	 * `DodgeService`, `BallSpawnerService` and every other service that needs a sibling gets one — and it is
@@ -817,19 +608,18 @@ export class MobileControlsController implements OnStart {
 	 * with a nil case, and the nil case is a press that silently does nothing. **A constructor parameter cannot
 	 * be nil**, so "the paw is wired to the inputs" is a fact the compiler checks rather than a hope.
 	 *
-	 * **`sprintController` is the one that is not a button's.** Its two callers here are the stick's start and
-	 * stop — see {@link watchStick} — and it stays injected for the same reason as the rest: one implementation
-	 * of what "sprinting" means, reached from a second sensor rather than duplicated.
-	 *
 	 * **It is the first use of constructor injection on the client**, which is worth saying because the client
 	 * has never needed it before: every other HUD here reads an attribute or subscribes to an event, and this is
 	 * the first one whose whole job is to *call* controllers that are not its own.
+	 *
+	 * **Four rather than five, and the missing one is `SprintController`.** It was injected here because the
+	 * stick's magnitude was read in this file, and it is not injected any more because it is not: the sprint has
+	 * two sensors and both of them live in that controller. See the class doc.
 	 */
 	constructor(
 		private readonly throwController: ThrowController,
 		private readonly catchController: CatchController,
 		private readonly dodgeController: DodgeController,
-		private readonly sprintController: SprintController,
 		private readonly actionController: ActionController,
 	) {}
 
@@ -977,14 +767,24 @@ export class MobileControlsController implements OnStart {
 		 * reach. Capping the number `pack` is handed is the self-consistent way for that to fail — the buttons come
 		 * out smaller — where a `UISizeConstraint` on the frame would clamp the rendered size *after* the packing
 		 * had been worked out for the bigger one, and the buttons would overlap instead.
+		 *
+		 * **And the cap needs a pad to be measured against, so a client without one takes the full design size.**
+		 * `room` is the distance from the screen's *top* down to the pad, and with no pad it is computed from a
+		 * centre of `(0, 0)` — a negative number, which `pack` answers with its tap floor: a cluster of 44px
+		 * buttons that would read as a bug rather than as a layout. **This is not a hypothetical client.** The
+		 * switch this project's joystick asks for (`DevTouchMovementMode.Scriptable`) is a movement-mode change,
+		 * and a device whose engine touch controls are *absent* rather than merely late is the case this branch and
+		 * the position below together exist for.
 		 */
 		const boxSize = Fusion.Computed(scope, (use) => {
 			const multiplier = use(scale);
 			const centre = use(jump.centre);
 			const padSize = use(jump.size);
+			const pad = use(jump.found);
 			const room = centre.Y - padSize / 2 - BOX_PAD_GAP * multiplier;
+			const wanted = BOX_SIZE.Y * multiplier;
 
-			return new Vector2(BOX_SIZE.X * multiplier, math.min(BOX_SIZE.Y * multiplier, room));
+			return new Vector2(BOX_SIZE.X * multiplier, pad ? math.min(wanted, room) : wanted);
 		});
 
 		/**
@@ -1021,6 +821,7 @@ export class MobileControlsController implements OnStart {
 				const multiplier = use(scale);
 				const centre = use(jump.centre);
 				const padSize = use(jump.size);
+				const pad = use(jump.found);
 				const hand = use(nudge);
 
 				// **The pad's top edge, in the axis it actually arrives in.** `centre` is built from an
@@ -1041,14 +842,34 @@ export class MobileControlsController implements OnStart {
 				const padTop = centre.Y - padSize / 2;
 				const bottomEdge = padTop - BOX_PAD_GAP * multiplier + hand.Y * multiplier;
 
+				// **No pad, no anchor — the box takes the corner instead**, which is the second shape this position
+				// can have, and the one that matters on a client whose engine touch controls are *gone* rather than
+				// late. The expression is the ordinary HUD corner: scale 1 on both axes, offset by
+				// {@link BOX_EDGE_GAP}, with this file's one signed nudge added in reference pixels like every other
+				// size here — so `Y` positive still means *down*, which is the direction {@link BOX_NUDGE} is
+				// written in. **Without this branch the cluster has nowhere to be on such a client**, and the gate
+				// below used to hide it rather than place it.
+				if (!pad) {
+					return new UDim2(
+						1,
+						-(BOX_EDGE_GAP - hand.X) * multiplier,
+						1,
+						-(BOX_EDGE_GAP - hand.Y) * multiplier,
+					);
+				}
+
 				return new UDim2(1, -(BOX_EDGE_GAP - hand.X) * multiplier, 0, bottomEdge);
 			}),
-			// **Drawn unconditionally while the hand-move mode is on**, so the cluster can be placed on a client the
-			// engine's button never appears on — a desktop emulator with no touch GUI is that case, and it is exactly
-			// the client somebody would tune a layout on. Otherwise it waits for the pad, because until then the pad's
-			// top edge reads `0` and the box would be drawn across the bottom of the screen. See
-			// {@link restyleEngineJump}.
-			Visible: Fusion.Computed(scope, (use) => ARRANGE || use(jump.found)),
+			// **Drawn always, and that is a correction rather than a simplification.** This used to wait for the
+			// engine's jump button (`ARRANGE || jump.found`), because until that button exists the pad's top edge
+			// reads `0` and a box positioned against it is drawn across the wrong end of the screen. **The position
+			// above no longer depends on the pad existing** — it falls back to the corner — so there is nothing left
+			// for a gate to protect, and it was hiding the entire cluster on the one client that certainly has no
+			// engine jump button: a touch client whose movement mode is `Scriptable`, which is exactly what this
+			// project's own joystick asks for. **The five buttons are ours and one of them cannot be made to depend
+			// on a control that the same feature takes away.** See {@link restyleEngineJump} for the pad's hunt and
+			// {@link BOX_EDGE_GAP} for the corner the fallback uses.
+			Visible: true,
 		});
 
 		box.Parent = getScreenSpaceGui();
@@ -1089,10 +910,6 @@ export class MobileControlsController implements OnStart {
 		if (DEBUG && ARRANGE) {
 			print("[HUD] arrange mode is on — drag the cluster; the nudge it prints goes into BOX_NUDGE");
 		}
-
-		// **The sprint, which is not a button on this HUD and never was one of the five.** Spawned rather than run
-		// here because resolving the module it reads can wait on the engine; see {@link watchStick}.
-		task.spawn(() => this.watchStick(scope));
 
 		/**
 		 * **The numbers rather than the shape, because a shape cannot be argued with from a log.** The button size
@@ -1163,276 +980,9 @@ export class MobileControlsController implements OnStart {
 		}
 	}
 
-	/**
-	 * **The sprint, which is the movement stick's own magnitude rather than a button.**
-	 *
-	 * **Why this exists at all.** A sprint button was the sixth circle on this HUD, and it asked a player to do with
-	 * a second finger what their first one was already doing: push the stick. Every phone game that has a sprint at
-	 * all puts it on the stick's rim — the gesture *is* the mode — and this HUD was spending one of its thumb
-	 * targets on a control the hand was already holding. So the button is gone and the magnitude is the sensor, and
-	 * it still ends at `SprintController.holdSprint`, which is the same place the shift key ends. See
-	 * {@link SPRINT_START_MAGNITUDE} for the two thresholds and for what the gap between them is for.
-	 *
-	 * **The read: the stick's own thumb first, the engine's movement module second — and the reversal is the
-	 * interesting part.** This file's first version read `GetMoveVector` and nothing else, on the argument that the
-	 * stick's *child* structure is the ControlModule's own business and that the module's getter is the supported
-	 * way to ask. That argument holds right up to the point where the getter is unreachable, which is what the
-	 * first real phone log shows: ten seconds of waiting and no sprint, on a client drawing the stick perfectly
-	 * well. So the primary read is now the same *kind* of read as the jump button's — the engine's own instance
-	 * names, found by search, **measured rather than asked** — and the module is the fallback for the two movement
-	 * modes whose geometry cannot be measured. See {@link findStick}, {@link findStickPoint} and
-	 * {@link findMoveModule}.
-	 *
-	 * **`GetControls` and `GetMoveVector` appear **nowhere** in `@rbxts/types` in this build, and `PlayerScripts`
-	 * only as a *class*** — `interface PlayerScripts extends Instance` in `include/generated/None.d.ts`, with
-	 * `RegisterTouchMovementMode` and its siblings on it, and no `Player.PlayerScripts` member declared beside it, so
-	 * reaching the instance is untyped too. **That is a correction to this comment**: the earlier note claimed all
-	 * three names were absent, which was read off a search of `include/roblox.d.ts` alone — the generated class
-	 * declarations are in `None.d.ts`. So the module route is an untyped hop at every step: a property this build
-	 * does not declare, a `require` of a module it has no shape for, and a call named nowhere. Made once, wrapped in
-	 * `pcall`, and reported at both ends. Neither route is a `PlayerModule` fork: nothing is overridden, nothing is
-	 * replaced, and nothing is asked to behave differently.
-	 *
-	 * **Two layouts, one question — and this is the correction the first real phone log bought.** That route was
-	 * written against `PlayerScripts.PlayerModule` and it timed out: ten seconds and `no PlayerModule` on a client
-	 * whose jump button was in the engine's touch GUI the whole time, which is a client running the movement code
-	 * perfectly well. Roblox has shipped the same module under two trees, and the older one has no `PlayerModule`
-	 * in it at all. See {@link findMoveModule}, which searches for both names rather than trusting a path.
-	 *
-	 * **What this means for whoever reads it: this is the only part of the cluster whose failure mode is "no
-	 * sprint" rather than "a circle a few pixels off".** If the module's shape differs in this build, one log line
-	 * says so and nothing else changes — no error, no partial state, no silently wrong input. That tolerance is
-	 * what makes the door worth opening, because the alternatives are worse: a fabricated vector from
-	 * `Humanoid.MoveDirection` would read about `1` **always** (the engine normalises it, which is the whole of why
-	 * it is called `MoveDirection` and not `MoveVector`), so the fallback would sprint permanently and look like a
-	 * different bug entirely.
-	 *
-	 * **`Heartbeat` and not `RenderStepped`.** The stick's vector is a fact about *input*: nothing on screen is
-	 * derived from it, the frame it is read on does not matter, and `RenderStepped` would put this in the frame
-	 * budget of every phone in the game for a value that changes at thumb speed. **Polled rather than subscribed**
-	 * for the same class of reason: the module exposes a getter and not a signal, and the input action underneath
-	 * it is one this file does not own and cannot name.
-	 *
-	 * **A latch, so the loop never repeats itself.** `SprintController.setHolding` already ignores a request that
-	 * does not change the state, so the latch is not what protects the network — it is what makes the *hysteresis*
-	 * legible: `sprinting` is the thing the two thresholds are edges of, and it is also why this loop allocates
-	 * nothing per frame (no closures, no tables, one vector read).
-	 */
-	private watchStick(scope: Fusion.Scope<unknown>): void {
-		const read = this.findStick();
-		if (read === undefined) return;
-
-		// **The loop's own line, and it is the first thing to look for in a log.** This feature has failed silently
-		// twice, in the same way both times: nothing printed, so nothing said which step was missing. A line here
-		// means the reader resolved and the stick is being polled; no line means it did not resolve, which is the
-		// failure {@link findStick} now names for itself.
-		if (DEBUG) print("[Sprint] mobile loop started — reading the stick every frame");
-
-		// **The calibration line, and it is evidence rather than decoration.** It prints the magnitude *now* — at
-		// mount, with nobody touching the screen — so a session that sprints in place has the number that explains
-		// it, and so does a session where the stick reads `0.5` at rest. A stick that reads anything but `0.00` with
-		// nobody touching it is one this loop should never act on, and no other line would say so.
-		if (DEBUG) {
-			print(
-				`[Sprint] mobile — the stick reads ${string.format("%.3f", read())} at rest, ` +
-					`so the sprint starts at ${SPRINT_START_MAGNITUDE} and stops at ${SPRINT_STOP_MAGNITUDE}`,
-			);
-		}
-
-		let sprinting = false;
-
-		// **The reach of the stick, printed as it grows and never as it falls.** The two edge lines below name every
-		// crossing; this one answers the question that has no crossing to name — *is the start threshold reachable
-		// on this device at all?* A stick that tops out at `0.60` never crosses `0.75` and would be silent
-		// otherwise, which is the third way this feature can fail without a trace. Monotone, so a session prints the
-		// envelope of the player's pushes — five or six lines — rather than a stream. See {@link STICK_PEAK_LIMIT}.
-		let peak = 0;
-		let peaks = 0;
-
-		scope.push(
-			RunService.Heartbeat.Connect(() => {
-				const magnitude = read();
-
-				if (DEBUG && peaks < STICK_PEAK_LIMIT && magnitude > peak + 0.1) {
-					peak = magnitude;
-					peaks += 1;
-
-					print(`[Sprint] mobile — the stick's peak so far ${string.format("%.2f", magnitude)}`);
-				}
-
-				// **Two tests and not one**, which is the hysteresis: the stick has to be pushed past the start
-				// threshold to begin and eased back below the (lower) stop threshold to end, so a thumb resting near
-				// one line cannot flip the state every frame. See {@link SPRINT_START_MAGNITUDE}.
-				//
-				// **And the state is a latch, so `holdSprint` is only ever called on an edge** — not once per frame
-				// with a value the other side merely de-duplicates. Two guards, deliberately: the latch is this
-				// loop's own account of what it last asked for, and `SprintController.setHolding` has one of its
-				// own. The line before each call is what makes the edge visible in a log, which is the whole of
-				// what was missing when this feature first failed.
-				if (!sprinting && magnitude >= SPRINT_START_MAGNITUDE) {
-					sprinting = true;
-
-					if (DEBUG) {
-						print(`[Sprint] mobile — magnitude ${string.format("%.2f", magnitude)} (over start)`);
-						print("[Sprint] mobile — hold true");
-					}
-
-					this.sprintController.holdSprint(true);
-				} else if (sprinting && magnitude < SPRINT_STOP_MAGNITUDE) {
-					sprinting = false;
-
-					if (DEBUG) {
-						print(`[Sprint] mobile — magnitude ${string.format("%.2f", magnitude)} (under stop)`);
-						print("[Sprint] mobile — hold false");
-					}
-
-					this.sprintController.holdSprint(false);
-				}
-			}),
-		);
-	}
-
-	/**
-	 * **Where the stick's reading comes from: two routes, one answer — the stick's own thumb, or the engine's
-	 * movement module.**
-	 *
-	 * **Both routes return a *reader*, a `() => number`, and never the thing they found.** That is what keeps the
-	 * untyped half contained: everything the module route touches below is `unknown` and checked by hand, and
-	 * {@link watchStick} cannot tell which route its number came from — it polls one either way.
-	 *
-	 * **The GUI route was written second and is tried first, which reverses this method's original design.** The
-	 * module was "the supported way to ask", and on the first real phone log this project has, that ask timed out
-	 * while the same client's jump button was being read out of the same GUI by name. What a supported route is
-	 * worth is what it delivers, and this one delivers a number on a client where the other delivers nothing; the
-	 * module stays for the movement modes the GUI cannot describe. See {@link findStickPoint}.
-	 *
-	 * **Every failure returns `undefined` rather than throwing, and each one prints a line that names itself.** A
-	 * missing module, a module whose `require` fails, a controls table with no `GetMoveVector` on it — three
-	 * different faults with three different fixes, and a single "no sprint" would make a session's log useless for
-	 * telling them apart. That is the same rule this codebase applies to its own probes: print the fact being
-	 * doubted.
-	 *
-	 * **`pcall` around the `require` and the `GetControls` call**, because past that point the code being run is
-	 * not this project's: `require` executes the module's own body, and a failure inside it would otherwise take
-	 * this controller — which has already mounted the paw by now — down with it. A sprint that does not work is a
-	 * far smaller loss than a controller that throws on start-up.
-	 */
-	private findStick(): (() => number) | undefined {
-		// **Route one: the stick's own geometry, which needs nobody's module.** It goes first because it is the only
-		// route that works on a client whose `PlayerScripts` this file turns out not to be able to read — and one
-		// such client exists, which is the whole reason this route does. See {@link findStickPoint}.
-		const fromStick = findStickPoint(Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui);
-		if (fromStick !== undefined) {
-			if (DEBUG) {
-				print(
-					`[Sprint] mobile — reading the stick's own thumb (${STICK_FRAME_NAME}.${STICK_THUMB_NAME}), ` +
-						`which is the default touch movement mode`,
-				);
-			}
-
-			return fromStick;
-		}
-
-		// **Route two: the engine's movement module**, which is what covers the movement modes the GUI cannot
-		// describe — the dynamic thumbstick's undrawn radius and the thumbpad's whole-pad slide. Everything below is
-		// that route.
-		//
-		// **Waited for with a timeout rather than yielded on forever.** Both instances are created by the engine's
-		// own scripts during boot, so they are usually there already; the timeout is what stops a client that
-		// somehow lacks them from leaving a task alive for the session. `WaitForChild` with a timeout returns
-		// `Instance | undefined`, which is the shape this whole method is written in.
-		const playerScripts = Players.LocalPlayer.WaitForChild("PlayerScripts", STICK_WAIT_SECONDS);
-		if (playerScripts === undefined) {
-			if (DEBUG) print("[Sprint] mobile — no PlayerScripts, so the stick cannot be read at all");
-
-			return undefined;
-		}
-
-		// **Found by searching rather than by naming a path, and that is a correction this method needed.** The
-		// first version waited on `PlayerScripts.PlayerModule` — the documented route — and the first real phone log
-		// this project has shows it timing out: ten seconds, then `no PlayerModule`, on a client whose jump button
-		// was sitting in `TouchGui.TouchControlFrame` the whole time. A client with the engine's touch controls up
-		// is a client whose movement module is running, so the lookup was wrong and not the device. See
-		// {@link findMoveModule} for the two trees Roblox has shipped the same module under.
-		const moduleScript = findMoveModule(playerScripts);
-		if (moduleScript === undefined) {
-			if (DEBUG) {
-				// **What is there instead, by name and class.** "no PlayerModule" is a message that cannot tell a
-				// renamed module from a missing one and says nothing about which layout the client runs, which is
-				// exactly what made the first failure unfixable from the log it printed. This prints the tree's top
-				// level, so the next session names the layout rather than guessing at it.
-				const held: string[] = [];
-				for (const child of playerScripts.GetChildren()) held.push(`${child.Name} (${child.ClassName})`);
-
-				print(
-					`[Sprint] mobile — no ${STICK_MODULE_NAMES.join(" or ")} anywhere under PlayerScripts, and the ` +
-						`GUI has no visible stick either. It holds: ${held.join(", ")}`,
-				);
-			}
-
-			return undefined;
-		}
-
-		// **The whole chain inside one `pcall`, because everything past the `require` is somebody else's code.**
-		// `require` runs the module's own body, and the call after it is made on a table this build has no typings
-		// for — so a module that fails to load, a `GetControls` that has been renamed and a `GetControls` that
-		// throws all arrive here as the same shape: a failure with a message. The message is what gets printed,
-		// which is what keeps the three of them apart in a session's log. A sprint that does not work is a far
-		// smaller loss than a controller that throws on start-up.
-		//
-		// **The `type(x.GetControls) === "function"` guard that was here first is *not* writable, and that is a
-		// fact about the compiler worth recording**: roblox-ts refuses to read a member declared as a method
-		// ("Cannot index a method without calling it"), because a method only exists as a colon call in Lua. So the
-		// guard could not be written against {@link PlayerModuleShape} at all — the compiler had already answered
-		// the question the guard was asking, and answered it the strict way. `pcall` is the runtime equivalent and
-		// it is better here anyway: it also catches a body that throws.
-		const [ok, controls] = pcall(() => {
-			const playerModule = require(moduleScript) as PlayerModuleShape;
-
-			return playerModule.GetControls();
-		});
-
-		if (!ok) {
-			if (DEBUG) {
-				print(
-					`[Sprint] mobile — ${moduleScript.GetFullName()} would not hand over its controls: ` +
-						`${tostring(controls)}`,
-				);
-			}
-
-			return undefined;
-		}
-
-		// **Checked against a *property* view of the same table, which is the one place the method/property
-		// distinction shows up as two casts.** Reading `controls.GetMoveVector` off {@link MoveControls} is refused
-		// for the reason above; reading it off a table whose member is declared as a function-typed property is
-		// allowed, and that is exactly what a runtime existence check is. The table is then cast *back* to the
-		// method view to be called, because the call is the thing that has to pass `self`.
-		if (type((controls as { GetMoveVector?: unknown }).GetMoveVector) !== "function") {
-			if (DEBUG) print(`[Sprint] mobile — ${moduleScript.Name} has no GetMoveVector on its controls`);
-
-			return undefined;
-		}
-
-		// **The route it was found by, printed once, because the *which layout* question is the one that cost this
-		// pass a round trip.** A path in the log also says whether the client is on the modern tree or the older one,
-		// which is the first thing to know about any future difference between them.
-		if (DEBUG) {
-			print(
-				`[Sprint] mobile — reading through ${moduleScript.GetFullName()}, which answers GetMoveVector; ` +
-					`"${moduleScript.Name}" is the ${moduleScript.Name === "PlayerModule" ? "modern" : "older"} ` +
-					`layout of the engine's controls`,
-			);
-		}
-
-		// **Bound to the object it came from, not lifted off it.** `GetMoveVector` is a method: called on the table
-		// it receives `self` and finds its own state, and called as a bare function it would receive nothing — which
-		// is why the interface declares it as a method (see {@link MoveControls}) and why this closure keeps the
-		// table alive rather than storing the function.
-		const stick = controls as MoveControls;
-
-		return () => stick.GetMoveVector().Magnitude;
-	}
+	// **The stick's reader — `watchStick` and `findStick`, with their two routes, their `pcall`ed `require` and
+	// their `ThumbstickFrame` search — was deleted from here.** See the note above `LABEL_GAP` for why, and
+	// `SprintController.watchStick` for what reads the stick now.
 
 	/**
 	 * One button and its word: **the circle, the space reserved inside it, and the label underneath.**
@@ -1726,8 +1276,13 @@ export class MobileControlsController implements OnStart {
 	 * `FindFirstChild` alone would miss it half the time. So the GUI is watched as well as swept: `ChildAdded`
 	 * on `PlayerGui` for a whole new `TouchGui`, `DescendantAdded` on the one that is there for a frame rebuilt
 	 * inside it, with the re-subscription guarded by holding the instance so one GUI is never watched twice.
-	 * **Nothing hides anything any more** — least of all `TouchControlFrame`, which holds the thumbstick this
-	 * HUD's dodge and sprint read the movement from.
+	 * **Nothing hides anything any more** — least of all `TouchControlFrame`, which holds the engine's touch
+	 * controls. **The reason it was not hidden has since expired, and the decision has not**: it used to be that
+	 * this HUD's sprint read the movement stick out of that frame, and nothing reads it now — the sprint reads
+	 * `Humanoid:GetMoveVelocity()` and `TouchJoystickController` replaces the stick outright on a touch client.
+	 * What keeps this line here is the *jump button*, which is inside that frame and which this cluster is built
+	 * around: **hiding the frame would take the jump with it**, and the jump is the one control this HUD does not
+	 * own. See {@link restyleEngineJump}.
 	 *
 	 * **Where each half of the look lives, and why it is split that way.** The *geometry* — `Size`, `Position`,
 	 * the corner it sits in — is the module's and stays the module's: it re-lays the button out on every

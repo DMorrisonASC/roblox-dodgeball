@@ -8,7 +8,6 @@
 		"roblox-dodgeball:out/client/controllers/character/TeamRingController@TeamRingController": "client/controllers/character/TeamRingController@TeamRingController",
 		"roblox-dodgeball:out/client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController": "client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController",
 		"roblox-dodgeball:out/client/controllers/hud/ControlsLegendController@ControlsLegendController": "client/controllers/hud/ControlsLegendController@ControlsLegendController",
-		"roblox-dodgeball:out/client/controllers/hud/CooldownHudController@CooldownHudController": "client/controllers/hud/CooldownHudController@CooldownHudController",
 		"roblox-dodgeball:out/client/controllers/hud/CurrencyHudController@CurrencyHudController": "client/controllers/hud/CurrencyHudController@CurrencyHudController",
 		"roblox-dodgeball:out/client/controllers/hud/DockController@DockController": "client/controllers/hud/DockController@DockController",
 		"roblox-dodgeball:out/client/controllers/hud/InventoryController@InventoryController": "client/controllers/hud/InventoryController@InventoryController",
@@ -72,7 +71,8 @@
 		"roblox-dodgeball:out/server/services/actions/DuckService@DuckState": "server/services/actions/DuckService@DuckState",
 		"roblox-dodgeball:out/client/controllers/input/DuckController@DuckController": "client/controllers/input/DuckController@DuckController",
 		"roblox-dodgeball:out/client/controllers/camera/CameraZoomController@CameraZoomController": "client/controllers/camera/CameraZoomController@CameraZoomController",
-		"roblox-dodgeball:out/client/controllers/hud/MobileControlsController@MobileControlsController": "client/controllers/hud/MobileControlsController@MobileControlsController"
+		"roblox-dodgeball:out/client/controllers/hud/MobileControlsController@MobileControlsController": "client/controllers/hud/MobileControlsController@MobileControlsController",
+		"roblox-dodgeball:out/client/controllers/input/TouchJoystickController@TouchJoystickController": "client/controllers/input/TouchJoystickController@TouchJoystickController"
 	},
 	"metadata": {}
 }

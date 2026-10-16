@@ -369,8 +369,8 @@ export class ArenaFreezeCountdownController implements OnStart {
 		});
 
 		// **The two labels are built before the card**, because `Card` takes its children at construction and
-		// parents them itself — the order `CooldownHudController`'s rows are built in, and there is nothing above
-		// them to own afterwards.
+		// parents them itself — so anything that has to end up *inside* one is finished first, and there is
+		// nothing above them to own afterwards.
 		this.labels.push(this.addLabel(scope, theme));
 		this.labels.push(this.addLabel(scope, theme));
 
@@ -456,7 +456,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 		// **Shown only while a count is running**, through the same `Computed` that decides it — one value, read
 		// by the one element rather than a connection per reader. It is `Hydrate` because `Card` hands back a
 		// finished instance, and a reactive value merely *assigned* to one of its properties is never tracked as
-		// a property at all — the trap `CooldownHudController` documents at its own container.
+		// a property at all — the rule `panelChrome.ts` states at its own length.
 		Fusion.Hydrate(scope, card)({ Visible: visible });
 
 		// The viewport bound every HUD here carries: the element brings its own limit rather than trusting that

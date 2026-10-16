@@ -23,10 +23,10 @@ const DEBUG = true;
 /**
  * How far up from the bottom of the screen the stack's *bottom edge* sits, in pixels.
  *
- * **The same inset the rest of the bottom furniture uses**, and that is the point: `CooldownHudController`'s
- * card and `DockController`'s buttons each sit 12px off their corner, and this stack sits 12px off the
- * bottom *edge* — so the three read as one row of furniture across the screen rather than as three things
- * at three heights.
+ * **The same inset the rest of the bottom furniture uses**, and that is the point: `DockController`'s buttons
+ * sit 12px off their corner and the touch client's joystick ring leaves the same kind of gap in the corner it
+ * owns, while this stack sits 12px off the bottom *edge* — so the furniture along the bottom of the screen
+ * reads at one height rather than at three.
  *
  * **This number used to be derived from the toast column, and the direction has reversed.** The stack was
  * lifted clear of the toasts, which put it most of the way up the screen — the wrong place for a readout a
@@ -271,8 +271,8 @@ interface PowerSlot {
  * kind of thing: it runs on a *change* to `MYSTERY_POWER_ATTRIBUTE` and never decides whether the prize is
  * real, because the server already answered that when it wrote the attribute.
  *
- * **One `RenderStepped` loop for all three values**, which is `CooldownHudController`'s argument reached the
- * same way: a pool is sampled by the server at its own rate and would want a subscription, while a fraction
+ * **One `RenderStepped` loop for all three values**, which is the argument this project reaches for at every
+ * frame loop: a pool is sampled by the server at its own rate and would want a subscription, while a fraction
  * of a live clock wants a frame. One loop that reads all of them is one mechanism instead of three, and its
  * cost is three attribute reads per frame.
  *
@@ -933,11 +933,11 @@ export class SuperHudController implements OnStart {
 					scope,
 					(use) => new UDim2(math.clamp(use(staminaUnits) - position, 0, 1), 0, 1, 0),
 				),
-				// **The colour rule the two bars used, unchanged.** Still filling is the busy tone and ready
-				// is the success tone, and the switch is on the reading rather than on an event, so the two can
-				// never disagree about which side of ready we are on: a pool at full is success, anything being
-				// spent is warning. `CooldownHudController` carries the argument for why this is the shared
-				// rule rather than a third colour for a third kind of bar.
+				// **The colour rule carried over from the cooldown bar this row replaces.** Still filling is the
+				// busy tone and ready is the success tone, and the switch is on the reading rather than on an event,
+				// so the two can never disagree about which side of ready we are on: a pool at full is success,
+				// anything being spent is warning. That is the project's one rule for a fill/ready readout rather
+				// than a third colour for a third kind of bar.
 				BackgroundColor3: Fusion.Computed(scope, (use) =>
 					use(staminaUnits) >= SEGMENT_COUNT ? theme.colors.success : theme.colors.warning,
 				),
@@ -956,10 +956,10 @@ export class SuperHudController implements OnStart {
 /**
  * How much of the stamina pool is left, in segments — `SEGMENT_COUNT` for full, `0` for empty.
  *
- * **Moved here from `CooldownHudController`, which produced a fraction of the whole pool.** The arithmetic
- * is the same division; what changed is the unit it returns, because the readout is segmented rather than
- * continuous. A *level* and not a clock subtraction: `STAMINA_ATTRIBUTE` publishes the pool itself, so
- * nothing here reads a clock and nothing here can drift from one.
+ * **A count of segments rather than a fraction of the whole pool.** The arithmetic is one division either way;
+ * what this returns is a unit, because the readout is segmented rather than continuous. A *level* and not a
+ * clock subtraction: `STAMINA_ATTRIBUTE` publishes the pool itself, so nothing here reads a clock and nothing
+ * here can drift from one.
  *
  * **Frozen is displayed as frozen, for free.** During the recovery pause the server writes the same value,
  * so this returns the same number and the lights do not move — which is what the mechanic does, and what

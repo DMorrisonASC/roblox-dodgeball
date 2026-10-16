@@ -26,10 +26,20 @@ import { UserInputService } from "@rbxts/services";
  * documents about big-ui's palette, arrived at from the other side. Nothing here is a subscription for the
  * same reason: a client does not change platform mid-session.
  *
- * **What this is not: a capability test, and not a gate on anything but drawing.** Nothing in the game
- * branches on "can this machine touch", no control is *refused* on a platform, and every binding, remote and
- * rule behind the buttons is the same one the keyboard drives — the keys are simply not there to press. This
- * question is asked twice, by two HUDs deciding which of them is the useful thing to draw.
+ * **What this is not: a capability test for the game, and not a gate on a rule.** Nothing in the game
+ * refuses a control on a platform, and every binding, remote and rule behind the buttons is the same one the
+ * keyboard drives — the keys are simply not there to press. **Six callers ask it now, and no two of them are
+ * asking the same kind of question.** Two HUDs ask it to decide which of them is the useful thing to draw;
+ * `ShiftLock` asks it because a phone has no mouse to lock; `SprintController` asks it because a keyboard asks
+ * for the *whole* of its walk speed where a thumbstick asks for part of it; `ThrowController` asks it because a
+ * phone has no cursor to aim with, so the throw follows the camera's axis; and `TouchJoystickController` asks it
+ * because the engine's own touch movement is something only a touch device needs switched off — **the first
+ * caller to gate a *replacement***, and the one whose cost of getting the answer wrong is a character with no
+ * way to walk at all. **This paragraph used to say three**, and the count is worth re-reading rather than
+ * trusting: `ThrowController` had been asking for a while before anyone counted it, and that is what a number in
+ * a comment is worth. `SprintController` remains the caller that gates a **sensor** rather than a surface, and
+ * the one whose cost of getting the answer wrong is a sprint that never ends — see that controller for the
+ * argument.
  */
 export function isMobile(): boolean {
 	return UserInputService.TouchEnabled && !UserInputService.KeyboardEnabled;

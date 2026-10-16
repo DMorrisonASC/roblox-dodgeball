@@ -11,7 +11,7 @@ import {
 import { DodgeDirection } from "shared/dodge";
 
 /** Prints every clip a body changes into, with the rung it plays on. Silent while the clip stays the same. */
-const DEBUG = true;
+const DEBUG = false;
 
 /**
  * How long the change from one **cycle** to the next takes, in seconds.

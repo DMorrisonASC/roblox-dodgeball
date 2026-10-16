@@ -190,7 +190,7 @@ export class RoundTransitionController implements OnStart {
 	 * **The movement is a `RenderStepped` loop rather than a `TweenService` tween**, and that is the
 	 * codebase's answer rather than a preference — there is no `TweenService` anywhere in `src`, and the
 	 * thing it is used for elsewhere is a *reading of a clock* written per frame
-	 * (`CooldownHudController`'s bar fills), which is exactly what this is. **One loop for the whole
+	 * (`chargeEffect`'s charge, for one), which is exactly what this is. **One loop for the whole
 	 * grid**: every cell shares one `GROW_SECONDS` and one `REVEAL_SECONDS`, so the only thing that differs
 	 * between them is *when* they take their turn, and 240 separate tween objects would be 240 things to
 	 * keep in step with two numbers.
@@ -306,8 +306,8 @@ export class RoundTransitionController implements OnStart {
 		let revealElapsed = 0;
 		let stage: TransitionStage = "grow";
 
-		// **`RenderStepped` rather than `Heartbeat`**, and not for `CooldownHudController`'s reason (that
-		// one reads a clock, so its only cost is how smoothly it is sampled). This one *writes* the frame
+		// **`RenderStepped` rather than `Heartbeat`**, and not for the reason a clock-reading loop picks it (a
+		// read's only cost is how smoothly it is sampled). This one *writes* the frame
 		// that is about to be drawn, so running before the draw is the point: a heartbeat would land after
 		// the frame it describes and the movement would lag the camera by one frame for its whole life.
 		const connection = RunService.RenderStepped.Connect((delta) => {

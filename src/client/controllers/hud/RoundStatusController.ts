@@ -246,7 +246,7 @@ export class RoundStatusController implements OnStart {
 		 *
 		 * **A plain assignment rather than `Hydrate`, and that is the same trap in reverse.** `Card` builds its
 		 * frame and hands it back, so a reactive value merely *assigned* to one of its properties is never tracked
-		 * as a property at all — the trap `CooldownHudController` documents at its own container, and the reason
+		 * as a property at all — the rule `panelChrome.ts` states at its own length — and the reason
 		 * `Hydrate` was needed here. What `Hydrate` bought was the subscription; with a constant there is nothing to
 		 * subscribe to, and a `Computed` that can only ever return the one value is a subscription that cannot fire.
 		 *
