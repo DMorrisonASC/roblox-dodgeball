@@ -1,10 +1,38 @@
 # Handoff — roblox-dodgeball
 
 A guide for a fresh session. Written 2026-09-28 against a green build (`npm run build` → exit 0);
-**brought up to date 2026-10-14** against a green build with the rig-walk work in the working tree
-(the last commit is `9b47369`). Earlier revisions: 2026-10-11 at `9e2e971`, 2026-10-06 at `5bcc374`.
-Where this file and the source disagree, the source wins — and the tag count in §7 is deliberately
-not quoted here (it is `TAGS.md`'s own table, which is the count).
+**brought up to date 2026-10-16** against a green build with the mobile input surface and the GUI
+region rule in the tree (the last commit is `196a5b3`). Earlier revisions: 2026-10-14 at `9b47369`,
+2026-10-11 at `9e2e971`, 2026-10-06 at `5bcc374`. Where this file and the source disagree, the source
+wins — and the tag count in §7 is deliberately not quoted here (it is `TAGS.md`'s own table, which is
+the count).
+
+**What has landed since the 2026-10-14 revision, because a reader of the older sections is missing all of
+it.** Three things, and the third is the one that changed a *rule* rather than adding a feature:
+
+1. **Mobile input is this project's own, not the engine's** (`63af8e8`, `aa3a3ad`, `0325c9a`). A ring is
+   drawn in place of the engine's thumbstick — the engine's stick is hidden by a `UIScale` it cannot
+   revert and left listening underneath, and its movement mode is deliberately *not* set by either peer —
+   a five-button cluster is built around the engine's own jump button, the sprint is read off the body
+   rather than off the stick, the cooldown readout is deleted, and touch gets an aim sight because a
+   phone has no cursor. **The ring is drawn only while a finger is on it** (added 2026-10-16), so the
+   lower-left corner is empty until the player pushes there. **The one test behind all of it is
+   `client/platform.ts`'s `isMobile()`** — `TouchEnabled && !KeyboardEnabled` — and §9 now has the list of
+   what asks it and why.
+2. **The HUD's two top readouts share one column** (`2d40684`, `b74c364`). The score plate and the clock
+   used to be two offsets from the same origin in the same GUI, both of them `14`, so the plate was
+   drawn *across* the clock for the whole of every intermission. They are now two children of one
+   `UIListLayout` made by `screenGui.ts`'s `getHudColumn()`, where the order is `LayoutOrder`'s business
+   rather than two numbers that have to agree.
+3. **A `ScreenGui`'s region is now decided by a written rule, and on a mobile client the HUD insets**
+   (`196a5b3`, plus the fix made in this pass). `ui/screenGui.ts` holds the rule — *where does the number
+   that positions it come from?* then *which device is this?* — and all four writes across the two gated
+   accessors go through one `edgeAnchoredInsets()`. **The bug that fix also closes is worth knowing
+   before reading any older description of the HUD: `getHudScreenGui()` created the GUI with
+   `CoreUISafeInsets` and then set `None` on every later call, so the shared HUD GUI was `None` at
+   runtime on *every* device.** The desktop half of the new rule is therefore what all clients already
+   had, and the mobile half is a change. §9 has the rule and the five GUIs; §10 has the four-pass hunt
+   that produced the coordinate-space half of it.
 
 **What has landed since the 2026-10-11 revision, because a reader of the old sections is missing it.**
 Four things, and the fourth is the one this pass added a section for:
@@ -41,6 +69,15 @@ was.
 where this pass found them stale — the three corrections are marked in place (the deleted
 `services/ball/WindBurst.ts`, the two charge attributes, and the new open items). **§5, §6, §8, §9,
 §12, §13 and §14 were not re-derived this time** and stand as the 2026-10-11 revision left them.
+
+**What the 2026-10-16 pass re-read.** Every accessor and both branches of each in `ui/screenGui.ts`;
+`client/platform.ts`; `controllers/input/TouchJoystickController.ts` (the mount, the pad, the ring, the
+geometry, the inset read and the grab line); `controllers/camera/ShiftLock.ts`'s `applySight` and its
+caller; `ThrowController.getThrowDirection`; `controllers/hud/MobileControlsController.ts`'s class doc
+and `restyleEngineJump`; `controllers/CoreGuiController.ts`'s own account of which chrome is left on;
+and §4, §9 and §15 of this file. **§5, §6, §7, §8, §11, §12, §13, §14 and §16 were not re-read this
+time** and stand as they were — with one exception that matters: **anything in them that describes
+which region the HUD's `ScreenGui` draws in is superseded by the rule in §9.**
 
 **Read this file, then read the actual source.** This document describes *where* things are and *why*
 the shape is what it is; it deliberately does not reproduce code, because code copied into prose
@@ -264,6 +301,8 @@ src/client/
   aiming.ts / sprinting.ts / throwing.ts / cameraShake.ts   tiny Fusion Values shared between
                                  controllers; panels.ts is the same shape for session state
   roundZone.ts                   "in a round or in a practice zone" — the client's one rule
+  platform.ts                    `isMobile()` — the client's one device test and the only place that
+                                 decides it; seven callers, no two asking the same question (§9)
   IasTest.ts                     finished input test, DEBUG = false, meant to be deleted
   bodyAnimation.ts /             **the body effects and the one animation renderer, and they are plain
   hitVfx.ts / hitConfirm.ts /    modules started by hand from `main.client.ts`** — `startHitVfx()`,
@@ -275,15 +314,19 @@ src/client/
                                  via `roundHit`, the rest via `hitImpact`), the catch's shockwave, and
                                  the charge — a loop on the hand, the fire ball over 90 %, and the
                                  driver for the gust at the thrower's feet. See §17
-  ui/                            screenGui.ts (HudGui / SplashGui / TransitionGui), hudTheme.ts,
-                                 viewportConstraint.ts, hudToast.ts, elevation.ts, panelChrome.ts
+  ui/                            screenGui.ts (the five `ScreenGui`s and the written rule for which
+                                 one a thing belongs in — HudGui, SplashGui, TransitionGui,
+                                 ScreenSpaceGui, StickGui; **see §9 before moving anything visual**),
+                                 hudTheme.ts, viewportConstraint.ts, hudToast.ts, elevation.ts,
+                                 panelChrome.ts
   controllers/                   CoreGuiController.ts (shared core-GUI wiring)
   controllers/hud/               RoundStatus, RoundResult, RoundTransition, LoadingScreen,
                                  RespawnHud, CurrencyHud, SuperHud, StatsBillboard, ScoreHud,
                                  CooldownHud, ThrowStateToast, ControlsLegend, ModeVote,
                                  ArenaFreezeCountdown, Dock, Shop, Inventory, Theme
   controllers/input/             Action, Catch, Dodge, Throw, AimTarget, SuperAbility,
-                                 AlternativeMovement, Sprint
+                                 AlternativeMovement, Sprint, **TouchJoystickController** — the ring,
+                                 its thumb and the movement pad, touch clients only
   controllers/camera/ShiftLock.ts
   controllers/character/         LocomotionAnimationController, TeamRingController,
                                  RigAnimationController, AfterimageController
@@ -609,6 +652,47 @@ not allowed to write `Color3.fromRGB` itself. The shop was migrated onto that se
 `ui/panelChrome.ts`) by the economy work, so it no longer keeps a palette of its own; the geometry in
 `shared/config/shop.config.ts` is still the shop's.
 
+### Which `ScreenGui` a thing mounts into — read `ui/screenGui.ts` before adding anything visual
+
+`ui/screenGui.ts` owns every `ScreenGui` in the client *and* the rule for choosing one. The rule is two
+questions **asked in this order**; the full argument, with its two counter-examples, is at the top of
+that file and is worth reading rather than paraphrasing:
+
+1. **Where does the number that positions it come from?** A *screen* coordinate — `GetMouseLocation()`, an
+   `AbsolutePosition` read off something the engine owns — belongs in a `ScreenInsets.None` GUI. A *touch*
+   position (`InputObject.Position`) belongs in a `CoreUISafeInsets` one, because that is the space a touch
+   is reported in. **When this question answers, it wins** — and its failure is quiet, because the engine
+   hit-tests each `ScreenGui` in that GUI's own space, so a misplaced control still *presses* under the
+   finger and is only *drawn* wrong. **A working button is not a coordinate-space test.**
+2. **Which device is this?** Where question 1 is silent — a thing placed as a fraction of the region it is
+   in — the device decides: `CoreUISafeInsets` on a mobile client, `ScreenInsets.None` on a desktop. Where
+   the region's inset is zero the two answers are the same origin, so the split is unobservable, not wrong.
+
+| GUI | Region | Its tenants |
+|---|---|---|
+| `HudGui` — `getHudScreenGui()` | **gated**: safe on mobile, screen origin on desktop | every HUD panel, the two readouts in `getHudColumn()`, `ui/hudToast.ts` |
+| `StickGui` — `getStickScreenGui()` | **gated** (mobile in practice: nothing calls it on a desktop) | the joystick's ring, thumb and movement pad |
+| `ScreenSpaceGui` — `getScreenSpaceGui()` | `None` on both | the aim sight, the mobile button cluster — both placed with screen numbers |
+| `SplashGui` — `getSplashScreenGui()` | `None` on both | the join overlay — a cover must reach the screen's edges |
+| `TransitionGui` — `getTransitionScreenGui()` | `None` on both | the round-start wipe, for the splash's reason |
+
+**A `ScreenGui` of its own is earned only by something that has to draw where the HUD's contents must
+not** — those four things and nothing else. Wanting to sit lower down the screen is an **offset**, never a
+region.
+
+**The device test is `client/platform.ts`'s `isMobile()`** and there are seven callers, no two asking the
+same question: which control surface to draw (two HUDs), the shoulder lock, the sprint's share of the walk
+speed, the throw's axis, the engine's own touch movement, and the HUD's region. It is
+**`TouchEnabled && !KeyboardEnabled`** — so a phone with a keyboard in front of it reads as a desktop,
+which is deliberate and is the one client where the region gate does the wrong thing for a notched screen.
+
+**Two log lines are the diagnostics for all of this.** `[screenGui] <Name> created — ScreenInsets = …, …`
+prints once per GUI with the region and what decided it, plus a `[screenGui] … was found with …` line if a
+GUI is ever found in the wrong region. `[Joystick] inset — …` (from `TouchJoystickController`) prints
+`GetGuiInset()`'s two *measured* corners. **Read the joystick's line when you want the inset's size** —
+`GetGuiInset()` answers `0, 0` at the moment a client's controllers first run, which is why the
+`[screenGui]` line reports the decision and not a measurement.
+
 **The HUD inventory** (`src/client/controllers/hud/`), which is the list to check when the screen is
 wrong:
 
@@ -708,6 +792,44 @@ added to fix is a property of a *coloured* trail; the default's job is to read a
 the one value the head's white-out cannot take away from it. The reasoning is in
 `BALL_CONFIG.TRAIL_COLOR_LEADING`, which now argues for neutral rather than warm.
 
+### The joystick that was one inset away — four passes, and a button that worked
+
+Symptom, from the user: *"My custom joystick is stuck on left bottom. Can we make it dynamic?"* and then,
+once the base followed the finger, *"Output. Is there an offset for my thumb, wtf?"* — the base and the
+dot drawn **above and left of the thumb**, by the same constant for both.
+
+The ring and the dot were drawn in `getScreenSpaceGui()` (`ScreenInsets.None` — the screen's own origin)
+while the number placing them came from a touch, and **`InputObject.Position` is reported in the *safe
+region's* space** (the screen minus Roblox's topbar and the device's cutouts). Two spaces one inset apart,
+so something had to reconcile them — and four passes went into arguing about which direction, on which
+object.
+
+**What settled it was the user looking at their own screen**, which is the only evidence in the story that
+cannot be argued with. The reference is genuinely ambiguous — `InputObject.Position`'s page says the inset
+*"is accounted for in the position"*, which one reader takes as "already added" and the next as "expressed
+in that space" — and every log line the file printed had been telling the truth: the two numbers simply
+came from different origins.
+
+**The fix was to delete the degree of freedom rather than to get the arithmetic right.** The ring, its
+thumb and the movement pad all mount into `getStickScreenGui()`, a `ScreenGui` at `CoreUISafeInsets` —
+the region a touch is reported in — so a touch position, a ring `Position` and the pad's own
+`AbsolutePosition` are one kind of number, and `InputObject.Position` is used untouched in all four places
+that need it.
+
+**Why it took four passes to see: the engine does its own picking per `ScreenGui`.** It converts an input
+into each GUI's layout space before deciding what was hit, so `MobileControlsController`'s five buttons
+pressed perfectly while being handed numbers from another space — and that looked like proof that the two
+spaces were one space. **What breaks is only the comparison a script makes for itself.** A working button
+is not a coordinate-space test; the measurement, short of the player's own eyes, is `GetMouseLocation()`
+(documented screen-relative) against a touch in the same session, which is what the joystick's grab line
+now prints.
+
+**The same ambiguity had a second victim, and it was in the HUD's own doc.** `getHudScreenGui()` created
+the shared GUI with `CoreUISafeInsets` and then set `None` on every later call — thirteen call sites, so
+`None` always won, and the doc above it described a region no client was using. That is the class of bug a
+find-or-create is one careless `if` away from at all times; the 2026-10-16 pass answered it by routing all
+four writes through one function, and §9 has the rule the two of them now follow.
+
 ### Completed since the last handoff
 
 Roughly in commit order (`git log` from 2026-09-28):
@@ -748,6 +870,22 @@ Roughly in commit order (`git log` from 2026-09-28):
 - **`findModel` deleted from `shared/find.ts`.** Its only caller was `MapService.loadMap`, so the dead
   map rotation took it with it; `RoundService` is the only caller left in that file and it wants
   `findFolder`.
+- **The mobile input surface** (`63af8e8`, `aa3a3ad`, `0325c9a`; §9). The ring drawn in place of the
+  engine's thumbstick, the five-button cluster around the engine's own jump button, the sprint read off
+  the body rather than off the stick, an aim sight for a client with no cursor, and the cooldown readout
+  deleted. **The one fact to carry from it: the engine's stick is hidden and still listening**, so a
+  character that walks is not evidence about the ring — `TouchJoystickController`'s class doc has the
+  whole arrangement and the two logs that settled the movement mode. **And the ring is drawn only while a
+  finger is on it** (2026-10-16, at the user's request: *"I want my joystick to 'disappear' when not
+  actively being used"*), so **the empty lower-left corner in a screenshot is the expected resting state
+  rather than a missing stick**; a push anywhere in the movement zone brings it up under the thumb.
+- **The better HUD layout** (`2d40684`, `b74c364`). The score plate and the clock became two children of
+  one `UIListLayout` (`screenGui.ts`'s `getHudColumn()`), which is the fix for the plate being drawn
+  *across* the clock in every intermission — see that function's doc for the two `14`s that did it.
+- **The GUI region rule, and the create/find fix under it** (2026-10-16; §9, and the story above) —
+  `ui/screenGui.ts` gained the written two-question rule, one `edgeAnchoredInsets()` for all four gated
+  writes, a `[screenGui]` line per GUI created, and one clause corrected in `hitConfirm.ts`, whose comment
+  had asserted that the shared GUI is always inset.
 
 ### Completed since the 2026-10-11 revision (the four in the header, in detail)
 
@@ -989,9 +1127,14 @@ Carried over from the previous handoff where still live, plus what this revision
    is no "you don't own this" toast when a key is refused.
 3. **The shop GUI is wired, and `SHOP-PANEL-BRIEFING.md` is stale** (§12). The briefing documents the
    retired mock (five tabs, a box picture with odds) rendering almost empty; the current panel is two
-   tabs and asks the server for the chest, so the briefing is a record rather than a description. Two
-   of its claims are wrong against the source as it stands: §6 says `getHudScreenGui()` uses `None`
-   insets (it uses `CoreUISafeInsets`), and §7's layout arithmetic rests on that.
+   tabs and asks the server for the chest, so the briefing is a record rather than a description. Its
+   §6 claim that `getHudScreenGui()` uses `None` insets **was right about the runtime and wrong about the
+   source**: the create branch said `CoreUISafeInsets` and the find branch forced `None`, so `None` won
+   on every device — the previous revision's note that "it uses `CoreUISafeInsets`" was the wrong
+   correction, and the 2026-10-16 pass fixed the code instead. As of that pass the true answer is
+   **gated** — `None` on a desktop client, `CoreUISafeInsets` on a mobile one (§9) — the briefing has been
+   corrected to say so, and §7's arithmetic still rests on it: on a *desktop* client the panel's own
+   offsets are measured from the true screen top and Roblox's topbar overlaps the top of them.
 4. **Trails render; elimination effects do not.** `BallService` passes the equipped trail's colours to
    `BallTrail.attach`, so an owned trail is worn on the ball. Nothing reads
    `EQUIPPED_ELIMINATION_ATTRIBUTE`, so an owned elimination cosmetic is ownership-only still.
@@ -1018,8 +1161,10 @@ Carried over from the previous handoff where still live, plus what this revision
     a false thing. None is fixed here; each wants its own small pass, and they are grouped because they
     share that cause (a one-line comment correction, not a behaviour change):
     - **`src/client/ui/screenGui.ts`** — "nine HUD controllers parent into it … a decision nine files
-      depend on". Fourteen controllers call `getHudScreenGui()` now, plus `ui/hudToast.ts`. The count
-      has drifted more than once and is a candidate for a description rather than a number (§10).
+      depend on". **Fixed in this pass, and the sentence is now a description rather than a count** (§10).
+      For the record, re-derived from the source: **eleven** HUD controllers call `getHudScreenGui()`,
+      plus `ui/hudToast.ts` and this file's own `getHudColumn()` — thirteen call sites, not the fourteen
+      the previous pass recorded.
     - **`src/client/ui/panelChrome.ts`** — "there are nine builders that each do exactly what the shop's
       own private method did before". The file exports about twenty builders.
     - **`src/shared/config/economy.config.ts`** — "The launch milestone table — six achievements,
@@ -1073,6 +1218,35 @@ Carried over from the previous handoff where still live, plus what this revision
     because an unexplained report is worth more than a lost one, and because the shape to suspect is
     client-side: the charge effect is a `Heartbeat` connection plus a `CollectionService` walk over every
     `NPC_TAG` model, which is the newest thing on the client that runs at boot.
+
+**Found by the 2026-10-16 pass. None of them is a bug found in code; they are the consequences of the
+region gate above, and none has been looked at in Studio.**
+
+20. **On a desktop client the HUD's top row is now *deliberately* behind Roblox's chrome.** The gate gives
+    a desktop client a `ScreenInsets.None` shared GUI (§9), so `COLUMN_TOP_INSET` = 14 measures from the
+    true screen top while the topbar — which `CoreGuiController` deliberately leaves on — overlaps roughly
+    the first 36 px. **No desktop element moved** (the create/find bug made the shared GUI `None` on every
+    device already), so this is a decision rather than a regression; the two ways out are an offset
+    measured from the safe region instead of from the screen, or a different `ScreenInsets` on a desktop.
+    Which of those is wanted is the user's call.
+21. **On a mobile client the whole HUD insets for the first time.** Until this pass the shared GUI was
+    effectively `None` on every device, so the mobile HUD now moves down (and right) by the inset — 58 px
+    down on the device this project's log measured — and its top row stops being drawn under the topbar.
+    **This is the visible half of the change and it is unconfirmed**; the lines to read are the
+    `[screenGui]` ones (§9) and `[Joystick] inset — …` for the measured size.
+22. **`getStickScreenGui()`'s `None` on a desktop is dead code, on purpose.** Its only caller returns
+    before mounting anything when `!isMobile()`, so no desktop client creates that GUI at all; it follows
+    the gate so that "the GUIs placed as fractions of their region follow the device" stays one sentence.
+    **The trap to know**: `TouchJoystickController.applyGeometry` derives the base's home from
+    `GetGuiInset()`'s corners and then draws it from that GUI's own origin, so the two are in the same
+    space only while the GUI insets — a future caller on a non-mobile client would put the ring one inset
+    up and to the left of the corner its home is a fraction of. `platform.ts`'s "the platform does not
+    change mid-session" is what makes that impossible today.
+23. **The working tree carries an uncommitted stamina retune, and it is not this pass's.**
+    `CHARACTER_CONFIG.STAMINA_MAX_SECONDS` is `3 → 6` and `STAMINA_DRAIN_PER_SECOND` is `1 → 0.5` (twice
+    the pool, half the drain), which doubles the sprint's duration; the comments above those two constants
+    still describe the old pair and were left alone deliberately. Expect it when you diff the tree, and
+    do not "fix" it.
 
 ---
 
@@ -1242,8 +1416,8 @@ else. Each is a subscriber to a fact the server already publishes, and each owns
 
 | Document | What it is | State |
 |---|---|---|
-| `HANDOFF.md` | this file | current as of 2026-10-14, against a green build with the rig-walk work in the working tree (last commit `9b47369`). §17 is new; §5–§14 stand as the 2026-10-11 revision left them — see the scope paragraph at the top |
+| `HANDOFF.md` | this file | current as of **2026-10-16**, against a green build with the mobile input surface and the GUI region rule in the tree (last commit `196a5b3`). §9 gained the `ScreenGui` section, §10 gained the joystick story, §4 gained `platform.ts` and `TouchJoystickController`, §15 gained items 20–23. **§5–§8, §11–§14, §16 and §17 stand as the 2026-10-14 revision left them** — see the scope paragraphs at the top, and note that anything in them describing the shared GUI's region is superseded by §9 |
 | `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of 2026-10-14. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
-| `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **stale.** It documents the retired mock; the panel was rewritten onto the economy and `ui/panelChrome.ts`. Kept as a record of the mock, not of the current shop |
-| `README.md` | upstream roblox-ts boilerplate | says nothing about this project; ignore it |
+| `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **a record, not a description.** It documents the retired mock (five tabs, a box picture with odds); the panel was rewritten onto the economy and `ui/panelChrome.ts`, and a caveat banner at the top now says so. Kept because **§7's arithmetic still holds** (the panel really does collapse below ~700 px of viewport height) and §8's ruled-out list is still worth not re-treading. §5 and §6 were corrected on 2026-10-16 for the shared GUI's region, which is a *device* decision now (§9) |
+| `README.md` | upstream roblox-ts boilerplate — its entire content is the line `First commit` | says nothing about this project; ignore it |
 | `tools/pattern/` | the Node renderer and PNG output used to design the ring pattern (`shared/ringPattern.ts`) | one-off design tooling, not part of the build |

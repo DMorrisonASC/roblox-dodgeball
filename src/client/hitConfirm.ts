@@ -134,8 +134,9 @@ const TOAST_NAME = "HitConfirmToast";
  *
  * **Pixel-based rather than scale-based, because the thing it sits above is.** The stack's inset and the
  * column's offset are both pixels measured from the bottom edge, so the toast tracks the Super HUD at every
- * screen size without either being a fraction of the viewport. A `YScale` here would be a fraction of the
- * *safe* region rather than of the screen — see `screenGui.ts` on `ScreenInsets`.
+ * screen size without either being a fraction of the viewport. A `YScale` here would be a fraction of
+ * *whichever region the shared GUI is in* — the safe one on a mobile client, the screen's own origin on a
+ * desktop — rather than of the screen: see `screenGui.ts` on `ScreenInsets` and on the device gate.
  */
 const SLOT = 0;
 

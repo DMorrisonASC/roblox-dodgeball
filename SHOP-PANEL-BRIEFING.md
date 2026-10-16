@@ -1,5 +1,16 @@
 # Shop panel renders almost empty — briefing for a visual-capable model
 
+> **This is a record, not a description — the caveat was added 2026-10-16, and it is the first thing to
+> read.** The document was written against the shop as it stood when the panel rendered almost empty. The
+> panel has since been rebuilt (`ShopController` is the current mock: two tabs, the chest asked of the
+> server, the roster as Owned/Locked), so **§4-§6's mock and layout tree no longer match the source** and
+> the "five tabs / box picture" they describe is retired. What is still worth reading is **§7's arithmetic**
+> — a panel is `0.8 × viewport` and it provably collapses below about 700 px of viewport height — and
+> **§8's ruled-out list**. For the current state of the shop see `HANDOFF.md` §12, and for which
+> `ScreenGui` anything mounts into — including the region of the shared HUD GUI, which is now a *device*
+> decision — see §9 of that file. §5 and §6 below have been corrected for that one fact and for nothing
+> else.
+
 You are debugging a Roblox UI that **renders a dark panel with almost nothing inside it**. Two
 screenshots exist: one of the current (broken) render, one of the target design. If you can see
 images, ask for both — the open question is largely *"which parts are actually on screen"*, and that
@@ -111,7 +122,9 @@ Module-level helpers: `countOf`, `withThousands`, `rarityColorOf`, `gridWidth`, 
 
 ```
 PlayerGui
-└── HudGui                    ScreenGui  ResetOnSpawn = false, ScreenInsets = None
+└── HudGui                    ScreenGui  ResetOnSpawn = false, ScreenInsets = None on a desktop client
+                                         and CoreUISafeInsets on a mobile one — a device decision since
+                                         2026-10-16 (see §6)
     ├── ShopButton            big-ui Button → TextButton, 120×44
     │                         AutomaticSize cleared to None, Position (0,12,0,12), AnchorPoint (0,0)
     └── ShopPanel             Frame   Visible = isOpen (Fusion.Value(false)); ZIndex = 10
@@ -341,10 +354,17 @@ function Card(scope, props): Frame
   `GetDescendants()` and set each `GuiObject`), or do not raise the container at all.
   - This is why the first symptom was so confusing: the only contents visible were the ones
     overflowing *past* the container's edge, where its background was not above them.
-- **`ScreenGui.ScreenInsets`**: `None` = true screen top-left · `CoreUISafeInsets` = below the topbar ·
-  `TopbarSafeInsets` = topbar inset only · `DeviceSafeInsets` = notches/cutouts. This project's
-  `getHudScreenGui()` sets **`None`**, so `y = 0` is the *true* screen top and the topbar overlaps
-  anything within roughly its height (`GuiService.TopbarInset`) of it.
+- **`ScreenGui.ScreenInsets`**: `None` = true screen top-left · `CoreUISafeInsets` = below the topbar and
+  inside the device's cutouts · `TopbarSafeInsets` = topbar inset only · `DeviceSafeInsets` = notches/cutouts
+  only, no Roblox chrome. This project's `getHudScreenGui()` **is gated on the device since 2026-10-16**
+  (`ui/screenGui.ts`, and HANDOFF §9 for the rule): **`ScreenInsets.None` on a desktop client, so `y = 0` is
+  the *true* screen top and the topbar overlaps anything within roughly its height
+  (`GuiService.TopbarInset`) of it; `CoreUISafeInsets` on a mobile client, so `y = 0` is the first pixel
+  below Roblox's chrome there.** The document's original claim — that it sets `None`, full stop — was
+  accidentally right about the *runtime* on every device, because the accessor set `None` on every call
+  after the first; that bug is fixed, and the desktop half of the gate is what was always happening.
+  **The arithmetic in §7 is measured from the region, so on a desktop client it starts at the true screen
+  top and on a phone a topbar lower.**
 - `UIPadding` insets the parent's content area; a child's `Position` **scale** is relative to the
   *padded* region, not the full parent.
 - `string.len` **does not exist** in the typings (use `string.sub` / `string.format` / `.size()`).

@@ -35,9 +35,25 @@ const DEBUG = true;
  *   the engine's touch camera rotates the view on a drag that is not over a control, so a stick that grabbed a
  *   finger hanging in open space would spin the camera on every push. The pad is the sink for the whole region, and
  *   the ring stays a sink for its own circle.
- * - **The base returning to the corner on release**, so the idle stick is always in one known place and the freedom
- *   is *during* a push rather than between them. A base left where the last thumb ended would be a control that
- *   drifted around the screen, and its home is also how a player sees there is a stick there at all.
+ * - **The base returning to the corner on release**, so the base is in one known place whenever no finger is on the
+ *   screen. **The corner is not drawn** — see the paragraph after this list — and the write is kept because the
+ *   ring's own *circle* is the second grab test: a base left where the last thumb ended would leave that circle in
+ *   the wrong place for the next touch, which is the one case where that test is the load-bearing one.
+ *
+ * **And the stick is only on the screen while it is being used, which this paragraph exists for.** The ask was the
+ * user's, in as many words — *"I want my joystick to 'disappear' when not actively being used"* — and it is the
+ * engine's own behaviour rather than a new invention: the reference's description of `DynamicThumbstick`, quoted
+ * below, is "a virtual thumbstick that **appears** when they touch the lower portion of the screen", and this file
+ * is a drawing of that stick rather than an alternative to it, so the resting state is now the same kind of absence
+ * on both. The ring and the thumb are drawn from the grab that accepts a touch until the release that ends it, and
+ * not one frame either side. **The cost is the affordance, and it is real**: the ring in the corner was how a
+ * player could see that a stick existed and where it would appear, and with it gone the only answer to "where do I
+ * push" is the movement zone — a *region* rather than a target, which is what makes it usable without a picture of
+ * it, and which is why {@link MOVEMENT_ZONE_WIDTH_SCALE} and {@link MOVEMENT_ZONE_HEIGHT_SCALE} are the numbers to
+ * reach for if the stick ever proves hard to find. **What the hiding does not change is any of the input**: both
+ * grab tests are this file's own arithmetic rather than the engine's hit-test, so they read the same either way,
+ * and the pad that sinks those touches is invisible by `BackgroundTransparency` rather than by `Visible` precisely
+ * so that hiding a ring can never open a hole in it.
  *
  * **And where a touch is measured from is the single most expensive thing this file has ever got wrong — and the
  * fix was to stop having two possible answers rather than to pick the right one.**
@@ -276,6 +292,15 @@ export class TouchJoystickController implements OnStart {
 		ring.AutoButtonColor = false;
 		ring.BackgroundColor3 = theme.colors.trough;
 		ring.BackgroundTransparency = RING_FILL_TRANSPARENCY;
+		// **And it is built hidden, which is the whole of "the joystick disappears when it is not being used".** A
+		// resting stick is nothing on the screen now: the ring, and the thumb inside it, are drawn from the grab
+		// that accepts a touch until the release that ends it, and not one frame either side. The class doc carries
+		// the argument and the cost; the short version is that the engine's own dynamic stick behaves this way too,
+		// and that the grab is decided by this file's own arithmetic rather than by the engine's hit-test, so hiding
+		// the ring takes nothing away from the input. **`Visible` rather than a transparency**: an invisible
+		// `GuiObject` is skipped for drawing *and* for input, and {@link PAD_NAME} is the sink for these touches
+		// either way — which is the reason it is a `BackgroundTransparency = 1` button rather than a hidden one.
+		ring.Visible = false;
 		// **An offset position in screen pixels rather than the scale corner this used to be, because the ring's
 		// place is now a *point* rather than a corner of the screen.** `placeBase` is its one writer and writes the
 		// top-left of a circle whose centre is known, and the home position it returns to is derived in
@@ -513,11 +538,13 @@ export class TouchJoystickController implements OnStart {
 			ring.Size = UDim2.fromOffset(diameter, diameter);
 			thumb.Size = UDim2.fromOffset(diameter * THUMB_RADIUS_RATIO, diameter * THUMB_RADIUS_RATIO);
 
-			// **The one line that says the ring is up, and it exists because the mount's own line cannot.** At the
-			// mount there is usually no camera yet, so this function returns without a number and the ring is left
-			// at `0 × 0` until the camera arrives — which is one frame of nothing on most clients and every frame
-			// of nothing on a client that never got this far. Printing *here* rather than at the mount is what
-			// makes "the ring drew" a fact in a log rather than an inference from a size that reads as `0`. Once
+			// **The one line that says the ring has its size, and it exists because the mount's own line cannot.**
+			// At the mount there is usually no camera yet, so this function returns without a number and the ring is
+			// left at `0 × 0` until the camera arrives — which is one frame of nothing on most clients and every
+			// frame of nothing on a client that never got this far. Printing *here* rather than at the mount is what
+			// makes "the ring is ready" a fact in a log rather than an inference from a size that reads as `0` — and
+			// **a size is all the mount can be asked about now that the ring is not drawn until a finger is on it**:
+			// "was it drawn" is the grab line's question, not this one's. Once
 			// only, because a rotation re-derives the same number and would otherwise print on every layout pass.
 			if (DEBUG && !sized) {
 				sized = true;
@@ -584,6 +611,10 @@ export class TouchJoystickController implements OnStart {
 			// the size has changed and the base is under a thumb that has not moved, and yanking it to the corner
 			// would change the reading under a player who is doing nothing but turning their phone. Leaving it where
 			// the finger put it keeps the push continuous, and the *new* home is where the next release sends it.
+			// **This write is invisible now** — the ring is not drawn while no finger is down, so a rotation on an
+			// idle screen moves a circle nobody can see — **and it is kept because the home is the centre that
+			// `onRing` measures a corner touch against**, which is the one grab test that works in a frame where the
+			// pad has not been laid out yet. See `placeBase` and `release`.
 			if (touch === undefined) placeBase(homeX, homeY);
 		};
 
@@ -794,7 +825,7 @@ export class TouchJoystickController implements OnStart {
 		let humanoid = humanoidOf(player.Character);
 
 		/**
-		 * **Stops driving the body, returns the thumb, and reports the grab.**
+		 * **Stops driving the body, takes the stick off the screen, returns the thumb, and reports the grab.**
 		 *
 		 * The zero write is here rather than left to the render step below, and it is the one write in this file
 		 * that is not a repeat of the last one: with no touch tracked the render step writes nothing at all, so
@@ -814,10 +845,18 @@ export class TouchJoystickController implements OnStart {
 
 			// **And the base goes back to the corner**, which is the other half of the dynamic deal: the base is
 			// under the thumb for the length of a push and in one known place the rest of the time. Left where the
-			// thumb ended it would be a control that wandered — and, worse, one whose *idle* drawing no longer says
-			// where the next push starts, since a grab takes the base to the finger rather than the finger to the
-			// base. See `placeBase`.
+			// thumb ended it would be a control that wandered — and, because a grab takes the base to the finger
+			// rather than the finger to the base, one whose next corner touch would be measured against a circle in
+			// the wrong place. **The corner itself is not drawn any more** — the ring is hidden on the line below —
+			// so the write's justification is the grab test rather than the picture. See `placeBase`.
 			placeBase(homeX, homeY);
+
+			// **And the stick comes off the screen in the same frame the finger left it**, which is the other half
+			// of what the user asked for: *"I want my joystick to 'disappear' when not actively being used"*. The
+			// thumb goes with it, being a child of the ring, so one `Visible` covers both. It belongs beside the
+			// base's return rather than in the render step: that step writes nothing at all while no touch is
+			// tracked, and this is the function that knows the gesture ended.
+			ring.Visible = false;
 
 			// **And the ring goes back to dark with the thumb**, which is the same paint the mount wrote — so a
 			// release can never leave a white ring behind on a hand that is no longer on the stick. The latch inside
@@ -827,7 +866,8 @@ export class TouchJoystickController implements OnStart {
 			if (DEBUG) {
 				print(
 					`[Joystick] released — the push peaked at ${string.format("%.2f", peak)} this grab; the base is ` +
-						`back at ${string.format("%.0f", homeX)}, ${string.format("%.0f", homeY)}`,
+						`back at ${string.format("%.0f", homeX)}, ${string.format("%.0f", homeY)}; the ring is off the ` +
+						`screen again`,
 				);
 			}
 
@@ -930,6 +970,13 @@ export class TouchJoystickController implements OnStart {
 			touch = input;
 			peak = 0;
 
+			// **And the ring goes up here, at the finger** — this write and the release's own are the whole of the
+			// disappearing stick. It is written *before* `placeBase` so that the first frame the ring can be seen in
+			// is one at the thumb rather than one still down in the corner. Note what it does *not* affect: the grab
+			// tests above are this file's own arithmetic, not the engine's hit-test, so a hidden ring was still the
+			// circle a corner touch was measured against.
+			ring.Visible = true;
+
 			// **The base moves to the finger before anything is read from it**, and the order is the whole of the
 			// dynamic behaviour: `reachOf` measures from this new centre, so the first `track` below reports a push
 			// of exactly `0` — the player's travel starts from wherever their thumb already was, which is the one
@@ -956,7 +1003,9 @@ export class TouchJoystickController implements OnStart {
 				print(
 					`[Joystick] grabbed at ${string.format("%.0f", input.Position.X)}, ` +
 						`${string.format("%.0f", input.Position.Y)} — ring ${string.format("%.0f", radius * 2)}px, ` +
-						`base placed there (the touch began ${inZone ? "in the movement zone" : "on the ring"}); ` +
+						`base placed there and the ring is up (the touch began ${
+							inZone ? "in the movement zone" : "on the ring"
+						}); ` +
 						agreement,
 				);
 			}

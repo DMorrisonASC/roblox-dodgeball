@@ -43,7 +43,7 @@ export const CHARACTER_CONFIG = {
      * the two only mean anything together. See
      * {@link CHARACTER_CONFIG.STAMINA_DRAIN_PER_SECOND}.
      */
-    STAMINA_MAX_SECONDS: 3,
+    STAMINA_MAX_SECONDS: 6,
 
     /**
      * How fast the pool empties while sprinting, in seconds of stamina per second of sprinting.
@@ -53,7 +53,7 @@ export const CHARACTER_CONFIG = {
      * longer, which is the knob to reach for when the pool's *duration* reads wrong but its
      * *size* — the bar's proportions — reads right.
      */
-    STAMINA_DRAIN_PER_SECOND: 1,
+    STAMINA_DRAIN_PER_SECOND: 0.5,
 
     /**
      * How fast the pool refills once recovery has started, in seconds of stamina per second.
