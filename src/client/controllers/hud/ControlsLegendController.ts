@@ -2,6 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { RunService, UserInputService } from "@rbxts/services";
+import { isMobile } from "../../platform";
 import { makePressResponse } from "../../ui/elevation";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
@@ -226,6 +227,19 @@ export class ControlsLegendController implements OnStart {
 	}
 
 	private mount(): void {
+		// **The card is a keyboard's, so a machine without one does not get it.** Every row below names a key,
+		// and on a phone or a tablet that is a card explaining a control the player does not have — the chip
+		// for `E` would light for nobody, because `IsKeyDown` is asking about hardware that is not there.
+		// `MobileControlsController` is what mounts instead: a cluster of buttons that are their own labels,
+		// wired to the same controllers the keys drive. **The two are alternatives and never both**, and the
+		// test they share is `isMobile()` — see `client/platform.ts` for the read and for why `KeyboardEnabled`
+		// is half of it.
+		if (isMobile()) {
+			if (DEBUG) print("[HUD] controls legend skipped — no keyboard on this device");
+
+			return;
+		}
+
 		const scope = Fusion.scoped();
 
 		// The HUD's colours, read now rather than at module load: `configureTheme` has run by the

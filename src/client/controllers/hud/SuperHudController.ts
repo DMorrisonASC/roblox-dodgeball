@@ -1,7 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, RunService } from "@rbxts/services";
+import { Players, RunService, TweenService } from "@rbxts/services";
 import { AbilityKind, isAbilityKind } from "shared/ability";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { IMAGES_CONFIG } from "shared/config/images.config";
@@ -15,6 +15,7 @@ import { sessionHudVisible } from "../../panels";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
+import { SuperAbility } from "../input/SuperAbility";
 
 /** Prints once, when the stack is up — the line that says the controller ran at all. */
 const DEBUG = true;
@@ -64,7 +65,7 @@ const ICON_SIZE = 56;
  * trough-coloured square whose *opacity* was the signal — dimmed to 0.8 when nothing was armed, fully opaque
  * when something was — which is an opaque black square behind a transparent icon, and an opaque black square
  * is what a broken image looks like. It then carried no background at all, which fixed that and left the icon
- * floating with nothing to anchor it. It is now a faint plate that never changes: at 0.9 it says "this is
+ * floating with nothing to anchor it. It is now a faint plate that never changes: at 0.8 it says "this is
  * where the slot is" without ever claiming to be *filled*, and **the arrival of the art is the whole of the
  * answer** rather than one half of a pair.
  *
@@ -73,11 +74,50 @@ const ICON_SIZE = 56;
  * lost all look the same on the plate, which is the point of a background: it is furniture, and what changes
  * is the picture standing on it.
  *
- * **At 0.9 the world is visible through it**, which is worth knowing when reading the icon's own comment
+ * **The glow is the one thing that has changed about that, and it changed *around* the plate rather than on
+ * it.** A power waiting to be spent now draws a ring in the theme's accent — see {@link GLOW_THICKNESS} — and
+ * the ring is a `UIStroke` on the plate's edge, so the fill is still one colour at one opacity in every state
+ * and the paragraph above is still exactly true. What the ring adds is a signal about the *player's* situation
+ * rather than about the picture: it says "a press here would do something", which is a fact the picture alone
+ * cannot carry, because a MultiBall window draws a picture too and a press spends nothing of it.
+ *
+ * **At 0.8 the world is visible through it**, which is worth knowing when reading the icon's own comment
  * below: the plate is a tint rather than a backdrop, so the pixels the icon is drawn on are, for practical
  * purposes, whatever is behind the player.
  */
 const SLOT_TRANSPARENCY = 0.8;
+
+/**
+ * How much the slot grows when a power is spent, and how long the settle takes. **Placeholder — 1.15 / 0.22.**
+ *
+ * **The pop is a result rather than an acknowledgement, and the number is sized by that.** It plays when a
+ * power that was waiting goes away — the box's prize spent, or a dev's arm taken up by a ball — which is the
+ * only moment this client can honestly say something *happened*; a press that is refused changes nothing and
+ * pops nothing, which is the useful half of the same signal. `15%` is enough to read as a hit at arm's length
+ * without the icon leaving its slot, and a fifth of a second is long enough to see and short enough that a
+ * second press can follow it.
+ *
+ * **The snap is instant and the settle is the tween**, which is what makes it read as a pop rather than as a
+ * grow: the scale is written to {@link POP_SCALE} in one property write and tweened back to `1` with a `Back`
+ * easing, so the eye gets an arrival and a bounce rather than a ramp up and a ramp down. The alternative — a
+ * tween up and a second tween down — is two animations and a completion callback for the same pixels.
+ */
+const POP_SCALE = 1.15;
+const POP_SECONDS = 0.22;
+
+/**
+ * The glow: how thick the ring around the plate is, and how solid it is while a power is waiting.
+ * **Placeholder — 3 / 0.25.**
+ *
+ * **A `UIStroke` rather than an effect, because a stroke is the only *light* this client has.** A halo would
+ * want an image asset or a gradient, and there is none; what the HUD already knows how to do is draw a ring
+ * (`ScoreHudController`'s discs wear one in the plate's own colour, `addTile`'s chips wear a hairline), so the
+ * slot lit up is that same vocabulary turned up: a thicker ring, in the theme's accent, at a quarter of its
+ * opacity left. It is a *state* and not an animation — it is on for exactly as long as a press would do
+ * something — which is why nothing here eases.
+ */
+const GLOW_THICKNESS = 3;
+const GLOW_TRANSPARENCY = 0.25;
 
 /**
  * How long the *reveal* runs after a mystery box is collected, in seconds. **Placeholder — 3.**
@@ -166,6 +206,27 @@ const COUNT_GAP = 6;
 const MULTI_BALL_KIND: AbilityKind = "MultiBall";
 
 /**
+ * The power slot's two halves: **the frame the column places, and the pop that is played on the plate inside
+ * it.**
+ *
+ * **A record rather than just the frame, because the pop is something *somebody else* has to trigger.** The
+ * loop in `mount` is what knows when a power was spent — it is the only thing reading `MYSTERY_POWER_ATTRIBUTE`
+ * and `ARMED_ABILITY_ATTRIBUTE` — and the plate that moves is three levels down inside the builder. Handing
+ * back a closure rather than the plate keeps the animation's entire mechanism on one side of the boundary: the
+ * caller has a verb, not a `UIScale` it has to remember to tween.
+ *
+ * **Two fields and not a method**, because there is nothing else either piece has to do — `addTile`'s `Tile`
+ * record is the same shape for the same reason.
+ */
+interface PowerSlot {
+	/** What the stack's column places, and what the uses count is anchored to. */
+	readonly frame: Frame;
+
+	/** Plays the pop: a snap up to {@link POP_SCALE} and a settle back to rest. */
+	readonly pop: () => void;
+}
+
+/**
  * The power slot and the stamina pool, bottom centre: an icon with three lights under it.
  *
  * **One slot, not two, and the second box in the reference is gone.** The old readout had an "ability"
@@ -225,6 +286,20 @@ const MULTI_BALL_KIND: AbilityKind = "MultiBall";
  */
 @Controller()
 export class SuperHudController implements OnStart {
+	/**
+	 * **The power key's client half, injected rather than reached for, because the slot is now a second way to
+	 * press it.**
+	 *
+	 * The tap on the slot sends exactly what `3` sends — see {@link SuperAbility.usePower}, which is the whole
+	 * of both paths — so this controller needs the one object that owns that request. **It is the same
+	 * constructor injection the server's services use** (`DodgeService`, `BallSpawnerService`), and the direction
+	 * of the dependency is the reason it works: the HUD reads the ability controller, and the ability controller
+	 * neither knows nor cares that a HUD exists. **A pop pushed the other way — the input calling the HUD — would
+	 * be a cycle**, which is why the pop is driven by the attribute rather than by the press. See the loop's own
+	 * comment for that argument.
+	 */
+	constructor(private readonly abilities: SuperAbility) {}
+
 	public onStart(): void {
 		// Spawned rather than done inline: mounting waits for `PlayerGui`, and a controller's `onStart`
 		// is the wrong place to hold up the rest of the client's boot — as every HUD here does it.
@@ -265,12 +340,21 @@ export class SuperHudController implements OnStart {
 		// mistake `panels.ts` describes about its own pair of booleans.
 		const staminaUnits = Fusion.Value(scope, SEGMENT_COUNT);
 
-		const icon = this.addIconSlot(scope, theme, iconId, usesLeft);
+		/**
+		 * **Whether a power is waiting to be spent, and what the slot's two pieces of feedback are drawn from.**
+		 * One `Value<boolean>` rather than two subscriptions and rather than a second read of the two attributes
+		 * at the stroke: the loop already reads both of them every frame, so this is the loop's answer being
+		 * handed to the one thing that needs it. See the loop for the rule.
+		 */
+		const glowing = Fusion.Value(scope, false);
 
-		// Built *after* the slot and given it as a parent, because it is anchored to the slot's own left edge
-		// — see {@link addCount}. No value is kept: the label is wired to `usesLeft` and needs nothing further
-		// from this method, so a local holding it would be a name nothing reads.
-		this.addCount(scope, theme, icon, usesLeft);
+		const slot = this.addIconSlot(scope, theme, iconId, usesLeft, glowing);
+
+		// Built *after* the slot and given its frame as a parent, because it is anchored to that frame's left
+		// edge — see {@link addCount}. The *outer* frame rather than the plate inside it, deliberately: the
+		// count is drawn beside the slot and the plate is what pops, so a number anchored to the plate would
+		// jump with every pop.
+		this.addCount(scope, theme, slot.frame, usesLeft);
 
 		const segments = this.addSegments(scope, theme, staminaUnits);
 
@@ -302,8 +386,8 @@ export class SuperHudController implements OnStart {
 		layout.Padding = new UDim(0, STACK_GAP);
 		layout.Parent = column;
 
-		icon.LayoutOrder = 1;
-		icon.Parent = column;
+		slot.frame.LayoutOrder = 1;
+		slot.frame.Parent = column;
 
 		segments.LayoutOrder = 2;
 		segments.Parent = column;
@@ -338,7 +422,14 @@ export class SuperHudController implements OnStart {
 		//
 		// `flashStartedAt` is the flash's own clock, and `undefined` means "not flashing": one value for
 		// "nothing is happening", rather than a boolean beside a time that could disagree with it.
+		//
+		// **`previousWaiting` is the third, and it is the same kind of thing as the first.** Where `previousPrize`
+		// detects a power *arriving*, this detects one *going*, and the two edges are what the slot's two pieces
+		// of feedback hang off: the reveal celebrates the arrival, and the pop marks the departure. It is seeded
+		// from the same pre-loop read for the same reason — a client that mounts while a power is already waiting
+		// must not pop at the first frame, because nothing happened.
 		let previousPrize = this.prizeOf(player);
+		let previousWaiting = this.armedOf(player) !== undefined || previousPrize !== undefined;
 		let flashStartedAt: number | undefined = undefined;
 
 		// The one connection in this file, reading all three values. See the class doc for why this is a loop
@@ -349,8 +440,7 @@ export class SuperHudController implements OnStart {
 
 				// **The arm and the prize, validated the same way** — the rule `abilityOn` applies to a ball's
 				// mark, so a word this build does not name reads as *nothing* rather than as a broken image.
-				const arm = player.GetAttribute(ARMED_ABILITY_ATTRIBUTE);
-				const armed = typeIs(arm, "string") && isAbilityKind(arm) ? arm : undefined;
+				const armed = this.armedOf(player);
 				const prize = this.prizeOf(player);
 
 				// **The MultiBall window, read as a count rather than as "is one open".** Since the window lost
@@ -358,6 +448,25 @@ export class SuperHudController implements OnStart {
 				// this one read answers both questions the slot has about it: whether to draw the icon, and what
 				// number goes beside it.
 				const multiBall = this.multiBallLeftOf(player);
+
+				// **Whether a press would spend anything, which is the slot's one *state* rather than its picture.**
+				// The two things that answer yes are the two things `3` — or a tap on this slot — actually spends:
+				// the box's prize, and the dev shortcut's arm. **A running MultiBall window is deliberately not
+				// one of them**, because it is not something a press spends; the window is a supply that pays out
+				// on throws of its own accord.
+				//
+				// It drives the two pieces of feedback and both are *states* of it: the glow is on for exactly as
+				// long as a press would do something, and the pop fires on the frame the answer goes from yes to
+				// no. **That direction is the honest one for a pop** — a press that the server refuses (no ball in
+				// hand, no prize held, no round) changes no attribute, so it pops nothing, and what the player
+				// sees is that nothing happened. The tap itself is not the trigger for a reason that is structural
+				// rather than aesthetic: the ability controller would have to know this HUD exists, which is the
+				// cycle the constructor's doc points at.
+				const waiting = prize !== undefined || armed !== undefined;
+
+				if (!waiting && previousWaiting) slot.pop();
+				previousWaiting = waiting;
+				glowing.set(waiting);
 
 				// **The flash starts on the edge where a prize appears, and is abandoned when one goes away.**
 				// That is one rule with three cases: a prize arriving starts it, a prize staying starts nothing,
@@ -452,6 +561,27 @@ export class SuperHudController implements OnStart {
 	}
 
 	/**
+	 * Which power a dev's shortcut has waiting for the next ball this player takes up, or `undefined`.
+	 *
+	 * **The prize's read, one attribute over, and the two are deliberately the same three clauses.** `prizeOf`
+	 * says the shape out loud — read, validate, narrow, and a word this build does not name reads as *nothing*
+	 * rather than as a missing icon — and this is that shape again for the arm, which used to be written inline
+	 * in the loop. It is a method now because the loop is not its only reader: the seed that stops the slot
+	 * popping on the first frame reads it too, and a second copy of a three-clause test is a second chance to
+	 * fix only one of them — the sentence `prizeOf`'s own doc already makes about itself.
+	 *
+	 * **What the arm is, for a reader who has only met the prize**: a dev-only shortcut that marks the *next*
+	 * ball rather than the one in hand, written by `BallService.markHeldBall` and spent by `attachToHand`. It
+	 * shares one slot with the prize — "the power my next press uses" — and the prize wins, which is why the
+	 * loop's order below puts the prize first.
+	 */
+	private armedOf(player: Player): AbilityKind | undefined {
+		const armed = player.GetAttribute(ARMED_ABILITY_ATTRIBUTE);
+
+		return typeIs(armed, "string") && isAbilityKind(armed) ? armed : undefined;
+	}
+
+	/**
 	 * How many throws the player's MultiBall window has left, or `0` when there is no window.
 	 *
 	 * **`0` is both "no window" and "spent", which is one empty case rather than two** — the convention the
@@ -504,33 +634,92 @@ export class SuperHudController implements OnStart {
 	 * **It is `undefined` rather than `0` when there is nothing to count**, and that is the state the whole
 	 * label is drawn from — a `Value<number | undefined>` where `undefined` means "no count", so the number
 	 * and its visibility cannot disagree. See {@link addCount} for the rule that decides which powers get one.
+	 *
+	 * **It is now two frames, a ring and a tap, and each one has its own argument written where it is built.**
+	 * The pair of frames is what lets the **pop** happen without the column noticing ({@link PowerSlot.pop}); the
+	 * ring is the **glow**, drawn around the plate rather than on it so that the plate's own invariance above
+	 * survives ({@link GLOW_THICKNESS}); and the transparent button over the whole slot is the **tap**, which is
+	 * the mobile equivalent of the `3` key and the same request the key makes — see each one in the body below.
+	 * **What did not move is the sentence the rest of this doc is about**: the plate is still one colour at one
+	 * opacity in every state, and every pixel that has changed about this slot is either drawn around it or
+	 * drawn on top of it.
+	 *
+	 * **It returns the frame and its pop rather than just the frame**, which is `panelChrome.addTile`'s shape —
+	 * a builder handing back the pieces its caller has to reach — because the loop is what decides when a pop is
+	 * due, and the loop is in `mount` rather than in here.
 	 */
 	private addIconSlot(
 		scope: Fusion.Scope<unknown>,
 		theme: HudTheme,
 		iconId: Fusion.Value<string>,
 		usesLeft: Fusion.Value<number | undefined>,
-	): Frame {
-		const slot = Fusion.New(scope, "Frame")({
+		glowing: Fusion.Value<boolean>,
+	): PowerSlot {
+		// **Two frames where there was one, and the pop is the whole reason.** The column places a `UIListLayout`
+		// child, and what pops has to be something that is *not* laid out: a `UIScale` written onto the frame the
+		// layout positions is a size the layout may or may not take into account — whether a `UIListLayout` reads
+		// `AbsoluteSize` through a `UIScale` is not something the typings answer — and if it does, a pop would
+		// push the stamina lights down the screen and pull them back, twice per press. Nested, the answer is the
+		// same under either reading: the outer frame stays exactly `ICON_SIZE` and the plate inside it grows out
+		// of the space it occupies, drawn over its neighbours rather than moving them, because nothing here clips.
+		const frame = Fusion.New(scope, "Frame")({
 			Name: "PowerSlot",
 			Size: UDim2.fromOffset(ICON_SIZE, ICON_SIZE),
+			// Transparent, because it is a *slot in a layout* now rather than a surface: every pixel a player
+			// sees is the plate's, and the only other thing on it is the tap.
+			BackgroundTransparency: 1,
+		});
+
+		const plate = Fusion.New(scope, "Frame")({
+			Name: "Plate",
+			Parent: frame,
+			Size: new UDim2(1, 0, 1, 0),
 			BackgroundColor3: theme.colors.trough,
 			// One value in both states, and **not a `Computed`** — which is what makes "it stays" something
-			// this code says rather than something a reader has to check two branches to confirm.
+			// this code says rather than something a reader has to check two branches to confirm. **The glow did
+			// not change that**: the accent ring is drawn *around* the plate, so the plate is the same plate it
+			// always was in every state, which is the sentence the doc above is about.
 			BackgroundTransparency: SLOT_TRANSPARENCY,
 		});
 
+		// The scale the pop is played on. Created once, here, rather than written into the loop: a frame loop
+		// makes no instances, and this is the instance the one animation in this file moves.
+		const scale = Fusion.New(scope, "UIScale")({ Parent: plate, Scale: 1 });
+
 		// The corner the plate has always had, back with it: a hard-cornered square sitting above three
 		// rounded lights reads as a different kind of object rather than as the top of the same stack.
-		Fusion.New(scope, "UICorner")({ Parent: slot, CornerRadius: new UDim(0, CORNER_RADIUS) });
+		Fusion.New(scope, "UICorner")({ Parent: plate, CornerRadius: new UDim(0, CORNER_RADIUS) });
+
+		/**
+		 * **The glow: a ring in the accent, on while a power is waiting to be spent.**
+		 *
+		 * It hangs off the *plate* so it hugs the surface it is lighting — a `UIStroke` follows its parent's
+		 * shape and corner — and it is a ring rather than a haze or a tint because a ring is the only light this
+		 * client can draw without an asset. See {@link GLOW_THICKNESS} for that, and for the state it tracks.
+		 *
+		 * **A `Computed` over the loop's own `Value`, rather than a property the loop writes frame by frame.**
+		 * The loop already knows the answer, and this is the bridge the rest of the file uses for anything that
+		 * comes out of a frame — the same reason `iconId` is a `Value` rather than an id written straight onto
+		 * the label. It has to be passed in the props of a `New` to be tracked at all, which is why it is a
+		 * parameter rather than something this method reads: `Transparency` is a property of an instance Fusion
+		 * built, and the graph must know about it from the start.
+		 */
+		Fusion.New(scope, "UIStroke")({
+			Name: "Glow",
+			Parent: plate,
+			Color: theme.colors.accent,
+			Thickness: GLOW_THICKNESS,
+			ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
+			Transparency: Fusion.Computed(scope, (use) => (use(glowing) ? GLOW_TRANSPARENCY : 1)),
+		});
 
 		// **`BackgroundTransparency = 1` on the *image* is load-bearing, and it is the first thing to check if
 		// the art ever shows up inside a rectangle of its own colour.** An `ImageLabel` is a rectangle that
 		// *contains* a picture the way a `Frame` is a rectangle that contains nothing — the engine fills it
 		// with `BackgroundColor3` unless this line says otherwise, which is why the property exists on every
-		// `GuiObject` rather than on the ones that draw a fill. With the plate at 0.9 the icon is drawn on
-		// whatever is *behind* the player, and a fill here would put a second rectangle inside the slot that no
-		// amount of work on the asset could take away.
+		// `GuiObject` rather than on the ones that draw a fill. With the plate at {@link SLOT_TRANSPARENCY} the icon
+		// is drawn on whatever is *behind* the player, and a fill here would put a second rectangle inside the slot
+		// that no amount of work on the asset could take away.
 		const icon = Fusion.New(scope, "ImageLabel")({
 			Name: "Icon",
 			Size: new UDim2(1, 0, 1, 0),
@@ -540,9 +729,74 @@ export class SuperHudController implements OnStart {
 			ImageTransparency: Fusion.Computed(scope, (use) => (use(iconId) === "" ? 1 : 0)),
 		});
 
-		icon.Parent = slot;
+		icon.Parent = plate;
 
-		return slot;
+		/**
+		 * **The tap: the mobile equivalent of the `3` key, and the same request the key makes.**
+		 *
+		 * A transparent `TextButton` over the whole slot, created last so it is the topmost child — the
+		 * construction `panelChrome.addTile` uses for its tiles, and for the same reason: a `Frame` does not
+		 * raise `Activated`, so a tappable surface needs a button, and laying one *over* the slot leaves the
+		 * plate, the ring and the icon exactly as they are drawn. The icon is an `ImageLabel` and a `GuiObject`
+		 * that is not a button does not consume the press, so the whole slot is the target.
+		 *
+		 * **`Activated` rather than the `InputBegan`/`InputEnded` pair the cluster's buttons use**, and the
+		 * difference is real rather than stylistic: there is nothing to *hold* here. The power is spent by a
+		 * press, the throw that follows is what carries it, so one event — the one the engine fires for a finger,
+		 * a mouse and a gamepad's select alike — is the whole of what this needs. `AutoButtonColor` is off for the
+		 * reason every hand-built button in this project switches it off.
+		 *
+		 * **It is not gated to touch devices, deliberately.** The only thing that differs between a tap and a
+		 * click is which finger did it, and a HUD element that behaved differently because of *how* it was pressed
+		 * would be a second rule to keep in step; the desktop key is untouched either way. What that means in
+		 * practice is that a mouse click on the power icon now asks for the power the same way `3` does — an
+		 * addition rather than a change, and the one line to revisit if a desktop player should not have it.
+		 *
+		 * **A refused tap changes nothing, and nothing here can report one.** The server owns every reason to
+		 * refuse — no prize held, no ball in hand for a mark to land on, no round and no zone — and there is no
+		 * reply to wait for, which is why the slot's feedback is driven by the attribute rather than by this
+		 * call. See the loop for the edge it watches.
+		 */
+		const hit = Fusion.New(scope, "TextButton")({
+			Name: "Tap",
+			Parent: frame,
+			Size: new UDim2(1, 0, 1, 0),
+			BackgroundTransparency: 1,
+			Text: "",
+			AutoButtonColor: false,
+		});
+
+		scope.push(
+			hit.Activated.Connect(() => {
+				if (DEBUG) print("[HUD] power slot tapped — asking to use the power");
+
+				this.abilities.usePower();
+			}),
+		);
+
+		/**
+		 * The pop, as a closure the loop can call: **snap up, then settle.**
+		 *
+		 * The scale is written in one property write and then tweened back, which is what makes the motion read as
+		 * an arrival and a bounce rather than as a grow and a shrink — see {@link POP_SCALE} for why that is the
+		 * shape and what the number is sized against.
+		 *
+		 * **Any pop already running is cancelled first.** Two spends in quick succession should be two pops rather
+		 * than two tweens fighting over one property: only the most recent tween on a property is *guaranteed* to
+		 * win, and "guaranteed" is not the same as "the one I meant".
+		 */
+		const settle = new TweenInfo(POP_SECONDS, Enum.EasingStyle.Back, Enum.EasingDirection.Out);
+		let playing: Tween | undefined;
+
+		const pop = (): void => {
+			if (playing !== undefined) playing.Cancel();
+
+			scale.Scale = POP_SCALE;
+			playing = TweenService.Create(scale, settle, { Scale: 1 });
+			playing.Play();
+		};
+
+		return { frame: frame, pop: pop };
 	}
 
 	/**

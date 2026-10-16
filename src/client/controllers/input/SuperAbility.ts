@@ -144,9 +144,7 @@ export class SuperAbility implements OnStart {
 			// because which power a box rolled is not this machine's to report. See `useMysteryPower` in
 			// `shared/networking.ts`, and the handler of the same name in `BallService`.
 			if (key === POWER_KEY) {
-				if (DEBUG) print(`[Super] ${POWER_KEY.Name} — asking to use the mystery box's power`);
-
-				this.getPowerRemote().SendToServer();
+				this.usePower();
 
 				return;
 			}
@@ -210,6 +208,27 @@ export class SuperAbility implements OnStart {
 				}
 			}
 		}
+	}
+
+	/**
+	 * **Asks the server to use whatever power the mystery box gave this player** — the `3` key, and the tap on
+	 * the power slot, which are the same request.
+	 *
+	 * **What it sends is nothing, and that is the whole of the design.** The server reads the window it is
+	 * holding to find out which power to use, so a client cannot name one — not to be polite, but because which
+	 * power a box rolled is not this machine's to report. See `useMysteryPower` in `shared/networking.ts`, and
+	 * the handler of the same name in `BallService`, which is where the prize is spent.
+	 *
+	 * **The press is what is being reported, not a success.** Nothing comes back: a refusal — no prize held, no
+	 * ball in hand for a mark to land on, no round and no practice zone — is refused on the server and logged
+	 * there, and this client has no reply to watch for. That is why the slot's own feedback is driven by the
+	 * *state* rather than by this call: see `SuperHudController`, whose pop fires when a waiting power goes
+	 * away, which is the honest sign that something happened rather than the sign that somebody pressed.
+	 */
+	public usePower(): void {
+		if (DEBUG) print(`[Super] ${POWER_KEY.Name} — asking to use the mystery box's power`);
+
+		this.getPowerRemote().SendToServer();
 	}
 
 	private getMarkRemote(): ClientRemotes["markHeldBall"] {

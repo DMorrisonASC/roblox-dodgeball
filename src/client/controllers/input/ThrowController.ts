@@ -22,6 +22,7 @@ import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
 import { Trajectory } from "shared/Trajectory";
 import { aiming, predictedTargets } from "../../aiming";
 import { shakeCamera } from "../../cameraShake";
+import { isMobile } from "../../platform";
 import { chargeStartedAt } from "../../throwing";
 import { events } from "shared/networking";
 
@@ -305,31 +306,24 @@ export class ThrowController implements OnStart {
 			ACTION_NAME,
 			(_actionName, inputState) => {
 				if (inputState === Enum.UserInputState.Begin) {
-					// **A ball in the hand is what makes a press a throw.** The click is not shared with
-					// anything — `CatchController` binds `E`, `DodgeController` the right button — so this is
-					// not one half of a contest over a button, just the plain test for whether there is
-					// anything to throw. `Pass` rather than `Sink`, because a press that threw nothing has not
-					// been used up.
-					const character = this.player.Character;
-					if (!character?.FindFirstChild(BALL_NAME)) return Enum.ContextActionResult.Pass;
-
+					// **The already-charging guard stays here rather than moving into `beginHold`, because it is a
+					// fact about the *input* rather than about the throw.** One mouse button cannot produce a second
+					// `Begin`; the engine announcing a held button again can, and this callback is the thing that
+					// knows about announcements. The cluster's button keeps its own copy of the same guard, for the
+					// same reason and from the same place — one hold per press, whichever hand asked for it.
 					if (Fusion.peek(chargeStartedAt) !== undefined) return Enum.ContextActionResult.Sink;
 
-					this.beginCharge();
-					return Enum.ContextActionResult.Sink;
+					// **A ball in the hand is what makes a press a throw, and `Pass` rather than `Sink` because a
+					// press that threw nothing has not been used up.** That test is `beginHold`'s now — see it for
+					// why — and what is left here is the translation from its answer into the engine's.
+					return this.beginHold() ? Enum.ContextActionResult.Sink : Enum.ContextActionResult.Pass;
 				}
 
+				// The release, and the same translation: `endHold` answers whether there was anything to resolve,
+				// which is the question this binding's `Sink`/`Pass` was always really asking. A release with no
+				// charge is a press the game did not use, and it goes back to the engine like any other.
 				if (inputState === Enum.UserInputState.End) {
-					if (Fusion.peek(chargeStartedAt) === undefined) return Enum.ContextActionResult.Pass;
-
-					const character = this.player.Character;
-					if (!character) {
-						this.cancelCharge("the body went between the press and the release");
-						return Enum.ContextActionResult.Sink;
-					}
-
-					this.releaseThrow(character);
-					return Enum.ContextActionResult.Sink;
+					return this.endHold() ? Enum.ContextActionResult.Sink : Enum.ContextActionResult.Pass;
 				}
 
 				if (inputState === Enum.UserInputState.Cancel) {
@@ -377,13 +371,10 @@ export class ThrowController implements OnStart {
 			(_actionName, inputState) => {
 				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
 
-				this.curve = !this.curve;
-				if (DEBUG) print(`[Throw] curve ${this.curve ? "on" : "off"}`);
-
-				// Redrawn on this frame rather than the next, for the reason the press redraws: the curve is
-				// half of what the drawn shape *is*, and a frame of the old shape after a key press is a frame
-				// of a throw the player has already changed.
-				this.updateGuide();
+				// **The whole of the key is now `toggleCurve`, and the two comments that used to stand here are
+				// in it.** What is left in this callback is the one thing a binding knows and a button does not:
+				// which input state means "it was pressed".
+				this.toggleCurve();
 				return Enum.ContextActionResult.Sink;
 			},
 			false,
@@ -587,6 +578,79 @@ export class ThrowController implements OnStart {
 	 */
 	private chargeRequest(charge: number): ChargeRequest {
 		return { heading: this.getThrowDirection(), charge: charge, curve: this.curve };
+	}
+
+	/**
+	 * **The throw's three entry points, and they are public because a button on a phone is a second way to ask
+	 * for the same thing.** The mouse binding above and `MobileControlsController` are the two callers of every
+	 * one of them, and that is the whole point of the extraction: the cluster does not know what a charge is, it
+	 * presses the same button the mouse presses.
+	 *
+	 * **What moved out of the binding and what deliberately did not.** Every *rule* — that a ball in the hand is
+	 * what makes a press a throw, that a release with no body cancels rather than throws, that a bend key
+	 * redraws on its own frame — is here, in one copy, called by both. What stayed in the `ContextActionService`
+	 * callback is the part that is only true of a *binding*: which `UserInputState` means what, and the
+	 * already-charging guard on a repeated `Begin`, which is a fact about the engine re-announcing a held input
+	 * rather than a fact about the throw.
+	 *
+	 * **Nothing here yields and nothing here is asynchronous.** A press is a clock write, a sound and a redraw —
+	 * all of which the desktop path already did synchronously inside the callback.
+	 */
+	public beginHold(): boolean {
+		// **A ball in the hand is what makes a press a throw.** The click is not shared with anything —
+		// `CatchController` binds `E`, `DodgeController` the right button — so this is not one half of a contest
+		// over a button, just the plain test for whether there is anything to throw. Answered as a `boolean`
+		// rather than as a `ContextActionResult`, because the only caller that cares about the difference is the
+		// binding, and it is the one that knows what a `Pass` is.
+		const character = this.player.Character;
+		if (!character?.FindFirstChild(BALL_NAME)) return false;
+
+		this.beginCharge();
+		return true;
+	}
+
+	/**
+	 * **One end of the hold, whether it is a release or a cancellation.** Answers whether there was anything to
+	 * resolve, which is the same question the binding's `Sink`/`Pass` was asking.
+	 *
+	 * **A release always resolves the gesture one way or the other**, which is what stops the pair having an
+	 * exit that neither throws nor cancels: a body that went away between the press and the release cancels,
+	 * and a body that is still there throws. Nothing else is asked — the charge is not validated here against
+	 * anything the server owns, because a throw's refusals are the server's and this is the client saying what
+	 * the player did.
+	 */
+	public endHold(): boolean {
+		if (Fusion.peek(chargeStartedAt) === undefined) return false;
+
+		const character = this.player.Character;
+		if (!character) {
+			this.cancelCharge("the body went between the press and the release");
+			return true;
+		}
+
+		this.releaseThrow(character);
+		return true;
+	}
+
+	/**
+	 * **Whether the ball bends: the switch on top of the hold.** The `V` key's whole behaviour, and the cluster's
+	 * "Curve" button is the same call rather than a second toggle.
+	 *
+	 * **It can be flipped mid-hold, deliberately, and that is why the redraw is here rather than at the call
+	 * sites.** The preview is rebuilt every frame from the current charge *and* the current curve, so a toggle
+	 * during a hold is one more input that same loop reads: the arc redraws bending, there is no state to keep in
+	 * step, and nothing has to be undone if the player changes their mind. What is sent is read at the release,
+	 * so the shape thrown is the shape drawn on the last frame — see {@link releaseThrow}.
+	 *
+	 * **Redrawn on this frame rather than the next**, for the reason the press redraws: the curve is half of what
+	 * the drawn shape *is*, and a frame of the old shape after a button press is a frame of a throw the player has
+	 * already changed.
+	 */
+	public toggleCurve(): void {
+		this.curve = !this.curve;
+		if (DEBUG) print(`[Throw] curve ${this.curve ? "on" : "off"}`);
+
+		this.updateGuide();
 	}
 
 	/**
@@ -1053,10 +1117,42 @@ export class ThrowController implements OnStart {
 	 *
 	 * A camera that does not exist yet is not an error — there is no aim before there is one, and due north is
 	 * the same fallback the solve makes for a heading with no horizontal part at all.
+	 *
+	 * **On a device with no pointer the ray is the camera's own axis, and that is the mobile half of what
+	 * `ShiftLock` does on a desktop.** A desktop aims with the cursor — and the lock pins that cursor to the
+	 * middle of the screen for the whole of a round, which is what makes the throw go where the crosshair is.
+	 * **A touch device has no cursor to pin**: what `GetMouseLocation` reports there is the last finger down,
+	 * which during a throw is the thumb sitting on the Throw button in the bottom-right corner, so aiming
+	 * through it would put every mobile throw into the floor beside the player.
+	 *
+	 * **`LookVector` rather than a ray through half the viewport**, and the difference is a real one rather than
+	 * a shortcut: `ViewportPointToRay` takes its point in a space measured from below the topbar while the
+	 * viewport's own centre is a number about the screen, so "half of `ViewportSize`" is a point a few tens of
+	 * pixels *below* the optical axis — the same offset the desktop convention carries and nobody notices,
+	 * because there the cursor is drawn wherever the mouse is and the player aims at the cursor. On a phone
+	 * there is no cursor for the player to aim with; the sight is drawn by `ShiftLock` and it is drawn on the
+	 * axis, so the axis is what the throw must follow. It is also the one answer that does not depend on a
+	 * coordinate space at all.
+	 *
+	 * **One seam, so everything that aims follows it.** The arc, the landing marker, the guide and the hit glow
+	 * all read this one heading (see `AimTargetController`, which lights what *this* arc reaches rather than
+	 * casting its own ray), which is why the whole of the mobile fix is these lines rather than a parallel
+	 * aiming path. **What it is not: a change to the lock, or to where a throw can go** — the rule that turns
+	 * the lock on is `ShiftLock`'s and is already the same on both platforms.
+	 *
+	 * **The diagnostic in `reportMarkerJitter` reads the same two things and its premise is weaker here than it
+	 * looks.** It gates on the cursor being still on the argument that a still cursor is a still heading; on a
+	 * phone the heading comes from the camera, so a second finger dragging the camera moves the arc while the
+	 * thumb on the button holds still, and that report would call it jitter. It is scaffolding behind
+	 * `DEBUG_CONFIG.VERBOSE_LOGS` and is left alone rather than given a second gate for a platform.
 	 */
 	private getThrowDirection(): Vector3 {
 		const camera = Workspace.CurrentCamera;
 		if (!camera) return new Vector3(0, 0, -1);
+
+		// The camera's axis, unflattened — see the doc above for why a phone takes this and a desktop takes a
+		// point. Flattening is `planChargedThrow`'s business and is deliberately not done here on either path.
+		if (isMobile()) return camera.CFrame.LookVector;
 
 		const mouse = UserInputService.GetMouseLocation();
 

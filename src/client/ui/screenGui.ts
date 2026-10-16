@@ -334,6 +334,71 @@ export function getTransitionScreenGui(): ScreenGui {
 }
 
 /**
+ * The name of the GUI the client's **screen-space** elements are drawn in, and its rung on the
+ * `DisplayOrder` ladder.
+ *
+ * **Zero, which is the HUD's own rung, and that is a deliberate choice rather than a leftover.** Both
+ * of this GUI's contents belong on the HUD plane rather than on the covers' — the splash at `1` and the
+ * wipe at `2` must both be able to hide them, and a cover that left a crosshair or a ring of controls
+ * floating over it would be the one thing a full-screen cover is for — so the only rungs they can take
+ * are `0` and below. `0` is the one that needs no new rung and no argument in this file's ladder: the
+ * two GUIs at that value do not overlap (the HUD's elements are all anchored to an edge, and these are
+ * not anchored at all), so which of them paints first is unobservable.
+ */
+const SCREEN_SPACE_GUI_NAME = "ScreenSpaceGui";
+const SCREEN_SPACE_DISPLAY_ORDER = 0;
+
+/**
+ * The `ScreenGui` the client's screen-space elements mount into: the same find-or-create, and **`None`
+ * insets because these are the only elements in the client whose positions are screen positions.**
+ *
+ * **The reason is the one place where "region versus offset" catches something rather than explaining it.**
+ * `getHudScreenGui` puts its contents inside the safe area — below Roblox's topbar — and that is right for
+ * everything anchored to an edge, which is every element the HUD has ever had. A mark at `(0.5, 0.5)` of that
+ * region is not at the middle of the screen: it is half a topbar lower, which on a phone is a finger's width
+ * and is exactly the amount by which a crosshair would be off the line the throw goes down. The alternative
+ * was to place the mark in the shared GUI by subtracting the inset — arithmetic that has to be redone on every
+ * viewport change and that is only right while the shared GUI's own `ScreenInsets` is what you think it is.
+ * A GUI that does not inset has no such question, so anything positioned in screen coordinates has one.
+ *
+ * **Its second tenant is what turned "the sight's GUI" into "the screen-space GUI"**, and the shared reason is
+ * worth stating once rather than twice: the mobile control ring has to sit *on the engine's jump button*, which
+ * is a screen-space object in the engine's own `TouchGui`. Every number that can describe where that button is
+ * — `AbsolutePosition`, `AbsoluteSize` — is in screen pixels, so the ring can only be placed with them in a GUI
+ * that starts at the screen's own origin. Both tenants are here for the same reason and neither could be
+ * anywhere else, which is the difference between one shared GUI and one GUI per feature.
+ *
+ * **A `ScreenGui` for two small elements is not the "GUI per feature" that `getHudScreenGui` argues against.**
+ * That argument is about *panels* — corners, cards, a window's worth of contents — and these are instances with
+ * fixed positions that must be outside the safe region; there is no smaller home for them, since `ScreenInsets`
+ * belongs to the `ScreenGui` and a child cannot opt out of its parent's.
+ *
+ * **And it is not the fourth GUI this file deleted, which was the round board's.** That one existed to give a
+ * *panel* insets of its own — a thing that wanted the safe region and got three different answers — where this
+ * is the opposite case: elements that must *not* be inset. Same mechanism, opposite requirement.
+ */
+export function getScreenSpaceGui(): ScreenGui {
+	const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
+
+	const existing = playerGui.FindFirstChild(SCREEN_SPACE_GUI_NAME);
+	if (existing?.IsA("ScreenGui")) {
+		existing.ResetOnSpawn = false;
+		existing.ScreenInsets = Enum.ScreenInsets.None;
+		existing.DisplayOrder = SCREEN_SPACE_DISPLAY_ORDER;
+		return existing;
+	}
+
+	const gui = new Instance("ScreenGui");
+	gui.Name = SCREEN_SPACE_GUI_NAME;
+	gui.ResetOnSpawn = false;
+	gui.ScreenInsets = Enum.ScreenInsets.None;
+	gui.DisplayOrder = SCREEN_SPACE_DISPLAY_ORDER;
+	gui.Parent = playerGui;
+
+	return gui;
+}
+
+/**
  * **There was a fourth GUI here — a `ScreenGui` of the round status board's own — and it is deleted with its
  * only caller.** It existed to give one panel a `ScreenInsets` of its own, and three values were tried across
  * three revisions. All three failed the same way, and that is the thing worth keeping:

@@ -14,6 +14,8 @@ import { SHIFT_LOCK_CONFIG } from "shared/config/shiftLock.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
+import { isMobile } from "../../platform";
+import { getScreenSpaceGui } from "../../ui/screenGui";
 import { inTaggedZone, isParticipant } from "../../roundZone";
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. */
@@ -24,6 +26,17 @@ const INTERMISSION = "Intermission";
 
 /** Prints the lock's transitions. See `shared/config/debug.config.ts` — they are behind the gate too. */
 const DEBUG = true;
+
+/**
+ * The sight's size, in pixels. **Placeholder — 44.**
+ *
+ * **About the size of the cursor it stands in for, and not tied to it.** A mouse icon is drawn by the operating
+ * system at whatever size that system gives a pointer, so there is no number in this project that matches it —
+ * this is the size a crosshair reads at on a phone screen, big enough to be a mark and small enough not to cover
+ * the thing being aimed at. It is a fixed square rather than a fraction of the viewport, because that is what a
+ * cursor is: one bitmap of one size, in the middle of the screen, on every device.
+ */
+const SIGHT_SIZE = 44;
 
 /** The phase the round folder is publishing, or nothing while it has not published one yet. */
 function phaseOf(status: Instance): string | undefined {
@@ -140,6 +153,13 @@ function cameraSettings(): UserGameSettings | undefined {
  * arrived wearing rather than a forced default: there is nothing to undo, and the capture is what lets a
  * release hand back a cursor somebody else set instead of inventing one.
  *
+ * **And the cursor is only half of the sight, which is the thing that was missing on a phone.**
+ * `MouseIcon`/`MouseBehavior` describe a pointer, and a touch device has none: its throw is aimed along the
+ * camera's own axis (`ThrowController.getThrowDirection`) and nothing was drawing where that pointed. So the
+ * lock draws the same crosshair — the same {@link SHIFT_LOCK_CONFIG.LOCKED_CURSOR} id — on the screen itself,
+ * on the platforms with no cursor to set. See {@link applySight}, which is a third call in `applyState`
+ * beside {@link writeSettings} and {@link applyOffset} rather than part of either.
+ *
  * **The camera offset is per *character*, and only that.** `RotationType` and `MouseBehavior` belong to
  * the user, so they are written once and hold across every respawn; the offset lives on the `Humanoid`,
  * so it has to be put back on each new body — see {@link watchCharacter}. The lock itself deliberately
@@ -189,8 +209,20 @@ export class ShiftLock implements OnStart {
 	private restingCursorEnabled?: boolean;
 
 	/**
-	 * What the round says: **the local player is in the round being played** — on a side, and a round on.
+	 * The sight the lock draws on a touch device, or nothing before the first lock.
 	 *
+	 * **A scope of its own, because this element's life is not the file's.** Everything else here is a
+	 * subscription made once at {@link mount} and handed to the mount's scope; the sight cannot be, because it
+	 * is created on the first lock rather than at mount (see {@link applySight}) — so it is made inside
+	 * `sightScope`, which exists for exactly one element and is never torn down. The alternative was to build it
+	 * at mount unconditionally, which would put an invisible `ImageLabel` in the GUI of every desktop client for
+	 * the whole session.
+	 */
+	private readonly sightScope = Fusion.scoped();
+	private sight?: ImageLabel;
+
+	/**
+	 * What the round says: **the local player is in the round being played** — on a side, and a round on.
 	 * **Both halves, and this is a narrowing of what it used to mean.** The field was `phaseLocked`, set
 	 * from the phase alone, so the camera was held for *everybody* in the server while a round ran —
 	 * including a player in the lobby who had never opted in and was not in the round, not teleported by
@@ -638,7 +670,64 @@ export class ShiftLock implements OnStart {
 		}
 
 		this.writeSettings(on);
+		this.applySight(on);
 		this.applyOffset();
+	}
+
+	/**
+	 * **The sight: the crosshair, drawn on the screen itself, for the platform that has no cursor to put it in.**
+	 *
+	 * **The desktop's third effect and the mobile's second, and they are the same effect reached two ways.** On a
+	 * desktop the cursor *is* the crosshair: `MouseIcon` is set to {@link SHIFT_LOCK_CONFIG.LOCKED_CURSOR} and
+	 * `MouseBehavior.LockCenter` holds it in the middle of the screen, which is what makes the aim read — see
+	 * `ThrowController.getThrowDirection`, which shoots its ray through that pixel. **A phone has neither a
+	 * cursor nor a place to put one**, so the lock had no visible marker on it at all: the camera moved to the
+	 * shoulder and the throw started going wherever the middle of the screen pointed, with nothing on the screen
+	 * saying where that was. This draws the same image at the same place, so the two platforms say the same thing
+	 * about where a throw will go.
+	 *
+	 * **The same `LOCKED_CURSOR` id rather than a second asset**, deliberately: it is the art of the sight, and a
+	 * second id here would be two pictures to keep looking alike — and the one place a player compares the two
+	 * platforms is this shape in the middle of their screen.
+	 *
+	 * **It is a sibling of the HUD rather than part of one.** The lock is not a HUD: it is a camera rule that
+	 * three readouts happen to move with, and it is on for players who have no HUD element in mind at all. So the
+	 * aim marker belongs to the thing that owns the aim, and any HUD that ever wants to draw over it can — the
+	 * rung is below the dock's.
+	 *
+	 * **Nothing says "touch device" here except the one test**, which is the same `isMobile()` the two control
+	 * surfaces use: a client with a keyboard has a cursor, and drawing a second crosshair on top of it would be
+	 * the same mark twice.
+	 */
+	private applySight(on: boolean): void {
+		if (!isMobile()) return;
+
+		if (this.sight === undefined) {
+			// Built on the first lock rather than at mount, so a client that never locks never makes an instance.
+			// **Into its own GUI**, and that is what makes the position below two scale numbers rather than
+			// arithmetic: a `ScreenGui` with `None` insets has the screen for its coordinate space, so
+			// `(0.5, 0.5)` *is* the middle of the screen — and the middle of the screen is where the throw goes,
+			// because a phone aims along the camera's own axis. See `getScreenSpaceGui`, which carries the
+			// argument for the GUI this lives in and for why the shared one cannot do this job.
+			const sight = Fusion.New(this.sightScope, "ImageLabel")({
+				Name: "AimSight",
+				Image: SHIFT_LOCK_CONFIG.LOCKED_CURSOR,
+				BackgroundTransparency: 1,
+				// A fixed square at the middle of the screen: the shape the desktop's cursor has, which is a
+				// bitmap of one size rather than a thing that scales with the viewport.
+				Size: UDim2.fromOffset(SIGHT_SIZE, SIGHT_SIZE),
+				AnchorPoint: new Vector2(0.5, 0.5),
+				Position: UDim2.fromScale(0.5, 0.5),
+				// **`Visible` is not a `Computed` and has no `Value` behind it**, because this controller *is* the
+				// state: `applyState` is the only writer of the lock and it hands the answer in on its way past.
+			});
+
+			sight.Parent = getScreenSpaceGui();
+			this.sight = sight;
+		}
+
+		this.sight.Visible = on;
+		if (DEBUG) print(`[ShiftLock] sight ${on ? "up" : "down"}`);
 	}
 
 	/**

@@ -158,6 +158,25 @@ export class SprintController implements OnStart {
 	}
 
 	/**
+	 * **The mobile sprint, driven by the movement stick's own magnitude rather than by a button.** The mobile
+	 * cluster calls this with `true` when the stick is pushed past its start threshold and `false` when it is eased
+	 * back below the lower one, and it lands on the same `setHolding` the keys reach — so the remote, the published
+	 * `sprinting` value and the guard that keeps a repeat announcement from becoming a stream of calls are all
+	 * shared rather than reimplemented. **There was a sprint button on that cluster and it is deleted**: a phone
+	 * player's thumb is already on the stick, so the push is the mode. See `MobileControlsController.watchStick`
+	 * for the loop and the two thresholds.
+	 *
+	 * **The two inputs cannot both be live, and that is the platform gate's doing rather than a rule here.**
+	 * The cluster only mounts where there is no keyboard at all (`isMobile()`), so on any device that can press
+	 * a shift key the cluster is not on screen. This method folds the keys in anyway — one `||`, and the answer
+	 * stays right on the day a keyboard is attached to a device that already had the cluster up, which is the
+	 * one case where a release here could otherwise stop a sprint somebody is still holding with a key.
+	 */
+	public holdSprint(active: boolean): void {
+		this.setHolding(active || this.heldKeys.size() > 0);
+	}
+
+	/**
 	 * Reports the key if that is news.
 	 *
 	 * The guard is not tidiness: it is what stops a held key's repeat announcements from becoming a

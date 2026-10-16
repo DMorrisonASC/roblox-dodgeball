@@ -39,7 +39,7 @@ export class ActionController implements OnStart {
 			(_actionName, inputState) => {
 				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
 
-				this.requestDrop();
+				this.drop();
 				return Enum.ContextActionResult.Sink;
 			},
 			false,
@@ -53,8 +53,12 @@ export class ActionController implements OnStart {
 		if (DEBUG) print(`[Action] 1 bound (drop)`);
 	}
 
-	/** Asks the server to drop the ball in hand. */
-	private requestDrop(): void {
+	/**
+	 * Asks the server to drop the ball in hand. **Public because the cluster's "Drop" button is the same
+	 * request**: the `1` key's callback calls this and so does the button, so what a press means and what goes
+	 * on the wire are one implementation rather than two that have to agree.
+	 */
+	public drop(): void {
 		if (DEBUG) print(`[Action] asked to drop`);
 
 		this.getDropRemote().SendToServer();

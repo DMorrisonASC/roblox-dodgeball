@@ -71,7 +71,8 @@
 		"roblox-dodgeball:out/server/services/actions/DuckService@DuckService": "server/services/actions/DuckService@DuckService",
 		"roblox-dodgeball:out/server/services/actions/DuckService@DuckState": "server/services/actions/DuckService@DuckState",
 		"roblox-dodgeball:out/client/controllers/input/DuckController@DuckController": "client/controllers/input/DuckController@DuckController",
-		"roblox-dodgeball:out/client/controllers/camera/CameraZoomController@CameraZoomController": "client/controllers/camera/CameraZoomController@CameraZoomController"
+		"roblox-dodgeball:out/client/controllers/camera/CameraZoomController@CameraZoomController": "client/controllers/camera/CameraZoomController@CameraZoomController",
+		"roblox-dodgeball:out/client/controllers/hud/MobileControlsController@MobileControlsController": "client/controllers/hud/MobileControlsController@MobileControlsController"
 	},
 	"metadata": {}
 }

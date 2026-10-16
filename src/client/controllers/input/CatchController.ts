@@ -51,36 +51,13 @@ export class CatchController implements OnStart {
 			(_actionName, inputState) => {
 				if (inputState !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
 
-				// **A press while a throw is being held cancels that throw, and the press is spent doing
-				// it.** One key, two meanings, and the rule between them is what the hand is doing: a throw
-				// in progress is a decision the player is still making, and `E` is how they take it back. The
-				// catch that the press might otherwise have been does not go out, so catching takes a press
-				// of its own.
-				//
-				// **This is a write to the charge's state, not a request to cancel it**, which is the part
-				// worth reading twice. A player who presses `E` *instead of* letting go — the obvious way to
-				// use this — can put the press and the release inside one frame, and anything the throw
-				// collected later would have let the ball go off in the gap. Clearing the state means the
-				// release handler, whenever it runs, finds nothing to throw. Nothing else is needed: a charge
-				// is a start time, a live preview and a sound, all three of which follow the one value — so
-				// `ThrowController`'s frame loop takes the arc, the markers and the charge sound down on its
-				// own next pass, which is what makes this file the only one that has to know the `E` cancel
-				// exists at all.
-				if (Fusion.peek(chargeStartedAt) !== undefined) {
-					chargeStartedAt.set(undefined);
-					if (DEBUG) print("[Catch] E cancelled the throw");
-					return Enum.ContextActionResult.Sink;
-				}
-
-				// **`Sink` when the ask went out, `Pass` when it did not.** A refusal is not a claim on the
-				// key: nothing here acted on the press, and `E` is bound to nothing else in this game, so
-				// handing it on costs nothing and stops this action swallowing input it did not use.
-				//
-				// **Cancelling a throw does not free the hand**, so the press right after a cancel is usually
-				// refused here: the ball stayed where it was, and a catch needs an empty hand. That rule is
-				// about catching and not about this key — but it is worth knowing before reading the refusal
-				// line as a bug, which is what it looks like from the outside.
-				return this.requestCatch() ? Enum.ContextActionResult.Sink : Enum.ContextActionResult.Pass;
+				// **The press itself is `press`, and it is public because the catch is also a button.** The cluster
+				// on a touch device calls the same method this callback does — which is what makes the two inputs
+				// one behaviour rather than two that have to be kept in step, and why everything about what `E`
+				// *means* (including its second meaning, cancelling a hold) lives in there rather than here. `Sink`
+				// when the press was used, `Pass` when it was not; see `requestCatch` for why a refusal is not a
+				// claim on the key.
+				return this.press() ? Enum.ContextActionResult.Sink : Enum.ContextActionResult.Pass;
 			},
 			false,
 			// One input, one handler, one remote.
@@ -100,6 +77,39 @@ export class CatchController implements OnStart {
 		// prints `asking to catch`; one that does not prints nothing, and that is the
 		// whole answer.
 		if (DEBUG) print(`[Catch] E bound`);
+	}
+
+	/**
+	 * **The press, and the whole of what `E` means** — the key's callback calls this, and so does the catch
+	 * button on a touch device. Answers whether the press was used, which is the question the callback turns
+	 * into `Sink` or `Pass`.
+	 *
+	 * **The two meanings of one press, and the rule between them is what the hand is doing.** A throw in
+	 * progress is a decision the player is still making, and a press is how they take it back; the catch that
+	 * the press might otherwise have been does not go out, so catching takes a press of its own.
+	 *
+	 * **The cancel is a write to the charge's state, not a request to cancel it**, which is the part worth
+	 * reading twice. A player who presses the button *instead of* letting go — the obvious way to use this —
+	 * can put the press and the release inside one frame, and anything the throw collected later would have let
+	 * the ball go off in the gap. Clearing the state means the release handler, whenever it runs, finds nothing
+	 * to throw. Nothing else is needed: a charge is a start time, a live preview and a sound, all three of which
+	 * follow the one value — so `ThrowController`'s frame loop takes the arc, the markers and the charge sound
+	 * down on its own next pass, which is what makes this file the only one that has to know the cancel exists
+	 * at all.
+	 *
+	 * **And cancelling a throw does not free the hand**, so the press right after a cancel is usually refused
+	 * here: the ball stayed where it was, and a catch needs an empty hand. That rule is about catching and not
+	 * about this press — but it is worth knowing before reading the refusal line as a bug, which is what it
+	 * looks like from the outside.
+	 */
+	public press(): boolean {
+		if (Fusion.peek(chargeStartedAt) !== undefined) {
+			chargeStartedAt.set(undefined);
+			if (DEBUG) print("[Catch] press cancelled the throw");
+			return true;
+		}
+
+		return this.requestCatch();
 	}
 
 	/**
