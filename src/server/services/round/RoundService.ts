@@ -308,6 +308,20 @@ export class RoundService implements OnStart {
     private admittedRevision = -1;
 
     /**
+     * The players whose admission into this round is **in flight** — covered, and about to be placed.
+     *
+     * **A set rather than one more tick of state on the player, and the cover is why it has to exist.** An
+     * admission now waits `TRANSITION_COVER_SECONDS` for that player's own grid to close before the body is
+     * moved, and the loop that admits keeps running: another player opting in during that wait bumps the
+     * roster revision, `admitMidRoundJoins` walks the roster again, and the player still standing under a
+     * cover has **no `TEAM_ATTRIBUTE` yet** — so `teams.has(player)` says "not admitted" and they would be
+     * covered, moved and printed a second time. This is the record that says "already on their way in".
+     *
+     * Cleared the moment the admission lands or fails, so it never outlives the second it describes.
+     */
+    private readonly admitting = new Set<Player>();
+
+    /**
      * The mode a match is waiting to open on.
      *
      * **The request and the flag are one field on purpose.** "Has a match been asked for" and "which mode
@@ -835,27 +849,76 @@ export class RoundService implements OnStart {
 
         for (const [player, side] of this.matches.roster()) {
             if (this.teams.has(player)) continue;
+            if (this.admitting.has(player)) continue;
             if (this.isPracticePlayer(player)) continue;
 
-            this.abilities.resetForRound(player);
-            this.setTeam(player, side);
-            this.activePlayers.add(player);
+            // **Recorded before the spawn, because the cover is a wait and this loop is not.** For the length
+            // of that wait the player has no side, so `teams` cannot answer "already on their way in" — see
+            // the field. Everything else about the admission lives in `admitWithCover`.
+            this.admitting.add(player);
 
-            const character = player.Character;
-
-            if (character) {
-                character.PivotTo(this.arenaSpawnFor(character));
-                shieldCharacter(character);
-            }
-
-            // **Said out loud, because this is a round changing its own sides mid-play.** The mode's
-            // outcome counting, the rigs' targeting and the scoreboard all read the side this writes, so a
-            // line naming who arrived and where is the only trace of why the counts moved.
-            print(
-                `[Round] ${player.Name}: joined mid-round — side ${side}, ` +
-                    `${character ? "on the arena spawn" : "their body lands on that side's spawn when it arrives"}`,
-            );
+            // **Spawned rather than awaited, so one player's cover does not hold the whole round.** This runs
+            // inside the round's own loop, and awaiting the cover here would stop the countdown, everybody's
+            // scoring and every other admission for the length of one grid.
+            task.spawn(() => this.admitWithCover(player, side));
         }
+    }
+
+    /**
+     * **Admits one player into a round already under way, behind a wipe of their own.**
+     *
+     * **The cover goes up before the side is written, which is the opposite order to the round-start one and
+     * deliberately so.** At a whistle the roster is admitted and then moved together under one cover; here
+     * there is one player and one cover, and until it closes they are still a spectator. Writing the side
+     * first would make them a *participant standing in the lobby* for the length of the grid — counted by
+     * `rosterOutcome`, targetable by every rig's enemy scan, and hittable by a ball thrown out of the arena —
+     * which is the same fault `moveWalkersToArena` exists to prevent for a rig.
+     *
+     * **The cue is that player's own attribute**, through {@link bumpTransition}, so nobody else's screen
+     * moves: an opt-in is one person's cut, and every other player is mid-round and looking at a court that is
+     * not changing. The round's clock is not held either — `transitionAround` holds it because a *boundary*
+     * must not start counting behind a cover, and there is no boundary here.
+     *
+     * **Checked again after the cover rather than only before it.** A cover is long enough for the player to
+     * leave the server, for the round to be decided (`finishRound` sets `finished`, and the intermission behind
+     * it sweeps everybody to the lobby), or for the same player to have been admitted by another route. Each of
+     * those ends the admission without writing anything.
+     */
+    private async admitWithCover(player: Player, side: TeamLabel): Promise<void> {
+        if (TRANSITION_CONFIG.ENABLED) {
+            this.bumpTransition(player);
+
+            task.wait(TRANSITION_COVER_SECONDS);
+        }
+
+        // **The in-flight record goes first**, so no guard below can leave a player who can never be admitted
+        // again this round.
+        this.admitting.delete(player);
+
+        if (player.Parent === undefined) return;
+        if (this.finished) return;
+        if (this.teams.has(player)) return;
+
+        this.abilities.resetForRound(player);
+        this.setTeam(player, side);
+        this.activePlayers.add(player);
+
+        const character = player.Character;
+
+        if (character) {
+            character.PivotTo(this.arenaSpawnFor(character));
+            shieldCharacter(character);
+        }
+
+        // **Said out loud, because this is a round changing its own sides mid-play.** The mode's outcome
+        // counting, the rigs' targeting and the scoreboard all read the side this writes, so a line naming who
+        // arrived and where is the only trace of why the counts moved. It now lands *after* the cover rather
+        // than instantly, which is the second thing it records: the gap between this line's timestamp and the
+        // wipe's is how a reader tells a covered admission from an uncovered one.
+        print(
+            `[Round] ${player.Name}: joined mid-round — side ${side}, ` +
+                `${character ? "on the arena spawn" : "their body lands on that side's spawn when it arrives"}`,
+        );
     }
 
     /**
@@ -1197,7 +1260,8 @@ export class RoundService implements OnStart {
      *
      * **Four steps, in this order, and each one is load-bearing.**
      *
-     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE}, which is the clients' cue to close their grids. A counter
+     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE} **on every player this boundary covers** — the round's
+     *    roster, not everybody in the server — which is each client's cue to close its grid. A counter
      *    rather than the phase, because the phase is published early by design — see that constant — and a
      *    wipe keyed on it would have finished and gone before this ran.
      * 2. Wait `TRANSITION_COVER_SECONDS`: the clients' own closing time plus a step of latency, so that the
@@ -1243,11 +1307,14 @@ export class RoundService implements OnStart {
         const wiping = TRANSITION_CONFIG.ENABLED && (options.wipe ?? true);
 
         if (wiping) {
-            const current = this.statusFolder.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
-            this.statusFolder.SetAttribute(
-                ROUND_TRANSITION_ATTRIBUTE,
-                (typeIs(current, "number") ? current : 0) + 1,
-            );
+            // **One bump per player this boundary covers, and the roster is what says who that is.** `teams`
+            // is the table `assignTeams` fills at the whistle and `roundOutcome` counts, and nothing clears it
+            // until the next `assignTeams` — so at a round's *start* it holds the players just admitted, and
+            // at its *end* it still holds the players who played it. **A player who never opted in is in
+            // neither**, which is the whole of "a wipe is not for a spectator": they are moved back to the
+            // lobby with everybody else and see the cut, and no grid closes over a room they were already
+            // watching. See `ROUND_TRANSITION_ATTRIBUTE` for why the cue is per player at all.
+            for (const [player] of this.teams) this.bumpTransition(player);
 
             print(
                 `[Round] transition — cover in ${TRANSITION_COVER_SECONDS}s, then the move, ` +
@@ -1281,6 +1348,26 @@ export class RoundService implements OnStart {
         // which is the ordinary case, and the line above is the last thing before the clock.
         const coverLeft = (wiping ? TRANSITION_OPEN_SECONDS : 0) - frozen;
         if (coverLeft > 0) task.wait(coverLeft);
+    }
+
+    /**
+     * **Tells one player's client to close its grid, one step before the move they are being covered for.**
+     *
+     * **The unit is a player rather than a round, and that is the change this exists for.** A boundary covers
+     * the round's roster — see `transitionAround`, which loops it — while a player opting into a round already
+     * under way is covered *alone*: see {@link admitWithCover}, which is the reason this is a helper rather
+     * than two lines inside the boundary. The alternative shape, one counter on the status folder that every
+     * client reads, cannot express "this one is yours" without a second attribute saying who the bump was
+     * for, and a client comparing its own name against a payload is the same judgement in a worse place.
+     *
+     * **A counter, and idempotent per change**: a client plays on any change, so a value that repeated would
+     * be a wipe that never happens. The read is validated because an attribute is a string or a number
+     * anybody may write — `onASide`'s reason, and `sideOfRig`'s.
+     */
+    private bumpTransition(player: Player): void {
+        const current = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+
+        player.SetAttribute(ROUND_TRANSITION_ATTRIBUTE, (typeIs(current, "number") ? current : 0) + 1);
     }
 
     /**

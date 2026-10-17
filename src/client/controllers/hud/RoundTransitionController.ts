@@ -1,10 +1,9 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, ReplicatedStorage, RunService } from "@rbxts/services";
+import { Players, RunService } from "@rbxts/services";
 import { TRANSITION_CONFIG } from "shared/config/transition.config";
-import { ROUND_STATUS_FOLDER, ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
+import { ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
 import { getTransitionScreenGui } from "../../ui/screenGui";
-import { onASide } from "../../roundZone";
 
 /** Prints when a wipe starts and when it comes off, which is how a wipe is told from a round without one. */
 const DEBUG = true;
@@ -105,10 +104,14 @@ export class RoundTransitionController implements OnStart {
 	private readonly scope = Fusion.scoped();
 
 	/**
-	 * The player whose screen this is, held so the wipe can ask whether it happens to them.
+	 * The player whose screen this is — **the one instance the cue is read from, since the cue is per player.**
 	 *
-	 * **The gate is here rather than on the server, and this is why:** the cue is one number on one folder
-	 * that everybody reads, and what differs between clients is what each of them is doing when it arrives.
+	 * **There is no gate any more, and the absence is the change.** This used to watch one counter on the round
+	 * folder and ask `roundZone.onASide` whether the wipe applied to it, which made "am I opted in" a client
+	 * judgement — and a judgement the server could come to differently, since it is the server that knows who
+	 * it is covering. The server now bumps this attribute on the players it covers and on nobody else, so a
+	 * wipe arriving on this player's attribute *is* the answer: a spectator is never written to, and a player
+	 * opting into a live round is written to alone.
 	 */
 	private readonly player = Players.LocalPlayer;
 
@@ -116,24 +119,31 @@ export class RoundTransitionController implements OnStart {
 	private running = false;
 
 	public onStart(): void {
-		// Spawned rather than done inline, on every other HUD controller's argument: mounting waits for
-		// the round folder, which the *server* creates, and a controller's `onStart` is the wrong place to
-		// hold up the rest of the client's boot.
-		task.spawn(() => this.mount());
+		this.mount();
 	}
 
+	/**
+	 * **Subscribes to this player's own wipe counter**, and nothing else.
+	 *
+	 * **This used to be spawned, and the reason it no longer is is the cue moving to the player.** The wait was
+	 * `ReplicatedStorage.WaitForChild(ROUND_STATUS_FOLDER)` — the round folder is created by the *server*, and
+	 * mounting before it replicated would have thrown inside `onStart` — while an attribute on the local
+	 * player is there from the first frame this controller exists. So there is nothing left to hold the
+	 * client's boot for, and the mount is one read and one subscription.
+	 */
+
 	private mount(): void {
-		const status = ReplicatedStorage.WaitForChild(ROUND_STATUS_FOLDER);
+		const player = this.player;
 
 		/**
-		 * The transition counter as last seen, which is what makes this an *edge* rather than a state.
+		 * This player's wipe counter as last seen, which is what makes this an *edge* rather than a state.
 		 *
 		 * **The seed fires nothing, and that is the rule a mid-round mount turns on.** A client that boots into
-		 * a round that is already under way has missed the transition this would have covered and has been
-		 * looking at the arena since its first frame — a wipe for it would be a cover over a world the player
-		 * has already seen. Seeding from the value the server has already published means "was this client here
-		 * for that transition" is answered by the server's own count rather than by a guess about time.
-		 * `MusicController` seeds its phase for the same reason and says so the same way.
+		 * a round that is already under way has missed the wipe this would have covered and has been looking at
+		 * the arena since its first frame — a grid for it would be a cover over a world the player has already
+		 * seen. Seeding from the value the server has already published means "was this client here for that
+		 * wipe" is answered by the server's own count rather than by a guess about time. `MusicController` seeds
+		 * its phase for the same reason and says so the same way.
 		 *
 		 * **And the counter is why this file no longer watches the phase at all.** The phase is published early
 		 * on purpose — an intermission announces itself before the lobby has been looked up, because a phase
@@ -142,45 +152,35 @@ export class RoundTransitionController implements OnStart {
 		 * exactly what happened: at the round's end the player saw the lobby and *then* a curtain over it. See
 		 * `ROUND_TRANSITION_ATTRIBUTE`.
 		 */
-		const initial = status.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+		const initial = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
 		let last = typeIs(initial, "number") ? initial : 0;
 
 		// Subscribed after the seed, so the seed cannot be clobbered by a change that landed mid-mount —
 		// and the handler re-reads the attribute rather than trusting the signal, which carries no value.
 		this.scope.push(
-			status.GetAttributeChangedSignal(ROUND_TRANSITION_ATTRIBUTE).Connect(() => {
-				const value = status.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+			player.GetAttributeChangedSignal(ROUND_TRANSITION_ATTRIBUTE).Connect(() => {
+				const value = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
 				if (!typeIs(value, "number")) return;
 
-				// **Any change is a transition**, because the count only moves forward and only the server
-				// writes it — so there is no phase to name, no direction to work out, and no way for two
-				// successive transitions to look alike.
+				// **Any change is a wipe**, because the count only moves forward and only the server writes it —
+				// so there is no boundary to name, no direction to work out, and no way for two successive
+				// wipes to look alike.
 				if (value === last) return;
 
 				last = value;
 
-				// **And it is only for the people it happens to.** A wipe covers a *move*: this player is
-				// teleported into the arena at a round's start and back to the lobby at its end, and a player
-				// who is not on a side is moved by neither — they watch the round from the lobby, and a grid
-				// over a room they are already standing in is a cover over nothing. So the answer is
-				// `onASide` and **not** the phase: at the round's *end* the phase has already left `Playing`
-				// when this arrives, and the players who are being moved are exactly the ones still wearing a
-				// side. That asymmetry is what decided the wipe and the camera need two predicates rather than
-				// one; see `roundZone.ts`, which owns both, and `RoundService.assignTeams`, which is what keeps
-				// the attribute honest — it clears every player's side and rewrites it from the roster at each
-				// whistle, so a player who did not re-opt in stops reading as a participant at the next one.
-				//
-				// **A mid-round opt-in does not replay this**, and that is a property of the cue rather than
-				// of the gate: the counter only moves at a boundary, and a player admitted into a round that is
-				// already being played arrives between two of them, so there is no bump for them to answer.
-				// They get the camera and no wipe, which is the pair the rule asks for.
-				if (!onASide(this.player)) return;
-
+				// **A mid-round opt-in is covered too, and that is a reversal of what this comment used to
+				// say.** It argued the opposite on a property of the cue: the counter moved only at a
+				// boundary, so a player admitted into a round already being played arrived between two of
+				// them, had no bump to answer, and got "the camera and no wipe, which is the pair the rule
+				// asks for". The server now bumps that player's own counter as it admits them, so the pair
+				// that rule wanted is the pair this file plays — and the rule itself is now the server's
+				// to state rather than this file's to infer.
 				this.play();
 			}),
 		);
 
-		if (DEBUG) print(`[Transition] watching ${ROUND_TRANSITION_ATTRIBUTE} — mounted at ${last}`);
+		if (DEBUG) print(`[Transition] watching ${ROUND_TRANSITION_ATTRIBUTE} on ${player.Name} — mounted at ${last}`);
 	}
 
 	/**

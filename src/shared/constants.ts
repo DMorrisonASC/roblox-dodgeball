@@ -429,20 +429,28 @@ export const ROUND_SCORE_A_ATTRIBUTE = "ScoreA";
 export const ROUND_SCORE_B_ATTRIBUTE = "ScoreB";
 
 /**
- * Attribute on {@link ROUND_STATUS_FOLDER}: **a count of the transitions the server has started**, bumped
- * the instant before it moves everybody.
+ * Attribute on **each `Player`**: **a count of the wipes that player has been covered for**, bumped the
+ * instant before the server moves them.
  *
- * **A counter of its own rather than the phase, and the reason is the whole point of it.** The phase is
+ * **Per player rather than one counter on the folder, and that is what makes "a wipe is something that
+ * happens to you" the shape of the code.** The cue used to be a single number on {@link ROUND_STATUS_FOLDER}
+ * that every client read and then filtered for itself — `roundZone.onASide` deciding whether it applied —
+ * which put a *judgement* on the client and left "is this for me" answerable differently on two machines.
+ * The server now names the players it covers: **the round's own roster at each boundary**, and **one player
+ * when they opt into a round already under way**. A player who has not opted in is never written to, so
+ * there is nothing for their client to decide and nothing for the two ends to disagree about.
+ *
+ * **A counter of its own rather than the phase, and the reason is still the whole point of it.** The phase is
  * published *early* on purpose: an intermission announces itself before the lobby is even looked up, because
  * a phase that is held must not read as the previous one (`RoundService` says so at length). The teleport
- * then happens later — after the lobby resolves, after the held balls and the map are dealt with — so a wipe
- * keyed on the phase would play and finish inside that gap and cover nothing at all. This is written
- * immediately before the move instead, which is what lets the client's cover close *around* the cut rather
- * than after it.
+ * then happens later — after the lobby resolves, after the held balls are dealt with — so a wipe keyed on the
+ * phase would play and finish inside that gap and cover nothing at all. This is written immediately before
+ * the move instead, which is what lets the client's cover close *around* the cut rather than after it.
  *
- * A number rather than a boolean because the count is the useful part: **any change is a transition**, so a
- * client needs no notion of which phase it is moving between, and a client that mounts mid-transition simply
- * reads a value and waits for the next one.
+ * A number rather than a boolean because the count is the useful part: **any change is a wipe**, so a client
+ * needs no notion of which boundary it is at, and a client that mounts mid-transition reads its own current
+ * value and waits for the next one — which is why a player who boots into a round already under way sees no
+ * cover for a move they were never part of.
  */
 export const ROUND_TRANSITION_ATTRIBUTE = "Transition";
 
