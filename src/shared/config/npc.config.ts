@@ -298,36 +298,57 @@ export const NPC_CONFIG = {
 	DODGE_CHANCE_PER_BALL: 0.5,
 
 	/**
-	 * The name of the model in `ServerStorage` that the lobby's placeholder rigs are cloned from.
+	 * **The folder in `ServerStorage` the placeholder rigs are cloned from — one model per rig, drawn at
+	 * random and never drawn twice at once.**
 	 *
-	 * **This is the name the template has to be given in Studio, and it is the whole of the contract**
-	 * — `LobbyRigService` looks for a `Model` with this name *anywhere* under `ServerStorage`, so where
-	 * it is filed does not matter and what it is called does.
+	 * **`NPCs` is the name the folder has to be given in Studio, and that is the whole of the contract.**
+	 * `npc/rigPool.ts` finds a `Folder` with this name *anywhere* under `ServerStorage` — through
+	 * `shared/find.ts`'s `findFolder`, which requires the class as well as the name, so a `Model` called
+	 * `NPCs` is passed over rather than mistaken for it — so where it is filed does not matter and what it
+	 * is called does. Every `Model` **child** of it is one rig the pool may hand out; a model nested inside
+	 * a sub-folder of `NPCs` is not one, which is the same shape the lobby's own spawn folder keeps.
 	 *
-	 * **And it wears no tag — any tag, and `NPC` in particular.** The contract is the *name*; the tags go
-	 * on the **clone**, from `NpcService.spawn` (which adds `NPC` and the behaviour tags it is handed)
-	 * and from `LobbyRigService` (which adds and removes the six gameplay behaviours on the rigs that are
-	 * playing). A tag on the template is not harmless, and the shape of the harm is worth knowing because
-	 * **nothing in the output names it**: `NpcService` scans for `NPC` across the whole DataModel on
-	 * purpose, so a tagged template is handed a *loop* — and, before `NpcService.ensureToken` refused it,
-	 * a `ThrowerToken`, which every clone of that template then inherited. One token shared by every
-	 * placeholder rig makes `BallComponent`'s own-ball rule answer "this is your ball" for **every**
-	 * rig-to-rig throw, so a rig hit by another rig's ball resolves to nothing and dies of it never. See
-	 * `TAGS.md`'s `NPC` row for the register and `NpcService.ensureToken` for the code half of the rule.
+	 * **And none of them wears a tag — any tag, and `NPC` in particular.** The contract is *membership of
+	 * this folder*; the tags go on the **clone**, from `NpcService.spawn` (which adds `NPC` and the
+	 * behaviour tags it is handed) and from `LobbyRigService` (which adds and removes the six gameplay
+	 * behaviours on the rigs that are playing). A tag on a model in here is not harmless, and the shape of
+	 * the harm is worth knowing because **nothing in the output names it**: `NpcService` scans for `NPC`
+	 * across the whole DataModel on purpose, so a tagged model is handed a *loop* — and, before
+	 * `NpcService.ensureToken` refused it, a `ThrowerToken`, which every clone of that model then
+	 * inherited. One token shared by every placeholder rig makes `BallComponent`'s own-ball rule answer
+	 * "this is your ball" for **every** rig-to-rig throw, so a rig hit by another rig's ball resolves to
+	 * nothing and dies of it never. See `TAGS.md`'s `NPC` row for the register and `NpcService.ensureToken`
+	 * for the code half of the rule — and `npc/rigPool.ts`, whose boot scan checks every model for exactly
+	 * this rather than leaving it to be discovered from a lobby that behaves strangely.
 	 *
-	 * **A rig and not a model of some other shape.** The thing cloned has to be something
-	 * `NpcService.spawn` can hand to a behaviour: a `Model` with a `Humanoid` and a
-	 * `HumanoidRootPart`. A `PrimaryPart` set to the root is worth having as well, because the spawn
-	 * places a rig by its *pivot* — see `NpcService.spawn` for that, and see the report on this task
-	 * for why the current placement is kept rather than a root-part one.
+	 * **A rig and not a model of some other shape.** Each model has to be something `NpcService.spawn` can
+	 * hand to a behaviour: a `Model` with a `Humanoid` and a `HumanoidRootPart`. A `PrimaryPart` set to the
+	 * root is worth having as well, because the spawn places a rig by its *pivot* rather than by its root —
+	 * see `NpcService.spawn`. **How many of them there are is the pool's ceiling**: fewer models than seats
+	 * means the surplus seats get no rig, and which models are in the folder is a place-file fact this file
+	 * cannot know.
 	 *
-	 * **`PlaceholderRig` is the name for a reason rather than a word:** a rig in this project is a
-	 * placeholder for a player who has not arrived, which is what the whole rig system is for. The
-	 * name says what the thing *is* rather than where it is, so a second template — a heavier dummy, a
-	 * testing rig — can carry a name that says what makes it different.
+	 * **Placeholder**, in the sense that the folder does not exist yet: nothing is in `ServerStorage.NPCs`
+	 * until somebody makes it, and until then the boot warning names the folder and no rigs are spawned.
+	 */
+	RIG_POOL_FOLDER: "NPCs",
+
+	/**
+	 * **`PLACEHOLDER_RIG_TEMPLATE` was here, and nothing reads it any more.** Kept as a record rather than
+	 * deleted, because the model it names is deliberately *still in the place file* and a reader who greps
+	 * for the name should find an explanation rather than nothing.
 	 *
-	 * **Placeholder.** Nothing has been modelled for this yet; the user creates the rig and gives it
-	 * this name.
+	 * It was the name of the single model every placeholder rig was cloned from, and it is what the deleted
+	 * `LobbyRigService.findTemplate` walked `ServerStorage` for. **The two went together**: `LobbyRigService`
+	 * no longer has that method, and the pool above replaced it — a rig is now a clone of a *drawn* model
+	 * from {@link RIG_POOL_FOLDER}, so there is no one template to name. **The rule that model was under is
+	 * the reason this is kept rather than deleted outright**: a model this service clones must carry no tag
+	 * and no `ThrowerToken`, and that is now a rule about every model in the folder rather than about one.
+	 * {@link RIG_POOL_FOLDER} carries the whole of it.
+	 *
+	 * **Retiring the model itself is a separate decision and not this file's** — it is a place-file edit,
+	 * and nothing breaks while it sits there. `ArenaV1` is the precedent for a template left parked after
+	 * its last reader went.
 	 */
 	PLACEHOLDER_RIG_TEMPLATE: "PlaceholderRig",
 

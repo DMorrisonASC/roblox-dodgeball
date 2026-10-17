@@ -246,6 +246,32 @@ export class NpcService implements OnStart {
 	 */
 	public spawn(template: Model, cframe: CFrame, behaviorTags: string[]): Model {
 		const model = template.Clone();
+
+		// **A pooled rig comes out unanchored, because a body this project made has to be able to move.** This
+		// is the token's argument one paragraph down, applied to the other property a place file can hand a
+		// clone that makes it useless: a model dragged in from the toolbox is very often anchored — that is how
+		// a builder keeps it still while editing — and the clone inherits it. An anchored assembly is one the
+		// engine does not simulate, so `MoveTo` walks nothing and `SetNetworkOwner` **raises**, which is why
+		// `ownForServer` refuses the rig with "Network Ownership API cannot be called on Anchored parts or parts
+		// welded to Anchored parts". One boot of seven free-model rigs produced that line four times.
+		//
+		// **Every `BasePart`, not just the root, because the engine's refusal is not about the root.** It names
+		// parts welded to anchored parts as well, so a single anchored limb pins the whole assembly — and which
+		// part a pool model has anchored is not something this file can know, because the pool is other people's
+		// models. Clearing all of them is one walk of a rig at the moment it is made, and it is where the
+		// question is answerable at all.
+		//
+		// **Here rather than in `npc/rigPool.ts`, on the same division as the token**: the *template* is the
+		// place file's business and `poolModelWarnings` names anything wrong with it, while the *clone* is a
+		// body this code made and `spawn` is where a body is made. Unanchoring changes no position, so the
+		// order against `PivotTo` below does not matter for correctness — it matters only in that the rig is
+		// already physics' by the time it is parented, so no frame of the clone is ever fixed in place.
+		for (const descendant of model.GetDescendants()) {
+			if (!descendant.IsA("BasePart")) continue;
+
+			descendant.Anchored = false;
+		}
+
 		model.PivotTo(cframe);
 		model.Parent = Workspace;
 
@@ -266,11 +292,14 @@ export class NpcService implements OnStart {
 		// which mints nothing when a token is already there — so this line is what keeps the token
 		// decision in one place even for a rig that was spawned.
 		//
-		// **And it is not the only fix, deliberately.** A template should carry no token at all — and
-		// no tag, since `LobbyRigService` finds it by name, see `NPC_CONFIG.PLACEHOLDER_RIG_TEMPLATE` —
-		// but a place file that already has one cannot be repaired from code, and this is the line that
-		// makes the difference unobservable either way. `ensureToken` is the other half: it refuses to
-		// write to a model that is not in the world, which is how the token got into the template.
+		// **And it is not the only fix, deliberately.** A model in `NPC_CONFIG.RIG_POOL_FOLDER` should
+		// carry no token at all — and no tag, since the folder is walked by name and class, see
+		// `npc/rigPool.ts` — but a place file that already has one cannot be repaired from code, and this
+		// is the line that makes the difference unobservable either way. `ensureToken` is the other half:
+		// it refuses to write to a model that is not in the world, which is how the token got into the
+		// template in the first place. **What a model in the folder *is* carrying is reported at boot
+		// rather than repaired** — see `poolModelWarnings`, which is the check this sentence is the
+		// reason for.
 		model.SetAttribute(THROWER_TOKEN, HttpService.GenerateGUID(false));
 
 		// **And a trail, chosen at random, which is the one cosmetic a rig wears.** See {@link dressRig}, which

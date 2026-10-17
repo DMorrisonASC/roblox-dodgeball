@@ -1,5 +1,5 @@
 import { OnStart, Service } from "@flamework/core";
-import { CollectionService, Players, ReplicatedStorage, ServerStorage, Workspace } from "@rbxts/services";
+import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import {
 	MATCH_JOIN_A_TAG,
 	MATCH_JOIN_B_TAG,
@@ -30,6 +30,14 @@ import {
 	WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE,
 	WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE,
 } from "../../npc/behaviors/WalkToJoinPadBehavior";
+import {
+	RIG_NAMES,
+	RIG_TEMPLATE_ATTRIBUTE,
+	drawRigIdentity,
+	poolModelWarnings,
+	readRigPool,
+	sourceOf,
+} from "../../npc/rigPool";
 import { rigsOnASide, sideOfRig } from "../../npc/rigs";
 import { zoneCounts } from "../../npc/sideZones";
 import { MatchService } from "../match/MatchService";
@@ -108,10 +116,12 @@ const GAMEPLAY_BEHAVIORS: Array<string> = [
  *
  * **Why they exist.** A rig in this project is a placeholder for a player who has not arrived — it
  * holds a seat on a side and plays the round in their place. This service is the half of that which
- * puts them in the lobby: it clones the template, stands each rig at a lobby spawn, tells it which pad
- * to walk to, and tags it with the one behaviour that walks it there. The rig takes its own side when it
- * reaches the pad — `WalkToJoinPadBehavior` writes `TEAM_ATTRIBUTE` in its arrival branch — and from
- * that moment `npc/rigs.ts` reports it as a participant and the round counts it.
+ * puts them in the lobby: it draws a body and a name for it out of the pool in `ServerStorage` (see
+ * `npc/rigPool.ts`, and see `spawnLobbyRig` for why the draw is per rig rather than once), stands each
+ * rig at a lobby spawn, tells it which pad to walk to, and tags it with the one behaviour that walks it
+ * there. The rig takes its own side when it reaches the pad — `WalkToJoinPadBehavior` writes
+ * `TEAM_ATTRIBUTE` in its arrival branch — and from that moment `npc/rigs.ts` reports it as a
+ * participant and the round counts it.
  *
  * **And this service is also what keeps the seats filled, which is the larger half of the job.** One
  * sentence says everything it maintains:
@@ -185,12 +195,12 @@ const GAMEPLAY_BEHAVIORS: Array<string> = [
  * has never heard of it — which is what keeps the roster change a thing this *notices* rather than a call
  * it makes.
  *
- * **Nothing is pinned to a parent, and that is the requirement rather than a preference.** The
- * template is found by name anywhere in `ServerStorage` and the lobby folder by name anywhere in
- * `Workspace`; the two lookups below say what that costs and what it avoids. What it costs, stated
- * once here: a *name* is a contract with the place file, so a template that has been renamed reads as
- * a template that does not exist, and the line this service prints when it finds nothing is the only
- * thing that will tell you which name it wanted.
+ * **Nothing is pinned to a parent, and that is the requirement rather than a preference.** The pool
+ * folder is found by name anywhere in `ServerStorage` and the lobby folder by name anywhere in
+ * `Workspace`; the lookups below say what that costs and what it avoids. What it costs, stated once
+ * here: a *name* is a contract with the place file, so a folder that has been renamed reads as a folder
+ * that does not exist, and the boot line this service prints when it finds nothing is the only thing
+ * that will tell you which name it wanted.
  *
  * **The lobby spawns are shared with the players, and neither side can reserve one.** A player joining
  * the server is placed at a random part of the same folder by `RoundService.lobbySpawn`, which knows
@@ -238,8 +248,8 @@ export class LobbyRigService implements OnStart {
 	 * round, where choosing is what puts them in it. See `RoundService.admitMidRoundJoins`.
 	 *
 	 * **There is no side-less entry, and that is a decision rather than an omission.** The only join that
-	 * could produce one is a join with *no rig at all* to displace — a server whose template or lobby is
-	 * missing, which the boot line has already explained. Nothing was lost in that case, so there is no
+	 * could produce one is a join with *no rig at all* to displace — a server with no rig pool or no
+	 * lobby, which the boot line has already explained. Nothing was lost in that case, so there is no
 	 * seat to hold: the record is simply not made, and the refill at the next boundary fills the lobby
 	 * according to what is actually there. A reservation that meant "somewhere, maybe" would make
 	 * {@link seatsHeld} wobble with the thing it was measuring.
@@ -256,9 +266,6 @@ export class LobbyRigService implements OnStart {
 	/** The next pad of each side, cycled so a side's rigs spread across its signs. */
 	private readonly padCursor = new Map<TeamLabel, number>();
 
-	/** The number a rig's name is built from, so no two rigs this service made share a name. */
-	private serial = 0;
-
 	/** Faults already reported, so a refill that keeps failing says so once rather than every time. */
 	private readonly reported = new Set<string>();
 
@@ -271,7 +278,12 @@ export class LobbyRigService implements OnStart {
 	constructor(private readonly npcs: NpcService, private readonly matches: MatchService) {}
 
 	public onStart(): void {
-		const template = this.findTemplate();
+		// **The pool is read once, here, and no draw is made here.** The boot needs the *counts* — how many
+		// names and how many models the place offers against how many rigs the match wants — while each spawn
+		// draws its own, so that eight rigs come out with eight different names and eight different bodies.
+		// The pool is derived from the live rigs rather than stored (see `npc/rigPool.ts`), so a snapshot kept
+		// from boot would be stale by the time the first refill asked for it.
+		const pool = readRigPool();
 		const spawns = this.lobbySpawns();
 
 		// **The pads, by tag, the same two the match service reads.** `taggedPartsInWorkspace` rather
@@ -284,17 +296,24 @@ export class LobbyRigService implements OnStart {
 		const padsB = taggedPartsInWorkspace(MATCH_JOIN_B_TAG);
 
 		// **One line, once, naming everything the place is missing.** The four faults are independent —
-		// a template not created yet, a folder not made, either side's pads untagged — so reporting them
-		// one restart at a time would be four runs of "now do the next thing". Names rather than
-		// sentences, because what the reader has to do is create a thing with that name. And **nothing
-		// is retried**: `RoundService.waitForLobby` holds an intermission for as long as a lobby is
-		// missing, because a player with nowhere to stand is a player in the wrong place, while eight
-		// absent placeholders are a lobby with no props in it. Restarting after fixing the place file is
-		// the honest cost, and it is stated in the line itself.
+		// no pool folder in `ServerStorage`, no lobby spawn folder in the world, either side's pads
+		// untagged — so reporting them one restart at a time would be four runs of "now do the next
+		// thing". The entries are names rather than sentences, because what a reader has to do is create
+		// a thing with that name. And **nothing is retried**: `RoundService.waitForLobby` holds an
+		// intermission for as long as a lobby is missing, because a player with nowhere to stand is a
+		// player in the wrong place, while eight absent placeholders are a lobby with no props in it.
+		// Restarting after fixing the place file is the honest cost, and it is stated in the line itself.
 		const missing = new Array<string>();
 
-		if (template === undefined) {
-			missing.push(`a Model named "${NPC_CONFIG.PLACEHOLDER_RIG_TEMPLATE}" anywhere in ServerStorage`);
+		// **The pool folder, when it holds no models at all — which is one fault and not two.** A folder that
+		// exists but is empty is the same repair as a folder that is not there: put models in it. The names
+		// are *not* in this list, deliberately: they live in this project's `rigPool.ts` and a place file
+		// cannot be missing them, so a short name list is a warning after the loop starts rather than a
+		// refusal to start.
+		if (pool.models.size() === 0) {
+			missing.push(
+				`a "${NPC_CONFIG.RIG_POOL_FOLDER}" folder holding Model children inside ServerStorage`,
+			);
 		}
 
 		if (spawns.size() === 0) {
@@ -306,7 +325,7 @@ export class LobbyRigService implements OnStart {
 		if (padsA.size() === 0) missing.push(`a part tagged ${MATCH_JOIN_A_TAG}`);
 		if (padsB.size() === 0) missing.push(`a part tagged ${MATCH_JOIN_B_TAG}`);
 
-		if (template === undefined || spawns.size() === 0 || padsA.size() === 0 || padsB.size() === 0) {
+		if (pool.models.size() === 0 || spawns.size() === 0 || padsA.size() === 0 || padsB.size() === 0) {
 			warn(
 				`[Rig] no placeholder rigs — the place is missing ${missing.join(", and ")}. ` +
 					`Nothing is spawned and nothing is retried; add it and restart.`,
@@ -320,6 +339,66 @@ export class LobbyRigService implements OnStart {
 		// follows it wherever it is tuned. It is computed rather than written down — a second number
 		// that agreed with the cap today is a second number that stops agreeing tomorrow.
 		const count = MATCH_MAX_PER_TEAM * 2;
+
+		// **What the pool holds, on one line, because every number in it is a question a reader is about to
+		// ask.** This is the line that turns "the lobby looks half empty" into a place-file fact: a name list
+		// and a folder are two independent supplies, and a reader who is told both counts beside the number of
+		// rigs wanted can see which one ran out without opening a script. Nothing is retried and nothing is
+		// reused, so what happens below is already decided by these two numbers.
+		const poolNames = RIG_NAMES.size();
+		const usableModels = pool.usableModels.size();
+
+		// **Two model counts, because a folder and a pool are not the same size.** A model in the folder that is
+		// not a rig is never drawn — see `rigPool.ts`'s `usableModels` — so the number that decides how full the
+		// lobby is the *usable* one, and the folder's own count is beside it to say how many are being passed
+		// over. A single count here would be the one number a reader could not check the outcome against.
+		print(
+			`[Rig] pool — ${poolNames} name(s), ${usableModels} usable model(s) (${pool.models.size()} in ` +
+				`the folder) for ${count} rig(s)`,
+		);
+
+		// **A pool that cannot fill the lobby says so *before* it fails to, which is the only moment a line
+		// about it is worth printing.** The alternative — letting the refusals in `npc/rigPool.ts` report one
+		// spawn at a time — would say "no free name" eight times and never once say that the lobby is meant to
+		// hold eight rigs, which is the number that makes the shortage legible. Both supplies are reported
+		// because either can be the binding one, and the two have different fixes: names are edited in this
+		// project's `rigPool.ts` and models are added to the place.
+		//
+		// **The model side counts the *usable* models**, because those are what a draw can hand out — a folder
+		// of seven of which one is not a rig fills six seats, and a line claiming seven would be a number the
+		// reader could watch be wrong.
+		if (poolNames < count || usableModels < count) {
+			const supplied =
+				usableModels === pool.models.size()
+					? `${pool.models.size()} model(s) available`
+					: `${usableModels} model(s) usable out of ${pool.models.size()} in the folder`;
+
+			warn(
+				`[Rig] pool — ${count} rig(s) wanted, so the lobby will be short: ` +
+					`${poolNames} name(s) and ${supplied}.`,
+			);
+		}
+
+		// **A folder with two models of one name silently costs a model**, which is the one pool fault that is
+		// invisible in the counts above: they are counted as two and only one of them can ever be drawn. The
+		// source is recorded as a *name*, so the two are one source as far as a release is concerned — see
+		// `RIG_TEMPLATE_ATTRIBUTE`. Reported rather than renamed, because renaming a place-file model is not
+		// something this service can do and guessing which of the two was meant is not a guess worth making.
+		if (pool.duplicatedNames.size() > 0) {
+			warn(
+				`[Rig] pool — ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}" holds more than one model named ` +
+					`"${pool.duplicatedNames.join('", "')}"; they share one source model, so only one of each ` +
+					`will ever be drawn. Rename them.`,
+			);
+		}
+
+		// **What the folder's models are carrying that they should not be.** A pool model is a template, not a
+		// rig: anything dressed on it is inherited by every clone drawn from it, and one of those things (a
+		// `ThrowerToken`) is actively wrong on a fresh body. `dressRig` runs on a rig before the world gate
+		// that would ignore a parked model, so a template left in `ServerStorage` can pick up a trail it never
+		// earned — which is why this reports rather than assumes. See `poolModelWarnings`.
+		const inherited = poolModelWarnings(pool.models);
+		if (inherited !== undefined) warn(inherited);
 
 		for (let index = 0; index < count; index++) {
 			// **Alternating, starting on A.** Rig 0 is A's, rig 1 is B's, and so on, so the two sides are
@@ -361,14 +440,15 @@ export class LobbyRigService implements OnStart {
 		}
 
 		print(
-			`[Rig] up — ${count} placeholder rig(s) from "${template.Name}", ` +
+			`[Rig] up — ${count} placeholder rig(s), ` +
 				`${spawns.size()} lobby spawn(s), pads ${padsA.size()} + ${padsB.size()}, ` +
 				`fetch boxes ${zones.a} + ${zones.b}`,
 		);
 
-		// **The seat wiring, and it is behind the guard above on purpose.** With no template there are no
-		// rigs, so there are no seats to keep and nothing a trigger could do about it; the boot line is
-		// what says why the lobby is empty.
+		// **The seat wiring, and it is behind the guard above on purpose.** With no rigs there are no seats
+		// to keep and nothing a trigger could do about it; the boot line is what says why the lobby is empty.
+		// Which model each rig came from is on its own spawn line rather than in this one, because there are
+		// up to eight of them and they are no longer all the same model.
 		//
 		// **A join and a leave are engine events, and both are immediate.** `PlayerAdded` is what the
 		// requirement calls "a player joins destroys a rig" — the observable is a lobby with one fewer
@@ -498,6 +578,95 @@ export class LobbyRigService implements OnStart {
 	}
 
 	/**
+	 * **A rig that is on a side over its cap moves to the side that is short, rather than being destroyed so
+	 * that a replacement can be made for the other side.**
+	 *
+	 * **The two counts are the whole of the case.** A side holds `MATCH_MAX_PER_TEAM` seats and a rig holds
+	 * one, so five rigs on A and three on B is not a full lobby with a body loose in it — it is a *body on the
+	 * wrong side*, and the arithmetic that noticed is the same one that can put it right. Without this the
+	 * repair is `releaseRigs` on the over-full side and a spawn on the short one: a rig destroyed, a model
+	 * taken out of the pool, and a name spent, to move one body nine feet. With it, nothing is created and
+	 * nothing is destroyed — the rig is told the other side and walks there.
+	 *
+	 * **Why a rig can be on the wrong side at all, since nothing here writes a side it was not told.** Every
+	 * writer of `TEAM_ATTRIBUTE` on a rig uses the side its walk was given: the arrival branch in
+	 * `WalkToJoinPadBehavior` reads its own `WalkToJoinPadSide`, and `spawnArenaRig` and
+	 * `moveWalkersToArena` write their own loop variable. **A join pad cannot assign one either** —
+	 * `MatchService.touched` returns before `optIn` for a body with no player, so a rig walking over the
+	 * other sign does nothing at all. What is left is everything outside this repository's control: a flung
+	 * body, a shove, or an attribute painted by hand in Studio. This method is the answer to those, and it is
+	 * deliberately cheap enough to be an answer to them rather than a theory about them.
+	 *
+	 * **A move, not a swap, and the difference matters at the boundary.** The rig is stripped of its side and
+	 * given the other side's walk, so it becomes a *walker bound for `short`* — which is exactly what
+	 * {@link seatHolders} counts it as, so the next read of {@link seatsHeld} sees the repair. Sending it with
+	 * its old side still on it would leave it counted on the side it just left until it arrived, and the next
+	 * rebalance — a quarter of a second later — would move it back. That flap is the reason the side comes off
+	 * first rather than at the end.
+	 *
+	 * **Intermission only**, and the caller is what decides that. During a round a rig's side is the round's
+	 * business: the bodies are already on the field, the round has counted them, and walking one out of the
+	 * arena to the other side's lobby pad would be a participant leaving mid-round. A side that is over its
+	 * cap *during* a round is `releaseRigs`' case, which is a player having taken a seat — the one thing this
+	 * cannot repair by moving somebody.
+	 */
+	private moveSurplusToTheShortSide(): void {
+		// **One move per iteration, and the counts re-read each time**, because a move changes both numbers
+		// and the case this fixes can be two bodies deep. `MATCH_MAX_PER_TEAM` is the bound rather than `while
+		// (true)`: the largest surplus two sides can produce is one side's whole cap, and a loop that cannot
+		// outrun its own arithmetic is worth more than a comment saying it terminates.
+		for (let moved = 0; moved < MATCH_MAX_PER_TEAM; moved++) {
+			const heldA = this.seatsHeld(TEAM_A);
+			const heldB = this.seatsHeld(TEAM_B);
+
+			if (heldA <= MATCH_MAX_PER_TEAM && heldB <= MATCH_MAX_PER_TEAM) return;
+
+			const over = heldA > MATCH_MAX_PER_TEAM ? TEAM_A : TEAM_B;
+			const short = over === TEAM_A ? TEAM_B : TEAM_A;
+
+			// **Nothing to move to.** Both sides over their cap is the case this cannot help with: there is no
+			// seat to walk to, so the surplus is `releaseRigs`' and the round's.
+			if (this.seatsHeld(short) >= MATCH_MAX_PER_TEAM) return;
+
+			// **The side's pads are the precondition, and a missing one is left to the boot line.** A rig
+			// given a side and no destination would stand in the lobby wearing the wrong colour with nothing
+			// telling anybody why, which is worse than the over-full side it started on.
+			if (this.padsFor(short).size() === 0) return;
+
+			const rig = this.surplusHolder(over);
+			if (rig === undefined) return;
+
+			rig.SetAttribute(TEAM_ATTRIBUTE, undefined);
+
+			this.writePadWalk(rig, short);
+			rig.AddTag(BEHAVIOR_WALK_TO_JOIN_PAD);
+
+			print(`[Rig] ${rig.Name}: side ${over} is full — sent to ${short} instead`);
+		}
+	}
+
+	/**
+	 * **One rig to move off an over-full side: arrived, alive, and holding a side.**
+	 *
+	 * Which one is arbitrary and deliberately so. Every rig {@link seatHolders} reports for the side is a body
+	 * the side is over capacity *because of*, so any of them is the right body to move — and unlike
+	 * {@link releaseRigs}, which also has to pick one, nothing is destroyed by the choice, so there is no
+	 * "giving up the wrong seat" to get wrong. It is taken from `rigsOnASide()` rather than from
+	 * `seatHolders` so that a *walker* is never offered: a rig already on its way to a pad is not on a side
+	 * yet, and sending it somewhere else would be a second instruction in the same crossing.
+	 */
+	private surplusHolder(side: TeamLabel): Model | undefined {
+		for (const entry of rigsOnASide()) {
+			if (entry.team !== side) continue;
+			if (this.isDown(entry.rig)) continue;
+
+			return entry.rig;
+		}
+
+		return undefined;
+	}
+
+	/**
 	 * **The single mechanism: fill every short seat, empty every over-full one.**
 	 *
 	 * Everything that moves a seat ends here, and that is the point rather than a tidiness. Four triggers
@@ -536,6 +705,16 @@ export class LobbyRigService implements OnStart {
 		// {@link retireHopelessCorpses}, and its doc for why the repair is not "leave respawn on".
 		this.retireHopelessCorpses();
 
+		// **Then the wrong-side repair, before the counts below are read — so that they read the repaired
+		// lobby rather than the broken one.** A body moved here is counted as a walker bound for the other
+		// side, so the fill and release passes below find nothing to do about a seat that has just been handed
+		// over. Doing it after them instead would be a rig destroyed and a rig spawned in the same call, to
+		// correct one number.
+		//
+		// **Intermission only**, for the reason `moveSurplusToTheShortSide` gives: during a round a rig's side
+		// is the round's, and the bodies are already on the field.
+		if (!playing) this.moveSurplusToTheShortSide();
+
 		// **Both counts are read once, at the top, and reused.** They are what this call is *about* — the
 		// one fact that decides which seats are filled and which rigs stand down — and reading them here
 		// rather than twice inside the loops is what lets the refill's line below print the count that
@@ -558,6 +737,19 @@ export class LobbyRigService implements OnStart {
 					print(
 						`[Rig] refill — ${rig.Name} to side ${side} ` +
 							`(seats held before: A ${heldA}, B ${heldB})`,
+					);
+				} else {
+					// **And a seat that stays empty says so, once per side.** This is the other half of the
+					// line above, and it exists because the *absence* of that line was the only trace a
+					// shortfall left: a lobby one body short looked exactly like one that had never been
+					// meant to have the body, and the refusal that caused it is reported once per fault —
+					// which for the pool is at boot, an intermission or two earlier. Naming the seat is what
+					// ties the two lines together; the cause itself is `spawnLobbyRig`'s or `spawnArenaRig`'s
+					// to state, and it has already said it somewhere above.
+					this.reportOnce(
+						`seat${side}`,
+						`[Rig] ${side}: a seat is short and no body was made for it — the reason was ` +
+							`reported once, in the line at boot or at the first attempt that failed`,
 					);
 				}
 			}
@@ -634,8 +826,6 @@ export class LobbyRigService implements OnStart {
 	 * coming back is never touched, however long it lies there.
 	 */
 	private retireHopelessCorpses(): void {
-		let retired = 0;
-
 		for (const { rig } of rigsOnASide()) {
 			if (!this.isDown(rig)) continue;
 
@@ -643,15 +833,14 @@ export class LobbyRigService implements OnStart {
 			// would cancel that, and it is the one thing this method must not do. See `isDown`.
 			if (rig.HasTag(BEHAVIOR_RESPAWN)) continue;
 
-			rig.Destroy();
-			retired++;
+			// **Said out loud, because a rig being retired is a rig the lobby has stopped counting.** The seat
+			// is refilled in the same call, so the visible effect is one body replaced by another — and the
+			// line is what says why the body that left could not have come back, rather than leaving a reader
+			// to wonder whether a respawn was cancelled by something. `retireRig` prints it, since it is also
+			// where the pool release is reported; the summary count this method used to print is gone with it,
+			// because the lines now name the rigs and a count of them says strictly less.
+			this.retireRig(rig, "retired — nothing was going to stand it up");
 		}
-
-		// **Said out loud, because a rig being retired is a rig the lobby has stopped counting.** The seat is
-		// refilled in the same call, so the visible effect is one body replaced by another — and this line is
-		// what says why the body that left could not have come back, rather than leaving a reader to wonder
-		// whether a respawn was cancelled by something.
-		if (retired > 0) print(`[Rig] retired ${retired} rig(s) that had nothing left to stand them up`);
 	}
 
 	/** Gives up `count` of `side`'s seats, beginning with the rigs standing on a pad. */
@@ -666,17 +855,44 @@ export class LobbyRigService implements OnStart {
 		// "the first settled rig of the busiest side" — which is a corpse whenever a rig died in the last
 		// seconds of the round that just finished.
 		const holders = this.seatHolders(side).filter((rig) => !this.isDown(rig));
-		let released = 0;
+		let index = 0;
 
-		while (released < count && released < holders.size()) {
-			holders[released].Destroy();
-			released++;
+		while (index < count && index < holders.size()) {
+			this.retireRig(holders[index], `released — side ${side} is over its cap`);
+
+			index++;
 		}
+	}
 
-		// **A released seat is reported, because two triggers look identical without it.** A player
-		// choosing a side and a round boundary both move the roster, and a rig leaving the lobby belongs
-		// to the first only — while `NpcService` prints nothing for a body that is simply gone.
-		if (released > 0) print(`[Rig] ${side}: ${released} seat(s) released`);
+	/**
+	 * **The one place a rig leaves this service: destroys it, and says what went back into the pool.**
+	 *
+	 * **One helper for all three destroy sites, and that is the point rather than tidiness.** `releaseRigs`,
+	 * `retireHopelessCorpses` and `reserveSeat` are three different reasons for a body to go, and the pool
+	 * does not care which one it was: a rig ceases to hold its name and its model because it stopped being
+	 * findable by the walk in `npc/rigPool.ts`, which is a property of being destroyed rather than of being
+	 * destroyed *by a particular caller*. So the release itself needs nothing — and what is left is the
+	 * **report**, which is the half a reader needs and the half that a fourth path would otherwise forget.
+	 * Naming the rig and its source on one line per release is also what makes a lobby that has run short of
+	 * names distinguishable from one that never had them: the draws are in the log beside the releases.
+	 *
+	 * **Both facts are read *before* the destroy**, on `reserveSeat`'s rule: an attribute does survive the
+	 * `Destroy` in the same Lua frame, but reading a fact off a body on its way out is an order nobody should
+	 * have to reason about. The name is read for the same reason rather than because it is at risk.
+	 *
+	 * **`what` is the caller's sentence and the pool's half is appended here**, so a caller cannot describe a
+	 * release without also saying what it released — which is the failure mode a per-caller print would have.
+	 */
+	private retireRig(rig: Model, what: string): void {
+		const name = rig.Name;
+		const source = sourceOf(rig);
+
+		rig.Destroy();
+
+		print(
+			`[Rig] ${name}: ${what} — ` +
+				(source === undefined ? "no source model recorded" : `"${source}" back in the pool`),
+		);
 	}
 
 	/**
@@ -727,19 +943,15 @@ export class LobbyRigService implements OnStart {
 		}
 
 		// **Read before the destroy.** The attribute outlives the instance in the same Lua frame, but
-		// reading a side off a body on its way out is an order nobody should have to reason about.
+		// reading a side off a body on its way out is an order nobody should have to reason about — and this
+		// read is the reason the sentence is written down twice, here and on `retireRig`.
 		const side = sideOfRig(victim) ?? this.walkingSide(victim);
-		const name = victim.Name;
 
-		victim.Destroy();
+		this.retireRig(victim, `${player.Name} arrived — stood down (${side ?? "no side known"})`);
 
 		if (side !== undefined) {
 			this.pending.set(player, side);
 		}
-
-		const where = side === undefined ? "no side known" : side;
-
-		print(`[Rig] ${player.Name}: arrived — ${name} stood down (${where})`);
 	}
 
 	/**
@@ -1426,6 +1638,32 @@ export class LobbyRigService implements OnStart {
 	// ---- Making rigs ----
 
 	/**
+	 * **Writes a drawn identity onto a fresh rig: the name players read, and the model it came from.**
+	 *
+	 * **Both facts, one helper, because they are the two halves of one release and nothing else pairs them.**
+	 * The name is a body's, and `npc/rigPool.ts` finds it used by reading the names of the live rigs; the
+	 * source is the *recorded* half, and it is what makes the pool's model side findable, since a model is
+	 * "free" exactly when no live rig names it. A caller that wrote one without the other would leak the
+	 * other: a rig with a name and no source holds its model forever, and on a pool that is the whole
+	 * folder's worth of models gone one spawn at a time.
+	 *
+	 * **Why an attribute holding a `Name` and not a reference** is argued where the attribute is declared, in
+	 * `npc/rigPool.ts`: the short of it is that an attribute is the only channel that survives both a
+	 * `Clone` (so a respawn keeps its identity) and a `Destroy` (so a release can be reported).
+	 *
+	 * **Called on the same resumption as the spawn and never later**, because there is no later moment that
+	 * is obviously safe: `NpcService.spawn` starts the body's loop on the `NPC` tag it sets last, and
+	 * `RespawnBehavior` snapshots the model it rebuilds from on the body's first managed turn. Whether that
+	 * snapshot has already happened by the time this line runs depends on how the engine delivers
+	 * `GetInstanceAddedSignal`, which nothing in this repository pins — so the write is made here, where the
+	 * rig is at its youngest, rather than a resumption later where the question would be live.
+	 */
+	private nameRig(rig: Model, name: string, template: Model): void {
+		rig.Name = name;
+		rig.SetAttribute(RIG_TEMPLATE_ATTRIBUTE, template.Name);
+	}
+
+	/**
 	 * **A rig for a seat, in the lobby: standing at a spawn part and walking to its side's pad.**
 	 *
 	 * The form a replacement takes during an intermission, and the same call the boot seeding makes — so
@@ -1448,9 +1686,13 @@ export class LobbyRigService implements OnStart {
 	 * placement to.
 	 */
 	private spawnLobbyRig(side: TeamLabel): Model | undefined {
-		const template = this.findTemplate();
-		if (template === undefined) {
-			this.reportOnce("template", this.noTemplateMessage());
+		// **The draw comes before the placement, and the order is deliberate rather than convenient.** A
+		// refused draw is a spawn that never happens: nothing has been placed, the spawn cursor has not moved
+		// and there is no body to undo. See `npc/rigPool.ts` for why a pool short of names or bodies *refuses*
+		// rather than reusing one, and for what each of its three refusals is telling a reader to go and fix.
+		const draw = drawRigIdentity(readRigPool());
+		if (!draw.ok) {
+			this.reportOnce("pool", `[Rig] no rigs: ${draw.reason}`);
 
 			return undefined;
 		}
@@ -1482,9 +1724,11 @@ export class LobbyRigService implements OnStart {
 		// lobby rig has no `RespawnBehavior` either, and why a lobby rig that is killed stays down as a corpse
 		// until {@link retireHopelessCorpses} retires it: see `GAMEPLAY_BEHAVIORS` for why the tag cannot
 		// simply be added here, which is the home a replacement would come back to.
-		const rig = this.npcs.spawn(template, spawn.CFrame.add(new Vector3(0, 3, 0)), [BEHAVIOR_WALK_TO_JOIN_PAD]);
+		const rig = this.npcs.spawn(draw.template, spawn.CFrame.add(new Vector3(0, 3, 0)), [
+			BEHAVIOR_WALK_TO_JOIN_PAD,
+		]);
 
-		rig.Name = `${template.Name}${++this.serial}`;
+		this.nameRig(rig, draw.name, draw.template);
 
 		// **The instructions go on after the rig exists, and that order is deliberate rather than incidental.**
 		// `NpcService.spawn` starts the loop on the `NPC` tag, so the attributes are written one resumption
@@ -1493,6 +1737,13 @@ export class LobbyRigService implements OnStart {
 		// before anything could read that warning as a fault. The alternative — writing the attributes first —
 		// would mean this service deciding how a rig comes into being, which is `NpcService`'s.
 		this.writePadWalk(rig, side);
+
+		// **One line per spawn, naming the rig, the name drawn and the model drawn** — the pattern every per-rig
+		// line in this project keeps: an edge and never a tick. **It is the second line a spawn can produce**,
+		// and deliberately: `rebalance`'s `refill` line and `onPlayerLeft`'s `takes the seat` line say *why* a
+		// body was asked for, which is their callers' business, and this says *what* the body is, which is this
+		// file's. The pair is what lets a lobby be read back — who arrived, and wearing which face.
+		print(`[Rig] ${draw.name}: from "${draw.template.Name}" — lobby spawn, side ${side}`);
 
 		return rig;
 	}
@@ -1512,9 +1763,11 @@ export class LobbyRigService implements OnStart {
 	 * carries (`basePartsIn`'s rule and the lobby-folder lookup).
 	 */
 	private spawnArenaRig(side: TeamLabel): Model | undefined {
-		const template = this.findTemplate();
-		if (template === undefined) {
-			this.reportOnce("template", this.noTemplateMessage());
+		// The same draw, from the same pool, under the same rule: see `spawnLobbyRig` for why it comes
+		// before anything is placed, and `npc/rigPool.ts` for what a refusal means.
+		const draw = drawRigIdentity(readRigPool());
+		if (!draw.ok) {
+			this.reportOnce("pool", `[Rig] no rigs: ${draw.reason}`);
 
 			return undefined;
 		}
@@ -1537,20 +1790,28 @@ export class LobbyRigService implements OnStart {
 		// than one that is about to be handed something to do. Applying them here rather than leaving them
 		// to {@link setGameplayBehaviors} is what makes a *mid-round replacement* fight — that pass runs on
 		// a phase edge, and this rig arrives between two of them.
-		const rig = this.npcs.spawn(template, part.CFrame.add(new Vector3(0, 3, 0)), GAMEPLAY_BEHAVIORS);
+		const rig = this.npcs.spawn(draw.template, part.CFrame.add(new Vector3(0, 3, 0)), GAMEPLAY_BEHAVIORS);
 
-		rig.Name = `${template.Name}${++this.serial}`;
+		this.nameRig(rig, draw.name, draw.template);
 		rig.SetAttribute(TEAM_ATTRIBUTE, side);
 
 		// **Said out loud, because a rig that appears mid-round is otherwise indistinguishable from one
 		// that was always there.** This is the ordinary path rather than a fault, so it is a print and not a
 		// warning; it pairs with the `[Rig] refill` line when a seat was what asked for the body.
-		print(`[Rig] ${rig.Name}: playing — six behaviours on (${side}, arena spawn)`);
+		//
+		// **And the model the body came from, folded into the same line rather than given one of its own.**
+		// This sentence exists to say the thing a reader cannot see; a separate line for the source would be
+		// a second line for one event, and the two facts are read together anyway.
+		print(`[Rig] ${draw.name}: from "${draw.template.Name}" — six behaviours on (${side}, arena spawn)`);
 
 		return rig;
 	}
 
-	/** The join pads of `side`, by tag — read per spawn rather than cached, for `findTemplate`'s reason. */
+	/**
+	 * The join pads of `side`, by tag — read per spawn rather than cached, on the rule that every
+	 * derivation in this file is live: a pad a builder adds, moves or untags mid-session is what the next
+	 * rig is sent to, and there is no cache to go stale because there is no cache.
+	 */
 	private padsFor(side: TeamLabel): Array<BasePart> {
 		return taggedPartsInWorkspace(this.padTag(side));
 	}
@@ -1678,49 +1939,6 @@ export class LobbyRigService implements OnStart {
 
 		this.reported.add(key);
 		warn(message);
-	}
-
-	/** The one sentence about a missing template, shared by the two spawn paths. */
-	private noTemplateMessage(): string {
-		return (
-			`[Rig] no rigs: nothing named "${NPC_CONFIG.PLACEHOLDER_RIG_TEMPLATE}" is in ServerStorage, ` +
-			`so no placeholder can be made`
-		);
-	}
-
-	/**
-	 * The rig template: the first `Model` called `NPC_CONFIG.PLACEHOLDER_RIG_TEMPLATE` anywhere under
-	 * `ServerStorage`, or nothing.
-	 *
-	 * **By name *and* by class, in one walk, which is the rule `shared/find.ts` states and this is a
-	 * local copy of it.** That file's `findFolder` cannot answer this question — it takes a name and
-	 * returns a `Folder`, and a template is a `Model` — and the lookup it exists to replace,
-	 * `FindFirstChild(name, true)`, is the one that answers with the first instance *of that name
-	 * whatever it is*: a `Folder` called `PlaceholderRig` would shadow the model, and this would read as
-	 * "there is no template" while the thing it wanted sat beside it. The class has to be part of the
-	 * question rather than a check applied to the answer.
-	 *
-	 * **A copy rather than a second function in `shared/find.ts`, and the duplication is the cost.**
-	 * That file's own note records that a `findModel` sat beside `findFolder` until `MapService` was
-	 * deleted with its last caller, so restoring it is the honest home for these six lines. It is a
-	 * change to a shared module this task does not otherwise touch, so it is named in the report rather
-	 * than made here.
-	 *
-	 * **Anywhere under `ServerStorage`, not at a pinned parent.** The template may be filed at the root
-	 * of the service, in a folder of rig templates, or inside a model somebody built for another purpose
-	 * entirely; a walk of everything is what makes tidying it up break nothing. `ServerStorage` is a
-	 * small tree — it holds what the game clones and nothing that it runs — so the walk costs one pass
-	 * at boot and never runs again.
-	 */
-	private findTemplate(): Model | undefined {
-		for (const instance of ServerStorage.GetDescendants()) {
-			if (instance.Name !== NPC_CONFIG.PLACEHOLDER_RIG_TEMPLATE) continue;
-			if (!instance.IsA("Model")) continue;
-
-			return instance;
-		}
-
-		return undefined;
 	}
 
 	/**
