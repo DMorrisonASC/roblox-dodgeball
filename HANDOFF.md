@@ -1,11 +1,23 @@
 # Handoff — roblox-dodgeball
 
 A guide for a fresh session. Written 2026-09-28 against a green build (`npm run build` → exit 0);
-**brought up to date 2026-10-16** against a green build with the mobile input surface and the GUI
-region rule in the tree (the last commit is `196a5b3`). Earlier revisions: 2026-10-14 at `9b47369`,
-2026-10-11 at `9e2e971`, 2026-10-06 at `5bcc374`. Where this file and the source disagree, the source
-wins — and the tag count in §7 is deliberately not quoted here (it is `TAGS.md`'s own table, which is
-the count).
+**brought up to date 2026-10-17** against a green build with the persistence pass in the tree (the
+last commit is `a73c0a7`, and that pass is **uncommitted** — see §12b and §15 item 24). Earlier
+revisions: 2026-10-16 at `196a5b3` with the mobile input surface and the GUI region rule, 2026-10-14
+at `9b47369`, 2026-10-11 at `9e2e971`, 2026-10-06 at `5bcc374`. Where this file and the source disagree,
+the source wins — and the tag count in §7 is deliberately not quoted here (it is `TAGS.md`'s own table,
+which is the count).
+
+**What has landed since the 2026-10-16 revision.** One thing, and it is the first change to how the two
+DataStores are written since either service was created:
+
+1. **Persistence has a shape, and it is shared.** A session lock on both records (`SessionId` /
+   `LastUpdated`, claimed inside the join read with `UpdateAsync`), a save at the **round end** in both
+   services, printed write failures on the economy side, a sleep between the stats service's two
+   retries, and a `BindToClose` that spends a bounded 20 s window instead of an unbounded one. The
+   rules live in `src/server/persistence/` — outside `services/`, so `flamework.build` is untouched
+   — and **§12b is the new section that describes them.** The one-file summary: nothing writes on a
+   hit, and four boundaries now do.
 
 **What has landed since the 2026-10-14 revision, because a reader of the older sections is missing all of
 it.** Three things, and the third is the one that changed a *rule* rather than adding a feature:
@@ -78,6 +90,14 @@ and `restyleEngineJump`; `controllers/CoreGuiController.ts`'s own account of whi
 and §4, §9 and §15 of this file. **§5, §6, §7, §8, §11, §12, §13, §14 and §16 were not re-read this
 time** and stand as they were — with one exception that matters: **anything in them that describes
 which region the HUD's `ScreenGui` draws in is superseded by the rule in §9.**
+
+**What the 2026-10-17 pass re-read, and what it did not.** It re-read both services' *persistence
+paths only* — every `load`, `write`, `flush`, autosave and shutdown method in `StatsService` and
+`EconomyService` — plus `RoundService.finishRound`'s tail, `shared/economy.ts`'s parsers, and the two
+new modules in `src/server/persistence/`. It added §12b, corrected §12's persistence bullet and §4's map,
+and added §15 items 24–28. **Everything else in this file stands as the 2026-10-16 revision left it**,
+including §12's economy rules, which this pass did not touch: the coin values, the chest, the milestones
+and the catalog are unchanged and still unconfirmed in Studio (§15 item 1).
 
 **Read this file, then read the actual source.** This document describes *where* things are and *why*
 the shape is what it is; it deliberately does not reproduce code, because code copied into prose
@@ -273,10 +293,16 @@ src/shared/                      runs on both sides
 src/server/
   main.server.ts                 boot: collision groups, ignite, CharacterAutoLoads = false, shield
   collision/CollisionGroups.ts   PhysicsService + Workspace groups; applyBarrierGroups()
+  persistence/                   **not a service and deliberately outside `services/`** (so it never
+                                 reaches `flamework.build`): sessionLock.ts — `SessionId` /
+                                 `LastUpdated`, `heldByAnother`, `stamped`, `serverNow` — and
+                                 shutdown.ts — the `BindToClose` budget, the per-write deadline, and
+                                 `runWithin`, the thread-and-poll that enforces it. §12b
   services/round/                RoundService, JoinService, VoteService (dormant), roundStatus.ts,
                                  team.ts, modes/{GameMode,TeamEliminationMode,ScoreRushMode,DodgeAndSeekMode,registry}
   services/match/MatchService.ts opt-in roster, the two join parts, the counts signs
-  services/economy/EconomyService.ts  coins, powers, cosmetics, milestones, the chest
+  services/economy/EconomyService.ts  coins, powers, cosmetics, milestones, the chest — and the
+                                 `"Economy"` store, locked, written at four boundaries (§12b)
   services/character/            RespawnService, WalkSpeedService, SpawnShield
   services/ball/                 BallService, BallFactory, BallSpawnerService, BallPickupService,
                                  BallTrail, ballExpiry, SphereService, ThrowProbe, SoundEmitter
@@ -287,7 +313,8 @@ src/server/
   services/actions/              ActionService, CatchService, DodgeService, FreezeService,
                                  actionLock, readyAt
   services/super/SuperService.ts streak, charge (dev-only), MultiBall window, crowns
-  services/stats/StatsService.ts hits + outs, DataStore "PlayerStats", autosave
+  services/stats/StatsService.ts hits + outs, DataStore "PlayerStats", the round-end + autosave
+                                 boundaries, and `recordOut`'s caller in the round (§12b)
   services/visual/OutlineService.ts   per-body Highlight, team colours, freeze override
   services/mystery/MysteryBoxService.ts  the tagged spawn points, the box, the chest prize
   services/zone/PracticeZoneService.ts   zone membership -> PRACTICE_ZONE_ATTRIBUTE
@@ -1027,10 +1054,11 @@ DataStore record per player**.
   placeholder that has never been filled in, and nothing consumes one yet. The intent is one **Game
   Pass** per catalog item and **no Developer Products** at all, because the design has no repeatable
   purchase to sell.
-- **Persistence** mirrors `StatsService`: DataStore `"Economy"`, load on join, autosave every
-  `AUTOSAVE_INTERVAL = 180` s writing only changed records, a write on leave, and `BindToClose` on
-  shutdown. Every call is `pcall`-wrapped, and a corrupt or absent record decodes to blank rather
-  than to a crash (`shared/economy.ts` shape-checks it).
+- **Persistence** is now the same shape in both services, and the two live in
+  `src/server/persistence/` rather than in either service: `"Economy"` and `"PlayerStats"` are still
+  separate stores and separate records, but the *rules* about writing them are shared. **Read
+  `sessionLock.ts` and `shutdown.ts` before touching either service's write path** — §12b has the
+  whole account.
 - **Dev commands registered here:** `!dev coins` (+1000) and `!dev powers` (grant the full roster).
 - **The shop GUI is wired now, and the briefing about its old mock is not.** `ShopController` *was*
   the static mock and is not any more: it has two tabs ("Cosmetics", "Power & Items"), sends
@@ -1040,6 +1068,107 @@ DataStore record per player**.
   hands them to `BallTrail.attach`. Elimination cosmetics are still ownership-only (nothing reads
   `EQUIPPED_ELIMINATION_ATTRIBUTE`). `SHOP-PANEL-BRIEFING.md` still describes the retired mock; it is
   kept as a record of it, not as a description of the current panel.
+
+---
+
+## 12b. Persistence — the two stores, the session lock, and the bounded shutdown
+
+Added 2026-10-17. **This section is the account §12's persistence bullet points at**; it covers both
+services because the change that created it made their write rules identical in everything except the
+record's contents. The two records are still separate — `"PlayerStats"` holds `hits`/`outs`,
+`"Economy"` holds coins, items, cosmetics and the two counters — and they are still separate stores.
+**Nothing here has been confirmed in Studio**; §16 does not gain a line from this pass.
+
+**Where the rules live, and why not in the services.** `src/server/persistence/sessionLock.ts` owns the
+two record fields, the "may this write happen" test, and the one function that stamps a payload.
+`src/server/persistence/shutdown.ts` owns the shutdown window, the per-write deadline and the
+thread-and-poll that enforces it. **Both sit outside `src/server/services/` on purpose**: Flamework's
+`addPaths("src/server/services")` recurses, so a plain module under it gets an identifier in
+`flamework.build` whether or not it holds a decorator. `npc/rigPool.ts` is the precedent. Neither
+module appears in the manifest.
+
+**A record is still loaded once into memory and written from memory**, which is the platform's
+recommended shape and unchanged. What changed is *when* it is written:
+
+| Boundary | Where | Why |
+|---|---|---|
+| the player leaves | `saveAndForget` | the only write that must not be lost, and the one that **releases the lock** |
+| **a round ends** | `StatsService.onRoundEnded`, the tail of `EconomyService.onRoundEnded` | the instant a record stops changing; **this is the new one** |
+| every `AUTOSAVE_INTERVAL = 180` s | both `autosaveLoop`s | the backstop for a crash, which `BindToClose` never runs for |
+| the server shuts down | `saveAll` via `BindToClose` | the last chance, and the only one that waits |
+
+**The coalescing rule is not weakened by the round-end write, and the user's constraint is the
+reason it exists**: *"I don't think player hit and death ratio should be saved instantly for each."*
+Nothing on a hit, a throw, a death or a pick-up touches the store. `flush(player, why)` is the only
+path a boundary takes, and its first act is to compare the record against what was last written — so
+a round end writes only the players who gained something in that round. `why` is not decoration: the
+log line `[Stats] <Name>: saved NH/MO — the round end` is the only evidence that the boundary fired at
+all, and without it a round end that saved nobody and one that saved eight look identical.
+
+**`StatsService` gets no roster from the round, deliberately.** `RoundService.finishRound` calls
+`this.stats.onRoundEnded()` with no arguments, and the service sweeps every record it holds. The
+obvious argument — `playersInRound()` — is **wrong**, and this is the trap to know: that accessor is
+`activePlayers`, and `eliminate` deletes from it *during* the round, so at the round's end it is the
+survivors — exactly the players whose `outs` did *not* go up. The dirty test makes the sweep cost one
+comparison per unchanged player, so the superset buys correctness for nothing.
+
+**The session lock, in the shape it was built.**
+
+- **Two fields on the saved value: `SessionId` and `LastUpdated`.** A deliberate departure from
+  Roblox's reference implementation, which keeps its `LockId` in the key's *metadata*. Both records
+  are read by shape-checked parsers that ignore unknown fields (`toStats`, `toEconomyRecord`), so two
+  plain fields cost nothing: an old record parses exactly as before and simply reads as unlocked. The
+  metadata route would have needed a `DataStoreKeyInfo` plumbed through every transform in two
+  services and a second storage mechanism to keep honest.
+- **The claim and the read are one `UpdateAsync`.** `GetAsync` followed by a write would leave the
+  window the lock exists to close. The transform takes the record if it is unlocked, already ours, or
+  expired; otherwise it returns `nil`, which is the documented way to *cancel* a write rather than
+  perform one.
+- **A failed claim does not kick anybody.** The player gets a blank record — published, so the HUD and
+  every ownership gate have an answer — and joins `unsaveable`, which is the "mark it errored so it is
+  never written" rule from the docs. **One set serves two roads**: a load that failed, and a lock held
+  by another server. The second road is why the refusal is permanent for the session: the moment the
+  other server releases, a retry would *succeed* and write the copy this server read before the hop.
+  **Writing a blank record over a real one is the wipe the docs warn about by name, and it was live
+  here before this pass**: the economy's `fetch` answered `undefined` on a failed read, `toEconomyRecord`
+  turned that into a zero wallet, and the next sweep wrote it back.
+- **Leaving releases the lock; the expiry is for crashes.** `saveAndForget` writes with `release = true`,
+  which drops both fields. A player who hops servers lands unlocked; a server that dies holding a lock
+  costs the next one a wait, and `LOCK_EXPIRY_SECONDS = 300` (**Placeholder**) is that wait — one
+  autosave sweep of slack plus a slow one, against the reference's thirty minutes, because a round here
+  is 150 s.
+- **No `MessagingService`, and the cost is named.** The docs' lock is transactional, and cross-server
+  messaging is best-effort. Without it a superseded server keeps trying until its next write — and that
+  write is *refused by the transform*, which is the guarantee that matters. Adding it would buy a
+  faster refusal in exchange for a subscription and a failure mode of its own.
+- **Every write is `UpdateAsync`.** It costs read *and* write budget (documented), which at
+  `60 + numPlayers × 40` writes a minute against ≤ 20 actual writes does not matter, and it is what
+  makes the lock check possible at all.
+
+**The shutdown is bounded, in one place.** `BindToClose` gets **30 s** from the engine and runs bound
+functions *in parallel*, so the two services' saves stand in one window rather than two. `shutdown.ts`
+states the budget once: `BIND_TO_CLOSE_SECONDS = 20` (**Placeholder**) for the whole save,
+`WRITE_DEADLINE_SECONDS = 5` (**Placeholder**) for any single write. Each write is taken as
+`math.min(windowLeft, 5)` and run through `runWithin`, which is a thread and a poll — **the only
+available shape**, because a throttled `UpdateAsync` *"continues to yield as long as its request is
+still queued"* and cannot be cancelled. When the deadline fires the player is named and skipped, the
+next one gets what is left of the window, and the loop ends with `shutdown ran out of its 20s window —
+N record(s) not saved`. **A shutdown that runs out of time is a data loss with a log**, and that is the
+decision, not an accident.
+
+**Failures print, on both sides.** `EconomyService.write` used to do `const [success] = pcall(...)` and
+throw the error away — a wallet that stopped saving with nothing in the output. It now prints
+`[Economy] write failed for <Name> (<userId>): <error>`, one line per attempt, and `StatsService` has
+always printed both of its attempts. The stats retry now **sleeps** between them
+(`RETRY_SLEEP_SECONDS = 1`, **Placeholder**) instead of re-issuing in the same frame, which was one
+throttle turning into two writes. The economy still has **no retry** — the asymmetry is known and
+deliberately not unified here (§15 item 25).
+
+**The log lines to look for** if any of this is ever seen in Studio: `[Stats] <Name>: loaded NH/MO
+(locked)`, `[Stats] <Name>: saved NH/MO — the round end`, `[Economy] <Name>: saved N coins — the round
+end`, `[Stats] claim failed …` / `[Economy] write failed …`, and the two `shutdown — N record(s)
+written, M skipped` summaries. `DEBUG` is `true` in both files, so all but the last two print by
+default.
 
 ---
 
@@ -1248,6 +1377,37 @@ region gate above, and none has been looked at in Studio.**
     still describe the old pair and were left alone deliberately. Expect it when you diff the tree, and
     do not "fix" it.
 
+**Found by the 2026-10-17 persistence pass. None of these is a bug found in code — they are the
+residue of that pass, and each is a decision left open rather than a mistake left in.**
+
+24. **Nothing in §12b has been observed in Studio.** The session lock, the round-end write, the
+    economy's failure line and the bounded shutdown are all *readings* — the code paths are there and
+    the build is green, and the only two items that can actually be seen are the economy's
+    `[Economy] write failed …` line (needs a failing store) and the two `— the round end` save lines
+    (need one finished round). Everything else in the pass is unverified, and §16 has no new line.
+25. **The economy still has no retry** — the stats service tries twice with a sleep and the economy
+    tries once — and that asymmetry was deliberately left alone, because unifying it is a change to
+    the economy rather than to persistence. **The missing `IsDescendantOf` load guard was closed
+    incidentally**, and worth saying plainly because the task that found it was told not to fix it:
+    `load` now returns if the player is gone by the time the claim answers, exactly as the stats
+    service always has, because otherwise it would build a record for somebody who has left and
+    publish to them. It is one line in a block that had to be rewritten anyway, not a separate change.
+26. **Neither auto-save loop is jittered**, against the docs' explicit advice ("don't start recurring
+    requests from every server on the same schedule"). Both sweep at `joinTime + n × 180`, and the
+    round-end flush added in this pass puts a second population of writes on the round clock rather
+    than the wall clock, which helps — but a fresh server still lands on the same phase as every other
+    fresh server. A jitter needs a per-server seed and changes a constant a spec may read.
+27. **No write happens on a purchase.** Opening a chest subtracts coins at `openChest` and buying a
+    cosmetic at `purchaseCosmetic`, and neither touches the store — the spend lands on the next
+    sweep, the next round end or the leaver's write. The platform lists *"purchase processing"* as a
+    checkpoint, so this is the one place the economy is still short of the guidance; it is a design
+    question of its own (a failed write on a player's click is the one failure that has to be answered
+    *to the player*), and it is not persistence's.
+28. **`BindToClose` ignores `Enum.CloseReason`.** A maintenance restart and a developer shutdown get
+    the same twenty-second window. There is no case today where a different window would help — the
+    note exists because the `CloseReason` argument is right there and unused, and because a `Restart`
+    against a slow store is the case where knowing *why* we are shutting down would be worth having.
+
 ---
 
 ## 16. What a live log has actually confirmed
@@ -1255,6 +1415,11 @@ region gate above, and none has been looked at in Studio.**
 Treat everything else as unverified. These were observed in the user's Studio output. Where the
 system they were observed in has since been removed, that is said explicitly — a confirmation is
 only worth anything about code that still exists.
+
+**Nothing from the 2026-10-17 persistence pass appears below**, and that is the honest state of it:
+no session lock has been claimed, no round-end save has been seen, and no failed economy write has
+been printed in front of anyone. §12b says which lines would prove each one; §15 item 24 says which
+two of them are reachable in a Studio session at all.
 
 **Still true of the current build:**
 

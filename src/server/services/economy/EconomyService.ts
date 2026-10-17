@@ -31,10 +31,31 @@ import {
 import { events } from "shared/networking";
 import { validatePurchase } from "shared/purchase";
 import { DevService } from "../../dev/DevService";
+import {
+	LOCK_EXPIRY_SECONDS,
+	heldByAnother,
+	serverNow,
+	serverSessionId,
+	stamped,
+} from "../../persistence/sessionLock";
+import { BIND_TO_CLOSE_SECONDS, WRITE_DEADLINE_SECONDS, runWithin } from "../../persistence/shutdown";
 import { DRAW, RoundOutcome, TeamLabel } from "../round/team";
 
 /** Prints one line per grant, chest, milestone and round-end payout. */
 const DEBUG = true;
+
+/**
+ * What a write attempt did. **Three answers rather than a boolean, because the caller reacts to each
+ * differently** — `written` retires the dirty mark, `failed` leaves it for the next sweep, and `refused`
+ * means this session must stop writing this record altogether. The same three as `StatsService`'s, kept as
+ * this file's own type because the two are answers about different records and either could gain a fourth.
+ */
+type WriteOutcome = "written" | "failed" | "refused";
+
+/** What reading — and locking — a record answered. See {@link claim}. */
+type ClaimOutcome =
+	| { readonly ok: true; readonly record: EconomyRecord }
+	| { readonly ok: false; readonly reason: string };
 
 /**
  * The economy: one coin, one chest, a roster of owned powers, a set of owned cosmetics, and the two
@@ -70,6 +91,25 @@ export class EconomyService implements OnStart {
 	/** The last value written for each player, serialized, so an unchanged record is never written twice. */
 	private readonly saved = new Map<Player, string>();
 
+	/**
+	 * **The players whose record this session must never write.**
+	 *
+	 * Two roads lead here and they end in the same place, which is why it is one set rather than two flags:
+	 *
+	 * - **The record could not be loaded.** The player then plays on a blank wallet — the platform recommends
+	 *   that over kicking (*"we recommend letting the player play with default data ... rather than removing
+	 *   them from the game"*) — but a blank wallet written back over a real one is a wipe, and the same page
+	 *   warns about it by name: *"Take special care to ensure that fallback data doesn't later overwrite
+	 *   'real' data."*
+	 * - **Another server holds the lock.** Roblox's own sample marks such a profile `errored` and refuses to
+	 *   write it, and the refusal has to last the whole session: the *moment* the other server releases, a
+	 *   write from here would succeed — and it would carry the copy this server read before the other one
+	 *   changed it.
+	 *
+	 * An entry is removed when the player leaves, so a rejoin starts clean.
+	 */
+	private readonly unsaveable = new Set<Player>();
+
 	private cachedStore?: DataStore;
 
 	constructor(private readonly dev: DevService) {}
@@ -79,7 +119,9 @@ export class EconomyService implements OnStart {
 		Players.PlayerRemoving.Connect((player) => this.saveAndForget(player));
 		for (const player of Players.GetPlayers()) this.load(player);
 
-		// The one save that is waited for: everything else is a periodic or leaver write.
+		// The one save that is waited for: everything else is a periodic, boundary or leaver write. It waits
+		// for a *bounded* time — see `saveAll`, which spends the shared `BindToClose` window rather than the
+		// engine's whole one.
 		game.BindToClose(() => this.saveAll());
 
 		task.spawn(() => this.autosaveLoop());
@@ -148,6 +190,14 @@ export class EconomyService implements OnStart {
 		teams: ReadonlyMap<Player, TeamLabel>,
 		roundHits: ReadonlyMap<Player, number>,
 	): void {
+		// **The round end is a save boundary, and the coins a round pays are the reason.** Every figure this
+		// record holds moves here and on a purchase; before this the store heard about either only when the
+		// player left or three minutes went by, so a crash or a shutdown in between lost the round's earnings
+		// — the "critical checkpoints such as purchase processing" the platform's best-practice page asks for.
+		// Collected rather than written inline, so the payouts below stay one synchronous pass, and flushed
+		// after it so the writes carry the milestones the pass may have granted.
+		const played: Player[] = [];
+
 		for (const player of Players.GetPlayers()) {
 			const record = this.records.get(player);
 			if (record === undefined) continue;
@@ -172,7 +222,16 @@ export class EconomyService implements OnStart {
 			if (DEBUG) print(`[Economy] ${player.Name}: +${coins} coins (${record.coins})`);
 
 			this.checkMilestones(player);
+
+			played.push(player);
 		}
+
+		// Spawned, so `RoundService.finishRound` is not held for a write per player before the intermission
+		// that follows — and so one slow record cannot delay the others. The dirty test in `flush` is what
+		// keeps this from being a request per player per round.
+		task.spawn(() => {
+			for (const player of played) this.flush(player, "the round end");
+		});
 	}
 
 	/**
@@ -225,7 +284,7 @@ export class EconomyService implements OnStart {
 	 *    first because it is the cheapest check and because every check after it is a lookup keyed by the
 	 *    slot.
 	 * 2. **`id` must be a string.** Anything else is dropped without a reply.
-	 * 3. **The record must be loaded.** A player whose `GetAsync` has not answered has no record to write,
+	 * 3. **The record must be loaded.** A player whose record read has not answered has no record to write,
 	 *    and the request is dropped rather than queued — the same call `onRoundEnded` makes for the same
 	 *    reason: a store that has not answered is already the worse failure, and a queue is machinery a
 	 *    solo economy should not carry.
@@ -611,7 +670,7 @@ export class EconomyService implements OnStart {
 	 * 1. **`power` must be a string.** It arrives from an untyped wire; nothing else is assumed about it.
 	 * 2. **`isAbilityKind(power)`** — a name this build knows. Without this an arbitrary word would enter the
 	 *    set, be joined into the attribute, and be read back by the panel as a power that cannot exist.
-	 * 3. **The record must be loaded.** A request arriving before the `GetAsync` answers is dropped rather
+	 * 3. **The record must be loaded.** A request arriving before the record read answers is dropped rather
 	 *    than queued — {@link equipCosmetic}'s call, for its reason.
 	 * 4. **And the player must own it, read from `record.items` and never from an attribute.** This is the
 	 *    check that makes the remote safe rather than merely tidy: the pool is a *subset of what you own*, so a
@@ -884,35 +943,143 @@ export class EconomyService implements OnStart {
 		return this.cachedStore;
 	}
 
-	/** One read; `undefined` on any failure, which the caller turns into a blank record. */
-	private fetch(key: string): unknown {
+	/**
+	 * **Reads `player`'s record and takes the session lock on it, in one `UpdateAsync`.**
+	 *
+	 * **The claim and the read have to be the same call.** A read followed by a write would leave a window in
+	 * which two servers both see the same record and both believe they own it — which is the fault the lock
+	 * exists to close, re-opened by the read itself. The platform's own reference implementation makes the
+	 * same move: the lock is *"atomically"* written *"inside the same `UpdateAsync()` call"* as the first read.
+	 * It matters more here than it does for stats, because a wallet is money: two servers counting the same
+	 * coins from the same starting balance is how a player earns a round twice.
+	 *
+	 * **The transform cannot yield** — *"The callback function you pass into UpdateAsync() does not have
+	 * permission to yield"* — so everything in it is a table read, a compare and `GetServerTimeNow()`, which
+	 * does not wait.
+	 *
+	 * **A claimed record is written back stamped with its fields untouched**, so claiming costs the player
+	 * nothing. A value that is absent or is not a table becomes an empty table, which is also the migration
+	 * path for every record written before this change: it carries no session fields, reads as unlocked, and
+	 * the first claim upgrades it in place while `toEconomyRecord` reads every figure it already had from the
+	 * fields it keeps. Unknown fields are ignored by that parser, which is what makes the two new ones free.
+	 */
+	private claim(player: Player): ClaimOutcome {
 		const store = this.store();
-		if (store === undefined) return undefined;
+		if (store === undefined) return { ok: false, reason: "the store is not available" };
 
-		const [success, result] = pcall(() => store.GetAsync(key));
-		return success ? result : undefined;
+		const key = this.key(player);
+		const session = serverSessionId();
+
+		const [success, result] = pcall(() =>
+			store.UpdateAsync(key, (oldValue: unknown) => {
+				const now = serverNow();
+
+				// **Held by somebody else and not expired: cancel the write by returning nothing** — the
+				// documented refusal — rather than writing over a live session's wallet.
+				if (heldByAnother(oldValue, session, now, LOCK_EXPIRY_SECONDS) !== undefined) {
+					return $tuple(undefined);
+				}
+
+				const base: object = typeIs(oldValue, "table") ? (oldValue as object) : {};
+
+				return $tuple(stamped(base, session, serverNow()));
+			}),
+		);
+
+		if (!success) {
+			warn(`[Economy] load failed for ${player.Name} (${key}): ${tostring(result)}`);
+
+			return { ok: false, reason: "the read failed" };
+		}
+
+		// Nothing back means our transform refused: the other server still owns the record.
+		if (result === undefined) return { ok: false, reason: "another server holds this record" };
+
+		return { ok: true, record: toEconomyRecord(result) };
 	}
 
-	/** One write, serializing the record to its plain-table form. Answers whether it was written. */
-	private write(player: Player): boolean {
+	/**
+	 * **Writes `player`'s record through the session lock. Always `UpdateAsync`, never `SetAsync`.**
+	 *
+	 * **The whole of this method changed shape for a reason that is worth stating plainly**: the old version
+	 * was `pcall(() => store.SetAsync(key, payload))` with `const [success] =` — the error was thrown away and
+	 * a failed write was a number in a store that quietly never changed. Now the failure is printed with the
+	 * player, the key and what the store said, because a wallet that stops saving is the one failure in this
+	 * game a player will notice and nobody would otherwise be able to explain.
+	 *
+	 * **`UpdateAsync` on the platform's own rule** — *"prefer UpdateAsync() when a write depends on the current
+	 * value or when multiple servers might write the same key"* — since the value written carries the lock and
+	 * has to be checked against the one held. `release` is the difference between an ordinary write and the
+	 * last one: a periodic or boundary write refreshes the stamp and keeps the lock, while a leaver's write and
+	 * a shutdown's write *drop* it, which is the documented unlocking step (*"as part of the final write in
+	 * `PlayerRemoving` or `BindToClose()`"*) and what lets a player who hops servers land unlocked.
+	 *
+	 * **`this.saved` holds the *unstamped* serialization**, which is not an oversight: the dirty test is a
+	 * comparison between two records, and a timestamp that changed on every write would make every record look
+	 * different from the last one written. The stamp exists in the store, not in memory.
+	 */
+	private write(player: Player, release: boolean): WriteOutcome {
 		const record = this.records.get(player);
-		if (record === undefined) return false;
+		if (record === undefined) return "failed";
 
 		const store = this.store();
-		if (store === undefined) return false;
+		if (store === undefined) return "failed";
 
+		const key = this.key(player);
+		const session = serverSessionId();
 		const payload = toSavedEconomy(record);
-		const [success] = pcall(() => store.SetAsync(this.key(player), payload));
-		if (success) this.saved.set(player, HttpService.JSONEncode(payload));
 
-		return success;
+		const [success, result] = pcall(() =>
+			store.UpdateAsync(key, (oldValue: unknown) => {
+				const now = serverNow();
+
+				if (heldByAnother(oldValue, session, now, LOCK_EXPIRY_SECONDS) !== undefined) {
+					return $tuple(undefined);
+				}
+
+				return $tuple(release ? (payload as object) : stamped(payload, session, serverNow()));
+			}),
+		);
+
+		if (!success) {
+			warn(`[Economy] write failed for ${player.Name} (${key}): ${tostring(result)}`);
+
+			return "failed";
+		}
+
+		if (result === undefined) return "refused";
+
+		this.saved.set(player, HttpService.JSONEncode(payload));
+
+		return "written";
 	}
 
-	/** Loads a record and, once it is in, grants the default roster, publishes it, and catches any milestone it has already passed. */
+	/**
+	 * Loads a record, locks it, and — once it is in — grants the default roster, publishes it, and catches any
+	 * milestone it has already passed.
+	 *
+	 * **A failed claim leaves the player playing on a blank wallet and this session silent.** The blank record
+	 * is published so the HUD and every gate read an answer, and the player joins {@link unsaveable} so those
+	 * blanks can never be written over the real thing. If the reason was a lock rather than a broken store, the
+	 * same flag is what stops the stale copy in memory from being written the moment the other server unlocks.
+	 */
 	private load(player: Player): void {
 		task.spawn(() => {
-			const record = toEconomyRecord(this.fetch(this.key(player)));
-			this.records.set(player, record);
+			const claim = this.claim(player);
+
+			// Gone already: nothing to publish to, and no entry worth keeping for a player who cannot return.
+			if (!player.IsDescendantOf(Players)) return;
+
+			if (!claim.ok) {
+				this.records.set(player, blankEconomyRecord());
+				this.unsaveable.add(player);
+
+				warn(`[Economy] ${player.Name}: ${claim.reason} — they play on a blank wallet and this session will not save it`);
+			} else {
+				this.records.set(player, claim.record);
+				this.saved.set(player, HttpService.JSONEncode(toSavedEconomy(claim.record)));
+			}
+
 			this.grantDefaultRoster(player);
 			this.publish(player);
 			this.checkMilestones(player);
@@ -967,31 +1134,156 @@ export class EconomyService implements OnStart {
 		print(`[Economy] ${player.Name}: default roster granted — ${missing.join(", ")}`);
 	}
 
-	/** A leaver's write, then the in-memory rows go. Fire-and-forget: nothing waits for a leaver. */
+	/**
+	 * **Retires a record for this session, and says so once.**
+	 *
+	 * The single door to {@link unsaveable}, so both roads there — a failed load and a lock held elsewhere —
+	 * are one rule in one place. The warning names the player and says what happened, because a wallet that
+	 * stops saving is the one thing in this game a player will ask about.
+	 */
+	private refuse(player: Player, what: string): void {
+		if (this.unsaveable.has(player)) return;
+
+		this.unsaveable.add(player);
+		warn(`[Economy] ${player.Name}: ${what} — another server holds this record, so this session stops writing it`);
+	}
+
+	/**
+	 * **Writes one player if their record differs from what was last written — the path every periodic and
+	 * boundary save takes, and the only place the dirty test lives.**
+	 *
+	 * The comparison was inline in the autosave loop; it is a method now because there are three callers —
+	 * autosave, round end and leave.
+	 *
+	 * **A purchase still does not write on the spot, and that is unchanged rather than endorsed.** Opening a
+	 * chest subtracts coins at `openChest`, and buying a cosmetic at `purchaseCosmetic`, and neither calls the
+	 * store: the spend reaches it on the next sweep, the next round end or the leaver's write. The platform's
+	 * guidance lists *"purchase processing"* as a checkpoint, so this is the one place the economy is still
+	 * short of it — it is reported rather than fixed here, because a synchronous write on a player's click is a
+	 * different design question (it is the one path where a failed write must be answered to the player, not
+	 * swallowed) and this change is about boundaries that already exist.
+	 *
+	 * `why` is for the log line, and the line is the proof a boundary write happened: a round end that saved
+	 * nobody and one that saved eight read identically without it.
+	 */
+	private flush(player: Player, why: string): void {
+		const record = this.records.get(player);
+		if (record === undefined) return;
+		if (this.unsaveable.has(player)) return;
+
+		if (this.saved.get(player) === HttpService.JSONEncode(toSavedEconomy(record))) return;
+
+		const outcome = this.write(player, false);
+
+		if (outcome === "written") {
+			if (DEBUG) print(`[Economy] ${player.Name}: saved ${record.coins} coins — ${why}`);
+
+			return;
+		}
+
+		if (outcome === "refused") this.refuse(player, `writing at ${why}`);
+	}
+
+	/**
+	 * A leaver's write, releasing their lock, then the in-memory rows go. Fire-and-forget: nothing waits.
+	 *
+	 * **The entry goes either way**: the record has been handed to the store, and a map keyed on a player who
+	 * has left is a leak with nothing in it to read. **The release is why this writes at all** — a player who
+	 * hops servers in the same second must not land on a wallet still locked by the server they left.
+	 */
 	private saveAndForget(player: Player): void {
 		task.spawn(() => {
-			this.write(player);
+			if (this.records.has(player) && !this.unsaveable.has(player)) {
+				if (this.write(player, true) === "refused") this.refuse(player, "leaving");
+			}
+
 			this.records.delete(player);
 			this.saved.delete(player);
+			this.unsaveable.delete(player);
 		});
 	}
 
-	/** The periodic write: changed records only, which is what the `saved` map decides. */
+	/**
+	 * The periodic write: changed records only, which is what the `saved` map decides.
+	 *
+	 * Spawned per player so one slow record does not hold up the sweep, and — with the round-end flush — the
+	 * reason a live server's lock never expires while a dead server's does: the interval is shorter than
+	 * `LOCK_EXPIRY_SECONDS` by a whole sweep.
+	 */
 	private autosaveLoop(): void {
 		while (true) {
 			task.wait(ECONOMY_CONFIG.AUTOSAVE_INTERVAL);
 
-			for (const [player, record] of this.records) {
-				const payload = HttpService.JSONEncode(toSavedEconomy(record));
-				if (this.saved.get(player) === payload) continue;
-
-				this.write(player);
+			for (const [player] of this.records) {
+				task.spawn(() => this.flush(player, "the autosave"));
 			}
 		}
 	}
 
-	/** The shutdown write, waited for by `BindToClose`. */
+	/**
+	 * Writes everybody out, releases their locks, and **waits for it — inside a deadline.**
+	 *
+	 * **Every record is written rather than only the changed ones, because this write also releases the
+	 * lock.** A clean shutdown should leave every record unlocked for the next server; skipping an unchanged
+	 * one would leave it locked until the expiry and gain nothing.
+	 *
+	 * **The bound is per write and taken from the window that is left**, which is one mechanism rather than
+	 * two. A budget check (`GetRequestBudgetForRequestType`) would answer a different question — *may* I
+	 * write? — and the failure this is built for is a write that is allowed and never answers, because a
+	 * throttled request sits in the engine's queue and *"the called function continues to yield as long as its
+	 * request is still queued"*. When the window does run out the rest are skipped **loudly**: a shutdown that
+	 * runs out of time is a loss either way, and the choice left is whether it is a loss with a log.
+	 */
 	private saveAll(): void {
-		this.records.forEach((record, player) => this.write(player));
+		const endsAt = os.clock() + BIND_TO_CLOSE_SECONDS;
+
+		let written = 0;
+		let skipped = 0;
+
+		for (const [player] of this.records) {
+			if (this.unsaveable.has(player)) {
+				skipped++;
+				continue;
+			}
+
+			const left = endsAt - os.clock();
+			if (left <= 0) {
+				skipped++;
+				continue;
+			}
+
+			if (this.writeWithin(player, math.min(left, WRITE_DEADLINE_SECONDS))) written++;
+			else skipped++;
+		}
+
+		if (DEBUG) {
+			print(`[Economy] shutdown — ${written} record(s) written, ${skipped} skipped, of ${this.records.size()}`);
+		}
+
+		if (skipped > 0) {
+			warn(`[Economy] shutdown ran out of its ${BIND_TO_CLOSE_SECONDS}s window — ${skipped} record(s) not saved`);
+		}
+	}
+
+	/**
+	 * One shutdown write, waited for at most `seconds`. `runWithin` owns the thread-and-poll — the stats
+	 * service's shutdown needs the same one — and what is left here is the part only this file knows: which
+	 * player timed out, and that a refusal is the other server's lock rather than a fault.
+	 */
+	private writeWithin(player: Player, seconds: number): boolean {
+		const outcome = runWithin(seconds, () => this.write(player, true));
+
+		if (!outcome.ok) {
+			warn(
+				`[Economy] ${player.Name}: the shutdown write did not answer within ` +
+					`${string.format("%.1f", seconds)}s — moved on`,
+			);
+
+			return false;
+		}
+
+		if (outcome.value === "refused") this.refuse(player, "the shutdown write");
+
+		return outcome.value === "written";
 	}
 }

@@ -1068,6 +1068,20 @@ export class RoundService implements OnStart {
         // checks in one call. See `EconomyService.onRoundEnded`.
         this.economy.onRoundEnded(outcome, this.teams, this.roundHits);
 
+        // **And the lifetime figures are written now, because this is the instant they stop moving.** A
+        // hit and an out are only counted while the phase is `Playing`, so a round end is the boundary a
+        // record can be saved at — until this line existed the store heard about a round only when the
+        // player left or three minutes went by, and a server that crashed in between lost it.
+        //
+        // **No roster is passed, and that is not an oversight.** `playersInRound()` is `activePlayers`, and
+        // `eliminate` removes from that set *during* the round — so the list at this point is missing exactly
+        // the players whose `outs` went up. The stats service sweeps every record it holds and skips the
+        // unchanged ones; see `StatsService.onRoundEnded`.
+        //
+        // Spawned inside that call rather than awaited, so the intermission below opens on the beat it would
+        // have opened on without this.
+        this.stats.onRoundEnded();
+
         // **The scoreboard is wiped as the round ends, and that moved here from the boundary.** It used to be
         // cleared at the *opening of the next round*, on the argument that a round's final score should be
         // readable for the whole intermission that follows — the same lifetime the result panel's rows have.
