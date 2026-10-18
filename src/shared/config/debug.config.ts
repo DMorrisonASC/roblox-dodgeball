@@ -19,8 +19,21 @@ export const DEBUG_CONFIG = {
 	 * cadence rather than on an event. Errors and lifecycle lines are never gated — those are
 	 * what is left when this is off, and they are the ones worth reading by default.
 	 */
-	// TEMPORARY (2026-09-30): on for one diagnostic run of the throw probe — the ball landing short of
-	// the aim guide's marker. Put back to `false` once the numbers are read; see `ThrowProbe` for what
-	// each field means, and `BALL_CONFIG.THROW_VERTICAL_BOOST_SCALE` for the dial they inform.
-	VERBOSE_LOGS: true,
+	// **Off, and it was left on for four weeks — 2026-09-30 to 2026-10-17.** It went on for one
+	// diagnostic run of the throw probe (the ball landing short of the aim guide's marker), the numbers
+	// were read, and the flag was never put back. What that cost is worth recording because nothing about
+	// the game looked wrong: it is *diagnostics*, so the only symptom is frame time.
+	//
+	// A count off a 93-second playtest log, `VERBOSE_LOGS` on: **~700 lines from the throw probe alone**,
+	// because `ThrowProbe.watchThrow` is not a print — it builds a whole `Trajectory` per throw (79
+	// integrated steps, each a spatial query against an ignore list built by walking every child of
+	// `Workspace`), then opens a `RunService.Heartbeat` connection that samples that throw for up to
+	// three seconds. Every ball in flight gets one. The rest went on every catch window opening and
+	// expiring, every sound, every ball's deciding body part, and the client's per-frame aim report —
+	// which the note below calls the noisiest log in the game.
+	//
+	// **So the lesson is the one this file already argues for**: these are build-time decisions, and a
+	// decision that is meant to be reversible needs somebody to reverse it. Turn it back on *for one
+	// run*, read the numbers, turn it off in the same sitting.
+	VERBOSE_LOGS: false,
 } as const;

@@ -1,5 +1,6 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, THROW_WALK_ATTRIBUTE } from "shared/constants";
 import type { ThrowWalk } from "shared/constants";
@@ -168,6 +169,10 @@ interface Seek {
 	 * lobby into the rig's own half and back is the same ball, and the second skip is the same fact as the
 	 * first — the state that would make it worth saying twice is the ball's position, which the line already
 	 * carries as a distance.
+	 *
+	 * **Written even when the line is not printed**, because the line behind `DEBUG_CONFIG.VERBOSE_LOGS` is what
+	 * this set exists for and the set is the cheap half: one `Set` lookup per ball per turn, against an engine
+	 * that will be asked for the ball's position on the next line either way.
 	 */
 	outside: Set<BasePart>;
 
@@ -450,21 +455,32 @@ export function createSeekBehavior(
 
 			const distance = ball.Position.sub(from).Magnitude;
 
-			// **A ball outside the region is not this rig's to fetch, and the line that says so is said once
-			// per ball.** Skipped rather than given up on: `givenUp` is a record about *this* ball at *this*
-			// position, and a ball later thrown inside the region is a fresh question, while a ball outside it
-			// is out of reach by the place's own design — asking again next turn costs one comparison. **The
-			// print is the diagnostic the previous version of this file lacked**: a region that does not cover
-			// the floor its rigs walk on looks exactly like a rig with nothing to do, and this is the line that
-			// tells those two apart from a log alone.
+			// **A ball outside the region is not this rig's to fetch.** Skipped rather than given up on:
+			// `givenUp` is a record about *this* ball at *this* position, and a ball later thrown inside the
+			// region is a fresh question, while a ball outside it is out of reach by the place's own design —
+			// asking again next turn costs one comparison.
+			//
+			// **The line that says so is the diagnostic the previous version of this file lacked** — a region
+			// that does not cover the floor its rigs walk on looks exactly like a rig with nothing to do, and
+			// this is the line that tells those two apart from a log alone. **It is behind
+			// `DEBUG_CONFIG.VERBOSE_LOGS` and it was not, which cost more than the diagnostic bought.** The
+			// dedupe below makes it one line per ball *per rig lifetime*, and the set it dedupes through is
+			// rebuilt empty whenever a rig respawns — so a live round is not one line per rig, it is one line
+			// per ball the round has ever created, times every rig that may not touch it. A round makes about
+			// 1.4 balls a second and half of them are outside any given rig's region, so a 93-second playtest
+			// log carries several hundred of these, in bursts of twelve to sixteen when a rig respawns. That
+			// made it the most frequent line in the game, and it is the shape to avoid: a diagnostic that is
+			// neither per-edge nor bounded by the number of *rigs*.
 			if (!insideZone(parts, ball.Position)) {
 				if (!seek.outside.has(ball)) {
 					seek.outside.add(ball);
 
-					print(
-						`[Rig] ${rig.Name}: skipped a ball outside ${region.label} — ` +
-							`${string.format("%.0f", distance)} studs away`,
-					);
+					if (DEBUG_CONFIG.VERBOSE_LOGS) {
+						print(
+							`[Rig] ${rig.Name}: skipped a ball outside ${region.label} — ` +
+								`${string.format("%.0f", distance)} studs away`,
+						);
+					}
 				}
 
 				continue;

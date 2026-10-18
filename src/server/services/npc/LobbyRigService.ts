@@ -27,6 +27,7 @@ import {
 import {
 	WALK_TO_JOIN_PAD_AT_ATTRIBUTE,
 	WALK_TO_JOIN_PAD_ATTRIBUTE,
+	WALK_TO_JOIN_PAD_AVOID_RADIUS_ATTRIBUTE,
 	WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE,
 	WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE,
 } from "../../npc/behaviors/WalkToJoinPadBehavior";
@@ -343,30 +344,32 @@ export class LobbyRigService implements OnStart {
 		// **What the pool holds, on one line, because every number in it is a question a reader is about to
 		// ask.** This is the line that turns "the lobby looks half empty" into a place-file fact: a name list
 		// and a folder are two independent supplies, and a reader who is told both counts beside the number of
-		// rigs wanted can see which one ran out without opening a script. Nothing is retried and nothing is
-		// reused, so what happens below is already decided by these two numbers.
+		// rigs wanted can see which one ran out without opening a script. **What a short supply decides is how
+		// *varied* the lobby is, not how full it is** — the draw repeats a face once the models are gone and
+		// the seats are filled regardless — so these two numbers are a taste of the crowd rather than a count
+		// of it. See `rigPool.drawRigIdentity`.
 		const poolNames = RIG_NAMES.size();
 		const usableModels = pool.usableModels.size();
 
 		// **Two model counts, because a folder and a pool are not the same size.** A model in the folder that is
-		// not a rig is never drawn — see `rigPool.ts`'s `usableModels` — so the number that decides how full the
-		// lobby is the *usable* one, and the folder's own count is beside it to say how many are being passed
-		// over. A single count here would be the one number a reader could not check the outcome against.
+		// not a rig is never drawn — see `rigPool.ts`'s `usableModels` — so the usable count is how many *faces*
+		// the lobby can show, while the folder's own count is beside it to say how many are being passed over.
+		// A single count here would be the one number a reader could not check the outcome against.
 		print(
 			`[Rig] pool — ${poolNames} name(s), ${usableModels} usable model(s) (${pool.models.size()} in ` +
 				`the folder) for ${count} rig(s)`,
 		);
 
-		// **A pool that cannot fill the lobby says so *before* it fails to, which is the only moment a line
-		// about it is worth printing.** The alternative — letting the refusals in `npc/rigPool.ts` report one
-		// spawn at a time — would say "no free name" eight times and never once say that the lobby is meant to
-		// hold eight rigs, which is the number that makes the shortage legible. Both supplies are reported
-		// because either can be the binding one, and the two have different fixes: names are edited in this
-		// project's `rigPool.ts` and models are added to the place.
+		// **A short pool is said out loud, because a repeated face is visible and the number behind it is not.**
+		// Two bodies wearing one face is the tell the pool exists to avoid, and it is now a *deliberate* cost of
+		// keeping the lobby full rather than a fault: the seats are filled either way, so the only thing this
+		// line can change is whether a reader knows why the eighth placeholder looks like the third. Both
+		// supplies are reported because either can be the binding one, and the two have different fixes: names
+		// are edited in this project's `rigPool.ts` and models are added to the place.
 		//
 		// **The model side counts the *usable* models**, because those are what a draw can hand out — a folder
-		// of seven of which one is not a rig fills six seats, and a line claiming seven would be a number the
-		// reader could watch be wrong.
+		// of seven of which one is not a rig repeats a face to fill the eighth seat, and a line claiming seven
+		// would be a number the reader could watch be wrong.
 		if (poolNames < count || usableModels < count) {
 			const supplied =
 				usableModels === pool.models.size()
@@ -374,21 +377,23 @@ export class LobbyRigService implements OnStart {
 					: `${usableModels} model(s) usable out of ${pool.models.size()} in the folder`;
 
 			warn(
-				`[Rig] pool — ${count} rig(s) wanted, so the lobby will be short: ` +
-					`${poolNames} name(s) and ${supplied}.`,
+				`[Rig] pool — ${count} seat(s) to fill and ${poolNames} name(s) / ${supplied}: the seats are ` +
+					`filled anyway, so a face is in use twice at once. Add a model to ` +
+					`ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}" to make every placeholder look different.`,
 			);
 		}
 
-		// **A folder with two models of one name silently costs a model**, which is the one pool fault that is
-		// invisible in the counts above: they are counted as two and only one of them can ever be drawn. The
-		// source is recorded as a *name*, so the two are one source as far as a release is concerned — see
-		// `RIG_TEMPLATE_ATTRIBUTE`. Reported rather than renamed, because renaming a place-file model is not
-		// something this service can do and guessing which of the two was meant is not a guess worth making.
+		// **A folder with two models of one name makes the counts above overstate the pool.** A rig records its
+		// source by *name*, so two same-named models are one source as far as a release is concerned — the pair
+		// is two faces on paper and one in the bookkeeping. It no longer costs a rig (a face repeats when it has
+		// to), but it does make the model count a number a reader cannot trust. Reported rather than renamed,
+		// because renaming a place-file model is not something this service can do and guessing which of the two
+		// was meant is not a guess worth making.
 		if (pool.duplicatedNames.size() > 0) {
 			warn(
 				`[Rig] pool — ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}" holds more than one model named ` +
-					`"${pool.duplicatedNames.join('", "')}"; they share one source model, so only one of each ` +
-					`will ever be drawn. Rename them.`,
+					`"${pool.duplicatedNames.join('", "')}"; they share one source model, so the folder holds ` +
+					`fewer distinct faces than its model count says. Rename them.`,
 			);
 		}
 
@@ -400,17 +405,35 @@ export class LobbyRigService implements OnStart {
 		const inherited = poolModelWarnings(pool.models);
 		if (inherited !== undefined) warn(inherited);
 
+		// **The whole lobby is seeded first, and a player already in the server then takes a seat out of it —
+		// which is the seeding rule, in two steps.** The lobby's size is a fact about the *match*, not about the
+		// folder: eight seats, and the loop below fills both sides because it alternates A/B. A short pool does
+		// not change that number — a repeated face is the price of it, and `rigPool.drawRigIdentity` is where
+		// that trade is made.
+		//
+		// **Why the connected players are settled *by hand* rather than by a smaller seed count.** Both routes
+		// end at seven rigs for one person, and only one of them leaves a record behind. `reserveSeat` is what
+		// writes down *which side's seat* that person displaced — and that record is what puts a rig in their
+		// seat when a round starts while they stay in the lobby, and what puts one back when they leave. A
+		// seed of `count - players` would produce the same bodies and forget the seat. `PlayerAdded` will not
+		// fire for these players: they were in `Players` before this service mounted, which is the ordinary
+		// Studio case, so nothing else would have reserved anything for them.
+		//
+		// **And the rig is built by the same call a replacement is**, which is the property worth having: this is
+		// not a second way to make a lobby rig, it is the first few of them. See `spawnLobbyRig` for where the
+		// part comes from, why the placement is lifted, and why the walk it hands over is four attributes rather
+		// than one.
+		let made = 0;
+
 		for (let index = 0; index < count; index++) {
-			// **Alternating, starting on A.** Rig 0 is A's, rig 1 is B's, and so on, so the two sides are
-			// filled evenly as the loop goes rather than one after the other. An odd count would leave the
-			// extra rig on **A**, which cannot arise at `2 × MATCH_MAX_PER_TEAM` and is written this way so
-			// that a formula which could produce one already has an answer.
-			//
-			// **And the rig is built by the same call a replacement is**, which is the property worth
-			// having: this is not a second way to make a lobby rig, it is the first eight of them. See
-			// `spawnLobbyRig` for where the part comes from, why the placement is lifted, and why the walk it
-			// hands over is four attributes rather than one.
-			this.spawnLobbyRig(index % 2 === 0 ? TEAM_A : TEAM_B);
+			if (this.spawnLobbyRig(index % 2 === 0 ? TEAM_A : TEAM_B) !== undefined) made++;
+		}
+
+		// **One rig stands down per person already in the server, exactly as if they had just walked in.** The
+		// observable is the rule the class doc states: eight seats, one player, seven placeholders — and two
+		// players on a screen is six, wherever they are standing.
+		for (const player of Players.GetPlayers()) {
+			this.reserveSeat(player);
 		}
 
 		// **The one line that says it worked**, in the shape `[Match] up`, `[Zone] up` and `[Spawner] up`
@@ -439,8 +462,13 @@ export class LobbyRigService implements OnStart {
 			);
 		}
 
+		// **The count that was actually *made*, not the count that was wanted.** They differ only when a spawn
+		// was refused outright — no rig-shaped model in the folder, no lobby spawn — and this line is the one a
+		// reader checks against the pool line, so it has to be the real number. The stand-down that follows a
+		// player already in the server is its own line, one per person, so `8 made` here plus one `stood down`
+		// below reads as the seven placeholders the class doc describes rather than as an eight-body lobby.
 		print(
-			`[Rig] up — ${count} placeholder rig(s), ` +
+			`[Rig] up — ${made} placeholder rig(s) (${count} seat(s)), ` +
 				`${spawns.size()} lobby spawn(s), pads ${padsA.size()} + ${padsB.size()}, ` +
 				`fetch boxes ${zones.a} + ${zones.b}`,
 		);
@@ -722,10 +750,18 @@ export class LobbyRigService implements OnStart {
 		const heldA = this.seatsHeld(TEAM_A);
 		const heldB = this.seatsHeld(TEAM_B);
 
+		// **The per-side target is the cap, always, and that is the one number this method cannot negotiate.**
+		// A side holds `MATCH_MAX_PER_TEAM` seats and the match is played on bodies, so a seat nothing holds is
+		// a side a body down — for the whole round, once it starts. The target used to be levelled down to what
+		// the model folder could supply evenly, which kept the *faces* distinct at the cost of a 3-versus-3
+		// lobby and a 3-versus-3 match; the user's rule is the other way round, and the pool now repeats a body
+		// rather than refusing one (see `rigPool.drawRigIdentity`).
+		const target = MATCH_MAX_PER_TEAM;
+
 		for (const side of SIDES) {
 			const held = side === TEAM_A ? heldA : heldB;
 
-			for (let seat = held; seat < MATCH_MAX_PER_TEAM; seat++) {
+			for (let seat = held; seat < target; seat++) {
 				const rig = playing ? this.spawnArenaRig(side) : this.spawnLobbyRig(side);
 
 				// **A refill says so, and this is the line the file was missing.** Whether a seat was
@@ -824,8 +860,20 @@ export class LobbyRigService implements OnStart {
 	 * **Idempotent, and it removes nothing that is standing.** A rig it has already retired is gone from
 	 * `rigsOnASide()` on the next call, and the tag test is the whole of the decision — so a rig that *is*
 	 * coming back is never touched, however long it lies there.
+	 *
+	 * **And it returns how many it took, because the seat it freed is only refilled if somebody is told.** The
+	 * sentence above used to say the seat "is refilled in the same call", and that was true of exactly one of
+	 * the two callers: `rebalance` calls this first and then fills in the same pass, but `watchSeats` sweeps
+	 * corpses on **every** turn of its poll and only reaches a rebalance if the roster revision moved. So a rig
+	 * retired by the sweep held a seat that nothing was going to fill until an unrelated opt-in bumped the
+	 * revision — which is the 75-second `B: 2` in the log that prompted this: a rig killed during the
+	 * round-start freeze was swept, its seat stayed empty, and two bodies only appeared on that side when the
+	 * player finally walked onto a pad. The count is how the sweep says "a seat was freed", rather than the
+	 * sweep having to know what to do about it.
 	 */
-	private retireHopelessCorpses(): void {
+	private retireHopelessCorpses(): number {
+		let retired = 0;
+
 		for (const { rig } of rigsOnASide()) {
 			if (!this.isDown(rig)) continue;
 
@@ -834,13 +882,18 @@ export class LobbyRigService implements OnStart {
 			if (rig.HasTag(BEHAVIOR_RESPAWN)) continue;
 
 			// **Said out loud, because a rig being retired is a rig the lobby has stopped counting.** The seat
-			// is refilled in the same call, so the visible effect is one body replaced by another — and the
-			// line is what says why the body that left could not have come back, rather than leaving a reader
-			// to wonder whether a respawn was cancelled by something. `retireRig` prints it, since it is also
-			// where the pool release is reported; the summary count this method used to print is gone with it,
-			// because the lines now name the rigs and a count of them says strictly less.
+			// is refilled by the caller — `rebalance` in its own pass, `watchSeats` from the count below — so
+			// the visible effect is one body replaced by another, and the line is what says why the body that
+			// left could not have come back rather than leaving a reader to wonder whether a respawn was
+			// cancelled by something. `retireRig` prints it, since it is also where the pool release is
+			// reported; the summary count this method used to print is gone with it, because the lines now
+			// name the rigs and a count of them says strictly less.
 			this.retireRig(rig, "retired — nothing was going to stand it up");
+
+			retired++;
 		}
+
+		return retired;
 	}
 
 	/** Gives up `count` of `side`'s seats, beginning with the rigs standing on a pad. */
@@ -934,6 +987,12 @@ export class LobbyRigService implements OnStart {
 	 * records no seat at all.
 	 */
 	private reserveSeat(player: Player): void {
+		// **Once per player, because one body is one seat.** The boot seeding calls this for everybody already
+		// in the server, and `PlayerAdded` calls it for everybody who arrives later — so the only way to reach
+		// it twice for one person is a join that races the mount, and a second stand-down there would be two
+		// rigs destroyed for one player: seven seats filled, one body in the lobby.
+		if (this.pending.has(player) || this.seated.has(player)) return;
+
 		const victim = this.victimForArrival();
 
 		if (victim === undefined) {
@@ -1085,10 +1144,26 @@ export class LobbyRigService implements OnStart {
 			// The order is the one thing worth stating: the behaviours come off *first*, so no rig is being
 			// handed a fresh seat and a fresh target in the same breath as being told the round is over.
 			if (state === PLAYING) {
+				// **The walkers first, on this edge rather than behind the cover**, because the point is to stop
+				// them walking before anybody can see them do it: a rig put on a side here is moved by the
+				// round's own teleport a cover's length later, and one left walking would keep crossing the
+				// lobby — over a join pad, past the other side's sign — for the whole of that window. See
+				// `promoteWalkers`.
+				this.promoteWalkers();
+
 				task.spawn(() => this.refillAtRoundStart());
 			} else {
 				task.spawn(() => {
 					this.setGameplayBehaviors(false);
+
+					// **The roster first, when it has already been cleared.** `MatchService.clear` runs on
+					// `RoundService`'s own boundary and may land before or after this thread — and read in the
+					// wrong order, the cleared roster looks like a side a body short, so the rebalance below
+					// spawns a replacement that the carry-over in `syncSeats` then stands down again: two rigs
+					// made and destroyed per round for nothing. `syncSeats` returns on its first line unless the
+					// revision moved, so this is free when the roster has not been cleared yet, and the
+					// rebalance after it is a no-op when it has.
+					this.syncSeats();
 					this.rebalance();
 
 					// **And the rigs walk to their pads, a cover's length later — because that is when the
@@ -1243,6 +1318,12 @@ export class LobbyRigService implements OnStart {
 			this.releasePendingSeats();
 			this.rebalance();
 			this.moveWalkersToArena();
+
+			// **And the rebuild behaviour, last, because the two above are what decide where the rigs stand.**
+			// It is the one tag of the six that can go on at the fill instead of at the lift — see
+			// {@link armRespawning}, and see the log it comes from: a rig killed inside the freeze was swept
+			// and its side played a body short for the rest of the round.
+			this.armRespawning();
 		};
 
 		// **And the last step, which is the rig being handed something to do — after the freeze.** The three
@@ -1388,12 +1469,107 @@ export class LobbyRigService implements OnStart {
 	 * about an attribute nobody wrote.
 	 */
 	private sendRigsToTheirPads(): void {
+		// **Never during a round, and this is a guard rather than a formality.** This runs from a *timer* set a
+		// cover's length after the last round ended (see `watchPhase`), so "a round has opened inside that
+		// window" is a state this method can actually wake up in — a dev command, a settle window satisfied by
+		// a roster that was already full, or a clock that wrapped early. Writing a pad walk then would send a
+		// rig standing in the arena out towards the lobby for the whole round, which is the report this line
+		// answers: a placeholder in the lobby while the round is being played. Reported once, because it is one
+		// fault rather than one per rig.
+		if (this.phase() === PLAYING) {
+			this.reportOnce(
+				"padsDuringRound",
+				`[Rig] pad walk refused — a round is being played, so no rig was sent to a lobby pad`,
+			);
+
+			return;
+		}
+
 		for (const { rig, team } of rigsOnASide()) {
 			if (this.padsFor(team).size() === 0) continue;
 
 			this.writePadWalk(rig, team);
 
 			rig.AddTag(BEHAVIOR_WALK_TO_JOIN_PAD);
+		}
+	}
+
+	/**
+	 * **Every rig still walking to a pad is made a participant the instant the round opens.**
+	 *
+	 * **This is the correction to a gap `moveWalkersToArena` documented and left standing.** A rig the lobby
+	 * spawned has no side on it until it arrives, so the round's own teleport cannot see it — and the walk tag
+	 * that *would* take it into the arena only comes off after the transition cover, a couple of seconds into
+	 * a round that has already been published. For that window a rig is genuinely still crossing the lobby
+	 * during a live round, which is exactly what it looks like: a placeholder walking over a join pad while
+	 * everybody else is in the arena.
+	 *
+	 * **Writing the side is what makes the round's teleport pick it up**, which is the whole trick: from this
+	 * moment the rig is a side-bearing body like the eight that walked to their pads on time, so
+	 * `teleportTeamsToArena` moves it behind the cover with them, and the seat it was holding stays counted
+	 * when `rebalance` runs a moment later. The walk tag goes in the same breath, because a destination
+	 * pointing at a lobby pad plus a side is a rig that walks out of the arena the moment its timer expires —
+	 * the state `moveWalkersToArena` exists to strip.
+	 *
+	 * **Called on the phase edge rather than from inside the delayed refill**, because the point is to stop
+	 * the walking before the cover; `refillAtRoundStart` waits the cover out so that a *new body* is not seen
+	 * appearing, which is a different requirement. `moveWalkersToArena` still runs afterwards and finds
+	 * nothing left to do, which is the sign this worked.
+	 */
+	private promoteWalkers(): void {
+		let promoted = 0;
+
+		for (const side of SIDES) {
+			for (const rig of this.seatHolders(side)) {
+				// Arrived, so the round's own teleport already sees it; only its walk would need taking off.
+				if (sideOfRig(rig) !== undefined) continue;
+
+				rig.SetAttribute(TEAM_ATTRIBUTE, side);
+				rig.RemoveTag(BEHAVIOR_WALK_TO_JOIN_PAD);
+
+				promoted++;
+			}
+		}
+
+		if (promoted > 0) {
+			print(`[Rig] round start — ${promoted} rig(s) still walking were put on a side and into the round`);
+		}
+	}
+
+	/**
+	 * **The rebuild behaviour, on every rig that holds a side, as soon as the rigs are standing in the arena.**
+	 *
+	 * **This is one tag of the six, split off `setGameplayBehaviors` for a reason the log supplied.** The whole
+	 * set waits for the arena freeze to lift, because five of them let a rig *act* while the players are held.
+	 * That leaves every rig that walked to its pad wearing nothing at all for the five seconds between the move
+	 * and the lift — and the argument for that being harmless was that nothing can hurt a body in that window,
+	 * since the round's balls are destroyed on the intermission edge. **The log says otherwise**: a *Pierce*
+	 * ball tagged `LunarLegend3` 0.11 s before the lift, the very next poll swept it for wearing no
+	 * `Behavior_Respawn`, and that side played a body short for the next 75 seconds. A rig in a round has to be
+	 * rebuildable from the moment it is in the round.
+	 *
+	 * **Why this one is safe and the other five are not.** The withholding exists because a rig with seek and
+	 * throw plays through the freeze. `RESPAWN` is not a thing a rig *does* — its tick is empty and `prepare`
+	 * only writes down where the rig stands and what it is made of — it is a thing that happens to a corpse. It
+	 * is also the tag {@link retireHopelessCorpses} reads as "this body is coming back", so arming it is what
+	 * stops a rig killed inside the window from being destroyed: the corpse is left where it fell, the rebuild
+	 * waits its delay, and the replacement is handed the tags the corpse wore, which the lift then completes.
+	 *
+	 * **Home, which is the one thing the later timing was protecting.** `prepare` records where a rig stands on
+	 * its first turn after the tag goes on, and the fill runs at the cover's close — the same frame as the
+	 * round's own teleport, with the rigs already where it put them (and, for a walker, where
+	 * `moveWalkersToArena` put it, which is why this runs after that). A rig's first turn is a tick away, so it
+	 * records an arena spawn. That is the same race `setGameplayBehaviors` documents, one frame earlier and with
+	 * the same bounded cost: a respawn point one room out, never a lost seat.
+	 *
+	 * **`spawnArenaRig` needs none of this**, because a rig spawned into a round wears all six from its first
+	 * frame. This is for the rigs that were already holding a side when the whistle went.
+	 */
+	private armRespawning(): void {
+		for (const { rig } of rigsOnASide()) {
+			if (rig.HasTag(BEHAVIOR_RESPAWN)) continue;
+
+			rig.AddTag(BEHAVIOR_RESPAWN);
 		}
 	}
 
@@ -1451,14 +1627,17 @@ export class LobbyRigService implements OnStart {
 	 * {@link refillAtRoundStart} for the timing and for why the wait is read from the round's own constant
 	 * rather than signalled from the round.
 	 *
-	 * **What the delay costs, named.** A rig is inert from the phase change until the freeze lifts, so
-	 * nothing it wears in the six can run in the opening seconds — including `RespawnBehavior`, which means
-	 * a rig that died inside the freeze would be a rig with nobody to bring it back. That is not reachable,
-	 * and the reason is the window before it rather than a guard here: the round start follows sixteen
-	 * seconds of intermission, every ball the round put out was destroyed on the intermission edge
-	 * (`BallSpawnerService.cleanupRoundBalls`), and what a spawner puts out afterwards is loose and unarmed
-	 * until somebody picks it up — which the six being off also prevents. Written down because the day
-	 * something else can hurt a body in the opening seconds, this is the line to change.
+	 * **What the delay costs, named — and it used to cost a seat, which is why one tag is no longer delayed.**
+	 * A rig is inert from the phase change until the freeze lifts, so nothing it wears in the six can run in
+	 * the opening seconds. That was written down as harmless on the argument that nothing can hurt a body in
+	 * that window: every ball the round put out is destroyed on the intermission edge
+	 * (`BallSpawnerService.cleanupRoundBalls`), and what the spawner puts out afterwards is loose and unarmed
+	 * until somebody picks it up. **The log that produced this correction disproved it** — a *Pierce* ball
+	 * tagged a rig 0.11 s before the lift, the poll swept the corpse for wearing no `RespawnBehavior`, and
+	 * that side played a body short for the rest of the round. So the one tag whose job is to put a body back
+	 * is now armed at the fill instead of here: see {@link armRespawning}, which this method then completes.
+	 * What is left in the delay is the half that was always about *acting* — a rig that must not seek, pick up,
+	 * throw or dodge while the players are held.
 	 *
 	 * **The race that remains, stated rather than papered over.** This runs in the same frame as the
 	 * round's own `moveEveryone`, and the two are unordered inside that frame; a rig whose loop happens to
@@ -1553,8 +1732,16 @@ export class LobbyRigService implements OnStart {
 			//
 			// **And it is here rather than at the top of `rebalance` alone** for the same reason — see that
 			// method, which calls it too, so that a seat freed by it is filled in the same pass rather than a
-			// quarter of a second later.
-			this.retireHopelessCorpses();
+			// quarter of a second later. **The count is what makes that true from *here*.** `syncSeats` below
+			// returns on its first line whenever the roster has not moved, which is most turns of most rounds,
+			// so a corpse swept on a quiet turn used to take its seat out of the round and leave it out: the
+			// log this was found in had a rig killed 0.11 s before the freeze lifted, swept at once, and its
+			// side read `B: 2` for the next 75 seconds until the player opted in and the revision moved. A
+			// rebalance here is a body appearing mid-round, which is the same price `onPlayerLeft` already
+			// pays — and a seat nothing holds is a side playing a body short, which is worse than a body that
+			// is seen arriving. Called before `syncSeats` because the two do different things and this is the
+			// urgent half.
+			if (this.retireHopelessCorpses() > 0) this.rebalance();
 
 			this.syncSeats();
 		}
@@ -1686,6 +1873,14 @@ export class LobbyRigService implements OnStart {
 	 * placement to.
 	 */
 	private spawnLobbyRig(side: TeamLabel): Model | undefined {
+		// **A lobby rig cannot be made while a round is being played, and that is a rule rather than a
+		// caller's good manners.** Every caller already picks the form from the phase, so this is the second
+		// line of the same decision — and it is here because the first line is a *read*, and a read made a
+		// frame before a boundary is a lobby rig standing in the middle of a round with a pad walk on it,
+		// which is the report this guards. A rig belongs in the arena while the arena is playing; if a caller
+		// asked for the other form, this makes the right one rather than refusing and leaving the seat empty.
+		if (this.phase() === PLAYING) return this.spawnArenaRig(side);
+
 		// **The draw comes before the placement, and the order is deliberate rather than convenient.** A
 		// refused draw is a spawn that never happens: nothing has been placed, the spawn cursor has not moved
 		// and there is no body to undo. See `npc/rigPool.ts` for why a pool short of names or bodies *refuses*
@@ -1830,15 +2025,94 @@ export class LobbyRigService implements OnStart {
 	}
 
 	/**
-	 * **The four writes that make a rig a placeholder on its way to a pad**: where it walks, which side it
-	 * is walking to, what it turns to look at on the way, and the instant it may set off.
+	 * **Which of the other side's pads the walk from where the rig stands to `destination` will pass.**
 	 *
-	 * **One writer, because the four are one instruction.** The destination and the side were already a pair
+	 * **One question with two readers, which is why it is a nearest-pad query rather than a rotation.** The
+	 * point this returns is written as the rig's look-at *and* is what the walk keeps clear of — see
+	 * `WalkToJoinPadBehavior.WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE` — so "a pad of the other side, chosen by
+	 * rotation" stopped being good enough the moment the same coordinate became an obstacle: a rig turning to
+	 * be seen looking at a distant sign while walking over a near one is the fault the corridor exists for,
+	 * wearing the look-around route's coat. With one pad a side the two answers coincide and this is a loop of
+	 * one.
+	 *
+	 * **Distance to the segment, not to the destination**, because "in the way" is a fact about the whole leg:
+	 * a pad beside the spawn and nowhere near the pad the rig is walking to is not in the way, and one halfway
+	 * across the lobby is. `t` is clamped, so a pad *behind* the rig measures to the rig rather than to a point
+	 * on a line that does not exist — the behaviour has the same rule for the same reason.
+	 *
+	 * **Flat, and measured from the centres.** A pad is a footprint on the floor; its height and the rig's own
+	 * height say nothing about where a body walking past it may go.
+	 */
+	private padInTheWay(rig: Model, destination: BasePart, otherPads: Array<BasePart>): BasePart {
+		const from = rig.GetPivot().Position;
+		const to = destination.Position;
+
+		const legX = to.X - from.X;
+		const legZ = to.Z - from.Z;
+		const lengthSquared = legX * legX + legZ * legZ;
+
+		let closest = otherPads[0];
+		let closestDistance = math.huge;
+
+		for (const pad of otherPads) {
+			// **On the leg rather than on the infinite line**, so the two ends of the walk are not treated as if
+			// the leg carried on past them. A zero-length leg — a rig standing on its own pad — reads as
+			// `t = 0`, which measures every pad from the rig and picks the nearest, the right answer for a walk
+			// of no length.
+			let t = 0;
+
+			if (lengthSquared > 1e-6) {
+				t = ((pad.Position.X - from.X) * legX + (pad.Position.Z - from.Z) * legZ) / lengthSquared;
+				t = math.clamp(t, 0, 1);
+			}
+
+			const dx = pad.Position.X - (from.X + legX * t);
+			const dz = pad.Position.Z - (from.Z + legZ * t);
+			const distance = math.sqrt(dx * dx + dz * dz);
+
+			if (distance < closestDistance) {
+				closestDistance = distance;
+				closest = pad;
+			}
+		}
+
+		return closest;
+	}
+
+	/**
+	 * **How much room `pad` needs kept clear, in studs: the radius of the disc that covers its footprint.**
+	 *
+	 * `0.5 × sqrt(x² + z²)`, the circumradius of the part's flat rectangle — not half its width and not its
+	 * diagonal. Geometrically that half-way house is the only one that covers every corner, and the alternative
+	 * shapes are both worse here: `max(x, z) / 2` under-covers a rotated pad, and the *diagonal* (twice this)
+	 * is the same number spelled wrong and would double the corridor.
+	 *
+	 * **Measured rather than configured, and that is the point of the attribute.** The corridor's first version
+	 * kept a fixed twelve studs clear of the pad's centre, which is right for a sign about fourteen studs
+	 * across and wrong for anything wider — a rig passing twelve studs from the centre of a twenty-stud sign
+	 * walks over its end, and the corridor looks like it did nothing. This file holds the part, so it can say
+	 * how big it is; the behaviour cannot, and gets the number as an attribute.
+	 *
+	 * **Flat, because a pad is a footprint.** The part's height is a slab's thickness and has nothing to do with
+	 * where a body walking past may go.
+	 */
+	private padAvoidRadius(pad: BasePart): number {
+		const size = pad.Size;
+
+		return 0.5 * math.sqrt(size.X * size.X + size.Z * size.Z);
+	}
+
+	/**
+	 * **The five writes that make a rig a placeholder on its way to a pad**: where it walks, which side it is
+	 * walking to, which sign of the other side is in its way, how much room that sign needs, and the instant
+	 * it may set off.
+	 *
+	 * **One writer, because the five are one instruction.** The destination and the side were already a pair
 	 * written from a single decision — see `WALK_TO_JOIN_PAD_ATTRIBUTE` for why the side is not derivable
-	 * from the point — and the look-at and the start instant are the same kind of thing: facts about the
-	 * *lobby* that the behaviour cannot work out for itself, which is what keeps the two-tag join-part layout
-	 * out of the machine that animates NPCs. Written out at four sites they would be four chances for a rig
-	 * to be told to look at one side's sign while walking to the other's.
+	 * from the point — and the look-at, its radius and the start instant are the same kind of thing: facts
+	 * about the *lobby* that the behaviour cannot work out for itself, which is what keeps the two-tag
+	 * join-part layout out of the machine that animates NPCs. Written out at five sites they would be five
+	 * chances for a rig to be told to look at one side's sign while walking to the other's.
 	 *
 	 * **The delay is drawn here, per rig, and that is the whole of the staggering.** Two rigs cloned a
 	 * moment apart in the boot loop must not set off in the same second, so the draw has to be per rig rather
@@ -1847,10 +2121,19 @@ export class LobbyRigService implements OnStart {
 	 * no claim on going first again. What the two ends of the window are sized against is argued at
 	 * `NPC_CONFIG.WALK_TO_PAD_DELAY_MAX_SECONDS`.
 	 *
-	 * **The look-at is drawn from the *other* side's pads**, through the same rotation the destination uses,
-	 * so a rig turns to a sign that is really there rather than to a coordinate this file made up. A side
-	 * with no pads has already been named by the boot line; a rig whose look-at is missing simply walks
-	 * straight, because the behaviour drops the route rather than turning to face nothing.
+	 * **The look-at is the other side's pad nearest the leg, and that is a correction.** It used to be
+	 * `nextPad`'s rotation — a pad of the other side, but not necessarily one the rig would walk past — on the
+	 * argument that a rig turning to a sign that is really there is what matters. That is still true, and it
+	 * is no longer the binding requirement: the same point is what the walk keeps clear of (see
+	 * `WalkToJoinPadBehavior.aimAroundPad`), so a rig looking at a sign it is nowhere near while walking over
+	 * a different one was the fault. `padInTheWay` answers the question that serves both jobs — *which of the
+	 * other side's signs is between me and my pad?* — and with one pad a side, which is what this lobby has,
+	 * it is the same pad the rotation would have drawn.
+	 *
+	 * **The radius is measured from the pad, because a guessed one was wrong.** `WalkToJoinPadAvoidRadius` is
+	 * the chosen pad's own flat circumradius, `0.5 × sqrt(x² + z²)`; the first corridor kept a fixed twelve
+	 * studs clear of the *centre*, which a sign wider than about fourteen studs is wider than. A side with no
+	 * pads has already been named by the boot line, and a rig with no radius falls back to the constant.
 	 *
 	 * **The tag is deliberately not written here.** `spawnLobbyRig` gets it from `NpcService.spawn` — the
 	 * call that makes the rig exist — and `sendRigsToTheirPads` adds it to a rig that is already in the
@@ -1864,11 +2147,16 @@ export class LobbyRigService implements OnStart {
 		const otherSide = side === TEAM_A ? TEAM_B : TEAM_A;
 		const otherPads = this.padsFor(otherSide);
 
-		rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, this.nextPad(side, pads).Position);
+		const destination = this.nextPad(side, pads);
+
+		rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, destination.Position);
 		rig.SetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE, side);
 
 		if (otherPads.size() > 0) {
-			rig.SetAttribute(WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE, this.nextPad(otherSide, otherPads).Position);
+			const inTheWay = this.padInTheWay(rig, destination, otherPads);
+
+			rig.SetAttribute(WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE, inTheWay.Position);
+			rig.SetAttribute(WALK_TO_JOIN_PAD_AVOID_RADIUS_ATTRIBUTE, this.padAvoidRadius(inTheWay));
 		}
 
 		// **A uniform draw across the window, not a choice between its two ends.** `math.random()` with no

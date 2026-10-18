@@ -377,6 +377,42 @@ export const NPC_CONFIG = {
 	WALK_TO_PAD_ARRIVAL_STUDS: 4,
 
 	/**
+	 * The marginal clearance the pad walk keeps outside a pad, in studs. **Placeholder — 3.**
+	 *
+	 * **Added to a measured radius rather than being one, and that is the whole of what this number is.**
+	 * The pad's own keep-clear radius is its flat circumradius — `0.5 × sqrt(x² + z²)` of the part — which
+	 * `LobbyRigService.writePadWalk` measures off the pad it is sending the rig past and writes on the rig as
+	 * `WalkToJoinPadAvoidRadius`. This is the margin around that: a body's own radius plus a stud, so a rig
+	 * walking the corridor misses the pad's corner by a body's width rather than by nothing.
+	 *
+	 * **The correction this represents.** The first version of this corridor had one guessed number for the
+	 * whole thing (`PAD_AVOID_RADIUS_STUDS`, 12), and it was wrong for exactly the reason a guess is wrong:
+	 * a sign wider than about fourteen studs is wider than the disc, so a rig passing twelve studs from the
+	 * centre walked over the end of it and the walk looked unchanged. Measuring the pad removes the guess;
+	 * what is left to tune is how much room a body wants, which is this.
+	 */
+	PAD_AVOID_CLEARANCE_STUDS: 6,
+
+	/**
+	 * The keep-clear radius a pad walk falls back to when the rig was not told a measured one, in studs.
+	 * **Placeholder — 12.**
+	 *
+	 * **A fallback and not the rule, which is the correction this pair of constants represents.** A rig the
+	 * lobby spawned carries `WalkToJoinPadAvoidRadius` — the actual pad's circumradius, measured from the
+	 * part — and this number is only reached by a rig somewhere the lobby did not put it, which in practice
+	 * means one tagged by hand in Studio. Twelve is a sign of about seventeen studs across, which is the
+	 * order of the pads this lobby has; it is deliberately a little generous, because the cost of being
+	 * wrong on the large side is a wider arc and the cost on the small side is a rig walking over the sign,
+	 * which is the fault the whole corridor exists for.
+	 *
+	 * **Two pads of one side are not kept clear of**, deliberately: the destination is one of them, and
+	 * walking over its own side's paint is not a mistake anybody can see.
+	 *
+	 * Both numbers are read by `WalkToJoinPadBehavior.aimAroundPad` and by nothing else.
+	 */
+	PAD_AVOID_RADIUS_STUDS: 12,
+
+	/**
 	 * How often the walk behaviour looks at where its rig is, in seconds. **Placeholder — 0.5.**
 	 *
 	 * **The walk itself is not paced by this — the engine's own `MoveTo` is.** A humanoid walks to the
@@ -389,7 +425,7 @@ export const NPC_CONFIG = {
 
 	/**
 	 * The shortest a placeholder rig waits after being told to walk before it sets off, in seconds.
-	 * **Placeholder — 10.**
+	 * **Placeholder — 2.**
 	 *
 	 * **A delay at all, and the reason is a drawing rather than a pause.** Every lobby rig is spawned in
 	 * one loop at boot and re-sent to its pad in one loop at every intermission, so without a wait they
@@ -397,28 +433,45 @@ export const NPC_CONFIG = {
 	 * room of people never looks like. A draw per rig spreads the lobby out, so the room reads as
 	 * individuals crossing it rather than as a formation.
 	 *
-	 * **The floor is most of the window, so the spread is what does the work.** Ten seconds is long
-	 * enough that two rigs drawn next to each other are visibly apart, and short enough that a rig drawn
-	 * at the bottom of the range still crosses the lobby inside a normal intermission: see
-	 * {@link NPC_CONFIG.WALK_TO_PAD_DELAY_MAX_SECONDS} for the upper end and what it costs.
+	 * **It was ten, and ten against fifteen is a window that does not fit the intermission it is drawn
+	 * in.** See {@link NPC_CONFIG.WALK_TO_PAD_DELAY_MAX_SECONDS}, whose own note predicted this exactly
+	 * and was read as a tolerable cost rather than as the bug it is: the walk is issued
+	 * `TRANSITION_COVER_SECONDS` (~0.9 s) into a 16-second intermission, so a rig drawn at fifteen set
+	 * off with the clock already wrapped and one drawn at ten had three seconds to cross the room. What
+	 * that looks like from the player's seat is not a staggered lobby — it is **a lobby of rigs standing
+	 * still**, which is the report this revision answers ("they spawn in lobby and are still"), and it is
+	 * why the two numbers are a pair.
+	 *
+	 * **So the spread is kept and the wait is removed.** Eight rigs over a five-second window is still
+	 * visibly staggered — three quarters of a second apart on average — while leaving eleven seconds of
+	 * a sixteen-second intermission for the crossing itself, which at
+	 * `NPC_CONFIG.WALK_TO_PAD_SPEED` is about two seconds of walking. The formation the old window was
+	 * guarding against needs the rigs to be *apart*, not to be *late*.
 	 */
-	WALK_TO_PAD_DELAY_MIN_SECONDS: 10,
+	WALK_TO_PAD_DELAY_MIN_SECONDS: 2,
 
 	/**
 	 * The longest a placeholder rig waits after being told to walk before it sets off, in seconds.
-	 * **Placeholder — 15.**
+	 * **Placeholder — 7.**
 	 *
-	 * **Sized against `ARENA_CONFIG.INTERMISSION_SECONDS` (16), and the fit is tighter than it looks.**
+	 * **The upper end of the same window, and it is bounded by the intermission rather than tuned.**
 	 * `LobbyRigService` starts the pads' walk `TRANSITION_COVER_SECONDS` after the phase changes — the
-	 * round's own cover, so the rigs move once the teleport has landed — which leaves about thirteen
-	 * seconds of intermission before the clock wraps. A rig drawn at fifteen therefore sets off with the
-	 * intermission already over, and one drawn at ten starts with three seconds left. Neither is a fault
-	 * — a rig still walking when a round opens is stripped and put on its side's spawn by
-	 * `LobbyRigService.moveWalkersToArena`, which is what that method is for — but it is what the delay
-	 * makes *ordinary* rather than rare, so the two numbers are a pair rather than two independent ones.
-	 * Raise this above the intermission and most rigs never walk at all in a short lobby life.
+	 * round's own cover, so the rigs move once the teleport has landed — which leaves about fifteen
+	 * seconds of a sixteen-second intermission before the clock wraps.
+	 *
+	 * **It used to be fifteen, and the paragraph that stood here knew the answer and kept the number.**
+	 * It said a rig drawn at fifteen "sets off with the intermission already over", called that "not a
+	 * fault" because `moveWalkersToArena` strips a rig still walking, and left the consequence where it
+	 * fell: **most rigs never walked at all**, and a lobby between rounds therefore looked like a room of
+	 * statues. Being stripped is a safety net for the unlucky rig, not a licence to draw a number that
+	 * makes stripping the ordinary case.
+	 *
+	 * **Seven leaves nine seconds of a sixteen-second intermission after the worst draw**, which is four
+	 * crossings of this lobby at `WALK_TO_PAD_SPEED`, so even the rig that waits longest is seen walking
+	 * and is seen arriving. The window keeps its job — spreading eight bodies out so they do not leave in
+	 * one line — without spending the whole intermission doing it.
 	 */
-	WALK_TO_PAD_DELAY_MAX_SECONDS: 15,
+	WALK_TO_PAD_DELAY_MAX_SECONDS: 10,
 
 	/**
 	 * The chance that a rig **runs** to its pad rather than walking. **Placeholder — 0.5.**

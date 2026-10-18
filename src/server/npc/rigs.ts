@@ -1,5 +1,6 @@
 import { CollectionService, Workspace } from "@rbxts/services";
 import { TEAM_ATTRIBUTE } from "shared/constants";
+import { MATCH_MAX_PER_TEAM } from "../config/match.config";
 import { TEAM_A, TEAM_B, TeamLabel } from "../services/round/team";
 import { NPC_TAG } from "./Behavior";
 
@@ -96,4 +97,41 @@ export function rigCounts(): { readonly a: number; readonly b: number } {
 	}
 
 	return { a: a, b: b };
+}
+
+/**
+ * **The side a rig actually takes on arrival, given the one it was sent to.**
+ *
+ * `WalkToJoinPadBehavior` writes `TEAM_ATTRIBUTE` when a rig reaches its pad, and what it writes is this
+ * rather than the side the pad was painted for. **The pad is a preference, not an instruction**: four
+ * bodies is a side, and a fifth rig walking onto the same sign is a fifth body on that side — which the
+ * round counts, teleports and scores against. The user's rule is that the overflow goes to the other pad
+ * rather than being turned back, so the lobby fills instead of piling up.
+ *
+ * **The count is the rigs on a side and nothing else**, which is the number `LobbyRigService` seats to and
+ * the number a rig's arrival can change. Players are `MatchService`'s roster and are balanced there, on
+ * their own cap — the two counters are deliberately separate, because a rig does not take a player's
+ * quota (`MatchService.canStart` argues that at length).
+ *
+ * **Both sides full returns the side it was sent to**, rather than nothing. A rig with no side is a body
+ * nothing manages: it wears no walk tag after this branch, so `LobbyRigService` would never move it again
+ * and it would stand in the lobby for the session. Taking the preferred side overfills by one, which is a
+ * state `LobbyRigService.releaseRigs` already knows how to trim, and an overfull side is a fault that
+ * repairs itself where an orphan is one that does not.
+ */
+export function sideWithRoom(preferred: TeamLabel): TeamLabel {
+	const other = preferred === TEAM_A ? TEAM_B : TEAM_A;
+
+	let preferredCount = 0;
+	let otherCount = 0;
+
+	for (const { team } of rigsOnASide()) {
+		if (team === preferred) preferredCount++;
+		else otherCount++;
+	}
+
+	if (preferredCount < MATCH_MAX_PER_TEAM) return preferred;
+	if (otherCount < MATCH_MAX_PER_TEAM) return other;
+
+	return preferred;
 }

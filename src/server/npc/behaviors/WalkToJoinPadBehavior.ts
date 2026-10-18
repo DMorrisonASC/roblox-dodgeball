@@ -11,6 +11,7 @@ import { TEAM_ATTRIBUTE } from "shared/constants";
 import type { WalkSpeedService } from "../../services/character/WalkSpeedService";
 import { TEAM_A, TEAM_B } from "../../services/round/team";
 import { BEHAVIOR_WALK_TO_JOIN_PAD, NpcBehavior } from "../Behavior";
+import { sideWithRoom } from "../rigs";
 
 /**
  * The attribute a rig's destination is written to, as a `Vector3`: the world point it walks to.
@@ -111,9 +112,50 @@ export const WALK_TO_JOIN_PAD_AT_ATTRIBUTE = "WalkToJoinPadAt";
  * one this file would otherwise have turning to face nothing. See `tick`, which drops the route and says so
  * once.
  *
+ * **It has a second job now: it is also the point the walk keeps clear of.** A rig sent to one side's pad
+ * walks over the other side's, because two signs in one lobby is all it takes and `Humanoid:MoveTo` walks a
+ * straight line. The pads a walk has to avoid are pads of the same "other side" whose signs it turns to look
+ * at, so one coordinate answers both questions — a second *point* attribute would be a second draw from the
+ * same set of pads, and the day one was written and the other was not, a rig would look at one sign and walk
+ * across another.
+ *
+ * **And it is drawn as the pad actually in the way, which is the correction the first version needed.** The
+ * point used to come from `nextPad`'s rotation — a pad of the other side, but not necessarily the one between
+ * the rig and its destination; with one pad a side that is the same pad and the two questions have one
+ * answer, and with several it was a coin toss. `LobbyRigService.writePadWalk` now picks **the other side's pad
+ * nearest the straight line the rig is about to walk**, so the sign the rig turns to look at is the sign it
+ * has to step around — which reads better than a rotation anyway.
+ *
+ * **The size of the thing being avoided does not travel with the point**, because a `Vector3` cannot carry
+ * one: {@link WALK_TO_JOIN_PAD_AVOID_RADIUS_ATTRIBUTE} is written beside it and is the pad's own measured
+ * footprint. See `aimAroundPad` for what the pair is used for.
+ *
  * **Placeholder string**, in the same family as its three siblings.
  */
 export const WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE = "WalkToJoinPadLookAt";
+
+/**
+ * The attribute carrying **how much room the pad walk must leave around the look-at point**, in studs: the
+ * other side's pad's own flat circumradius, written by the spawner that can see the part.
+ *
+ * **Why this is measured rather than a constant, and it is a correction.** The corridor's first version kept
+ * a fixed twelve studs clear of the pad's centre, which is only right for a sign about fourteen studs across
+ * — and a pad is a place-file fact no file in `src` can see. A wider sign meant a rig passing twelve studs
+ * from its centre walked over the end of it, and the fix looked like it had done nothing. The spawner holds
+ * the part, so the measurement is taken there: `0.5 × sqrt(x² + z²)`, the radius of the disc that covers the
+ * pad's footprint.
+ *
+ * **A number on the rig rather than a size, because the walk is flat.** The pad is a slab a body stands on,
+ * so its height says nothing about where a body walking past it may go; a `Vector3` of the part's size would
+ * invite a reader to use all three axes and get a corridor that dodges the pad's thickness.
+ *
+ * **Absent means the fallback constant**, `NPC_CONFIG.PAD_AVOID_RADIUS_STUDS` — a rig tagged by hand in
+ * Studio was written by nobody and has no measurement. The corridor still runs, from the guessed radius,
+ * which is the best a rig with no spawner can be given.
+ *
+ * **Placeholder string**, in the same family as its siblings.
+ */
+export const WALK_TO_JOIN_PAD_AVOID_RADIUS_ATTRIBUTE = "WalkToJoinPadAvoidRadius";
 
 /**
  * The contribution a rig's run is added under, **deliberately the same word a player's sprint uses.**
@@ -290,6 +332,148 @@ interface Walk {
 type WalkStage = "approach" | "look-away" | "look-back";
 
 /**
+ * **Where a rig should be walking this turn: its pad, or a point beside the other side's pad when the
+ * straight line would take it across it.**
+ *
+ * **Why this exists.** `Humanoid:MoveTo` walks a body in a straight line and knows nothing about what is in
+ * it — the class doc below says so and leaves obstacles to the place file. A join pad is that problem
+ * arriving: both signs stand in one lobby, every rig is spawned where a *player* spawns, and a rig sent to
+ * the far pad walks over the near one. Nothing actually breaks by it — a rig takes its side from its own
+ * attribute and not from the sign it walked over, so the wrong-team half of this is not reachable — but a
+ * placeholder standing on the other side's pad reads as a rig that picked the wrong team, which is exactly
+ * what a lobby of placeholders exists not to look like.
+ *
+ * **A corridor and not a plan.** Nothing here searches: each turn asks one question about the leg the body is
+ * about to walk — *does it come within `radius` of the other pad?* — and answers with a point to walk at. The
+ * point is the **tangent** point of that keep-clear circle seen from where the rig stands, pushed one radius
+ * further along the tangent, so the leg from here is outside the circle by construction and the answer slides
+ * around the pad as the rig advances. That is the same reasoning `SeekBehavior` gives for `MoveTo` over a path
+ * object: a trip with one known obstacle in it is not worth a planner, it is worth one dot product and one
+ * square root.
+ *
+ * **The radius is the pad's, not this file's.** It arrives as {@link WALK_TO_JOIN_PAD_AVOID_RADIUS_ATTRIBUTE}
+ * — the other pad's own circumradius, measured off the part by the spawner — plus
+ * `NPC_CONFIG.PAD_AVOID_CLEARANCE_STUDS` for the body. The first version of this used one guessed constant for
+ * both, sized for a sign that turned out to be an assumption, and a rig passing twelve studs from a wider sign
+ * still walked over its end. A corridor is only as good as the radius it is told: this one is told a measured
+ * number wherever a spawner wrote it, and falls back to the constant only for a hand-tagged rig.
+ *
+ * **The thing that has to be right is that the rig keeps walking.** Aiming *at* the tangent point rather than
+ * past it stalls a rig that is already level with the pad — the point it is aiming at is where it stands — so
+ * the aim is the touch point plus one radius along the tangent. And the question is only asked while the pad
+ * is *ahead*: once the rig has passed the pad's plane the answer is the destination again, which is what
+ * stops a body circling a pad it has already walked past.
+ *
+ * **Three geometries have no corridor, and each is answered rather than refused.**
+ *
+ * - **The rig is inside the keep-clear circle** — a shove, or a spawn part placed inside it. It steps one
+ *   radius straight outward, and the tangent leg takes over on the next turn. Walking on to the destination
+ *   from inside the circle is the one choice that would put the body on the pad.
+ * - **The rig's own pad is inside the circle too** — the two signs overlap, so there is no corridor between
+ *   them and the walk is the straight line it always was. Both pads are place-file facts, and the number that
+ *   decides it is the same measured radius: two pads whose discs touch cannot be walked between, and no
+ *   corridor would help if they did.
+ * - **No point to avoid** — a rig tagged by hand has no look-at. `tick` reads the attribute and only calls
+ *   this when it is there, so such a rig walks straight, exactly as it did before.
+ */
+function aimAroundPad(from: Vector3, target: Vector3, pad: Vector3, radius: number): Vector3 {
+	// Flat throughout: a pad is a place on the floor, and so is the leg between two of them.
+	const toTarget = new Vector3(target.X - from.X, 0, target.Z - from.Z);
+	const span = toTarget.Magnitude;
+
+	// Standing on the destination — no heading to improve on. `tick`'s arrival test has usually ended the
+	// walk before this is reached, so this is the guard rather than the ordinary case.
+	if (span < LOOK_FLAT_EPSILON) return target;
+
+	const toPad = new Vector3(pad.X - from.X, 0, pad.Z - from.Z);
+	const reach = toPad.Magnitude;
+
+	// **The destination inside the keep-clear disc means there is no corridor to take.** Two signs closer
+	// together than this radius are two signs a rig cannot walk between, and the straight line is what is
+	// left. **This test comes before the escape below, and that order is load-bearing rather than tidy:**
+	// with it after, a rig walking to a destination near the other pad crossed the boundary every other turn
+	// — inside, so stepped back out; outside, so walked on — and stood oscillating between two points for
+	// ever. Any change to this function has to be replayed against that geometry, and against the rig
+	// starting inside the circle, which is the other case the escape branch exists for.
+	const toGoal = new Vector3(target.X - pad.X, 0, target.Z - pad.Z);
+	if (toGoal.Magnitude <= radius + NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS) return target;
+
+	// **Inside the circle: out, and only out.** A zero offset means the pad is exactly under the body, where
+	// there is no outward direction and every choice crosses the pad; the destination is then the least bad
+	// answer, and the next turn has a reach of its own to work with.
+	//
+	// **`toPad` points at the pad, so outward is its negative** — the sign is the whole of this branch, and
+	// getting it wrong drives the body at the sign it is meant to be escaping.
+	if (reach < radius) {
+		if (reach < LOOK_FLAT_EPSILON) return target;
+
+		const outwardX = -toPad.X / reach;
+		const outwardZ = -toPad.Z / reach;
+
+		return new Vector3(from.X + outwardX * radius, target.Y, from.Z + outwardZ * radius);
+	}
+
+	const dirX = toTarget.X / span;
+	const dirZ = toTarget.Z / span;
+
+	// **How far down the leg the pad is, and how far off it** — two projections rather than a line-distance
+	// helper, because both numbers are wanted and the second is the first one taken back out again.
+	const along = toPad.X * dirX + toPad.Z * dirZ;
+
+	// Behind the rig: there is nothing to walk around, and steering would be steering backwards.
+	if (along <= 0) return target;
+
+	const lateral = math.sqrt(math.max(0, reach * reach - along * along));
+
+	// The leg already misses it — which is also the answer at exactly one radius, where the straight line
+	// grazes the circle and there is nothing left to gain by bending.
+	if (lateral >= radius) return target;
+
+	// The circle as this rig sees it: `u` points at the pad, and the two tangents leave it at `±theta`.
+	const uX = toPad.X / reach;
+	const uZ = toPad.Z / reach;
+
+	const cosTheta = radius / reach;
+	const sinTheta = math.sqrt(math.max(0, 1 - cosTheta * cosTheta));
+
+	// The tangent on the side the destination is on, which is the short way round.
+	const perpX = -uZ;
+	const perpZ = uX;
+	const side = dirX * perpX + dirZ * perpZ >= 0 ? 1 : -1;
+
+	// **The touch point, built from the pad rather than from the rig**, because `w` — the unit vector from
+	// the pad to it — is what makes the tangency checkable: the rig's own offset along `w` is one radius
+	// exactly, which is the statement that the leg is tangent to the circle rather than crossing it.
+	const wX = -cosTheta * uX + side * sinTheta * perpX;
+	const wZ = -cosTheta * uZ + side * sinTheta * perpZ;
+
+	const touchX = pad.X + radius * wX;
+	const touchZ = pad.Z + radius * wZ;
+
+	// **One more radius along the tangent, so the aim is somewhere to walk to rather than a place to stop.**
+	// The tangent direction is `w` turned a quarter turn; of its two signs, the one leading towards the
+	// destination is the one that carries the rig past the pad rather than back around it.
+	let tangentX = -wZ;
+	let tangentZ = wX;
+
+	if (tangentX * dirX + tangentZ * dirZ < 0) {
+		tangentX = -tangentX;
+		tangentZ = -tangentZ;
+	}
+
+	const aimX = touchX + tangentX * radius;
+	const aimZ = touchZ + tangentZ * radius;
+
+	// **And never past the pad the rig is walking to.** A corridor that overshoots the destination would be
+	// a body walking through its own sign and turning round; when the overshoot would land beyond it, the
+	// touch point is the aim and the next turn asks the question again from there.
+	const forward = (aimX - from.X) * dirX + (aimZ - from.Z) * dirZ;
+	if (forward > span) return new Vector3(touchX, target.Y, touchZ);
+
+	return new Vector3(aimX, target.Y, aimZ);
+}
+
+/**
  * Walking to a join pad, for an NPC.
  *
  * **Why this exists.** The rigs in a lobby are placeholders standing in for players who have not
@@ -299,11 +483,21 @@ type WalkStage = "approach" | "look-away" | "look-back";
  * to the sign, which is the one part of that illusion that costs a behaviour.
  *
  * **`MoveTo` and not `PathfindingService`, for the reason `SeekBehavior` gives at length** — which
- * applies here with less force: this walk is a straight line across a lobby floor, and a path object
- * recomputed per rig for a trip with nothing in it would be the largest thing in this directory. What
- * that costs is the same as it costs there, and it is smaller here because the destination is
- * *authored*: a dev who puts something between the spawns and the pads will see a rig standing against
- * it, which is a place-file answer to a place-file question rather than a behaviour that has to guess.
+ * applies here with less force: this walk is across a lobby floor, and a path object recomputed per rig
+ * for a trip with one known obstacle in it would be the largest thing in this directory. What that costs
+ * is the same as it costs there, and it is smaller here because the destination is *authored*: a dev who
+ * puts something between the spawns and the pads will see a rig standing against it, which is a place-file
+ * answer to a place-file question rather than a behaviour that has to guess.
+ *
+ * **The one obstacle this file does know about is the other side's pad, and the walk goes around it.** It
+ * used to be a straight line, and the straight line was the fault: a rig sent across the lobby walked over
+ * the near sign on the way to the far one, so a placeholder ended up standing on the *other* side's pad —
+ * which is the one thing a lobby of placeholders exists not to look like. The cost to this paragraph is
+ * worth stating plainly, because it is a small retreat from "nothing here knows what a pad is": it still
+ * does not know what a pad *is*, but it now knows one point to keep clear of — the point it already had,
+ * from {@link WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE}, because that is the other side's sign and the look-around
+ * route had already been given it. See `aimAroundPad` for the geometry and for the three geometries where no
+ * corridor exists.
  *
  * **It walks to a point it was handed rather than to a place it looked up.** The destination is the
  * rig's own `WalkToJoinPad` attribute, written by whoever spawned it — see
@@ -680,6 +874,23 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				return;
 			}
 
+			// **The obstacle and the aim, read once a turn and used twice** — by the line this walk prints when
+			// it sets off, and by the `MoveTo` at the bottom. Both facts are attributes the spawner wrote: the
+			// point is the other side's pad *nearest the leg* (see `LobbyRigService.padInTheWay`), and the
+			// radius is that pad's own measured footprint. A rig with no point is a rig tagged by hand, and it
+			// walks straight exactly as it did before the corridor existed; a rig with a point and no radius is
+			// one from a build before the measurement, and the constant is the fallback. See `aimAroundPad`.
+			const avoidPoint = model.GetAttribute(WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE);
+			const measuredRadius = model.GetAttribute(WALK_TO_JOIN_PAD_AVOID_RADIUS_ATTRIBUTE);
+			const avoidRadius =
+				typeIs(measuredRadius, "number") && measuredRadius > 0
+					? measuredRadius + NPC_CONFIG.PAD_AVOID_CLEARANCE_STUDS
+					: NPC_CONFIG.PAD_AVOID_RADIUS_STUDS;
+
+			const aim = typeIs(avoidPoint, "Vector3")
+				? aimAroundPad(root.Position, target, avoidPoint, avoidRadius)
+				: target;
+
 			// **The walk begins here, once, and the two draws are the whole of what makes a lobby of rigs
 			// look like a room of people.** One sets the gait and one sets the route, and both are held for
 			// the walk: a roll per turn would have a rig changing gear and route mid-crossing, which is a
@@ -693,6 +904,20 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				walk.stage = "approach";
 				walk.stageUntil = 0;
 
+				// **The walk speed is stated here as well as in `prepare`, and the second statement is the one
+				// that guarantees it.** `prepare` runs once per *loop*, and a rig's second walk — the one
+				// `LobbyRigService.sendRigsToTheirPads` issues at a round end — is the same model and the same
+				// loop, so `prepare` does not run for it: the tag comes off on arrival and goes back on at the
+				// next boundary, and `NpcService` has already marked it prepared. Everything else this walk
+				// needs it reads per turn, which is why only this one needed saying twice.
+				//
+				// **What it costs to leave out is the exact fault `prepare`'s doc is about**, arriving by the
+				// other door: a rig whose speed sum has ended up at nothing is told to walk, agrees, and does
+				// not move — indistinguishable in the output from a rig that has arrived. Writing the base is
+				// idempotent, so a rig that is about to run has it overwritten with the same number and
+				// `startRun` adds its contribution on top as it always did.
+				speeds.setBaseSpeed(model, NPC_CONFIG.WALK_TO_PAD_SPEED);
+
 				// **The one line this walk gets, on the edge and never per tick** — the shape every per-rig
 				// line in §17 has, and for its reason: a line per tick is unreadable, and a line per nothing
 				// leaves a stalled rig indistinguishable from a working one. It names the three things that
@@ -701,16 +926,24 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				// which. The wait is *measured* rather than the figure the spawner drew: this file never sees
 				// that number, and the gap between the deadline and the first turn that saw it is the same
 				// quantity, one tick short at worst.
+				//
+				// **And a fourth thing, which is the only one that can be checked from the log**: whether the
+				// straight line the rig was about to walk crosses the other side's pad. A corridor that is
+				// not being used and one that is being used for nothing look identical in a screenshot, and
+				// "does this rig's route bend?" is the question a reader of a lobby actually has.
 				const waited = walk.toldAt === undefined ? 0 : serverNow - walk.toldAt;
 				walk.toldAt = undefined;
 				// **The wait is over, so the row carries no pending instruction** — and clearing this is what
 				// makes a deadline written *later* read as a new one rather than as the one already served.
 				walk.deadline = undefined;
 
+				const routed = new Vector3(aim.X - target.X, 0, aim.Z - target.Z).Magnitude > LOOK_FLAT_EPSILON;
+
 				print(
 					`[Rig] ${model.Name}: pad walk — waited ${string.format("%.1f", waited)}s, ` +
 						`${walk.run ? "running" : "walking"}, ` +
-						`${walk.look ? "looking around on the way" : "straight to the pad"}`,
+						`${walk.look ? "looking around on the way" : "straight to the pad"}, ` +
+						`${routed ? `routed around the other sign (${string.format("%.1f", avoidRadius)} studs)` : "clear of the other sign"}`,
 				);
 			}
 
@@ -749,10 +982,22 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				// matching a point to a part is a lookup whose failure mode is a rig quietly joining the
 				// wrong side. A rig whose side is missing stays side-less and stands where it is, which is
 				// `rigs.ts`'s inert answer and an honest one.
-				const side = model.GetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE);
+				const wanted = model.GetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE);
 
-				if (side === TEAM_A || side === TEAM_B) {
+				if (wanted === TEAM_A || wanted === TEAM_B) {
+					// **The pad it walked to is a preference, and the side it takes is the one with room.**
+					// Four bodies is a side, so a fifth rig arriving on the same sign is moved to the other
+					// one rather than joining a side the round would then overfill. See `sideWithRoom`, which
+					// is where the count lives — and note what it does *not* do: the rig stays where it
+					// arrived, and the round's own teleport puts it on its new side's arena spawn at the
+					// whistle. It is the *side* that is balanced here, not the route.
+					const side = sideWithRoom(wanted);
+
 					model.SetAttribute(TEAM_ATTRIBUTE, side);
+
+					if (side !== wanted) {
+						print(`[Rig] ${model.Name}: side ${wanted} was full — took ${side} instead`);
+					}
 				} else if (!walk.reported) {
 					walk.reported = true;
 
@@ -875,7 +1120,11 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				}
 			}
 
-			humanoid.MoveTo(target);
+			// **The aim, decided above and reused here.** It is the destination unless the leg to it would cut
+			// across the other side's pad, in which case it is a point beside that pad — the corridor. The
+			// distance test above is against the *destination*, so a rig bending around a sign still arrives on
+			// the arrival threshold rather than on some larger one.
+			humanoid.MoveTo(aim);
 		},
 
 		/**

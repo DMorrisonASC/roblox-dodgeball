@@ -93,11 +93,12 @@ function sideCount(team: TeamLabel, counts: MatchCounts): number {
  * whether a match may begin, and the counts on the two signs let a dev see a 4v1 and ask somebody to
  * move.
  *
- * **A match starts when the sides are ready and have stopped moving, and the waiting is the round's.**
+ * **A match starts when the intermission's clock runs out, and the timing is the round's.**
  * `canStart()` answers "could a match begin"; nothing here acts on the answer, because starting a match
- * is the round's business and this service does not know what a round is — `RoundService` samples
- * `canStart` and {@link rosterRevision} once an intermission tick and asks for a match once the roster
- * has held still for `MATCH_SETTLE_SECONDS`. See the loop in `RoundService` for the window, and
+ * is the round's business and this service does not know what a round is — `RoundService` asks `canStart`
+ * once an intermission tick and opens the round when the clock reaches zero with the answer `true`.
+ * There is no settle window any more: a roster still moving at the whistle is the roster the round starts
+ * on, and the sides are balanced as bodies arrive. See the loop in `RoundService`, and
  * `RoundService.requestMatch` for the door a dev uses when they would rather not wait.
  *
  * **That delay is not timidity — it is what keeps the paragraph above true.** A match that began the
@@ -203,13 +204,14 @@ export class MatchService implements OnStart {
 	/**
 	 * How many times the roster has changed, ever.
 	 *
-	 * **For the one reader that has to tell "the same roster" from "a new one".** `RoundService` samples
-	 * this once an intermission tick to know whether the sides have stopped changing, so that a match can
-	 * start on its own; see `MATCH_SETTLE_SECONDS`. Nothing else needs it, and nothing should write to it —
-	 * the only thing that moves the number is a mutation of the roster itself.
+	 * **For the one reader that has to tell "the same roster" from "a new one".** `LobbyRigService` samples
+	 * it to decide whether any seat has moved since it last looked, which is what keeps a per-poll rebalance
+	 * cheap. Nothing else needs it, and nothing should write to it — the only thing that moves the number is
+	 * a mutation of the roster itself. (**The round used to read it too**, to wait for a roster that had
+	 * stopped changing; that window is gone and the clock ends the intermission now.)
 	 *
 	 * Read this rather than {@link countsFor} for that question. A player moving from one side to the other
-	 * is a change to the roster and a no-op to the counts, and the move is the case the window is about.
+	 * is a change to the roster and a no-op to the counts, and the move is the case a poll is about.
 	 */
 	public rosterRevision(): number {
 		return this.revision;
@@ -329,13 +331,30 @@ export class MatchService implements OnStart {
 
 		const counts = this.countsFor();
 
-		if (!this.hasRoom(side, counts)) {
-			if (DEBUG) print(`[Match] ${player.Name}: side ${side} is full — try the other part`);
+		// **Balanced at the part: a full side sends you to the other one rather than turning you away.**
+		// The sign you walked into is a *preference*, not an instruction — if four are already there, the
+		// fifth goes to the other pad. That is the user's rule and it reverses what stood here: this used
+		// to refuse and print "try the other part", on the argument that falling back would put somebody
+		// on a side they did not ask for. What it actually did was leave them standing in the lobby
+		// watching a side that was one body short of a match, with the fix being to walk ten studs and
+		// touch something else. Nobody is refused for a reason they can act on faster than we can.
+		let placed = side;
 
-			return undefined;
+		if (!this.hasRoom(placed, counts)) {
+			const other = placed === TEAM_A ? TEAM_B : TEAM_A;
+
+			if (!this.hasRoom(other, counts)) {
+				if (DEBUG) print(`[Match] ${player.Name}: both sides are full — nobody else can play`);
+
+				return undefined;
+			}
+
+			placed = other;
+
+			if (DEBUG) print(`[Match] ${player.Name}: side ${side} is full — balanced onto ${placed}`);
 		}
 
-		this.opted.set(player, side);
+		this.opted.set(player, placed);
 		this.revision++;
 		this.updateSigns();
 
@@ -344,11 +363,11 @@ export class MatchService implements OnStart {
 
 			// Two sentences rather than one, because "in" on a second touch would be a lie: the log is the
 			// record of the roster, and a move is a different fact from an arrival.
-			if (existing === undefined) print(`[Match] ${player.Name}: in — side ${side}, ${now}`);
-			else print(`[Match] ${player.Name}: moved to side ${side}, ${now}`);
+			if (existing === undefined) print(`[Match] ${player.Name}: in — side ${placed}, ${now}`);
+			else print(`[Match] ${player.Name}: moved to side ${placed}, ${now}`);
 		}
 
-		return side;
+		return placed;
 	}
 
 	/**

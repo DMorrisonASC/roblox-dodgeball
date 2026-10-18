@@ -138,19 +138,25 @@ export interface RigPool {
 	readonly usableModels: ReadonlyArray<Model>;
 
 	/**
-	 * Names the folder uses twice or more — **ambiguous, so the models behind them are never drawn.**
+	 * Names the folder uses twice or more — **ambiguous, so the two cannot be told apart as sources.**
 	 *
-	 * A rig records its source by *name*, so two same-named models cannot be told apart: drawing one would
-	 * mark the other as in use, and the lobby would end up short a body with nothing said. Refusing both is
-	 * the conservative half of the ambiguity, and it is a fault the boot line names rather than a state this
-	 * file tries to work around.
+	 * A rig records its source by *name*, so two same-named models are one source as far as a release is
+	 * concerned. That is no longer a reason to refuse them — the draw repeats a face when it has to — but it is
+	 * a reason to say so, because the boot line's model count will overstate how many different faces the
+	 * folder can show and nothing else would explain the gap.
 	 */
 	readonly duplicatedNames: ReadonlyArray<string>;
 
 	/** The names from {@link RIG_NAMES} that no live rig wears. */
 	readonly freeNames: ReadonlyArray<string>;
 
-	/** The folder's models that are neither ambiguous nor named by a live rig's {@link RIG_TEMPLATE_ATTRIBUTE}. */
+	/**
+	 * The folder's models that are neither ambiguous nor named by a live rig's {@link RIG_TEMPLATE_ATTRIBUTE}.
+	 *
+	 * **A preference rather than a limit**, and that distinction is the whole of the lobby's size rule: a
+	 * model is drawn from here while one is free, and a face is *repeated* once none are, because a seat left
+	 * empty to keep two rigs looking different is a match played a body short. See {@link drawRigIdentity}.
+	 */
 	readonly freeModels: ReadonlyArray<Model>;
 }
 
@@ -326,16 +332,26 @@ export function readRigPool(): RigPool {
  * furniture in a different colour each time. Independence is also what keeps the two exhaustions separate
  * questions, with separate answers, which is why they have separate sentences below.
  *
- * **Neither draw ever reuses something in use, and refusing is what happens instead.** A silent duplicate is
- * the immersion break this whole file is against, and it is *invisible* — where a refused spawn is a rig
- * missing from the lobby, which the boot line's counts already predicted. So the refusal is the answer the
- * lobby can be read for, and the alternative (reuse, with a line) would be a fault that has to be looked for.
+ * **A free face and a free name are what the draw *prefers*, and a seat is filled whether or not either is
+ * left — that is the rule, and it is the user's.** The lobby exists to be eight bodies, four a side, so that
+ * a match opens full whether or not anybody opted in; distinct faces are the immersion the pool is *for*, and
+ * they are the smaller of the two goods. So when every model is already worn, the draw repeats a face rather
+ * than leaving a seat empty. **What it must never do is refuse to make a body because the folder is small** —
+ * that is a lobby that looks half empty and a round that opens three against three, which is the failure this
+ * file used to cause by design and no longer does. The boot line still prints both counts beside the number
+ * of rigs wanted, so a repeated face is a fact in the log rather than something to spot in the crowd.
  *
- * **The three refusals are told apart because they need different actions.** An empty model set is a
- * *place-file* fault and sends the reader to Studio; an exhausted name list is a *config* fault about a rig
- * cap that has outgrown its names; and models all in use means the folder is smaller than the seats — the
- * case where the lobby is short a placeholder and nothing is broken. One sentence covering all three would
- * name none of them.
+ * **The name side is not treated the same way, and the asymmetry is deliberate.** Twenty names for eight
+ * seats means it cannot run out in an ordinary session, so a name refusal is only ever reachable by shortening
+ * the list below the rig cap — a config fault in this project's own file, which a duplicate name would hide
+ * for ever. The face list, by contrast, is a *place-file* supply the user is expected to keep small while the
+ * lobby is expected to stay full.
+ *
+ * **What is still refused is a folder that holds no rig at all.** That is not a shortage of faces but the
+ * absence of a body: `usableModels` is empty, nothing can be cloned, and the blame is a place-file fault the
+ * boot line already named. `freeNames` being empty is likewise refused, because it cannot happen with
+ * {@link RIG_NAMES} at twenty and the lobby at eight — if it ever does, the name list has been shortened
+ * below the rig cap, and spawning duplicates for ever would hide that rather than fix it.
  */
 export function drawRigIdentity(pool: RigPool): RigDraw {
 	if (pool.models.size() === 0) {
@@ -356,20 +372,26 @@ export function drawRigIdentity(pool: RigPool): RigDraw {
 		};
 	}
 
-	if (pool.freeModels.size() === 0) {
+	if (pool.usableModels.size() === 0) {
 		return {
 			ok: false,
 			reason:
-				`every model in "${NPC_CONFIG.RIG_POOL_FOLDER}" is in use, shares its name with another, ` +
-				`or is not a rig at all (a Humanoid and a HumanoidRootPart) — the folder has fewer usable ` +
-				`rigs than the lobby has seats`,
+				`no model in "${NPC_CONFIG.RIG_POOL_FOLDER}" is a rig — every one is missing a Humanoid ` +
+				`or a HumanoidRootPart — so no placeholder can be made at all`,
 		};
 	}
+
+	// **The face is the draw's only preference, and it is spent rather than hoarded.** Free models first, so
+	// a lobby with bodies to spare looks like eight different people; the whole usable set once they are gone,
+	// so the eighth seat is filled by a face already on the field. The alternative — which is what this did —
+	// was to refuse, and a refusal here is a rig missing from the lobby, which is a round that opens a body
+	// short. See this function's doc for why the seat outranks the face.
+	const faces = pool.freeModels.size() > 0 ? pool.freeModels : pool.usableModels;
 
 	// `math.random(a, b)` is inclusive at both ends, so the index is the whole array and never its end —
 	// the same note `NpcService.dressRig` and `MysteryBoxService` carry beside the same call.
 	const name = pool.freeNames[math.random(0, pool.freeNames.size() - 1)];
-	const template = pool.freeModels[math.random(0, pool.freeModels.size() - 1)];
+	const template = faces[math.random(0, faces.size() - 1)];
 
 	return { ok: true, name: name, template: template };
 }
@@ -393,10 +415,11 @@ export function drawRigIdentity(pool: RigPool): RigDraw {
  *
  * **Five faults, in two families, and the families differ in what a session costs.** A *structural* fault —
  * no `Humanoid`, no `HumanoidRootPart` — is one this file must not paint over, so the draw excludes the model
- * and the park costs a **seat**: the lobby is one rig shorter and the body is never seen doing anything. A
- * *decorative* fault — a tag, a token, a trail — leaves a body that works and looks wrong, and it is the
- * family nobody can see, which is why it is reported at all. `rigProblem` is the test both halves use, so the
- * exclusion and the line about it can never disagree.
+ * and the cost is a **face the lobby does not get to show**: the seat it would have filled is filled by a
+ * repeat of another model instead, because a seat is a body either way. A *decorative* fault — a tag, a token,
+ * a trail — leaves a body that works and looks wrong, and it is the family nobody can see, which is why it is
+ * reported at all. `rigProblem` is the test both halves use, so the exclusion and the line about it can never
+ * disagree.
  *
  * **`EQUIPPED_TRAIL_ATTRIBUTE` on a *rig* is correct and on a *pool model* is not**, which is the distinction
  * the wording has to carry: a rig that has been dressed is doing exactly what it should. A model sitting in

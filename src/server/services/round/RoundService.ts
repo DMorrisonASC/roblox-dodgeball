@@ -25,7 +25,7 @@ import {
 // next tidy-up should do: the block is long and alphabetically grouped, and adding two names to it means
 // re-reading it to find the right slot. Flagged rather than left silent.
 import { ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE } from "shared/constants";
-import { MATCH_JOIN_POLL_SECONDS, MATCH_MIN_PLAYERS, MATCH_SETTLE_SECONDS } from "../../config/match.config";
+import { MATCH_JOIN_POLL_SECONDS, MATCH_MIN_PLAYERS } from "../../config/match.config";
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
 import { rigCounts, rigsOnASide, sideOfRig } from "../../npc/rigs";
@@ -329,8 +329,8 @@ export class RoundService implements OnStart {
      * boundary consumes it. A separate `pending: boolean` beside it would be a second answer that could
      * disagree with the mode sitting next to it.
      *
-     * **Two things set it, through the one method that does.** The intermission's settle window sets it for
-     * a roster that has stopped changing — see `MATCH_SETTLE_SECONDS` — which is how a match normally
+     * **Two things set it, through the one method that does.** The intermission's clock sets it when it runs
+     * out with a roster that can play — see the loop in this file — which is how a match normally
      * begins, and a dev's `!dev match` sets it as the manual override. Both go through {@link startMatch},
      * so there is exactly one place the field is written and exactly one line saying a match is coming.
      *
@@ -502,9 +502,9 @@ export class RoundService implements OnStart {
     /**
      * Asks for a match to open on `mode`, at the next round boundary.
      *
-     * **The only thing that sets {@link pendingMatch}, and it has two callers.** The intermission's settle
-     * window is the normal one — it asks for a roster that has stopped changing, see
-     * `MATCH_SETTLE_SECONDS` — and {@link requestMatch} is the manual override behind a dev's `!dev match`.
+     * **The only thing that sets {@link pendingMatch}, and it has two callers.** The intermission's clock is
+     * the normal one — it asks for the match the moment it reaches zero with a roster that can play — and
+     * {@link requestMatch} is the manual override behind a dev's `!dev match`.
      * Both arrive here because the boundary below wants the same
      * thing from either of them: one mode, consumed once, and a `Round started` with a line above it saying
      * which of the two it was.
@@ -2720,48 +2720,39 @@ export class RoundService implements OnStart {
             // further down, which is how a match normally begins, and a dev's `!dev match` as the manual
             // override.
             //
-            // **The clock still runs, and wraps rather than reaching zero.** The number on the HUD is the
-            // honest sign that the server is alive, and freezing it for a wait with no promised end would
-            // read as a hung server — the same lie the held intermission used to tell. So the countdown
-            // restarts at its full length each time it reaches zero: the clock says the server is running by
-            // moving rather than by stopping, and a wrap is not a round boundary.
-            let elapsed = 0;
-
-            // **The settle window's two numbers, counted on the clock's own ticks.**
+            // **The clock ends an intermission, and it is the only thing that does.** It reaches zero and
+            // the round opens; the wrap survives only in the one case with no end to reach — an empty server
+            // — see the expiry below. *(It used to wrap always, and the round was opened by a separate
+            // five-second settle window instead, which is how one intermission came to last five seconds and
+            // the next twenty-two.)*
             //
-            // `settledFor` is how many ticks the roster has been startable and unchanged, and `roster` is
-            // the roster that count was last measured against. Both are declared out here rather than inside
-            // the loop because both have to survive a wrap: the countdown going round again is a fact about
-            // the clock, not about the sides, and a grace period that reset itself every sixteen seconds
-            // would be a match that never started.
-            let settledFor = 0;
-            let roster = this.matches.rosterRevision();
+            // **No settle window and nothing to count**, so the only number the loop carries is `elapsed`,
+            // which exists for the vote window alone.
+            let elapsed = 0;
 
             while (this.pendingMatch === undefined) {
                 // A paused tick does nothing at all: no second off the clock, no change of
                 // state, no teleport. The phase resumes from whatever the clock said when it
                 // was switched off, which is the whole difference between pausing and ending.
                 //
-                // **A server below the minimum freezes in exactly the same way**, and for the same
-                // reason: there is nobody to start a match for. This single line is where "freeze,
-                // don't skip" lives — and it is the *only* thing that stops the clock, which is the
-                // honest reading of it: with one player in the server the clock stands still because no
-                // match could be started anyway.
-                //
-                // **And the settle count goes with the clock.** A paused or half-empty server is not
-                // accumulating a start: the sides may well still be startable from before, and a match that
-                // began the instant the population came back would open while nobody was there to see it.
-                if (this.isRoundsPaused() || this.belowMinimum()) {
-                    settledFor = 0;
+                // **A server below the minimum no longer freezes with it.** The clock used to stand still
+                // until there were `MIN_PLAYERS` bodies *on a side* — and at boot there are none, because
+                // the lobby's rigs are still walking to their pads and take no side until they arrive. So
+                // the first intermission's clock did not start for ten-odd seconds and then needed its whole
+                // countdown, while every later one started ticking the instant the previous round ended. The
+                // freeze was there to stop a half-empty server burning an intermission it could not use, and
+                // the expiry below does that job honestly instead: an empty server counts down, fails to
+                // start, and goes round again with the HUD still moving.
+                if (this.isRoundsPaused()) {
                     task.wait(1);
                     continue;
                 }
 
                 // The vote opens on the intermission's **first running second**, which is not the
-                // same moment as the intermission *starting*: a server below the minimum is frozen
-                // above, so its intermission has not really begun and the window should not be open
-                // while nobody is there to vote. Opening it here rather than once before the loop
-                // is also what lets a server that fills up thirty seconds later still get this vote.
+                // same moment as the intermission *starting*: a held server is parked above, so its
+                // intermission has not really begun and the window should not be open while a dev has
+                // it stopped. Opening it here rather than once before the loop is also what reopens the
+                // window after a wrap — see the expiry below, which is now the only thing that wraps.
                 //
                 // **Switched off, and left standing.** See `VOTE_ENABLED` — the vote is not offered any
                 // more, and the call stays where it is so that turning it back on is that one line.
@@ -2771,71 +2762,62 @@ export class RoundService implements OnStart {
                 this.timeRemaining--;
                 elapsed++;
 
-                // **The wrap.** Reaching zero is not the end of anything now, it is the clock going round
-                // again — and `elapsed` goes round with it, so a wrapped intermission behaves like a fresh
-                // one to anything counting running seconds, the vote window above included.
+                // **The expiry, and the whole of the start rule.** The clock ends an intermission; there is
+                // no second gate beside it and nothing to settle. Three readings of zero:
+                //
+                // - **a match can start** — hold at `0`, and the block below opens it on this tick;
+                // - **nothing here to play for** (`belowMinimum`) — wrap, because the number moving is how
+                //   the HUD says the server is alive and an empty server should not sit at `0` looking hung;
+                // - **bodies here but one side empty** — hold at `0`, because a round cannot open and
+                //   somebody still has to choose. Every tick re-asks, so the moment a side is picked the
+                //   match opens. **This is the only case where an intermission outruns its clock**, and
+                //   balancing is what keeps it rare: nobody is left stranded on a side that is full.
                 if (this.timeRemaining <= 0) {
-                    this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
-                    elapsed = 0;
+                    if (this.matches.canStart()) {
+                        this.timeRemaining = 0;
+                    } else if (this.belowMinimum()) {
+                        this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
+                        elapsed = 0;
+                    } else {
+                        this.timeRemaining = 0;
+                    }
                 }
 
                 this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
                 if (VOTE_ENABLED && elapsed === GAME_MODE_CONFIG.VOTE_SECONDS) this.votes.closeVote();
 
-                // **The normal start: a roster that is ready and has stopped moving.**
+                // **The start: the clock ran out with a roster that can play.**
                 //
                 // **Nobody has to ask for a match for one to happen, and that is the design rather than a
-                // fallback.** A server whose sides are full and have stopped moving keeps opening rounds by
-                // itself; `!dev match` is the override beside it, for a dev who does not want to wait out
-                // the window. Both arrive at the same door — see {@link startMatch} — so nothing below cares
-                // which of the two this is.
+                // fallback** — the intermission's own length is the request. `!dev match` is the override
+                // beside it, for a dev who does not want to wait the clock out. Both arrive at the same
+                // door — see {@link startMatch} — so nothing below cares which of the two this is.
                 //
-                // **Read against the revision rather than the counts, and a side switch is why.** `countsFor`
-                // cannot see the change that matters most here — a player crossing from `A` to `B` leaves it
-                // identical — and that crossing is exactly the move this window exists to wait out. Any
-                // touch, move, departure or clearing moves the number, so comparing it is the question "is
-                // this the same roster I was looking at a second ago".
-                //
-                // **A roster that is not startable resets the count rather than pausing it**, so one player
-                // waiting alone on a pad does not carry a half-elapsed window into the instant somebody joins
-                // them: the match then starts a full `MATCH_SETTLE_SECONDS` after the sides were complete,
-                // which is the window the last arrival is owed.
-                const current = this.matches.rosterRevision();
+                // **No settle window and no revision read.** A roster still moving at the whistle is simply
+                // the roster the round starts on: a last-second side switch *is* a roster change, and the
+                // sides are balanced as bodies arrive rather than held still for — see `MatchService.optIn`
+                // and `sideWithRoom` in `npc/rigs.ts`. Waiting for the roster to stop changing was what made
+                // one intermission five seconds and the next twenty-two.
+                if (this.timeRemaining !== 0) continue;
 
-                if (current !== roster) {
-                    roster = current;
-                    settledFor = 0;
-                } else if (this.matches.canStart()) {
-                    settledFor++;
+                const counts = this.matches.countsFor();
+                const rigs = rigCounts();
 
-                    if (settledFor >= MATCH_SETTLE_SECONDS) {
-                        // **Two lines, because two places know the two facts.** `startMatch` says what is
-                        // coming and in which mode; this says the request came from the roster rather than
-                        // from a dev, which is the normal path and the one worth being able to tell apart
-                        // in the output from somebody having typed `!dev match`.
-                        const counts = this.matches.countsFor();
-                        const rigs = rigCounts();
+                // **The rigs are counted separately rather than folded into the player counts**, so the line
+                // names both kinds of body: `countsFor` is the players `MatchService` knows, and `rigCounts`
+                // is the derivation a rig-only round starts on. A rig-only start therefore prints two zeroes
+                // under "players" and two under "rigs" — the honest shape of a match with no people in it —
+                // rather than a bare `A: 0, B: 0` that reads as a fault.
+                print(
+                    `[Round] starting on its own — the ${ARENA_CONFIG.INTERMISSION_SECONDS}s intermission ` +
+                        `ran out (players A: ${counts.a}, B: ${counts.b}; rigs A: ${rigs.a}, B: ${rigs.b})`,
+                );
 
-                        // **The rigs are counted separately rather than folded into the player counts**, so
-                        // the line names both kinds of body: `countsFor` is the players `MatchService` knows,
-                        // and `rigCounts` is the derivation a rig-only round starts on. A rig-only start
-                        // therefore prints two zeroes under "players" and two under "rigs" — the honest shape
-                        // of a match with no people in it — rather than a bare `A: 0, B: 0` that reads as a
-                        // fault.
-                        print(
-                            `[Round] starting on its own — the sides held still for ${MATCH_SETTLE_SECONDS}s` +
-                                ` (players A: ${counts.a}, B: ${counts.b}; rigs A: ${rigs.a}, B: ${rigs.b})`,
-                        );
-
-                        // The same door the dev command uses, so the field still has exactly one writer — and
-                        // a request that arrived a moment earlier still wins, because this branch is only
-                        // reached while it is unset.
-                        this.startMatch(SCORE_RUSH);
-                    }
-                } else {
-                    settledFor = 0;
-                }
+                // The same door the dev command uses, so the field still has exactly one writer — and a
+                // request that arrived a moment earlier still wins, because this branch is only reached
+                // while it is unset.
+                this.startMatch(SCORE_RUSH);
             }
 
             await this.waitWhilePaused();
