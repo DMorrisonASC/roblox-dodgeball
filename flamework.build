@@ -72,7 +72,8 @@
 		"roblox-dodgeball:out/client/controllers/input/DuckController@DuckController": "client/controllers/input/DuckController@DuckController",
 		"roblox-dodgeball:out/client/controllers/camera/CameraZoomController@CameraZoomController": "client/controllers/camera/CameraZoomController@CameraZoomController",
 		"roblox-dodgeball:out/client/controllers/hud/MobileControlsController@MobileControlsController": "client/controllers/hud/MobileControlsController@MobileControlsController",
-		"roblox-dodgeball:out/client/controllers/input/TouchJoystickController@TouchJoystickController": "client/controllers/input/TouchJoystickController@TouchJoystickController"
+		"roblox-dodgeball:out/client/controllers/input/TouchJoystickController@TouchJoystickController": "client/controllers/input/TouchJoystickController@TouchJoystickController",
+		"roblox-dodgeball:out/client/controllers/character/AimFacingController@AimFacingController": "client/controllers/character/AimFacingController@AimFacingController"
 	},
 	"metadata": {}
 }

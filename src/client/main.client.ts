@@ -1,4 +1,6 @@
 import { Flamework } from "@flamework/core";
+import { UserInputService } from "@rbxts/services";
+import { AIM_CONFIG } from "shared/config/aim.config";
 import { startChargeEffects } from "./chargeEffect";
 import { startIasTest } from "./IasTest";
 import { startHitConfirm } from "./hitConfirm";
@@ -8,6 +10,27 @@ print("[client] igniting");
 Flamework.addPaths("src/client/controllers");
 Flamework.ignite();
 print("[client] ignited");
+
+// **The game's mouse sensitivity, written once, here, and nowhere else in the project.** This is a
+// *session* property rather than a saved setting, so "once at client start" is the whole of its lifecycle —
+// there is nothing to persist, nothing to restore, and no path that needs to write it again. It is here
+// rather than in a controller because it is not a *surface*: no controller owns it, every view on the client
+// inherits it (the ordinary camera, the custom shift lock, the aim ray and the arc), and putting it in one
+// controller would make that controller the owner of a setting the others depend on without being able to
+// see it.
+//
+// **`MouseDeltaSensitivity`, deliberately, and not `UserGameSettings.MouseSensitivity`.** The first is a
+// multiplier on the player's own slider; the second *is* the slider. Overwriting the slider would be taking a
+// preference away from somebody who has already stated it, so the game scales it instead and leaves the
+// stored value alone. See `AIM_CONFIG.MOUSE_SENSITIVITY` for the whole argument, and note that this is the
+// only write to either property anywhere in `src/`.
+//
+// **Not gated on `isMobile()`, and the thought is worth recording because `ui/screenGui.ts` has a device gate
+// a few lines of habit away.** A touch client has no mouse, so the property is inert there — writing it costs
+// one property write and changes nothing. Gating it would imply that a touch device has a sensitivity to set,
+// which is the opposite of true, and would put a second platform branch in a line that has no platform
+// question in it.
+UserInputService.MouseDeltaSensitivity = AIM_CONFIG.MOUSE_SENSITIVITY;
 
 // **Temporary, and the second of the two lines that make the IAS test deletable.** The other is the
 // import above. The file's own `DEBUG` flag is the off switch, so turning the test off does not

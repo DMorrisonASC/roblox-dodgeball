@@ -152,14 +152,12 @@ interface PoolHold {
      * **The line between the two tiers of hold, and it is a line about physics rather than about fairness.**
      * The drain is a measure of *walking*, so a body that is not walking must not pay it: a duck anchors the
      * root to the floor and a dash is the server moving the body, and in neither is it the legs doing work.
-     * A catch window and a charge are the other way round — the body is on its own feet and may well be
-     * running — so the drain stays, and only the *recovery* stops, because a body with its hands up or a
-     * throw wound back is not resting.
+     * A catch window is the other way round — the body is on its own feet and may well be running — so the
+     * drain stays, and only the *recovery* stops, because a body with its hands up is not resting.
      *
-     * **And it is what makes the charge safe to take on trust.** The charge is the one action the server
-     * cannot see for itself, so a client reports it — and because a charge does *not* hold the drain, a
-     * client that lied about charging would still burn its pool while sprinting. There is nothing to be
-     * gained by lying; see the `setCharging` event.
+     * **A charge used to be named in that second tier and is not any more.** See {@link poolHold} for the
+     * argument — a hold whose length the player chooses is a lockout rather than a measure of resting — and
+     * `shared/networking.ts` for the event that used to carry it. The two tiers now hold two actions and one.
      */
     readonly holdsDrain: boolean;
 }
@@ -200,15 +198,9 @@ export class WalkSpeedService implements OnStart {
      */
     private catchState?: CatchState;
 
-    /**
-     * The players **holding the throw button**, as the client last reported it. See the `setCharging` event
-     * for why this is a client's word and why that is safe here.
-     *
-     * Keyed by `Player` rather than by character, because it is the client that reports it and a client
-     * outlives the bodies it drives — and cleared when a new body arrives, because the claim describes a
-     * *body* and a client that died mid-charge may never send the `false`. See {@link trackPlayer}.
-     */
-    private readonly charging = new Set<Player>();
+    // **The players holding the throw button used to be tracked here**, in a `Set<Player>` filled by the
+    // `setCharging` event and cleared on a new body, and `poolHold` read it to stop the recovery during a
+    // charge. All three are gone: see `poolHold` for why that hold was removed.
 
     /**
      * Hands this service the catch window it has to respect. Called by `CatchService` itself.
@@ -227,9 +219,9 @@ export class WalkSpeedService implements OnStart {
         // situation. The check is in {@link setSprinting}.
         events.Server.OnEvent("setSprinting", (player, active) => this.setSprinting(player, active));
 
-        // And the charge, whose two questions are the same shape — is this a boolean, and is the player
-        // being tracked — and are answered by `setCharging` for the same reason.
-        events.Server.OnEvent("setCharging", (player, charging) => this.setCharging(player, charging));
+        // **`setCharging` was subscribed here and is not any more.** It was the client's report of "the throw
+        // button is down", and its only reader was `poolHold`'s charge branch. Both are gone together — see
+        // that method for why the stamina hold during a charge was removed.
 
         Players.PlayerAdded.Connect((player) => this.trackPlayer(player));
 
@@ -491,12 +483,6 @@ export class WalkSpeedService implements OnStart {
         const prepare = (character: Model) => {
             this.setBaseSpeed(character, CHARACTER_CONFIG.BASE_WALK_SPEED);
 
-            // **A new body is not a charging one, and the claim is per *player*.** The state it describes is
-            // per *body*, and a client that died mid-charge may never send the `false` — a pool that never
-            // refilled again would be a worse fault than the one the claim exists to fix. Cleared here rather
-            // than on death, so it covers every road to a new body: a respawn, a first spawn, and a rig.
-            this.charging.delete(player);
-
             const state = this.sprints.get(player);
             if (state?.sprinting) this.applySprint(player, true);
         };
@@ -535,10 +521,15 @@ export class WalkSpeedService implements OnStart {
      * could not take, because `active` is a *key* and the key was still down. *"I can use dodge to allow
      * me to move while I recover my stamina"* — the pool refilled during a dash, so the dash was free
      * movement bought with the recovery the player was supposed to be standing still for. And *"I should
-     * not recover stamina if I am attempting a catch or HOLDING a throw"* — the same fault with two more
-     * actions, both of which a body can do *while walking*, which is why they hold the recovery and not
-     * the drain. **All three are one fault seen from different ends: the pool was refilling for a body
-     * that was plainly not resting**, and a pool is only a *sprint's* pool if it measures resting.
+     * not recover stamina if I am attempting a catch"* — the same fault for an action a body can do *while
+     * walking*, which is why it holds the recovery and not the drain. **All three are one fault seen from
+     * different ends: the pool was refilling for a body that was plainly not resting**, and a pool is only
+     * a *sprint's* pool if it measures resting.
+     *
+     * **And the charge was the fourth, and it is gone.** Named here because the paragraph above used to
+     * quote it — *"…or HOLDING a throw"* — and a reader carrying that sentence will otherwise conclude the
+     * rule still covers it. It does not: see {@link poolHold}, where the argument is that a hold whose
+     * length the player chooses is a lockout rather than a measure of resting.
      *
      * **A hold is not a stop.** `sprinting` is still computed from the key and the pool, so a player who
      * keeps the key down through a duck comes out of it still sprinting — the contribution stays on the
@@ -568,10 +559,10 @@ export class WalkSpeedService implements OnStart {
 
         // **Two rules, and the tiers are what they are for.** A hold *always* stops the recovery, so
         // `recovers` only has to ask whether there is one. The *drain* stops only for a hold that also takes
-        // the body off its own feet — `PoolHold.holdsDrain` — so a charging or a catching body is still
-        // running and still pays for it. Nothing below moves `lastDrainAt` while the recovery is held, so the
-        // pause neither restarts nor elapses while the body is busy, and the pool is the same number when
-        // the action ends as it was when it began.
+        // the body off its own feet — `PoolHold.holdsDrain` — so a catching body is still running and still
+        // pays for it. Nothing below moves `lastDrainAt` while the recovery is held, so the pause neither
+        // restarts nor elapses while the body is busy, and the pool is the same number when the action ends
+        // as it was when it began.
         const drains = sprinting && hold?.holdsDrain !== true;
         const recovers =
             hold === undefined &&
@@ -624,19 +615,25 @@ export class WalkSpeedService implements OnStart {
  * **Recovery is what this answers, and it is the wider of the two rules**: everything named here stops the
  * pool refilling. What varies is whether it stops the *drain* as well — {@link PoolHold.holdsDrain} — which
  * is a separate question about whether the body is still moving under its own power. Two tiers, then: a
- * **duck** and a **dodge** hold both halves, and a **catch** and a **charge** hold only the recovery.
+ * **duck** and a **dodge** hold both halves, and a **catch** holds only the recovery.
  *
- * **Why a catch and a charge are in here at all, in the words they were reported with:** *"I should not
- * recover stamina if I am attempting a catch or HOLDING a throw."* Both are things a body does *on the
- * move*, and both are therefore things it can do *instead of* resting — which is the whole fault: the pool
- * was refilling for a body that was plainly not standing still. What is deliberately **not** changed for
- * them is the drain, because draining a body that is running is the pool working correctly.
+ * **Why a catch is in here at all, in the words it was reported with:** *"I should not recover stamina if I
+ * am attempting a catch."* A catch is a thing a body does *on the move*, and therefore a thing it can do
+ * *instead of* resting — which is the whole fault: the pool was refilling for a body that was plainly not
+ * standing still. What is deliberately **not** changed for it is the drain, because draining a body that is
+ * running is the pool working correctly.
  *
- * **The catch and the charge get here by two different roads, and only one of them is visible to the
- * server.** A catch window is a server-side fact with a server-side lifetime, so `CatchService` hands this
- * service a handle to it — see {@link watchCatchState}. A charge is measured on the *client*
- * (`client/throwing.ts` owns its start time) and the server learns nothing about it until the release
- * arrives, so the client reports it as a level — see {@link charging} and the `setCharging` event.
+ * **A charge was in here beside the catch and has been taken out, and it is the one hold whose length the
+ * player controls.** It arrived by a different road — a charge is measured on the *client*, so the server was
+ * told about it over the `setCharging` event — and it has gone for a reason the catch does not have.
+ * `currentCharge` clamps at full and **nothing auto-throws**, so a player can hold the throw button for as
+ * long as they like: while they did, nothing recovered. A stance somebody can stand in for a minute is not
+ * evidence that they are not resting, it is a lockout they can inflict on themselves, and it was reported as
+ * exactly that — *"stamina does not replenish while aiming"*. See the note at the bottom of this method for
+ * what went with it.
+ *
+ * **The catch arrives the only way it can.** A catch window is a server-side fact with a server-side
+ * lifetime, so `CatchService` hands this service a handle to it — see {@link watchCatchState}.
      *
      * **Read from the body's published attributes, and that is forced rather than chosen.** The services
      * that own these states cannot be injected here: `DodgeService` depends on `FreezeService`, which
@@ -671,15 +668,24 @@ export class WalkSpeedService implements OnStart {
             return { action: "dodging", holdsDrain: true };
         }
 
-        // **The two a body can do while walking, and they hold only the recovery.** Raising your hands for
-        // a ball and winding up a throw are both things a player does *on the move* — you can run with a
-        // window open and you can run while charging — so the drain stays honest for them and only the
-        // recovery stops: a body doing either is not resting. The charge's half of that is also what makes
-        // it safe to take the client's word for; see the `setCharging` event.
+        // **The one a body can do while walking, and it holds only the recovery.** Raising your hands for
+        // a ball is something a player does *on the move* — you can run with a window open — so the drain
+        // stays honest for it and only the recovery stops: a body with its hands up is not resting. It was
+        // two of these until the charge was removed below.
         if (this.catchState?.isCatching(model) === true) return { action: "catching", holdsDrain: false };
 
-        const player = Players.GetPlayerFromCharacter(model);
-        if (player !== undefined && this.charging.has(player)) return { action: "charging", holdsDrain: false };
+        // **A charge used to be returned here, and its removal is the point of this change.** The hold stopped
+        // the pool recovering while the throw button was down, on the same "hands up is not resting" argument.
+        // What that argument missed is that **this is the one hold whose length the player controls**: a
+        // charge has no ceiling (`currentCharge` clamps at full and nothing auto-throws), so a player who held
+        // the button — to line a shot up, to wait for a gap, or by accident — stopped their own stamina
+        // recovering for as long as they kept holding it. Every other hold here is short and involuntary: a
+        // duck, a dash, a catch window with a server-side lifetime. Writing a charge off as "not resting" is
+        // defensible; making it a stance somebody can stand in for a minute is not, and the symptom is the
+        // one this was reported as — "stamina does not replenish while aiming".
+        //
+        // **Charging and sprinting together still drains**, exactly as it did before: this branch never held
+        // the drain. What has changed is only that standing still with the button down now refills.
 
         return undefined;
     }
@@ -727,28 +733,10 @@ export class WalkSpeedService implements OnStart {
         player.SetAttribute(STAMINA_ATTRIBUTE, state.stamina);
     }
 
-    /**
-     * Records whether this player is holding the throw button, as the client last reported it.
-     *
-     * **The same two checks as {@link setSprinting}, for the same two reasons.** The wire is untyped, so
-     * anything that is not a boolean is a client that is not this one, and is ignored rather than coerced;
-     * and a player who is not being tracked is ignored rather than remembered, so this flag cannot outlive
-     * the pool it describes.
-     *
-     * **Nothing here is a refusal and nothing here decides anything.** The flag is read by {@link poolHold},
-     * which holds the recovery while it is up and deliberately leaves the drain alone — see the `setCharging`
-     * event for why that asymmetry is what makes taking a client's word for this safe.
-     */
-    private setCharging(player: Player, charging: unknown): void {
-        if (!typeIs(charging, "boolean")) return;
-        if (!this.sprints.has(player)) return;
-
-        if (charging) {
-            this.charging.add(player);
-        } else {
-            this.charging.delete(player);
-        }
-    }
+    // **`setCharging` used to live here.** It recorded whether a client was holding the throw button, and
+    // {@link poolHold} read it to stop the pool recovering during a charge. Removed at the user's request —
+    // see `poolHold` for why a hold that lasts as long as a button is held is a lockout rather than a rule
+    // about resting — along with the `charging` set, the event subscription and the wire event itself.
 
     /** Whether this player is asking to sprint, and with how much pool. */
     private setSprinting(player: Player, active: unknown): void {

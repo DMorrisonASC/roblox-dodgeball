@@ -38,6 +38,29 @@ const DEBUG = true;
  */
 const SIGHT_SIZE = 44;
 
+/**
+ * **Whether the camera diagnostics are on. `false` — this is a switch for one session, and it costs a log line
+ * a frame while it is on.**
+ *
+ * **Its own constant rather than `DEBUG_CONFIG.VERBOSE_LOGS`, and that is deliberate.** Turning the verbose
+ * gate on would also turn on `ThrowProbe`, which builds a whole `Trajectory` per throw, and `ThrowController`'s
+ * marker-jitter report — so the session that measures the camera would be a session where the throw path is
+ * doing work it does not do in a real game. `DEBUG_CONFIG.PROFILE` would be the other candidate and is the
+ * wrong shape too: those are named MicroProfiler bands, and a camera *feel* question is answered from a text
+ * log rather than from a flame chart. This switch turns on four lines of this file's own measuring and nothing
+ * else, which is what makes the numbers comparable to a session with it off.
+ *
+ * **The four lines are specified in {@link ShiftLock.reportCamera}, with what each one distinguishes.** What a
+ * reader brings back is a five-second recording taken in a practice zone with the lock on, while walking and
+ * turning — and the summary lines are the ones that decide the shape of the fault.
+ *
+ * Turn it on by editing this line, take the session, and put it back.
+ */
+const CAMERA_DIAGNOSTICS = false;
+
+/** How long the diagnostic rollup accumulates before printing, in seconds. One second, so the lines pair. */
+const CAMERA_DIAGNOSTIC_PERIOD = 1;
+
 /** The phase the round folder is publishing, or nothing while it has not published one yet. */
 function phaseOf(status: Instance): string | undefined {
 	const value = status.GetAttribute(ROUND_STATE_ATTRIBUTE);
@@ -257,6 +280,18 @@ export class ShiftLock implements OnStart {
 	 * {@link reportZoneParts} for the log that made a one-time count untenable.
 	 */
 	private reportedZoneParts?: number;
+
+	/** The camera's view direction last frame, for the rotational delta {@link reportCamera} measures. */
+	private lastLook?: Vector3;
+
+	/** Frames sampled in the current diagnostic second, its mean, its mean of squares, and its worst frame. */
+	private sampleFrames = 0;
+	private sampleSum = 0;
+	private sampleSquares = 0;
+	private sampleMax = 0;
+
+	/** Seconds accumulated toward the next `[Camera] summary` line. See {@link CAMERA_DIAGNOSTIC_PERIOD}. */
+	private sampleSeconds = 0;
 
 	public onStart(): void {
 		// **The first line is printed here, before anything else below it can fail, and that is not
@@ -793,6 +828,14 @@ export class ShiftLock implements OnStart {
 	 * **What it writes is not `CAMERA_OFFSET` itself**, and the difference is the whole of
 	 * {@link offsetForBody}. Called on every state change *and* once a frame while locked — see
 	 * {@link watchOffset}, which is the half that keeps the shoulder on one side of the screen.
+	 *
+	 * **It is exact, and there is no easing here any more.** An exponential ease lived on this method for one
+	 * revision, chasing the recomputed value, and it was the wrong medicine: the fault was never that the
+	 * value moved too far in a frame, it was that the value was **applied in a different body frame from the
+	 * one it was computed in**, which turns the body's own turn into camera motion. An ease blurs a 180° whip
+	 * into a sway and leaves the flaw in place — which is exactly what it did. The cause is fixed in
+	 * {@link watchOffset} by writing one step before the camera reads, where the conversion cancels exactly;
+	 * with nothing left to damp, a smoothing constant would be a lag with no job.
 	 */
 	private applyOffset(): void {
 		const humanoid = this.humanoid;
@@ -817,6 +860,14 @@ export class ShiftLock implements OnStart {
 	 * unchanged.** That is the property worth holding on to: the shoulder a player is used to is exactly
 	 * where it was, and the change is visible only in the poses that used to be wrong.
 	 *
+	 * **The conversion is only valid in the frame it was computed in, and that is what {@link watchOffset}'s
+	 * binding order buys.** Written down as algebra, because the whole of the wobble is in it: this returns
+	 * `R⁻¹ · (C · intent)` for the body's rotation `R` and the camera's `C`, and the engine applies the result
+	 * in `R` — so the world offset is `C · intent`, the intent rotated into camera space, with `R` cancelling.
+	 * **That cancellation only happens while both `R`s are the same frame's.** Bound after the camera, they
+	 * are not — the value is computed against one body orientation and applied against the next — and what
+	 * survives is the body's own turning, which is a 180° swing every time the player reverses direction.
+	 *
 	 * Falls back to the raw vector when either frame is missing — no body, or no camera yet — because an
 	 * unconverted offset is simply the old behaviour, which is the better failure: a shoulder in the wrong
 	 * place for a frame, rather than a `nil` written into a property.
@@ -834,12 +885,38 @@ export class ShiftLock implements OnStart {
 	/**
 	 * Keeps the offset camera-relative for as long as the client is running, from the render step.
 	 *
-	 * **A one-frame lag, and it is the right side to be on.** Bound one step *after*
-	 * `RenderPriority.Camera`, so the camera has already placed itself for this frame and the yaw being
-	 * read is the current one; the offset written here is the one the next frame's camera will use. A
-	 * shoulder that is a frame behind a mouse that moved a pixel in the meantime is not something an eye
-	 * can find, and running *first* instead would read the previous frame's camera for the same lag with
-	 * less obvious ordering.
+	 * **Bound *before* `RenderPriority.Camera` — two steps before, with `cameraShake` between — and that
+	 * reversal is the fix for "moving back and forward wobbles the camera".**
+	 *
+	 * The whole of it is a frame ordering that looks harmless and is not. `Humanoid.CameraOffset` is applied in
+	 * the *body's* frame, and the value written here is computed by converting the camera-space intent into
+	 * that frame — so **the conversion is only exact if the body frame used to write is the body frame used to
+	 * apply**. Bound after the camera, it is not: the camera reads the property before this file writes it, so
+	 * frame N's value is applied in frame N+1's body, and the world result is rotated by however far the body
+	 * turned in between. **The body turns on its own** — `RotationType` is `MovementRelative`, so it faces the
+	 * way it is walking — and walking backwards turns it through 180°. The shoulder therefore swings round the
+	 * character every time the player reverses direction, which is the reported symptom exactly, and the
+	 * reason it shows up on *movement* rather than on turning the view.
+	 *
+	 * **Writing before the camera takes the body out of the sum entirely.** The camera applies the property
+	 * moments later in the same frame, in the same body frame this file read to compute it: `R⁻¹ · (C · intent)`
+	 * applied in `R` is `C · intent`, with `R` gone. What is left is that `C` is the previous frame's camera
+	 * rotation, so the offset trails the view by one mouse movement — a degree or two, a couple of hundredths
+	 * of a stud, and not something an eye can find.
+	 *
+	 * **The old argument is kept because it was half right, and the half it missed is the interesting part.**
+	 * This was bound at `Camera.Value + 1` on the reasoning that the yaw read would then be the current
+	 * frame's, and that "a shoulder a frame behind a mouse that moved a pixel in the meantime is not something
+	 * an eye can find". Both clauses are true. What the reasoning did not weigh is that the *other* one-frame
+	 * lag — the one on the body's rotation — is 180° when a player reverses, not a pixel. It is also why a
+	 * smoothing pass over the written value improved this without fixing it: **an ease blurs a whip into a
+	 * sway**, and cannot remove a rotation that is applied in a frame the value was not computed in. That ease
+	 * has been taken back out; see {@link applyOffset}.
+	 *
+	 * **`cameraShake` moved with it**, to `Camera.Value - 1`. It composes on this file's value, so it has to
+	 * run after this write and before the camera reads — which also means it now adds its kick to *this*
+	 * frame's shoulder rather than to the previous one's. See its own doc, where the ordering argument is
+	 * rewritten on the same finding.
 	 *
 	 * **Bound once and never unbound**, with the lock checked inside it. The lock comes and goes several
 	 * times a session — a round, a zone — and a binding re-established on each of those would be a second
@@ -851,8 +928,139 @@ export class ShiftLock implements OnStart {
 	 * replaced is a value that was only ever right in the pose where the body and the camera agree.
 	 */
 	private watchOffset(): void {
-		RunService.BindToRenderStep("ShiftLockOffset", Enum.RenderPriority.Camera.Value + 1, () => {
+		// **The two mount-time diagnostic lines, printed before the binding is made** — see
+		// `reportCameraSources`, which is where the reading of the source is written down and why it is
+		// printed rather than argued.
+		if (CAMERA_DIAGNOSTICS) this.reportCameraSources();
+
+		// **`Camera.Value - 2`, with `cameraShake` at `- 1` and the camera itself at `0`.** This file writes
+		// the shoulder, the shake adds its kick on top, and then the camera reads the sum — which is what
+		// makes the body frame the same one on both sides of the conversion. See the doc above.
+		RunService.BindToRenderStep("ShiftLockOffset", Enum.RenderPriority.Camera.Value - 2, (delta) => {
 			if (this.isLocked()) this.applyOffset();
+
+			// **The measurement still runs here**, and reading the view one frame before the camera sees this
+			// value costs nothing: what it measures is how far the *camera* rotated between frames, which is a
+			// property of the camera rather than of this write. See {@link reportCamera}.
+			if (CAMERA_DIAGNOSTICS) this.reportCamera(delta);
 		});
+	}
+
+	/**
+	 * **The camera diagnostics, and what each of the four lines is for.** All of them are behind
+	 * {@link CAMERA_DIAGNOSTICS}, which is off.
+	 *
+	 * *"The camera, when custom shift lock is on, is a little wobbly and not smooth."* That sentence had four
+	 * possible causes and three different fixes, and the answer turned out to be none of the four as written:
+	 * nothing in `src/client` writes `Camera.CameraType` or `Camera.CFrame` (so the camera is never taken
+	 * over), the two things that write *something* — this file writing `Humanoid.CameraOffset` and
+	 * `CameraZoomController` writing `Camera.FieldOfView` — write different properties on different objects
+	 * and cannot fight, and there was no missing ease to add. **What there was, was a frame of ordering**:
+	 * the offset is expressed in the body's frame and was written *after* the camera read it, so each value
+	 * was applied against the next frame's body — which turns the body's own turning into camera motion.
+	 * Every reverse of direction turned the body through 180° and swung the shoulder with it. See
+	 * {@link watchOffset}, which is where that is fixed and where the whole of it is written down.
+	 *
+	 * **These lines stay because the fix should be verifiable rather than taken on trust.** With
+	 * `CAMERA_DIAGNOSTICS` on, the same five seconds of walking back and forth should now show a `max` on the
+	 * same order as its `mean`; before the reordering it did not.
+	 *
+	 * - **`[Camera] frame — delta N.NN° — dt N.NNms`**, once a frame while locked: how far the view rotated
+	 *   in the frame, and how long the frame was. **The pair is the point** — a smooth pan has a *steady*
+	 *   delta for its dt, and a wobble is the same total movement arriving unevenly.
+	 * - **`[Camera] summary — N frames, mean N.NN°, max N.NN°, stddev N.NN°`**, once a second: the rollup that
+	 *   decides between the two shapes a wobble can have. **`max ≫ mean` is jitter** — most frames near
+	 *   still with occasional jumps — and **`max ≈ mean` with a high `stddev` is an oscillation**, which is
+	 *   what a one-frame feedback path produces. Those two want different fixes, which is why neither this
+	 *   file nor the report guesses at one.
+	 * - **`[Camera] write — priority N — type Enum.CameraType.X`**, once on mount: this file's render
+	 *   priority and the camera's actual type, so "is something else placing this camera" is answered from
+	 *   the log rather than from a comment.
+	 * - **`[Camera] sources — shiftLock …, zoom …`**, once on mount: which of the two camera controls in this
+	 *   client touches `Camera.CFrame`. The answer is neither, and the line says what each one does touch.
+	 *
+	 * **What this costs while it is on, stated so it is not mistaken for the fault it is measuring**: a print
+	 * per frame is sixty prints a second, which floods the output and costs frames of its own. That distortion
+	 * is why the flag is off by default and why the *summary* line is the one to read — it is an aggregate
+	 * over real frames, and the per-frame line is there to be spot-checked rather than read through.
+	 */
+	private reportCamera(delta: number): void {
+		const camera = Workspace.CurrentCamera;
+		if (!camera) return;
+
+		const look = camera.CFrame.LookVector;
+
+		// **The angle between this frame's view and the last one**, which is the camera's own rotational
+		// delta and needs no input reading: whatever moved it — the mouse, the camera scripts, a constraint —
+		// is in this number. `acos` of a clamped dot product is the only way to get it from two unit vectors,
+		// and the clamp is not decoration: rounding can push the dot to 1.0000001 and `acos` of that is NaN.
+		if (this.lastLook !== undefined) {
+			const degrees = math.deg(math.acos(math.clamp(look.Dot(this.lastLook), -1, 1)));
+
+			print(
+				`[Camera] frame — delta ${string.format("%.2f", degrees)}° — ` +
+					`dt ${string.format("%.1f", delta * 1000)}ms`,
+			);
+
+			this.sampleFrames += 1;
+			this.sampleSum += degrees;
+			this.sampleSquares += degrees * degrees;
+			this.sampleMax = math.max(this.sampleMax, degrees);
+		}
+
+		this.lastLook = look;
+		this.sampleSeconds += delta;
+
+		if (this.sampleSeconds >= CAMERA_DIAGNOSTIC_PERIOD) this.reportCameraSummary();
+	}
+
+	/** The once-a-second rollup {@link reportCamera} accumulates toward. See its doc for how it is read. */
+	private reportCameraSummary(): void {
+		const frames = this.sampleFrames;
+
+		this.sampleSeconds = 0;
+		this.sampleFrames = 0;
+		this.sampleSum = 0;
+		this.sampleSquares = 0;
+		this.sampleMax = 0;
+
+		// A locked player who has not moved at all produces one frame and no samples beyond it; a second with
+		// nothing in it says nothing rather than printing `mean NaN`.
+		if (frames === 0) return;
+
+		const mean = this.sampleSum / frames;
+		// Population stddev from the running sums, and clamped at zero because a mean and a mean of squares
+		// computed in floating point can put the variance a hair below zero on a perfectly still camera.
+		const variance = math.max(0, this.sampleSquares / frames - mean * mean);
+
+		print(
+			`[Camera] summary — ${frames} frames, mean ${string.format("%.2f", mean)}°, ` +
+				`max ${string.format("%.2f", this.sampleMax)}°, ` +
+				`stddev ${string.format("%.2f", math.sqrt(variance))}°`,
+		);
+	}
+
+	/**
+	 * The two once-on-mount lines: what this file writes, at which priority, and what the camera's type is.
+	 *
+	 * **Read from the running camera rather than asserted from the source**, because the question the log has
+	 * to answer is "is something else placing this camera" and the only honest answer is what the client is
+	 * holding right now. A `CameraType` of `Custom` means Roblox's own scripts are placing it and this file is
+	 * feeding them an offset — which is the arrangement the class doc argues for and the one that makes a
+	 * `CFrame` writer elsewhere the thing to look for if the wobble is ever attributed.
+	 */
+	private reportCameraSources(): void {
+		const camera = Workspace.CurrentCamera;
+
+		print(
+			`[Camera] write — priority ${Enum.RenderPriority.Camera.Value + 1} — ` +
+				`type ${camera !== undefined ? tostring(camera.CameraType) : "no camera"}`,
+		);
+
+		// **`false` for the zoom, and the qualifier is not hedging.** `CameraZoomController` writes
+		// `FieldOfView` and nothing else — a different property on a different object — so it cannot fight
+		// this file for the `CFrame`. Neither of them writes one at all; what this file writes is
+		// `Humanoid.CameraOffset`, which the camera scripts then read.
+		print(`[Camera] sources — shiftLock true, zoom false — neither writes CFrame (offset and field of view)`);
 	}
 }

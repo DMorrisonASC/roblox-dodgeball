@@ -29,9 +29,11 @@ import { THROW_FEEDBACK_CONFIG } from "shared/config/throwFeedback.config";
  * is not a state change, it is the steady state of a locked player. Two consequences follow, and the second
  * is why this file does not simply capture once:
  *
- * - A value captured at the start of a shake does not *survive* shift lock for the shake's duration, it
- *   *suppresses* it: for about ten frames the shoulder stops tracking the body, because the last write of
- *   each frame is this one. That is a fraction of a stud of drift at the shake's own length and is accepted.
+ * - A value captured at the start of a shake does not need to *survive* shift lock for the shake's duration,
+ *   because the two no longer compete for the frame: `ShiftLock` writes the shoulder first and this module
+ *   adds to it, so the shoulder keeps tracking the body through a shake. Before the reordering below it did
+ *   not — the last write of each frame was this one's, so the shoulder stood still for the shake's length,
+ *   which was the same drift seen from the other side.
  * - **A capture taken once and restored at the end can be left holding the wrong value permanently**, which
  *   is not a fraction of a stud and is not acceptable. Unlock shift lock during a shake — a round boundary, a
  *   zone entry — and `ShiftLock` writes the zero, the shake finishes a few frames later and writes the
@@ -45,12 +47,21 @@ import { THROW_FEEDBACK_CONFIG } from "shared/config/throwFeedback.config";
  * about, and a second thing that wants a camera kick — a dodge, a landing — should be able to call this
  * without the throw's input handler growing a camera.
  *
- * **The binding, and why not a plain `RenderStepped` connection.** Two reasons, and they point the same way.
- * The write has to land where `ShiftLock`'s does — after the camera has placed itself for the frame, so the
- * offset is read by the *next* frame's camera, which is the one-frame lag that file documents and accepts —
- * and it has to land **after** `ShiftLock`'s own step, so the value read below is the one shift lock just
- * computed rather than the previous frame's. `Enum.RenderPriority.Camera.Value + 2` is one above
- * `ShiftLockOffset`, which makes that order a fact rather than a coincidence of registration.
+ * **The binding, and why not a plain `RenderStepped` connection.** Two conditions, and the second one changed
+ * after this file was written. It has to land **after** `ShiftLock`'s own step, so the value read below is the
+ * one shift lock just computed for this frame rather than the previous frame's — that condition is unchanged.
+ * It also has to land **before the camera reads the property**, which is the condition it now shares with
+ * shift lock's own write, for a reason that file's doc carries in full: `Humanoid.CameraOffset` is applied in
+ * the *body's* frame, so a value written after the camera has placed itself is applied against the *next*
+ * frame's body orientation and picks up the body's own turning as camera motion. That is what "the camera
+ * wobbles when I walk backwards" was. **`Enum.RenderPriority.Camera.Value - 1`, one above `ShiftLockOffset`'s
+ * `- 2`**, makes both conditions facts rather than a coincidence of registration: this file adds its kick to
+ * this frame's shoulder and the camera reads the sum moments later in the same frame.
+ *
+ * **That reordering improved this module rather than merely moving it, and the improvement is worth stating.**
+ * The kick used to be added, after the camera, to a shoulder the camera had already read — so what the player
+ * saw was a kick riding on the *previous* frame's shoulder. Now it rides on the current one: the offset is the
+ * correct shoulder plus the shake, with no frame of drift under the jolt.
  *
  * **Bound on the first kick and unbound at the end, which is the opposite of `ShiftLock`'s arrangement and
  * for the opposite reason.** That one binds once and lives forever because the lock comes and goes several
@@ -145,7 +156,9 @@ export function shakeCamera(charge: number): void {
 	elapsed = 0;
 
 	if (!bound) {
-		RunService.BindToRenderStep(BINDING_NAME, Enum.RenderPriority.Camera.Value + 2, step);
+		// `Camera.Value - 1`: after `ShiftLockOffset` (`- 2`) and before the camera itself (`0`). See the
+		// module doc for why both writes have to be inside the frame the camera is about to read.
+		RunService.BindToRenderStep(BINDING_NAME, Enum.RenderPriority.Camera.Value - 1, step);
 		bound = true;
 	}
 }

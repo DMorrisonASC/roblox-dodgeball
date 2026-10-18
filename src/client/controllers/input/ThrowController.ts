@@ -1,6 +1,5 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
-import Net from "@rbxts/net";
 import {
 	ContextActionService,
 	ContentProvider,
@@ -20,53 +19,32 @@ import { REMOTES } from "shared/remotes";
 import { abilityOn } from "shared/ability";
 import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
 import { Trajectory } from "shared/Trajectory";
-import { aiming, predictedTargets } from "../../aiming";
+import { aiming, predictedLanding, predictedTargets } from "../../aiming";
 import { shakeCamera } from "../../cameraShake";
 import { isMobile } from "../../platform";
 import { chargeStartedAt } from "../../throwing";
-import { events } from "shared/networking";
 
 const ACTION_NAME = "ThrowDodgeball";
 const CURVE_ACTION_NAME = "BendThrow";
 
-/** The client half of the charge-level remote, as the declarations build it. */
-type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
-
-/** The charge-level remote, made once. See {@link syncCharging}. */
-let chargingRemote: ClientRemotes["setCharging"] | undefined;
-
-/** What the server was last told, so an unchanged level is never sent twice. `undefined` until the first. */
-let sentCharging: boolean | undefined;
-
 /**
- * Tells the server whether this client is **holding the throw button** — a level, sent only when it changes.
+ * **The charge-level remote used to live here, and its removal is worth a paragraph rather than a deletion.**
  *
- * **The one fact about a charge the server cannot have.** The charge is measured here (`throwing.ts` owns its
- * start time) and the server learns nothing until the release arrives carrying the number, so a stamina pool
- * that must not refill while a body is winding up a throw has to be *told*. That is the same position
- * `setSprinting` is in, and the event is deliberately the same shape — a level rather than a request, and a
- * client that is the only machine able to answer.
+ * `syncCharging` sent the server one boolean — "this client is holding the throw button" — from the frame
+ * loop, only when it changed. It existed for exactly one reason: `WalkSpeedService` stopped the stamina pool
+ * refilling while a charge was in progress, and a charge is measured *here* (`throwing.ts` owns its start
+ * time), so the server could not see it and had to be told. **That hold is gone** — a player can hold the
+ * throw button indefinitely, and a rule that stops stamina recovering for as long as somebody holds a button
+ * is a self-inflicted lockout rather than a rule about resting; see `WalkSpeedService.poolHold` for the whole
+ * argument — so there is nothing left for this module to report.
  *
- * **Called from the frame loop rather than from the three places a charge can end, and that is the
- * load-bearing choice.** A charge ends in `beginCharge`'s opposite three ways — the release, this file's
- * `cancelCharge`, and `CatchController`'s `E` cancel, which clears the charge state *directly* by design so
- * that a press and a release can land in one frame. A signal sent from those three would miss the third, and
- * the server would go on believing this client was charging for the rest of the session — a stamina pool
- * that never refilled again. The loop below reads the same value they all write, so **every way a charge can
- * end is one comparison away and none of them has to remember to tell anyone.**
- *
- * **Said out loud on each change**, because a level with no line is a level nobody can check: the pair of
- * lines this prints is the whole of what "is the pool being held for me" looks like from the client.
+ * **What went with it, so nobody looks for it:** the `setCharging` wire event (`shared/networking.ts`), the
+ * `charging` set and `setCharging` handler in `WalkSpeedService`, and the `[Throw] charge level —
+ * holding/released` pair of lines. **One thing deliberately did not go:** the shape of the loop that called
+ * it. `updateGuide` still computes `charging` once per frame and everything that used to hang off it —
+ * the guide, the `aiming` flag, the charge sound's stop, the arc — still reads that one value, so a fifth
+ * consumer later has the same single source it would have had.
  */
-function syncCharging(charging: boolean): void {
-	if (charging === sentCharging) return;
-	sentCharging = charging;
-
-	if (chargingRemote === undefined) chargingRemote = events.Client.Get("setCharging");
-	chargingRemote.SendToServer(charging);
-
-	if (DEBUG) print(`[Throw] charge level — ${charging ? "holding" : "released"}`);
-}
 
 /**
  * Console diagnostics: which throw was fired, and the marker-jitter report — that one is rate limited so
@@ -423,11 +401,11 @@ export class ThrowController implements OnStart {
 
 		const charging = Fusion.peek(chargeStartedAt) !== undefined;
 
-		// **The charge's level, reported from the one place that already knows it.** `charging` is computed
-		// above for the guide's own use, and it is read *after* the ball-left-the-hand cancel — so a charge
-		// that ended by any road is reported on the same frame it ended, without any of those roads having to
-		// remember to send anything. See `syncCharging`.
-		syncCharging(charging);
+		// **The charge's level used to be reported to the server from here, and it is not any more.** The
+		// server held the stamina pool's recovery while a player was charging, so it needed to be told when a
+		// charge began and ended — `syncCharging`, the `setCharging` event and the `charging` set in
+		// `WalkSpeedService` were the whole of that. The hold is gone (see `WalkSpeedService.poolHold`), so
+		// nothing is sent and the `[Throw] charge level — holding/released` pair of lines is gone with it.
 
 		// **The glow's flag is the guide's own visibility, published rather than worked out twice.**
 		// It is set from the same expression that decides whether to draw, so the guide and the aim
@@ -469,6 +447,10 @@ export class ThrowController implements OnStart {
 			// same reason the guide is hidden: the glow is driven by the flag those two share, and a
 			// publish that stopped would leave the last answer standing for whoever read it next.
 			predictedTargets.set([]);
+			// And the landing point goes with it, so the body's facing has nothing to turn onto once the
+			// throw has left the hand — see `AimFacingController`, which reads "no landing" as "stand
+			// down" rather than needing a second flag to tell it the same thing.
+			predictedLanding.set(undefined);
 			return;
 		}
 
@@ -535,6 +517,18 @@ export class ThrowController implements OnStart {
 		const arcTargets = this.hitTargets(arc);
 		predictedTargets.set(arcTargets);
 		this.reportArc(arc, arcTargets);
+
+		// **And where that arc comes to rest, published for the body's facing.** The same expression the
+		// marker below is placed from, read here rather than worked out again: `contact` is the point the
+		// ball's *edge* touched — the honest answer to "where does this land" — and `landing` is where the
+		// path ended when it touched nothing. `AimFacingController` turns the body onto that point, so the
+		// face and the throw cannot disagree; a facing that cast its own ray would be the second aim line
+		// that `AimTargetController`'s doc spends a page refusing. See `client/aiming.ts`.
+		//
+		// **Set only on the frames a throw is actually being charged**, because this line is below the early
+		// return that a released or cancelled charge takes — which is what makes the facing stop a frame
+		// after the throw rather than a frame after somebody remembers to clear it.
+		predictedLanding.set(arc.contact ?? arc.landing);
 
 		// **Both ends of the preview, and the placement is why the marker is honest.** The path ends where
 		// the ball's *centre* stopped, one radius clear of the surface; the marker lies flat on the surface

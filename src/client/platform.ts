@@ -28,7 +28,7 @@ import { UserInputService } from "@rbxts/services";
  *
  * **What this is not: a capability test for the game, and not a gate on a rule.** Nothing in the game
  * refuses a control on a platform, and every binding, remote and rule behind the buttons is the same one the
- * keyboard drives — the keys are simply not there to press. **Seven callers ask it now, and no two of them are
+ * keyboard drives — the keys are simply not there to press. **Eight callers ask it now, and no two of them are
  * asking the same kind of question.** Two HUDs ask it to decide which of them is the useful thing to draw;
  * `ShiftLock` asks it because a phone has no mouse to lock; `SprintController` asks it because a keyboard asks
  * for the *whole* of its walk speed where a thumbstick asks for part of it; `ThrowController` asks it because a
@@ -39,7 +39,11 @@ import { UserInputService } from "@rbxts/services";
  * it wants to know which *region* a HUD's `ScreenGui` should be placed in — the same safe area a touch is
  * measured from, asked as a layout question rather than as an input one, and the one caller here whose answer
  * changes where something is **drawn** rather than whether it exists. See that file for the rule it is half of,
- * and for why the answer is read at every call rather than latched into a constant. **This paragraph used to
+ * and for why the answer is read at every call rather than latched into a constant. **`AimFacingController` is
+ * the newest, and it asks the question `ThrowController` already asks one layer down**: a phone aims along the
+ * camera's axis because it has no cursor, so the body is turned onto that axis while a throw is being charged,
+ * while a desktop is turned onto the point the arc lands on. Two answers to one question, and the platform is
+ * what picks between them — see that controller for the whole of it. **This paragraph used to
  * say three**, and the count is worth re-reading rather than trusting: `ThrowController` had been asking for a
  * while before anyone counted it, and that is what a number in a comment is worth. `SprintController` remains
  * the caller that gates a **sensor** rather than a surface, and the one whose cost of getting the answer wrong

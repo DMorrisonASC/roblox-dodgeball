@@ -59,3 +59,27 @@ export const aiming = Fusion.Value(scope, false);
  * wall, at the floor or at the sky — and not a state of not knowing yet.
  */
 export const predictedTargets = Fusion.Value<Array<Model>>(scope, []);
+
+/**
+ * Where the drawn arc would come to rest, in world space, or nothing while nothing is being charged.
+ *
+ * **Published for the same reason `predictedTargets` is, and with the same rule behind it: this is the
+ * arc's own answer, not a second one.** The landing marker has always been placed from `arc.contact ??
+ * arc.landing` — where the ball's edge first touches something, or where the path ends when it touches
+ * nothing — and `AimFacingController` needs exactly that point to know which way the player is throwing.
+ * Publishing it from `ThrowController.updateGuide`, beside the two values it already publishes, is what
+ * stops the body's facing from answering the question with a raycast of its own: **a second aim line is
+ * the failure this whole arrangement exists to prevent**, because the two would agree on the day they were
+ * written and drift apart the first time the arc's radius, gravity or exclusion list changed.
+ *
+ * **`undefined` rather than a zero or the camera's focus**, because "no throw is being charged" has no
+ * landing place to name, and a sentinel like `Vector3.zero` would put the facing's target at the middle of
+ * the world the moment a player let go. The reader treats `undefined` as "not my business".
+ *
+ * **A `Vector3` and not the `Trajectory`**, so the reader cannot be tempted to walk the arc or re-solve it.
+ * The one thing the facing wants is the point the throw lands on, and that is what this is.
+ *
+ * **Not a signal anybody subscribes to**: like the two values above, it is polled with `Fusion.peek` by the
+ * one reader, which builds no graph edge and so cannot outlive anything.
+ */
+export const predictedLanding = Fusion.Value<Vector3 | undefined>(scope, undefined);
