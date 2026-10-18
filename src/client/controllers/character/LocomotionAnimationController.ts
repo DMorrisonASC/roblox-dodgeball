@@ -2,8 +2,10 @@ import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { AnimationClip, clipIdFor } from "shared/animation";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { BodyRender, applyBodyRender, bodyRenderPlays, destroyBodyRender, startBodyRender } from "../../bodyAnimation";
 import { sprinting } from "../../sprinting";
+import { chargeStartedAt, releasedCharge } from "../../throwing";
 
 /** Prints the write once per body, and each body that was left alone and why. */
 const DEBUG = true;
@@ -458,12 +460,29 @@ export class LocomotionAnimationController implements OnStart {
 		const humanoid = owned.humanoid;
 		const moving = humanoid.MoveDirection.Magnitude > 0 && humanoid.WalkSpeed > 0;
 
+		// **The charge, measured here the way the arc is measured one file over.** `chargeStartedAt` is the
+		// instant the hold began — the one fact `ThrowController` and `CatchController` share — and dividing by
+		// `CHARGE_SECONDS` is the division `ThrowController.currentCharge` makes for the throw itself. Doing it
+		// again here rather than exporting a getter is deliberate: it is one clamp, and a getter would be a
+		// second place the charge could be answered from, which is the pair of numbers that must not drift.
+		//
+		// **`undefined` while nothing is held**, which is what tells the renderer to release the throw pose
+		// rather than hold it. See `BodyConditions.charge`.
+		const began = Fusion.peek(chargeStartedAt);
+		const charge =
+			began !== undefined ? math.clamp((os.clock() - began) / BALL_CONFIG.CHARGE_SECONDS, 0, 1) : undefined;
+
 		applyBodyRender(owned.body, {
 			moving,
 			sprinting: Fusion.peek(sprinting),
 			grounded: humanoid.FloorMaterial !== Enum.Material.Air,
 			frozen: false,
 			deferToDefault: deferring,
+			charge,
+			// **The release, which this client knows and the server will not tell it about for a round trip.**
+			// Set by `ThrowController.releaseThrow` on the frame the button comes up and cleared at the next
+			// charge or any cancellation, so a cancelled charge cannot hold a pose for a throw nobody made.
+			releasedCharge: Fusion.peek(releasedCharge),
 		});
 	}
 

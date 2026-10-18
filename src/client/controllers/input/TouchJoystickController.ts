@@ -1257,7 +1257,7 @@ export class TouchJoystickController implements OnStart {
  * `min(viewport's short axis) <= 500` test, so the same stick is a very different fraction of two phones. That
  * variance is the real argument for this file, more than either size is.
  */
-const STICK_DIAMETER_SCALE = 0.4;
+const STICK_DIAMETER_SCALE = 0.35;
 
 /**
  * **The smallest viewport this file will draw into, in pixels along its short axis: `64`. Not a Placeholder and

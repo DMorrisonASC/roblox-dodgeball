@@ -1,4 +1,4 @@
-import { AnimationState, BODY_ANIMATION } from "./config/animation.config";
+import { AnimationState, BODY_ANIMATION, THROW_CHARGE_HOLD_SECONDS, THROW_CLIP_SECONDS } from "./config/animation.config";
 import { DodgeDirection } from "./dodge";
 
 /**
@@ -229,6 +229,22 @@ export interface BodyState {
 
 	/** A throw or a catch happening **now**, or nothing. Outranks every state below it. */
 	readonly action: BodyAction | undefined;
+
+	/**
+	 * **How far into a throw's charge this body is, from `0` to `1`, or nothing when no throw is being held.**
+	 *
+	 * **A condition rather than an action, and the one condition that borrows an action's clip.** A charge is
+	 * not an event: it lasts as long as somebody holds a button, which can be a second and a quarter or a
+	 * frame. But the pose for it *is* the throw's own wind-up — the arm is back — so it resolves to the
+	 * `"throw"` clip and the renderer holds that clip at the wind-up rather than playing it through. See
+	 * `applyBodyRender`, which is where the hold and the release live, and {@link bodyClipFor} for the rank.
+	 *
+	 * **Two bodies answer it from two different facts.** A rig publishes it as `CHARGING_ATTRIBUTE`, a number
+	 * the server writes for the length of the windup it is running. A player's charge is measured on the
+	 * client that owns the body and never sent anywhere, so its number is `throwing.ts`'s clock divided by
+	 * `CHARGE_SECONDS` — the same division the arc is drawn from, so the pose and the preview cannot disagree.
+	 */
+	readonly charge: number | undefined;
 }
 
 /**
@@ -288,6 +304,15 @@ export function bodyClipFor(state: BodyState): AnimationState | undefined {
 	if (state.action === "throw") return "throw";
 	if (state.dodge !== undefined) return DODGE_STATES[state.dodge];
 
+	// **The charge, ranked with the events but below the dash — and it is the same clip as the release.**
+	// Above the catch and the duck because the thing being drawn is the *ball*: a body winding up is holding
+	// the pose the throw comes out of, and that pose is the one fact the player most needs to see while they
+	// choose how hard to throw. Below the dash because a dodge is the whole body moving and it outranks a
+	// motion of one arm — the same precedence a live throw has. **That the two ranks produce the same clip is
+	// deliberate and is why `applyBodyRender` has an explicit release path**: the clip's *name* does not change
+	// when the charge ends, so the renderer cannot see the transition through this function at all.
+	if (state.charge !== undefined) return "throw";
+
 	if (state.action === "catch") return "catch";
 
 	// **The duck sits below the catch and above locomotion, and the rank is the whole of the argument.**
@@ -305,4 +330,25 @@ export function bodyClipFor(state: BodyState): AnimationState | undefined {
 	if (state.deferToDefault) return undefined;
 
 	return animationFor(state.moving, state.sprinting, state.grounded, state.frozen) ?? RESTING_STATE;
+}
+
+/**
+ * **How long the throw clip needs after a release, in seconds** — the length the mark has to last for the
+ * animation to be seen to its end.
+ *
+ * **A constant, and it was a function of the charge for one revision.** The clip used to be played at
+ * `charge ×` speed so that a weak throw drew its motion over a longer window — and a throw that stretched to
+ * three seconds read as the game stalling rather than as a weak throw. The clip plays at `1×` now, so what is
+ * left is the asset's own length, which is the whole clip: the hold at `THROW_CHARGE_HOLD_SECONDS` plus
+ * everything after it. **The charge is carried by the camera instead** — see `client/cameraShake.ts`, whose
+ * tremble during the hold scales with it.
+ *
+ * **The server is the one reader, and that is why this is arithmetic rather than a client read of the track.**
+ * `BALL_CONFIG.THROW_ANIMATION_SECONDS` is the mark's length and the mark is what keeps the clip up; the
+ * client knows the real length of the asset and the server does not, so the length is written down in
+ * `animation.config.ts` and this function is the single expression that turns it into a duration. Callers take
+ * `math.max` with `THROW_ANIMATION_SECONDS` so the old floor survives.
+ */
+export function throwAnimationWindowSeconds(): number {
+	return THROW_CLIP_SECONDS;
 }

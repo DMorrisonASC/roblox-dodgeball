@@ -20,9 +20,9 @@ import { abilityOn } from "shared/ability";
 import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
 import { Trajectory } from "shared/Trajectory";
 import { aiming, predictedLanding, predictedTargets } from "../../aiming";
-import { shakeCamera } from "../../cameraShake";
+import { shakeCamera, startChargeTremble } from "../../cameraShake";
 import { isMobile } from "../../platform";
-import { chargeStartedAt } from "../../throwing";
+import { chargeStartedAt, releasedCharge } from "../../throwing";
 
 const ACTION_NAME = "ThrowDodgeball";
 const CURVE_ACTION_NAME = "BendThrow";
@@ -226,6 +226,12 @@ export class ThrowController implements OnStart {
 	private curve = false;
 
 	onStart() {
+		// **The camera's charge tremble is armed here, at boot, rather than at the first press.** It is a
+		// Heartbeat watcher on `chargeStartedAt` and binds nothing until a charge runs — see
+		// `startChargeTremble` — so its cost when no one is throwing is one comparison a frame, and arming it
+		// lazily would mean the *first* charge of a session had no tremble on the frame it began.
+		startChargeTremble();
+
 		// **The sound is made before the remote is resolved, and the order is the point.** `Get` yields until
 		// the server's remote exists, and this clip should be loading from the first frame this client can
 		// start loading anything — the charge it belongs to needs no remote to begin, and the throw that
@@ -667,6 +673,8 @@ export class ThrowController implements OnStart {
 	 */
 	private beginCharge(): void {
 		chargeStartedAt.set(os.clock());
+		// A new charge owns the release slot: whatever the last throw's level was, it is not this throw's.
+		releasedCharge.set(undefined);
 		this.lastCharge = 0;
 		this.playChargeSound();
 
@@ -799,6 +807,13 @@ export class ThrowController implements OnStart {
 		const drawn = this.lastCharge;
 		chargeStartedAt.set(undefined);
 
+		// **The level is published before anything else, and it is the animation's own copy of the number.**
+		// The renderer needs it on this frame — the charge itself is gone from here on, and the throw's mark is
+		// a round trip away — so it is written to `throwing.ts` where the renderer already reads the charge
+		// from. See `releasedCharge` for the whole of why it is a separate value rather than a read of the
+		// mark.
+		releasedCharge.set(charge);
+
 		// Drawn once more before the send, so the log's order is the order the player lived — hold, arc,
 		// release — and so the preview comes down on this frame rather than hanging over a ball that has
 		// already left. With the charge cleared, this draw is the one that hides everything.
@@ -870,6 +885,10 @@ export class ThrowController implements OnStart {
 		if (Fusion.peek(chargeStartedAt) === undefined) return;
 
 		chargeStartedAt.set(undefined);
+		// **And the release slot goes with it, because this is the case the renderer must not mistake for a
+		// throw.** A release that never happened leaves no level behind, so the body drops the held pose on the
+		// next update rather than playing a throw that nobody made. See `releasedCharge`.
+		releasedCharge.set(undefined);
 		this.updateGuide();
 
 		if (DEBUG) print(`[Throw] charge cancelled — ${reason}`);

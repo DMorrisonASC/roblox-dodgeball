@@ -110,6 +110,19 @@ export class AimFacingController implements OnStart {
 	/** The aiming flag as last acted on, so the two edges print once each rather than once a frame. */
 	private wasAiming = false;
 
+	/**
+	 * **The direction the body was last being turned onto**, kept so the release can finish the turn itself.
+	 *
+	 * The constraint is a *pull* — `Responsiveness = 30` takes a few frames to arrive — so a throw released a
+	 * tenth of a second into the charge leaves a body that is still halfway round, and the ball goes out of a
+	 * shoulder pointing somewhere else. `release` reads this and writes the orientation directly, once, which
+	 * is the only way to guarantee the pose is right at the instant the ball leaves.
+	 *
+	 * Cleared on every release, so it can never be applied to a later throw: it is the *last* frame's aim of
+	 * *this* hold, and a stale copy is the one thing worse than no copy.
+	 */
+	private lastDirection?: Vector3;
+
 	public onStart(): void {
 		// **`Heartbeat` rather than `RenderStepped`, and the order is the reason.** `ThrowController`
 		// rebuilds the arc in a `RenderStepped` connection; reading `predictedLanding` from the same signal
@@ -185,6 +198,10 @@ export class AimFacingController implements OnStart {
 		// so the body stays upright and is never leaned into the ground by an aim at the floor.
 		this.balance.CFrame = CFrame.lookAt(root.Position, root.Position.add(direction));
 
+		// Kept for `release`: the turn the constraint is still making is finished in one write there, because
+		// the ball can leave before the constraint has arrived. See {@link lastDirection}.
+		this.lastDirection = direction;
+
 		if (!this.wasAiming) {
 			this.wasAiming = true;
 			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Facing] ${character.Name}: turning onto the aim`);
@@ -251,6 +268,36 @@ export class AimFacingController implements OnStart {
 	}
 
 	/**
+	 * **Finishes the turn the constraint was still making, in one write, on the frame the pose is dropped.**
+	 *
+	 * **This is the fix for "it throws the ball before the body rotates".** A short charge is the whole of the
+	 * case: the constraint pulls the body round over several frames, and a release a tenth of a second in
+	 * catches it a third of the way there — so the ball leaves a shoulder pointing somewhere the player was
+	 * not aiming, and then the body arrives afterwards, which reads as the animation running late. Nothing in
+	 * the release path could have known that from the constraint's state, which is why this keeps the last aim
+	 * direction itself.
+	 *
+	 * **Only when the body is not already there**, so the ordinary release — the constraint having arrived a
+	 * frame or more ago — writes nothing and cannot re-aim a body that was already correct. The test is a dot
+	 * product against a cosine rather than an angle because it needs no `math.floor` to be right; **the
+	 * threshold is 5°, a placeholder**, and it exists so the last frame's own noise cannot write a CFrame for a
+	 * difference nobody can see.
+	 *
+	 * `CFrame.lookAt` with both points at the root's height, for `hold`'s reason: two points at one height
+	 * cannot describe a pitch, so this is a yaw and the body stays upright.
+	 */
+	private snapOntoAim(): void {
+		const direction = this.lastDirection;
+		const root = this.humanoid?.RootPart;
+
+		if (direction === undefined || root === undefined || root.Parent === undefined) return;
+
+		if (root.CFrame.LookVector.Dot(direction) >= math.cos(math.rad(5))) return;
+
+		root.CFrame = CFrame.lookAt(root.Position, root.Position.add(direction));
+	}
+
+	/**
 	 * Lets go of the pose: the constraint goes, and the body is handed back to its own steering.
 	 *
 	 * **Idempotent**, because it is called on every frame no throw is charged — the ordinary case — and on
@@ -265,8 +312,11 @@ export class AimFacingController implements OnStart {
 	private release(): void {
 		if (this.wasAiming) {
 			this.wasAiming = false;
+			this.snapOntoAim();
 			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Facing] released — back to the movement direction`);
 		}
+
+		this.lastDirection = undefined;
 
 		if (this.balance !== undefined) {
 			this.balance.Destroy();

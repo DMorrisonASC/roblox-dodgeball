@@ -186,3 +186,35 @@ export const CYCLE_STATES: ReadonlyArray<AnimationState> = ["idle", "walk", "run
 export const STATE_CLIP_SECONDS: Partial<Record<AnimationState, number>> = {
 	duck: DUCK_CONFIG.DURATION_SECONDS,
 };
+
+/**
+ * **Placeholder — `0.17`.** Where the throw clip is held while a throw is being charged, in seconds.
+ *
+ * **The cocked pose, and the whole of the feature.** The throw clip is one motion authored straight through:
+ * a wind-back, a release, a follow-through. A charged throw in this game is not one motion — it is a hold
+ * whose length the player chooses, and then a throw — so the clip is played up to the point where the arm is
+ * back (`0.17`), stopped there for as long as the button is down, and released from there at the clip's own
+ * speed. See `client/bodyAnimation.ts` for the two functions that do it, and {@link THROW_CLIP_SECONDS} for
+ * the length the release needs. **The hold length is the only thing the charge does to the animation**; what
+ * the charge *is worth* is shown by the camera while the button is down (`client/cameraShake.ts`).
+ *
+ * **A number from the animation editor rather than from anything the game measures.** It is the time of one
+ * keyframe in one asset, so it moves when the asset is re-cut and nothing here can detect that — the symptom
+ * of a stale value is a body that holds a pose somewhere other than the top of the wind-up, which reads
+ * immediately wrong and is fixed here.
+ */
+export const THROW_CHARGE_HOLD_SECONDS = 0.17;
+
+/**
+ * **Placeholder — `0.8`.** The authored length of the throw clip, in seconds — the second number the release's
+ * arithmetic needs, and the one that has to be written down rather than read.
+ *
+ * **The client could ask the track**, and does not: `AnimationTrack.Length` is the right answer and only the
+ * client has it, but the *server* needs the same number to know how long to keep the body marked as throwing
+ * (`BALL_CONFIG.THROW_ANIMATION_SECONDS` is that window, and a clip that outlives its mark is cut off). A
+ * remote to tell the server how long to draw an animation would be a second fact crossing the wire for a
+ * duration, so the duration lives here where both machines can read it. The cost is this constant going
+ * stale if the clip is re-cut without updating it — the same cost `THROW_CHARGE_HOLD_SECONDS` carries, and
+ * the same symptom: a throw whose last frames are clipped, or a body that holds a finished pose.
+ */
+export const THROW_CLIP_SECONDS = 0.8;

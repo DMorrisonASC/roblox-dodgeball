@@ -1,6 +1,7 @@
 import { AnimationState, CYCLE_STATES, STATE_CLIP_SECONDS } from "shared/config/animation.config";
+import { THROW_CHARGE_HOLD_SECONDS } from "shared/config/animation.config";
 import { playCatchShockwave } from "./catchShockwave";
-import { BodyAction, bodyClipFor, clipIdFor } from "shared/animation";
+import { BodyAction, bodyClipFor, clipIdFor, throwAnimationWindowSeconds } from "shared/animation";
 import {
 	CATCH_ANIMATION_ATTRIBUTE,
 	CatchCause,
@@ -57,6 +58,49 @@ export interface BodyRender {
 
 	/** The clip playing right now, so a state change that names the same clip writes nothing. */
 	playing?: AnimationState;
+
+	/**
+	 * **The last charge level this body was seen holding**, kept because the level is only published *while*
+	 * the charge is live and the speed has to be applied on the frame it ends.
+	 *
+	 * A renderer cannot ask a body "how hard was that throw" after the fact: the level is a number the client
+	 * computes while the button is down (or, for a rig, an attribute the server clears the instant the windup
+	 * ends), and the release is exactly the moment it stops being available. Remembering it is one number and
+	 * one line; the alternative is an event carrying the charge level into the renderer, which is a second
+	 * path for a fact the renderer already receives every frame.
+	 *
+	 * `undefined` until the body first charges, and never cleared: a throw always follows its own charge, and
+	 * a stale value can only be read by a release that had none — which cannot happen, because a release is
+	 * the *end* of a charge.
+	 */
+	charge?: number;
+
+	/**
+	 * **Whether the throw clip is currently being held at the wind-up rather than playing.** The flag that
+	 * makes the release an edge rather than a thing re-applied every call.
+	 *
+	 * **Needed because the clip's name does not change when the charge ends.** Both the hold and the release
+	 * are `"throw"`, so `playing` cannot tell them apart — and `applyBodyRender` returns early on an unchanged
+	 * clip, which is precisely the call the release arrives on. This is the one bit of state that separates
+	 * the two phases, and it is set from `conditions.charge` rather than from a timer.
+	 */
+	throwHeld?: boolean;
+
+	/**
+	 * **The `os.clock` instant a released throw's clip may stop being worn**, or nothing when no release is
+	 * in flight — the latch that keeps the throw pose on a player's body while the server's mark is in transit.
+	 *
+	 * **A round trip is not optional here and it is not short.** A player's release is reported to the server,
+	 * which writes `THROW_ANIMATION_ATTRIBUTE`; until that attribute arrives the body's own facts say "nobody
+	 * is throwing", and without this the pose would drop to idle and then start again half a clip in — on
+	 * every single throw. The deadline is the same window the server will use for the mark (one function,
+	 * `throwAnimationWindowSeconds`, so the two cannot disagree), which means the clip lands on the mark and
+	 * off it at the same moment from the player's point of view.
+	 *
+	 * **Nothing has to clear it.** It is compared against `os.clock` rather than counted down, so a stale value
+	 * is a value in the past, and a body that was cancelled mid-charge never sets it at all.
+	 */
+	throwPlayingUntil?: number;
 }
 
 /**
@@ -99,6 +143,34 @@ export interface BodyConditions {
 	 * at all and stands in its bind pose.
 	 */
 	readonly deferToDefault: boolean;
+
+	/**
+	 * **How far into a throw's charge this body is, `0` to `1`, or nothing when no throw is being held** — the
+	 * same fact as `BodyState.charge`, and the one condition either caller can answer.
+	 *
+	 * **A player and a rig answer it from different places, and that is the seam this type exists for.** The
+	 * client that owns a player's body measures the charge itself (`throwing.ts`'s start instant over
+	 * `CHARGE_SECONDS`), because it drew the arc from that same division; a rig's windup is the server's and
+	 * arrives as `CHARGING_ATTRIBUTE`. Neither caller has to know what the other does — the renderer holds and
+	 * releases the clip from this number alone, so the two bodies cannot end up holding the pose for different
+	 * reasons or at different points.
+	 */
+	readonly charge: number | undefined;
+
+	/**
+	 * **The level the throw this body has just released was charged with, or nothing when no release is pending.**
+	 *
+	 * **A player's release is the client's to report, because the server's answer arrives a round trip later.**
+	 * `BallService` writes the throw's mark at the release, and the body has to keep its pose until that mark
+	 * reaches this machine — but the charge itself is gone by then (it was measured on this client and cleared
+	 * the frame the button came up), so the level has to come from the client that released it. That is
+	 * `throwing.ts`'s `releasedCharge`, and this field is how it reaches the renderer.
+	 *
+	 * **A rig passes nothing, and that is not an omission.** A rig's windup and its mark are both the server's,
+	 * written in the same frame, so there is no gap for a second fact to bridge — the renderer falls back to the
+	 * level it remembered while the pose was held. See {@link BodyRender.charge}.
+	 */
+	readonly releasedCharge: number | undefined;
 }
 
 /**
@@ -171,6 +243,39 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	// carry a field for.
 	playCatchShockwave(render.body, publishedCatchCause(render.body));
 
+	// **The charge is remembered before the clip is decided**, because the frame this call is the *release*
+	// frame is a frame the charge has already gone: the level arrives only while the button is down. See
+	// `BodyRender.charge`.
+	if (conditions.charge !== undefined) render.charge = conditions.charge;
+
+	// **The release, decided before the clip is asked for, because the clip table cannot express it.** A charge
+	// and the release that follows it are the same clip name, so `bodyClipFor` answers the same thing either
+	// side of the edge — the transition is invisible to it by construction. Everything here is a comparison plus,
+	// on one frame per throw, two property writes.
+	//
+	// **The level comes from whichever body can supply it.** A player's release is announced by the client that
+	// made it (`conditions.releasedCharge`, available on the frame the button came up); a rig's is the server's
+	// mark arriving on an attribute it shares a frame with, so it falls back to the level remembered from the
+	// hold. A *cancelled* charge reaches this branch too and is harmless: it releases a track the clip change
+	// below is about to stop, and it sets no latch, because nothing was released.
+	if (render.playing === "throw" && render.throwHeld === true && conditions.charge === undefined) {
+		const level = conditions.releasedCharge ?? render.charge;
+		const held = render.tracks.get("throw");
+
+		if (held !== undefined && level !== undefined) releaseThrowAtCharge(held, level);
+
+		render.throwHeld = false;
+
+		// **The latch, and only for a real release.** See `BodyRender.throwPlayingUntil`: without it the pose
+		// would drop for the length of the player's round trip and then restart, which is a hitch on every throw.
+		if (conditions.releasedCharge !== undefined && level !== undefined) {
+			render.throwPlayingUntil = os.clock() + throwAnimationWindowSeconds();
+		}
+	}
+
+	// Whether a released throw's clip is still owed to this body — see `BodyRender.throwPlayingUntil`.
+	const lifted = render.throwPlayingUntil !== undefined && os.clock() < render.throwPlayingUntil;
+
 	const clip = bodyClipFor({
 		moving: conditions.moving,
 		sprinting: conditions.sprinting,
@@ -178,8 +283,23 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 		frozen: conditions.frozen,
 		deferToDefault: conditions.deferToDefault,
 		dodge: publishedDodge(render.body),
-		action: publishedAction(render.body),
+		action: lifted ? "throw" : publishedAction(render.body),
+		charge: conditions.charge,
 	});
+
+	// **And while the charge lasts, the pose is re-asserted rather than assumed.** Two property writes on the
+	// frames a body is charging, and they earn it: `AnimationTrack.Length` reads `0` until the asset streams, so
+	// the frame the hold was first applied can have been too early to place it — see `holdThrowAtWindup`, which
+	// this re-enters for exactly that case. It also covers a charge that begins while a throw's own mark is
+	// still up, where the clip was already `"throw"` and nothing started this frame.
+	if (conditions.charge !== undefined && clip === "throw") {
+		const held = render.tracks.get("throw");
+
+		if (held !== undefined) {
+			holdThrowAtWindup(held);
+			render.throwHeld = true;
+		}
+	}
 
 	if (clip === render.playing) return;
 
@@ -233,6 +353,15 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 
 	track.Play(fadeFor(clip));
 
+	// **A throw clip that starts while a charge is live starts *held*, and that is the only place the hold is
+	// established.** The charge is what made the clip appear, so the pose has to be on the wind-up rather than
+	// at the start of the clip: `Play` on a fresh track begins at `TimePosition` 0, which is the body swinging
+	// back rather than already back. See `holdThrowAtWindup` for what it writes and `BodyRender.throwHeld` for
+	// why the flag exists at all.
+	render.throwHeld = clip === "throw" && conditions.charge !== undefined;
+
+	if (render.throwHeld) holdThrowAtWindup(track);
+
 	// **Printed at the edge, and the rung is on the line because it is half of the answer.** The same shape for
 	// both bodies — the caller's tag, the body's name, the state, the priority — so a player's line and a rig's
 	// can be read side by side, which is how "do the two bodies do the same thing" is answered from a log. A
@@ -242,6 +371,60 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 		const rung = isCycle(clip) ? "Movement" : "Action";
 		print(`[${render.logTag}] ${render.body.Name}: ${clip} — ${rung}`);
 	}
+}
+
+/**
+ * **Stops the throw clip at the cocked pose** — the wind-back, held for as long as the charge lasts.
+ *
+ * **Two writes, and both are needed.** `AdjustSpeed(0)` freezes the track where it stands, and
+ * `TimePosition` puts it where the pose actually is: the clip is one motion authored straight through, so the
+ * difference between "a body winding up" and "a body mid-throw" is one number in the track. A speed of zero
+ * alone would freeze a fresh track at `0`, which is the body *starting* the wind-up rather than holding it.
+ *
+ * **Written every call rather than once, and the guard is not decoration.** `Length` reads `0` until the
+ * animation has streamed, and a track is cached for the life of the body — so the first charge of a session
+ * can run against a track that has no length yet, where setting `TimePosition` clamps to the start. The
+ * caller re-asserts the pose on every update while the charge is live (see `applyBodyRender`), which costs two
+ * property writes and repairs that case the moment the asset arrives. It is the same lesson
+ * `STATE_CLIP_SECONDS` records one function up.
+ */
+function holdThrowAtWindup(track: AnimationTrack): void {
+	track.AdjustSpeed(0);
+
+	if (track.Length > 0) track.TimePosition = THROW_CHARGE_HOLD_SECONDS;
+}
+
+/**
+ * **Plays the rest of the throw from the held pose, at the clip's own speed.**
+ *
+ * **`1×`, and it used to be the charge.** The clip's `0.63 s` of remaining motion was played at
+ * `charge ×` speed so a weak throw drew itself over a longer window — and a tap producing a three-second throw
+ * read as the game stalling, not as a weak throw. The clip now plays at its authored rate for every throw, and
+ * **the charge is carried by the camera instead**: `cameraShake`'s tremble grows with the hold while a throw is
+ * being charged, which says "how hard" *before* the release rather than by stretching the release. The
+ * parameter is kept because the call site still names what released it and a future sign may want it again.
+ *
+ * **The pose is re-asserted before the speed, and it is the cold-asset case again.** If the hold never landed
+ * — the clip streamed after the charge began — the track may still be at the start, and resuming from there
+ * would replay the wind-up the player has just spent a second holding. Putting it on the hold point first
+ * means the release always continues from where the pose was, whatever the track did before.
+ *
+ * **`AdjustSpeed` rather than `Play`**, because the track is already playing (at speed zero): changing the
+ * speed resumes it from its own position, which is what makes this one continuous motion rather than a
+ * second clip starting. The speed is set explicitly rather than left at zero for the next throw, and the next
+ * hold re-zeroes it in `holdThrowAtWindup`.
+ */
+function releaseThrowAtCharge(track: AnimationTrack, charge: number): void {
+	if (track.Length > 0 && track.TimePosition < THROW_CHARGE_HOLD_SECONDS) {
+		track.TimePosition = THROW_CHARGE_HOLD_SECONDS;
+	}
+
+	// **`1×`, and the charge is no longer read here.** The speed used to be the charge level, which made a
+	// weak throw take two or three seconds to finish drawing — read as a stall rather than as a weak throw.
+	// The level is carried by the camera instead (`cameraShake`'s tremble during the hold), so the clip plays
+	// its authored motion at its authored rate and the pose is the only thing the hold changes. The parameter
+	// is kept so the call site still says what released it.
+	track.AdjustSpeed(1);
 }
 
 /**

@@ -13,6 +13,7 @@ import {
 } from "shared/constants";
 import { NPC_TAG } from "../../npc/Behavior";
 import { BALL_CONFIG } from "shared/config/ball.config";
+import { throwAnimationWindowSeconds } from "shared/animation";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
@@ -1242,7 +1243,21 @@ export class BallService implements OnStart {
 		this.throwMarks.set(model, throwMark);
 		model.SetAttribute(THROW_ANIMATION_ATTRIBUTE, true);
 
-		task.delay(BALL_CONFIG.THROW_ANIMATION_SECONDS, () => {
+		// **The window is the clip's own remaining length, and it stopped being a function of the charge.**
+		// The clip was held at its wind-up for the charge and then played at `charge ×` normal speed, so the
+		// motion used to need `0.63 / speed` seconds after the release. It now plays at `1×` for every throw —
+		// the charge is carried by the camera while the button is held instead — so the mark lasts exactly as
+		// long as the clip's motion, and `throwAnimationWindowSeconds` is the single place that says so. The
+		// arithmetic still lives in `shared/animation.ts` so the client playing the clip and this mark cannot
+		// disagree about it, and the `max` keeps `THROW_ANIMATION_SECONDS` as a floor for a clip that is
+		// somehow shorter than the constant.
+		//
+		// **This is the only server-side change the hold needed, and it is not enforcement of the animation.**
+		// The client still decides everything visual; what this buys is that the mark is up for as long as the
+		// motion it authorises.
+		const animationWindow = math.max(BALL_CONFIG.THROW_ANIMATION_SECONDS, throwAnimationWindowSeconds());
+
+		task.delay(animationWindow, () => {
 			// A newer throw owns the mark by now; its own timer is the one that clears it, so this leaves the
 			// attribute alone rather than cutting a later throw's window short.
 			if (this.throwMarks.get(model) !== throwMark) return;

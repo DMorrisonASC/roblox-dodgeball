@@ -1,6 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 import { CollectionService, Workspace } from "@rbxts/services";
 import {
+	CHARGING_ATTRIBUTE,
 	NPC_ANIM_FROZEN_ATTRIBUTE,
 	NPC_ANIM_GROUNDED_ATTRIBUTE,
 	NPC_ANIM_MOVING_ATTRIBUTE,
@@ -312,7 +313,35 @@ export class RigAnimationController implements OnStart {
 			grounded: this.flagOf(model, NPC_ANIM_GROUNDED_ATTRIBUTE, true),
 			frozen: this.flagOf(model, NPC_ANIM_FROZEN_ATTRIBUTE, false),
 			deferToDefault: false,
+			charge: this.chargeOf(model),
+			// **Nothing, and that is a fact rather than a gap.** A rig's windup and its throw mark are both the
+			// server's and are written in one frame, so this client never sees the gap a player's round trip
+			// creates — the renderer falls back to the level it remembered while the pose was held. See
+			// `BodyConditions.releasedCharge`.
+			releasedCharge: undefined,
 		};
+	}
+
+	/**
+	 * **How far into a windup this rig is, `0` to `1`, or nothing when it is not winding up** — the rig's half
+	 * of the fact `BodyConditions.charge` carries, and the one place it is read.
+	 *
+	 * **`CHARGING_ATTRIBUTE` and not the throw mark.** The mark (`AnimThrow`) means *a throw has happened* and
+	 * is written by `BallService` at the release; the charge is the hold *before* it, published by
+	 * `ThrowBehavior`'s windup tracker as a number precisely so a client can draw the arm coming back. The
+	 * renderer holds the throw clip on this value and releases it when this value goes, so the two attributes
+	 * are the two halves of one motion: charge up, mark over.
+	 *
+	 * **Absent is the ordinary answer and reads as "not charging"**, which is the safe direction — a rig whose
+	 * attribute has not replicated is a rig standing normally, not one stuck in a held pose. Validated as a
+	 * number rather than trusted, the convention every attribute read here keeps: something else could have
+	 * written a string, and a value that is not a number is not a charge.
+	 */
+	private chargeOf(model: Model): number | undefined {
+		const value = model.GetAttribute(CHARGING_ATTRIBUTE);
+		if (!typeIs(value, "number")) return undefined;
+
+		return math.clamp(value, 0, 1);
 	}
 
 	/**

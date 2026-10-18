@@ -44,3 +44,25 @@ const scope = Fusion.scoped();
  * and release handler, and by `CatchController`'s key handler.
  */
 export const chargeStartedAt = Fusion.Value<number | undefined>(scope, undefined);
+
+/**
+ * **The charge level of the throw this player has just released, or nothing** — the other half of the pair,
+ * and the half the animation needs.
+ *
+ * **Why the charge cannot be read at the moment it is wanted.** The renderer has to know how hard the throw
+ * was *as the charge ends*, and by then `chargeStartedAt` is `undefined` — so the number would be gone. The
+ * arc has the same problem and solves it differently (it is drawn on the frame of the release, before the
+ * clear); an animation cannot, because the clip keeps playing long after the hand has let go.
+ *
+ * **And the obvious answer — read it off the throw's mark — arrives too late on this client.** The mark is the
+ * *server's* (`BallService.throwBall`), so between the release and the mark reaching this machine there is a
+ * whole round trip in which the body would have no throw to show: the pose would drop to idle and then start
+ * again half a clip in. Written here, the level is available on the frame the button comes up, which is the
+ * frame the motion has to begin on.
+ *
+ * **Cleared at the next charge and at any cancellation**, so a *cancelled* charge cannot leave a stale level
+ * behind for a throw that never happened: the renderer reads "a release is pending" from this value being
+ * present, and a stale one would hold a pose for a throw nobody made. A player's release is the only writer
+ * of a value here — a rig's comes off the server as an attribute, because a rig's timing is the server's.
+ */
+export const releasedCharge = Fusion.Value<number | undefined>(scope, undefined);
