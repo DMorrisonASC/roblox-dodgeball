@@ -158,6 +158,26 @@ export interface RigPool {
 	 * empty to keep two rigs looking different is a match played a body short. See {@link drawRigIdentity}.
 	 */
 	readonly freeModels: ReadonlyArray<Model>;
+
+	/**
+	 * The folder's models **worn by the fewest live rigs** — the faces a draw spends once every one is taken.
+	 *
+	 * **The repeats are the same, and which faces carry them is what this changes.** A folder with fewer
+	 * usable models than seats *must* show some body twice, so "do not repeat" is not available; what is
+	 * available is *spread the repeats thinly*, and that is the difference a player sees. Drawing uniformly
+	 * from the whole usable set — which is what this was — can put the same face on three or four rigs while
+	 * a second model sits on one, and the report that produced this field is exactly that: a rig appearing
+	 * beside another wearing an identical body when the folder held a face nobody was using twice.
+	 *
+	 * **A minimum, not a count**, because that is all the draw needs: the set of faces tied for fewest uses is
+	 * the set a repeat should come from, and drawing from it makes the usage counts converge rather than
+	 * drift. It costs one extra pass over the folder, per spawn, in a file that already walks the folder.
+	 *
+	 * **Ambiguous names are left out**, for {@link RigPool.freeModels}' reason: two models with one name are
+	 * one source as far as a rig's recorded origin is concerned, so the pair cannot be told apart and the
+	 * boot line has already asked for a rename.
+	 */
+	readonly leastWornModels: ReadonlyArray<Model>;
 }
 
 /**
@@ -169,7 +189,22 @@ export interface RigPool {
  * and a decision that said only "no" would leave the caller inventing the sentence a person has to act on.
  */
 export type RigDraw =
-	| { readonly ok: true; readonly name: string; readonly template: Model }
+	| {
+			readonly ok: true;
+			readonly name: string;
+			readonly template: Model;
+
+			/**
+			 * **Whether this face is already on a live rig** — true exactly when the draw had no free model to
+			 * spend, so every body in the folder was worn when this rig was made.
+			 *
+			 * **Carried rather than left to the caller to work out**, because working it out means reading the
+			 * pool a second time, and because a repeated face is otherwise *invisible*: two bodies wearing one
+			 * model look like a folder holding one model, and nothing in the output says which it is. The two
+			 * spawn lines in `LobbyRigService` append a sentence when this is true.
+			 */
+			readonly repeatedFace: boolean;
+	  }
 	| { readonly ok: false; readonly reason: string };
 
 /**
@@ -292,11 +327,21 @@ export function readRigPool(): RigPool {
 	const usedNames = new Set<string>();
 	const usedSources = new Set<string>();
 
+	// **How many live rigs name each source**, which is the number {@link RigPool.leastWornModels} minimises.
+	// Counted rather than boolean because the question is no longer "is this face taken" — `usedSources`
+	// answers that — but "which taken face is taken *least*", which is what a repeat should be spent on.
+	const sourceUses = new Map<string, number>();
+
 	for (const rig of liveRigs()) {
 		usedNames.add(rig.Name);
 
 		const source = sourceOf(rig);
-		if (source !== undefined) usedSources.add(source);
+		if (source === undefined) continue;
+
+		usedSources.add(source);
+
+		const worn = sourceUses.get(source);
+		sourceUses.set(source, (worn === undefined ? 0 : worn) + 1);
 	}
 
 	const freeNames = new Array<string>();
@@ -315,12 +360,39 @@ export function readRigPool(): RigPool {
 		freeModels.push(model);
 	}
 
+	// **Which faces carry the fewest live bodies, in two passes rather than one.** The first finds the
+	// minimum; the second collects the faces tied at it. A single pass would have to rebuild its list every
+	// time a smaller count appeared, and this build's `Array` has no `clear` to rebuild with — see the `Map`
+	// note in `MysteryBoxService` for the same class of surprise. Two walks of a folder holding a handful of
+	// models, once per spawn, is the cheaper side of that trade.
+	//
+	// **The result is what a repeat is drawn from**, so a short folder spreads its duplicates across faces
+	// instead of piling them on whichever one the dice favoured — see {@link RigPool.leastWornModels}.
+	let fewestWorn = math.huge;
+
+	for (const model of usableModels) {
+		if (repeated.has(model.Name)) continue;
+
+		const worn = sourceUses.get(model.Name) ?? 0;
+		if (worn < fewestWorn) fewestWorn = worn;
+	}
+
+	const leastWornModels = new Array<Model>();
+
+	for (const model of usableModels) {
+		if (repeated.has(model.Name)) continue;
+		if ((sourceUses.get(model.Name) ?? 0) !== fewestWorn) continue;
+
+		leastWornModels.push(model);
+	}
+
 	return {
 		models: models,
 		usableModels: usableModels,
 		duplicatedNames: duplicatedNames,
 		freeNames: freeNames,
 		freeModels: freeModels,
+		leastWornModels: leastWornModels,
 	};
 }
 
@@ -340,6 +412,15 @@ export function readRigPool(): RigPool {
  * that is a lobby that looks half empty and a round that opens three against three, which is the failure this
  * file used to cause by design and no longer does. The boot line still prints both counts beside the number
  * of rigs wanted, so a repeated face is a fact in the log rather than something to spot in the crowd.
+ *
+ * **A repeat is spent on the *least-worn* face, and that is a correction rather than a detail.** Repeating at
+ * all is unavoidable when a folder holds fewer models than the lobby has seats; *which* face repeats is not,
+ * and drawing uniformly from the whole usable set — what this did — lets the counts drift. Reported from a
+ * session: a rig spawned beside another wearing an identical body while a third face stood on one rig, which
+ * is the clustering a uniform draw produces and a minimum-use draw cannot. So the middle band is
+ * {@link RigPool.leastWornModels}, and a folder of two models across eight rigs now comes out four and four
+ * instead of seven and one. **What it cannot do is make a small folder look large** — the count of repeats is
+ * `seats − usable models` whatever this picks, and that number is a place-file fact.
  *
  * **The name side is not treated the same way, and the asymmetry is deliberate.** Twenty names for eight
  * seats means it cannot run out in an ordinary session, so a name refusal is only ever reachable by shortening
@@ -381,19 +462,26 @@ export function drawRigIdentity(pool: RigPool): RigDraw {
 		};
 	}
 
-	// **The face is the draw's only preference, and it is spent rather than hoarded.** Free models first, so
-	// a lobby with bodies to spare looks like eight different people; the whole usable set once they are gone,
-	// so the eighth seat is filled by a face already on the field. The alternative — which is what this did —
-	// was to refuse, and a refusal here is a rig missing from the lobby, which is a round that opens a body
-	// short. See this function's doc for why the seat outranks the face.
-	const faces = pool.freeModels.size() > 0 ? pool.freeModels : pool.usableModels;
+	// **The face is the draw's only preference, and it is spent rather than hoarded.** Three bands, in the
+	// order they are worth having: a free face, so a lobby with bodies to spare looks like eight different
+	// people; the **least-worn** faces once every one is taken, so a folder too small for the lobby spreads its
+	// repeats instead of piling them onto one body; and the whole usable set as a last resort, reachable only
+	// by a folder in which every model shares a name. **The alternative — which is what this did — was to
+	// refuse**, and a refusal here is a rig missing from the lobby, which is a round that opens a body short.
+	// See this function's doc for why the seat outranks the face, and {@link RigPool.leastWornModels} for the
+	// report that added the middle band.
+	let faces = pool.freeModels;
+	if (faces.size() === 0) faces = pool.leastWornModels;
+	if (faces.size() === 0) faces = pool.usableModels;
 
 	// `math.random(a, b)` is inclusive at both ends, so the index is the whole array and never its end —
 	// the same note `NpcService.dressRig` and `MysteryBoxService` carry beside the same call.
 	const name = pool.freeNames[math.random(0, pool.freeNames.size() - 1)];
 	const template = faces[math.random(0, faces.size() - 1)];
 
-	return { ok: true, name: name, template: template };
+	// **`freeModels` being empty is the whole definition of a repeat**, and it is read here rather than
+	// recomputed by a caller: a face is repeated exactly when there was no unworn model to spend.
+	return { ok: true, name: name, template: template, repeatedFace: pool.freeModels.size() === 0 };
 }
 
 /**

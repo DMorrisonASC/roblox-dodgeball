@@ -2031,7 +2031,16 @@ export class LobbyRigService implements OnStart {
 		// and deliberately: `rebalance`'s `refill` line and `onPlayerLeft`'s `takes the seat` line say *why* a
 		// body was asked for, which is their callers' business, and this says *what* the body is, which is this
 		// file's. The pair is what lets a lobby be read back — who arrived, and wearing which face.
-		print(`[Rig] ${draw.name}: from "${draw.template.Name}" — lobby spawn, side ${side}`);
+		//
+		// **And whether that face was already on the field, which is the one fact of the three a reader cannot
+		// see from the line itself.** `from "Marco"` says nothing about whether a `Marco` is standing ten feet
+		// away; two rigs wearing one model is what a short folder *must* produce, and the whole of the question
+		// "why does the same body keep appearing" is answered by which of the two it is — a repeat (this
+		// sentence) or the folder holding two models that look alike (not this file's to see).
+		print(
+			`[Rig] ${draw.name}: from "${draw.template.Name}" — lobby spawn, side ${side}` +
+				(draw.repeatedFace ? " — every model is in use, so this face repeats" : ""),
+		);
 
 		return rig;
 	}
@@ -2115,10 +2124,16 @@ export class LobbyRigService implements OnStart {
 		// **The held case says "held", because "six behaviours on" would be a lie about a rig that is standing
 		// there inert.** It is also the line that tells a reader the freeze is working: a rig named here as
 		// held should print `playing — six behaviours on` from `setGameplayBehaviors` when the hold lifts.
+		//
+		// **And the same repeat sentence `spawnLobbyRig` appends**, for the same reason: a body appearing out
+		// of a folder that is already fully worn is a duplicate a reader would otherwise have to infer from
+		// two lines minutes apart. See `drawRigIdentity` — a repeat is the price of a folder smaller than the
+		// lobby, and the least-worn face is what it is spent on.
 		print(
-			holdGameplay
+			(holdGameplay
 				? `[Rig] ${draw.name}: from "${draw.template.Name}" — held for the arena freeze (${side}, arena spawn)`
-				: `[Rig] ${draw.name}: from "${draw.template.Name}" — six behaviours on (${side}, arena spawn)`,
+				: `[Rig] ${draw.name}: from "${draw.template.Name}" — six behaviours on (${side}, arena spawn)`) +
+				(draw.repeatedFace ? " — every model is in use, so this face repeats" : ""),
 		);
 
 		return rig;

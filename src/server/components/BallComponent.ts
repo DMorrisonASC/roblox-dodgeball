@@ -875,7 +875,11 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 			hitAny = true;
 
-			if (token !== "") this.rounds.registerHit(token, model);
+			// **The ability goes with the hit, because nothing can be asked about it afterwards.** A mark rides
+			// the *ball*, and by the time a client reacts to the impact this instance may already be gone — so
+			// the word is read here, once per body, and travels on the event. A Pierce ball's three bodies all
+			// name Pierce, which is what the splash counts.
+			if (token !== "") this.rounds.registerHit(token, model, abilityOn(this.instance) ?? "");
 			this.landHit(model, humanoid, part);
 		}
 

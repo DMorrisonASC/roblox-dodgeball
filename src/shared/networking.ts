@@ -309,14 +309,32 @@ export const events = Net.Definitions.Create({
 	 *
 	 * **Sent from `RoundService.registerHit`, which is where both ends resolve to something with a name** —
 	 * the thrower arrives as a token that is a `UserId` for a player and a GUID for a rig, and matching a
-	 * rig's GUID to its rig is `throwerOf`'s job. Gated like everything else about a hit: `registerHit`
-	 * returns unless a round is being played, so a ball that touches a body outside one draws nothing.
+	 * rig's GUID to its rig is `throwerOf`'s job.
+	 *
+	 * **And sent in every phase, which is a reversal recorded rather than a quiet widening.** This used to be
+	 * gated with the round — `registerHit` returned before sending unless one was being played — so a ball
+	 * landing on a practice dummy, or on a player in the lobby, drew nothing anywhere. An impact is a fact
+	 * about a *body* rather than about a round, and both of its readers are cosmetic (`hitVfx` draws the
+	 * burst, `hitConfirm` draws the splash), so the send now happens before the round gate and only the
+	 * round's own records stay behind it. **What still does not draw outside a round is a rig's throw**:
+	 * `throwerOf`'s rig arm walks `rigsInRound()`, which is `Playing`-gated, so a rig throwing in the lobby
+	 * resolves to nothing and no half-subject payload is sent. A player's throw always resolves.
+	 *
+	 * **A third field, `ability` — the power the throw was carrying, `""` when it carried none.** Added for the
+	 * escalating splash: `hitConfirm` counts the bodies one throw took and has to know whether to escalate past
+	 * `MULTI HIT!` into `SMASH!` and `RAMPAGE!`, and a client cannot answer that for itself. The two attributes
+	 * that could have said so are both gone by the time an impact is drawn — `BALL_ABILITY_ATTRIBUTE` rides the
+	 * ball, which has already landed, and `ARMED_ABILITY_ATTRIBUTE` is consumed when the mark is applied.
+	 * **`"MultiBall"` is filled in by `registerHit` rather than read off the ball**, because a MultiBall throw
+	 * is a window on the *player* and its balls carry no mark: `isBallAbility` reports `false` for it, so the
+	 * name can never arrive from `abilityOn`. An empty string rather than a `nil`, on
+	 * `BALL_ABILITY_ATTRIBUTE`'s convention — every reader has one empty value to test.
 	 *
 	 * **It is not a record and nothing accumulates from it.** `roundHit` and `roundHitLog` remain the round's
 	 * history of a hit between two people; this is the same event told to the clients that have to draw it,
-	 * and only `hitVfx` reads it.
+	 * and `hitVfx` and `hitConfirm` are its readers.
 	 */
-	hitImpact: Net.Definitions.ServerToClientEvent<[victim: string, thrower: string]>(),
+	hitImpact: Net.Definitions.ServerToClientEvent<[victim: string, thrower: string, ability: string]>(),
 
 	/**
 	 * Server → client: **a throw was caught, and the body that has to wear the consequence is the thrower's.**
@@ -347,6 +365,30 @@ export const events = Net.Definitions.Create({
 	 * against rigs and there is no player end to target; and the body it happened to is one everybody can see.
 	 */
 	caughtThrow: Net.Definitions.ServerToClientEvent<[thrower: string, catcher: string]>(),
+
+	/**
+	 * Server → client: **your throw took the last body on the other side** — the round is decided by your hit,
+	 * and your screen says `WIPEOUT!`.
+	 *
+	 * **Why this cannot be derived on the client.** A wipe is a fact about a *side*: it needs every body on
+	 * that side, their healths, the mode's own rule about what a side running out means, and the rigs the
+	 * client may not even be watching. A client can see the body it hit fall over; it cannot see that it was
+	 * the last one, and it certainly cannot see the mode's answer. So the confirmation is the server's, and
+	 * this event is that confirmation.
+	 *
+	 * **Sent to one player rather than broadcast**, which is the first event in this file that is. Everything
+	 * else here is a thing everybody can see (a hit, a catch, a feed); a wipe is a caption on the thrower's
+	 * own screen, and the other clients already get the result panel when the round finishes. **It carries the
+	 * thrower's name anyway** — the same pair `hitImpact` sends — so the one client that receives it can make
+	 * the same comparison it makes for every other event rather than trusting the addressing.
+	 *
+	 * **Sent from `RoundService.announceWipe`, which `eliminate` calls**, and only when the round's own
+	 * outcome function says the victim's side is now empty *and* the winner is the thrower's side. It fires at
+	 * most once a round: the elimination that empties a side is the last one that can happen. **It is not a
+	 * record and changes nothing** — the result is published by `roundResult` on its own path, and this is the
+	 * caption that path has no place for.
+	 */
+	teamWipe: Net.Definitions.ServerToClientEvent<[thrower: string]>(),
 
 	/**
 	 * Client → server: this player wants to spend coins on a Power Chest.

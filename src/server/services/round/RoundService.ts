@@ -76,6 +76,17 @@ const ARENA_FREEZE_KEY = "ArenaFreeze";
 const ARENA_FREEZE_SPEED = -1000;
 
 /**
+ * How long after a landed hit a death is still attributed to it, in seconds. **Placeholder — 0.5.**
+ *
+ * **Sized against a chain that is ordinarily zero frames apart.** `registerHit` runs immediately before
+ * `landHit`, whose `TakeDamage` is what fires `Died` — so the real gap is under a millisecond and this number
+ * only decides how much slack the engine's own delivery of `Died` gets. It must be short enough that a later
+ * death cannot be credited to a hit aimed at somebody else; the victim compare in {@link announceWipe} is the
+ * primary guard for that, and this is the second.
+ */
+const WIPE_ATTRIBUTION_SECONDS = 0.5;
+
+/**
  * What a boundary's transition does beyond covering the screen and moving everybody.
  *
  * **An options object rather than two more positional arguments**, because both are read at the call site as
@@ -369,6 +380,25 @@ export class RoundService implements OnStart {
      * service having to know a HUD exists. Made in `onStart`; the client waits for it.
      */
     private statusFolder!: Folder;
+
+    /**
+     * **The last hit this round heard about, and the body it landed on** — the join between a death and the
+     * throw that caused it.
+     *
+     * **One record, not a log**, because only the most recent hit can be the cause of the death being handled
+     * right now: `Died` fires out of the `TakeDamage` that `landHit` runs immediately after `registerHit`, and
+     * a second hit cannot land between the two. A list would be a history nothing asks for, and the thing that
+     * makes a stale entry harmless is the victim compare in {@link announceWipe} rather than the list's length.
+     *
+     * **Written only while a round is being played**, which is where it is read: `announceWipe` runs from
+     * `eliminate`, and a lobby hit cannot eliminate anybody. It is not cleared at a boundary — the next hit of
+     * the next round overwrites it, and a record older than {@link WIPE_ATTRIBUTION_SECONDS} is refused.
+     *
+     * **`victim` is an `Instance` rather than a `Model`**, because it is only ever compared by identity and the
+     * thing it is compared against is a `Player` — two Roblox type declarations share no members but the base
+     * class, and typing it as `Model` made the comparison a type error that said nothing useful.
+     */
+    private lastHit?: { readonly thrower: Player; readonly victim: Instance; readonly at: number };
 
     constructor(
         private readonly dev: DevService,
@@ -1698,11 +1728,60 @@ export class RoundService implements OnStart {
         this.stats.recordOut(player);
         this.roundOuts.set(player, (this.roundOuts.get(player) ?? 0) + 1);
 
+        // **And the wipe, before the body is handed back.** It has to be *here* rather than in `finishRound`,
+        // because the round-end path is the loop's and up to a tick later, while the thrower's caption has to
+        // say what their throw just did. See {@link announceWipe} for what it asks, and note that this changes
+        // nothing about when the round actually ends — `finishRound` still runs where it always did.
+        this.announceWipe(player);
+
         // **And a body, immediately — which is why this death did not gain a delay.** Elimination means *out of
         // the round*, not *out of the game*: an eliminated player is a player in the lobby with a character to
         // watch from, which is what the engine used to provide on its own clock and what this load provides at
         // the moment it is wanted. Every path that is not the round's own respawn takes its body now.
         this.respawns.loadNow(player, "eliminated");
+    }
+
+    /**
+     * **Tells the thrower that their hit took the last body on the other side — `WIPEOUT!` is theirs.**
+     *
+     * **A wipe is a fact only the server has, which is the whole reason for the event.** The victim's client
+     * could see its own body fall; it cannot see that it was the last one, and it cannot ask a mode what an
+     * empty side means — a mode that keeps score does not care, and one that counts heads does. So the answer
+     * is computed here, once, at the only moment it is knowable: the elimination that empties a side.
+     *
+     * **Three questions, in the order they can fail, and each is a different silence.**
+     *
+     * 1. **Was there a hit at all, and was it this death?** `lastHit` is written by `registerHit`, which runs
+     *    immediately before `landHit` in `BallComponent.resolveTags` — so for a death caused by a ball it is
+     *    this ball. A death caused by anything else (a reset, a fall, a dev command) has no hit behind it, and
+     *    a death not caused by the *last* hit is refused by the victim compare. The clock is the second guard
+     *    and is only there for an engine that delivers `Died` late — see {@link WIPE_ATTRIBUTION_SECONDS}.
+     * 2. **Was the round decided by it?** `roundOutcome` is the round's own answer — the same one the loop
+     *    asks — and a `DRAW` or an `undefined` means this elimination emptied nothing that matters (or emptied
+     *    both sides), so there is no wipe to celebrate.
+     * 3. **Did the *thrower* win it?** The outcome names a side, and the thrower's side has to be that one. A
+     *    side can also empty because somebody left or because a rig was the last body — neither is a wipe by
+     *    the thrower, and the second has no thrower to tell at all.
+     *
+     * **Addressed to the thrower rather than broadcast**, which is a first for this file's events: every other
+     * one is a thing everybody can see, while this is a caption on one screen. **The name still travels**, so
+     * the receiving client makes the same comparison it makes for `hitImpact` instead of trusting the
+     * addressing — and so the line reads the same in a log either way.
+     *
+     * **It sends at most once a round.** The elimination that empties a side is the last one that can happen,
+     * and a second one would have to find an outcome for a round already decided.
+     */
+    private announceWipe(victim: Player): void {
+        const hit = this.lastHit;
+        if (hit === undefined) return;
+        if (hit.victim !== victim) return;
+        if (os.clock() - hit.at > WIPE_ATTRIBUTION_SECONDS) return;
+
+        const outcome = this.roundOutcome();
+        if (outcome !== TEAM_A && outcome !== TEAM_B) return;
+        if (this.teamOf(hit.thrower) !== outcome) return;
+
+        events.Server.Get("teamWipe").SendToPlayer(hit.thrower, hit.thrower.Name);
     }
 
     /** Put `player` on `team` — in the table the round counts from, and on the player. */
@@ -1852,8 +1931,59 @@ export class RoundService implements OnStart {
      * door every fact about one goes through. This paragraph used to list stats as a fourth reader here,
      * which was wrong about where the wire runs. Nothing anywhere asks whether a death was a throw or a
      * reset, which is why the round keeps no *cause*: a hit arrives as a hit or it does not arrive.
+     *
+     * **What changed on 2026-10-18: the cosmetic half is no longer the round's.** `hitImpact` — the event
+     * `hitVfx` and `hitConfirm` read — is now sent before the phase gate, so an impact draws in every phase and
+     * a player can watch and tune it in a practice zone. That makes one sentence above read differently:
+     * **"only a cross-team hit ever arrives" is a fact about a round and not about the lobby**, because
+     * `isFriendlyFire` answers `false` outside one by its own design. Nothing below the gate moves — the phase
+     * test is the first line of the round's half — so a same-side contact outside a round is announced and
+     * recorded nowhere, which is the honest reading of a throw with no round to be in.
      */
-    public registerHit(throwerToken: string, victim: Model): void {
+    public registerHit(throwerToken: string, victim: Model, ballAbility: string): void {
+        // **The cosmetic half — the impact every client draws — is sent *before* the round gate, and that is
+        // the whole of why this method now starts here.** `hitImpact` is read by `hitVfx` and by
+        // `hitConfirm`, and both are about a *body being hit* rather than about the round: the burst on a
+        // practice dummy and the splash over the thrower's own screen are wanted in the lobby, in a practice
+        // zone and in the middle of a round alike. It used to be sent at the bottom, behind
+        // `state !== Playing`, so a ball landing on anything outside a round drew nothing anywhere — which is
+        // exactly the place a player throws freely enough to judge what a hit feels like.
+        //
+        // **Nothing is recorded here.** No counter, no log entry, no side check, no score: the records below
+        // are still the round's alone and are still behind the gate two lines down. The two facts are told
+        // apart deliberately — *a ball landed on a body* is true in every phase, and *this round has a hit in
+        // it* is true only while one is being played.
+        //
+        // **Resolved once, above the gate, because the board and the log need the same answer below.** The
+        // token is a `UserId` for a player and a GUID for a rig, and matching a rig's GUID to its rig is
+        // `throwerOf`'s job; a second lookup further down would be the same scan twice.
+        //
+        // **An unresolved token still draws nothing, and outside a round that is every rig's throw.**
+        // `throwerOf`'s player arm answers in any phase, while its rig arm walks `rigsInRound()` — a `Playing`
+        // gated list — so a rig throwing in the lobby has no resolvable name and no payload with half a
+        // subject is sent. A player's throw always resolves, which is the case that matters here: the splash
+        // is compared against the *local player's* name.
+        const thrower = this.throwerOf(throwerToken);
+
+        // **Which power the throw was carrying, and why the ball's answer is not always the whole of it.**
+        // `abilityOn` reports the mark on the ball — Pierce, Freeze — and cannot report MultiBall at all:
+        // `isBallAbility` says a ball cannot carry it, because a MultiBall window is a buff on a *player* that
+        // supplies ordinary balls, not a mark that rides one. So the window is asked here instead, which is the
+        // one place the two halves can be joined: the splash needs one word for "was this throw a power", and
+        // this is the only code that holds both the throw and the thrower.
+        //
+        // **The empty string rather than `undefined`**, on `BALL_ABILITY_ATTRIBUTE`'s convention — the client
+        // has one value to test instead of two spellings of "none".
+        let power = ballAbility;
+
+        if (power === "" && thrower !== undefined && this.abilities.isMultiBallActive(thrower)) {
+            power = "MultiBall";
+        }
+
+        if (thrower !== undefined) {
+            events.Server.Get("hitImpact").SendToAllPlayers(victim.Name, thrower.Name, power);
+        }
+
         if (this.state !== RoundState.Playing) return;
 
         // **The victim's side, asked of the body.** A player's character answers through its `Player` and
@@ -1866,14 +1996,24 @@ export class RoundService implements OnStart {
         const victimTeam = this.teamOf(victim);
         if (victimTeam === undefined) return;
 
-        // **Resolved once, here, above the scoring gate below.** Three things below need the thrower
-        // and two of them are above the gate, so the lookup cannot live inside the scoring block: the
-        // board is a fact about who landed a hit and the log is a fact about *two* people, and neither
-        // is a question about what a hit is worth — so both are kept for every mode, including the
-        // scoreless ones, which have a result panel like anybody else. Under the gate, Team
-        // Elimination's board would be empty for ever.
-        const thrower = this.throwerOf(throwerToken);
+        // **The hit is remembered for the length of one death, because that is the only moment a wipe can be
+        // told apart.** `announceWipe` runs inside `eliminate`, and the join it needs is "which throw took
+        // *this* body". The chain is `registerHit` → `landHit` → `TakeDamage` → `Died` → `handleDeath` →
+        // `eliminate`, so this line and that one are one throw apart; the victim compare in `announceWipe` is
+        // what stops a stale record from claiming a death it did not cause.
+        //
+        // **Players only.** `teamWipe` is addressed to a player and a rig has no client to caption, so a rig's
+        // throw is not recorded — the record exists only for the case that can be drawn.
+        if (thrower !== undefined && thrower.IsA("Player")) {
+            this.lastHit = { thrower: thrower, victim: victim, at: os.clock() };
+        }
 
+        // **The thrower was resolved above the round gate, and this is what is left of the paragraph that used
+        // to introduce the lookup here.** What it said still holds of everything below: the board is a fact
+        // about who landed a hit and the log is a fact about *two* people, neither is a question about what a
+        // hit is worth, and both are kept for every mode — a scoreless mode has a result panel like anybody
+        // else, and under the scoring gate below Team Elimination's board would be empty for ever.
+        //
         // **The board and the log stay records about *people*, and that is not the same gap it looked like.**
         // The result panel is drawn per person — a row, a name, a face — so a rig's throw raises nobody's
         // count and writes no entry in the feed; what a rig's throw is worth is its *side's* point, below.
@@ -1885,24 +2025,11 @@ export class RoundService implements OnStart {
             if (victimPlayer !== undefined) this.logHit(thrower, victimPlayer);
         }
 
-        // **And everybody is told what happened to this *body*, which is not the same telling as the log
-        // above.** The log is a record about a pair of people, so a rig's throw and a ball that landed on a
-        // rig are not in it; this is about an impact, so it goes out for every hit that reaches the round —
-        // those two cases and the player-on-player one the log already covers. **Sent from here rather than
-        // from the ball** because this is where both ends have been resolved to something with a name: the
-        // token is a `UserId` for a player and a GUID for a rig, and matching a rig's GUID to its rig is
-        // `throwerOf`'s job a few lines above. A ball could not do it without a second copy of that scan.
-        //
-        // **Nothing here is a record.** No counter is raised, no entry is written and no score moves — it is
-        // the cosmetic half, drawn by each client for itself. See `networking.ts` on `hitImpact` for the two
-        // names and their order, and `hitVfx` for the only reader.
-        //
-        // **Only when the thrower resolved.** An unresolved token means a rig whose throw this round cannot
-        // attribute — one that has left, or one nobody gave a side to — and a payload with no thrower would
-        // be a sentence with half a subject. The victim still loses the health; it just is not drawn.
-        if (thrower !== undefined) {
-            events.Server.Get("hitImpact").SendToAllPlayers(victim.Name, thrower.Name);
-        }
+        // **Was: the `hitImpact` send, here.** It has moved to the top of this method, above the round gate,
+        // because an impact is a fact in every phase and a round is not — see the paragraph there. Nothing
+        // else moved with it, which is why the send is not repeated for the hits that reach this far: every
+        // one of them already went out two lines into the method. See `networking.ts` on `hitImpact` for the
+        // two names and their order, and `hitVfx` and `hitConfirm` for the readers.
 
         // **A mode that keeps no score is not asked what a hit is worth.** See `GameMode.scores`:
         // a scoreless mode has no hit rule to state, so asking anyway would make every mode carry a
