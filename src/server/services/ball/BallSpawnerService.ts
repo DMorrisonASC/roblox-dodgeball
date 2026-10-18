@@ -1,6 +1,7 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { BALL_CONFIG } from "shared/config/ball.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { MATCH_SPAWNER_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { MATCH_BALL_COUNT } from "../../config/match.config";
@@ -191,6 +192,26 @@ export class BallSpawnerService implements OnStart {
 	 * two limits cannot disagree about how many balls the arena is holding.
 	 */
 	private tick(): void {
+		// Scope: BallSpawner.tick — once a second, a budget count plus a walk of every spawner part.
+		if (DEBUG_CONFIG.PROFILE) debug.profilebegin("BallSpawner.tick");
+		this.tickBody();
+		if (DEBUG_CONFIG.PROFILE) debug.profileend();
+	}
+
+	/**
+	 * The body of {@link tick}, split off **only** so the scope above can wrap it.
+	 *
+	 * **Why a second method rather than the pair written into the body.** The first line of the original
+	 * is `if (this.stateOf() !== PLAYING) return;`, i.e. every turn outside a round leaves the function
+	 * immediately — a `profileend` at the bottom would then never run, and the MicroProfiler would be left
+	 * holding an open band for a tick that did nothing. The split makes the pairing structural rather than
+	 * remembered: one statement between `begin` and `end`, and the early return is a return into it. The
+	 * `break` inside the loop is untouched and needs nothing, since it is not an exit from the function.
+	 *
+	 * **No `try`/`finally`**, deliberately: roblox-ts compiles one to an `xpcall`, which would add a call
+	 * and a closure to the very path being measured and would change how an error leaves this loop.
+	 */
+	private tickBody(): void {
 		if (this.stateOf() !== PLAYING) return;
 
 		let budget = MATCH_BALL_COUNT - this.roundBallCount();

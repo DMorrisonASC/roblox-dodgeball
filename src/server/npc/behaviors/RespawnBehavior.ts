@@ -1,6 +1,7 @@
 import { CollectionService, Workspace } from "@rbxts/services";
 import { BALL_NAME, TEAM_ATTRIBUTE } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { TEAM_A, TEAM_B } from "../../services/round/team";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
 import {
@@ -245,10 +246,34 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				const label = model.GetAttribute(TEAM_ATTRIBUTE);
 				const team = label === TEAM_A || label === TEAM_B ? label : undefined;
 
+				// Scope: Npc.Respawn.clone — the one expensive statement in the rebuild, on its own band
+				// because it is the only part of this thread whose cost is not a handful of writes.
+				if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Npc.Respawn.clone");
 				const rig = template.Clone();
+				if (DEBUG_CONFIG.PROFILE) debug.profileend();
+
 				const fresh = rig.FindFirstChildWhichIsA("Humanoid");
 				const root = rig.FindFirstChild("HumanoidRootPart");
 				if (!fresh || !root || !root.IsA("BasePart")) return;
+
+				// Scope: Npc.Respawn.onDied — the rebuild after the copy, from health to the entry-point
+				// tag that restarts the rig's loop.
+				//
+				// **It opens here, after the last early return, and that is the whole of why it is not at
+				// the top of the thread.** Everything above this line is a guard — no home, no template,
+				// parented out of the world, already alive, a copy with no humanoid — and every one of them
+				// leaves the function. A `profilebegin` above them would need an `end` on each of five exits
+				// to balance, and the one that got missed would not fail loudly: it would silently attribute
+				// the rest of the frame's work to a respawn that never happened. Below this line there is no
+				// early return left, so one pair is enough.
+				//
+				// **And it does not span the wait.** `task.wait(NPC_CONFIG.RESPAWN_DELAY_SECONDS)` is above
+				// this method's own scope on purpose: a rig's respawn delay is two seconds of *not working*,
+				// and a band that included it would report the delay as server cost. Two consequences worth
+				// knowing before reading the recording: `Npc.Respawn.onDied` is the rebuild and nothing else,
+				// and the `task.spawn` at the top of the method — the only thing `onDied` itself does
+				// synchronously — is a creation, not a cost, and is deliberately left outside every band.
+				if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Npc.Respawn.onDied");
 
 				// Full health, which is not the same as the template's: a rig that had been hurt
 				// before it was killed would otherwise come back carrying the damage it never
@@ -356,6 +381,12 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 							`at ${string.format("%.0f, %.0f, %.0f", at.X, at.Y, at.Z)}`,
 					);
 				}
+
+				// The other half of `Npc.Respawn.onDied`, which opened after this thread's last early
+				// return. Nothing between the two can yield — `Destroy`, the attribute writes, the reparent
+				// and the tag writes are all synchronous — so the pair is closed in the same resumption it
+				// was opened in, which is what makes a `debug.profileend` here mean anything.
+				if (DEBUG_CONFIG.PROFILE) debug.profileend();
 			});
 		},
 	};

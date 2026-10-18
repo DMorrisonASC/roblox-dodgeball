@@ -36,4 +36,36 @@ export const DEBUG_CONFIG = {
 	// decision that is meant to be reversible needs somebody to reverse it. Turn it back on *for one
 	// run*, read the numbers, turn it off in the same sitting.
 	VERBOSE_LOGS: false,
+
+	/**
+	 * Whether the server's hot paths announce themselves to the MicroProfiler.
+	 * **Placeholder — `false`. Set it to `true` for one recording session, then put it back.**
+	 *
+	 * **What it buys.** Without a `debug.profilebegin` the MicroProfiler's server view shows one
+	 * undifferentiated "Script" bar, so a 12 ms frame cost can be attributed to *nothing* — which is how a
+	 * fix gets chosen from arithmetic and makes the NPCs dumber while the real stall sits untouched. Every
+	 * scope is a named band in that bar, and the recording then says which one is wide.
+	 *
+	 * **What it costs, and why it is a build-time constant rather than a dev flag.** Each site is one
+	 * `if (DEBUG_CONFIG.PROFILE)` — a table read and a branch — and nothing else when this is off. With it
+	 * on, every scope is also a MicroProfiler label, which is measurable overhead in its own right: a
+	 * recording is a *diagnostic* frame cost, not the frame cost of the game, and the two must never be
+	 * compared to each other. That is the same argument `VERBOSE_LOGS` above makes, and the same failure
+	 * mode: a diagnostic left on is a lie about the frame budget.
+	 *
+	 * **Why `false` and not a per-session toggle at runtime.** This file's whole premise is that these are
+	 * decided *before* a playtest rather than during one, because the cost is paid per tick, and a flag
+	 * that could be flipped mid-session would make two halves of one recording incomparable.
+	 *
+	 * **The scope names are string literals at their sites**, so a MicroProfiler screenshot reads without
+	 * a legend, and `grep -rn "debug.profilebegin" src/` is the whole list — there is no registry of them
+	 * anywhere else to fall out of step. `@rbxts/types` types this as
+	 * `debug.profilebegin(profileName: string): void` (`include/lua.d.ts:231`), so the typing accepts either
+	 * form. **One family of names is built rather than written**: `NpcService` passes a precomputed label per
+	 * behaviour so the rig loop reads `Npc.tick.Catching`, `Npc.tick.Throwing`, `Npc.tick.Seeking`,
+	 * `Npc.tick.Pickup`, `Npc.tick.Dodging`, `Npc.tick.Respawn` and `Npc.tick.WalkToJoinPad` — built once
+	 * per rig loop out of `behavior.tag`, not per turn, because a label made inside the dispatch would be an
+	 * allocation on the path it is measuring.
+	 */
+	PROFILE: false,
 } as const;

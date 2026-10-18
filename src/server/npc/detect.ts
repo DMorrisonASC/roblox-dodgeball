@@ -1,6 +1,7 @@
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { BALL_NAME, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { resolveDodgeable } from "shared/dodge";
 import type { BallService } from "../services/ball/BallService";
 import { TEAM_A, TEAM_B, TeamLabel } from "../services/round/team";
@@ -197,6 +198,25 @@ function sideOf(model: Model): TeamLabel | undefined {
  * rule writable without a second scan.
  */
 export function detectEnemy(rig: Model): EnemySighting | undefined {
+	// Scope: Npc.detect.enemy — the whole scan, tagged-body list included.
+	if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Npc.detect.enemy");
+	const sighting = detectEnemyBody(rig);
+	if (DEBUG_CONFIG.PROFILE) debug.profileend();
+	return sighting;
+}
+
+/**
+ * The body of {@link detectEnemy}, split off **only** so the scope above can wrap it.
+ *
+ * **Why a second function rather than the pair written into the body.** This one returns early three
+ * times before it scans anything — no round playing, no dodgeable rig, and then inside the `consider`
+ * closure once per candidate — so a `profileend` at the bottom of the original would be reached on the
+ * ordinary path only, and every early exit would leave an unclosed band in the MicroProfiler. The split
+ * makes the pairing structural: the wrapper has one statement between `begin` and `end`, and every early
+ * exit is a return into it. Nothing inside moved, and there is no `try`/`finally` here because roblox-ts
+ * compiles one to an `xpcall`, which would change both the cost this measures and how an error unwinds.
+ */
+function detectEnemyBody(rig: Model): EnemySighting | undefined {
 	if (!isRoundPlaying()) return undefined;
 
 	const rigBody = resolveDodgeable(rig);

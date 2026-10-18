@@ -1,6 +1,7 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, Players, ReplicatedStorage } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import {
 	ROUND_MODE_ATTRIBUTE,
@@ -450,6 +451,22 @@ function dress(player: Player, character: Model): void {
  * nothing to do about it here either, because the next `dress` will make one.
  */
 function paint(character: Model, player: Player): void {
+	// Scope: Outline.paint — one highlight per character, respawns included.
+	if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Outline.paint");
+	paintBody(character, player);
+	if (DEBUG_CONFIG.PROFILE) debug.profileend();
+}
+
+/**
+ * The body of {@link paint}, split off **only** so the scope above can wrap it.
+ *
+ * `paint` is a module-level function rather than a method, so there is nothing to rename but the function
+ * itself; the name `paintBody` is internal and the exported/called name is unchanged. `OutlineService`'s
+ * other paths (`applyOutline`, the breathing loop) are left alone: this is the one that a `CharacterAdded`
+ * fires, so it is the one that can be repeated in the same frame by a respawn, and the band is there to
+ * say whether that is where a hitch comes from.
+ */
+function paintBody(character: Model, player: Player): void {
 	const highlight = findOutline(character);
 	if (highlight === undefined) return;
 

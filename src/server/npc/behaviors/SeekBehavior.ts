@@ -601,7 +601,16 @@ export function createSeekBehavior(
 		// **The one line a sprint gets, on the edge and not per turn.** What ends it is already in the output —
 		// `WalkSpeedService` prints every recalculation with the contributions it was summed from — so a second
 		// line here would be that line said again in different words.
-		print(`[Rig] ${model.Name}: sprinting to a ball — ${string.format("%.0f", distance)} studs`);
+		//
+		// **Behind `VERBOSE_LOGS` since 2026-10-17, and this line and `seedWalk`'s were the two loudest in the
+		// server script.** A rig starts a new walk about every three seconds — best ball lost, next ball
+		// chased — and every one of those walks opened with this line and a `walk curving` line plus two
+		// `[Walk]` lines. Eight rigs made that a steady ten lines a second, and none of it was an error. The
+		// behaviour is identical either way: the sprint is still started, the watchdog is still armed, and the
+		// line was only ever a report of the edge.
+		if (DEBUG_CONFIG.VERBOSE_LOGS) {
+			print(`[Rig] ${model.Name}: sprinting to a ball — ${string.format("%.0f", distance)} studs`);
+		}
 	};
 
 	/**
@@ -669,11 +678,15 @@ export function createSeekBehavior(
 
 		const lateral = math.tan(math.rad(amplitude)) * distance;
 
-		print(
-			`[Rig] ${model.Name}: walk curving — amplitude ` +
-				`${string.format("%.1f", amplitude)}° ` +
-				`(${string.format("%.1f", lateral)} studs here), period ${string.format("%.1f", period)} s`,
-		);
+		// Gated with the sprint line above — see there for the measurement and the reason. The draw is not
+		// gated: `seek.curve` is written above this, so the walk still curves whatever the log is set to.
+		if (DEBUG_CONFIG.VERBOSE_LOGS) {
+			print(
+				`[Rig] ${model.Name}: walk curving — amplitude ` +
+					`${string.format("%.1f", amplitude)}° ` +
+					`(${string.format("%.1f", lateral)} studs here), period ${string.format("%.1f", period)} s`,
+			);
+		}
 	};
 
 	/**

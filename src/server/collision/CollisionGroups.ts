@@ -1,5 +1,6 @@
 import { CollectionService, PhysicsService, Players, Workspace } from "@rbxts/services";
 import { CHARACTER_BARRIER_TAG } from "shared/constants";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { DUCK_GROUP } from "shared/duck";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { NPC_TAG } from "../npc/Behavior";
@@ -527,6 +528,22 @@ export function setPracticePlayer(model: Model, practice: boolean): void {
  * that is not in the list.
  */
 export function applyBarrierGroups(): void {
+	// Scope: Collision.applyBarrierGroups — every round boundary, so it should be a spike, not a level.
+	if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Collision.applyBarrierGroups");
+	applyBarrierGroupsBody();
+	if (DEBUG_CONFIG.PROFILE) debug.profileend();
+}
+
+/**
+ * The body of {@link applyBarrierGroups}, split off **only** so the scope above can wrap it.
+ *
+ * **Why a second function rather than the pair written into the body.** The function's work is a walk of
+ * the midline walls with early exits per part; the split makes the scope's pairing structural instead of
+ * depending on there being no `return` between `begin` and `end`. The cost is one call per boundary —
+ * which is the point of measuring it here: this runs a handful of times a round, and if it is showing up
+ * in a recording at all it is because it is doing something it should not, not because it is called often.
+ */
+function applyBarrierGroupsBody(): void {
 	let assigned = 0;
 	let report = "";
 

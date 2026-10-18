@@ -1577,6 +1577,50 @@ else. Each is a subscriber to a fact the server already publishes, and each owns
 
 ---
 
+## 18. The MicroProfiler scopes, and what has *not* been measured
+
+**Nothing in this section is a finding. It is the instrument.** The lag complaint that opened this work
+("it never did before, so Studio is not the problem") was answered on 2026-10-17 with arithmetic rather
+than a recording, because a MicroProfiler run is a thing a person does on their own machine, not something
+a session can do for them. So the cost of the per-rig game loop is **still unknown**, and the decision
+that follows from it — which of the candidates to actually make cheaper — is **still open**. What changed
+is that the next recording will name it.
+
+- **One flag, off in the tree.** `DEBUG_CONFIG.PROFILE` (`shared/config/debug.config.ts`), `false`. Every
+  site is `if (DEBUG_CONFIG.PROFILE) debug.profilebegin(...)` / `debug.profileend()`; when it is off each
+  costs a table read and a branch, and nothing else. With it on, a recording is a *diagnostic* frame cost —
+  the labels are real work — so a recording's numbers must never be compared to the game's own.
+- **The scopes, and what each is asking.** `Npc.turn` (one rig's turn: gate-passed, yield-excluded) and
+  `Npc.publishAnimation` are the per-rig pair; `Npc.tick.<Behaviour>` is one band per behaviour
+  (`Catching`, `Throwing`, `Seeking`, `Pickup`, `Dodging`, `Respawn`, `WalkToJoinPad`) so the recording
+  says *which* per-rig mechanic is wide rather than "the NPC tick"; `Npc.detect.enemy` digs into the one
+  call that walks `CollectionService.GetTagged(NPC_TAG)` per rig per turn, which is the only O(rigs²)
+  shape in the server; `Npc.Respawn.clone` / `Npc.Respawn.onDied` split a respawn's one expensive statement
+  from the writes around it; `BallSpawner.tick` (once a second, walks every spawner part), `BallService.attach`
+  (four routes into a hand, per rig per turn) and `BallService.throw` (the release); `LobbyRig.rebalance`
+  (seat arithmetic, spawning included — that is the question being asked); `Outline.paint` (a respawn can
+  repeat it in one frame); `Collision.applyBarrierGroups` (a handful of times a round, so if it is ever
+  wide it is doing something wrong).
+- **Two rules every site obeys, and a reviewer should check rather than trust.** *No scope spans a yield* —
+  that is why `Npc.turn` closes before `task.wait(period)` and why `Npc.Respawn.onDied` opens *after* the
+  respawn delay. And *no scope has an early `return` between its pair* — where the natural region had one,
+  the body was split into a `…Body` method behind a one-statement wrapper (`detectEnemyBody`,
+  `tickBody`, `rebalanceBody`, `attachToHandBody`, `throwBallBody`, `paintBody`, `applyBarrierGroupsBody`,
+  `publishAnimationBody`), so the pairing is structural instead of remembered. **No `try`/`finally`
+  anywhere**: roblox-ts compiles one to an `xpcall`, which would change both the cost being measured and
+  how an error unwinds.
+- **How to record.** Flip `PROFILE` to `true`, publish, run: (A) a round in progress, 10 s of recording —
+  that is steady state; (B) a recording started ~2 s before a rig death *and* a round boundary — that is
+  the event path. **`MicroProfiler` on the server view only**: a client recording says nothing about a
+  server stall. Bring back the same recording twice — once as the HTML dump, once as the server's
+  `Steps Per Sec` — because the dump says *where* and the step rate says *whether it matters*.
+- **What is left to look at if none of it is wide.** Instance count across a full round (the leak check),
+  and the two things this pass deliberately did not instrument: the `BallService` settle loop and
+  `ThrowProbe` — the latter because it is off with `VERBOSE_LOGS` and the former because it is the one
+  loop already known to be periodic.
+
+---
+
 ## Appendix — the other documents, and how far to trust them
 
 | Document | What it is | State |

@@ -804,6 +804,28 @@ export class BallService implements OnStart {
 	 * do — the *holding*.
 	 */
 	private attachToHand(model: Model, ball: BasePart): boolean {
+		// Scope: BallService.attach — every route a ball takes into a hand, four of them per rig per turn.
+		if (DEBUG_CONFIG.PROFILE) debug.profilebegin("BallService.attach");
+		const attached = this.attachToHandBody(model, ball);
+		if (DEBUG_CONFIG.PROFILE) debug.profileend();
+		return attached;
+	}
+
+	/**
+	 * The body of {@link attachToHand}, split off **only** so the scope above can wrap it.
+	 *
+	 * **Why a second method rather than the pair written into the body.** The body returns `false` from a
+	 * missing hand and a held ball's replacement, and `true` at the end; a `profileend` written at the last
+	 * statement would be skipped on the first of those, leaving an open band. The split makes the pairing
+	 * structural — one statement between `begin` and `end`, every exit a return into it — and the extra
+	 * frame is paid whether the flag is on or off, so the recording is not measuring a different call graph
+	 * from the one the game runs.
+	 *
+	 * **Nothing inside yields**, which is what makes the scope legal at all: there is no `task.wait`, no
+	 * `Humanoid` move and no `Sound:Play()` that waits inside either half. The only yield in this file is
+	 * the settle loop's `task.wait`, four hundred lines past the end of this method.
+	 */
+	private attachToHandBody(model: Model, ball: BasePart): boolean {
 		// The same hand the ball was placed at, asked of the factory rather than looked up again
 		// here: one rig-type rule, in one file, for both the placing and the welding.
 		const hand = this.factory.getRightHand(model);
@@ -1125,6 +1147,31 @@ export class BallService implements OnStart {
 	 * ask while there is nothing to throw.
 	 */
 	public throwBall(model: Model, request: ThrowRequest, claimedLaunch?: Vector3): boolean {
+		// Scope: BallService.throw — the release itself, gates and trail arming included.
+		if (DEBUG_CONFIG.PROFILE) debug.profilebegin("BallService.throw");
+		const thrown = this.throwBallBody(model, request, claimedLaunch);
+		if (DEBUG_CONFIG.PROFILE) debug.profileend();
+		return thrown;
+	}
+
+	/**
+	 * The body of {@link throwBall}, split off **only** so the scope above can wrap it.
+	 *
+	 * **Why a second method rather than the pair written into the body.** Three `return false` gates sit
+	 * between the top of the original and any work at all — frozen, ducking, empty hand — so a `profileend`
+	 * at the bottom would be reached only by a throw that actually happened, and every refused throw would
+	 * leave the MicroProfiler holding an open band. The split makes the pairing structural instead of a
+	 * thing to remember, and this is the method most likely to grow a fourth gate later.
+	 *
+	 * **The scope covers the whole release**, including `task.delay` for the throw mark and the trail arming
+	 * — `task.delay` schedules and returns, so nothing here yields and the `profileend` is always reached in
+	 * the same resumption. The only `task.wait` in this file is the settle loop's, far below this method.
+	 *
+	 * **`trajectory` work is not included**: nothing in this method computes an arc. A rig's aim is
+	 * `SeekBehavior`'s and its launch point is `ThrowBehavior`'s, which is why a recording that shows a wide
+	 * `BallService.throw` is pointing at the release rather than at the aiming.
+	 */
+	private throwBallBody(model: Model, request: ThrowRequest, claimedLaunch?: Vector3): boolean {
 		// **A frozen body does not throw, and the gate is here rather than on the remote.** `throwBall` is
 		// the only thing in the game that throws — a player's click and a rig's behavior both arrive here,
 		// which is `ActionService`'s own note about where a throw gate belongs — so a check in the remote
@@ -1279,7 +1326,23 @@ export class BallService implements OnStart {
 				? `charged ${string.format("%.2f", request.charge)}${request.curve ? " bend" : ""}`
 				: `${request.arc}`;
 
-		if (DEBUG) {
+		// **Gated on the config as well as on this file's own `DEBUG`, and that is the fix for the log volume
+		// measured on 2026-10-17.** `const DEBUG = true` above is a build-time switch for the *lifecycle* lines
+		// — who threw, who caught, what ended on a part — and those are the ones worth having on. This block is
+		// not one of them: it is a per-throw measurement of eight `string.format`s, `describeThrow` and
+		// `describeMuzzle`, and `describeMuzzle` walks the model to find the torso and head. With eight rigs
+		// throwing, that is two or three of these a second, forever, and `VERBOSE_LOGS: false` did not touch a
+		// single one of them because this file never read the flag.
+		//
+		// **What is kept, because it is not diagnostic.** Everything outside this block runs regardless — the
+		// collision ignore, the trail, the armed token, the network owner — so silencing the line changes what
+		// the log says and nothing about what the throw does.
+		//
+		// **The `at N fps` number goes with it, which is a real loss and is noted rather than hidden:** it is
+		// `Workspace:GetRealPhysicsFPS()`, the server's actual physics-step rate, and the 2026-10-17 log caught
+		// the server at 29–46 of them during a rig-heavy stretch. Turning it back on for one run is how the next
+		// frame-time reading is taken — see `DEBUG_CONFIG.PROFILE` beside this flag in `debug.config.ts`.
+		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
 			// Both halves of the correction, and only the second one is ever zero for a reason: a
 			// straight throw's line has no pull in it, so its log line is the one it always was.
 			const curvePull = new Vector3(correction.X, 0, correction.Z).Magnitude;

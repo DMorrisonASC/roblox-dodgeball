@@ -2,6 +2,7 @@ import { OnStart, Service } from "@flamework/core";
 import { Players, RunService } from "@rbxts/services";
 import { DODGE_DIRECTION_ATTRIBUTE, DUCKING_ATTRIBUTE, STAMINA_ATTRIBUTE } from "shared/constants";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { events } from "shared/networking";
 import type { CatchState } from "../actions/DodgeService";
 
@@ -426,7 +427,13 @@ export class WalkSpeedService implements OnStart {
         // move: `0 ()` is an entry with nothing in it, which is a bug here, and `0 (Base:20)` would
         // mean the base itself had been set to nothing. Rebuilding the string rather than logging the
         // map because an attribute-shaped table prints as a pointer, which is no use in a log.
-        if (DEBUG) {
+        // **Gated on the config as well as on this file's own `DEBUG`.** The doc above calls this "a handful
+        // of lines a round"; a live log on 2026-10-17 had it firing roughly twice per rig per walk, because
+        // every walk starts and ends a sprint and every sprint is two writes to the map. Eight rigs cycling a
+        // walk every three seconds made this one of the three loudest lines in the server script. Nothing
+        // below is skipped when it is off — the write to `humanoid.WalkSpeed` is above it, which is the whole
+        // reason this is a print guard and not an early return.
+        if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
             const parts: string[] = [];
             entry.forEach((value, key) => parts.push(`${key}:${value}`));
 

@@ -2730,6 +2730,22 @@ export class RoundService implements OnStart {
             // which exists for the vote window alone.
             let elapsed = 0;
 
+            // **The intermission is now measured against a clock rather than counted in iterations, and
+            // this is the fix for "why was the first one longer than the second".** The old line was
+            // `task.wait(1); this.timeRemaining--`, which reads as one second per tick and is not one:
+            // `task.wait(1)` resumes on the first frame *after* a second, so every tick is a little over a
+            // second and sixteen of them are a little over sixteen. On a busy server "a little" is a lot.
+            // Measured in a live log on 2026-10-17: `Intermission started` at 21:09:42.571 and
+            // `starting on its own` at 21:10:03.355 — **20.8 seconds for a 16-second intermission**, which
+            // is the same class of fault as the settle window this loop used to have and reads to a player
+            // as exactly the same thing: the number on the HUD is not the time they are waiting.
+            //
+            // **So the number is derived from time that actually passed.** `os.clock()` is monotonic and
+            // unaffected by the loop's own lateness, which means a slow tick no longer costs an
+            // intermission anything — it just gets counted in the next read. The `++`/`--` pair is gone;
+            // the loop turns once a second, which is the *resolution* of the display, not the clock.
+            let clockStarted = os.clock();
+
             while (this.pendingMatch === undefined) {
                 // A paused tick does nothing at all: no second off the clock, no change of
                 // state, no teleport. The phase resumes from whatever the clock said when it
@@ -2744,7 +2760,15 @@ export class RoundService implements OnStart {
                 // the expiry below does that job honestly instead: an empty server counts down, fails to
                 // start, and goes round again with the HUD still moving.
                 if (this.isRoundsPaused()) {
+                    // **A pause does not eat the clock, and with a wall clock that has to be said out loud.**
+                    // The old count-then-`continue` version was immune by accident: a held tick simply never
+                    // decremented. A `os.clock()` reading keeps advancing while the loop is parked, so the
+                    // origin is shifted forward by however long the hold lasted — the intermission resumes
+                    // from the second it was stopped at, which is what "paused" has to mean if it is not to
+                    // secretly mean "skipped ahead".
+                    const pausedAt = os.clock();
                     task.wait(1);
+                    clockStarted += os.clock() - pausedAt;
                     continue;
                 }
 
@@ -2759,8 +2783,11 @@ export class RoundService implements OnStart {
                 if (VOTE_ENABLED && elapsed === 0) this.votes.openVote();
 
                 task.wait(1);
-                this.timeRemaining--;
                 elapsed++;
+                this.timeRemaining = math.max(
+                    0,
+                    ARENA_CONFIG.INTERMISSION_SECONDS - math.floor(os.clock() - clockStarted),
+                );
 
                 // **The expiry, and the whole of the start rule.** The clock ends an intermission; there is
                 // no second gate beside it and nothing to settle. Three readings of zero:
@@ -2778,6 +2805,10 @@ export class RoundService implements OnStart {
                     } else if (this.belowMinimum()) {
                         this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
                         elapsed = 0;
+                        // The wrap re-bases the clock as well, or the next intermission would be over the
+                        // instant it started — the origin is what "16 seconds" is measured from, and this is
+                        // the one branch that begins a fresh one without leaving the loop.
+                        clockStarted = os.clock();
                     } else {
                         this.timeRemaining = 0;
                     }
@@ -3087,6 +3118,15 @@ export class RoundService implements OnStart {
             // `Playing`. See `watchMidRoundJoins` for the whole argument, including why it is a poll.
             task.spawn(() => this.watchMidRoundJoins());
 
+            // **The round's clock is measured the same way the intermission's now is, and it is started
+            // *here* rather than where `timeRemaining` was set.** The two are different moments on purpose:
+            // the number is published at its full length before `transitionAround`, and the comment above is
+            // explicit that it does not move until that returns — so the origin belongs at the top of the
+            // loop, which is the first tick after the arena freeze lifts. Starting it a few lines higher
+            // would hand the round back the five seconds the hold costs, which is the exact fault the
+            // intermission's 20.8-for-16 measurement was.
+            let roundStarted = os.clock();
+
             while (this.timeRemaining > 0) {
                 // **The round may already be over**, decided from outside this loop: a player leaving
                 // can empty a side, and `PlayerRemoving` records that the moment it happens rather
@@ -3104,7 +3144,10 @@ export class RoundService implements OnStart {
                 }
 
                 task.wait(1);
-                this.timeRemaining--;
+                this.timeRemaining = math.max(
+                    0,
+                    ARENA_CONFIG.ROUND_SECONDS - math.floor(os.clock() - roundStarted),
+                );
                 this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
                 // Checked after the clock moves, so a round ends on the tick its last second

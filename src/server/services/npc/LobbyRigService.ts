@@ -10,6 +10,7 @@ import {
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
 import { ARENA_CONFIG } from "shared/config/arena.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import { findFolder } from "shared/find";
@@ -230,6 +231,36 @@ export class LobbyRigService implements OnStart {
 
 	/** The roster revision {@link seated} was taken at, so a tick that changed nothing costs one read. */
 	private revision = -1;
+
+	/**
+	 * **When the arena freeze ends, as a clock reading — `0` when no round is holding its rigs.**
+	 *
+	 * The rigs' half of the opening freeze is "do not hand them the six gameplay tags yet", because a rig has
+	 * no walk-speed sum to hold (see `RoundService.holdArenaEntry` for why the players' hold cannot be reused).
+	 * That rule is enforced in two places, and this is the second one: `spawnArenaRig` will not arm a rig while
+	 * this reading is in the future, so **a body created during the hold is held exactly like the bodies
+	 * already standing there** — whoever asked for it.
+	 *
+	 * **A deadline rather than a flag passed down from the fill, and that is the difference between fixing the
+	 * observed fault and fixing its instance.** The first version threaded a `holdGameplay` argument from
+	 * `refillAtRoundStart` through `rebalance` into the spawn, which covered the refill — the rig the log
+	 * caught fighting inside the freeze — and left the other two routes that can create a body during those
+	 * five seconds: the seat poll (`watchSeats`, every 0.25 s) and a player walking onto a pad. Both call
+	 * `rebalance` without any knowledge of the phase's timing, so the question is asked here instead, where
+	 * every route necessarily arrives.
+	 *
+	 * Read as `os.clock() < this.arenaArmedAt`, which gives the field three states and all three are used:
+	 * **`0` — no round is holding anything; `math.huge` — held, and when it ends is not written down yet**
+	 * (the whistle, before the fill knows the move has happened); and **a real reading — held until then**.
+	 * The middle state is what closes the cover window, which is a fifth of a second of round in which the
+	 * spawner has already stocked the arena and the players are still being moved.
+	 *
+	 * **Set on the Playing edge and refined by `refillAtRoundStart`'s fill, which runs at the move** — the
+	 * same instant the round measures its own hold from, so the two cannot drift apart the way two copied
+	 * durations would. Cleared by `setGameplayBehaviors`, which is the call that ends the hold either way it
+	 * ends: arming the rigs, or standing them down because the round ended inside its own freeze.
+	 */
+	private arenaArmedAt = 0;
 
 	/**
 	 * **The seats held for players who are present and hold no roster seat: the side, and nothing else.**
@@ -722,6 +753,28 @@ export class LobbyRigService implements OnStart {
 	 * the open, to repair a seat nothing had actually freed. See `syncSeats` for that fix.
 	 */
 	private rebalance(): void {
+		// Scope: LobbyRig.rebalance — the seat arithmetic for both sides, corpse retirement included.
+		if (DEBUG_CONFIG.PROFILE) debug.profilebegin("LobbyRig.rebalance");
+		this.rebalanceBody();
+		if (DEBUG_CONFIG.PROFILE) debug.profileend();
+	}
+
+	/**
+	 * The body of {@link rebalance}, split off **only** so the scope above can wrap it.
+	 *
+	 * **Why a second method rather than the pair written into the body.** The split costs one call and buys
+	 * the guarantee that the `profileend` is reached on every path — including any `return` added later by
+	 * someone who has no reason to know a scope was open above them. That matters more here than in most of
+	 * the instrumented sites, because this is the method whose seat arithmetic the whole lobby rests on: it is
+	 * called from a join, a leave, a round boundary and the corpse sweep, and a band left open in the middle
+	 * of it would misattribute whatever runs after it to this call.
+	 *
+	 * **The spawns this method makes are deliberately inside the scope**, even though they are the expensive
+	 * part (`spawnLobbyRig`/`spawnArenaRig` clone a rig into the world). That is the question being asked: if
+	 * `LobbyRig.rebalance` is wide in a recording, the next step is to look at whether the fill pass is
+	 * spawning rigs it should not, and a scope that excluded the spawn would hide exactly that.
+	 */
+	private rebalanceBody(): void {
 		const playing = this.phase() === PLAYING;
 
 		// **First, because a corpse nothing will rebuild is not a held seat — and both counts below are read
@@ -1144,6 +1197,15 @@ export class LobbyRigService implements OnStart {
 			// The order is the one thing worth stating: the behaviours come off *first*, so no rig is being
 			// handed a fresh seat and a fresh target in the same breath as being told the round is over.
 			if (state === PLAYING) {
+				// **Held from this edge, not from the fill, and with no end written down yet.** The freeze runs
+				// from the *move* and the move is a cover away, so the only honest reading at the whistle is
+				// "held, and the fill will say until when" — `math.huge` is that, and it closes the cover
+				// window as well: a seat filled between the whistle and the move must not produce a rig that
+				// picks up a ball the spawner has already put out and throws it while the players are still
+				// being moved. Writing the end here instead would mean adding the two durations up in a second
+				// place, which is the drift this file keeps refusing to allow.
+				this.arenaArmedAt = math.huge;
+
 				// **The walkers first, on this edge rather than behind the cover**, because the point is to stop
 				// them walking before anybody can see them do it: a rig put on a side here is moved by the
 				// round's own teleport a cover's length later, and one left walking would keep crossing the
@@ -1315,6 +1377,13 @@ export class LobbyRigService implements OnStart {
 		// would have them arrive in the arena and then be counted as held seats by the refill — the same
 		// arithmetic either way, but this order means each step sees the world as the next one will.
 		const fill = (): void => {
+			// **And the hold gets its end here, because this is the move.** The fill is scheduled to land at the
+			// far end of the transition cover, and the round measures its freeze from that same move — so a
+			// reading taken on the first line of the fill is that instant, and `rebalance` below reads it rather
+			// than being told. Until now it has been `math.huge` (held, end unknown), which is what the Playing
+			// edge wrote; from here it is a number, and every body any caller creates before it lifts is held.
+			this.arenaArmedAt = os.clock() + ARENA_CONFIG.ARENA_FREEZE_SECONDS;
+
 			this.releasePendingSeats();
 			this.rebalance();
 			this.moveWalkersToArena();
@@ -1334,7 +1403,18 @@ export class LobbyRigService implements OnStart {
 		const startPlaying = (): void => {
 			fill();
 
-			task.delay(ARENA_CONFIG.ARENA_FREEZE_SECONDS, () => this.setGameplayBehaviors(true));
+			// **The phase is re-asked when the delay fires, and that guard is not defensive.** A round can end
+			// inside its own freeze — a side emptying, a dev stopping it — and this timer is already in
+			// flight when it does; `setGameplayBehaviors(false)` has run on the intermission edge by then, and
+			// without this line the timer would arm six behaviours on a lobby full of rigs five seconds later.
+			// The clock reading above would not save it: `standing down` clears `arenaArmedAt`, so the rigs
+			// would be *held* rather than armed, but a lobby rig wearing `Behavior_Seeking` is a rig walking
+			// around the lobby chasing balls, which is the fault either way.
+			task.delay(ARENA_CONFIG.ARENA_FREEZE_SECONDS, () => {
+				if (this.phase() !== PLAYING) return;
+
+				this.setGameplayBehaviors(true);
+			});
 		};
 
 		if (!TRANSITION_CONFIG.ENABLED) {
@@ -1670,13 +1750,22 @@ export class LobbyRigService implements OnStart {
 	 * wears a side *and* a walk, which the start delay turned from rare into ordinary.
 	 */
 	private setGameplayBehaviors(on: boolean): void {
+		// **The hold ends with the tags, whichever way this call goes.** Arming is the ordinary end; standing
+		// down is the other one, for a round that ended inside its own freeze — and clearing it here is what
+		// makes `arenaArmedAt` a fact about the round rather than a timer somebody has to remember to disarm.
+		// Cleared *before* the loop, so no spawn in the same frame can read a hold that has already ended.
+		this.arenaArmedAt = 0;
+
 		for (const { rig } of rigsOnASide()) {
 			let touched = false;
 
 			for (const tag of GAMEPLAY_BEHAVIORS) {
-				// Already in the state being asked for, which is the ordinary case for a rig the refill
-				// spawned a moment ago: it was tagged at spawn, and this pass is what catches the rigs that
-				// were already standing there.
+				// Already in the state being asked for. **That is the ordinary case for a rig the refill
+				// spawned *mid-round***, which was tagged at spawn and is already fighting — and it is
+				// emphatically not the case for one the round-start fill spawned, which is deliberately left
+				// untagged so that this pass is what arms it. That asymmetry is the whole point of
+				// `spawnArenaRig`'s `holdGameplay`: a body created inside the arena freeze must not act, and a
+				// body created twenty seconds into a round must.
 				if (rig.HasTag(tag) === on) continue;
 
 				if (on) rig.AddTag(tag);
@@ -1985,7 +2074,28 @@ export class LobbyRigService implements OnStart {
 		// than one that is about to be handed something to do. Applying them here rather than leaving them
 		// to {@link setGameplayBehaviors} is what makes a *mid-round replacement* fight — that pass runs on
 		// a phase edge, and this rig arrives between two of them.
-		const rig = this.npcs.spawn(draw.template, part.CFrame.add(new Vector3(0, 3, 0)), GAMEPLAY_BEHAVIORS);
+		//
+		// **`holdGameplay` is asked here rather than taken from the caller, and that is the whole of the fix.**
+		// A rig spawned *mid-round* has to act on its first turn. A rig spawned while the arena freeze is
+		// running does not: that fill runs at the far end of the transition cover — `TRANSITION_COVER_SECONDS`
+		// (0.86 s) after the whistle — while the players are held for `ARENA_FREEZE_SECONDS` (5) *from the
+		// move*, so everything the fill creates lands about four seconds inside a hold the rest of the field is
+		// obeying. The log it came from, 2026-10-17: the refill rig wore six behaviours at 36.64, picked a ball
+		// up at 38.72, threw at 39.40 and killed `FrostByte99` at 40.03 — 1.6 s before `arena freeze lifted` at
+		// 41.62. **The freeze's rig half is "do not hand them the tags yet"** (see `RoundService.holdArenaEntry`
+		// for why it is not a speed hold), so a rig tagged at spawn is a rig the freeze never reaches.
+		//
+		// **Asking the clock here rather than in `rebalance` is what makes it cover every route into this
+		// method**: the round-start fill, the seat poll, a player walking onto a pad mid-round
+		// (`reserveSeat`), and `spawnLobbyRig`'s delegation — four callers, one of which knows the round has
+		// just started and three of which cannot. A flag threaded from the fill to here fixed the caller that
+		// was in the log and left the other three. Held tags go on at the freeze's lift, in
+		// {@link setGameplayBehaviors}, which is the same call the rigs already standing on the field wait for;
+		// `NPC` and `Behavior_Respawn` still go on now — see `armRespawning`, which runs at the fill precisely
+		// so a body killed inside the freeze can be rebuilt.
+		const holdGameplay = os.clock() < this.arenaArmedAt;
+		const tags = holdGameplay ? [] : GAMEPLAY_BEHAVIORS;
+		const rig = this.npcs.spawn(draw.template, part.CFrame.add(new Vector3(0, 3, 0)), tags);
 
 		this.nameRig(rig, draw.name, draw.template);
 		rig.SetAttribute(TEAM_ATTRIBUTE, side);
@@ -1997,7 +2107,15 @@ export class LobbyRigService implements OnStart {
 		// **And the model the body came from, folded into the same line rather than given one of its own.**
 		// This sentence exists to say the thing a reader cannot see; a separate line for the source would be
 		// a second line for one event, and the two facts are read together anyway.
-		print(`[Rig] ${draw.name}: from "${draw.template.Name}" — six behaviours on (${side}, arena spawn)`);
+		//
+		// **The held case says "held", because "six behaviours on" would be a lie about a rig that is standing
+		// there inert.** It is also the line that tells a reader the freeze is working: a rig named here as
+		// held should print `playing — six behaviours on` from `setGameplayBehaviors` when the hold lifts.
+		print(
+			holdGameplay
+				? `[Rig] ${draw.name}: from "${draw.template.Name}" — held for the arena freeze (${side}, arena spawn)`
+				: `[Rig] ${draw.name}: from "${draw.template.Name}" — six behaviours on (${side}, arena spawn)`,
+		);
 
 		return rig;
 	}

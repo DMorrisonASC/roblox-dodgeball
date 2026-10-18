@@ -9,6 +9,7 @@ import {
 	THROWER_TOKEN,
 } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { COSMETICS } from "shared/config/economy.config";
 import { EQUIPPED_TRAIL_ATTRIBUTE } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
@@ -595,6 +596,18 @@ export class NpcService implements OnStart {
 		/** Behaviors that have had their `prepare`, so it happens once and not per tick. */
 		const prepared = new Set<string>();
 
+		// **The MicroProfiler labels for this rig's behaviours, built once per loop rather than per turn.**
+		// A turn is 10 a second per rig, so a label built inside the dispatch below would be an allocation
+		// on the very path it is measuring. `behavior.tag` is the behaviour's own identity, and dropping
+		// its nine-character prefix is what turns `Behavior_Seeking` into a band called `Npc.tick.Seeking`
+		// — a recording read without a legend. `string.sub` rather than `.replace`, which roblox-ts's
+		// string shim does not provide; the prefix is fixed width, so a slice is exact where a pattern is
+		// not. See `DEBUG_CONFIG.PROFILE`, which decides whether any of it is emitted.
+		const profileScopes = new Map<string, string>();
+		for (const behavior of this.behaviors) {
+			profileScopes.set(behavior.tag, `Npc.tick.${string.sub(behavior.tag, 10)}`);
+		}
+
 		while (!loop.stopped && model.HasTag(NPC_TAG) && model.Parent !== undefined && humanoid.Health > 0) {
 			// **A rig that is not in the world does nothing, and this is the first of the two gates every
 			// behavior passes through.** The tag says a model is an NPC; it does not say the model is
@@ -663,6 +676,21 @@ export class NpcService implements OnStart {
 				continue;
 			}
 
+			// **Scope: `Npc.turn` — one rig's work for one turn.** It opens after the two gates above, because
+			// both of them `continue` to the `task.wait` and a scope that skipped its own end would unbalance
+			// the MicroProfiler's stack; and it closes before the `task.wait` at the bottom of this block,
+			// because **a scope must never span a yield** — the wait is not work, and including it would
+			// report the rig's idle period as frame cost. What is inside is every behaviour that is actually
+			// due this turn, which is the part that scales with how many rigs are playing.
+			//
+			// **`publishAnimation` is deliberately outside it, and that is worth knowing before reading a
+			// recording.** It is called above, before the frozen gate, because a rig's published animation
+			// state has to be true whether or not its behaviors are allowed to run — so it is not a part of
+			// "the turn" and folding it in here would make the two bands disagree for frozen rigs. It has a
+			// band of its own (`Npc.publishAnimation`) for that reason, and **`Npc.turn` + `Npc.publishAnimation`
+			// is the per-rig cost** rather than `Npc.turn` alone.
+			if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Npc.turn");
+
 			for (const behavior of this.behaviors) {
 				// Untagged: this behavior is not on for this model, so it is skipped
 				// without ever being run.
@@ -682,8 +710,19 @@ export class NpcService implements OnStart {
 				if (now - (lastRan.get(behavior.tag) ?? 0) < behavior.tickInterval) continue;
 
 				lastRan.set(behavior.tag, now);
+
+				// **Scope: one band per behaviour**, so the recording says *which* per-rig mechanic is wide
+				// rather than blaming "the NPC tick" wholesale. The pair is written around a single statement
+				// with nothing between it that can return or yield, which is what makes it safe to leave
+				// un-nested: `try`/`finally` would compile to an `xpcall` here and change both the frame cost
+				// and how an error inside a behaviour unwinds, which instrumentation is not allowed to do.
+				const scope = profileScopes.get(behavior.tag);
+				if (scope !== undefined && DEBUG_CONFIG.PROFILE) debug.profilebegin(scope);
 				behavior.tick(model, humanoid);
+				if (scope !== undefined && DEBUG_CONFIG.PROFILE) debug.profileend();
 			}
+
+			if (DEBUG_CONFIG.PROFILE) debug.profileend();
 
 			task.wait(period);
 		}
@@ -763,6 +802,24 @@ export class NpcService implements OnStart {
 	 * rig that cannot be owned says so once at setup and not every few seconds.
 	 */
 	private publishAnimation(model: Model, humanoid: Humanoid, frozen: boolean, loop: NpcLoop, now: number): void {
+		// Scope: Npc.publishAnimation — five attribute reads per rig per turn, and the writes they guard.
+		if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Npc.publishAnimation");
+		this.publishAnimationBody(model, humanoid, frozen, loop, now);
+		if (DEBUG_CONFIG.PROFILE) debug.profileend();
+	}
+
+	/**
+	 * The body of {@link publishAnimation}, split off **only** so the scope above can wrap it.
+	 *
+	 * **Why a second method rather than the pair written into the body.** `publishAnimation` returns early —
+	 * `if (now - loop.ownershipCheckedAt < ...) return;` — and a `profileend` written after the last
+	 * statement of a function with an early `return` in front of it is a scope that never closes on the
+	 * ordinary path. The split makes the pairing provable instead of argued: the wrapper has exactly one
+	 * statement between its `begin` and its `end`, and every exit from the body is a return into the
+	 * wrapper, which then closes the scope. Nothing else moved — this is the same code, one stack frame
+	 * deeper, and the frame costs a call whether the flag is on or off.
+	 */
+	private publishAnimationBody(model: Model, humanoid: Humanoid, frozen: boolean, loop: NpcLoop, now: number): void {
 		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED);
 		this.writeAttribute(model, NPC_ANIM_SPRINTING_ATTRIBUTE, this.speeds.isSprinting(model));
 		this.writeAttribute(model, NPC_ANIM_GROUNDED_ATTRIBUTE, humanoid.FloorMaterial !== Enum.Material.Air);
