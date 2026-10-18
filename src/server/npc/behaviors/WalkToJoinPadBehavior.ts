@@ -34,6 +34,14 @@ import { sideWithRoom } from "../rigs";
  * is a *point* rather than a reference, so a pad dragged in Studio while a rig is walking to it leaves
  * that rig walking to where the pad used to be. This is a boot-time trip across a lobby, so that is a
  * price paid once rather than a rule that has to be defended.
+ *
+ * **A point drawn *on* the pad rather than the pad's centre** — `LobbyRigService.padArrivalPoint` picks it
+ * inside the pad's own footprint, so a side's rigs fan out across the sign instead of all walking to one
+ * coordinate and standing in a stack on it. **Nothing here needs to know that**: this file walks to whatever
+ * point it is handed and the arrival radius is the whole of what says how close is close enough, which is the
+ * same division of labour the paragraph above is about — the lobby knows where a pad is, this file knows how
+ * to walk. The inset the draw uses is deliberately the arrival radius, so a point near the pad's edge still
+ * leaves a rig that comes to rest *on* the sign; see `PAD_EDGE_MARGIN`.
  */
 export const WALK_TO_JOIN_PAD_ATTRIBUTE = "WalkToJoinPad";
 
@@ -954,8 +962,15 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 
 			// **Flat, and it is the arrival test rather than the walk.** A pad is a place on the floor,
 			// so the question is "am I over it" rather than "am I at its height" — a rig standing on the
-			// pad is a couple of studs below the point in the middle of it, and a three-dimensional
-			// distance would have a rig walking at a pad it is already standing on for ever.
+			// pad is a dozen studs below the point the walk was handed, which sits at the sign's own centre,
+			// and a three-dimensional distance would have a rig walking at a pad it is already standing on
+			// for ever.
+			//
+			// **And the point is drawn somewhere *on* the pad rather than at its centre**, so this radius is
+			// now also what says how exactly a rig comes to rest: each rig stops within it of its own draw,
+			// which is what lets four of them stand side by side on one sign instead of in a stack on one
+			// coordinate. See `LobbyRigService.padArrivalPoint`, whose inset is this same radius precisely so
+			// that a point near the pad's edge cannot have a rig settle beside the sign rather than on it.
 			const offset = new Vector3(target.X - root.Position.X, 0, target.Z - root.Position.Z);
 
 			if (offset.Magnitude <= NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS) {

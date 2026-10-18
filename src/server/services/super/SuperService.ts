@@ -124,6 +124,26 @@ export class SuperService implements OnStart {
 	private readonly streaks = new Map<Player | Model, number>();
 
 	/**
+	 * **When each body last moved its own count, as a ticket off a counter rather than a clock.**
+	 *
+	 * It exists for one question and is read in one place: a tie at the top of a side has to be broken, and
+	 * the tie is broken by *who got there last*. See {@link refreshCrowns} for the rule and for why a tie is
+	 * no longer shared.
+	 *
+	 * **A monotonic integer and not `os.clock()`.** Two hits in the same frame — a MultiBall throw landing on
+	 * two bodies, which is an ordinary thing here — read the same clock, so a clock would leave the tie it is
+	 * supposed to break unbroken and make the answer depend on the order two entries happened to be assigned
+	 * in. A counter cannot tie with itself.
+	 *
+	 * **Deleted whenever the count goes back to nought**, by the same argument `streaks` is zeroed: a ticket
+	 * describing a run that no longer exists is a number that could only be read by a bug.
+	 */
+	private readonly recentHits = new Map<Player | Model, number>();
+
+	/** The ticket the next hit takes. Read and written only by {@link noteHit}. */
+	private hitSequence = 0;
+
+	/**
 	 * Who is holding a charge.
 	 *
 	 * A `Set` rather than a count, because the rule is "only one charge at a time": the question is
@@ -182,6 +202,7 @@ export class SuperService implements OnStart {
 		// deliberately not carried across a rejoin — it is earned in a session and spent in one.
 		Players.PlayerRemoving.Connect((player) => {
 			this.streaks.delete(player);
+			this.recentHits.delete(player);
 			this.charged.delete(player);
 
 			// **The window goes with them, and nothing is left scheduled for it.** The deletion is all of it:
@@ -211,8 +232,8 @@ export class SuperService implements OnStart {
 
 		if (DEBUG) {
 			print(
-				`[Super] up — crowning at ${SUPER_CONFIG.CROWN_STREAK_THRESHOLD} hits,` +
-					` and the most on a side; nothing grants a charge but the dev bypass`,
+				`[Super] up — crowning the leader of each side at ${SUPER_CONFIG.CROWN_STREAK_THRESHOLD}+ hits,` +
+					` a tie going to the newest; nothing grants a charge but the dev bypass`,
 			);
 		}
 	}
@@ -246,6 +267,12 @@ export class SuperService implements OnStart {
 		const streak = (this.streaks.get(thrower) ?? 0) + 1;
 
 		this.streaks.set(thrower, streak);
+
+		// **The ticket goes on before the crown is worked out**, because the crown reads it: this hit is what
+		// makes this body the newest arrival at whatever count it has just reached, so writing it after the
+		// refresh would decide a tie with the previous holder's number. See {@link recentHits}.
+		this.hitSequence += 1;
+		this.recentHits.set(thrower, this.hitSequence);
 
 		// A rig publishes no readout; a player's streak goes out with the rest of the HUD's state.
 		if (thrower.IsA("Player")) this.publish(thrower);
@@ -307,6 +334,11 @@ export class SuperService implements OnStart {
 			// applies before its own line — so a rig that died with nothing to clear stays silent, and a
 			// rig whose run actually ends says so in the same words a player's does.
 			const had = this.streaks.delete(owner);
+
+			// And its ticket, on the same argument as `resetStreak`'s — a rig's row cannot be zeroed, so
+			// everything keyed on it goes.
+			this.recentHits.delete(owner);
+
 			if (DEBUG && had) print(`[Super] ${owner.Name}: streak reset — died`);
 		}
 
@@ -533,6 +565,13 @@ export class SuperService implements OnStart {
 		if ((this.streaks.get(player) ?? 0) === 0) return;
 
 		this.streaks.set(player, 0);
+
+		// **The ticket goes too, and this one matters more than the death's.** A run left over from one round
+		// could otherwise out-ticket an earlier hit of the next, so a body that has not hit anything since the
+		// round opened would win a tie it should have lost — the ticket is only meaningful inside the run it
+		// was written for.
+		this.recentHits.delete(player);
+
 		this.publish(player);
 
 		if (DEBUG) print(`[Super] ${player.Name}: streak cleared for the new round`);
@@ -761,19 +800,29 @@ export class SuperService implements OnStart {
 	/**
 	 * Recomputes who wears the crown, and writes {@link CROWN_ATTRIBUTE} on every body.
 	 *
-	 * **The rule, as one condition now.** A body is crowned if its count is at least
-	 * `CROWN_STREAK_THRESHOLD` **and** equals the highest count on its side. The two halves are no longer
-	 * alternatives: a body with three hits on a side whose leader has five is not hot, and a body with one
-	 * hit is never hot, whatever its side is doing. **A tie at the top crowns both**, because the test is
-	 * `count === best` and a tiebreak would mean inventing a reason why one of two equal bodies is the hot
-	 * one. The floor of the threshold is what says a side where nobody has reached three crowns nobody,
+	 * **The rule.** A body wears the crown if it is **its side's leader** and its count is at least
+	 * `CROWN_STREAK_THRESHOLD`. The floor is what says a side where nobody has reached three crowns nobody,
 	 * rather than crowning whoever happens to be sitting at nought.
 	 *
-	 * **The crown is live, not an award.** It is recomputed on every hit and every death, so the body that
-	 * was the best stops wearing it the moment another body passes them, and a body that drops below three
-	 * — through the death reset — has the crown come off with the count.
+	 * **A tie is broken by recency, so one side has one crowned body.** This used to say `count === best` and
+	 * crown both, on the argument that a tiebreak would be inventing a reason why one of two equal bodies is
+	 * the hot one. That argument was wrong about what the crown is for: **it is a single thing a viewer reads
+	 * to know who is winning the side**, and two crowns on one side read as a broken indicator rather than as
+	 * a tie — the user's report of exactly that is what changed the rule. A tie still *breaks* on nothing the
+	 * players did differently, but it has to break, so it breaks on the one fact a scoreboard already has an
+	 * order for: **who got there last**. That is also the moment worth marking — a body that has just passed
+	 * or caught up is the one with something to show for it, and the body it just tied with has been sitting
+	 * there.
 	 *
-	 * **Computed here rather than in the client, because "the highest on their side" is not a question one
+	 * **"Last" is a ticket, not a clock.** The order comes from {@link recentHits}, which {@link noteHit}
+	 * stamps with a counter — see that field for why `os.clock()` would not do: two bodies hit in one frame by
+	 * an ordinary MultiBall throw read the same time, and the tie would come back.
+	 *
+	 * **The crown is live, not an award.** It is recomputed on every hit and every death, so the body that
+	 * was the best stops wearing it the moment another body passes them *or ties them and is newer*, and a
+	 * body that drops below three — through the death reset — has the crown come off with the count.
+	 *
+	 * **Computed here rather than in the client, because "the leader of their side" is not a question one
 	 * client can answer.** It needs every body's count *and* every body's side at the same instant, and a
 	 * client would be reading a replica of two tables this file owns, a message behind — so two clients
 	 * could disagree about who is wearing a crown, and the body being crowned would be watching a third
@@ -790,29 +839,34 @@ export class SuperService implements OnStart {
 	 * being crowned, since a crown coming off is the ordinary case of a count coming off.
 	 */
 	public refreshCrowns(): void {
-		// **One pass to find each side's best, one to decide.** The two cannot be one pass: a body's
-		// answer depends on a maximum that may belong to somebody further down the list, so the whole
-		// comparison has to be finished before anybody is judged against it. Two walks — the players, then
-		// the rigs — because a side's best is the best of *both* kinds of body, and neither list knows the
-		// other.
-		const bests = new Map<string, number>();
+		// **One pass to find each side's leader, one to decide.** The two cannot be one pass: a body's answer
+		// depends on a leader that may be somebody further down the list, so the whole comparison has to be
+		// finished before anybody is judged against it. Two walks — the players, then the rigs — because a
+		// side's leader is the leader of *both* kinds of body, and neither list knows the other.
+		const leaders = new Map<string, CrownLeader>();
 
-		for (const player of Players.GetPlayers()) {
-			const team = teamOf(player);
-			bests.set(team, math.max(bests.get(team) ?? 0, this.streaks.get(player) ?? 0));
-		}
+		/** Folds one body into its side's leader. See {@link CrownLeader} for why the ticket is kept. */
+		const consider = (body: Player | Model, team: string): void => {
+			const count = this.streaks.get(body) ?? 0;
+			const at = this.recentHits.get(body) ?? 0;
+			const current = leaders.get(team);
 
-		for (const { rig, team } of rigsOnASide()) {
-			bests.set(team, math.max(bests.get(team) ?? 0, this.streaks.get(rig) ?? 0));
-		}
+			// **Higher count wins, then the newer ticket** — and a body that ties the leader but is older is
+			// simply not installed, which is the whole of "the crown stays where it was".
+			if (current !== undefined && (count < current.count || (count === current.count && at <= current.at))) {
+				return;
+			}
 
-		for (const player of Players.GetPlayers()) {
-			this.applyCrown(player, teamOf(player), bests);
-		}
+			leaders.set(team, { body: body, count: count, at: at });
+		};
 
-		for (const { rig, team } of rigsOnASide()) {
-			this.applyCrown(rig, team, bests);
-		}
+		for (const player of Players.GetPlayers()) consider(player, teamOf(player));
+
+		for (const { rig, team } of rigsOnASide()) consider(rig, team);
+
+		for (const player of Players.GetPlayers()) this.applyCrown(player, teamOf(player), leaders);
+
+		for (const { rig, team } of rigsOnASide()) this.applyCrown(rig, team, leaders);
 	}
 
 	/**
@@ -823,10 +877,17 @@ export class SuperService implements OnStart {
 	 * one kind of body and miss the other. The attribute is the same name on both — `CROWN_ATTRIBUTE` —
 	 * which is the whole of "a rig wears the crown the way a player does": the server writes one flag, the
 	 * client reads one flag, and neither asks what kind of body it is on.
+	 *
+	 * **Identity, not a count comparison, and that is what makes one crown per side.** Asking whether this
+	 * body *is* its side's leader is a question with exactly one true answer per side; asking whether its
+	 * count equals the best is the same question with no answer at all when two counts are equal, which is
+	 * the fault this replaced.
 	 */
-	private applyCrown(body: Player | Model, team: string, bests: ReadonlyMap<string, number>): void {
+	private applyCrown(body: Player | Model, team: string, leaders: ReadonlyMap<string, CrownLeader>): void {
+		const leader = leaders.get(team);
 		const count = this.streaks.get(body) ?? 0;
-		const crowned = count >= SUPER_CONFIG.CROWN_STREAK_THRESHOLD && count === (bests.get(team) ?? 0);
+		const crowned =
+			leader !== undefined && leader.body === body && leader.count >= SUPER_CONFIG.CROWN_STREAK_THRESHOLD;
 
 		if (body.GetAttribute(CROWN_ATTRIBUTE) === crowned) return;
 
@@ -842,6 +903,12 @@ export class SuperService implements OnStart {
 		if ((this.streaks.get(player) ?? 0) === 0) return;
 
 		this.streaks.set(player, 0);
+
+		// **The ticket goes with the run it described.** A body with nought hits cannot be a side's leader,
+		// so nothing reads this — which is exactly why it is cleared here rather than left to be ignored: a
+		// number that outlives its meaning is the kind that gets read by the next person who touches this.
+		this.recentHits.delete(player);
+
 		this.publish(player);
 
 		if (DEBUG) print(`[Super] ${player.Name}: streak reset — ${why}`);
@@ -954,4 +1021,25 @@ function teamOf(player: Player): string {
 	const team = player.GetAttribute(TEAM_ATTRIBUTE);
 
 	return typeIs(team, "string") ? team : "";
+}
+
+/**
+ * **One side's leader, as `refreshCrowns` found it** — the body and the two facts the crown is decided from.
+ *
+ * **The ticket is part of the leader rather than looked up again at the write**, and that is what makes the
+ * tie rule a comparison instead of a second lookup: `applyCrown` asks only whether *this body* is the leader,
+ * so the newer-of-two-equal answer has already been settled by the time anybody is judged. A lookup in
+ * `applyCrown` would be a second read of a map that a hit in between could have changed, which is exactly the
+ * class of fault the two-pass structure exists to avoid.
+ *
+ * **`count` is carried as well as the body** so the threshold is tested against the leader's count once rather
+ * than against each body's — the two are the same number for the leader, and reading it from here is what makes
+ * that true by construction rather than by two maps agreeing.
+ */
+interface CrownLeader {
+	readonly body: Player | Model;
+	readonly count: number;
+
+	/** The ticket of the hit that put this body here. See `SuperService.recentHits`. */
+	readonly at: number;
 }

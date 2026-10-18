@@ -2,8 +2,10 @@ import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
-import { AFTERIMAGE_WINDOW_ATTRIBUTE, CATCHING_ATTRIBUTE } from "shared/constants";
+import { throwAnimationWindowSeconds } from "shared/animation";
+import { AFTERIMAGE_WINDOW_ATTRIBUTE, CATCHING_ATTRIBUTE, THROW_ANIMATION_ATTRIBUTE } from "shared/constants";
 import { aiming, predictedLanding } from "../../aiming";
 import { isMobile } from "../../platform";
 
@@ -23,7 +25,8 @@ const DEBUG = true;
 const MIN_AIM_DISTANCE = 0.5;
 
 /**
- * **The body turns onto the aim while a throw is being charged, and turns back when it is not.**
+ * **The body turns onto the aim while a throw is being charged, keeps facing it through the throw's own
+ * animation, and turns back when that is done.**
  *
  * *"Face the player's body at the aim while they charge a throw."* This is the client half of a thing the
  * NPCs already do on the server — `ThrowBehavior.aimAt` — and it is deliberately **not** that code: a rig's
@@ -88,6 +91,32 @@ const MIN_AIM_DISTANCE = 0.5;
  * anywhere (`ThrowController.getThrowDirection` uses the camera, and `planChargedThrow` flattens that), so
  * turning the body changes what the player *sees* and nothing about where the ball goes.
  *
+ * ## The facing outlives the release
+ *
+ * **The body keeps facing where it threw until the throw's own animation is done**, which is the third reason
+ * this file holds a pose and the one that is about the *past* rather than the present. Without it the throw's
+ * follow-through plays on a body that has already turned away: `release` gives `AutoRotate` back, and the
+ * humanoid steers a walking player toward `MoveDirection` on the very next step — so the arm goes out of a
+ * shoulder pointing at the new heading while the ball has gone along the old one. **The window is
+ * `BALL_CONFIG.THROW_ANIMATION_SECONDS`**, the same number the server uses for the `THROW_ANIMATION_ATTRIBUTE`
+ * mark and for how long every client dresses a body with the throw clip, so the pose and the clip end together
+ * by construction rather than by two numbers agreeing.
+ *
+ * **It is opened by the charge's falling edge and extended by the server's mark**, which is not belt and braces
+ * but the fix for a one-frame hole: the charge ends on this client the instant the player lets go, while the
+ * mark is written on the server and arrives a frame or three later. Releasing on the falling edge and re-holding
+ * when the mark turned up would hand the body back to `AutoRotate` for exactly the frames the animation begins
+ * in. See {@link followThroughUntil} for the whole argument, including what a *cancelled* charge costs.
+ *
+ * **The direction held is the aim's, not the camera's**, which is the point: a player who releases and
+ * immediately swings the view is still finishing a throw at the old heading, and re-deriving the facing from the
+ * view would make the body turn into the next throw while the last one is being animated. Nothing recomputes it
+ * during the window — `lastDirection` is simply kept, and {@link release} is what clears it.
+ *
+ * **A rig does the same thing, from the other side of the wire.** `ThrowBehavior.holdAimThroughThrow` keeps its
+ * `AlignOrientation` up for the same window instead of taking it down at the release, so an NPC's follow-through
+ * and a player's are one rule applied to two bodies.
+ *
  * ## A catch is the same pose, from a second signal
  *
  * **A body waiting for a ball turns onto the camera exactly as a body aiming a throw turns onto the aim**, and
@@ -135,17 +164,51 @@ export class AimFacingController implements OnStart {
 	private wasHolding = false;
 
 	/**
-	 * **The direction the body was last being turned onto**, kept so the release can finish the turn itself.
+	 * **The direction the body was last being turned onto**, kept so the release can finish the turn itself *and*
+	 * so the throw's follow-through knows which way to keep facing.
 	 *
 	 * The constraint is a *pull* — `Responsiveness = 30` takes a few frames to arrive — so a throw released a
 	 * tenth of a second into the charge leaves a body that is still halfway round, and the ball goes out of a
 	 * shoulder pointing somewhere else. `release` reads this and writes the orientation directly, once, which
 	 * is the only way to guarantee the pose is right at the instant the ball leaves.
 	 *
+	 * **It also outlives the charge**, which is the whole of the follow-through: when the hold ends the body keeps
+	 * this direction until the throw's animation is done — see {@link followThroughUntil} — and nothing re-derives
+	 * it in that window, because a body that corrected its aim *after* releasing would be aiming a throw it has
+	 * already made.
+	 *
 	 * Cleared on every release, so it can never be applied to a later throw: it is the *last* frame's aim of
 	 * *this* hold, and a stale copy is the one thing worse than no copy.
 	 */
 	private lastDirection?: Vector3;
+
+	/**
+	 * **When the throw's follow-through ends**, as an `os.clock()` reading — the last moment the body keeps facing
+	 * the aim it threw along. Zero means there is no follow-through running.
+	 *
+	 * **A window rather than a flag, because the thing it is waiting for is a replicated attribute and a frame is
+	 * not a guarantee.** The charge ends on *this* client the instant the player lets go, while the body's
+	 * `THROW_ANIMATION_ATTRIBUTE` is written by the server on the throw it received and arrives a frame or three
+	 * later. So "the charge stopped" cannot be followed by "release, then hold again when the mark turns up": for
+	 * those frames the body would be handed back to `AutoRotate` mid-throw, which for a walking player is exactly
+	 * the snap this feature exists to prevent.
+	 *
+	 * **So the window opens on the charge's own falling edge** and is long enough to cover both the replication
+	 * delay and the animation itself, counting from the release. The attribute then *extends* nothing — it is a
+	 * second reason to hold, not a timer — and a throw whose mark arrives late simply keeps the hold alive past
+	 * the window rather than re-starting it.
+	 *
+	 * **The cost, named rather than discovered: a cancelled charge follows through too.** A drop, a death that
+	 * leaves the body standing, a round boundary — all of them end the charge, and none of them is a throw. What
+	 * that looks like is a body facing where the player was aiming for a fifth of a second after the ball never
+	 * left, which is a fifth of a second of a pose nobody is looking at, and the alternative is a per-frame
+	 * question this controller cannot answer honestly (nothing local distinguishes "released" from "cancelled";
+	 * only the server's mark does, and it is the thing that has not arrived yet).
+	 */
+	private followThroughUntil = 0;
+
+	/** Whether a charge was held on the last frame, so its falling edge can be detected. */
+	private wasAiming = false;
 
 	public onStart(): void {
 		// **`Heartbeat` rather than `RenderStepped`, and the order is the reason.** `ThrowController`
@@ -163,13 +226,16 @@ export class AimFacingController implements OnStart {
 		// one: "nothing happens" has two causes — never started, or started and found nothing to do — and
 		// this is the line that tells them apart. `[Facing]` rather than `[Aim]` so it sits beside
 		// `AimTargetController`'s line in the output and does not read as a duplicate of it.
-		if (DEBUG) print(`[Facing] up — the body turns onto the aim while a throw is charged`);
+		if (DEBUG) {
+			print(`[Facing] up — the body turns onto the aim while a throw is charged, and holds it to the end of the throw`);
+		}
 	}
 
 	/**
-	 * **The frame's pose decision, and it is now two questions rather than one:** is a throw being charged, and
-	 * is a catch window open. Both want the body held and neither wants it turned by the humanoid's own steering;
-	 * the only thing that differs is *which* direction the turn is onto, decided in {@link aimDirection}.
+	 * **The frame's pose decision, and it is now three questions rather than one:** is a throw being charged, is
+	 * a catch window open, and is a throw's own animation still running. All three want the body held and none of
+	 * them wants it turned by the humanoid's own steering; the only thing that differs is *which* direction the
+	 * turn is onto, decided in {@link aimDirection}.
 	 */
 	private step(): void {
 		const character = this.player.Character;
@@ -182,9 +248,34 @@ export class AimFacingController implements OnStart {
 		const aimingNow = Fusion.peek(aiming);
 		const catchingNow = character !== undefined && character.GetAttribute(CATCHING_ATTRIBUTE) === true;
 
-		// **Neither** reason to hold a pose: let go. A charge and a catch are the only two, and a release, a
-		// drop, a death, a round boundary and a window lapsing all arrive here as the same edge.
-		if (!aimingNow && !catchingNow) {
+		// **The server's own mark that a throw has left this body** — written by `BallService` for
+		// `BALL_CONFIG.THROW_ANIMATION_SECONDS`, for every body that throws rather than for rigs alone. It is what
+		// the follow-through below is really waiting for; see {@link followThroughUntil} for why it cannot be the
+		// only thing the window is built from.
+		const throwingNow = character !== undefined && character.GetAttribute(THROW_ANIMATION_ATTRIBUTE) === true;
+
+		// **The charge's falling edge opens the follow-through window.** It is the one edge that says "the ball
+		// has just left" on this client, and it arrives immediately — unlike the attribute above, which is a
+		// round trip behind it. The window is measured from here so the body is still held on the frames between
+		// the two. See {@link followThroughUntil} for the whole argument and for what a cancelled charge costs.
+		//
+		// **The length is `BallService`'s own expression for the mark's window**, `math.max` of the constant and
+		// the clip's length — a clip longer than `THROW_ANIMATION_SECONDS` extends the animation, and a hold that
+		// read only the constant would let the body go a fraction of a second before the arm finished moving.
+		if (!aimingNow && this.wasAiming) {
+			const window = math.max(BALL_CONFIG.THROW_ANIMATION_SECONDS, throwAnimationWindowSeconds());
+
+			this.followThroughUntil = os.clock() + window;
+		}
+
+		this.wasAiming = aimingNow;
+
+		const followingThrough = os.clock() < this.followThroughUntil;
+
+		// **No** reason to hold a pose: let go. A charge, a catch and a throw's follow-through are the only three,
+		// and a release that has run out of window, a death, a round boundary and a catch window lapsing all
+		// arrive here as the same edge.
+		if (!aimingNow && !catchingNow && !throwingNow && !followingThrough) {
 			this.release();
 			return;
 		}
@@ -240,7 +331,11 @@ export class AimFacingController implements OnStart {
 		if (!this.wasHolding) {
 			this.wasHolding = true;
 			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
-				print(`[Facing] ${character.Name}: turning onto the ${aimingNow ? "aim" : "catch"}`);
+				// **Three names for the three reasons, in the order they outrank each other**, so the log says
+				// which one opened the hold rather than only that one did.
+				const reason = aimingNow ? "aim" : catchingNow ? "catch" : "throw";
+
+				print(`[Facing] ${character.Name}: turning onto the ${reason}`);
 			}
 		}
 	}
@@ -251,18 +346,35 @@ export class AimFacingController implements OnStart {
 	 * **Flat and normalised before it leaves here**, and the flattening is the difference between a facing
 	 * and a lean: a point on the ground is at the body's own feet height, but the camera's forward is
 	 * unflattened and would tip the body into the floor by however much the player is looking down.
+	 *
+	 * **Three answers, in the order the reasons outrank each other**, which is the shape the hold itself has:
+	 * a charge aims, a catch watches, and a follow-through *remembers*.
 	 */
 	private aimDirection(root: BasePart, aimingNow: boolean, catchingNow: boolean): Vector3 | undefined {
 		const camera = Workspace.CurrentCamera;
 		if (!camera) return undefined;
 
-		// **A catch with no charge is the view, and it is asked first because it is the simpler question.** A
+		// **A catch with no charge is the view, and it is asked first because it is the newer intent.** A
 		// catching body has no arc to read — the hand is empty, so no throw is charged — and the ball it is
 		// waiting for may be anywhere, so the only honest direction is where the player is looking. That is the
 		// same answer the touch path below gives, for the same reason, on every platform. If a charge and a
 		// window are somehow both up for a frame — the press that opens a catch cancels a hold in the same
-		// breath — the charge wins, because it has a real aim point to use.
-		if (catchingNow && !aimingNow) return flatUnit(camera.CFrame.LookVector);
+		// breath — the charge wins, because it has a real aim point to use. **A follow-through loses to both**,
+		// for the same reason: it is the only one of the three that is about the past.
+		if (!aimingNow) {
+			if (catchingNow) return flatUnit(camera.CFrame.LookVector);
+
+			// **The follow-through: the direction the throw was aimed along, not where the player is looking
+			// now.** This is the whole of "keep facing that direction": the body holds the last aim the charge
+			// produced while the throw's animation plays, so the motion the player sees is the throw they made
+			// rather than the turn they started on the next one. Nothing re-derives it — a body that corrected
+			// its facing after releasing would be aiming a throw it has already thrown.
+			//
+			// **The camera is the fallback rather than the answer**, for the case where this controller never
+			// held the aim: a client that mounted, or a body replaced, in the middle of a throw's window. The
+			// view is the same guess `aimDirection` makes everywhere else when there is no better one.
+			return this.lastDirection ?? flatUnit(camera.CFrame.LookVector);
+		}
 
 		// **The touch path, first and unconditionally.** A phone has no cursor, so the aim point is whatever
 		// the arc solved for and the *view* is what the player is turning — `ThrowController` makes the same
@@ -362,6 +474,12 @@ export class AimFacingController implements OnStart {
 		}
 
 		this.lastDirection = undefined;
+
+		// **The follow-through ends when the pose does**, which is what makes the window self-closing rather than
+		// something a later frame has to remember to cancel. It matters on the paths that cut a hold short — a
+		// dodge, a death, a destroyed character — where the window would otherwise still be in the future on the
+		// next frame and would re-open a hold on a body that has just been handed back to its own steering.
+		this.followThroughUntil = 0;
 
 		if (this.balance !== undefined) {
 			this.balance.Destroy();

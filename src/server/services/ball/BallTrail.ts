@@ -134,6 +134,12 @@ const DEFAULT_CORE_COLORS: CoreColors = {
  * is where a throw's death is already resolved — worth doing when something else wants it, and until
  * then two more instances that can be left on are two more instances that can be left on.
  *
+ * **Something else wanted it, and that hook now exists** — `BallService.detachPierceEffect` is called
+ * from that branch for the authored Pierce trail. What that does *not* change is the refusal above: an
+ * emitter of this trail's own would still have to be destroyed at the end of a throw rather than merely
+ * disabled, because the ball lying on the floor is the same ball either way, and the ribbons' advantage
+ * — that a stationary one draws nothing — is not one an emitter has.
+ *
  * **Why it is a class at all.** The ribbons have to be turned on and off together, and the
  * caller wants to say that in one word — see {@link setArmed}. Everything else here is
  * construction.

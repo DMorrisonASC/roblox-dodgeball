@@ -1,8 +1,9 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, RunService, TweenService } from "@rbxts/services";
+import { Players, RunService, SoundService, TweenService } from "@rbxts/services";
 import { AbilityKind, isAbilityKind } from "shared/ability";
+import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { IMAGES_CONFIG } from "shared/config/images.config";
 import {
@@ -88,14 +89,21 @@ const ICON_SIZE = 56;
 const SLOT_TRANSPARENCY = 0.8;
 
 /**
- * How much the slot grows when a power is spent, and how long the settle takes. **Placeholder — 1.15 / 0.22.**
+ * How much the slot grows when a power arrives or is spent, and how long the settle takes.
+ * **Placeholder — 1.15 / 0.22.**
  *
- * **The pop is a result rather than an acknowledgement, and the number is sized by that.** It plays when a
- * power that was waiting goes away — the box's prize spent, or a dev's arm taken up by a ball — which is the
- * only moment this client can honestly say something *happened*; a press that is refused changes nothing and
- * pops nothing, which is the useful half of the same signal. `15%` is enough to read as a hit at arm's length
- * without the icon leaving its slot, and a fifth of a second is long enough to see and short enough that a
- * second press can follow it.
+ * **The pop is a result rather than an acknowledgement, and the number is sized by that.** It plays at the two
+ * moments this client can honestly say something *happened*: when the reel lands on a new prize — the arrival is
+ * the punchline of the shuffle, and without it the strip simply stops, which reads as the animation being cut
+ * off — and when a power that was waiting goes away (the box's prize spent, or a dev's arm taken up by a ball).
+ * A press that is refused changes nothing and pops nothing, which is the useful half of the same signal.
+ * `15%` is enough to read as a hit at arm's length without the icon leaving its slot, and a fifth of a second is
+ * long enough to see and short enough that a second press can follow it.
+ *
+ * **One number for both edges on purpose**: an arrival and a spend are the same fact about the slot — its
+ * picture changed because of something the player did — so they get the same size of acknowledgement. A louder
+ * arrival would be the slot claiming the pickup was more important than the use, which is the opposite of what
+ * the animation is for.
  *
  * **The snap is instant and the settle is the tween**, which is what makes it read as a pop rather than as a
  * grow: the scale is written to {@link POP_SCALE} in one property write and tweened back to `1` with a `Back`
@@ -120,35 +128,40 @@ const GLOW_THICKNESS = 3;
 const GLOW_TRANSPARENCY = 0.25;
 
 /**
- * How long the *reveal* runs after a mystery box is collected, in seconds. **Placeholder — 3.**
+ * **How long the shuffle runs when a box is collected, in seconds. Placeholder — 1.6.**
  *
- * **The tease has to be shorter than the attention it asks for.** This is not the length of anything the
- * game does — the prize is held until it is used — it is the length of the animation that says a box was
- * collected, and it is spent spinning the slot through every power in the game before settling on the one
- * that was granted. Long enough that the eye can follow the spin, short enough that a player who wanted the
- * power yesterday is not waiting for their own HUD: three seconds is about two breaths.
+ * **Shorter than the three seconds this spent flashing, and the *motion* is why the number could come down.** The
+ * old reveal stepped one icon every 0.15 seconds at a constant rate and then simply showed the answer: twenty
+ * sharp changes of a picture, and a reader had to count them to know something was happening. A reel that
+ * *decelerates* into its answer does not need twenty steps to be legible — the slowing is the signal, and by the
+ * time the eye has worked out that the picture is still moving, it is stopping. A third less time, and more of it
+ * is spent at the end where a player is actually watching.
  *
- * **Placeholder in the `SLOT_TRANSPARENCY` sense** — a tuned-by-looking number, not a value with an
- * argument behind it. What the number has to satisfy is that the spin reads as *deliberate* rather than as
- * a slot that has lost its image, and that is a question for a screen.
+ * **What the number has to satisfy is "long enough that the landing feels earned"**, and that is a question for a
+ * screen. Too short and the reel is a glitch; much longer inside a 56-pixel slot and it is a thing the player is
+ * waiting out, which is the trap the old constant was in.
  */
-const FLASH_SECONDS = 3;
+const SHUFFLE_SECONDS = 1.6;
 
 /**
- * How long each icon in the reveal is shown, in seconds. **Placeholder — 0.15.**
+ * **How many passes of the ability list the reel travels before it stops.**
  *
- * **Six or seven times a second, which is fast enough to read as a shuffle and slow enough to see.** At
- * `FLASH_SECONDS`/`FLASH_STEP_SECONDS` the reveal is twenty steps, so a three-icon build cycles just under
- * seven times: enough repetition that the eye stops trying to read each one and waits for it to stop, which
- * is what makes the settle legible as an *answer* rather than as the end of a list.
+ * **Eight, which is where the speed comes from rather than where the duration does.** The reel is a strip of one
+ * icon per row pulled upward, and the tween's destination is the winning power's row *in the last pass* — so the
+ * distance is what makes the first third a blur and the distance is set here. More passes at the same
+ * {@link SHUFFLE_SECONDS} is a faster reel, not a longer one.
  *
- * **Stepped by elapsed time rather than by frame count.** A per-frame step would make the spin twice as fast
- * on a 144Hz client as on a 60Hz one, so the speed of the animation would be a fact about the player's
- * monitor — and the slot would be reading the machine rather than the game.
+ * **Eight rather than three or thirty**, because the reel has to go round often enough that the eye stops trying
+ * to read individual icons (three powers means a reader can track each one — that is what makes a short pass look
+ * like a slideshow) but not so often that the last pass arrives as a number rather than as a motion. The set is
+ * per-pass rather than a row count for the reason `IMAGES_CONFIG.ABILITY_ICONS` gives about itself: a fourth
+ * power should lengthen the reel, not shorten its steps.
  */
-const FLASH_STEP_SECONDS = 0.15;
+const SHUFFLE_PASSES = 8;
 
-/** The corner on the icon's plate and on every stamina segment. One radius, so the stack looks like one thing. */
+/**
+ * The corner on the icon's plate and on every stamina segment. One radius, so the stack looks like one thing.
+ */
 const CORNER_RADIUS = 4;
 
 /**
@@ -206,17 +219,24 @@ const COUNT_GAP = 6;
 const MULTI_BALL_KIND: AbilityKind = "MultiBall";
 
 /**
- * The power slot's two halves: **the frame the column places, and the pop that is played on the plate inside
- * it.**
+ * The power slot's three halves: **the frame the column places, the pop played on the plate inside it, and the
+ * shuffle that reveals a new prize.**
  *
- * **A record rather than just the frame, because the pop is something *somebody else* has to trigger.** The
- * loop in `mount` is what knows when a power was spent — it is the only thing reading `MYSTERY_POWER_ATTRIBUTE`
- * and `ARMED_ABILITY_ATTRIBUTE` — and the plate that moves is three levels down inside the builder. Handing
- * back a closure rather than the plate keeps the animation's entire mechanism on one side of the boundary: the
- * caller has a verb, not a `UIScale` it has to remember to tween.
+ * **A record rather than just the frame, because both animations are something *somebody else* has to
+ * trigger.** The loop in `mount` is what knows when a power arrived or was spent — it is the only thing reading
+ * `MYSTERY_POWER_ATTRIBUTE` and `ARMED_ABILITY_ATTRIBUTE` — and the plate that moves is three levels down inside
+ * the builder. Handing back closures rather than the instances keeps each animation's entire mechanism on one
+ * side of the boundary: the caller has verbs, not a `UIScale` and a strip it has to remember to tween.
  *
- * **Two fields and not a method**, because there is nothing else either piece has to do — `addTile`'s `Tile`
- * record is the same shape for the same reason.
+ * **`spin` rather than `shuffle`, and it takes the kind rather than finding it**, because the reel has to land
+ * on a *specific row* and only the caller knows which power the server granted. Everything else about the reel —
+ * its length, its curve, its sound — is the slot's business and is not a parameter.
+ *
+ * **Three fields and not methods**, for `addTile`'s `Tile` reason: there is nothing else either piece has to do,
+ * and a function-typed property is also the shape roblox-ts accepts an arrow function into — an interface
+ * member declared with method syntax refuses an arrow function on the other side ("Attempted to assign
+ * non-method where method was expected"), which is recorded in this project's notes as a trap that reads as a
+ * type error in code that is otherwise correct.
  */
 interface PowerSlot {
 	/** What the stack's column places, and what the uses count is anchored to. */
@@ -224,6 +244,9 @@ interface PowerSlot {
 
 	/** Plays the pop: a snap up to {@link POP_SCALE} and a settle back to rest. */
 	readonly pop: () => void;
+
+	/** Runs the shuffle: the reel, its sound and the landing, ending on the given power. */
+	readonly spin: (kind: AbilityKind) => void;
 }
 
 /**
@@ -238,12 +261,14 @@ interface PowerSlot {
  * **The icon is the mystery prize, the arm, or nothing — read in that order.** A prize held from a box
  * outranks an armed ability because it is the newer decision and the one that can be *lost*: an arm waits
  * indefinitely for a ball, while a prize ends when it is spent, when the player dies, or when the round
- * does. **And the moment a box is collected, the slot reveals it** — spinning through every power in
- * `IMAGES_CONFIG.ABILITY_ICONS` for {@link FLASH_SECONDS} before settling on the granted one, which is the
- * announcement the deleted `MysteryToastController` used to make in words. Not the owned roster, which stays
- * the shop's business. That also means **nothing here reads the character any more** — the old strip looked
- * up the ball in hand by name on every frame, and the icon has no reason to, which removes a per-frame
- * `FindFirstChild` from one of the client's busiest loops.
+ * does. **And the moment a box is collected, the slot shuffles** — a small reel of every power in
+ * `IMAGES_CONFIG.ABILITY_ICONS`, pulled upward inside the slot and decelerating onto the granted one, with a
+ * sound running under it. That shuffle is the announcement the deleted `MysteryToastController` used to make in
+ * words, and it is deliberately *in the slot*: this is the element a player learns to look at for their own
+ * power, so the answer arriving in it is the answer arriving where they already look. Not the owned roster,
+ * which stays the shop's business. That also means **nothing here reads the character any more** — the old
+ * strip looked up the ball in hand by name on every frame, and the icon has no reason to, which removes a
+ * per-frame `FindFirstChild` from one of the client's busiest loops.
  *
  * **The stamina pool is drawn here rather than in the cooldown card**, and it is the split those two were
  * always owed: a pool is a *level* and a cooldown is a *deadline*, they read in opposite directions, and
@@ -348,7 +373,29 @@ export class SuperHudController implements OnStart {
 		 */
 		const glowing = Fusion.Value(scope, false);
 
-		const slot = this.addIconSlot(scope, theme, iconId, usesLeft, glowing);
+		/**
+		 * **The reel's faces, and why the list is the config's rather than the player's roster.** Every power in
+		 * the game is shuffled past — including the ones this player does not own — because that is what makes
+		 * the reveal a tease rather than a confirmation, and `IMAGES_CONFIG.ABILITY_ICONS` is the only thing that
+		 * knows the whole set. A power added there joins the reel with no code change here; the roster would be
+		 * the roster of *gameplay*, and "an icon for a power you cannot use" is exactly the case a tease exists
+		 * to show.
+		 *
+		 * **Built once, here, and never rebuilt**, for the reason the old flash gave about its own list: a list
+		 * rebuilt per frame could skip or repeat an entry, and the reel's landing row is an *index into this
+		 * array* — so a list that changed underneath a spin would land on the wrong power, which is the one
+		 * failure this animation exists to avoid.
+		 *
+		 * **`pairs` and not a sequence**, because there is no sequence to have: the record is keyed by kind and
+		 * the order is whatever the table gives. A reel needs a *stable* order rather than a meaningful one, and
+		 * this array is the order for the life of the mount.
+		 */
+		const reelFaces = new Array<AbilityKind>();
+		for (const [kind] of pairs(IMAGES_CONFIG.ABILITY_ICONS)) {
+			reelFaces.push(kind);
+		}
+
+		const slot = this.addIconSlot(scope, theme, iconId, usesLeft, glowing, reelFaces);
 
 		// Built *after* the slot and given its frame as a parent, because it is anchored to that frame's left
 		// edge — see {@link addCount}. The *outer* frame rather than the plate inside it, deliberately: the
@@ -398,45 +445,32 @@ export class SuperHudController implements OnStart {
 		// the element carries its own limit rather than trusting that the screen will be big enough.
 		addViewportConstraint(scope, column);
 
-		// **The reveal's list, and why it is read from the config rather than from the roster.** Every icon in
-		// the game is spun through, including the ones this player does not own — that is what makes the reveal
-		// a tease rather than a confirmation, and `IMAGES_CONFIG.ABILITY_ICONS` is the only thing that knows the
-		// whole set. A power added there joins the reveal with no code change here; the roster would be the
-		// roster of *gameplay*, and "an icon for a power this player cannot use" is exactly the case a tease
-		// exists to show.
-		//
-		// **`pairs` and not a sequence**, because there is no sequence to have: the record is keyed by kind and
-		// the spin is a shuffle. What matters is only that the list is *stable* for the life of the mount,
-		// which it is — one rebuilt per frame could skip or repeat an entry, and that reads as a stutter
-		// rather than as a spin.
-		const revealIcons = new Array<string>();
-		for (const [kind] of pairs(IMAGES_CONFIG.ABILITY_ICONS)) {
-			revealIcons.push(IMAGES_CONFIG.ABILITY_ICONS[kind]);
-		}
-
 		// **Two locals, and both are the loop's memory rather than the state.** `previousPrize` is the edge
 		// detector for a pickup: the box is collected on the *server*, so the only way this loop can know one
-		// happened is by noticing a value that was empty and is not. It is seeded from a read taken before the
-		// loop starts, so a player who is already holding a prize the first time this runs — a rejoin
-		// mid-round, or a dev grant — sees the icon without a flash they did not earn.
+		// happened is by noticing a value that changed. It is seeded from a read taken before the loop starts, so
+		// a player who is already holding a prize the first time this runs — a rejoin mid-round, or a dev grant —
+		// sees the icon without a shuffle they did not earn.
 		//
-		// `flashStartedAt` is the flash's own clock, and `undefined` means "not flashing": one value for
-		// "nothing is happening", rather than a boolean beside a time that could disagree with it.
+		// **`previousWaiting` is the second, and it is the same kind of thing as the first.** Where `previousPrize`
+		// detects a power *arriving*, this detects one *going*: the shuffle celebrates the arrival and the pop
+		// marks the departure, so between them the two edges are the slot's whole vocabulary of events. It is
+		// seeded from the same pre-loop read for the same reason — a client that mounts while a power is already
+		// waiting must not pop at the first frame, because nothing happened.
 		//
-		// **`previousWaiting` is the third, and it is the same kind of thing as the first.** Where `previousPrize`
-		// detects a power *arriving*, this detects one *going*, and the two edges are what the slot's two pieces
-		// of feedback hang off: the reveal celebrates the arrival, and the pop marks the departure. It is seeded
-		// from the same pre-loop read for the same reason — a client that mounts while a power is already waiting
-		// must not pop at the first frame, because nothing happened.
+		// **There was a third, and it is gone with the flash it timed.** The old spin was a clock this loop owned
+		// (`flashStartedAt`, `undefined` for "not spinning") and stepped every frame; the reel is one tween with a
+		// duration, owned by the slot, so the only thing left for this loop to do about it is start it. See the
+		// pickup edge below.
 		let previousPrize = this.prizeOf(player);
 		let previousWaiting = this.armedOf(player) !== undefined || previousPrize !== undefined;
-		let flashStartedAt: number | undefined = undefined;
 
 		// The one connection in this file, reading all three values. See the class doc for why this is a loop
 		// rather than three subscriptions.
 		scope.push(
 			RunService.RenderStepped.Connect(() => {
-				const clock = time();
+				// **`time()` is no longer read here.** The old reveal timed itself from this loop with a
+				// `flashStartedAt` clock; the reel is a tween with a duration in seconds, so the animation's state
+				// lives in the slot and this loop has nothing to time and no clock to read.
 
 				// **The arm and the prize, validated the same way** — the rule `abilityOn` applies to a ball's
 				// mark, so a word this build does not name reads as *nothing* rather than as a broken image.
@@ -468,42 +502,47 @@ export class SuperHudController implements OnStart {
 				previousWaiting = waiting;
 				glowing.set(waiting);
 
-				// **The flash starts on the edge where a prize appears, and is abandoned when one goes away.**
-				// That is one rule with three cases: a prize arriving starts it, a prize staying starts nothing,
-				// and a prize *leaving* clears it. The last case is the one worth naming — the ways a prize
-				// leaves are using it and dying, both of which the player just did, so a spin that kept running
-				// would be celebrating a pickup while the slot already showed how it ended.
-				if (prize !== undefined && previousPrize === undefined) flashStartedAt = clock;
-				if (prize === undefined) flashStartedAt = undefined;
+				// **The reel spins when the prize *becomes a power*, and on nothing else.** Not on a prize
+				// *staying* — this loop runs at the frame rate, so a reel started from "a prize is held" rather
+				// than from "the prize changed" would be a reel that never stopped — and not on a prize *leaving*,
+				// because the ways a prize leaves are using it and dying, both of which the pop covers while a
+				// reel spinning for a power the player just spent would be telling them about a decision they have
+				// already made.
+				//
+				// **A change between two powers counts, which is why this is not the `undefined`-to-something
+				// test it started as.** The server can replace a held prize with another one (a second box
+				// collected, a dev grant), and in that case the attribute goes from one kind straight to another
+				// without ever being empty — so an edge detector written as "was nothing, is something" would be
+				// silent for exactly the pickup a player most wants to see announced.
+				//
+				// **The kind is the whole of what crosses the boundary**, which is `PowerSlot.pop`'s shape: this
+				// loop owns the reading of the attribute and the slot owns the animation, so the slot never has to
+				// know that `MYSTERY_POWER_ATTRIBUTE` exists and this loop never has to know how a reel is built.
+				if (prize !== undefined && prize !== previousPrize) slot.spin(prize);
 
 				previousPrize = prize;
 
-				// **What the slot shows, in the order the four states outrank each other.** The flash while it
-				// runs, then a held prize, then an arm, then a running MultiBall window, then nothing. A prize
-				// outranks the arm because it is the power the box paid for and the only one of the two with an
-				// ending; the arm outranks nothing because it is still something the player is about to use.
-				// **The window is last**, because it is the only one of the four that is a *state* rather than
+				// **What the slot shows, in the order the three states outrank each other.** A held prize, then an
+				// arm, then a running MultiBall window, then nothing. A prize outranks the arm because it is the
+				// power the box paid for and the only one of the two with an ending; the arm outranks nothing
+				// because it is still something the player is about to use.
+				// **The window is last**, because it is the only one of the three that is a *state* rather than
 				// something pending — an arm is a decision waiting on a ball, and a window is a supply that will
 				// still be there in a second. It is also the only one that can be arrived at with nothing else
 				// held, which is the ordinary case: using a MultiBall prize spends the prize, so the slot is
 				// empty for the whole life of the window unless the player collects another box.
 				//
-				// **The non-empty guard is not decoration**: `% 0` is a division by zero, and a config with every
-				// icon removed is a thing somebody could do.
-				const started = flashStartedAt;
-
+				// **The reel is not a fourth state, and that is deliberate.** It is drawn *over* whatever this
+				// list says — see `addIconSlot` — so the loop carries on answering "what power do you hold" while
+				// the reel turns, and the answer is already correct underneath it when the reel stops. A reel that
+				// owned the slot's state would be a second thing to unwind when a prize is spent mid-spin, which
+				// is a real sequence: the player can press `3` during the animation.
 				let shown = "";
 				// Which power the slot settled on, kept beside the id rather than recovered from it: the id is
-				// what the `ImageLabel` wants and the *kind* is what the uses count has to be matched against,
-				// and the flash deliberately sets one without the other.
+				// what the `ImageLabel` wants and the *kind* is what the uses count has to be matched against.
 				let shownKind: AbilityKind | undefined;
 
-				if (started !== undefined && revealIcons.size() > 0 && clock - started < FLASH_SECONDS) {
-					const step = math.floor((clock - started) / FLASH_STEP_SECONDS);
-					shown = revealIcons[step % revealIcons.size()];
-				} else if (prize !== undefined) {
-					// The settle, and it is written by this branch on every frame after the spin ends — so the
-					// answer is on screen from the frame the flash stops rather than at the end of a fade.
+				if (prize !== undefined) {
 					shown = IMAGES_CONFIG.ABILITY_ICONS[prize];
 					shownKind = prize;
 				} else if (armed !== undefined) {
@@ -535,8 +574,8 @@ export class SuperHudController implements OnStart {
 		if (DEBUG) {
 			print(
 				`[HUD] power slot up — ${ARMED_ABILITY_ATTRIBUTE} on the player, ${SEGMENT_COUNT} stamina` +
-					` segments over ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s, reveal over` +
-					` ${revealIcons.size()} icon(s)`,
+					` segments over ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s, shuffle over` +
+					` ${reelFaces.size()} icon(s) x ${SHUFFLE_PASSES} passes`,
 			);
 		}
 	}
@@ -635,18 +674,25 @@ export class SuperHudController implements OnStart {
 	 * label is drawn from — a `Value<number | undefined>` where `undefined` means "no count", so the number
 	 * and its visibility cannot disagree. See {@link addCount} for the rule that decides which powers get one.
 	 *
-	 * **It is now two frames, a ring and a tap, and each one has its own argument written where it is built.**
-	 * The pair of frames is what lets the **pop** happen without the column noticing ({@link PowerSlot.pop}); the
-	 * ring is the **glow**, drawn around the plate rather than on it so that the plate's own invariance above
-	 * survives ({@link GLOW_THICKNESS}); and the transparent button over the whole slot is the **tap**, which is
-	 * the mobile equivalent of the `3` key and the same request the key makes — see each one in the body below.
-	 * **What did not move is the sentence the rest of this doc is about**: the plate is still one colour at one
-	 * opacity in every state, and every pixel that has changed about this slot is either drawn around it or
-	 * drawn on top of it.
+	 * **It is now three frames, a ring, a reel and a tap, and each one has its own argument written where it is
+	 * built.** The pair of frames is what lets the **pop** happen without the column noticing ({@link
+	 * PowerSlot.pop}); the ring is the **glow**, drawn around the plate rather than on it so that the plate's own
+	 * invariance above survives ({@link GLOW_THICKNESS}); the **reel** is the shuffle ({@link PowerSlot.spin}),
+	 * a clipped strip of icons that is *drawn over* the slot's own icon rather than replacing it; and the
+	 * transparent button over the whole slot is the **tap**, which is the mobile equivalent of the `3` key and the
+	 * same request the key makes — see each one in the body below. **What did not move is the sentence the rest
+	 * of this doc is about**: the plate is still one colour at one opacity in every state, and every pixel that
+	 * has changed about this slot is either drawn around it or drawn on top of it.
 	 *
-	 * **It returns the frame and its pop rather than just the frame**, which is `panelChrome.addTile`'s shape —
-	 * a builder handing back the pieces its caller has to reach — because the loop is what decides when a pop is
-	 * due, and the loop is in `mount` rather than in here.
+	 * **It returns the frame, its pop and its spin rather than just the frame**, which `panelChrome.addTile`'s
+	 * shape — a builder handing back the pieces its caller has to reach — because the loop is what knows when a
+	 * pop or a shuffle is due, and the loop is in `mount` rather than in here.
+	 *
+	 * **The reel takes the face list rather than reading the config itself**, and that is the one parameter that
+	 * is not an argument about this slot: `mount` builds the list once (see its own note) and this method places
+	 * rows for it. A builder that read `IMAGES_CONFIG` on its own would be a second place the reel's contents are
+	 * decided, and the landing index would then be an index into a list this method had built *differently* from
+	 * the one `mount` used to find the winner.
 	 */
 	private addIconSlot(
 		scope: Fusion.Scope<unknown>,
@@ -654,6 +700,7 @@ export class SuperHudController implements OnStart {
 		iconId: Fusion.Value<string>,
 		usesLeft: Fusion.Value<number | undefined>,
 		glowing: Fusion.Value<boolean>,
+		reelFaces: readonly AbilityKind[],
 	): PowerSlot {
 		// **Two frames where there was one, and the pop is the whole reason.** The column places a `UIListLayout`
 		// child, and what pops has to be something that is *not* laid out: a `UIScale` written onto the frame the
@@ -713,6 +760,22 @@ export class SuperHudController implements OnStart {
 			Transparency: Fusion.Computed(scope, (use) => (use(glowing) ? GLOW_TRANSPARENCY : 1)),
 		});
 
+		/**
+		 * **Whether the reel is turning, and the only state the shuffle adds to this slot.**
+		 *
+		 * It is read by exactly two things: the reel's own `Visible`, and the resting icon's `ImageTransparency`.
+		 * The second is what makes the reel an *overlay* rather than a replacement — while it turns, the icon
+		 * underneath is transparent, so two pictures are never drawn in the same 56 pixels; as soon as it stops,
+		 * the icon is whatever the loop currently says the slot holds.
+		 *
+		 * **That is also what makes a spent prize during a spin a non-event.** The player can press `3` while the
+		 * reel is still turning, which empties the prize attribute; the loop keeps writing the icon it thinks is
+		 * true, the reel finishes on the power that *was* granted, and then the flag drops and the slot shows the
+		 * truth — which is nothing held. A reel that owned the slot's state would have to be unwound by hand for
+		 * that sequence, and it would be one more thing that could leave a strip drawn over the icon forever.
+		 */
+		const reeling = Fusion.Value(scope, false);
+
 		// **`BackgroundTransparency = 1` on the *image* is load-bearing, and it is the first thing to check if
 		// the art ever shows up inside a rectangle of its own colour.** An `ImageLabel` is a rectangle that
 		// *contains* a picture the way a `Frame` is a rectangle that contains nothing — the engine fills it
@@ -726,10 +789,114 @@ export class SuperHudController implements OnStart {
 			BackgroundTransparency: 1,
 			ScaleType: Enum.ScaleType.Fit,
 			Image: iconId,
-			ImageTransparency: Fusion.Computed(scope, (use) => (use(iconId) === "" ? 1 : 0)),
+			// **Hidden while the reel turns, as well as when there is nothing to show.** See {@link reeling} for
+			// why the reel overlays the icon instead of replacing it, and why that makes the two flags one.
+			ImageTransparency: Fusion.Computed(scope, (use) => (use(iconId) === "" || use(reeling) ? 1 : 0)),
 		});
 
 		icon.Parent = plate;
+
+		/**
+		 * **The reel: a clipped strip of one icon per row, pulled upward through the slot by a single tween.**
+		 *
+		 * **It lives in the slot rather than in an overlay of its own, and that is the point of this revision.**
+		 * A large screen-space cabinet was built first and read as a second GUI bolted onto the HUD; the reveal
+		 * belongs in the element a player already watches for their own power, so the answer arrives exactly where
+		 * they look for it. Everything below is therefore the whole of the animation: a clipping window the size
+		 * of the plate, a strip of rows behind it, and one number moving.
+		 *
+		 * **The window is the plate's own rectangle** — `Size = (1, 0, 1, 0)` — so the reel can never be a
+		 * different size from the icon it stands in for, whatever `ICON_SIZE` becomes. The one thing that costs
+		 * is the glow: a `UIStroke` is drawn as part of the plate, so children cover it, and the accent ring is
+		 * hidden behind the reels for the length of the shuffle. That is 1.6 seconds of a state indicator the
+		 * landing brings straight back, and the alternative — insetting the reel by the stroke's thickness — would
+		 * crop three pixels off every icon for the whole spin, which is the worse of the two.
+		 *
+		 * **Rows are flush, with no layout padding.** A reel's icons are one picture replacing another, and a gap
+		 * would show as a black band crossing the slot twenty-four times; it also makes the landing arithmetic
+		 * exactly one multiply, because the row pitch *is* `ICON_SIZE`.
+		 *
+		 * **A plain `Frame` moved by `Position.Y`, not a `ScrollingFrame` driven by `CanvasPosition`.** The strip
+		 * is {@link SHUFFLE_PASSES} passes long and the landing row is near its end, which is exactly where a
+		 * scroll surface's position is clamped to its canvas — a clamp would silently land one icon off, and
+		 * "it revealed the wrong power" is the one failure a reveal cannot have. Below a window that clips, there
+		 * is nothing to clamp: the strip goes where it is told.
+		 *
+		 * **The rows are created once, at mount**, because the frame a spin starts on is the one frame in this
+		 * feature that must not pay for two dozen instances — the same trade `hitConfirm` makes for its caption.
+		 */
+		const faceCount = reelFaces.size();
+		const reelRows = faceCount * SHUFFLE_PASSES;
+
+		const reel = Fusion.New(scope, "Frame")({
+			Name: "Reel",
+			Parent: plate,
+			Size: new UDim2(1, 0, 1, 0),
+			BackgroundTransparency: 1,
+			// **The clipping is the whole mechanism**: one row fills the window, and everything else is hidden
+			// above and below it.
+			ClipsDescendants: true,
+			Visible: Fusion.Computed(scope, (use) => use(reeling)),
+		});
+
+		const strip = Fusion.New(scope, "Frame")({
+			Name: "Strip",
+			Parent: reel,
+			Size: new UDim2(1, 0, 0, reelRows * ICON_SIZE),
+			Position: new UDim2(0, 0, 0, 0),
+			BackgroundTransparency: 1,
+		});
+
+		Fusion.New(scope, "UIListLayout")({
+			Parent: strip,
+			FillDirection: Enum.FillDirection.Vertical,
+			SortOrder: Enum.SortOrder.LayoutOrder,
+			Padding: new UDim(0, 0),
+		});
+
+		for (let row = 0; row < reelRows; row++) {
+			// **The row index is copied into a `const` before it is closed over**, the belt-and-braces
+			// `addSegments` documents: Luau's loop variables are per-iteration, but a reader thinking in Lua 5.1
+			// would read the closure below as broken, and the `const` says which of the two this is relying on.
+			const position = row;
+
+			Fusion.New(scope, "ImageLabel")({
+				Name: `Row${position}`,
+				Parent: strip,
+				Size: UDim2.fromOffset(ICON_SIZE, ICON_SIZE),
+				BackgroundTransparency: 1,
+				ScaleType: Enum.ScaleType.Fit,
+				Image: IMAGES_CONFIG.ABILITY_ICONS[reelFaces[position % faceCount]],
+				LayoutOrder: position,
+			});
+		}
+
+		/**
+		 * **The sound, one `Sound` in `SoundService`, looped, and stopped by hand.**
+		 *
+		 * `elevation.ts` makes the argument for the location and it applies unchanged: a `Sound` is positional
+		 * only when it hangs off a `BasePart` or an `Attachment`, and everywhere else it is heard at one level
+		 * from anywhere. `SoundService` beats `PlayerGui` because the latter is torn down and rebuilt on every
+		 * respawn, and this instance is created once at mount. `MusicController` keeps its tracks here too.
+		 *
+		 * **`Looped`, because the clip's length has nothing to do with the spin's.** {@link SHUFFLE_SECONDS} is
+		 * this file's number; the noise has to last exactly that long and then stop dead, so the loop is what
+		 * makes it audible throughout and `<Sound>:Stop()` is what ends it — called from the tween's completion,
+		 * and again at the top of a new spin. **The requirement that it must not outlive the landing is met in
+		 * two places on purpose**, because the completion callback is the one an interrupted spin could skip.
+		 *
+		 * **Created through `Fusion.New` so the scope owns it**, which means a HUD that unmounts takes the sound
+		 * with it rather than leaving a looping instance behind. Created at mount, which is also what starts the
+		 * clip downloading — the first spin of a session may therefore begin before the asset has arrived, which
+		 * is why the start is logged.
+		 */
+		const shuffleSound = Fusion.New(scope, "Sound")({
+			Name: "PowerShuffle",
+			Parent: SoundService,
+			SoundId: AUDIO_CONFIG.POWER_SPIN,
+			Volume: AUDIO_CONFIG.POWER_SPIN_VOLUME,
+			Looped: true,
+		});
 
 		/**
 		 * **The tap: the mobile equivalent of the `3` key, and the same request the key makes.**
@@ -796,7 +963,89 @@ export class SuperHudController implements OnStart {
 			playing.Play();
 		};
 
-		return { frame: frame, pop: pop };
+		/**
+		 * **The shuffle, as a closure the loop can call: reset the strip, start the noise, pull it up, land, pop.**
+		 *
+		 * **The landing row is found by searching the face list for the granted kind**, because nothing upstream
+		 * knows this slot's list order — the loop reads an `AbilityKind` off an attribute and has no business
+		 * knowing how many faces precede it. The search is a linear scan over three entries, and it answers
+		 * "which row would this power be on", which is the only question the tween needs.
+		 *
+		 * **The destination is that face in the *last* pass**, so the strip has to travel the whole reel to reach
+		 * it — that is what {@link SHUFFLE_PASSES} is for, and why the number is passes rather than rows. Landing
+		 * on the first pass would be a one-row hop, which is a flicker rather than a shuffle.
+		 *
+		 * **`Quint`/`Out`, and the curve is the improvement.** The old reveal stepped the icon at a constant rate
+		 * and then stopped, so the only thing distinguishing "still shuffling" from "landed" was that the picture
+		 * stopped changing — the eye had to notice an absence of motion. A `Quint` `Out` curve puts most of its
+		 * travel in the first third and then creeps, so the reel visibly *slows down* into its answer: the
+		 * deceleration itself is the signal that something is about to be decided, and the last row arrives almost
+		 * still. `Back` would overshoot past the landing row and come back, which reads as a bounce — wrong for a
+		 * reel that is supposed to stop.
+		 *
+		 * **The pop fires on the landing**, which is the one thing the old flash never did: the strip stopping is
+		 * now an *arrival* rather than an animation ending. See {@link POP_SCALE}, which is one number for both
+		 * edges of a power's life so neither claims to be the more important one.
+		 */
+		const shuffleInfo = new TweenInfo(SHUFFLE_SECONDS, Enum.EasingStyle.Quint, Enum.EasingDirection.Out);
+		let spinToken = 0;
+		let spinning: Tween | undefined;
+
+		const spin = (kind: AbilityKind): void => {
+			// **Nothing to spin past**, which is a config with every icon removed — a thing somebody could do, and
+			// `% 0` below is a division by zero if they did.
+			if (faceCount === 0) return;
+
+			let index = -1;
+			for (let face = 0; face < faceCount; face++) {
+				if (reelFaces[face] === kind) {
+					index = face;
+					break;
+				}
+			}
+
+			// **A kind with no face lands on the first row rather than erroring.** It cannot happen — the kind
+			// arrives through `isAbilityKind`, so this build has a picture for it — but a reel that stops on the
+			// wrong icon is a far better failure than an error on the frame a box was opened.
+			if (index < 0) index = 0;
+
+			spinToken += 1;
+			const token = spinToken;
+
+			// **Everything the previous spin was doing is stopped before this one starts**, which is the same
+			// rule as the pop's: only the most recent tween on a property is guaranteed to win, and a shuffle
+			// interrupted by another shuffle must not leave a strip half-way down or a noise still running.
+			if (spinning !== undefined) spinning.Cancel();
+			shuffleSound.Stop();
+
+			strip.Position = new UDim2(0, 0, 0, 0);
+			reeling.set(true);
+			shuffleSound.Play();
+
+			const landingRow = (SHUFFLE_PASSES - 1) * faceCount + index;
+			const landing = new UDim2(0, 0, 0, -landingRow * ICON_SIZE);
+
+			if (DEBUG) print(`[HUD] shuffle — ${reelFaces[index]} on row ${landingRow} of ${reelRows}`);
+
+			const tween = TweenService.Create(strip, shuffleInfo, { Position: landing });
+			spinning = tween;
+			tween.Play();
+
+			task.spawn(() => {
+				// **`Completed` fires on a cancel too**, so the token is what decides whether this is the spin the
+				// slot actually finished or one that a newer call replaced — the same pattern `playSplash` uses.
+				tween.Completed.Wait();
+				if (token !== spinToken) return;
+
+				// **The noise stops here and nowhere later.** This is the frame the reel lands, which is the
+				// moment a ticker still running would be the machine working while the answer is on the screen.
+				shuffleSound.Stop();
+				reeling.set(false);
+				pop();
+			});
+		};
+
+		return { frame: frame, pop: pop, spin: spin };
 	}
 
 	/**

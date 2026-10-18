@@ -423,6 +423,15 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 				);
 			}
 
+			// **The Pierce trail comes off here, because this is the throw's death.** The effect is a child of
+			// the ball, so the ball's own destruction takes it — but a ball that has *landed* is not
+			// destroyed, it lies on the floor until somebody collects it or it expires, and a particle
+			// emitter on a stationary ball is a plume of trail sitting in the middle of the arena for as long
+			// as that takes. `BallTrail` refused to be an emitter for exactly this reason and named this
+			// branch as the honest hook; see `BallService.detachPierceEffect` for the other two exits, and
+			// note this one is the only place that knows the throw is over while the ball lives on.
+			this.balls.detachPierceEffect(this.instance);
+
 			this.instance.SetAttribute("Armed", false);
 			return;
 		}

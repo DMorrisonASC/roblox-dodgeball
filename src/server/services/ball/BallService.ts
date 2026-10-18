@@ -19,6 +19,7 @@ import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
 import { abilityOn, isBallAbility, pendingAbilityOn, AbilityKind } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
+import { findTemplate } from "shared/find";
 import { resolveDodgeable } from "shared/dodge";
 import { REMOTES } from "shared/remotes";
 import { events } from "shared/networking";
@@ -117,6 +118,56 @@ const CATCH_EMITTER_NAME = "CatchEmitter";
 const THROW_EMITTER_NAME = "ThrowEmitter";
 
 /**
+ * The name of the Pierce effect template — **the whole of the contract with the place file, and the name
+ * every copy of it wears on a ball.**
+ *
+ * **Found by name, recursively, and never by path.** `ReplicatedStorage.VFX.PierceTrail` is what this used
+ * to look up, and it was wrong for the reason `HANDOFF.md` §17 gives about the body effects: the contract
+ * with an authored template is *its name and nothing else* — a folder is something a person renames from
+ * `VFX` to `Effects`, a wrapper `Model` is something they add or drop, and either one would silently break a
+ * lookup that encoded it. {@link findTemplate} walks all of `ReplicatedStorage` instead, so
+ * `ReplicatedStorage.VFX.PierceTrail`, `ReplicatedStorage.Effects.PierceTrail` and a loose
+ * `ReplicatedStorage.PierceTrail` are the same template to this file.
+ *
+ * **One name for both jobs.** A clone keeps its template's name, so the lookup that finds the template and
+ * the lookup that takes a spent effect off a ball are the same `FindFirstChild` — which is what makes "is
+ * there a stray effect on this ball" a question anybody can ask of the instance tree. See
+ * {@link BallService.detachPierceEffect} for the three places that ask it.
+ *
+ * **The effect itself is never built here.** The trail is a `BasePart` carrying an `Attachment` and a
+ * `ParticleEmitter`, authored in Studio; this file clones it and welds the clone to the ball and has no
+ * opinion about rate, colour or lifetime, so the effect can be retuned without a build.
+ */
+const PIERCE_EFFECT_NAME = "PierceTrail";
+
+/**
+ * What the weld holding the effect to the ball is called.
+ *
+ * Named rather than left as `WeldConstraint` for the reason the emitter names are: the effect's whole
+ * arrangement is "a child of the ball, held by one weld", and a reader looking at a ball in the Explorer
+ * — or a leftover check grepping for a weld that outlived its part — has no other handle on it. The
+ * weld is a child of the effect part, so it cannot outlive it; the name is for the reader.
+ */
+const PIERCE_WELD_NAME = "PierceEffectWeld";
+
+/**
+ * The template names this file has already warned about, so a missing one is reported **once per name**
+ * rather than once per throw.
+ *
+ * **A `Set` of names rather than a boolean, which is the clients' own pattern** — `hitVfx`, `windBurst`,
+ * `chargeEffect` and `catchShockwave` each keep a `warnedTemplates` set for exactly this — and the reason it
+ * is a set even with one name in it today is that "one missing template swallows the warning for the other"
+ * is the failure a boolean has. A second effect added to this file gets its own line for free.
+ *
+ * **One shot rather than every throw**, because the fault is the same fault every time: a Pierce ball is
+ * thrown about once a second in a busy round, and a warn per throw would bury every other line in the log
+ * inside a minute. What that costs is named in the client copies' docs and applies here too: a warning that
+ * fires once and then goes quiet is indistinguishable, from the seat, from code that never ran — which is
+ * why the missing-template line is a `warn` and not a `print` behind `DEBUG`.
+ */
+const reportedMissingTemplates = new Set<string>();
+
+/**
  * How often a loose ball is checked for having stopped, in seconds.
  *
  * Short enough that the creep below {@link BALL_CONFIG.MIN_SPEED} is not something
@@ -204,6 +255,28 @@ const MAX_PHYSICS_FPS = 240;
  */
 function physicsRate(): number {
 	return math.clamp(Workspace.GetRealPhysicsFPS(), MIN_PHYSICS_FPS, MAX_PHYSICS_FPS);
+}
+
+/**
+ * The `BasePart` inside a cloned effect — the thing a weld can hold — or nothing.
+ *
+ * **Three shapes rather than one, because the template is somebody else's decision.** An effect built as a
+ * single `BasePart` carrying its `Attachment` and emitter (which is what the Pierce trail is) is its own
+ * part; one built as a `Model` is held at its `PrimaryPart`; and a `Model` whose author never set a
+ * primary part — easy to leave unset, and invisible in Studio until something asks — falls back to its
+ * first `BasePart` child. All three are the same question, "which part is this effect *at*", and the
+ * fallback is why the caller does not have to reject a model-shaped template.
+ *
+ * **Not recursive on purpose.** A model that holds no `BasePart` directly is a folder of models or
+ * something stranger, and picking a deep descendant would attach the weld to one piece of an effect whose
+ * other pieces were never made to move with it.
+ */
+function effectPartOf(effect: Instance): BasePart | undefined {
+	if (effect.IsA("BasePart")) return effect;
+	if (effect.IsA("Model")) return effect.PrimaryPart ?? effect.FindFirstChildWhichIsA("BasePart");
+	if (effect.IsA("Folder")) return effect.FindFirstChildWhichIsA("BasePart");
+
+	return undefined;
 }
 
 /**
@@ -930,6 +1003,14 @@ export class BallService implements OnStart {
 		// mean reaching into the contact path for a case with no symptom.
 		CollisionIgnore.clear(ball);
 
+		// **And the Pierce trail, for the same reason and with a louder symptom.** It is a child of the ball,
+		// and a child of a ball survives a catch — so a caught Pierce ball would arrive in the catcher's hand
+		// still wearing the trail of the throw it was caught out of: an effect that says "this ball is Pierce"
+		// on a ball whose ability `setBallAbility` above has just cleared. The end-of-throw branch in
+		// `BallComponent` covers the throw that lands on something; this covers the one that was caught, which
+		// never touches the world at all and therefore never reaches that branch.
+		this.detachPierceEffect(ball);
+
 		// **And then the arm, if this player is carrying one — the other end of the dev shortcut.**
 		//
 		// An armed dev has no ball to put an ability on, so the ability waits on the *player* and moves
@@ -1049,6 +1130,159 @@ export class BallService implements OnStart {
 		} else {
 			this.freezes.detachAura(ball);
 		}
+	}
+
+	/**
+	 * **Puts the authored Pierce trail on `ball`: clone the template out of `ReplicatedStorage`, hold it on
+	 * the ball with a `WeldConstraint`, and let the ball's own lifetime be the effect's.**
+	 *
+	 * **Why a weld rather than parenting alone.** A child of a moving part does not move with it — Roblox
+	 * has no transform inheritance between a part and its children — so a clone parented to the ball would
+	 * sit in the air at the throw's launch point while the ball flew away, which is a surprisingly quiet
+	 * failure: the effect exists, it emits, and nothing is wrong with it except that it is in the wrong
+	 * place for ever. A `WeldConstraint` is the engine's own answer to "these two parts are one object":
+	 * with `Part0 = ball` and `Part1 = effect` it locks the *relative* offset the two had at the moment the
+	 * weld was parented, and from then on the effect follows the ball's position and rotation exactly — the
+	 * solver moves one assembly, so the trail cannot lag a frame behind the ball, which is what a
+	 * `RunService.Heartbeat` re-parent would do.
+	 *
+	 * **And it is a `WeldConstraint` rather than a `Motor6D` or a rigid `Weld`.** A `Motor6D` exists to be
+	 * *animated* — it carries a `Transform` a rig's joints write — and nothing wants to move this effect
+	 * relative to its ball. A `Weld` welds the *parts'* surfaces at a `C0`/`C1` offset, which means a
+	 * rotation authored between them, which is one more number to get wrong in a file that has no opinion
+	 * about how the effect is oriented. The constraint is the one that says only what is true here: keep
+	 * these two where they are, together.
+	 *
+	 * **Five properties, and every one of them is about not changing how the ball flies.** An effect
+	 * welded to a projectile joins the projectile's **assembly**, and an assembly is what the solver
+	 * integrates — so a part that is `Anchored` would pin the ball in place, a part with mass would make the
+	 * ball heavier than the plan, the aim guide and `launchCorrection` all assume it is, and a part that
+	 * collides or answers queries would turn a ball that passes through people into a ball that hits them.
+	 * Hence: `Anchored = false` (a template sitting in `ReplicatedStorage` is usually anchored, and the weld
+	 * would be silently undone), `Massless = true`, `CanCollide = false`, `CanTouch = false` and
+	 * `CanQuery = false`. **`Massless` is the one worth knowing about**: without it the throw's trajectory
+	 * changes the moment a Pierce ball is thrown, and nothing in this file would be able to tell you why.
+	 *
+	 * **The part is moved onto the ball before the weld is made.** A `WeldConstraint` holds the offset the
+	 * two parts had when it was parented, and the template's own position in `ReplicatedStorage` means
+	 * nothing relative to a ball at the other end of the map — so the clone is placed at the ball's
+	 * `CFrame` first, and the weld then locks *that* (a zero offset). Anything the author offset inside the
+	 * template travels with the template's own hierarchy: an `Attachment`'s position, a second part welded
+	 * to the first, and the emitter's `EmissionDirection` are all relative to the part, and none of them are
+	 * touched here.
+	 *
+	 * **Parented to the ball, and that is the cleanup.** The ball is destroyed by a round ending, by
+	 * `removeBall`, and by a ball expiry — three routes, one place to undo the effect, and the copy goes
+	 * with the instance. A ball is *also* reused (thrown, caught, thrown again), which is why the effect is
+	 * taken off explicitly when a throw ends rather than only at the ball's death; see
+	 * {@link detachPierceEffect}.
+	 */
+	private attachPierceEffect(ball: BasePart): void {
+		// **One effect per throw, so any older one goes first.** Both ordinary routes out of a throw detach
+		// already, so this line is about the route nobody has thought of yet: a ball that reaches a second
+		// Pierce throw still wearing the first trail's copy would be a ball with two emitters on it, which
+		// is a denser effect rather than an error, and would be almost impossible to attribute to this
+		// method from a screenshot.
+		this.detachPierceEffect(ball);
+
+		// **By name, through the whole of `ReplicatedStorage`** — see `PIERCE_EFFECT_NAME`, `shared/find.ts`
+		// and `HANDOFF.md` §17: the contract with an authored template is its name, and where it sits (a `VFX`
+		// folder, an `Effects` folder, or no folder at all) is a thing a person moves. The helper resolves a
+		// name on the part, on the attachment inside it, or on the emitter inside that, to the part to clone.
+		const template = findTemplate(ReplicatedStorage, PIERCE_EFFECT_NAME);
+
+		// **Said once per name, and with everything the reader needs to fix it.** The fix is a Studio job, so
+		// the line names the template, says what shape it has to be, and then lists what `ReplicatedStorage`
+		// actually holds — because "no template" is true of a name that is absent, a name that is misspelt and
+		// a template that was never published, which are three different fixes and one indistinguishable
+		// symptom. Everything after this returns quietly: a Pierce ball with no trail still flies, still
+		// passes through bodies and still tags them, so this is not a fault that should stop a throw.
+		if (template === undefined) {
+			if (!reportedMissingTemplates.has(PIERCE_EFFECT_NAME)) {
+				reportedMissingTemplates.add(PIERCE_EFFECT_NAME);
+
+				warn(`[VFX] no ${PIERCE_EFFECT_NAME} in ReplicatedStorage — the Pierce trail will not play`);
+
+				const top: string[] = [];
+				for (const child of ReplicatedStorage.GetChildren()) top.push(`${child.Name} (${child.ClassName})`);
+
+				warn(
+					`[VFX] ReplicatedStorage holds: ${top.isEmpty() ? "nothing" : top.join(", ")} — ` +
+						`a template is a BasePart carrying an Attachment and a ParticleEmitter, ` +
+						`and it is found by name wherever it sits.`,
+				);
+			}
+
+			return;
+		}
+
+		const effect = template.Clone();
+		const part = effectPartOf(effect);
+
+		// A template with no part in it cannot be welded to anything, and cloning a fresh copy every throw
+		// that is immediately thrown away would be a leak with a warn attached.
+		if (part === undefined) {
+			if (!reportedMissingTemplates.has(PIERCE_EFFECT_NAME)) {
+				reportedMissingTemplates.add(PIERCE_EFFECT_NAME);
+
+				warn(
+					`[VFX] ${PIERCE_EFFECT_NAME} has no BasePart in it — the Pierce trail will not play. ` +
+						"The template is cloned and welded by its part.",
+				);
+			}
+
+			effect.Destroy();
+
+			return;
+		}
+
+		// **Before it joins the ball's assembly, not after** — see this method's doc for what each one is
+		// protecting. Set on the clone, so the template in `ReplicatedStorage` is left as its author built
+		// it and the next throw starts from the same state.
+		part.Anchored = false;
+		part.Massless = true;
+		part.CanCollide = false;
+		part.CanTouch = false;
+		part.CanQuery = false;
+
+		// The effect sits on the ball, and the weld locks that in. Placed before parenting so the part is
+		// never briefly somewhere else in the world — and `CFrame` rather than `Position` because the
+		// template's own rotation is not a fact about the ball.
+		part.CFrame = ball.CFrame;
+		effect.Parent = ball;
+
+		// **The weld last, with its parts assigned before it is parented.** A `WeldConstraint` that enters
+		// the tree with a `Part0` or `Part1` still unset is a constraint on nothing, and one parented before
+		// its parts are placed would lock the offset they had at that instant. Assigning both first and
+		// parenting once is the order that cannot go wrong.
+		const weld = new Instance("WeldConstraint");
+		weld.Name = PIERCE_WELD_NAME;
+		weld.Part0 = ball;
+		weld.Part1 = part;
+		weld.Parent = part;
+	}
+
+	/**
+	 * **Takes the Pierce trail off `ball`: the one line every route out of a throw ends on.**
+	 *
+	 * The effect is a child of the ball, so a destroyed ball takes it with it and needs nothing. Everything
+	 * else does, because **a ball outlives its throws**: it is caught, put back in a hand, and thrown again
+	 * as an ordinary ball, and a trail that survived that would be a Pierce effect on a ball that carries no
+	 * Pierce — the visual half of an ability the gameplay half has already cleared. There are three exits,
+	 * and each is someone else's moment:
+	 *
+	 * - **The end of a throw** — the world-contact branch in `BallComponent`, which is where `Armed` goes
+	 *   off and every tag resolves. That is the throw's death, and a trail whose throw is over is a trail
+	 *   emitting on a ball lying on the floor.
+	 * - **A ball arriving in a hand** — `attachToHand`, beside `CollisionIgnore.clear`: a caught ball never
+	 *   touches the world, and this is the moment it stops being a throw.
+	 * - **Another Pierce throw** — {@link attachPierceEffect} clears the old copy before making a new one.
+	 *
+	 * Public because the first of those is `BallComponent`'s to see and this service is already injected
+	 * there; the other two are this file's own.
+	 */
+	public detachPierceEffect(ball: BasePart): void {
+		ball.FindFirstChild(PIERCE_EFFECT_NAME)?.Destroy();
 	}
 
 	/**
@@ -1428,6 +1662,15 @@ export class BallService implements OnStart {
 			const bodies = this.pierceBodies(model);
 
 			for (const body of bodies) CollisionIgnore.between(ball, body);
+
+			// **And the trail, from the same test and at the same moment.** The two halves of a Pierce throw
+			// are the same fact read once: the collision ignores are what the *contact* solver is told, and
+			// this is what the *player* is told, so a branch that set one up and not the other would be a
+			// throw that behaves like Pierce and looks ordinary — or, worse, a mark the shot never carried.
+			// It is attached here rather than at the mark because the effect belongs to the flight: a ball
+			// marked and never thrown should not be trailing particles around a hand, and a ball marked and
+			// then thrown twice should wear the trail once, per throw.
+			this.attachPierceEffect(ball);
 
 			if (DEBUG) {
 				print(

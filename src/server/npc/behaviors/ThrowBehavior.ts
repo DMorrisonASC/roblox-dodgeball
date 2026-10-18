@@ -1,5 +1,6 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import { throwAnimationWindowSeconds } from "shared/animation";
 import { CHARGING_ATTRIBUTE, NPC_ANIM_MOVING_ATTRIBUTE, PENDING_ABILITY_ATTRIBUTE, THROW_WALK_ATTRIBUTE } from "shared/constants";
 import type { ThrowWalk } from "shared/constants";
 import { pendingAbilityOn } from "shared/ability";
@@ -111,6 +112,22 @@ interface Aim {
 
 	/** What `Humanoid.AutoRotate` was before this file switched it off. */
 	readonly autoRotate: boolean;
+
+	/**
+	 * **When this aim may be dropped, if the rig has just thrown.** `undefined` for an ordinary aim, which ends
+	 * the moment the rig stops aiming at something.
+	 *
+	 * **The aim outlives the throw by the throw's own animation**, and this is the number that says so: the tick
+	 * that fires a throw sets it to `os.clock() + BALL_CONFIG.THROW_ANIMATION_SECONDS`, and the branch that would
+	 * otherwise clear the aim on the next turn — a rig holding no ball is not aiming at anything — leaves it
+	 * standing until this has passed. See `holdAimThroughThrow` for why the facing has to survive the release at
+	 * all, and for the timer that closes it if the rig stops being ticked.
+	 *
+	 * **A time rather than a boolean**, so the window needs no second number and cannot be left switched on: an
+	 * aim that is `undefined` here ends on the next turn, and one whose deadline has passed ends on the turn after
+	 * that.
+	 */
+	holdUntil?: number;
 }
 
 /**
@@ -606,9 +623,14 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 	/**
 	 * Ends an aim: destroys the constraint and gives the humanoid its own rotation back.
 	 *
-	 * Called on the three ways an aim can end — a throw, a lost target, and a death — and safe to call
-	 * when there is no aim, so each of those paths can call it unconditionally rather than each having
-	 * to know whether one was ever built.
+	 * **Called on the three ways an aim can truly end — a lost target, a death, and the run-out of the window a
+	 * throw holds it open for** — and safe to call when there is no aim, so each of those paths can call it
+	 * unconditionally rather than each having to know whether one was ever built.
+	 *
+	 * **A throw is no longer one of them**, which is the one thing this function stopped doing. See
+	 * {@link holdAimThroughThrow}: the body has to keep facing where it threw for the length of the throw's own
+	 * animation, so the release leaves the aim standing and the moment it is cleared moves out to the end of that
+	 * window.
 	 */
 	const clearAim = (model: Model): void => {
 		const aim = aims.get(model);
@@ -619,6 +641,56 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 		if (aim.humanoid) aim.humanoid.AutoRotate = aim.autoRotate;
 
 		aims.delete(model);
+	};
+
+	/**
+	 * **Keeps the rig facing where it threw, for the length of the throw's own animation.**
+	 *
+	 * **The problem it solves is the follow-through.** `Humanoid.AutoRotate` is restored the moment an aim ends,
+	 * and a walking rig steers its facing from `MoveDirection` — so a rig that threw while walking (the
+	 * `moveAndAim` shape, and the carry-through half of `moveThenPlant`) snapped back to its walk direction on the
+	 * very frame the ball left its hand. The body then throws its arm out while already pointing somewhere else,
+	 * which reads as the animation running after the throw instead of being the throw. A player's body has the
+	 * same fault from the same cause, and `AimFacingController` fixes its half in its own file — **this is the
+	 * server's half, and the two are the same rule**: the facing outlives the release by
+	 * {@link BALL_CONFIG.THROW_ANIMATION_SECONDS}, which is the number both the animation's length and the
+	 * `THROW_ANIMATION_ATTRIBUTE` window are set from.
+	 *
+	 * **What it is not: a constraint that keeps *tracking* the target.** The aim's `CFrame` was last written on
+	 * the turn that threw, and nothing re-writes it here — the rig holds the one heading it released along, which
+	 * is precisely "keep facing that direction". Re-aiming during the animation would be the rig correcting its
+	 * throw after making it.
+	 *
+	 * **Two mechanisms, and the second one is for the rig that stops being driven.** The tick's own "no ball"
+	 * branch is what normally ends the aim, and it has been taught to leave it standing while this deadline has
+	 * not passed — but `LobbyRigService` strips the behaviour tags at a round boundary, and a rig that threw
+	 * within this window of one would never tick again, leaving an `AlignOrientation` and a switched-off
+	 * `AutoRotate` on a body standing in the lobby for the rest of the session. So a timer is armed for the window
+	 * plus {@link WINDUP_EXPIRY_SLACK_SECONDS}, and **it can only ever clear, never act** — the same restriction
+	 * the windup's own expiry timer carries, and for the same reason: it cannot race a turn that has already
+	 * thrown its token away.
+	 *
+	 * **The length is the clip's, not the constant's**, and it is written the way `BallService` writes the mark's
+	 * window — `math.max` of the two — because a clip longer than {@link BALL_CONFIG.THROW_ANIMATION_SECONDS}
+	 * extends the animation and the mark with it. Reading the constant alone here would drop the facing a fraction
+	 * of a second before the arm finished moving, which is the same fault this function exists to fix, only
+	 * smaller.
+	 *
+	 * **The token is the aim object itself.** A rig cannot pick up a ball and throw again inside this window — it
+	 * has to fetch one — but the check is a reference comparison rather than a promise about timing, so a rig that
+	 * somehow aimed again would keep its new aim and only the old one would be dropped.
+	 */
+	const holdAimThroughThrow = (model: Model): void => {
+		const aim = aims.get(model);
+		if (aim === undefined) return;
+
+		const window = math.max(BALL_CONFIG.THROW_ANIMATION_SECONDS, throwAnimationWindowSeconds());
+
+		aim.holdUntil = os.clock() + window;
+
+		task.delay(window + WINDUP_EXPIRY_SLACK_SECONDS, () => {
+			if (aims.get(model) === aim) clearAim(model);
+		});
 	};
 
 	return {
@@ -633,13 +705,22 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// not aiming at anything, and a constraint left standing would keep turning a body that
 			// has nothing to do with the turn.
 			//
+			// **Except for the length of the throw it has just made**, which is the one case this branch is asked
+			// to leave alone. The turn after a release arrives here with the ball already gone and the throw's
+			// animation still running, and clearing the aim at that instant restores `AutoRotate` and snaps a
+			// walking rig back to its walk direction mid-throw. See `holdAimThroughThrow`, which set the deadline
+			// this reads, and which also arms the timer that closes the window if this branch never runs again.
+			//
 			// **And a hold cannot survive it.** A rig whose ball left its hand mid-windup — a throw by another
 			// path, a pickup it lost, a round boundary that destroyed the ball — is not winding anything up any
 			// more, and a windup left standing would fire a ball that is not there and leave its charge published
 			// on a body with an empty hand.
 			if (!balls.getHeldBall(model)) {
+				const aim = aims.get(model);
+				const holdingFacing = aim !== undefined && aim.holdUntil !== undefined && os.clock() < aim.holdUntil;
+
 				cancelWindup(model, "the ball left the hand");
-				clearAim(model);
+				if (!holdingFacing) clearAim(model);
 
 				return;
 			}
@@ -789,10 +870,17 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				return;
 			}
 
-			// **On target, and the hold is over: stop turning and throw at the body.** The constraint comes down
-			// before the throw so the ball leaves a body that has finished moving, and the charge carries it to the
-			// target from the muzzle the rig is now facing along — solved on the turn that *decided* for the shape
-			// that stops there, and on this turn for the two shapes whose body has walked since.
+			// **On target, and the hold is over: throw at the body.** The charge carries it to the target from the
+			// muzzle the rig is facing along — solved on the turn that *decided* for the shape that stops there,
+			// and on this turn for the two shapes whose body has walked since.
+			//
+			// **The aim constraint stays up, which reverses what this line did.** It used to come down here, on the
+			// argument that "the ball leaves a body that has finished moving" — true, but only for the instant of
+			// the release. What that cost was the follow-through: with the constraint gone, `AutoRotate` came back
+			// on the same frame and a rig that threw while walking turned back to its walk direction *during* the
+			// throw animation, so the arm went out of a body already facing somewhere else. Nothing here re-aims
+			// it — the heading is the one written on this turn, and the body holds exactly that. See
+			// `holdAimThroughThrow` for the window and for the timer that closes it if the rig stops being ticked.
 			//
 			// **The hold ends here through `endWindup` rather than through `cancelWindup`, because a throw is not a
 			// cancellation.** The row and the published charge go exactly as a cancellation's do — see
@@ -803,7 +891,7 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// rather than from an attribute that is now gone.
 			const walk = windup.walk;
 
-			clearAim(model);
+			holdAimThroughThrow(model);
 			windups.endWindup(model);
 
 			// **And the point handed over is the only thing the miss touches.** `rollMiss` runs once per throw —

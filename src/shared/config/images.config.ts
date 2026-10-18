@@ -31,12 +31,12 @@ export const IMAGES_CONFIG = {
 	 * whether each reads as its own power rather than as a colour. That is a question for a screen, not
 	 * for this file.
 	 *
-	 * **This record is also the HUD's reveal list, and a new entry joins both at once.** When a box is
-	 * collected, `SuperHudController` spins the slot through *every* value here — including powers the
-	 * player does not own — before settling on the one that was granted, so the tease shows a player what
-	 * they are missing. It walks this record rather than the roster, which means an entry added here is in
-	 * the reveal with no code change anywhere: the same one-line-per-file cost this doc opens with, now
-	 * paying for two features instead of one.
+	 * **This record is also the power slot's reel, and a new entry joins both at once.** When a box is
+	 * collected, `SuperHudController` shuffles the slot through *every* value here — including powers the player
+	 * does not own — before landing on the one that was granted, so the tease shows a player what they are
+	 * missing. It walks this record rather than the roster, which means an entry added here is on the reel with
+	 * no code change anywhere: the same one-line-per-file cost this doc opens with, now paying for two features
+	 * instead of one.
 	 *
 	 * **And the asset-side trap, which lives here because it is a fact about these icons.** The art is drawn
 	 * at the artist's size — the sources in `assets/icons/` are 1254px square — and the slot is 56px, so an

@@ -8,12 +8,18 @@
  */
 export const SUPER_CONFIG = {
 	/**
-	 * Hits a player needs to wear a crown on their own, without being compared to anybody.
+	 * **The floor on a side's leader: how many hits the top body on a side must have before that side's
+	 * crown appears at all.**
 	 *
 	 * **Placeholder.** Three is a first guess, and it is the number to move when the crown turns up too
-	 * early or too late. It is half of the rule — a player at or above this is crowned whatever their
-	 * side is doing, and a player below it can still be crowned by being the highest on their side. See
-	 * `SuperService.refreshCrowns` for the pair and for why a tie crowns both.
+	 * early or too late. It is a *floor* and not a second way in: a body below its side's leader never wears
+	 * the crown however many hits it has, and a side whose leader has not reached this crowns nobody rather
+	 * than crowning whoever happens to be sitting at nought.
+	 *
+	 * **One crown per side, and a tie at the top goes to the newer body.** See
+	 * `SuperService.refreshCrowns` for the rule as it is written and for why the tie is broken by who got
+	 * there last rather than shared — it used to be shared, and two crowns on one side read as a broken
+	 * indicator rather than as a tie.
 	 *
 	 * **It is not a target, and nothing is earned at it.** The number that stood here was
 	 * `STREAK_REQUIRED`, the run of hits that bought a super charge. That grant is gone — see

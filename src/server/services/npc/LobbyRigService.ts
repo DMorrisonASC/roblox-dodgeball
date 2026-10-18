@@ -113,6 +113,28 @@ const GAMEPLAY_BEHAVIORS: Array<string> = [
 ];
 
 /**
+ * **How far inside a join pad's edge a rig is sent, in studs** — and it is the arrival radius rather than a
+ * tunable of its own, which is the one decision in this file that looks like an omission and is not.
+ *
+ * A rig stops when it is flat within `NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS` of the point it was handed, so a
+ * point inset by *that same amount* is the smallest inset that keeps every resting body on the pad: the reach
+ * it may drift is a disc of that radius, and a disc of radius `r` around a point at least `r` from each edge of
+ * a rectangle lies inside the rectangle. **A margin of one stud**, which "near the edge but not on it" would
+ * suggest, is a rig that can come to rest three studs off the sign and in the air beside it — the arrival
+ * radius is what makes the two numbers the same question, so they are written as one number.
+ *
+ * **The inset exists so that the pad is a room rather than a spot.** The destination used to be the pad's own
+ * `Position`, so every rig on a side walked to the same coordinate and stood in the same square stud of it,
+ * which is a stack of placeholders shoulder to shoulder on a sign twenty studs wide. `padArrivalPoint` draws
+ * inside these edges instead, so a side's rigs fan out across the pad.
+ *
+ * **`Size.X` and `Size.Z`, and no `Y`.** A pad is a footprint: the parts this lobby uses are about
+ * 20 × 29 × 20, and the 29 is the sign standing up, not an extent a walk has to stay inside — the arrival test
+ * is flat for the same reason. See `padArrivalPoint` for what the height of the drawn point is.
+ */
+const PAD_EDGE_MARGIN = NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS;
+
+/**
  * The lobby's placeholder rigs: one per seat a match allows, spawned once at server start, each
  * walking to one side's join pad.
  *
@@ -1732,9 +1754,12 @@ export class LobbyRigService implements OnStart {
 	 * re-decides once its window expires, `SeekBehavior` forgets a ball that has been destroyed or moved,
 	 * and `RespawnBehavior` *wants* the home and template it took at the start of the life. **One is not
 	 * harmless and is named rather than fixed here**: `ThrowBehavior`'s aim constraint is destroyed on a
-	 * death and on losing the hand but **not** on losing the tag, so a rig killed mid-turn keeps an
+	 * death and, for a rig that has just thrown, by a watchdog of its own — see `holdAimThroughThrow`, which
+	 * keeps the facing up for the length of the throw's animation and clears it on a timer whether or not the
+	 * rig ever ticks again — but **not** on losing the tag, so a rig killed *or turned* mid-aim keeps an
 	 * `AlignOrientation` on its root until its next turn with the tag back on — where an empty hand clears
-	 * it.
+	 * it. **A rig that threw just before the strip is no longer one of those**, which is the half the timer
+	 * bought.
 	 *
 	 * **The pad walk's own leftovers are not on that list, and both are worth naming because they were
 	 * equivalent to them.** This doc used to say that `WalkToJoinPadBehavior.arrived` stayed `true` past a
@@ -2162,6 +2187,49 @@ export class LobbyRigService implements OnStart {
 	}
 
 	/**
+	 * **A point drawn on `pad`'s footprint, inset from every edge — where the rig actually walks.**
+	 *
+	 * `nextPad` above already spreads a side's rigs over its *signs*, and with one pad a side that rotation is
+	 * a loop of one: every rig on the side is handed the same `BasePart`, and the destination used to be that
+	 * part's `Position`, which is one coordinate for four bodies. What that looks like is four placeholders
+	 * standing in a stack in the middle of a sign twenty studs across, which reads as one rig with a rendering
+	 * fault. This is the other axis of the same spread: pick a pad for the side, then pick a spot on it.
+	 *
+	 * **A uniform draw over an inset rectangle, one axis at a time.** Each axis reaches
+	 * `0.5 × (Size − 2·margin)` either side of the pad's own centre, so the ends of the range are the pad's
+	 * edges less {@link PAD_EDGE_MARGIN} — the margin is the arrival radius, and the arithmetic that makes that
+	 * the right number is at that constant. The span is floored at zero rather than guarded: a pad narrower than
+	 * two margins would otherwise hand `math.random` a *negative* range and return a point outside the pad,
+	 * which is the failure this whole method exists to avoid, arrived at from the other side.
+	 *
+	 * **The offset goes through `pad.CFrame`, not through `Position` in world space.** `Size.X` and `Size.Z`
+	 * are the pad's *local* extents, so the draw has to be rotated with the part: a sign turned to face the
+	 * lobby has a world footprint that is its own bounding box, and adding a world-axis offset would push rigs
+	 * toward the world diagonals and off two corners — more so the further the pad is turned.
+	 * `PointToWorldSpace` is exactly the "this offset, in the part's own frame, as a world point" that the
+	 * rectangle the sizes describe needs — and it is *that* method rather than `CFrame.new` composed by hand,
+	 * which is not callable in this project's typings at all (`CFrameConstructor` has no `new`).
+	 *
+	 * **The height is the pad's own, unchanged from the centre this replaced.** The pads here are about
+	 * 20 × 29 × 20 boxes, so `Position.Y` is roughly fourteen studs up the sign — and that is the point the walk
+	 * has been handed since it was written, with rigs arriving on it happily, because `Humanoid:MoveTo` steers
+	 * toward the X/Z of the point it is given and gravity keeps the body on the floor. The arrival test agrees:
+	 * `WalkToJoinPadBehavior.tick` measures the offset from the rig to this point with the Y dropped. So the
+	 * drawn point is kept at the pad's height rather than dropped to the floor, which keeps the destination one
+	 * *thing* — the pad, less a random offset — instead of a point at one height with a test at another.
+	 */
+	private padArrivalPoint(pad: BasePart): Vector3 {
+		const size = pad.Size;
+
+		const spanX = math.max(size.X - PAD_EDGE_MARGIN * 2, 0);
+		const spanZ = math.max(size.Z - PAD_EDGE_MARGIN * 2, 0);
+
+		const offset = new Vector3((math.random() - 0.5) * spanX, 0, (math.random() - 0.5) * spanZ);
+
+		return pad.CFrame.PointToWorldSpace(offset);
+	}
+
+	/**
 	 * **Which of the other side's pads the walk from where the rig stands to `destination` will pass.**
 	 *
 	 * **One question with two readers, which is why it is a nearest-pad query rather than a rotation.** The
@@ -2177,12 +2245,16 @@ export class LobbyRigService implements OnStart {
 	 * across the lobby is. `t` is clamped, so a pad *behind* the rig measures to the rig rather than to a point
 	 * on a line that does not exist — the behaviour has the same rule for the same reason.
 	 *
-	 * **Flat, and measured from the centres.** A pad is a footprint on the floor; its height and the rig's own
-	 * height say nothing about where a body walking past it may go.
+	 * **Flat, and measured from the pads' centres.** A pad is a footprint on the floor; its height and the rig's own
+	 * height say nothing about where a body walking past it may go. **The leg's own far end is now a `Vector3`
+	 * rather than a pad** — the point `padArrivalPoint` drew, not the pad's `Position` — because that is where the
+	 * rig is walking: on a twenty-stud sign the two differ by up to ten studs, which is half a sign's worth of
+	 * error in "is this pad between me and my destination". What the query still measures *from* is the centres of
+	 * the pads it is choosing between, which is the only thing that has a centre at all.
 	 */
-	private padInTheWay(rig: Model, destination: BasePart, otherPads: Array<BasePart>): BasePart {
+	private padInTheWay(rig: Model, destination: Vector3, otherPads: Array<BasePart>): BasePart {
 		const from = rig.GetPivot().Position;
-		const to = destination.Position;
+		const to = destination;
 
 		const legX = to.X - from.X;
 		const legZ = to.Z - from.Z;
@@ -2251,6 +2323,15 @@ export class LobbyRigService implements OnStart {
 	 * join-part layout out of the machine that animates NPCs. Written out at five sites they would be five
 	 * chances for a rig to be told to look at one side's sign while walking to the other's.
 	 *
+	 * **The destination is a point drawn on the pad rather than the pad's centre**, and it is the first of the
+	 * five writes. `nextPad` spreads a side's rigs over its *signs*, which with one pad a side is a loop of one,
+	 * so the destination used to be one coordinate for all four bodies on the side and the lobby showed a stack
+	 * of placeholders in the middle of the sign. `padArrivalPoint` draws inside the pad's own edges instead —
+	 * see it, and see `PAD_EDGE_MARGIN` for why the inset is the arrival radius rather than a number of its own.
+	 * The draw is per *walk* rather than per rig, so a rig sent back to its pad at a round end lands somewhere
+	 * new rather than back in the spot it left. And the corridor below is measured to the drawn point rather
+	 * than to the pad's centre, because the drawn point is where the rig is going.
+	 *
 	 * **The delay is drawn here, per rig, and that is the whole of the staggering.** Two rigs cloned a
 	 * moment apart in the boot loop must not set off in the same second, so the draw has to be per rig rather
 	 * than one number per lobby — and it is re-drawn on every walk rather than once per rig, because the
@@ -2299,9 +2380,9 @@ export class LobbyRigService implements OnStart {
 		const otherSide = side === TEAM_A ? TEAM_B : TEAM_A;
 		const otherPads = this.padsFor(otherSide);
 
-		const destination = this.nextPad(side, pads);
+		const destination = this.padArrivalPoint(this.nextPad(side, pads));
 
-		rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, destination.Position);
+		rig.SetAttribute(WALK_TO_JOIN_PAD_ATTRIBUTE, destination);
 		rig.SetAttribute(WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE, side);
 
 		if (otherPads.size() > 0) {
