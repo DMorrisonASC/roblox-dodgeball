@@ -1,8 +1,56 @@
 import { BEHAVIOR_CATCHING, NpcBehavior } from "../Behavior";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import { CATCHING_ATTRIBUTE } from "shared/constants";
 import { detectThreat } from "../detect";
 import type { BallService } from "../../services/ball/BallService";
 import type { CatchService } from "../../services/actions/CatchService";
+
+/**
+ * **The catch's own facing constraint** — the names it is built under and the two handling numbers, taken from
+ * `ThrowBehavior`'s aim rather than invented.
+ *
+ * **Why a rig has to be turned at all, when the window is what catches.** A catch is not aimed: the window
+ * catches any body contact, so nothing about the mechanic reads the rig's facing. What reads it is a *person
+ * watching* — a rig catching a ball it is facing away from is a rig that appears to be caught by luck — and the
+ * same requirement is on the player's body (`AimFacingController`), which is the whole of the parity this
+ * feature is about. The turn costs one constraint on a body that is standing still anyway.
+ *
+ * **`AlignOrientation` on an attachment at the root, `AutoRotate = false`, restored to what it was** — the exact
+ * construction `ThrowBehavior.aimAt`, `WalkToJoinPadBehavior` and `DodgeService` all use, and the codebase has
+ * already argued it three times: a constraint turns a body *over time*, which is what makes a turn read as a
+ * turn, and a per-tick `CFrame` write would snap. **`AutoRotate = false` and not `PlatformStand`**, which is
+ * `ThrowBehavior`'s own note: a catching rig may well be walking, and platform stand would take the walk away.
+ *
+ * **`50` rather than the aim's `30`**: a catch is a reaction with a one-second window, so the body arriving late
+ * is a body that missed the moment; a throw's aim is a pose the player is settling into.
+ *
+ * **Placeholder** on both numbers in the sense that they are copied rather than tuned here — the aim's own
+ * constants are what a change should be made in, and this pair is kept in step with them by being the same
+ * values.
+ */
+const CATCH_FACE_ATTACHMENT_NAME = "NpcCatchAttachment";
+const CATCH_FACE_CONSTRAINT_NAME = "NpcCatchBalance";
+const CATCH_FACE_MAX_TORQUE = 1e6;
+const CATCH_FACE_RESPONSIVENESS = 50;
+const CATCH_FACE_FLAT_EPSILON = 0.001;
+
+/**
+ * One rig's catch facing, as this behaviour holds it.
+ *
+ * **State rather than locals, because the constraint has to outlive the tick that built it** — the same note
+ * `ThrowBehavior`'s `Aim` carries, for the same reason: an `AlignOrientation` turns a body over time, so it
+ * cannot be created, used and destroyed inside one turn.
+ */
+interface CatchFace {
+	readonly attachment: Attachment;
+	readonly balance: AlignOrientation;
+
+	/** The rig's humanoid, if it has one, so its own rotation can be handed back. */
+	readonly humanoid?: Humanoid;
+
+	/** What `Humanoid.AutoRotate` was before this file switched it off. */
+	readonly autoRotate: boolean;
+}
 
 /**
  * Catching, for an NPC — **and the two ways to ask for it.**
@@ -68,6 +116,84 @@ export function makeCatchBehavior(
 	dropCaught: boolean,
 	shouldAsk: (model: Model, now: number) => boolean,
 ): NpcBehavior {
+	/**
+	 * Every rig this behaviour is currently turning, and the constraint doing it.
+	 *
+	 * **Never cleared on a tag removal, and that is `ThrowBehavior`'s own accepted state rather than an
+	 * oversight** — see `LobbyRigService.setGameplayBehaviors`, which names it: a constant is destroyed on a
+	 * death and on the window closing, and a rig stopped mid-catch keeps one on its root until its next turn
+	 * with the tag back on, where the attribute now reads false and this clears it. The alternative considered
+	 * was a token-guarded watchdog timer per rig, and the cost — ten timers a second per sitting rig — buys an
+	 * edge nobody can see, because the constraint's goal is a direction and a body holding one is a body facing
+	 * the ball it was watching anyway.
+	 */
+	const faces = new Map<Model, CatchFace>();
+
+	/**
+	 * Points `model`'s body at `point`, building the constraint the first time and re-aiming it after.
+	 *
+	 * **Re-aimed every turn**, because the thing being faced moves: the rig is waiting for a thrown ball, and
+	 * the point it was at last turn is not where it will arrive. `ThrowBehavior.aimAt` re-aims on the same
+	 * argument for a target that walks.
+	 *
+	 * Flat, so the turn is a yaw and never pitches the rig into the floor — a ball rolling on the ground is at
+	 * the rig's feet and a ball arriving at head height still has a horizontal heading. A point exactly overhead
+	 * has no heading to turn to and the guard leaves the last good aim standing rather than turning the rig to
+	 * face nothing.
+	 */
+	const faceAt = (model: Model, point: Vector3): void => {
+		const root = model.FindFirstChild("HumanoidRootPart");
+		if (!root || !root.IsA("BasePart")) return;
+
+		let face = faces.get(model);
+
+		if (face === undefined) {
+			const attachment = new Instance("Attachment");
+			attachment.Name = CATCH_FACE_ATTACHMENT_NAME;
+			attachment.Parent = root;
+
+			const balance = new Instance("AlignOrientation");
+			balance.Name = CATCH_FACE_CONSTRAINT_NAME;
+			balance.Attachment0 = attachment;
+			balance.Mode = Enum.OrientationAlignmentMode.OneAttachment;
+			balance.MaxTorque = CATCH_FACE_MAX_TORQUE;
+			balance.Responsiveness = CATCH_FACE_RESPONSIVENESS;
+			balance.RigidityEnabled = false;
+			balance.Parent = root;
+
+			const humanoid = model.FindFirstChildWhichIsA("Humanoid");
+			const autoRotate = humanoid?.AutoRotate ?? true;
+			if (humanoid) humanoid.AutoRotate = false;
+
+			face = { attachment, balance, humanoid, autoRotate };
+			faces.set(model, face);
+		}
+
+		const flat = new Vector3(point.X - root.Position.X, 0, point.Z - root.Position.Z);
+		if (flat.Magnitude < CATCH_FACE_FLAT_EPSILON) return;
+
+		face.balance.CFrame = CFrame.lookAt(root.Position, root.Position.add(flat.Unit));
+	};
+
+	/**
+	 * Ends a facing: destroys the constraint and gives the humanoid its own rotation back.
+	 *
+	 * **Safe to call when there is none**, so every exit path can call it unconditionally rather than each
+	 * having to know whether one was ever built. Called on the two that matter — the window closing, and the
+	 * rig dying — and the restore is to the captured value rather than to `true`, since something else may have
+	 * switched `AutoRotate` off for a reason of its own.
+	 */
+	const clearFace = (model: Model): void => {
+		const face = faces.get(model);
+		if (face === undefined) return;
+
+		face.balance.Destroy();
+		face.attachment.Destroy();
+		if (face.humanoid) face.humanoid.AutoRotate = face.autoRotate;
+
+		faces.delete(model);
+	};
+
 	return {
 		tag,
 
@@ -117,6 +243,40 @@ export function makeCatchBehavior(
 				const held = balls.getHeldBall(model);
 				if (held && held.GetAttribute("Armed") !== true) balls.dropBall(model);
 			}
+
+			// **And the pose, read from the same published window the player's client reads.**
+			//
+			// The rig is turned onto the nearest ball **while its window is open**, which is the whole of the
+			// parity with a player: one attribute, two readers, so the two kinds of body cannot end up holding
+			// one pose each for the same moment. `detectThreat` is the behaviour's own question — the same call
+			// `shouldAsk` makes before it decides to catch — so the body is turned onto the ball it decided to
+			// wait for rather than onto a second, differently-sourced answer.
+			//
+			// **Nothing is turned when there is no ball in radius.** A window outliving the ball that opened it
+			// is ordinary (the ball is thrown, the window keeps running), and leaving the last aim standing is
+			// the honest pose: the body is still facing where the threat was rather than snapping to nothing.
+			//
+			// **The clear is on the attribute rather than on this file's own clock**, which is what makes a
+			// *successful* catch end the pose too: `BallComponent` spends the window the moment a ball arrives,
+			// `CatchService.consume` clears the attribute in the same breath, and the next turn reads it gone.
+			// A face armed with `now + WINDOW_SECONDS` would keep a rig looking at a ball it has already caught.
+			if (model.GetAttribute(CATCHING_ATTRIBUTE) === true) {
+				const ball = detectThreat(model, balls);
+				if (ball !== undefined) faceAt(model, ball.Position);
+			} else {
+				clearFace(model);
+			}
+		},
+
+		/**
+		 * **The death path, and it is here because a dead rig is never ticked again.** `NpcService` stops running
+		 * a behaviour on a body that is not alive, so the branch above cannot be the thing that takes the
+		 * constraint off a corpse — a rig would come back rebuilt (or be left as a corpse) still wearing an
+		 * `AlignOrientation` and a switched-off `AutoRotate`. `onDied` is the interface's answer to exactly this
+		 * and `WalkToJoinPadBehavior` uses it for the same class of leftover.
+		 */
+		onDied(model) {
+			clearFace(model);
 		},
 	};
 }

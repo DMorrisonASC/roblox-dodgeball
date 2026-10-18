@@ -2100,6 +2100,23 @@ export class RoundService implements OnStart {
             return;
         }
 
+        // **And everybody is told whose body just paid for that throw, which is the cosmetic half of the kill
+        // below.** A caught throw is the one moment the *thrower* is the punished end, so the effect is drawn on
+        // their body — red — and it goes out for both kinds of body and both kinds of catcher, because a rig's
+        // throw being caught is the common case in a round against rigs and the thrower there has no client of
+        // its own to be told privately. See `networking.ts` on `caughtThrow` for why it is an event of its own
+        // rather than a flag on `hitImpact`, and `hitVfx` for the only reader.
+        //
+        // **Sent here rather than beside the kill, and the difference is the guards above.** Everything that
+        // reaches this line is a catch the round is about to act on: both ends in this round, both ends on
+        // opposite sides, and a thrower that resolved. A friendly catch, a catch between rounds and one from a
+        // thrower the round cannot attribute all returned before it — so the red effect can never say "you are
+        // out" about a throw nobody is out for.
+        //
+        // **Nothing here is a record.** No counter, no score, no feed entry — the points and the death below are
+        // the record, and this is only the sentence the clients draw.
+        events.Server.Get("caughtThrow").SendToAllPlayers(thrower.Name, catcher.Name);
+
         // The death goes through `Died → handleDeath` for a player, the same chain a landed hit takes: the
         // mode decides what the death means, and this file does not decide it here twice. **A rig has no
         // `Died → handleDeath` chain and needs none** — its `Humanoid` is killed here and `RespawnBehavior`

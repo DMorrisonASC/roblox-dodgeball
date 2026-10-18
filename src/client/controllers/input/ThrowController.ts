@@ -1,5 +1,6 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
+import Net from "@rbxts/net";
 import {
 	ContextActionService,
 	ContentProvider,
@@ -15,6 +16,7 @@ import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BALL_NAME, BALL_SIZE } from "shared/constants";
+import { events } from "shared/networking";
 import { REMOTES } from "shared/remotes";
 import { abilityOn } from "shared/ability";
 import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
@@ -28,23 +30,31 @@ const ACTION_NAME = "ThrowDodgeball";
 const CURVE_ACTION_NAME = "BendThrow";
 
 /**
- * **The charge-level remote used to live here, and its removal is worth a paragraph rather than a deletion.**
+ * **The charge-level remote, removed once and now back for a different reason.**
  *
  * `syncCharging` sent the server one boolean — "this client is holding the throw button" — from the frame
  * loop, only when it changed. It existed for exactly one reason: `WalkSpeedService` stopped the stamina pool
  * refilling while a charge was in progress, and a charge is measured *here* (`throwing.ts` owns its start
- * time), so the server could not see it and had to be told. **That hold is gone** — a player can hold the
+ * time), so the server could not see it and had to be told. **That hold was removed** — a player can hold the
  * throw button indefinitely, and a rule that stops stamina recovering for as long as somebody holds a button
  * is a self-inflicted lockout rather than a rule about resting; see `WalkSpeedService.poolHold` for the whole
- * argument — so there is nothing left for this module to report.
+ * argument — so the event, the `charging` set and the handler all went with it.
  *
- * **What went with it, so nobody looks for it:** the `setCharging` wire event (`shared/networking.ts`), the
- * `charging` set and `setCharging` handler in `WalkSpeedService`, and the `[Throw] charge level —
- * holding/released` pair of lines. **One thing deliberately did not go:** the shape of the loop that called
- * it. `updateGuide` still computes `charging` once per frame and everything that used to hang off it —
- * the guide, the `aiming` flag, the charge sound's stop, the arc — still reads that one value, so a fifth
- * consumer later has the same single source it would have had.
+ * **It is back, and what it carries is different in kind.** A charge is a *stance* now: the clip holds its
+ * windup pose, so a body that keeps walking at twenty studs a second through it slides across the ground. So
+ * `WalkSpeedService` caps the speed for the length of the hold — and the server still cannot see a hold at
+ * all, because `chargeStartedAt` is measured on this machine and the server only learns of the throw when the
+ * release arrives. The client therefore reports the level of a fact only it has, exactly as `setSprinting`
+ * reports a key only it can see, and the server decides what to do with it.
+ *
+ * **Sent on the edge, from `updateGuide`**, which is the one place that already computes `charging` every
+ * frame and therefore the one place that sees every way a charge can end: a release, the four cancellations
+ * this file owns, and the `E` cancel another file performs — all of them clear `chargeStartedAt`, and the next
+ * frame reads the change. A send at each call site would be a second list to keep in step with the first,
+ * which is the failure this loop was built to avoid; see `stopChargeSound`, which makes the same argument for
+ * the same reason.
  */
+type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
 
 /**
  * Console diagnostics: which throw was fired, and the marker-jitter report — that one is rate limited so
@@ -157,6 +167,19 @@ function chargePlaybackSpeed(sound: Sound): number {
 export class ThrowController implements OnStart {
 	private readonly player = Players.LocalPlayer;
 	private throwRemote?: RemoteEvent;
+
+	/** The charge-level remote, resolved on first use — `Client.Get` waits for the server's copy. */
+	private chargingRemote?: ClientRemotes["setCharging"];
+
+	/**
+	 * Whether the last frame reported a charge, so the wire carries one message per *edge*.
+	 *
+	 * **Not the charge's state itself** — that lives in `client/throwing.ts` and this is only the last value
+	 * this file sent about it. Kept here because it is this file's business: the loop below is what reads the
+	 * state every frame, and the send is a message about a change in what it read.
+	 */
+	private reportedCharging = false;
+
 	private readonly guide = new AimGuide();
 
 	// Scaffolding for tracking down a marker that moves when it should not — see `reportMarkerJitter`.
@@ -407,11 +430,22 @@ export class ThrowController implements OnStart {
 
 		const charging = Fusion.peek(chargeStartedAt) !== undefined;
 
-		// **The charge's level used to be reported to the server from here, and it is not any more.** The
-		// server held the stamina pool's recovery while a player was charging, so it needed to be told when a
-		// charge began and ended — `syncCharging`, the `setCharging` event and the `charging` set in
-		// `WalkSpeedService` were the whole of that. The hold is gone (see `WalkSpeedService.poolHold`), so
-		// nothing is sent and the `[Throw] charge level — holding/released` pair of lines is gone with it.
+		// **The cap's wire, sent on the edge and from here rather than from the six places a charge can end.**
+		//
+		// The server decides what a charge costs in speed (`WalkSpeedService`); what it needs from this side is
+		// only *whether one is running*, and this is the one line in the game that already knows. `updateGuide`
+		// runs once per frame and reads the shared charge state, so a release, each of the four cancellations
+		// this file owns and the `E` cancel performed by `CatchController` all arrive here as the same change —
+		// the argument `stopChargeSound` below makes at length, applied to a message instead of a sound.
+		//
+		// The comparison is against the last value *sent* rather than against the last frame's read, because
+		// the two are the same thing: the value is written only when it differs, and a send that failed would
+		// leave the two out of step in a way a re-send each frame would paper over — at the cost of sixty
+		// messages a second for a boolean that changes twice.
+		if (charging !== this.reportedCharging) {
+			this.reportedCharging = charging;
+			this.getChargingRemote().SendToServer(charging);
+		}
 
 		// **The glow's flag is the guide's own visibility, published rather than worked out twice.**
 		// It is set from the same expression that decides whether to draw, so the guide and the aim
@@ -1096,6 +1130,14 @@ export class ThrowController implements OnStart {
 		}
 
 		return balls;
+	}
+
+	private getChargingRemote(): ClientRemotes["setCharging"] {
+		if (!this.chargingRemote) {
+			this.chargingRemote = events.Client.Get("setCharging");
+		}
+
+		return this.chargingRemote;
 	}
 
 	private getThrowRemote(): RemoteEvent | undefined {

@@ -83,6 +83,28 @@ export const CHARACTER_CONFIG = {
     STAMINA_RECOVERY_DELAY_SECONDS: 0.5,
 
     /**
+     * **Placeholder — `8`.** The speed a body is limited to while an action that wants it planted is running:
+     * a throw being charged, or a catch window.
+     *
+     * **A ceiling, not a base and not a bonus.** A charge holds the throw clip at its windup pose and a catch
+     * window is a body with its hands up waiting for a ball; a body that keeps its full `20` — or its sprinting
+     * `35` — through either one slides across the ground, which is what this number is for. It is applied by
+     * `WalkSpeedService` as `min(sum of contributions, this)`, so it composes with everything else the service
+     * already sums: a frozen body is still frozen at `0`, a slowed body is still slower, and a **sprinting**
+     * catcher or thrower is held at `8` rather than at `20 + 15`.
+     *
+     * **Named for aiming and applied to more than aiming, which is the honest record of how it arrived.** The
+     * throw's cap was asked for by this name; the catch's cap then asked to reuse *the aiming speed* rather
+     * than invent a second number, so one constant serves both. A second name for the same `8` would be two
+     * numbers free to drift apart the first time somebody tuned a stance, so there is one — this one — and
+     * every action that wants a body slowed while it stands in it reads it here.
+     *
+     * Below `BASE_WALK_SPEED` by design, and above the `0` an anchor would mean: a body can still shuffle to
+     * line itself up, which is the difference between a stance and a stun.
+     */
+    AIMING_WALK_SPEED: 8,
+
+    /**
      * How long a freshly spawned player cannot be hurt, in seconds.
      *
      * **One second, on every player, in every phase.** Short enough to read as a spawn grace rather

@@ -3,7 +3,7 @@ import { Players } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
-import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
+import { CATCHING_ATTRIBUTE, CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
 import { lockoutElapsed } from "./actionLock";
@@ -309,6 +309,19 @@ export class CatchService implements OnStart {
 
 		this.windows.set(model, window);
 
+		// **And the window itself is published, which is what the two visible halves of a catch are read from.**
+		// `CATCHING_ATTRIBUTE` is a *state* rather than an event: it is up for as long as a window is open,
+		// which is longer than the animation mark below and shorter than the catch cycle the client's bar shows.
+		// Two readers, one per kind of body — `AimFacingController` turns the local player onto the camera and
+		// `CatchBehavior` turns a rig onto the ball — and one signal between them is the whole reason it is an
+		// attribute rather than two client-side models that could disagree.
+		//
+		// **Set on open and never on the extension branch above**, on exactly the argument the animation mark
+		// makes: a rig holding a window open asks every tick, and a property written twenty times a second with
+		// the value it already holds is twenty replication candidates for one fact. Absence is "not catching",
+		// and {@link consume} is the only thing that writes it.
+		model.SetAttribute(CATCHING_ATTRIBUTE, true);
+
 		// **And the body is marked as mid-catch, which is what the catch's own clip is played from — the
 		// *attempt*, with no ball anywhere near it.**
 		//
@@ -364,6 +377,12 @@ export class CatchService implements OnStart {
 		if (!player || !this.dev.getFlag(player, "InfiniteCatch")) return false;
 
 		this.alwaysCatching.add(player);
+
+		// **The endless window is still a window, so it is published like one.** Reached on every press by a dev
+		// holding the flag, so this is one write per press rather than one per tick — the value is already `true`
+		// after the first, and a repeat of it is no change. Cleared by {@link consume}, which is where the flag
+		// going off lands, so the dev's whole exit path is `isCatching` reading the flag and consuming.
+		model.SetAttribute(CATCHING_ATTRIBUTE, true);
 
 		// **The dev's endless window draws no trail either**, from the same removal — see the note on the
 		// normal branch above. This one is worth a line of its own because it was the case with no timer at
@@ -527,6 +546,13 @@ export class CatchService implements OnStart {
 			window.death.Disconnect();
 			this.windows.delete(model);
 		}
+
+		// **The published window comes off here, and here is the only place that can be said of.** Every close
+		// path already passes through this method — a ball caught, an expiry found by {@link isCatching}, a
+		// death, a departure, and the dev's flag going off — so one clear covers the whole list, and no exit
+		// path had to learn that the attribute exists. That is the same argument the removed trail made for
+		// being stopped here, and it is why this is not written at each of the five sites.
+		model.SetAttribute(CATCHING_ATTRIBUTE, undefined);
 
 		// **When the window stopped counting**, which is not the same thing as this instant:
 		// an expired window is only noticed by whoever next asks, and recording *that* moment

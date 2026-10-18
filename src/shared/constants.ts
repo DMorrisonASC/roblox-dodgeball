@@ -1043,6 +1043,40 @@ export const CATCH_ANIMATION_ATTRIBUTE = "AnimCatch";
 export type CatchCause = "attempt" | "catch";
 
 /**
+ * **Whether this body has a catch *window* open right now** — `true` from the moment `CatchService` opens one
+ * until the moment it stops counting, and absent at every other time.
+ *
+ * ## Why it exists, and why it is not {@link CATCH_ANIMATION_ATTRIBUTE}
+ *
+ * The animation mark above is `true`-shaped for a *clip*: it is written when a window opens and again when a
+ * ball arrives, and it lapses after `CATCH_CONFIG.CATCH_ANIMATION_SECONDS` (0.6 s) whatever the window is doing
+ * — and it is deliberately **not rewritten when a window is extended**, because a rig holding a window open by
+ * asking every tick would then hold a catch pose for its whole life. So it cannot answer "is this body catching
+ * now": a 1 s window with 0.6 s of mark leaves 0.4 s in which a catching body is marked as not catching, and a
+ * window extended past its first second is marked as nothing at all.
+ *
+ * **This attribute is the window itself**, and it has exactly one writer and two readers:
+ *
+ * - **Written by `CatchService`** — `true` in the two places a window opens (the ordinary branch of
+ *   `attemptCatch` and the endless window a dev holds), cleared in `consume`, which is the *one* path every
+ *   close goes through: a ball caught, an expiry found, a death, a departure, and a dev's flag going off.
+ * - **Read by `client/controllers/character/AimFacingController`**, which turns the local player's body onto
+ *   the camera while it is set, and by **`server/npc/behaviors/CatchBehavior`**, which turns a rig onto the ball
+ *   it is waiting for. One signal for both bodies is the whole point: "catching" is one state and the two kinds
+ *   of body must not be able to disagree about it.
+ *
+ * **A `true` flag rather than a number or a word**, unlike the animation mark, because nothing reads it for a
+ * degree. Every reader asks one question — is a window open — and a value with more in it would be a value each
+ * reader has to narrow before it can answer.
+ *
+ * **An attribute rather than a Fusion value on the client**, because the window is the *server's* fact: a press
+ * that the server refuses (no free hand, a dodge lockout, a freeze) must not turn the player's body, and a
+ * client-side model of the window would turn it for the whole of a press that never opened anything. The server
+ * is also the only side that can publish it for a rig.
+ */
+export const CATCHING_ATTRIBUTE = "Catching";
+
+/**
  * **What a rig is winding up** — the charge it is holding, as a fraction of a full hold, for as long as it holds
  * it. A number from `0` to `1`, written by the one behaviour that runs a windup on the body.
  *

@@ -1,6 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, RunService } from "@rbxts/services";
-import { DODGE_DIRECTION_ATTRIBUTE, DUCKING_ATTRIBUTE, STAMINA_ATTRIBUTE } from "shared/constants";
+import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, DUCKING_ATTRIBUTE, STAMINA_ATTRIBUTE } from "shared/constants";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { events } from "shared/networking";
@@ -39,6 +39,24 @@ const DEBUG = true;
  * key would be for a second, independent reason for the same bonus.
  */
 const SPRINT_KEY = "Sprint";
+
+/**
+ * The cap an **action stance** puts on a body — a throw being charged or a catch window — as the key it is
+ * stored under.
+ *
+ * **A cap is not a contribution, and that is why it has a name of its own here rather than being a negative
+ * addition.** A contribution is something a body *has* — a sprint adds `15` — while a cap is a ceiling on
+ * whatever it ends up with, and the difference is not cosmetic: `20 + 15` minus `27` would cap a sprinting
+ * catcher correctly and would do nothing at all to a frozen body already at `0`, which is the case it looks
+ * like it handles. A ceiling is one `math.min` at the end of the sum, it cannot move a body up, and it composes
+ * with every contribution already in the map without knowing what any of them are.
+ *
+ * **One key for both actions, because both are the same number.** `CHARACTER_CONFIG.AIMING_WALK_SPEED` is the
+ * whole of what a stance costs, and two keys holding one value would be two entries to remove and no difference
+ * to observe — the catch window and a charge cannot overlap in practice anyway (a catch needs an empty hand).
+ * A second action *with a different ceiling* would add its own key, and the lower of the two would win.
+ */
+const ACTION_CAP_KEY = "Action";
 
 /**
  * How often the stamina pool is written to {@link STAMINA_ATTRIBUTE}, in seconds.
@@ -174,6 +192,22 @@ export class WalkSpeedService implements OnStart {
     private readonly speeds = new Map<Model, Map<string, number>>();
 
     /**
+     * Every ceiling currently on a model, and the value of each, keyed exactly as {@link speeds} is.
+     *
+     * **A second map rather than a second kind of entry in the first.** The two are read at different points
+     * of one calculation — the contributions are *summed*, the caps are *minimised against the sum* — and
+     * mixing them would mean every reader of the sum remembering to skip cap-shaped rows. It also keeps
+     * {@link forget} honest: both maps are dropped together, so a body that dies cannot leave a ceiling
+     * behind to be applied to the next body that reuses the model (a character is new each death, so this is
+     * belt-and-braces, but the rig pool reuses *models*).
+     *
+     * **Written only by {@link setCap}, cleared only by {@link clearCap} and by a model being forgotten**, so
+     * there is no path that leaves a stale ceiling standing — see {@link enforceActionCaps}, which is the one
+     * caller for the catch and which clears on the frame the window closes.
+     */
+    private readonly caps = new Map<Model, Map<string, number>>();
+
+    /**
      * Every player's sprint, keyed by the player rather than by their character.
      *
      * **A pool belongs to a person, not to a body.** A character is replaced on every death, and a
@@ -198,9 +232,26 @@ export class WalkSpeedService implements OnStart {
      */
     private catchState?: CatchState;
 
-    // **The players holding the throw button used to be tracked here**, in a `Set<Player>` filled by the
-    // `setCharging` event and cleared on a new body, and `poolHold` read it to stop the recovery during a
-    // charge. All three are gone: see `poolHold` for why that hold was removed.
+    /**
+     * **The players holding the throw button, reported by their own client** — the aiming half of the action cap.
+     *
+     * **A `Set<Player>` filled by the `setCharging` event, and it lived here once before for a different
+     * purpose.** It used to hold the stamina pool's *recovery* during a charge; that hold was removed, because a
+     * hold whose length the player controls is a self-inflicted lockout rather than a rule about resting (see
+     * `poolHold`), and the set went with it. **It is back for the speed cap**, which is a different argument:
+     * a charge is a stance with the clip held at its windup, so the body has to be slowed while it stands in it,
+     * and *that* rule ends when the button does by definition.
+     *
+     * **Keyed by player, and read through the model.** A charge belongs to a person — it survives a death in the
+     * sense that the client is still holding the key — while the cap is applied to a body, so
+     * {@link isHoldingAction} resolves the player from the model it is already holding. The alternative, keyed by
+     * model, would need a handler that finds the body and a second path for a body arriving mid-hold.
+     *
+     * **The client's report is believed**, which is `setSprinting`'s rule and its argument: the server holds no
+     * opinion about a held button and no way to discover one, and an untrue `true` costs the player their own
+     * movement speed and buys nothing else.
+     */
+    private readonly charging = new Set<Player>();
 
     /**
      * Hands this service the catch window it has to respect. Called by `CatchService` itself.
@@ -219,9 +270,18 @@ export class WalkSpeedService implements OnStart {
         // situation. The check is in {@link setSprinting}.
         events.Server.OnEvent("setSprinting", (player, active) => this.setSprinting(player, active));
 
-        // **`setCharging` was subscribed here and is not any more.** It was the client's report of "the throw
-        // button is down", and its only reader was `poolHold`'s charge branch. Both are gone together — see
-        // that method for why the stamina hold during a charge was removed.
+        // **The charge's level, for the speed cap.** The server cannot see a hold — the start time is measured on
+        // the client and the server only hears of the throw at the release — so this is the one fact on the wire
+        // that only one machine has. See {@link setCharging} for what is done with it and {@link charging} for
+        // why it is a set of players rather than of bodies.
+        events.Server.OnEvent("setCharging", (player, active) => this.setCharging(player, active));
+
+        // **This subscription existed once, was removed, and is back — and the sentence that used to sit here said
+        // it was gone.** It first fed `poolHold`'s charge branch, and went with that branch when the stamina hold
+        // was removed. What it feeds now is the speed cap, which is a different rule with a different argument:
+        // see {@link isAiming}. The client's old `syncCharging` doc and `shared/networking.ts`'s declaration both
+        // carry the same record, so a reader arriving at any of the three finds the reversal rather than a
+        // contradiction between them.
 
         Players.PlayerAdded.Connect((player) => this.trackPlayer(player));
 
@@ -232,7 +292,13 @@ export class WalkSpeedService implements OnStart {
             this.trackPlayer(player);
         }
 
-        Players.PlayerRemoving.Connect((player) => this.sprints.delete(player));
+        // **Both per-player tables go with the player**, and the charge is here for the same reason the pool is:
+        // nothing will ever report `false` for a player who has left, so a row left behind would cap the next
+        // body that player id is reused for and nothing would ever take it off.
+        Players.PlayerRemoving.Connect((player) => {
+            this.sprints.delete(player);
+            this.charging.delete(player);
+        });
 
         // **A heartbeat with the engine's own delta, not a one-second loop.** A three-second pool
         // sampled once a second is three samples, and the recovery pause is a quarter of one of them
@@ -339,6 +405,121 @@ export class WalkSpeedService implements OnStart {
     }
 
     /**
+     * **Put a ceiling on a model's walk speed**, under a name so any cap can be taken off again without
+     * disturbing the rest.
+     *
+     * The value is applied to the *sum*, in {@link recalculateSpeed}, and never to a single contribution — so
+     * this cannot be defeated by a bonus that happens to be added afterwards, and a sprinting catcher is
+     * capped exactly as a walking one is. That is the whole of what "maximum speed while catching" means, and
+     * it is why this is a map of its own rather than a modifier with a negative number in it; see
+     * {@link CATCHING_CAP_KEY}.
+     *
+     * **Idempotent, and the unchanged case returns early.** `enforceActionCaps` calls this every frame a window
+     * is open, and a `Humanoid.WalkSpeed` write per frame is sixty property writes and sixty replication
+     * candidates a second to say one number that has not moved. The comparison is the same one `publish` makes
+     * for the stamina attribute and for the same reason.
+     *
+     * A model with no `Humanoid` stores nothing, like every other writer here — the ceiling would have nowhere
+     * to go.
+     */
+    public setCap(model: Model, key: string, speed: number): void {
+        const humanoid = model.FindFirstChildOfClass("Humanoid");
+        if (!humanoid) return;
+
+        let caps = this.caps.get(model);
+        if (!caps) {
+            caps = new Map<string, number>();
+            this.caps.set(model, caps);
+        }
+
+        if (caps.get(key) === speed) return;
+
+        caps.set(key, speed);
+        this.recalculateSpeed(model, humanoid);
+    }
+
+    /**
+     * Remove a ceiling by name. Safe to call when there is none — {@link addModifier}'s own argument, and the
+     * one that matters here: every path out of a catch calls it unconditionally rather than first working out
+     * whether a cap was ever applied.
+     */
+    public clearCap(model: Model, key: string): void {
+        const caps = this.caps.get(model);
+        if (!caps || !caps.has(key)) return;
+
+        caps.delete(key);
+
+        if (caps.size() === 0) this.caps.delete(model);
+
+        const humanoid = model.FindFirstChildOfClass("Humanoid");
+        if (!humanoid) return;
+
+        this.recalculateSpeed(model, humanoid);
+    }
+
+    /**
+     * **One pass over every tracked body, holding it to `CHARACTER_CONFIG.AIMING_WALK_SPEED` while it is standing
+     * in an action stance** — a throw being charged or a catch window — and letting go on the frame it is not.
+     *
+     * **Both kinds of body, from one loop, because the cap must be one rule.** A rig's speed is a base plus the
+     * seek's own sprint and a player's is a base plus the sprint key, and neither difference survives the
+     * comparison this makes: the stance is a fact about the *model* and every model the game moves has an entry
+     * here — a player's from `trackPlayer`, a rig's from whichever `prepare` set its base (`SeekBehavior`, for
+     * both the round and the practice variant). So the rig and the player are held by the same three lines, which
+     * is the requirement rather than a convenience.
+     *
+     * **Asked here rather than pushed from the services that own the states, and the two reasons are different.**
+     * A catch window expires *lazily* — `CatchService.isCatching` is what notices — so a cap pushed on open and
+     * cleared by a callback would outlive its window by however long nothing asked about it, which for a rig that
+     * stopped catching is the rest of the round; this pass asks every frame, so the window is noticed expiring on
+     * the frame it lapses. A charge, by contrast, publishes itself: `ThrowBehavior` writes `CHARGING_ATTRIBUTE` for
+     * the length of the hold and `endWindup` clears it, so reading the attribute needs no wiring in the behaviour
+     * at all and cannot miss a teardown path — a death, a lost target, a cancelled windup and a throw all go
+     * through that one clear.
+     *
+     * **Death needs no line here.** `entryFor` watches `Died` and `Destroying` and drops the model from both maps,
+     * so a corpse's cap goes with the body it was put on — "removed on every exit path" is met by the maps being
+     * dropped rather than by a fifth branch to remember.
+     */
+    private enforceActionCaps(): void {
+        for (const [model] of this.speeds) {
+            if (this.isHoldingAction(model)) {
+                this.setCap(model, ACTION_CAP_KEY, CHARACTER_CONFIG.AIMING_WALK_SPEED);
+            } else {
+                this.clearCap(model, ACTION_CAP_KEY);
+            }
+        }
+    }
+
+    /** Whether `model` is in an action stance — the one question the cap is a consequence of. */
+    private isHoldingAction(model: Model): boolean {
+        if (this.isAiming(model)) return true;
+
+        return this.catchState?.isCatching(model) === true;
+    }
+
+    /**
+     * **Whether `model` is holding a throw.** Two sources, one per kind of body, and the split is forced rather
+     * than chosen.
+     *
+     * - **A rig publishes it.** `ThrowBehavior`'s windup tracker writes `CHARGING_ATTRIBUTE` as a number when a
+     *   hold starts and clears it in `endWindup`, so the attribute *is* the hold's lifetime — the same fact
+     *   `SeekBehavior` reads to stop a rig jumping mid-windup and `client/chargeEffect.ts` reads to draw it.
+     *   Presence rather than a value: a charge of `0` (a rig throwing point blank) is still a hold, and the
+     *   number is a level for the effects rather than a switch for this.
+     * - **A player is reported.** Nothing on the server can see a client's button, so `setCharging` carries the
+     *   level and {@link charging} holds it. A player's character never wears `CHARGING_ATTRIBUTE`, so the two
+     *   branches cannot contradict each other — and the check order costs nothing either way.
+     */
+    private isAiming(model: Model): boolean {
+        if (model.GetAttribute(CHARGING_ATTRIBUTE) !== undefined) return true;
+
+        const player = Players.GetPlayerFromCharacter(model);
+
+        return player !== undefined && this.charging.has(player);
+    }
+
+    /**
      * A model's contributions, creating — and watching — them on first use.
      *
      * The watching is here rather than in the constructor because it is the same event: the first
@@ -410,10 +591,23 @@ export class WalkSpeedService implements OnStart {
             total += value;
         });
 
+        // **The ceilings, and this is the one place they are applied.** `math.huge` when a model has none, so
+        // the `min` below is a no-op rather than a branch; with two caps on one body the *lower* wins, which is
+        // the correct answer for a body in two capped actions at once. See {@link setCap} for why a ceiling is
+        // not a negative contribution.
+        let ceiling = math.huge;
+        this.caps.get(model)?.forEach((value) => {
+            ceiling = math.min(ceiling, value);
+        });
+
         // Clamped at zero. A pile of slow effects could sum below it, and a negative `WalkSpeed` is
         // not "not moving" — Roblox reads it as a nudge backwards, which is how a debuff ends up
         // walking a character in the wrong direction.
-        humanoid.WalkSpeed = math.max(0, total);
+        //
+        // **Capped first, then clamped**: a ceiling can only ever lower a speed, and a frozen catcher
+        // (`0`) stays at `0` whatever the action cap says. The order is the reason a cap cannot resurrect a
+        // body that something else has stopped.
+        humanoid.WalkSpeed = math.max(0, math.min(total, ceiling));
 
         // What it was set to, and out of what. This is the line to read when a character will not
         // move: `0 ()` is an entry with nothing in it, which is a bug here, and `0 (Base:20)` would
@@ -433,9 +627,15 @@ export class WalkSpeedService implements OnStart {
         }
     }
 
-    /** Drop a model's contributions. */
+    /** Drop a model's contributions, and any ceiling that was standing on them. */
     private forget(model: Model): void {
         this.speeds.delete(model);
+
+        // **Both maps, together, and this is the death path the acceptance criteria ask about.** A cap left
+        // behind would be applied to whatever body next answers to this key — for a character that is nothing,
+        // since a body is new each death, but a rig model is reused by the pool, so a rig that died mid-catch
+        // would hand its successor a walk speed of `8` for no visible reason.
+        this.caps.delete(model);
     }
 
     /**
@@ -483,6 +683,13 @@ export class WalkSpeedService implements OnStart {
         const prepare = (character: Model) => {
             this.setBaseSpeed(character, CHARACTER_CONFIG.BASE_WALK_SPEED);
 
+            // **A new body starts uncharged.** The cap is read per frame, so a flag left standing would cap a
+            // body the player has not held the button on — and the client re-sends on its own edge, so a player
+            // who does keep the button down through a death is capped again a frame after the report arrives.
+            // Clearing here is the safe half of that trade: a stale cap is a movement bug, and a missing one is
+            // a speed a player gets for one frame.
+            this.charging.delete(player);
+
             const state = this.sprints.get(player);
             if (state?.sprinting) this.applySprint(player, true);
         };
@@ -496,6 +703,12 @@ export class WalkSpeedService implements OnStart {
     /** One tick of every tracked player's pool. */
     private onHeartbeat(dt: number): void {
         const now = os.clock();
+
+        // **The catch cap, for every body rather than only for players, and it runs first.** It is one pass over
+        // the models this service tracks and it is the only thing that notices a catch window *expiring* — see
+        // {@link enforceActionCaps} — so it belongs on the frame's own clock rather than on the pool's, which
+        // exists for players only.
+        this.enforceActionCaps();
 
         // Iterated rather than keyed by character, because the pool belongs to the *player* and must
         // keep draining or recovering whether or not that player currently has a body.
@@ -632,6 +845,11 @@ export class WalkSpeedService implements OnStart {
  * exactly that — *"stamina does not replenish while aiming"*. See the note at the bottom of this method for
  * what went with it.
  *
+ * **`setCharging` is on the wire again and has nothing to do with this method.** It carries the charge's level
+ * for the *speed cap* — see {@link isAiming} — because a stance holds the throw clip at its windup and a body
+ * that keeps walking slides. The distinction to keep: **a stance may slow a body and may not stop it resting**,
+ * and the two rules are argued separately rather than sharing one flag.
+ *
  * **The catch arrives the only way it can.** A catch window is a server-side fact with a server-side
  * lifetime, so `CatchService` hands this service a handle to it — see {@link watchCatchState}.
      *
@@ -733,10 +951,11 @@ export class WalkSpeedService implements OnStart {
         player.SetAttribute(STAMINA_ATTRIBUTE, state.stamina);
     }
 
-    // **`setCharging` used to live here.** It recorded whether a client was holding the throw button, and
-    // {@link poolHold} read it to stop the pool recovering during a charge. Removed at the user's request —
-    // see `poolHold` for why a hold that lasts as long as a button is held is a lockout rather than a rule
-    // about resting — along with the `charging` set, the event subscription and the wire event itself.
+    // **`setCharging` used to stand here, was removed, and is now further down this file.** Its first life
+    // recorded whether a client was holding the throw button so that {@link poolHold} could stop the pool
+    // recovering during a charge, and it went with that hold — a button that can be held indefinitely is a
+    // lockout rather than a rule about resting. Its second life is the speed cap, and it is a different ask:
+    // see {@link setCharging} below for what it does now and {@link isAiming} for who reads it.
 
     /** Whether this player is asking to sprint, and with how much pool. */
     private setSprinting(player: Player, active: unknown): void {
@@ -751,5 +970,34 @@ export class WalkSpeedService implements OnStart {
         state.active = active;
 
         if (DEBUG) print(`[Sprint] ${player.Name}: key ${active ? "down" : "up"}`);
+    }
+
+    /**
+     * **Whether this player is holding the throw button** — the client's report, believed, and acted on by the
+     * cap pass rather than here.
+     *
+     * **Nothing is applied at this instant, deliberately.** The cap lives in {@link enforceActionCaps}, which
+     * runs on the frame's heartbeat; this method only records the fact, so there is exactly one place a
+     * `Humanoid.WalkSpeed` can be written for a stance and no way for a report and the catch window to cap a body
+     * twice with different reasoning. The delay is one frame at most, which is inside the press.
+     *
+     * **Refused rather than coerced**, exactly as {@link setSprinting}: the declaration types the argument and the
+     * wire does not, so a value nobody meant to send is ignored rather than given a truthiness.
+     *
+     * **Nothing is verified about the body.** A report with no character is recorded and simply caps nothing,
+     * because a player holding the button through a death holds it — the same reason the sprint's decision is a
+     * `Player` field rather than a property of the body — and `prepare` clears it when the new body arrives so a
+     * stale `true` cannot cap a body the player is not holding for.
+     */
+    private setCharging(player: Player, active: unknown): void {
+        if (!typeIs(active, "boolean")) return;
+
+        if (active) {
+            this.charging.add(player);
+        } else {
+            this.charging.delete(player);
+        }
+
+        if (DEBUG) print(`[Walk] ${player.Name}: ${active ? "holding a throw — capped" : "throw released — cap off"}`);
     }
 }

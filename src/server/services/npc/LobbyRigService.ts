@@ -1981,7 +1981,11 @@ export class LobbyRigService implements OnStart {
 			return undefined;
 		}
 
-		const spawns = this.lobbySpawns();
+		// **The seat's own half of the lobby, when the place file says which half that is.** A rig placed at
+		// a part on the other side's end of the room is a rig that has "spawned on the wrong side" to anyone
+		// watching, and the pad walk that follows is a correction rather than a placement. See
+		// {@link lobbySpawnsFor} for the two ways a part can be marked and for the fallback.
+		const spawns = this.lobbySpawnsFor(side);
 		if (spawns.size() === 0) {
 			this.reportOnce(
 				"lobbySpawns",
@@ -2258,7 +2262,22 @@ export class LobbyRigService implements OnStart {
 	 * world. Sharing that would mean this method deciding how a rig comes into being, which is the one thing
 	 * `NpcService` owns.
 	 */
-	private writePadWalk(rig: Model, side: TeamLabel): void {
+	private writePadWalk(rig: Model, preferred: TeamLabel): void {
+		// **The side written here is the side the rig will actually take, not the side that was asked for.**
+		// A rig that already holds a team keeps it — its seat is that side, and re-balancing it on the way to
+		// its own pad is the fault `sideWithRoom` now cannot make. A rig with no team is a fresh seat, and for
+		// that one the room is checked here, *before* the destination is chosen, so the pad it walks to and
+		// the side it arrives on are the same side. Until this line existed the decision was made at the end
+		// of the walk instead, on a count that could not see the rigs still crossing the room — which is how
+		// four rigs in the 2026-10-17 log arrived on the sign of a side they were not on.
+		const side = sideOfRig(rig) ?? this.sideForWalker(preferred, rig);
+
+		if (side !== preferred) {
+			print(
+				`[Rig] ${rig.Name}: side ${preferred} has no room for this seat — walking to ${side}'s pad instead`,
+			);
+		}
+
 		const pads = this.padsFor(side);
 		if (pads.size() === 0) return;
 
@@ -2287,6 +2306,45 @@ export class LobbyRigService implements OnStart {
 		const delay = NPC_CONFIG.WALK_TO_PAD_DELAY_MIN_SECONDS + math.random() * span;
 
 		rig.SetAttribute(WALK_TO_JOIN_PAD_AT_ATTRIBUTE, Workspace.GetServerTimeNow() + delay);
+	}
+
+	/**
+	 * **The side a rig with no team should walk to, given the seat that was asked for.**
+	 *
+	 * The same question `sideWithRoom` answers on arrival, asked at the other end of the walk and with the
+	 * count this file keeps rather than the one `npc/rigs.ts` keeps. **The difference is the walkers**: that
+	 * count is `TEAM_ATTRIBUTE` holders, which a rig does not have until it reaches a pad, so four rigs
+	 * crossing the lobby are four seats nothing can see. Here they are counted by the side their destination
+	 * was written for — which is what {@link seatHolders} is, and what {@link seatsHeld} already balances
+	 * against — so the second of two rigs sent to the same side is turned away *before* it walks.
+	 *
+	 * **`rig` is excluded, and this is the same exclusion `sideWithRoom` needed.** A re-issued walk — a rig
+	 * put back on a pad at a round end — may still carry the side it was walking to; counting it against
+	 * itself would make that side read one full and bounce it for no reason.
+	 *
+	 * **Both sides full keeps the preferred one**, which is `sideWithRoom`'s own answer and its own
+	 * argument: an overfull side is a fault `releaseRigs` trims, and a side-less rig is a body nothing moves
+	 * again. Reached only by a lobby that is genuinely over its seats, since the refill only asks for a seat
+	 * it has already counted as free.
+	 */
+	private sideForWalker(preferred: TeamLabel, rig: Model): TeamLabel {
+		const other = preferred === TEAM_A ? TEAM_B : TEAM_A;
+
+		if (this.rigsHolding(preferred, rig) < MATCH_MAX_PER_TEAM) return preferred;
+		if (this.rigsHolding(other, rig) < MATCH_MAX_PER_TEAM) return other;
+
+		return preferred;
+	}
+
+	/** How many rigs hold or are walking to `side`, not counting `rig` itself — see {@link sideForWalker}. */
+	private rigsHolding(side: TeamLabel, rig: Model): number {
+		let count = 0;
+
+		for (const holder of this.seatHolders(side)) {
+			if (holder !== rig) count++;
+		}
+
+		return count;
 	}
 
 	/**
@@ -2345,6 +2403,71 @@ export class LobbyRigService implements OnStart {
 
 		this.reported.add(key);
 		warn(message);
+	}
+
+	/**
+	 * **`side`'s half of the lobby's spawn parts — or all of them when the place file does not say which half
+	 * is which.**
+	 *
+	 * **Two ways to say it, and either is enough.** A rig placed at a part on the other side's end of the room
+	 * is a rig that has visibly "spawned on the wrong side", and the pad walk that follows is a correction
+	 * rather than a placement — which is the 2026-10-17 report, where the refill had no sided placement at
+	 * all and the cursor could land anywhere in the folder.
+	 *
+	 * - **A folder per side inside `LobbySpawns`**, named as `ArenaSpawns`' are
+	 *   ({@link ARENA_CONFIG.ARENA_TEAM_FOLDER_A} / {@link ARENA_CONFIG.ARENA_TEAM_FOLDER_B}), with direct
+	 *   `BasePart` children. This is the shape the arena already has, so it is the one to reach for.
+	 * - **A `Team` attribute on each part**, `"A"` or `"B"` — `TEAM_ATTRIBUTE`, the same name a rig wears, so
+	 *   there is one word for "which side is this" in the project. Marked parts are found anywhere inside the
+	 *   folder, which tolerates a grouping model between the folder and the floor.
+	 *
+	 * **The fallback is the old behaviour, kept deliberately.** A lobby authored before this existed has no
+	 * marking, and refusing to place a rig there would be a worse fault than a rig walking across the room:
+	 * the whole folder is the pool, the cursor still spreads rigs over it, and the walk still takes each one to
+	 * its own pad. What it costs is a warning once per session saying how to opt in — which is the only way
+	 * this stops being a thing to notice.
+	 */
+	private lobbySpawnsFor(side: TeamLabel): Array<BasePart> {
+		const folder = findFolder(Workspace, ARENA_CONFIG.LOBBY_SPAWNS_FOLDER);
+		if (folder === undefined) return [];
+
+		const sided = findFolder(
+			folder,
+			side === TEAM_B ? ARENA_CONFIG.ARENA_TEAM_FOLDER_B : ARENA_CONFIG.ARENA_TEAM_FOLDER_A,
+		);
+
+		if (sided !== undefined) {
+			const parts = new Array<BasePart>();
+
+			for (const child of sided.GetChildren()) {
+				if (child.IsA("BasePart")) parts.push(child);
+			}
+
+			// **Empty falls through rather than winning.** A folder somebody made and has not filled yet is a
+			// half-finished edit, and taking it would leave one side with no place to stand.
+			if (parts.size() > 0) return parts;
+		}
+
+		const marked = new Array<BasePart>();
+
+		for (const descendant of folder.GetDescendants()) {
+			if (!descendant.IsA("BasePart")) continue;
+			if (descendant.GetAttribute(TEAM_ATTRIBUTE) !== side) continue;
+
+			marked.push(descendant);
+		}
+
+		if (marked.size() > 0) return marked;
+
+		this.reportOnce(
+			"lobbySpawnsUnsided",
+			`[Rig] "${ARENA_CONFIG.LOBBY_SPAWNS_FOLDER}" has no side marking, so a rig can be placed on the ` +
+				`other side's end of the lobby and walk across it — put ` +
+				`"${ARENA_CONFIG.ARENA_TEAM_FOLDER_A}"/"${ARENA_CONFIG.ARENA_TEAM_FOLDER_B}" folders inside it, ` +
+				`or a ${TEAM_ATTRIBUTE} attribute on each part`,
+		);
+
+		return this.lobbySpawns();
 	}
 
 	/**

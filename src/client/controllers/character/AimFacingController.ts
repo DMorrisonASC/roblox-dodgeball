@@ -3,7 +3,7 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
-import { AFTERIMAGE_WINDOW_ATTRIBUTE } from "shared/constants";
+import { AFTERIMAGE_WINDOW_ATTRIBUTE, CATCHING_ATTRIBUTE } from "shared/constants";
 import { aiming, predictedLanding } from "../../aiming";
 import { isMobile } from "../../platform";
 
@@ -87,6 +87,24 @@ const MIN_AIM_DISTANCE = 0.5;
  * aim while strafing still plays its walk and run clips. The throw's direction is not read from the body
  * anywhere (`ThrowController.getThrowDirection` uses the camera, and `planChargedThrow` flattens that), so
  * turning the body changes what the player *sees* and nothing about where the ball goes.
+ *
+ * ## A catch is the same pose, from a second signal
+ *
+ * **A body waiting for a ball turns onto the camera exactly as a body aiming a throw turns onto the aim**, and
+ * reusing this controller rather than writing a second one is the point: the constraint, the `AutoRotate`
+ * capture-and-restore, the dodge stand-down and the snap-on-release are all the same problem, and a second copy
+ * of them would be a second place for the restore to be forgotten.
+ *
+ * **The signal is `CATCHING_ATTRIBUTE`**, the server's published window — not a local flag. A press the server
+ * refuses (a ball in the hand, a dodge lockout, a freeze) opens no window and therefore turns nothing, which is
+ * the difference between a body reacting to a request and a body reacting to the game. The attribute is cleared
+ * by `CatchService.consume`, the one path every close goes through, so the pose ends with the window on every
+ * exit including a death; and `WalkSpeedService` asks the same question every frame, which is what makes the
+ * attribute disappear on the frame the window lapses rather than on the next ball.
+ *
+ * **The direction is the camera's forward**, not `predictedLanding`: a catch has no arc — a catch needs an empty
+ * hand, so a throw cannot be charged at the same time — and the ball being waited for may be anywhere. The view
+ * is where the player is looking, which is the answer the touch path above already gives for the same reason.
  */
 @Controller()
 export class AimFacingController implements OnStart {
@@ -107,8 +125,14 @@ export class AimFacingController implements OnStart {
 	/** The constraint doing the turning, or nothing when no pose is being held. */
 	private balance?: AlignOrientation;
 
-	/** The aiming flag as last acted on, so the two edges print once each rather than once a frame. */
-	private wasAiming = false;
+	/**
+	 * Whether a pose was being held on the last frame, whatever asked for it — so the two edges print once each
+	 * rather than once a frame.
+	 *
+	 * **Named for the pose rather than for the charge**, because a catch holds the same one: the field answers
+	 * "was this file holding the body", which is the question both the edge print and the snap-on-release ask.
+	 */
+	private wasHolding = false;
 
 	/**
 	 * **The direction the body was last being turned onto**, kept so the release can finish the turn itself.
@@ -142,17 +166,28 @@ export class AimFacingController implements OnStart {
 		if (DEBUG) print(`[Facing] up — the body turns onto the aim while a throw is charged`);
 	}
 
-	/** One frame: hold the pose, or let go of it. */
+	/**
+	 * **The frame's pose decision, and it is now two questions rather than one:** is a throw being charged, and
+	 * is a catch window open. Both want the body held and neither wants it turned by the humanoid's own steering;
+	 * the only thing that differs is *which* direction the turn is onto, decided in {@link aimDirection}.
+	 */
 	private step(): void {
-		const aimingNow = Fusion.peek(aiming);
-		if (!aimingNow) {
-			this.release();
-			return;
-		}
-
 		const character = this.player.Character;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		const root = humanoid?.RootPart;
+
+		// **Read before the body is checked**, because the attribute is on the model and a character that has
+		// just been replaced is exactly when a stale `true` must not be trusted: `CatchService` clears it through
+		// `consume`, and a death closes the window that way, so a new body starts without one.
+		const aimingNow = Fusion.peek(aiming);
+		const catchingNow = character !== undefined && character.GetAttribute(CATCHING_ATTRIBUTE) === true;
+
+		// **Neither** reason to hold a pose: let go. A charge and a catch are the only two, and a release, a
+		// drop, a death, a round boundary and a window lapsing all arrive here as the same edge.
+		if (!aimingNow && !catchingNow) {
+			this.release();
+			return;
+		}
 
 		// **A charge with nothing to turn is not an error, it is a gap between frames.** The ball leaving the
 		// hand, a death and a respawn all pass through here with `aiming` still true for a frame; falling back
@@ -177,7 +212,7 @@ export class AimFacingController implements OnStart {
 			return;
 		}
 
-		const direction = this.aimDirection(root);
+		const direction = this.aimDirection(root, aimingNow, catchingNow);
 		if (direction === undefined) {
 			this.release();
 			return;
@@ -202,9 +237,11 @@ export class AimFacingController implements OnStart {
 		// the ball can leave before the constraint has arrived. See {@link lastDirection}.
 		this.lastDirection = direction;
 
-		if (!this.wasAiming) {
-			this.wasAiming = true;
-			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Facing] ${character.Name}: turning onto the aim`);
+		if (!this.wasHolding) {
+			this.wasHolding = true;
+			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
+				print(`[Facing] ${character.Name}: turning onto the ${aimingNow ? "aim" : "catch"}`);
+			}
 		}
 	}
 
@@ -215,9 +252,17 @@ export class AimFacingController implements OnStart {
 	 * and a lean: a point on the ground is at the body's own feet height, but the camera's forward is
 	 * unflattened and would tip the body into the floor by however much the player is looking down.
 	 */
-	private aimDirection(root: BasePart): Vector3 | undefined {
+	private aimDirection(root: BasePart, aimingNow: boolean, catchingNow: boolean): Vector3 | undefined {
 		const camera = Workspace.CurrentCamera;
 		if (!camera) return undefined;
+
+		// **A catch with no charge is the view, and it is asked first because it is the simpler question.** A
+		// catching body has no arc to read — the hand is empty, so no throw is charged — and the ball it is
+		// waiting for may be anywhere, so the only honest direction is where the player is looking. That is the
+		// same answer the touch path below gives, for the same reason, on every platform. If a charge and a
+		// window are somehow both up for a frame — the press that opens a catch cancels a hold in the same
+		// breath — the charge wins, because it has a real aim point to use.
+		if (catchingNow && !aimingNow) return flatUnit(camera.CFrame.LookVector);
 
 		// **The touch path, first and unconditionally.** A phone has no cursor, so the aim point is whatever
 		// the arc solved for and the *view* is what the player is turning — `ThrowController` makes the same
@@ -310,8 +355,8 @@ export class AimFacingController implements OnStart {
 	 * from its own value anyway, which is why `WalkToJoinPadBehavior` treats the same case the same way.
 	 */
 	private release(): void {
-		if (this.wasAiming) {
-			this.wasAiming = false;
+		if (this.wasHolding) {
+			this.wasHolding = false;
 			this.snapOntoAim();
 			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Facing] released — back to the movement direction`);
 		}

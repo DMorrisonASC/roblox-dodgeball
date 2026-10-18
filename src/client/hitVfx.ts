@@ -10,8 +10,8 @@ const DEBUG = true;
  *
  * **A client-side effect on a server-side fact, exactly like `catchShockwave`.** The server decides that a
  * hit landed and says so on the wire; who draws it, and in what colour, is each client's own business. So
- * nothing here is cloned on the server, nothing is sent from here, and the module's only input is the
- * event below.
+ * nothing here is cloned on the server, nothing is sent from here, and the module's only inputs are the two
+ * events below — `hitImpact` for a landing and `caughtThrow` for the thrower whose ball never landed.
  *
  * **THE EFFECT IS FOUND BY NAME — the template's structure is a moving target and the only contract is its
  * name.** The two templates are found by a walk of `ReplicatedStorage`, their parts by walking the clone,
@@ -56,35 +56,64 @@ const DEBUG = true;
  * people, still filled only for a person's throw at a person, and this event neither feeds nor changes them.
  * It is the cosmetic half of the same moment, sent to everyone, read by this file alone.
  *
- * ## The third-party case: a bystander sees it, in white
+ * ## The third-party case: a bystander sees it in the same red
  *
- * A client that is in neither end of a hit draws `HitNeutral` on the **victim's** body. **This reverses the
- * first version of this file**, which decided the opposite — and the reversal is worth stating, because the
- * argument for "no" was not silly, it was about the wrong thing.
+ * A client that is in neither end of a hit draws `HitVictim` — **the same red the dying body's own client sees**
+ * — on the victim's body. **This has been three decisions, and the third one is the user's own report**, so the
+ * history is worth keeping rather than flattening: the first version drew nothing for a third party; the second
+ * drew `HitNeutral`, white, on the argument that a spectator's burst should say "that was not yours to take";
+ * and the current one draws the red, because *"I don't see the effect when my team mates or opposing rig/player
+ * dies, it should be the same as the one I see when I die"*.
  *
- * The argument was that the brief names two parties and two colours, that its authoring rule says *both*
- * templates are recoloured by hand, and that a third case would be the most common effect on screen: every
- * hit drawn on every client, so the effect nobody asked for outnumbering the two that were. All three of those
- * are still true. **What they miss is what the effect is *for*.** A fight this client is not in is still a
- * fight this client is watching — the hits between two rigs, and between a rig and another player, are most
- * of what happens in a round against them — and a version of this effect that only the two participants can
- * see is invisible from the seat of everybody else in the arena. **A neutral colour makes an impact legible
- * to a spectator while still saying, unmistakably, that it was not theirs.**
+ * **The argument that settles it is what this game does with a hit: it kills.** A hit is lethal — that is what
+ * `BallComponent`'s own comment says, and why the round ends on one — so the body in the burst is a body that is
+ * about to die, and the *colour of a death* should not depend on which seat is watching it. The white version
+ * was reasoning about the effect as an injury ("did this happen to me"), which is the right question for a
+ * damage system and the wrong one here: there is no partial damage to be possessive about, and a spectator who
+ * sees white is a spectator whose screen says less than the dying player's does about the same event.
  *
- * **The cost is real and is named rather than left to be discovered**: every client draws every hit, so the
- * neutral case is the common one, and the particle work per hit is multiplied by the number of clients that
- * can see it. If that reads as too loud or too heavy, the levers are a distance gate on *this* branch alone —
- * the two personal cases are still exactly two clients — or a lower `EMIT_COUNT` for the neutral template.
- * Both are one line, and neither touches the other two cases.
+ * **What survives from the white version is the *reason* it existed** — a fight this client is not in is still a
+ * fight it is watching, and the hits between two rigs are most of what happens in a round against them. That
+ * argument was always in favour of drawing *something*; only the colour was in dispute. The template is still in
+ * the place file and still named here ({@link NEUTRAL_TEMPLATE_NAME}), because it is the one-line undo if the
+ * red proves too loud on every client at once.
+ *
+ * **The cost is unchanged from the white version**: every client draws every hit, so the particle work per hit
+ * is multiplied by the number of clients that can see it. It is one clone per client per hit either way — the
+ * only difference is which emitters that clone carries.
+ *
+ * ## A caught throw: red on somebody else's body, for the same reason
+ *
+ * **A catch is the mirror image of a hit and it is drawn from its own event.** When a thrown ball is caught by
+ * an enemy, nothing was tagged — the ball never reached the body it was aimed at — and the player who pays is
+ * the one who *threw* it: `RoundService.resolveCaughtThrower` kills the thrower and, where the mode scores,
+ * credits the catcher's side. So there is no `hitImpact` for it at all, and the body that has to show the cost
+ * is the thrower's rather than the catcher's.
+ *
+ * **`caughtThrow` carries the thrower first and the catcher second**, and this file puts `HitVictim` — red — on
+ * the thrower's body. Two readers, not three: the thrower's own client draws it on its own character, and every
+ * other client draws it on the body the name resolves to, which is a rig in most rounds played against them.
+ *
+ * **This branch and the spectator branch above now agree**, and that agreement is the current rule: **red is the
+ * colour of a body that is out**, drawn on that body for every client that can see it, whichever end of the
+ * exchange this client happens to be at. The only body that gets a different colour is the one the local player
+ * *hit*, which is gold — gold says "I did that", which is a sentence only the thrower can say.
+ *
+ * **It does not touch `catchShockwave`.** The catcher's burst is read from the `AnimCatch` mark by that module,
+ * on the catcher's own body; this is a different body and a different event, so both play and neither replaces
+ * the other. The one shared thing is `playOn`'s per-body replacement, which can only ever replace an effect on
+ * the *same* body — and a body cannot be both the thrower of a caught ball and the catcher of it.
  *
  * ## What this is not
  *
- * - **Not a second subscriber to the feed's event.** This file reads `hitImpact` and nothing else — not
- *   `roundHit`, which the hit feed already reads, and not any attribute, `HealthChanged` or poll. **Both
- *   events must not be subscribed to here at once**: a player-on-player hit is in *both* of them, so reading
- *   both would draw two bursts for one impact, the second replacing the first. A body's health dropping is
- *   *not* a hit either — it is also a reset, a fall and a super, and deriving "somebody hit me" from it would
- *   be a second detection of a fact the server already publishes.
+ * - **Not a second subscriber to the feed's event.** This file reads `hitImpact` and `caughtThrow` and nothing
+ *   else — not `roundHit`, which the hit feed already reads, and not any attribute, `HealthChanged` or poll.
+ *   **Two events rather than one, and they are two different facts**: `hitImpact` is a ball landing on a body
+ *   and `caughtThrow` is a ball *not* landing on one, whose cost falls on the thrower. Neither can be derived
+ *   from the other, and **`roundHit` must not be subscribed to here at all**: a player-on-player hit is in both
+ *   it and `hitImpact`, so reading both would draw two bursts for one impact, the second replacing the first.
+ *   A body's health dropping is *not* a hit either — it is also a reset, a fall and a super, and deriving
+ *   "somebody hit me" from it would be a second detection of a fact the server already publishes.
  * - **Not a change to `catchShockwave`.** The two modules are siblings that share a shape and nothing
  *   else: this file has its own finder, its own cloner and its own emitter handling rather than reaching
  *   into that one, because the sibling is Studio-proven and the last thing it needs is to be refactored
@@ -105,8 +134,8 @@ export function startHitVfx(): void {
 	if (DEBUG) {
 		print(
 			`[VFX] hit effects up — ${ATTACKER_TEMPLATE_NAME} when I land one, ` +
-				`${VICTIM_TEMPLATE_NAME} when I take one, ` +
-				`${NEUTRAL_TEMPLATE_NAME} in any hit I am not in`,
+				`${VICTIM_TEMPLATE_NAME} for every hit, mine or anybody else's, ` +
+				`and again on a thrower whose ball I watch get caught`,
 		);
 	}
 
@@ -171,25 +200,70 @@ export function startHitVfx(): void {
 			playOn(VICTIM_TEMPLATE_NAME, own, `${localPlayer.Name}: hit by ${thrower} — red`);
 		}
 
-		// **Neither end is mine, so I am a spectator — and I still get to see it.** White, on the victim's
-		// body, because the fight this client is not in is the fight it is watching: in a round against rigs
-		// most hits have no player in either end, and drawing none of them would make the effect invisible from
-		// the seat of everyone who is not in it. **The neutral colour is the point** — it makes the impact
-		// legible while saying plainly that it was not this client's, and it is why there is a third template
-		// rather than a tinted copy of one of the two.
+		// **Neither end is mine, so I am a spectator — and I see exactly what the body's own client sees.** Red,
+		// on the victim's body, because in this game a hit is a death: the body that was struck is a body that is
+		// about to lie down, and the person watching it from either side of the court should read that the same
+		// way the dying player does. **This was white, and the reversal is the user's own report** — *"I don't
+		// see the effect when my team mates or opposing rig/player dies, it should be the same as the one I see
+		// when I die"* — which is the whole of the argument: a colour that means "somebody else was hit" is a
+		// colour that says nothing about what happens next, and what happens next is the same for everybody.
 		//
-		// **A rig throwing at a rig lands here on every client**, which is the case this branch exists for.
-		//
-		// **The cost, named rather than discovered**: this branch runs on *every* client for *every* hit, so
-		// the neutral case is the common one on screen and it draws a clone each time. See the module doc for
-		// the levers if that proves too loud.
+		// **The cost, named rather than discovered**: this branch runs on *every* client for *every* hit, so a
+		// body that dies now draws its burst on every screen at once rather than one white clone and one red one.
+		// It is the same particle work as before — one burst per hit per client either way — and what changed is
+		// only which template is cloned. If the red reads as too loud, the lever is the still-present
+		// `NEUTRAL_TEMPLATE_NAME` below: one name here and the bystander case is white again.
 		const body = bodyOf(victim);
 		if (body === undefined) {
 			if (DEBUG) print(`[VFX] ${localPlayer.Name}: bystander — but no body for ${victim}`);
 			return;
 		}
 
-		playOn(NEUTRAL_TEMPLATE_NAME, body, `${localPlayer.Name}: bystander — neutral for ${victim}`);
+		playOn(VICTIM_TEMPLATE_NAME, body, `${localPlayer.Name}: bystander — ${victim} was hit — red`);
+	});
+
+	// **The catch's counterpart: my throw was stopped, so the red goes on *my* body this time.**
+	//
+	// One subscription for both seats, because the question is the same question asked of a different body —
+	// and the answer is `HitVictim` either way. **The thrower is the name tested first**, which is the reverse
+	// of the handler above, and that is not an inconsistency: there the body drawn on is the victim's and the
+	// local player is compared against it, while here the body drawn on is the thrower's and the thrower is what
+	// the event leads with. Read the payload as a sentence — "this body's throw was caught by that one" — and
+	// the order is the shape of the fact rather than a preference.
+	if (DEBUG) print(`[VFX] catch effects wired`);
+
+	events.Client.Get("caughtThrow").Connect((thrower, catcher) => {
+		const localPlayer = Players.LocalPlayer;
+
+		// **Mine.** The one body on this client that needs no lookup, so it is taken from the player rather than
+		// from `bodyOf` — the same split the victim branch above makes, and for the same reason: a character mid
+		// respawn has no body at all, and that is worth a line of its own rather than reading as "not found".
+		if (thrower === localPlayer.Name) {
+			const own = localPlayer.Character;
+			if (own === undefined) {
+				if (DEBUG) {
+					print(`[VFX] ${localPlayer.Name}: throw caught by ${catcher} — but no character to put it on`);
+				}
+
+				return;
+			}
+
+			playOn(VICTIM_TEMPLATE_NAME, own, `${localPlayer.Name}: throw caught by ${catcher} — red`);
+			return;
+		}
+
+		// **Anybody else's throw, which in a round against rigs is nearly every catch.** The body is resolved by
+		// name exactly as the hit path resolves a victim's — a rig or another player, one string either way — and
+		// the red is the same red the hit path now draws on everybody: the body that lost its throw, seen by the
+		// people watching it happen. See the module doc for why the two branches agree on the colour and only the
+		// sentence on the wire differs.
+		const body = bodyOf(thrower);
+		if (body === undefined) {
+			if (DEBUG) print(`[VFX] ${localPlayer.Name}: bystander — but no body for ${thrower}`);
+			return;
+		}
+
+		playOn(VICTIM_TEMPLATE_NAME, body, `${localPlayer.Name}: bystander — ${thrower}'s throw caught by ${catcher} — red`);
 	});
 }
 
@@ -633,11 +707,17 @@ const VICTIM_TEMPLATE_NAME = "HitVictim";
  * The template for a hit **this client is in neither end of** — white, drawn on the victim's body so that a
  * spectator can see an impact they are not part of.
  *
+ * **Nothing reads this name any more, and it is kept rather than deleted.** The spectator branch was changed to
+ * `HitVictim` at the user's request — *"it should be the same as the one I see when I die"* — so this is now the
+ * **undo**: one identifier in `startHitVfx`'s third branch and the bystander case is white again, with the place
+ * file untouched because the template still exists. See the module doc for the whole of that reversal, including
+ * why the argument for white was reasonable and why the game's lethality overrules it.
+ *
  * **A third template rather than a tint applied to one of the other two**, which is the same rule as for
  * those: the colour lives in the emitters, in the place file, and a `Color3` written here would be a second
  * colour authority beside the one a person authored — with the emitter's own sequence, `LIGHT_EMISSION` and
- * texture all multiplying into the pixel, none of it knowable from code. **Which of the three plays is the
- * only thing this file decides.** See the module doc for why the case exists at all.
+ * texture all multiplying into the pixel, none of it knowable from code. **Which of the templates plays is the
+ * only thing this file decides.**
  */
 const NEUTRAL_TEMPLATE_NAME = "HitNeutral";
 

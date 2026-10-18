@@ -118,14 +118,27 @@ export function rigCounts(): { readonly a: number; readonly b: number } {
  * and it would stand in the lobby for the session. Taking the preferred side overfills by one, which is a
  * state `LobbyRigService.releaseRigs` already knows how to trim, and an overfull side is a fault that
  * repairs itself where an orphan is one that does not.
+ *
+ * **`exclude` is the rig that is arriving, and leaving it out is the whole of a fix.** `TEAM_ATTRIBUTE` is
+ * *not* cleared at a round end — the seat a rig holds is a fact about the side, and
+ * `sendRigsToTheirPads` deliberately keeps it — so a rig walking back to its own pad for the next round is
+ * already **one of the four it is counting**. Without this argument its own side reads `4` on every
+ * arrival, `preferredCount < MATCH_MAX_PER_TEAM` is false at exactly the moment the side is *correct*, and
+ * the rig swaps sides for no reason at all. That is the 2026-10-17 log: eight rigs walk back to their pads,
+ * each one finds its own side "full" because it is standing in the count, and four of them arrive on the
+ * other side's sign — a rig on the wrong side of the lobby, with nothing wrong with the pads or the seats.
+ * The argument is optional so a caller that is not counting a rig (a forecast) can still ask the plain
+ * question.
  */
-export function sideWithRoom(preferred: TeamLabel): TeamLabel {
+export function sideWithRoom(preferred: TeamLabel, exclude?: Model): TeamLabel {
 	const other = preferred === TEAM_A ? TEAM_B : TEAM_A;
 
 	let preferredCount = 0;
 	let otherCount = 0;
 
-	for (const { team } of rigsOnASide()) {
+	for (const { rig, team } of rigsOnASide()) {
+		if (rig === exclude) continue;
+
 		if (team === preferred) preferredCount++;
 		else otherCount++;
 	}

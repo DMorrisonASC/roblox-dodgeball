@@ -991,7 +991,12 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 					// is where the count lives — and note what it does *not* do: the rig stays where it
 					// arrived, and the round's own teleport puts it on its new side's arena spawn at the
 					// whistle. It is the *side* that is balanced here, not the route.
-					const side = sideWithRoom(wanted);
+					//
+					// **`model` is passed so the rig does not count itself**, and that argument is the whole
+					// of the 2026-10-17 fault: a rig that plays keeps its `Team` between rounds, so it arrives
+					// already holding one of the four seats it is being balanced against and its own side
+					// reads full every time. See `sideWithRoom` for the log that found it.
+					const side = sideWithRoom(wanted, model);
 
 					model.SetAttribute(TEAM_ATTRIBUTE, side);
 

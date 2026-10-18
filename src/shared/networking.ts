@@ -175,13 +175,22 @@ export const events = Net.Definitions.Create({
 	 */
 	setSprinting: Net.Definitions.ClientToServerEvent<[active: boolean]>(),
 
-	// **`setCharging` used to sit here, and its absence is a decision rather than an omission.** It reported
-	// whether a player was holding the throw button, so that `WalkSpeedService` could stop the stamina pool
+	// **`setCharging` used to sit here, was removed, and is back carrying something else.** It first reported
+	// whether a player was holding the throw button so that `WalkSpeedService` could stop the stamina pool
 	// refilling during a charge. **That hold is gone** — see `WalkSpeedService.poolHold` for why a hold whose
-	// length the player controls is a lockout rather than a rule about resting — so there is nothing left on
-	// the wire to carry. Kept as a note rather than deleted silently, because a reader who remembers the
-	// event will come looking for it here, and a missing declaration with no explanation reads as a
-	// regression.
+	// length the player controls is a lockout rather than a rule about resting — and the event went with it.
+	//
+	// It returns for the *speed cap*: a charge is a stance with its windup held, so a charging body is limited to
+	// `CHARACTER_CONFIG.AIMING_WALK_SPEED` while it holds, and the server has no way to observe a hold — the
+	// start time lives on the client (`client/throwing.ts`) and the server only hears of the throw when the
+	// release arrives. So this is `setSprinting`'s shape and `setSprinting`'s trust argument: a level that only
+	// the client can know, reported as a boolean and believed, because an untrue `true` costs the player their
+	// own movement speed and buys nothing else.
+	//
+	// **A level and not an event**, deliberately: a missed "start" would leave a body capped for ever if the
+	// server tracked only that, and a level is idempotent — the client re-sends whenever the answer changes, and
+	// a lost message is corrected by the next charge the player starts or ends.
+	setCharging: Net.Definitions.ClientToServerEvent<[active: boolean]>(),
 
 	/**
 	 * Client → server: this player wants the ball in their hand to carry this ability.
@@ -308,6 +317,36 @@ export const events = Net.Definitions.Create({
 	 * and only `hitVfx` reads it.
 	 */
 	hitImpact: Net.Definitions.ServerToClientEvent<[victim: string, thrower: string]>(),
+
+	/**
+	 * Server → client: **a throw was caught, and the body that has to wear the consequence is the thrower's.**
+	 * Named thrower first, catcher second — the body being drawn on is the subject, exactly as {@link
+	 * hitImpact} puts the victim first.
+	 *
+	 * **Why a third event, and not a flag inside `hitImpact`.** A caught throw is not a hit: nothing was
+	 * tagged, no damage was dealt and the ball never reached the body it was aimed at. It is also the *only*
+	 * moment in the game where the player who is punished is the one whose ball was stopped — so a client
+	 * cannot derive it from anything it already receives. `hitImpact` could not carry it either: its two
+	 * names are "the body it landed on" and "the arm that threw it", and the meaning of the pair is the
+	 * opposite of this one, so a flag would make every reader re-learn what a hit is.
+	 *
+	 * **Sent from `RoundService.resolveCaughtThrower` rather than from the ball**, and *after* that method's
+	 * guards — so it goes out exactly where the catch actually punishes somebody. A friendly catch returns
+	 * before it (nothing happened to the thrower), a catch between rounds returns (there is no round to be
+	 * out of), and an unresolved thrower — a rig whose throw cannot be attributed — returns too, because a
+	 * payload with no thrower is a body nobody can draw on. Everything that reaches the send is a thrower the
+	 * round is about to kill, which is the sentence the effect says.
+	 *
+	 * **Two names and nothing else.** The thrower's *model* name is the player's name for a character and the
+	 * rig's own name for a rig, so one string answers both — the same convention {@link hitImpact} uses for
+	 * its pair. The catcher is carried only so the client's log line can name both ends; nothing is drawn on
+	 * the catcher's body from this event, because the catch's own burst is `catchShockwave`'s and reads the
+	 * `AnimCatch` mark instead.
+	 *
+	 * **Broadcast, not targeted at the thrower.** A rig's throw being caught is the common case in a round
+	 * against rigs and there is no player end to target; and the body it happened to is one everybody can see.
+	 */
+	caughtThrow: Net.Definitions.ServerToClientEvent<[thrower: string, catcher: string]>(),
 
 	/**
 	 * Client → server: this player wants to spend coins on a Power Chest.
