@@ -66,32 +66,6 @@ export const BEHAVIOR_SEEKING = "Behavior_Seeking";
 export const BEHAVIOR_DODGING = "Behavior_Dodging";
 
 /**
- * Enables the gathering behavior: **during an intermission the rig walks to one of the two
- * matchmaking join pads and waits there.**
- *
- * **The one behavior that is not about the rig's own business.** Catching, throwing, seeking and
- * dodging all answer "what should this rig do next"; this one answers "where should this rig *be*
- * while there is no round". It exists because the join pads are where the players are deciding the
- * next match, and a rig standing in the arena while that happens is a rig in the wrong room. The
- * alternative — moving the rigs with code the round owns — would put rig placement inside
- * `RoundService`, which owns players and knows nothing about rigs; keeping it a behavior is what
- * makes it the rig's own business after all.
- *
- * **This is what `RIG_TEAM_ATTRIBUTE` is for on the reading side, and it is also where a rig with no
- * side gets one.** A rig that already has a side walks to that side's pad; a rig that has none — the
- * case every rig placed by hand in Studio is in, since `NpcService.spawn` has no call site — is given
- * one here, by an alternation that leans toward whichever side is emptier, so the rigs do not pile
- * onto `A` and leave `B` bare. From then on it walks to its own pad and the alternation is not asked
- * again. See `GatherBehavior`, which owns the counting rule and the reason it is a count at all.
- *
- * **It is deliberately independent of `Behavior_Seeking` in intent and in conflict with it in
- * practice**, which is worth knowing before putting both on one rig: both move the rig with
- * `Humanoid.MoveTo`, and the tick that runs later wins. A rig that is supposed to gather should not
- * also be hunting loose balls, and nothing in the tag system stops the combination.
- */
-export const BEHAVIOR_GATHERING = "Behavior_Gathering";
-
-/**
  * Enables the respawn behavior: the rig gets up again after it is killed.
  *
  * The one behavior here that is not a mechanic of the *game* — a rig has no round to

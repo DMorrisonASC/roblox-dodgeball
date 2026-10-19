@@ -10,12 +10,8 @@ import {
 } from "shared/config/transition.config";
 import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import { findFolder } from "shared/find";
-import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { events, HitDirection, RoundResultRow } from "shared/networking";
 import {
-    MATCH_JOIN_A_TAG,
-    MATCH_JOIN_B_TAG,
-    RIG_TEAM_ATTRIBUTE,
     ROUND_MODE_ATTRIBUTE,
     ROUND_STATE_ATTRIBUTE,
     ROUND_TIME_ATTRIBUTE,
@@ -477,12 +473,11 @@ export class RoundService implements OnStart {
      * which of the two it was.
      *
      * **It checks nothing, and the callers are why.** Whether a match is already running and whether there
-     * are participants to put in one have two different answers to print, and {@link requestMatch} is the
-     * place that prints them; the settle window asks its own question before calling, and only ever fires on
-     * a field {@link canStartMatch} has already accepted — the roster's players **plus the rigs standing on
-     * the pads**, which are participants for the minimum and nothing else. Each caller checks in the way its
-     * own situation calls for, and this method stays the single place the request is made — so the two can
-     * never disagree about what "asked for" means.
+     * are players to put in one have two different answers to print, and {@link requestMatch} is the place
+     * that prints them; the settle window asks its own question before calling, and only ever fires on a
+     * roster `canStart` has already accepted. Each caller checks in the way its own situation calls for, and
+     * this method stays the single place the request is made — so the two can never disagree about what
+     * "asked for" means.
      */
     public startMatch(mode: GameMode): void {
         this.pendingMatch = mode;
@@ -509,14 +504,12 @@ export class RoundService implements OnStart {
             return;
         }
 
-        if (!this.canStartMatch()) {
+        if (!this.matches.canStart()) {
             const counts = this.matches.countsFor();
-            const rigs = rigsOnPads();
 
             print(
-                `[Round] ${player.Name} asked for a match — refused, needs ${MATCH_MIN_PLAYERS} participant(s)` +
-                    ` with one a side, and the field is A ${counts.a} player(s) + ${rigs.a} rig(s),` +
-                    ` B ${counts.b} player(s) + ${rigs.b} rig(s)`,
+                `[Round] ${player.Name} asked for a match — refused, needs ${MATCH_MIN_PLAYERS} player(s) with` +
+                    ` one a side, and the roster is A ${counts.a}, B ${counts.b}`,
             );
 
             return;
@@ -618,7 +611,7 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Who has won, judged only by who is still **in the game** — connected players, and the rigs left standing.
+     * Who has won, judged only by who is still **connected to the server**.
      *
      * **Counted from `Players`, not from `activePlayers`, and that distinction is the entire point.**
      * A mode counts who is still *in the round*: somebody eliminated in Team Elimination is out of the
@@ -630,15 +623,6 @@ export class RoundService implements OnStart {
      * `teams` the moment `PlayerRemoving` fires, so this counts them out on that same tick — which is
      * what makes a departure end a round immediately rather than at the next countdown tick, and what
      * makes it end even while a dev has rounds frozen. Leaving is not pausable.
-     *
-     * **A rig standing for a side is that side still being in the game**, and this is the line that stops the
-     * round being a game *for people* and makes it a game. A rig has no `Player`, so it is invisible to the
-     * count above — and a round of four rigs therefore read as *both sides empty* and was drawn the tick after
-     * it opened, which is the "starts, ends immediately, loops" the whole feature exists to remove. So a side is
-     * out when it has no connected players **and** no rigs still standing for it; see `rigsInPlay` for what
-     * "still standing" means, which is deliberately *not* "on a pad" — the rigs leave the pads when the round
-     * opens. **What it buys is a complete game with nobody in it**, played out by the mode's own rules, which is
-     * precisely what a player arriving part-way is meant to be able to walk into.
      *
      * **Both sides empty is a draw.** The case where everybody left: it is the honest answer, and it
      * is also what stops an empty server sitting inside a round for ever — the same reason every mode
@@ -661,16 +645,9 @@ export class RoundService implements OnStart {
             else if (team === TEAM_B) connectedB++;
         }
 
-        // **The rigs, added to the people rather than replacing them.** A side with a connected player is in
-        // whatever its rigs are doing; a side whose people have all left is still in while a rig stands for it.
-        // See `rigsInPlay` for the count itself and this method's doc for why the round needs it at all.
-        const rigs = rigsInPlay();
-        const ableA = connectedA + rigs.a;
-        const ableB = connectedB + rigs.b;
-
-        if (ableA === 0 && ableB === 0) return DRAW;
-        if (ableA === 0) return TEAM_B;
-        if (ableB === 0) return TEAM_A;
+        if (connectedA === 0 && connectedB === 0) return DRAW;
+        if (connectedA === 0) return TEAM_B;
+        if (connectedB === 0) return TEAM_A;
 
         return undefined;
     }
@@ -800,60 +777,20 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Whether there are too few **participants** for a round to be worth starting.
+     * Whether there are too few players for a round to be worth starting.
      *
-     * **Asked of `Players` and the pads, and not of `activePlayers` — that is not a style choice.**
+     * **Asked of `Players`, and not of `activePlayers` — that is not a style choice.**
      * `activePlayers` is who is *in the round*, and it is empty for the whole of an intermission:
      * it is cleared as the intermission opens and filled again when the round does. A check against
      * it would read zero every single time and freeze the intermission for ever, which is the trap
      * this comment exists to stop anybody walking back into.
-     *
-     * **A rig standing on a join pad is a participant, and this is the gate where that is true.**
-     * The minimum asks "is there enough here to run a round"; a rig that has walked to a pad and is
-     * waiting to play is exactly that — the alternative is a server of one human and four rigs that
-     * stands frozen for ever, looking like a game and counting as nobody. **What the number now means:**
-     * `MIN_PLAYERS` — 2 — is *enough participants to start*, where a participant is a connected player
-     * **or a rig on a pad**. One player and one rig is a round, and the solo player this whole feature
-     * exists for always has four. The *value* is unchanged; only what it counts is. See `rigsOnPads`
-     * for the test itself, which is a bounds check against the pad parts rather than the rig's
-     * `RIG_TEAM_ATTRIBUTE` — that attribute is written as a rig *sets off*, so a walking rig is not
-     * yet a participant.
      *
      * **Only the start of a round is gated by this.** A round that drops below the minimum mid-play
      * runs to its finish — a result that changed because somebody's connection did is not a result,
      * and the round already has its own rules for a side that empties out.
      */
     private belowMinimum(): boolean {
-        const rigs = rigsOnPads();
-
-        return Players.GetPlayers().size() + rigs.a + rigs.b < ARENA_CONFIG.MIN_PLAYERS;
-    }
-
-    /**
-     * `MatchService.canStart`, with the rigs standing on the pads counted as participants.
-     *
-     * **The second half of the minimum, and the two are not the same gate.** `belowMinimum` is what *freezes*
-     * an intermission — the clock stops and nothing is offered while it is true. This is what says a field is
-     * *ready* to open a round, which is a different question asked by a different branch of the loop. The
-     * round needed both: with only the freeze gate relaxed, a solo player's intermission would run and still
-     * never open, because `MatchService.canStart` insists on *one a side* and a rig is not in `opted`.
-     *
-     * **The split this keeps, and the one it deliberately does not take.** `MatchService.canStart` is the one
-     * check in the game that answers both "are there enough" and "is the roster within its cap", and those two
-     * want *opposite* answers about rigs. Rather than split it — which would put the readiness rule in two
-     * files and let the halves drift — the stand-in counts are **passed in**, so the minimum accepts them and
-     * the cap ignores them inside the one place that rule is written. See `MatchService.canStart` for the
-     * asymmetry argued in full.
-     *
-     * **Rigs do not reset the settle window, deliberately.** The window waits on `rosterRevision`, which only
-     * a player's touch moves. A rig arriving on a pad is the *condition* for a solo player's match, not a
-     * change to the roster the window is measuring, so the count is re-read each tick and flips this branch
-     * the moment the rigs are standing.
-     */
-    private canStartMatch(): boolean {
-        const rigs = rigsOnPads();
-
-        return this.matches.canStart(rigs.a, rigs.b);
+        return Players.GetPlayers().size() < ARENA_CONFIG.MIN_PLAYERS;
     }
 
     /**
@@ -888,9 +825,9 @@ export class RoundService implements OnStart {
      *
      * **Four steps, in this order, and each one is load-bearing.**
      *
-     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE} **on each player in `covered`** — the clients' cue to close
-     *    their grids, and theirs alone. A counter rather than the phase, because the phase is published early
-     *    by design — see that constant — and a wipe keyed on it would have finished and gone before this ran.
+     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE}, which is the clients' cue to close their grids. A counter
+     *    rather than the phase, because the phase is published early by design — see that constant — and a
+     *    wipe keyed on it would have finished and gone before this ran.
      * 2. Wait `TRANSITION_COVER_SECONDS`: the clients' own closing time plus a step of latency, so that the
      *    move below lands on covered screens rather than on half-covered ones.
      * 3. `moveEveryone()` — the teleport, hidden — and {@link holdArenaEntry} on the very next line.
@@ -921,60 +858,28 @@ export class RoundService implements OnStart {
      * than merely late in reporting. `await` rather than a bare `task.wait` because this is called from
      * `gameLoop`, which is `async` — see that function's note on why a throw from in there ends the session.
      *
-     * **Not gated on the pause.** A paused or below-minimum round still teleports its players, so the cover is
-     * still the truth for them; what the pause holds is the *counting*, and this runs before anything counts.
-     * A player sitting in the lobby is not in `covered` and so is never covered, pause or no pause.
+     * **Not gated on the pause.** A paused or below-minimum round still teleported everybody, so the cover is
+     * still the truth; what the pause holds is the *counting*, and this runs before anything counts.
      *
      * **`options` rather than more arguments**, because both of them are read at the call site as often as
      * they are written and one of them was a bare `true`: see {@link TransitionOptions}. With `wipe` off there
      * is no cover to move behind, so the move happens at once — but a hold still runs, because the freeze is a
      * rule about the round rather than part of the cover.
-     *
-     * **`covered` is passed in rather than derived from `moveEveryone`, and it is the fix for a lobby player
-     * being shown somebody else's wipe.** The cover hides a camera cut; a cut only happens to a body the move
-     * actually touches. The two callers move different sets — the intermission's `teleportAll` moves everybody,
-     * the round's `teleportTeamsToArena` moves only the opted-in players — so the honest list is exactly
-     * whatever the caller's own move is about to touch, and only the caller knows it. Passing it in buys two
-     * behaviours: **a boundary that moves nobody does not wait**, so a rig-only round opens without a
-     * `TRANSITION_COVER_SECONDS` stall that no one on the server can see; and **deriving it is not available
-     * anyway**, because `teleportTeamsToArena` re-reads `playersInRound()` for itself and a list taken here
-     * would have to be captured before the move to be the same list. There is deliberately no default value: a
-     * caller adding a third boundary has to answer who it is covering for, which is the question that was
-     * missed here. `readonly Player[]` rather than `Set`, because it is a list to loop and nothing looks
-     * anything up in it.
      */
-    private async transitionAround(
-        moveEveryone: () => void,
-        covered: ReadonlyArray<Player>,
-        options: TransitionOptions = {},
-    ): Promise<void> {
+    private async transitionAround(moveEveryone: () => void, options: TransitionOptions = {}): Promise<void> {
         const holdFor = options.holdEveryoneFor ?? 0;
-
-        // **No cover when there is nobody to cover for.** The cover exists to hide a camera cut, and a cut only
-        // happens to a body that is moved — so a boundary that moves nobody (a rig-only round opening) has
-        // nothing to hide and no reason to make anybody wait `TRANSITION_COVER_SECONDS` behind a grid they
-        // cannot see. `covered` is the list of players about to be moved, so it is empty exactly when
-        // `moveEveryone` will move nobody.
-        const wiping = TRANSITION_CONFIG.ENABLED && (options.wipe ?? true) && covered.size() > 0;
+        const wiping = TRANSITION_CONFIG.ENABLED && (options.wipe ?? true);
 
         if (wiping) {
-            // **Bumped on the players rather than on the folder, and that is what makes the cover theirs.** A
-            // wipe hides a camera cut, so only the players being cut should see it — a player standing in the
-            // lobby while a rigs-only round opens is not being moved and should not be covered, and a folder
-            // attribute cannot tell those two apart because it reaches everybody. See
-            // `ROUND_TRANSITION_ATTRIBUTE` for the whole argument.
-            for (const player of covered) {
-                const current = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
-
-                player.SetAttribute(
-                    ROUND_TRANSITION_ATTRIBUTE,
-                    (typeIs(current, "number") ? current : 0) + 1,
-                );
-            }
+            const current = this.statusFolder.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+            this.statusFolder.SetAttribute(
+                ROUND_TRANSITION_ATTRIBUTE,
+                (typeIs(current, "number") ? current : 0) + 1,
+            );
 
             print(
                 `[Round] transition — cover in ${TRANSITION_COVER_SECONDS}s, then the move, ` +
-                    `then ${TRANSITION_OPEN_SECONDS}s to open, for ${covered.size()} player(s)`,
+                    `then ${TRANSITION_OPEN_SECONDS}s to open`,
             );
 
             task.wait(TRANSITION_COVER_SECONDS);
@@ -1928,9 +1833,7 @@ export class RoundService implements OnStart {
 
             // **No hold at this boundary**, and the absence is the point: the round is over, so there is
             // nothing to hold anybody for — the only thing being covered here is the move back to the lobby.
-            // **Everybody, because the intermission moves everybody** — opted in or not, the lobby is where an
-            // intermission puts you, so this is the one boundary whose cover is for the whole server.
-            await this.transitionAround(() => this.teleportAll(lobby), Players.GetPlayers(), {
+            await this.transitionAround(() => this.teleportAll(lobby), {
                 wipe: TRANSITION_CONFIG.WIPE_AT_ROUND_END,
             });
 
@@ -2112,7 +2015,7 @@ export class RoundService implements OnStart {
                 if (current !== roster) {
                     roster = current;
                     settledFor = 0;
-                } else if (this.canStartMatch()) {
+                } else if (this.matches.canStart()) {
                     settledFor++;
 
                     if (settledFor >= MATCH_SETTLE_SECONDS) {
@@ -2121,12 +2024,10 @@ export class RoundService implements OnStart {
                         // from a dev, which is the normal path and the one worth being able to tell apart
                         // in the output from somebody having typed `!dev match`.
                         const counts = this.matches.countsFor();
-                        const rigs = rigsOnPads();
 
                         print(
                             `[Round] starting on its own — the sides held still for ${MATCH_SETTLE_SECONDS}s` +
-                                ` (A: ${counts.a} player(s) + ${rigs.a} rig(s),` +
-                                ` B: ${counts.b} player(s) + ${rigs.b} rig(s))`,
+                                ` (A: ${counts.a}, B: ${counts.b})`,
                         );
 
                         // The same door the dev command uses, so the field still has exactly one writer — and
@@ -2365,10 +2266,7 @@ export class RoundService implements OnStart {
             // length above does not move until this returns, which is the tick the hold lifts: see
             // `transitionAround`, whose last act is the release, and `releaseArenaEntry` for why that and the
             // round's first second are one moment rather than two timers that agree.
-            // **The match's own players, because those are the bodies the move touches.** A player in the lobby
-            // who never opted in is not moved to the arena, so they are not cut and so not covered — there is no
-            // cut where nobody goes. See `transitionAround` and `ROUND_TRANSITION_ATTRIBUTE`.
-            await this.transitionAround(() => this.teleportTeamsToArena(), this.playersInRound(), {
+            await this.transitionAround(() => this.teleportTeamsToArena(), {
                 holdEveryoneFor: ARENA_CONFIG.ARENA_FREEZE_SECONDS,
             });
 
@@ -2488,39 +2386,6 @@ function basePartsIn(folder: Folder): BasePart[] {
 }
 
 /**
- * **Every** lobby spawn part — the places a player may wait between rounds, and now the places a spawned
- * rig stands.
- *
- * **The second caller of one rule, which is the whole reason this exists rather than the spawner writing its
- * own.** "What is the arena", "where is its `LobbySpawns` folder" and "what counts as a part in it" are three
- * decisions {@link RoundService.lobbySpawn} already makes, and `RigSpawnerService` needs all three — but it
- * needs *every* part rather than one picked at random, so it cannot call that method. Composing the same
- * three helpers here keeps the rule in one place (`basePartsIn`'s own doc is explicit that this is the one
- * place "what counts as a spawn" is decided) while handing the spawner the list it actually wants. The
- * alternative — the spawner looking up `ArenaV2` and `LobbySpawns` for itself — would be a second answer to
- * "where is the lobby", which is the failure `shared/taggedParts.ts` exists to end.
- *
- * **Exported rather than a method on the service**, because a caller that wants to know where the lobby is
- * should not have to hold the round — the same reasoning that has `RoundService` read the phase off a folder
- * instead of being asked. `RigSpawnerService` imports this and nothing else from the round, so the arrow
- * between the two services still points one way.
- *
- * **`[]` for every way this can fail, and saying which is somebody else's job** — exactly the contract
- * {@link RoundService.lobbySpawn} keeps. No arena, no folder and an empty folder all read the same here;
- * `waitForLobby` is what holds an intermission while the answer is no, and the spawner names the fix for
- * itself.
- */
-export function lobbySpawnParts(): BasePart[] {
-    const arena = findArena();
-    if (arena === undefined) return [];
-
-    const folder = lobbySpawnFolder(arena);
-    if (folder === undefined) return [];
-
-    return basePartsIn(folder);
-}
-
-/**
  * The `BasePart` children of `arena`'s spawn folder for `team`.
  *
  * **One traversal, two callers that disagree about what emptiness means** — the round boundary
@@ -2551,35 +2416,6 @@ function teamSpawnParts(arena: Instance, team: TeamLabel): BasePart[] {
     }
 
     return parts;
-}
-
-/**
- * **Every** spawn part on `side`'s half of the court — the places a player of that side is put at the start of
- * a round, and now the places a match rig walks to.
- *
- * **The second caller of one rule, and that is why this exists rather than the gather behaviour writing its
- * own.** "What is the arena", "where is its `ArenaSpawns` folder" and "what counts as a part in it" are three
- * decisions {@link RoundService.getRandomTeamSpawn} already makes, and the rigs need the same three — but they
- * need the *list* rather than one picked CFrame, because a rig is sent by index so that two rigs of a side
- * cannot be given the same spot (see `GatherBehavior` for the rotation and for why a plain random pick is not
- * good enough there). Composing the same two helpers here keeps the rule in one place, and the alternative —
- * a behaviour looking up `ArenaV2` and `ArenaSpawns` for itself — would be a second answer to "where does a
- * round begin", which is the failure {@link lobbySpawnParts}' own doc names.
- *
- * **Exported rather than a method on the service**, for the reason {@link lobbySpawnParts} gives: a caller
- * that wants to know where the court is should not have to hold the round. `GatherBehavior` imports this one
- * function, so the arrow between the two still points one way — the round knows nothing about a rig.
- *
- * **`[]` for every way this can fail, and saying which is somebody else's job** — exactly the contract
- * {@link RoundService.lobbySpawn} keeps. No arena, no `ArenaSpawns` folder, no folder for that side, and an
- * empty folder all read the same here; {@link arenaProblem} is what turns the same emptiness into a sentence a
- * person can act on, and it is asked at every round boundary before a round is allowed to begin.
- */
-export function arenaSpawnParts(side: TeamLabel): BasePart[] {
-    const arena = findArena();
-    if (arena === undefined) return [];
-
-    return teamSpawnParts(arena, side);
 }
 
 /**
@@ -2672,117 +2508,4 @@ function roundParticipants(): Model[] {
     }
 
     return participants;
-}
-
-/**
- * The parts a player — or a rig — walks into to pick a side, both tags as one list.
- *
- * **Found by tag rather than asked of `MatchService`, and that is not a shortcut around an API.** That
- * service retains no list of its pads: it finds them once at mount, dresses each, connects its `Touched` and
- * keeps only the labels it put above them — so the tag is the interface to a pad, exactly as it is for
- * `GatherBehavior.padFor`. Both tags are read because a rig may be standing on either, and a part wearing
- * both would simply be tested twice, which costs one query and changes nothing.
- */
-function joinPads(): BasePart[] {
-    const pads = taggedPartsInWorkspace(MATCH_JOIN_A_TAG);
-
-    for (const part of taggedPartsInWorkspace(MATCH_JOIN_B_TAG)) pads.push(part);
-
-    return pads;
-}
-
-/** Whether `rig`'s bounds overlap any of `pads` — the practice zone's test, against a pad instead of a zone. */
-function onAnyPad(rig: Model, pads: BasePart[]): boolean {
-    const params = new OverlapParams();
-    // **`IncludeInstances`, which is the current spelling of "only this instance may answer"** — the pair it
-    // replaces is deprecated in the installed typings, and `PracticeZoneService.insideZone` carries the
-    // argument for it. The whole `Model` is passed rather than its root part, so a rig with one foot over a
-    // pad still counts, which is what "standing on the pad" means to a person watching it.
-    params.IncludeInstances = [rig];
-
-    for (const pad of pads) {
-        if (Workspace.GetPartBoundsInBox(pad.CFrame, pad.Size, params).size() > 0) return true;
-    }
-
-    return false;
-}
-
-/**
- * How many rigs are standing on the join pads, counted by side — the rig half of the round's minimum.
- *
- * **This is the round's own reading of a fact another service owns, and the separation is deliberate.** A
- * rig's side is written by `GatherBehavior.assignSide`, and `MatchService` — which owns the roster and mounts
- * the pads — cannot see it: `opted` is `Map<Player, TeamLabel>`, a rig has no `Player`, and `touched` returns
- * on `GetPlayerFromCharacter` *before* `optIn` runs. So the rig-side fact lives here, with the thing that
- * needs it, and the maximum stays a pure question about players. See `MatchService.canStart`, which is handed
- * these two numbers rather than looking them up, and `RoundService.belowMinimum` / `canStartMatch`, the two
- * readers.
- *
- * **"On a pad" is a bounds test, not `RIG_TEAM_ATTRIBUTE`, and that distinction is the whole reason this
- * exists rather than one attribute read.** The attribute is written the moment a rig *sets off* for its pad —
- * `assignSide` runs in the same tick that issues the first `MoveTo` — so a rig halfway across the lobby
- * carries a side with it, and a participant count keyed on the attribute would count a rig that has not
- * arrived, opening a round on rigs still in transit. The bounds test asks the question the eye asks: is it
- * *there*. It is also the same thing `GatherBehavior`'s own arrival test approximates with a four-stud radius,
- * asked exactly instead.
- *
- * **A rig with no side counts toward neither column.** That cannot happen on a pad — a rig walks only after
- * `assignSide` has given it one — but the guard is what stops a hand-tagged oddity being counted into a side
- * it never declared. The answer is `{ a: 0, b: 0 }` when there are no pads at all, which is also what an
- * unbuilt lobby gives.
- */
-function rigsOnPads(): { readonly a: number; readonly b: number } {
-    const pads = joinPads();
-    if (pads.size() === 0) return { a: 0, b: 0 };
-
-    let a = 0;
-    let b = 0;
-
-    for (const instance of CollectionService.GetTagged(NPC_TAG)) {
-        if (!instance.IsA("Model")) continue;
-        if (!instance.IsDescendantOf(Workspace)) continue;
-        if (!onAnyPad(instance, pads)) continue;
-
-        const side = instance.GetAttribute(RIG_TEAM_ATTRIBUTE);
-        if (side === TEAM_A) a++;
-        else if (side === TEAM_B) b++;
-    }
-
-    return { a: a, b: b };
-}
-
-/**
- * The rigs still standing for each side — a rig that carries a side and is in the world.
- *
- * **The second of the two rig counts, and it answers a different question from `rigsOnPads`.** That one asks
- * "has this rig come to a pad to play", which is what the round's *minimum* is about, and it is positional
- * because a rig still walking has not arrived. This one asks "is this side still in the round", which is what
- * *ends* a round, and it is deliberately **not** positional: **the gather behaviour walks a rig home the
- * moment the round opens** — `home` is where it stood when it set off, and for a spawned rig that is the lobby
- * spawn — so during play there may be no rig on a pad at all. A pads-only count would read zero for the whole
- * round and `rosterOutcome` would draw every one of them, which is the loop this exists to break.
- *
- * **"Standing" is about presence, not health.** A dead rig is not gone: it wears `Behavior_Respawn`, its corpse
- * keeps the side, and `RespawnBehavior` replaces it a few seconds later — so counting only the living would end
- * a round for the length of one death. It is the player's own rule read across (`Players` counts a dead
- * player's side too), and it is what makes a rig round behave like a match rather than a last-one-standing.
- *
- * **A rig with no side counts for neither column**, which is what keeps hand-placed practice rigs out of it:
- * they wear no `Behavior_Gathering`, never walk to a pad and never get a side, so they are scenery here exactly
- * as they are everywhere else. The guards on the tag walk are `roundParticipants`' own.
- */
-function rigsInPlay(): { readonly a: number; readonly b: number } {
-    let a = 0;
-    let b = 0;
-
-    for (const instance of CollectionService.GetTagged(NPC_TAG)) {
-        if (!instance.IsA("Model")) continue;
-        if (!instance.IsDescendantOf(Workspace)) continue;
-
-        const side = instance.GetAttribute(RIG_TEAM_ATTRIBUTE);
-        if (side === TEAM_A) a++;
-        else if (side === TEAM_B) b++;
-    }
-
-    return { a: a, b: b };
 }

@@ -42,17 +42,15 @@ a place file that no build touches.
 | `MatchJoinA` | `shared/constants.ts`, `MATCH_JOIN_A_TAG` | *painted in Studio* — the part's flags are then forced from code | `MatchService.mountSide` |
 | `MatchJoinB` | `shared/constants.ts`, `MATCH_JOIN_B_TAG` | as above | as above |
 | `MatchJoinTouched` | `MatchService`, `DEBOUNCE_TAG` | `MatchService.touched`, on a **character** | `MatchService.touched` |
-| `RigTemplate` | `shared/constants.ts`, `RIG_TEMPLATE_TAG` | *painted in Studio*, on a rig parked **outside `Workspace`** | `RigSpawnerService.findTemplate` — the only reader, and the only reader in this file that requires a tag to be *out* of the world |
-| `NPC` | `shared/constants.ts`, `NPC_TAG` — re-exported by `npc/Behavior.ts`, which is where every server reader still imports it from | `NpcService.spawn` (called by `RigSpawnerService` on the first join, and by any other caller), `RespawnBehavior`, or painted in Studio | `NpcService`, `CollisionGroups`, `BallService`, `RoundService`, `OutlineService` — **and `client/controllers/character/RigAnimationController`, which is what animates the rigs** |
+| `NPC` | `shared/constants.ts`, `NPC_TAG` — re-exported by `npc/Behavior.ts`, which is where every server reader still imports it from | `NpcService.spawn`, `RespawnBehavior`, or painted in Studio | `NpcService`, `CollisionGroups`, `BallService`, `RoundService`, `OutlineService` — **and `client/controllers/character/RigAnimationController`, which is what animates the rigs** |
 | `Behavior_Catching` | `npc/Behavior.ts`, `BEHAVIOR_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted | `NpcService`'s per-behavior gate |
 | `Behavior_Throwing` | `npc/Behavior.ts`, `BEHAVIOR_THROWING` | as above | as above |
 | `Behavior_Pickup` | `npc/Behavior.ts`, `BEHAVIOR_PICKUP` | as above | as above |
 | `Behavior_Seeking` | `npc/Behavior.ts`, `BEHAVIOR_SEEKING` | as above | as above |
 | `Behavior_Dodging` | `npc/Behavior.ts`, `BEHAVIOR_DODGING` | as above | as above |
 | `Behavior_Respawn` | `npc/Behavior.ts`, `BEHAVIOR_RESPAWN` | as above | as above |
-| `Behavior_Gathering` | `npc/Behavior.ts`, `BEHAVIOR_GATHERING` | `NpcService.spawn` / `RespawnBehavior` / painted, **and on before `NPC`** like every behavior tag | `NpcService`'s per-behavior gate |
 
-Eighteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
+Sixteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
 in the world — and the rule is now enforced by the reader rather than repeated in each one: see the
 four sections below that say so.
 
@@ -275,47 +273,10 @@ a switch wants a pause between the two touches.
 It is worth having in this file despite being code-only, because it is a tag on a **character**, and
 a reader who knows the rest of this list will not expect that.
 
-## `RigTemplate` — the one tag that must be painted *out* of the world
-
-The rig `NpcService.spawn` copies from, parked in `ServerStorage` (or anywhere that is not `Workspace`). Read
-by `RigSpawnerService.findTemplate`, which takes the first `RigTemplate`-tagged `Model` it finds **and
-requires it to be outside `Workspace`** — the one place in this file where the world filter is *inverted*.
-
-**Why it is inverted, because every other tag reader's rule is the opposite.** `MatchSpawner`,
-`practiceZone`, `CharacterBarrier` and the `NPC` gate in `NpcService` all *exclude* what is out of the world,
-because a tag on something a player cannot reach is a claim the world cannot honour. A template is the
-reverse case: it must be somewhere nobody can see it, and getting it wrong has a specific symptom — a rig
-standing in the lobby *and* a copy of it spawning on every join, which reads as "the rigs are doubled". So a
-tagged model found inside `Workspace` is reported by name and ignored rather than used, and the warning says
-to move it to `ServerStorage`.
-
-**`NPC` must not be on it.** A template wearing `NPC` is one `NpcService` starts a loop for — harmless, since
-the runner's own world gate stops it acting, but noisy in the output — and `spawn` strips every tag off the
-copy before applying the behaviour set, so a template with the wrong tags does not pass them to a rig. The
-template is simply cleaner without them.
-
-**This is the only tag in the register whose whole contract is *where* something is rather than *what* it
-is**, and it is the tag `RigSpawnerService` prints when it finds no template — which is the first line to
-grep for when no rigs appear on a join.
-
-**The convention it changes, recorded here because it is a rule about the game rather than about a string.**
-Rigs used to be *placed*: a person dragged one into the arena, tagged it, and it stayed there for the life of
-the server. They are now *spawned*: on the first player's join, `RigSpawnerService` copies the template
-`RIGS_PER_TEAM` times a side, and `NpcService.spawn` decides the tags and the side. The hand-placed route
-still works — a rig tagged by hand is managed exactly as before — but it is now the fallback rather than the
-only way, and a place file that has *both* the spawner and its old hand-placed rigs will show two of
-everything.
-
-## `NPC` and the seven `Behavior_*` tags
+## `NPC` and the six `Behavior_*` tags
 
 `NPC` is the entry point; a `Behavior_*` tag enables one mechanic. A rig wearing `NPC` and no
 behaviour tag is managed and does nothing.
-
-**`Behavior_Gathering` is the one that runs *between* rounds rather than during one**, and it is the only
-behavior that reads the round's phase at all. Every other tag names something a rig does while a match is
-on; this one gathers the rigs onto the matchmaking pads while there is no match, and walks them back when
-one starts. It is also the second writer of `RIG_TEAM_ATTRIBUTE` — the first is `NpcService.spawn` — because
-a rig placed by hand in Studio arrives with no side, and this is where it is given one.
 
 **The order they go on is load-bearing, and it is the one rule in this file that is not about
 spelling.** `NpcService` starts a loop when `NPC` **arrives** on a model, so the behaviour tags must
@@ -391,7 +352,7 @@ duplicated — the source of truth is the file named.
 | `"Playing"` / `"Intermission"` | `RoundService` publishes them as the phase name | **server:** `BallSpawnerService`, `MatchService`, `StatsService`, `SuperService`, `OutlineService`. **client:** `RoundStatusController`, `RoundResultController`, `StatsBillboardController`, `TeamRingController`, `MusicController`, `ShiftLock` |
 | `"LobbySpawn"` | `shared/config/arena.config.ts` (`LOBBY_SPAWN_NAME`) | `RoundService`, in the `DescendantRemoving` watcher that traces the part's disappearance. **Nothing reads this name as a spawn any more** — the lobby is a folder of `LobbySpawns` parts — so the only reason the string still exists is that watcher, which is scaffolding worth deleting once the part is traced |
 | `DodgeballBall` | `shared/constants.ts` (`BALL_NAME`) | **imported, not copied** |
-| `THROWER_TOKEN`, `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE`, `TEAM_ATTRIBUTE`, `RIG_TEAM_ATTRIBUTE`, `RESPAWN_AT_ATTRIBUTE`, `COINS_ATTRIBUTE`, `OWNED_ITEMS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE`, `CROWN_ATTRIBUTE`, `STAT_HITS` / `STAT_OUTS` / `STAT_RATIO`, `BALL_ABILITY_ATTRIBUTE`, `ARMED_ABILITY_ATTRIBUTE`, `CHARACTER_BARRIER_TAG`, `MATCH_JOIN_A_TAG` / `MATCH_JOIN_B_TAG`, `MATCH_SPAWNER_TAG`, `PRACTICE_ZONE_TAG` | `shared/constants.ts` | **imported, not copied.** This is the list to check first: every one of them is read by two files or more, and every one of them is a *string* that a typo would silently break |
+| `THROWER_TOKEN`, `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE`, `TEAM_ATTRIBUTE`, `RESPAWN_AT_ATTRIBUTE`, `COINS_ATTRIBUTE`, `OWNED_ITEMS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE`, `CROWN_ATTRIBUTE`, `STAT_HITS` / `STAT_OUTS` / `STAT_RATIO`, `BALL_ABILITY_ATTRIBUTE`, `ARMED_ABILITY_ATTRIBUTE`, `CHARACTER_BARRIER_TAG`, `MATCH_JOIN_A_TAG` / `MATCH_JOIN_B_TAG`, `MATCH_SPAWNER_TAG`, `PRACTICE_ZONE_TAG` | `shared/constants.ts` | **imported, not copied.** This is the list to check first: every one of them is read by two files or more, and every one of them is a *string* that a typo would silently break |
 
 **The distinction that matters:** the tag strings in this file are the ones that *cannot* be imported
 — a Flamework decorator literal, or a string painted on an instance in Studio. Everything in the

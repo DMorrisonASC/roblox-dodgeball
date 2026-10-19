@@ -1,8 +1,8 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, RunService } from "@rbxts/services";
+import { ReplicatedStorage, RunService } from "@rbxts/services";
 import { TRANSITION_CONFIG } from "shared/config/transition.config";
-import { ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
+import { ROUND_STATUS_FOLDER, ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
 import { getTransitionScreenGui } from "../../ui/screenGui";
 
 /** Prints when a wipe starts and when it comes off, which is how a wipe is told from a round without one. */
@@ -52,25 +52,13 @@ type TransitionStage = "grow" | "hold" | "reveal";
 /**
  * The wipe that covers the screen when a round begins.
  *
- * **What it is masking.** A round *starts* with the players who opted in moved to the arena
- * (`RoundService.teleportTeamsToArena`) and *ends* with everybody moved back to the lobby
+ * **What it is masking.** A round *starts* with every client's body moved to the arena
+ * (`RoundService.teleportTeamsToArena`) and *ends* with every body moved back to the lobby
  * (`teleportAll`); both are a camera cut — the world and everything the player was looking at change in one
  * server frame — and this is what is on screen at each of them. It is not a loading screen and no rule of
  * the game depends on anybody having seen it, but it is not free either: `RoundService.transitionAround`
- * holds the phase's clock still for the cover, so a round neither spends its opening seconds behind a cover
- * nor starts counting before its players are standing in the arena.
- *
- * **The cover belongs to the player being moved, and that is the correction this went through last.** The
- * cue is written on each player the transition is about to teleport, and this watches its own
- * (`Players.LocalPlayer`), so a wipe is shown if and only if *this* client's body is about to be cut. Two
- * cases fall out of that rather than needing rules of their own. A player standing in the lobby while a round
- * opens is not moved and so gets no grid — it used to get one, because the cue was a single attribute on the
- * round's status folder in `ReplicatedStorage` and that reaches every client on the server; a full-screen
- * wipe over a world that never changed is not a transition, it is a blackout. And a transition **that moves
- * nobody** — a round played out entirely by rigs, with no players on the pads — writes no cue to anybody, so
- * nobody is covered and nobody waits out `TRANSITION_COVER_SECONDS` behind a grid they cannot see. The
- * server's half of that is `RoundService.transitionAround`, which is handed the list of players it is
- * covering for rather than assuming its move touches everybody.
+ * holds the phase's clock still for `TRANSITION_SECONDS`, so a round neither spends its opening seconds
+ * behind a cover nor starts counting before its players are standing in the arena.
  *
  * **The cover closes *around* the move, and that is a correction this went through twice.** The first
  * version played the wipe after the teleport, which is not a transition at all — a curtain drawn after the
@@ -119,24 +107,14 @@ export class RoundTransitionController implements OnStart {
 	private running = false;
 
 	public onStart(): void {
-		// **Called straight through, with nothing awaited and nothing to wait for, and that is itself part of
-		// the change this file went through.** It used to be spawned because mounting waited on the round
-		// folder in `ReplicatedStorage`, which the *server* creates; the attribute it watches is on this
-		// client's own player now, and `Players.LocalPlayer` exists before any client script runs. So there is
-		// no yield to keep off the boot path, and connecting on this frame rather than the next is one frame
-		// fewer in which a transition could land unwatched.
-		this.mount();
+		// Spawned rather than done inline, on every other HUD controller's argument: mounting waits for
+		// the round folder, which the *server* creates, and a controller's `onStart` is the wrong place to
+		// hold up the rest of the client's boot.
+		task.spawn(() => this.mount());
 	}
 
 	private mount(): void {
-		// **On this player rather than on a folder in `ReplicatedStorage`**, and that is the fix for a lobby
-		// player being covered for a cut that happened to somebody else. The wipe hides a camera cut, and a cut
-		// only happens to a body that is moved — so the players who should see it are exactly the players
-		// `RoundService.transitionAround` is about to teleport, and it writes one attribute per player for that
-		// reason. A folder attribute reaches every client on the server and cannot tell the two apart: a player
-		// standing in the lobby while a round opened — and especially while a round of *rigs* played itself out
-		// with nobody in it at all — was shown a full-screen grid over a world they had never left.
-		const player = Players.LocalPlayer;
+		const status = ReplicatedStorage.WaitForChild(ROUND_STATUS_FOLDER);
 
 		/**
 		 * The transition counter as last seen, which is what makes this an *edge* rather than a state.
@@ -155,14 +133,14 @@ export class RoundTransitionController implements OnStart {
 		 * exactly what happened: at the round's end the player saw the lobby and *then* a curtain over it. See
 		 * `ROUND_TRANSITION_ATTRIBUTE`.
 		 */
-		const initial = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+		const initial = status.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
 		let last = typeIs(initial, "number") ? initial : 0;
 
 		// Subscribed after the seed, so the seed cannot be clobbered by a change that landed mid-mount —
 		// and the handler re-reads the attribute rather than trusting the signal, which carries no value.
 		this.scope.push(
-			player.GetAttributeChangedSignal(ROUND_TRANSITION_ATTRIBUTE).Connect(() => {
-				const value = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+			status.GetAttributeChangedSignal(ROUND_TRANSITION_ATTRIBUTE).Connect(() => {
+				const value = status.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
 				if (!typeIs(value, "number")) return;
 
 				// **Any change is a transition**, because the count only moves forward and only the server

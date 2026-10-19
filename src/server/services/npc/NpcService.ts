@@ -6,7 +6,6 @@ import {
 	NPC_ANIM_GROUNDED_ATTRIBUTE,
 	NPC_ANIM_SPEED_ATTRIBUTE,
 	NPC_ANIM_THROWING_ATTRIBUTE,
-	RIG_TEAM_ATTRIBUTE,
 	THROWER_TOKEN,
 } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
@@ -14,7 +13,6 @@ import { resolveDodgeable } from "shared/dodge";
 import { NPC_TAG, NpcBehavior } from "../../npc/Behavior";
 import { createCatchBehavior } from "../../npc/behaviors/CatchBehavior";
 import { createDodgeBehavior } from "../../npc/behaviors/DodgeBehavior";
-import { createGatherBehavior } from "../../npc/behaviors/GatherBehavior";
 import { createPickupBehavior } from "../../npc/behaviors/PickupBehavior";
 import { createRespawnBehavior } from "../../npc/behaviors/RespawnBehavior";
 import { createSeekBehavior } from "../../npc/behaviors/SeekBehavior";
@@ -24,8 +22,6 @@ import { BallService } from "../ball/BallService";
 import { CatchService } from "../actions/CatchService";
 import { DodgeService } from "../actions/DodgeService";
 import { FreezeService } from "../actions/FreezeService";
-import { MatchService } from "../match/MatchService";
-import { TeamLabel } from "../round/team";
 
 /** Prints each model as it is picked up. A print per tick would flood the output. */
 const DEBUG = true;
@@ -93,11 +89,6 @@ export class NpcService implements OnStart {
 		private readonly pickups: BallPickupService,
 		private readonly freezes: FreezeService,
 		private readonly dodges: DodgeService,
-		// **The pads' own service, injected for the gathering behaviour's counting rule and nothing else.** A
-		// rig with no side is sent to the side with fewer occupants, and "how many players are on each side" is
-		// `MatchService.countsFor` — the roster the pads actually serve. The arrow points one way
-		// (`MatchService` has no reason to know an NPC exists), so there is no construction cycle.
-		private readonly matches: MatchService,
 	) {
 		this.behaviors = [
 			createCatchBehavior(catches, balls),
@@ -116,14 +107,6 @@ export class NpcService implements OnStart {
 			// and that one takes it. A rig needs both tags for the mechanic — either alone is a rig
 			// that stands beside a ball it will never pick up, or one that never goes anywhere.
 			createSeekBehavior(pickups, balls),
-			// **The only behavior about where a rig *is* rather than what it does**, and the only one that reads a
-			// phase: an intermission sends the rig to a join pad, the start of a round walks it to its side's
-			// spawn on the court, and the end of the round walks it back to the lobby spawn it began on. It is
-			// placed after the seeker so that on a rig wearing both the ball hunt has already had
-			// its say this turn — the two both call `MoveTo` and the later call is the one that sticks — which
-			// is the reading that matters in the lobby, where a seeker has nothing to fetch and the pad is the
-			// destination that counts.
-			createGatherBehavior(matches),
 			// The one behavior that needs something no other one does: the ball the rig was
 			// holding, so it can be taken out of the copy this makes. It re-enters this service
 			// the way any other rig does — by putting `NPC` on a model and letting the
@@ -166,51 +149,23 @@ export class NpcService implements OnStart {
 	}
 
 	/**
-	 * Puts a rig in the world under this system's control — **the one way a rig the code owns comes to exist.**
+	 * Puts a rig in the world under this system's control.
 	 *
-	 * **What "live" means now, because this method had no caller until `RigSpawnerService` and that changes
-	 * what its contract costs.** While every rig was placed by hand, the tag was the whole interface and this
-	 * was a convenience: nothing depended on the tag order or on the side being written, because a person had
-	 * already done both in Studio. A spawner depends on all of it — it decides how many rigs exist and what
-	 * side each is on, and it does so through these four arguments — so the order below is load-bearing
-	 * rather than tidy, and a rig this method builds is a rig the game plays with.
+	 * The `NPC` tag goes on **last**, after the behavior tags, so the
+	 * added-signal fires with the whole set already in place and the first tick
+	 * can never land on a half-described model.
 	 *
-	 * The `NPC` tag goes on **last**, after the behavior tags, so the added-signal fires with the whole set
-	 * already in place and the first tick can never land on a half-described model. **The side, if one is
-	 * given, is written before either**, so a rig spawned onto a side can throw at the other one from its
-	 * very first tick rather than from the next intermission.
-	 *
-	 * **The copy's own tags are cleared first, and that is what makes a template's tags harmless.** `Clone`
-	 * copies tags, so a template that wears `NPC` — a rig somebody dragged into `ServerStorage` rather than
-	 * stripped — would hand its copy that entry point and every behaviour beside it, and the copy would be
-	 * managed before this method had added anything. It would also inherit the template's `RigTemplate` tag,
-	 * which no live rig should wear. So the tag set is *decided here* rather than appended to: whatever the
-	 * template wears, a spawned rig wears exactly `behaviorTags` and `NPC`. That is the same strip
-	 * `RespawnBehavior.prepare` makes of its own template, for the same reason, at the other door.
-	 *
-	 * `team` is optional: a rig with no side is a working rig rather than a broken one — it simply fights for
-	 * nobody, and `GatherBehavior` gives it a side the next time it walks to a pad. `RigSpawnerService` always
-	 * names one; a rig a person spawns by hand needs no side until a match is on.
+	 * This is a convenience, not a requirement: everything a spawned NPC gets, a
+	 * hand-tagged one gets too, because the added-signal runs the same `start`.
 	 *
 	 * Note what is deliberately **not** here: nothing that equips the rig. Whatever
 	 * a behavior needs in order to run — a ball in the hand, say — that behavior
 	 * asks for itself when its tag is seen. See `NpcBehavior.prepare`.
 	 */
-	public spawn(template: Model, cframe: CFrame, behaviorTags: string[], team?: TeamLabel): Model {
+	public spawn(template: Model, cframe: CFrame, behaviorTags: string[]): Model {
 		const model = template.Clone();
 		model.PivotTo(cframe);
 		model.Parent = Workspace;
-
-		// **Every tag off the copy before any goes on**, so a spawned rig's tags are exactly what this method
-		// was asked for and never a description the template happened to be wearing. See the doc above for the
-		// two faults that hides — a template that is itself managed, and a `RigTemplate` tag riding onto a
-		// live rig.
-		for (const tag of CollectionService.GetTags(model)) model.RemoveTag(tag);
-
-		// **The side goes on before the tags**, for the reason the behavior tags go on before `NPC`: the loop
-		// the entry point starts reads the rig on its first turn, and a throw on that turn needs to know whose
-		// side the rig is on. See `RIG_TEAM_ATTRIBUTE` for why a rig has its own key rather than the player's.
-		if (team !== undefined) model.SetAttribute(RIG_TEAM_ATTRIBUTE, team);
 
 		for (const tag of behaviorTags) model.AddTag(tag);
 		model.AddTag(NPC_TAG);

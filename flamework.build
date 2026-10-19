@@ -2,19 +2,15 @@
 	"version": 1,
 	"flameworkVersion": "1.3.2",
 	"identifiers": {
-		"roblox-dodgeball:out/client/controllers/CoreGuiController@CoreGuiController": "client/controllers/CoreGuiController@CoreGuiController",
 		"roblox-dodgeball:out/client/controllers/audio/MusicController@MusicController": "client/controllers/audio/MusicController@MusicController",
 		"roblox-dodgeball:out/client/controllers/camera/ShiftLock@ShiftLock": "client/controllers/camera/ShiftLock@ShiftLock",
-		"roblox-dodgeball:out/client/controllers/character/AfterimageController@AfterimageController": "client/controllers/character/AfterimageController@AfterimageController",
 		"roblox-dodgeball:out/client/controllers/character/LocomotionAnimationController@LocomotionAnimationController": "client/controllers/character/LocomotionAnimationController@LocomotionAnimationController",
-		"roblox-dodgeball:out/client/controllers/character/RigAnimationController@RigAnimationController": "client/controllers/character/RigAnimationController@RigAnimationController",
 		"roblox-dodgeball:out/client/controllers/character/TeamRingController@TeamRingController": "client/controllers/character/TeamRingController@TeamRingController",
 		"roblox-dodgeball:out/client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController": "client/controllers/hud/ArenaFreezeCountdownController@ArenaFreezeCountdownController",
 		"roblox-dodgeball:out/client/controllers/hud/ControlsLegendController@ControlsLegendController": "client/controllers/hud/ControlsLegendController@ControlsLegendController",
 		"roblox-dodgeball:out/client/controllers/hud/CooldownHudController@CooldownHudController": "client/controllers/hud/CooldownHudController@CooldownHudController",
 		"roblox-dodgeball:out/client/controllers/hud/CurrencyHudController@CurrencyHudController": "client/controllers/hud/CurrencyHudController@CurrencyHudController",
 		"roblox-dodgeball:out/client/controllers/hud/DockController@DockController": "client/controllers/hud/DockController@DockController",
-		"roblox-dodgeball:out/client/controllers/hud/HitLogController@HitLogController": "client/controllers/hud/HitLogController@HitLogController",
 		"roblox-dodgeball:out/client/controllers/hud/InventoryController@InventoryController": "client/controllers/hud/InventoryController@InventoryController",
 		"roblox-dodgeball:out/client/controllers/hud/LoadingScreenController@LoadingScreenController": "client/controllers/hud/LoadingScreenController@LoadingScreenController",
 		"roblox-dodgeball:out/client/controllers/hud/ModeVoteController@ModeVoteController": "client/controllers/hud/ModeVoteController@ModeVoteController",
@@ -50,7 +46,6 @@
 		"roblox-dodgeball:out/server/services/ball/SphereService@SphereService": "server/services/ball/SphereService@SphereService",
 		"roblox-dodgeball:out/server/services/ball/BallFactory@BallFactory": "server/services/ball/BallFactory@BallFactory",
 		"roblox-dodgeball:out/server/services/ball/BallService@BallService": "server/services/ball/BallService@BallService",
-		"roblox-dodgeball:out/server/services/zone/PracticeZoneService@PracticeZoneService": "server/services/zone/PracticeZoneService@PracticeZoneService",
 		"roblox-dodgeball:out/server/services/actions/DodgeService@DodgeService": "server/services/actions/DodgeService@DodgeService",
 		"roblox-dodgeball:out/server/services/actions/CatchService@CatchService": "server/services/actions/CatchService@CatchService",
 		"roblox-dodgeball:out/server/services/character/RespawnService@RespawnService": "server/services/character/RespawnService@RespawnService",
@@ -65,10 +60,14 @@
 		"roblox-dodgeball:out/server/services/ball/BallPickupService@BallPickupService": "server/services/ball/BallPickupService@BallPickupService",
 		"roblox-dodgeball:out/server/services/actions/ActionService@ActionService": "server/services/actions/ActionService@ActionService",
 		"roblox-dodgeball:out/server/services/ball/BallSpawnerService@BallSpawnerService": "server/services/ball/BallSpawnerService@BallSpawnerService",
+		"roblox-dodgeball:out/server/services/zone/PracticeZoneService@PracticeZoneService": "server/services/zone/PracticeZoneService@PracticeZoneService",
 		"roblox-dodgeball:out/server/services/mystery/MysteryBoxService@MysteryBoxService": "server/services/mystery/MysteryBoxService@MysteryBoxService",
 		"roblox-dodgeball:out/server/services/npc/NpcService@NpcService": "server/services/npc/NpcService@NpcService",
 		"roblox-dodgeball:out/server/services/round/JoinService@JoinService": "server/services/round/JoinService@JoinService",
-		"roblox-dodgeball:out/server/services/npc/RigSpawnerService@RigSpawnerService": "server/services/npc/RigSpawnerService@RigSpawnerService"
+		"roblox-dodgeball:out/client/controllers/character/AfterimageController@AfterimageController": "client/controllers/character/AfterimageController@AfterimageController",
+		"roblox-dodgeball:out/client/controllers/CoreGuiController@CoreGuiController": "client/controllers/CoreGuiController@CoreGuiController",
+		"roblox-dodgeball:out/client/controllers/hud/HitLogController@HitLogController": "client/controllers/hud/HitLogController@HitLogController",
+		"roblox-dodgeball:out/client/controllers/character/RigAnimationController@RigAnimationController": "client/controllers/character/RigAnimationController@RigAnimationController"
 	},
 	"metadata": {}
 }

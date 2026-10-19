@@ -235,30 +235,6 @@ export const MATCH_JOIN_B_TAG = "MatchJoinB";
 export const MATCH_SPAWNER_TAG = "MatchSpawner";
 
 /**
- * Tag marking the rig `NpcService.spawn` copies from, **parked out of the world in `ServerStorage`**.
- *
- * **The one tag in this file that has to be painted somewhere a player can never see, and that is its
- * whole point.** A template is a rig that is deliberately *not* a rig: it wears no `NPC`, runs no behaviour
- * and stands in no arena, and the only thing that makes it a template is that it is outside `Workspace`.
- * The reader therefore asks for the *opposite* of every other tag reader in this project —
- * `taggedPartsInWorkspace` and the world gates in `NpcService` all exclude what is out of the world, and
- * `RigSpawnerService` requires it. A `RigTemplate` left inside `Workspace` is reported and ignored, because
- * a live rig wearing this tag would be copied *and* keep standing there — two rigs out of one.
- *
- * **A tag rather than a name, and rather than a fixed `ServerStorage` path.** Where the template sits is a
- * person's choice — `ServerStorage`, a folder inside it, a parent folder of its own — and the project's rule
- * for a label somebody paints in Studio is a tag, exactly as `MATCH_SPAWNER_TAG` and `PRACTICE_ZONE_TAG` are;
- * the `LobbySpawn` afternoon is the standing lesson on names that get read and then reorganised. Several may
- * be tagged and the first is used, which is a convenience rather than a contract.
- *
- * **`NPC` must not go on it.** `NpcService` starts a loop when that entry point *arrives*, so a template
- * wearing it would be managed — harmlessly, since the world gate stops it acting, but noisily in the output.
- * `spawn` strips every tag off the copy it makes before applying the behaviour set, so a template that has
- * them does not pass them on; the template itself is simply cleaner without them.
- */
-export const RIG_TEMPLATE_TAG = "RigTemplate";
-
-/**
  * Attribute naming whoever a ball belongs to, carried on the **thrower's model**.
  *
  * The value is a string token rather than a `UserId`, because a thrower is not
@@ -297,39 +273,6 @@ export const THROW_ENABLED = "ThrowEnabled";
  * a reader tells "not playing" from "playing for somebody".
  */
 export const TEAM_ATTRIBUTE = "Team";
-
-/**
- * Attribute on a **rig `Model`** naming the side it fights for, in the same vocabulary
- * {@link TEAM_ATTRIBUTE} uses: `"A"` or `"B"`.
- *
- * **Rigs cannot use `TEAM_ATTRIBUTE`, and this is not a second way to say the same thing — it is the
- * only way a rig can say it at all.** `TEAM_ATTRIBUTE` lives on a `Player` and is written by
- * `RoundService.assignTeams` from `MatchService.roster()`, both of which are keyed by `Player`. A rig
- * has no `Player`, so nothing in the round can ever put a side on one, and a reader that looked for
- * `TEAM_ATTRIBUTE` on a rig would be reading an attribute nothing writes. A separate key is what makes
- * "which side is this rig on" answerable without pretending a rig is a person.
- *
- * **The property is on the rig's `Model` rather than on a part or the humanoid**, so it survives a
- * respawn the way every other per-rig fact in this project does: a rig is replaced by cloning a copy of
- * the live rig, and an attribute on the model is part of what the clone carries. A part-level attribute
- * would be scattered — the rig is a stack of parts — and a humanoid-level one would be dropped the
- * moment a body is rebuilt, which is exactly the event a side has to outlive. See `RespawnBehavior`,
- * which copies it off the corpse by hand rather than trusting `Clone`, for the one case where the
- * template was taken before the side was known.
- *
- * **Set by code, not painted in Studio**, which is why it is an attribute and not a tag: `NpcService.spawn`
- * writes it from the side its caller names, `RespawnBehavior` carries it across a death, and the
- * gathering behaviour writes it for a rig that reaches a join pad with no side of its own — the case a
- * rig placed by hand in Studio is in, since `spawn` has no call site today. It is deliberately **not** a
- * `TeamA` / `TeamB` tag: a tag is a label a person paints on an instance, this is a fact the round sets,
- * and the project keeps that distinction (`TaggedParts`, `TAGS.md`).
- *
- * **Absent means "no side", and that is a state rather than an error.** A rig that has never been given
- * one — parked in a template, or standing in the lobby before the first match — has no side to be
- * friendly with, so the readers treat it as being on nobody's side: it throws at nobody, and nobody
- * throws at it *because of this*. The same reading `TEAM_ATTRIBUTE`'s doc gives a player between rounds.
- */
-export const RIG_TEAM_ATTRIBUTE = "RigTeam";
 
 /**
  * Attribute on a **`Player`** holding the server-time instant at which their next dodge is allowed.
@@ -445,8 +388,8 @@ export const ROUND_SCORE_A_ATTRIBUTE = "ScoreA";
 export const ROUND_SCORE_B_ATTRIBUTE = "ScoreB";
 
 /**
- * Attribute on a **`Player`**: **a count of the transitions the server has moved that player through**,
- * bumped the instant before the move.
+ * Attribute on {@link ROUND_STATUS_FOLDER}: **a count of the transitions the server has started**, bumped
+ * the instant before it moves everybody.
  *
  * **A counter of its own rather than the phase, and the reason is the whole point of it.** The phase is
  * published *early* on purpose: an intermission announces itself before the lobby is even looked up, because
@@ -459,22 +402,6 @@ export const ROUND_SCORE_B_ATTRIBUTE = "ScoreB";
  * A number rather than a boolean because the count is the useful part: **any change is a transition**, so a
  * client needs no notion of which phase it is moving between, and a client that mounts mid-transition simply
  * reads a value and waits for the next one.
- *
- * **On the player and not on {@link ROUND_STATUS_FOLDER}, and this is the correction it went through.** The
- * wipe is a cover for a *camera cut*, and a cut only happens to a body that is moved — so the players who
- * should see it are exactly the players the transition is about to teleport, and nobody else. An attribute on
- * the folder reaches every client on the server and cannot make that distinction, so a player standing in the
- * lobby while somebody else's transition ran was shown a full-screen grid for a cut that never happened to
- * them. On the player, `RoundService.transitionAround` writes one attribute per player it is about to move,
- * and a client watching its own `LocalPlayer` sees a wipe if and only if it is about to be moved. The same
- * placement makes the *empty* case fall out for free: a boundary that moves nobody — a round played out by
- * rigs alone — writes nothing to anybody, and so covers nobody.
- *
- * **What it is not:** it is not {@link ROUND_STATE_ATTRIBUTE} and not a second phase. It says nothing about
- * *what* the transition is — a reader does not need to know, and publishing that would be one more thing to
- * keep in step. It is not per-player *state* either: it is a cue, and the only thing a client may conclude
- * from a change is "close the grid now". A player who joins mid-round has no attribute at all until their
- * first transition, which reads as `0` and is exactly right.
  */
 export const ROUND_TRANSITION_ATTRIBUTE = "Transition";
 
