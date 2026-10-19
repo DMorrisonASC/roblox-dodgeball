@@ -301,6 +301,25 @@ export const THROWER_TOKEN = "ThrowerToken";
 export const TEAM_ATTRIBUTE = "Team";
 
 /**
+ * Attribute on a **ball** naming the side of the body it has tagged, or `""` when it has tagged nobody.
+ *
+ * **Written by `BallComponent` at the moment of the tag and cleared wherever the tag list is**: a re-arm (a
+ * new throw), a resolution on the world (the tags became deaths) and a catch (the tags were released). So
+ * "this attribute is a label" and "this ball owes somebody a death" are the same instant, which is the only
+ * reading a reader needs to act on.
+ *
+ * **Published for one reader: the client's `CATCH IT!` prompt**, which shows itself only to players on that
+ * side. It is *not* part of the catch rule — the server decides catchability from the ball's ability, its
+ * parent and the catcher's own window, and a body is free to catch a ball it has been tagged by (that is
+ * exactly the save the prompt is advertising). See `BallComponent.handleTouch` for both halves.
+ *
+ * **An attribute rather than an event**, for `TEAM_ATTRIBUTE`'s reason: every client can see it with no
+ * remote, and the value is a *state* that ends when the tag does, so a client that joins mid-flight reads the
+ * truth rather than missing a message.
+ */
+export const BALL_TAGGED_TEAM_ATTRIBUTE = "BallTaggedTeam";
+
+/**
  * Attribute on a **`Player`** holding the server-time instant at which their next dodge is allowed.
  *
  * `Workspace:GetServerTimeNow()` seconds, written by `DodgeService` at the moment a dodge is

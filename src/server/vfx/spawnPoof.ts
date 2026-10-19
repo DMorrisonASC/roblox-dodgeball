@@ -20,31 +20,38 @@ const DEBUG = true;
 const TEMPLATE_NAME = "SpawnPoof";
 
 /**
- * How many particles a poof should have alive at once. **Placeholder — 30.**
+ * How many particles one poof delivers. **Placeholder — 50.**
  *
- * **The count is now carried by `Rate`, not by `Emit`, and the log that asked for this is the reason.** `Emit`
- * is a call into *one* simulation. The server has none — it has no renderer — so the particles it creates are
- * born and expire where nobody can see them, and each client only ever simulates what the replicated properties
+ * **The count is delivered by `Rate`, not by `Emit`, and the log that asked for this is the reason.** `Emit` is
+ * a call into *one* simulation. The server has none — it has no renderer — so the particles it creates are born
+ * and expire where nobody can see them, and each client only ever simulates what the replicated *properties*
  * tell it to. `Rate` is one of those properties, so the burst has to be described by it; see the emit loop.
  *
- * **The formula is the documented one: `Rate × Lifetime` is how many particles are alive at once** (the
- * engine's own sample says so). Dividing this count by the template's own lifetime gives the rate that produces
- * this many, which is why the poof keeps the author's particle look and changes only how fast they arrive.
+ * **The formula is `Rate × window`, and nothing else**: the rate is this count divided by the fixed
+ * {@link BURST_WINDOW_SECONDS}, which keeps "how big is a poof" and "how long does it take to fire" two
+ * independent questions. Dividing by the template's own `Lifetime` instead — the shape this replaced — made a
+ * short-lived template fire its whole burst in a flash.
  *
- * Thirty is enough for a burst to read as one event from across the arena and few enough that sixteen bodies in
- * a lobby do not become a fog.
+ * Fifty is enough for a burst to read as one event from across the arena and few enough that sixteen bodies in a
+ * lobby do not become a fog.
  */
 const EMIT_COUNT = 50;
 
 /**
- * The shortest lifetime a burst is spread over, in seconds. **Placeholder — 0.1.**
+ * How long the emitter is allowed to run, in seconds. **Placeholder — 0.25.**
  *
- * **A guard against dividing by a template authored at zero**, which the docs describe as "a lifetime of 0 will
- * prevent particles from emitting at all": the count would be spread over no time at all and the rate would be
- * an infinity the engine would clamp to whatever it felt like. One tenth of a second is short enough that the
- * burst still reads as instantaneous and long enough that the arithmetic is finite.
+ * **A fixed window rather than the template's own `Lifetime`, and that is the difference between a poof and a
+ * flash.** The count is delivered by `Rate`, so the emitter has to be running for *some* time to deliver it.
+ * Taking that time from the particle lifetime couples two unrelated questions: a template authored at a tenth of
+ * a second would fire its whole burst in a tenth of a second and be over before anybody read it, and one
+ * authored at three seconds would trickle. A quarter of a second keeps the rate sane — a fifth of a second would
+ * need a rate of 250 for the same count — while still reading as one event rather than a spray.
+ *
+ * **What the particles do afterwards is the template's business.** They live for whatever `Lifetime` its author
+ * set, independently of this window, and the clone is kept for {@link EFFECT_LIFETIME} so there is always time
+ * for them to play out.
  */
-const MIN_BURST_LIFETIME = 0.1;
+const BURST_WINDOW_SECONDS = 0.25;
 
 /**
  * How far below the body's root the burst is placed, in studs. **Placeholder — -2.5.**
@@ -101,10 +108,10 @@ let templateWarned = false;
  * An anchored clone stays at the position it was given, fires its burst, is not simulated, cannot be walked
  * into, and is taken by `Debris`.
  *
- * **The burst is fired by hand rather than left to the emitter's `Rate`, and that is the second half of the same
- * argument.** A streaming template emits its first particle `1 / Rate` seconds after it enters the world, and a
- * teleport moves the body in the same frame — so `Emit` is what guarantees particles at the place and instant the
- * event happened, whatever the author set. See {@link BURST_COUNT}.
+ * **The burst is delivered by `Rate` rather than by `Emit`, and the clone's rate is rewritten for it.** A
+ * template's own rate is one particle every so many seconds — far too slow to read as an event — and `Emit` never
+ * reaches a client's simulation at all. So the rate is set from a fixed window and the emitter is switched off
+ * when it ends; see {@link EMIT_COUNT} and {@link BURST_WINDOW_SECONDS}.
  *
  * **The template is not trusted, and that is a rule rather than a preference.** Every visual and physical
  * property below is forced on the clone, because the failure mode of trusting the place file is a solid white
@@ -223,21 +230,20 @@ export function playSpawnPoof(model: Model): void {
 	// that model would go with it before the particles had been drawn once.
 	effect.Parent = Workspace;
 
-	// **The burst is carried by `Rate`, and this is the fix for the poof that arrived a second or two after its
-	// body left.** `Emit` is a call into one simulation: the server has no renderer, so the particles it creates
-	// exist where no player can see them, and a client simulates only what the replicated *properties* describe.
-	// The template's own `Rate` is 3 — one particle every third of a second — which is exactly the "the effect
-	// showed up late" that was reported: the brick appeared in the frame it was made, and the particles trickled
-	// in afterwards, eventually reading as a puff long after the body was gone.
+	// **The burst is carried by `Rate` over a fixed window, and both halves of that were learned the hard way.**
+	// `Emit` is a call into one simulation: the server has no renderer, so the particles it creates exist where
+	// no player can see them, and a client simulates only what the replicated *properties* describe. The
+	// template's own `Rate` is 3 — one particle every third of a second — which is exactly the "the effect
+	// showed up late" that was reported: the brick appeared in the frame it was made and the particles trickled
+	// in afterwards.
 	//
-	// **So the rate is rewritten for the clone**, from the documented relationship `Rate × Lifetime = particles
-	// alive`: {@link EMIT_COUNT} divided by the template's own lifetime gives the rate that keeps the whole burst
-	// on screen at once, with each particle still living and fading exactly as its author wrote it. Nothing about
-	// the look changes; only how quickly the particles arrive.
+	// **So the rate is rewritten for the clone**, as {@link EMIT_COUNT} over {@link BURST_WINDOW_SECONDS}. The
+	// window is a constant rather than the particle's own lifetime on purpose: the lifetime belongs to the
+	// template and this does not, so a template authored at a tenth of a second still gets a full quarter-second
+	// burst instead of a flash.
 	//
 	// **`Emit` is kept anyway**, because it is free, and because a template authored as a one-shot (`Rate = 0`)
-	// would otherwise have nothing to emit from on the server's copy. It is no longer what makes the effect
-	// visible.
+	// would otherwise have nothing to emit from on the server's copy. It is not what makes the effect visible.
 	//
 	// **`Enabled` is forced on**, for the same reason `Transparency` and `Anchored` are: a template left with
 	// its emitter switched off is a poof that produces nothing, and that is a Studio state this file cannot
@@ -251,17 +257,15 @@ export function playSpawnPoof(model: Model): void {
 		emitters += 1;
 		if (texture === undefined) texture = descendant.Texture;
 
-		const lifetime = math.max(descendant.Lifetime.Max, MIN_BURST_LIFETIME);
-		descendant.Rate = EMIT_COUNT / lifetime;
+		descendant.Rate = EMIT_COUNT / BURST_WINDOW_SECONDS;
 		descendant.Enabled = true;
 		descendant.Emit(EMIT_COUNT);
 
-		// **Switched off after one lifetime, so this is a burst rather than a cloud that grows.** A rate left on
-		// for the clone's whole two seconds emits twice the count, and the second half arrives as the first is
-		// expiring — a puff that gets denser instead of dissipating. One lifetime is exactly one generation: the
-		// thirty particles arrive together, live out their authored life, and the clone is taken by `Debris`
-		// shortly after the last of them goes.
-		task.delay(lifetime, () => {
+		// **Switched off when the window ends, so this is a burst and not a cloud that grows.** A rate left on
+		// for the clone's whole life keeps emitting after the first generation has expired, which reads as a puff
+		// that thickens instead of dissipating. The window delivers the count and then stops; the particles live
+		// out their own authored lifetimes afterwards, and `Debris` takes the clone after them.
+		task.delay(BURST_WINDOW_SECONDS, () => {
 			if (descendant.Parent !== undefined) descendant.Enabled = false;
 		});
 

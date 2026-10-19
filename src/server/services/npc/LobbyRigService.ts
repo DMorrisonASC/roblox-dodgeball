@@ -44,6 +44,7 @@ import {
 	readRigPool,
 	sourceOf,
 } from "../../npc/rigPool";
+import { lobbySpawnPartsFor } from "../../npc/lobbySpawns";
 import { rigsOnASide, sideOfRig } from "../../npc/rigs";
 import { zoneCounts } from "../../npc/sideZones";
 import { MatchService } from "../match/MatchService";
@@ -2581,36 +2582,13 @@ export class LobbyRigService implements OnStart {
 	 * this stops being a thing to notice.
 	 */
 	private lobbySpawnsFor(side: TeamLabel): Array<BasePart> {
-		const folder = findFolder(Workspace, ARENA_CONFIG.LOBBY_SPAWNS_FOLDER);
-		if (folder === undefined) return [];
-
-		const sided = findFolder(
-			folder,
-			side === TEAM_B ? ARENA_CONFIG.ARENA_TEAM_FOLDER_B : ARENA_CONFIG.ARENA_TEAM_FOLDER_A,
-		);
-
-		if (sided !== undefined) {
-			const parts = new Array<BasePart>();
-
-			for (const child of sided.GetChildren()) {
-				if (child.IsA("BasePart")) parts.push(child);
-			}
-
-			// **Empty falls through rather than winning.** A folder somebody made and has not filled yet is a
-			// half-finished edit, and taking it would leave one side with no place to stand.
-			if (parts.size() > 0) return parts;
-		}
-
-		const marked = new Array<BasePart>();
-
-		for (const descendant of folder.GetDescendants()) {
-			if (!descendant.IsA("BasePart")) continue;
-			if (descendant.GetAttribute(TEAM_ATTRIBUTE) !== side) continue;
-
-			marked.push(descendant);
-		}
-
-		if (marked.size() > 0) return marked;
+		// **The sided derivation has moved to `npc/lobbySpawns.ts`, because this is no longer its only
+		// caller.** `RoundService.returnRigsToLobby` places every rig that has just finished a round, and
+		// it was drawing from the side-less `lobbySpawn()` — the same "spawned on the wrong side" fault
+		// this method was written to fix, arriving by the other road one round boundary later. One rule
+		// with two askers means the rule gets one home rather than two copies free to drift.
+		const sided = lobbySpawnPartsFor(Workspace, side);
+		if (sided.size() > 0) return sided;
 
 		this.reportOnce(
 			"lobbySpawnsUnsided",

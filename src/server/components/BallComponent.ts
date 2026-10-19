@@ -3,7 +3,14 @@ import { BaseComponent, Component } from "@flamework/components";
 import { Players, Workspace } from "@rbxts/services";
 import { abilityOn } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
-import { BALL_NAME, DUCKING_ATTRIBUTE, PRACTICE_ZONE_ATTRIBUTE, THROWER_TOKEN } from "shared/constants";
+import {
+	BALL_NAME,
+	BALL_TAGGED_TEAM_ATTRIBUTE,
+	DUCKING_ATTRIBUTE,
+	PRACTICE_ZONE_ATTRIBUTE,
+	TEAM_ATTRIBUTE,
+	THROWER_TOKEN,
+} from "shared/constants";
 import { isDuckExempt } from "shared/duck";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
@@ -246,6 +253,12 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 			this.hitModels.clear();
 
+			// **And the tagged side goes with them**, because this is a new throw: a ball that kept the last
+			// throw's label would show `CATCH IT!` to a side it has not hit yet, for a save that is not owed.
+			// The two writes are one statement of state and always happen together — see
+			// `BALL_TAGGED_TEAM_ATTRIBUTE`.
+			this.instance.SetAttribute(BALL_TAGGED_TEAM_ATTRIBUTE, "");
+
 			// And the throw is unscored again, for the same reason and at the same moment: `Armed`
 			// going on *is* a new throw, and a new throw gets its own one contact. See {@link score}.
 			this.instance.SetAttribute("StatsRecorded", false);
@@ -480,28 +493,22 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		const token = character.GetAttribute(THROWER_TOKEN);
 		if (typeIs(throwerId, "string") && throwerId !== "" && throwerId === token) return;
 
-		// **Decided already — or decided by an earlier part of this same arrival.** Either way
-		// this body's turn has been taken and the ball passes through it.
+		// **The catch comes first, and above the "already tagged" guard on purpose.** That guard is what makes
+		// the first body part final for a throw; leaving it above this branch is what made a *tagged* body
+		// unable to catch the ball it had just been hit by. The ball bounced off, the victim pressed catch, the
+		// ball came back to them — and the contact was refused a line before the catch was ever considered. The
+		// save this game advertises ("catch the rebound and nobody dies") was therefore available only to a body
+		// the ball had *not* hit: every teammate, and never the victim.
 		//
-		// This is what makes the *first* part final: every part the engine reports after it is
-		// refused here. It is also what stops one throw taking the same body twice.
-		if (this.hitModels.has(character)) return;
-
-		// **The first body part to arrive decides the whole contact, and nothing later may
-		// change its mind.** What it decides is *which body*: the tag, the one-per-throw rule, and the
-		// fact that every part the engine reports afterwards is refused above.
+		// **Nothing is weakened by the move.** A catch spends the window, takes the ball out of the air and
+		// releases every tag in one call — see `resolveCatch` — so the only thing an earlier-part catch could
+		// disturb is the *same arrival* reporting more parts of the same body, and that cannot happen: a window
+		// open at the first part would have caught the ball there. The guard below still refuses every later
+		// part of a tag, so one tag per body per throw is exactly where it was.
 		//
-		// **It no longer decides hit-versus-catch, and that is the parts change.** Every part of the
-		// body can catch now, so whichever part the engine happens to report first gives the same
-		// answer — and the note that stood here said the opposite, arguing that a head reported first
-		// *had* to read as a hit or "a ball aimed at the head would be caught by the torso it also
-		// touches". That was true while only the torso and the arms could catch. With every part
-		// catchable the argument dissolves: the head catching it is the same answer rather than a
-		// loophole, and what the rule is left doing is bounding the contact to one body.
-		//
-		// **The cost is the point of the change, and it is worth reading twice**: a catcher whose
-		// window is open cannot be hit by an ordinary throw at all, wherever it lands on them. See
-		// `canCatch` for the answers that remain.
+		// **A body can therefore catch a ball that has already tagged it, and that is the feature rather than a
+		// loophole**: the throw is still in the air, the tag is still owed, and catching it is the save. See
+		// `canCatch` for the refusals that remain — a Pierce ball, a Freeze ball, and a ball already in a hand.
 		if (this.canCatch(struck, character)) {
 			// Spent before the ball is handed over, so one attempt catches one ball
 			// even if two arrive together.
@@ -520,6 +527,27 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			}
 			return;
 		}
+
+		// **Decided already — or decided by an earlier part of this same arrival.** Either way
+		// this body's turn has been taken and the ball passes through it.
+		//
+		// This is what makes the *first* part final: every part the engine reports after it is
+		// refused here. It is also what stops one throw taking the same body twice.
+		if (this.hitModels.has(character)) return;
+
+		// **The first body part to arrive decides which body the contact is about, and nothing later may change
+		// its mind.** The tag, the one-per-throw rule, and the fact that every part the engine reports
+		// afterwards is refused above are all this rule.
+		//
+		// **It does not decide hit-versus-catch, and the catch above is not a part test at all.** Every part of
+		// the body can catch — `struckBodyPart` has already resolved the contact to a limb — so the note that
+		// used to stand here, arguing that a head reported first *had* to read as a hit, was describing the old
+		// hand-written part list rather than this rule. What is left is what the rule was always for: bounding
+		// one contact to one body.
+		//
+		// **The cost is the point of the parts change, and it is worth reading twice**: a catcher whose
+		// window is open cannot be hit by an ordinary throw at all, wherever it lands on them. See
+		// `canCatch` for the answers that remain.
 
 		// **Friendly fire is off, and this is the one place that decides it.**
 		//
@@ -596,6 +624,26 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// Tagged before it leaves, so that every other part of this same arrival — and every later
 		// contact with this body — is a body the ball has already tagged.
 		this.hitModels.set(character, struck);
+
+		// **And the side of the body that was tagged, published on the ball for the client's prompt.** The ball
+		// now owes this body a death, and the only people who can take that back are the ones who may catch it —
+		// the victim and their side — so the side is what a client needs to decide whether to draw `CATCH IT!`.
+		//
+		// **Nothing on the server reads it.** `canCatch` answers about the ball and the catcher's window and
+		// never about the tag, so this attribute is a *publishing* fact only: it exists so that each client can
+		// answer "is this mine to catch" without a remote and without a list of who has been hit.
+		//
+		// **Read from the right place per kind of body**, which is `npc/detect.ts`'s rule: a player's side lives
+		// on the `Player` — the roster is player-keyed and a character is replaced on every death — while a
+		// rig's lives on the rig itself. A body with no side at all (a practice player, a rig nobody has given a
+		// team to) writes `""`, which is the prompt's off state, so a stale label can never outlive the tag.
+		const taggedPlayer = Players.GetPlayerFromCharacter(character);
+		const taggedTeam =
+			taggedPlayer !== undefined
+				? taggedPlayer.GetAttribute(TEAM_ATTRIBUTE)
+				: character.GetAttribute(TEAM_ATTRIBUTE);
+
+		this.instance.SetAttribute(BALL_TAGGED_TEAM_ATTRIBUTE, typeIs(taggedTeam, "string") ? taggedTeam : "");
 
 		// **The other half of `landHit`'s line, and the half that was missing.** `landHit` reports a
 		// death when the throw resolves; with no line saying a body was *tagged*, a throw that tagged
@@ -911,6 +959,12 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		this.hitModels.clear();
 
+		// **The tags are deaths now, so the prompt's subject is gone.** `landHit` has already run for every body
+		// above, and a ball that has resolved its throw has nothing left to catch — the next thing that happens
+		// to it is `Armed = false` on the line below the caller. Clearing here as well as on the re-arm is what
+		// keeps the property honest between those two moments, when the ball is still in the world for a frame.
+		this.instance.SetAttribute(BALL_TAGGED_TEAM_ATTRIBUTE, "");
+
 		return hitAny;
 	}
 
@@ -949,6 +1003,12 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		}
 
 		this.hitModels.clear();
+
+		// **And the prompt goes with the release, because the save has already happened.** This is the one clear
+		// that runs while the ball is still alive and about to be carried in a hand: a `CATCH IT!` left on it
+		// would be advertising a catch that has just been made, to a side whose teammate may now be holding the
+		// ball. Both writes are one statement of state — see `BALL_TAGGED_TEAM_ATTRIBUTE`.
+		this.instance.SetAttribute(BALL_TAGGED_TEAM_ATTRIBUTE, "");
 
 		const token = typeIs(throwerId, "string") ? throwerId : "";
 		if (token !== "") this.rounds.resolveCaughtThrower(token, catcher);

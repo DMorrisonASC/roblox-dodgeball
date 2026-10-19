@@ -28,6 +28,7 @@ import { ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE } from "shared/constan
 import { MATCH_JOIN_POLL_SECONDS, MATCH_MIN_PLAYERS } from "../../config/match.config";
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
+import { lobbySpawnPartsFor } from "../../npc/lobbySpawns";
 import { rigCounts, rigsOnASide, sideOfRig } from "../../npc/rigs";
 import { playSpawnPoof } from "../../vfx/spawnPoof";
 import { applyBarrierGroups } from "../../collision/CollisionGroups";
@@ -2316,6 +2317,39 @@ export class RoundService implements OnStart {
     }
 
     /**
+     * **A lobby spawn on `team`'s half — the draw {@link lobbySpawn} deliberately does not make.**
+     *
+     * `lobbySpawn`'s own doc says a lobby has no sides, and for the *players* it moves that is true:
+     * everybody waiting between rounds is put on one spawn and walks apart on their own, so which spot
+     * they start from means nothing. **It stopped being true of the rigs** when the lobby learned to
+     * place them by side (`LobbyRigService.lobbySpawnsFor`), because a rig does not walk apart — it
+     * walks to a pad, and a pad belongs to a side. A rig returned to the lobby on the other side's half
+     * is therefore a body on the wrong side to anybody watching: it stands there for the length of the
+     * cover and then crosses the room.
+     *
+     * **The sided rule is not written here.** It is `npc/lobbySpawns.ts`, shared with `LobbyRigService`,
+     * so the two callers that place a rig in the lobby cannot come to two answers about which parts
+     * belong to a side — the same reason `npc/rigs.ts` exists for "which rigs stand on a side".
+     *
+     * **The fallback is the old behaviour, reached two ways, and neither is a new failure mode.** A
+     * place file that does not mark the halves gets the side-less draw it has always had (and
+     * `LobbyRigService` warns about the missing marking once a session), and a lobby that cannot be
+     * resolved at all returns `undefined`, which the caller already treats as "stop moving rigs".
+     * The sided answer is simply tried first.
+     */
+    private lobbySpawnFor(team: TeamLabel): CFrame | undefined {
+        const arena = findArena();
+        if (arena === undefined) return this.lobbySpawn();
+
+        const parts = lobbySpawnPartsFor(arena, team);
+        if (parts.size() === 0) return this.lobbySpawn();
+
+        // The same three-stud lift `lobbySpawn` and `getRandomTeamSpawn` use, and for the same reason:
+        // a body placed at the `CFrame` of the floor it stands on arrives half inside it.
+        return parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
+    }
+
+    /**
      * What the world has to say about the lobby it cannot find, as one sentence.
      *
      * **The distinction this exists to draw is between "absent" and "present but unusable"**, because
@@ -2535,8 +2569,14 @@ export class RoundService implements OnStart {
      * moves a body, and where a rig *belongs* inside the lobby is a fact about pads.
      */
     private returnRigsToLobby(): void {
-        for (const { rig } of rigsOnASide()) {
-            const spawn = this.lobbySpawn();
+        for (const { rig, team } of rigsOnASide()) {
+            // **The rig's own side decides which half of the lobby it lands on**, which is the correction
+            // this line carries. `lobbySpawn()` has no side in it at all — by design, and correctly, for
+            // players — so a rig returned to the lobby was put wherever the draw fell and then walked
+            // across the room to its pad. That is a placeholder standing on the other side's end of the
+            // lobby for the length of the cover, which is what "a rig spawned on the wrong side" looks
+            // like. See {@link lobbySpawnFor}.
+            const spawn = this.lobbySpawnFor(team);
             if (spawn === undefined) return;
 
             const root = rig.FindFirstChild("HumanoidRootPart");

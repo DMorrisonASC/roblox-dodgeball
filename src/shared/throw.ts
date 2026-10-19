@@ -36,106 +36,66 @@ import {
  */
 
 /**
- * Parts checked, in order, for the thrower's torso.
+ * Where a throw starts: **a fixed height above the thrower's `HumanoidRootPart`, on the body's own axis.**
  *
- * R15 rigs have `UpperTorso`, R6 rigs have `Torso`; `HumanoidRootPart` catches
- * anything custom.
- */
-const TORSO_PARTS = ["UpperTorso", "Torso", "HumanoidRootPart"];
-
-/**
- * The part the launch point's *height* is taken from.
+ * **The root and nothing else, and that absence is the whole of this function.** It used to be head height, at
+ * the torso's position, two studs along the body's facing — and each of those three readings was a way for the
+ * *animated* body to move the launch point:
  *
- * The same name on both rigs, which is why there is no list beside {@link TORSO_PARTS}: R6 calls it
- * `Head` and so does R15.
- */
-const HEAD_PART = "Head";
-
-/**
- * Where a throw starts: level with the thrower's head, {@link BALL_CONFIG.THROW_MUZZLE_DISTANCE} studs
- * in front of the thrower's torso.
+ * - **The torso is animated.** A rig's `UpperTorso` leans, twists and swings on its `Motor6D`s, so a
+ *   torso-anchored muzzle moved with the walk cycle and with every turn: the aim guide wobbled as the player
+ *   walked, and the ball left from wherever the chest happened to be pointing.
+ * - **The facing is animated too, and slower than the intent.** A body turns *towards* the aim over a fraction of
+ *   a second, so "two studs in front" was measured along the direction the body was still pointing. Quick-tap a
+ *   throw before the turn had finished and the ball started a body-width to the side of the line to the target,
+ *   then flew across to it — the report this change answers.
+ * - **The head height was read per frame**, which is right per rig but is one more animated part that could carry
+ *   the muzzle up and down with a look.
  *
- * **The head's height, the torso's position, and the split between them is the whole point.** Taking
- * the launch point *from the head* is what let idle turns — looking left and right — visibly swing it
- * around the player, because the head is animated and the torso is not. Dropping to the torso alone
- * fixes the swing and puts the ball out of a chest, which is lower than where a throw reads as coming
- * from. So the *position and facing* come from the body, which does not move with the head, and the
- * *height* comes from the head — a number that barely changes when it turns, and one that is measured
- * rather than written down because it is the part of this that differs between rigs: an R15 head and an
- * R6 head are not carried at the same height above the part this function measures from, and the exact
- * difference in studs is not something to write down here and keep true. Reading the offset instead of
- * naming it follows both rigs, and any custom one, without a number to maintain.
+ * **Nothing here knows which way anybody is facing, and that is the point.** The aim does not belong in this
+ * function: *every* throw is a ballistic solve that starts from this point and lands on the target — see
+ * `planChargedThrow` and `planAimedThrow` — so the line the ball flies is already the aim's. All this has to be
+ * is a point the body cannot drag around, and the root is the one part no animation moves.
  *
- * The *direction* comes from the `HumanoidRootPart` rather than the torso. Motor6Ds hang off the root,
- * so animation moves the torso but never the root — and because this offset is a multi-stud lever, any
- * torso rotation gets multiplied into the launch point several times over, which shows up as the aim
- * guide wobbling along with the walk cycle. The root's facing only changes when the character itself
- * actually turns.
+ * **Being on the body's axis is not a self-hit risk.** `BallService.throwBallBody` calls
+ * `CollisionIgnore.between(ball, model)` before it moves the ball, so the thrower's parts are not in the ball's
+ * collision set at all — the forward offset this replaces was never what kept the ball out of its thrower, which
+ * `BALL_CONFIG.THROW_MUZZLE_HEIGHT`'s own note says from the other end.
  *
- * A character with no head of its own throws from torso height rather than not throwing at all: the
- * offset is zero, which is what this function did before the head was read at all. Nothing is printed
- * for that case, and the reason is the caller: this runs once per frame per client while the aim guide
- * is up, so a line per frame is not a report.
+ * **`THROW_MUZZLE_HEIGHT` is one number for every body**, and that is a deliberate trade: an R15 head and an R6
+ * head are not carried at the same height, so the ball leaves a few tenths of a stud higher on one than the
+ * other. It cannot be seen — the solve lands the ball on the target whatever height it starts from — and what it
+ * buys is a muzzle no animation can move, which a per-frame head measurement could not promise.
  *
- * When a throw animation lands, this is the seam it plugs into: return the
- * animated hand's release point instead, and nothing else has to change.
+ * **Called once per frame by the aim guide**, so this is a `FindFirstChild` and some vector arithmetic and
+ * nothing else. No print: a line here would be a line per frame.
  */
 export function getThrowMuzzle(character: Model): Vector3 {
-	const anchor = findTorso(character);
-	if (!anchor) {
-		warn(`[Throw] ${character.Name}: no torso, throwing from the pivot`);
-		return character.GetPivot().Position;
-	}
-
 	const root = character.FindFirstChild("HumanoidRootPart");
-	const forward = root && root.IsA("BasePart") ? root.CFrame.LookVector : anchor.CFrame.LookVector;
+	const origin = root !== undefined && root.IsA("BasePart") ? root.Position : character.GetPivot().Position;
 
-	// Read from the head's own position rather than from its size or a rig table: what is wanted is the
-	// height it is actually carried at, which is the whole reason the head is consulted instead of the
-	// torso.
-	const head = character.FindFirstChild(HEAD_PART);
-	const height = head !== undefined && head.IsA("BasePart") ? head.Position.Y - anchor.Position.Y : 0;
-
-	const muzzle = anchor.CFrame.Position.add(forward.mul(BALL_CONFIG.THROW_MUZZLE_DISTANCE));
-
-	return muzzle.add(new Vector3(0, height, 0));
-}
-
-function findTorso(character: Model): BasePart | undefined {
-	for (const name of TORSO_PARTS) {
-		const part = character.FindFirstChild(name);
-		if (part && part.IsA("BasePart")) return part;
-	}
-
-	return undefined;
+	return origin.add(new Vector3(0, BALL_CONFIG.THROW_MUZZLE_HEIGHT, 0));
 }
 
 /**
  * Why the muzzle is where it is, as one line for the throw log.
  *
- * **The same two readings `getThrowMuzzle` adds up, named.** The number that matters is the rise — the
- * head's height above the part the muzzle is anchored to — because a muzzle at the anchor's own height
- * throws the ball out of the chest, and everything about the throw still works when it does. That is
- * the failure this offset exists to prevent and the one nothing else in the game prints: `getThrowMuzzle`
- * cannot say it (the client calls it once a frame while the aim guide is up, so a print there is not a
- * report), and the ball's flight does not reveal its own starting height against a body whose
- * proportions nobody has written down.
+ * **The three numbers that decide it, because the failure they describe is invisible everywhere else.** A muzzle
+ * that sits too low throws the ball out of the chest and everything still works — the solve lands it on the
+ * target either way — so nothing in the flight says where it started. This names the root it is measured from,
+ * the height added, and the point that comes out.
  *
  * Called once per throw, from the throw path. Delete it when the offset is trusted.
  */
 export function describeMuzzle(character: Model): string {
-	const anchor = findTorso(character);
-	const head = character.FindFirstChild(HEAD_PART);
-	const headIsPart = head !== undefined && head.IsA("BasePart");
+	const root = character.FindFirstChild("HumanoidRootPart");
+	const hasRoot = root !== undefined && root.IsA("BasePart");
+	const rootY = hasRoot ? (root as BasePart).Position.Y : 0;
+	const height = BALL_CONFIG.THROW_MUZZLE_HEIGHT;
 
-	const anchorY = anchor ? anchor.Position.Y : 0;
-	const headY = headIsPart ? (head as BasePart).Position.Y : anchorY;
+	const found = hasRoot ? `root y ${string.format("%.2f", rootY)}` : "root NOT FOUND";
 
-	return (
-		`${anchor ? anchor.Name : "no anchor"} y ${string.format("%.2f", anchorY)}, ` +
-		`head ${headIsPart ? `y ${string.format("%.2f", headY)}` : "NOT FOUND"} ` +
-		`(rise ${string.format("%.2f", headY - anchorY)})`
-	);
+	return found + `, rise ${string.format("%.2f", height)}, ` + `muzzle y ${string.format("%.2f", rootY + height)}`;
 }
 
 /** How far the ball's edge sits from the point its centre is aimed at. */

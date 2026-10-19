@@ -68,7 +68,7 @@ export const BALL_CONFIG = {
 	 * Higher snaps those to a dead stop sooner; too high and a genuinely slow ball — a nudge,
 	 * a ball rolled gently off a kerb — reads as caught on something.
 	 */
-	MIN_SPEED: 1.5,
+	MIN_SPEED: 30,
 
 	/**
 	 * How hard a ball grips the floor it lands on — **which is not how long it rolls.**
@@ -236,26 +236,28 @@ export const BALL_CONFIG = {
 	// ------------------------------------------------------------------ throw
 
 	/**
-	 * How far in front of the thrower's torso the ball starts its flight, in studs,
-	 * measured along the direction the body is facing.
+	 * How far **above the thrower's `HumanoidRootPart`** a ball starts its flight, in studs.
+	 * **Placeholder — 2.5.**
 	 *
-	 * **Horizontal only.** The launch point's height is not a number here: it is read off the thrower's
-	 * head, see `shared/throw.ts` → `getThrowMuzzle`. That is deliberate, because the height is the one
-	 * part of the offset that differs between rigs, and a constant would be right on one of them and
-	 * wrong on the other.
+	 * **A height and no forward offset, and dropping the second one is the whole of the change.** The launch point
+	 * used to be two studs in front of the torso along the direction the body was facing, and both halves of that
+	 * were animation: a torso leans and twists on its joints, and the facing only catches up with the aim a moment
+	 * after the player does. A quick throw therefore started a body-width to the side of the line to the target
+	 * and flew across to it. The muzzle is now a fixed height over the root — the one part of a body that no
+	 * animation moves — and the aim is the throw's own solve, which starts here and lands on the target.
+	 * See `shared/throw.ts` → `getThrowMuzzle`.
 	 *
-	 * Read this as a **lever arm**: it is the radius the launch point swings on when
-	 * the character moves or turns, so every stud of offset multiplies body motion
-	 * into the aim guide at a 1:1 ratio. A large value here makes the guide appear
-	 * to wobble as you walk; it does not make the throw safer, because
-	 * `CollisionIgnore` already guarantees the ball cannot hit its thrower.
+	 * **One number for every body rather than a measured head height.** An R15 head and an R6 head are carried at
+	 * slightly different heights, so this is a few tenths of a stud out for one of them, and invisible: the solve
+	 * lands the ball on the target whatever height it starts from. What it buys is a muzzle no animation can move,
+	 * which a per-frame head measurement could not promise.
 	 *
-	 * This is the one number to change to move the launch point horizontally. It is read in
-	 * exactly one place — `shared/throw.ts` → `getThrowMuzzle` — which both the
-	 * server (real throw) and the client (aim guide) call, so tuning it moves both
-	 * together and the guide keeps telling the truth.
+	 * **It is not what keeps the ball out of its thrower.** `BallService.throwBallBody` calls
+	 * `CollisionIgnore.between(ball, model)` before the ball is moved, so the thrower's parts are not in the ball's
+	 * collision set at all. Raise this if the ball looks like it comes out of the hips; lower it if it comes out of
+	 * the neck.
 	 */
-	THROW_MUZZLE_DISTANCE: 2,
+	THROW_MUZZLE_HEIGHT: 2.5,
 
 	/**
 	 * How long a body stays marked as **mid-throw** after the ball leaves its hand, in seconds.
@@ -346,7 +348,7 @@ export const BALL_CONFIG = {
 	 * **Flight time is the knob, not speed.** Lowering this lengthens the ball's hang, which is what makes a
 	 * throw watchable and catchable; the speed that then covers the distance is `THROW_MAX_SPEED`'s business.
 	 */
-	BALL_GRAVITY: 40,
+	BALL_GRAVITY: 20,
 
 	/**
 	 * How much faster than the bare minimum the arcing throw is launched, as a
@@ -449,7 +451,7 @@ export const BALL_CONFIG = {
 	 * further than any arena here is across. There is no lob any more. What is left is a throw a player asks for
 	 * deliberately, and the furthest deliberate one reaches 150 studs.
 	 */
-	THROW_MAX_SPEED: 120,
+	THROW_MAX_SPEED: 90,
 
 	// ------------------------------------------------ the charged player throw
 
@@ -504,14 +506,24 @@ export const BALL_CONFIG = {
 	 * the speed and only in the *root* of the peak. See `planChargedThrow` for the table this produces and for
 	 * the arithmetic behind "restore the old range".
 	 *
-	 * **Lowered from three to two at the user's request — "make the arc one stud lower".** The apex is now about
-	 * six and a half studs above the floor rather than seven and a half, which is a flatter, more direct-looking
-	 * throw. The cost is reach, and it is worth knowing which way it moves: full charge loses about a fifth of
-	 * its range, because the reach goes with the square *root* of this number — `sqrt(3)` against `sqrt(2)` is
-	 * the 1.22 that a fifth is measured against. Nothing else reads it, so the aim guide and the ball move
-	 * together by construction: the client draws the solve from the same constant.
+	 * **It has been moved three times by ear, and every move has been downward**: three, then two ("make the arc
+	 * one stud lower"), then the one and a half it holds now. At this value the apex sits about four studs above
+	 * the floor for a body standing on one — a flat, direct-looking throw rather than a lob — and the arc is a
+	 * *consequence* rather than a shape any caller picks: `v_y = sqrt(2·g·h)` is fixed by this number, so every
+	 * charge hangs for the same `2·v_y / g` and the only thing the hold changes is how flat the launch is.
+	 *
+	 * **What moving it costs, with the shipped figures.** `g` is 20 and the speed runs from
+	 * {@link BALL_CONFIG.CHARGE_MIN_SPEED} (`45`) to {@link BALL_CONFIG.THROW_MAX_SPEED} (`90`), so
+	 * `v_y = sqrt(60) = 7.75`, the hang is `0.77 s`, and the reach is `sqrt(v² − v_y²) · 0.77` — about **34
+	 * studs at a tap and 69 at a full hold**. Reach goes with the square *root* of this number and linearly with
+	 * the speed, so raising it buys hang at the price of distance and lowering it does the reverse. Nothing else
+	 * reads it: the aim guide draws the solve from this same constant, so the line and the ball move together by
+	 * construction.
+	 *
+	 * **The clamp is far away.** `peakAngle` falls back to 45° only when `sqrt(2·g·h)` exceeds the launch speed,
+	 * which at the current floor of `45` would need this above fifty studs. See that function for the fallback.
 	 */
-	CHARGE_PEAK_HEIGHT: 1.5,
+	CHARGE_PEAK_HEIGHT: 0.9,
 
 	/**
 	 * The launch speed at zero charge, in studs per second. **Placeholder.**

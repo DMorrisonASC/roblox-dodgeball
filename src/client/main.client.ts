@@ -5,6 +5,7 @@ import { startChargeEffects } from "./chargeEffect";
 import { startIasTest } from "./IasTest";
 import { startHitConfirm } from "./hitConfirm";
 import { startHitVfx } from "./hitVfx";
+import { startCatchPrompt } from "./catchPrompt";
 
 print("[client] igniting");
 Flamework.addPaths("src/client/controllers");
@@ -49,6 +50,12 @@ startHitVfx();
 // a sentence rather than a burst — so it is a second subscriber rather than a call from `hitVfx`: the two
 // have nothing to say to each other, and neither should have to know the other exists. See `hitConfirm`.
 startHitConfirm();
+
+// **And the catch prompt, which is the third subscriber to a fact about a throw and the first one that watches a
+// ball rather than an event.** It reads `BALL_TAGGED_TEAM_ATTRIBUTE` on every live ball and draws a word over
+// the ones that owe somebody on this player's side a death — see `catchPrompt` for why that is an attribute
+// rather than a message, and why the box is built in code rather than cloned.
+startCatchPrompt();
 
 // **And the charge effect, which departs from the two above in *how* it learns its fact.** Those two watch a
 // server event; this one watches the local player's own hold (`chargeStartedAt`, a `Fusion.Value`) *and* the
