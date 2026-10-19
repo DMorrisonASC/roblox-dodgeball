@@ -1034,5 +1034,31 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			cancelWindup(model, "the rig died");
 			clearAim(model);
 		},
+
+		/**
+		 * **The tags were taken off with an aim still on the body** — `NpcBehavior.onStopped`, and the bug
+		 * that hook was added for.
+		 *
+		 * `LobbyRigService.setGameplayBehaviors` strips this behaviour at every round boundary, and a rig that
+		 * had a target in sight when the round ended keeps an `AlignOrientation` on its root plus the
+		 * `AutoRotate = false` that went with it. Nothing calls this behaviour again, so nothing takes them
+		 * off, and the body's facing stays locked to whatever it was last aiming at — which for a rig walking
+		 * to its join pad in the intermission means **walking backwards**, moving toward the pad while held
+		 * facing away from it. Reported 2026-10-18, "sometimes", which is exactly the set of rigs that had a
+		 * target at that instant.
+		 *
+		 * **Silent, and the windup row is ended rather than cancelled.** The round-boundary line already says
+		 * the tags came off, and `cancelWindup`'s vocabulary ("the rig died", "the target left the angle")
+		 * would be a lie here — so its two published attributes are cleared straight through `endWindup` and
+		 * no reason is printed for an event that has a better sentence somewhere else.
+		 *
+		 * `idle` is cleared too, so that the next round's first "holding a ball and not throwing" is reported
+		 * again rather than being swallowed by a latch that was set before the last intermission.
+		 */
+		onStopped(model) {
+			windups.endWindup(model);
+			idle.delete(model);
+			clearAim(model);
+		},
 	};
 }

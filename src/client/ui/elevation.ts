@@ -191,6 +191,33 @@ export interface InteractionOptions {
 }
 
 /**
+ * The interface's **select tone**, played on its own: the sound a shop or inventory button makes when it is
+ * pressed.
+ *
+ * **Why this has to be exported at all, when {@link wireInteraction} already plays it.** That helper is for a
+ * *button* — it owns the pointer's four events, a `UIScale` and a shadow, and none of that belongs to an
+ * action that arrives from the keyboard. The power slot's own tap and the power key are exactly that case:
+ * `SuperAbility.usePower` is one request with two triggers, so it is one place that has no button to be
+ * wired to. What is shared is the *tone*, which is the thing a player recognises: the same click a shop
+ * purchase makes, because spending a power with `3` is the same kind of act as spending coins in a shop.
+ *
+ * **Not the counterpart of {@link makePressResponse}, which deliberately has none.** That one drives a
+ * controls-legend chip from a key the player pressed *to play the game*, and a click from the edge of the
+ * screen for a movement key would be noise. The power key is the other case: the key **is** the interface,
+ * there is no button anywhere on screen for the player to have pressed, and silence is what would read as the
+ * key not having registered.
+ *
+ * **A function rather than an exported `Sound`**, so the pair stays private and lazily built — see
+ * {@link uiSounds} for why nothing is created at module load — and so a caller cannot hold a reference to a
+ * tone and set its volume. It plays and returns; there is nothing to configure.
+ */
+export function playSelectTone(): void {
+	// `uiSounds` is `[hover, select]`; index 1 is the select tone, and the hover tone is not this function's
+	// business — a key press has no hover state to report.
+	uiSounds()[1].Play();
+}
+
+/**
  * Makes `button` respond to a pointer: it raises on hover, drops on press, and makes both tones.
  *
  * **This is `wirePress` grown up, and the rename is the honest part of the change.** It used to wire one

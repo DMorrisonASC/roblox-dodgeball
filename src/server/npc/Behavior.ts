@@ -253,7 +253,12 @@ export interface NpcBehavior {
 	 *
 	 * Called only when the health ran out. An NPC that stopped for any other reason
 	 * — its tag was taken off, or it left the world — is being switched off rather
-	 * than interrupted, and there is nothing for a behavior to react to.
+	 * than interrupted, so there is nothing here for a *death* to answer.
+	 * **What that reading was wrong about is at {@link onStopped}**, which is where
+	 * a behaviour that is switched off *with something still on the body* gets to
+	 * undo it: a rig stripped of its throwing tag mid-aim kept an
+	 * `AlignOrientation` and a switched-off `AutoRotate`, and walked to its join
+	 * pad backwards for the rest of the intermission.
 	 *
 	 * The loop that ran the behaviors has already finished by the time this is
 	 * called, so a behavior that brings the model back has to see that a *new* loop
@@ -263,6 +268,36 @@ export interface NpcBehavior {
 	 * A method for the same reason `tick` is.
 	 */
 	onDied?(model: Model): void;
+
+	/**
+	 * Optional: this behaviour has just stopped being asked for turns **because its tag was taken off a
+	 * model that is still alive and going somewhere else.**
+	 *
+	 * **`onDied` cannot cover this, and the bug that proved it is worth naming.** A behaviour runs only
+	 * while its tag is on the model, and the tags are stripped from outside at every round boundary —
+	 * `LobbyRigService.setGameplayBehaviors` takes six of them off at once — so a behaviour that leaves
+	 * something on the body is never called again and never gets to undo it. The report from 2026-10-18:
+	 * **rigs walking *backwards* to their join pads in the intermission**, moving toward a pad while a stale
+	 * `AlignOrientation` (and the switched-off `AutoRotate` that goes with it) held them facing whatever they
+	 * were aiming at when the round ended. It was not every rig — only the ones that had a target in sight at
+	 * that instant, which is why it read as "sometimes".
+	 *
+	 * **Called once per stop**, on the first turn that sees the tag gone, and **the tag going back on later
+	 * prepares nothing again**: `prepare` has already run for this behaviour on this model and the behaviour
+	 * resumes as it was. So anything a behaviour attached to the body comes off here, and anything it
+	 * published as an attribute is cleared here, because a stopped behaviour has no next turn to notice with
+	 * — waiting for a timer is the fallback for a stop nobody saw, not the answer for a stop this is told
+	 * about.
+	 *
+	 * **Silent, and that is the contract.** The reason a behaviour stopped is the *spawner's* business
+	 * (`LobbyRigService` prints which tags it wrote and why), so a second line from the behaviour would say
+	 * the same thing in a different vocabulary. The exception is a line about something the spawner cannot
+	 * see — a windup that was never thrown, say — which is why `ThrowBehavior` prints nothing here and lets
+	 * the round-boundary line stand as the explanation.
+	 *
+	 * A method for the same reason `tick` is.
+	 */
+	onStopped?(model: Model): void;
 
 	/**
 	 * Optional: the model has been **placed** — moved by something that owns where rigs stand.

@@ -141,7 +141,7 @@ const GLOW_TRANSPARENCY = 0.25;
  * screen. Too short and the reel is a glitch; much longer inside a 56-pixel slot and it is a thing the player is
  * waiting out, which is the trap the old constant was in.
  */
-const SHUFFLE_SECONDS = 1.6;
+const SHUFFLE_SECONDS = 1;
 
 /**
  * **How many passes of the ability list the reel travels before it stops.**

@@ -75,9 +75,10 @@ export const SUPER_CONFIG = {
 	 *
 	 * **The hit radius and the miss radius are two numbers because they are two different promises.**
 	 * Hitting somebody is what the ability is aimed at, so it pays a radius wide enough to catch the
-	 * people standing with them; a ball that hits the world is the ability going wrong, so it pays a
-	 * smaller one — enough that a shot which lands at somebody's feet still does something, not enough
-	 * that a wild throw freezes a room.
+	 * people standing with them; a ball that hits the world pays for where it stopped. **They are the same
+	 * eight today** — see {@link FREEZE_MISS_RADIUS} for the log that made the miss reach as far as the
+	 * hit does — and they are still two constants because the two moments can diverge again without one
+	 * of them dragging the other.
 	 *
 	 * Eight studs is a little more than two bodies across, which is the shape to check in Studio: too
 	 * small and the splash is a slower Pierce with no splash at all, too large and one throw in a
@@ -89,11 +90,27 @@ export const SUPER_CONFIG = {
 	 * How far the freeze reaches from where a Freeze ball stopped, in studs, when it tagged nobody.
 	 * **Placeholder.**
 	 *
-	 * Smaller than {@link FREEZE_HIT_RADIUS} on purpose — see that comment for why the two are not one
-	 * number. Five studs is about one body's reach, so a ball that clips a wall beside somebody freezes
-	 * them and a ball that hits the wall across the arena freezes nobody.
+	 * **The same eight as {@link FREEZE_HIT_RADIUS} now, and that is the correction a live log asked for.**
+	 * The two stayed separate numbers because they are two different promises — a hit pays for the body it
+	 * struck, a miss pays for where the ball stopped — and the case for the miss being the smaller of the
+	 * two was that a wild throw should not freeze a room. **What that case missed is the shot the ability
+	 * exists for**: a Freeze ball that lands *among* bodies is what a player bought, and with five studs of
+	 * reach it held nobody at all. The log from 2026-10-18 carried four of these inside a minute —
+	 * `[Freeze] splash at …, radius 5, found 2 bod(ies), spared 0, caught 0` — with the sphere reaching only
+	 * the practice area's own parts while the nearest rig stood about eleven studs away. From the seat that
+	 * is an ability that does nothing, and no burst on the floor argues with it.
+	 *
+	 * **So: a Freeze ball freezes the area it lands in, hit or miss.** A throw into an empty patch of floor
+	 * still freezes nobody whatever this number is; a throw that lands in a group now takes the group, which
+	 * is the rule a player is actually holding.
+	 *
+	 * **Still two constants rather than one**, because the two moments may diverge again — a hit is aimed and
+	 * a miss is not — and one number would make that a change to both at once. They are equal *today*, which
+	 * is why `FreezeService.freezeInRadius`'s report names the bodies it found: with both radii reading `8`,
+	 * the line before the splash (`ended on … 0 tag(s) [Freeze]` versus `was tagged by … [Freeze]`) is what
+	 * says whether it was a miss or a hit.
 	 */
-	FREEZE_MISS_RADIUS: 5,
+	FREEZE_MISS_RADIUS: 8,
 
 	/**
 	 * The colour a frozen body's outline is drawn in. **Placeholder — and the one non-number here.**

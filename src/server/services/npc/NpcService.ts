@@ -596,6 +596,17 @@ export class NpcService implements OnStart {
 		/** Behaviors that have had their `prepare`, so it happens once and not per tick. */
 		const prepared = new Set<string>();
 
+		/**
+		 * The behaviours currently being run on this rig — **the set that makes a tag going away an event.**
+		 *
+		 * `prepared` cannot answer this: it is a latch, deliberately, so that a tag taken off and put back on
+		 * does not `prepare` a behaviour twice. This one is cleared when the tag goes, which is what lets
+		 * {@link NpcBehavior.onStopped} be called exactly once per stop rather than on every turn the tag stays
+		 * off. See that hook for the bug it exists for — a rig left facing its last aim and walking to its join
+		 * pad backwards.
+		 */
+		const live = new Set<string>();
+
 		// **The MicroProfiler labels for this rig's behaviours, built once per loop rather than per turn.**
 		// A turn is 10 a second per rig, so a label built inside the dispatch below would be an allocation
 		// on the very path it is measuring. `behavior.tag` is the behaviour's own identity, and dropping
@@ -692,9 +703,24 @@ export class NpcService implements OnStart {
 			if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Npc.turn");
 
 			for (const behavior of this.behaviors) {
-				// Untagged: this behavior is not on for this model, so it is skipped
-				// without ever being run.
-				if (!model.HasTag(behavior.tag)) continue;
+				// **Untagged: this behavior is not on for this model, so it is skipped without ever being
+				// run** — and if it was running until now, that is a *stop*, which is the one thing a
+				// behaviour cannot notice for itself.
+				//
+				// **Why this is not merely tidiness.** The tags come off from outside at every round boundary
+				// (`LobbyRigService.setGameplayBehaviors` strips six at once), so a behaviour holding
+				// something on the body is never called again and never gets to undo it. `onDied` cannot
+				// help — the body is alive. That is exactly how rigs came to walk *backwards* to their join
+				// pads on 2026-10-18: `ThrowBehavior`'s aim and its switched-off `AutoRotate` stayed on every
+				// rig that had a target when the round ended. See {@link NpcBehavior.onStopped}.
+				if (!model.HasTag(behavior.tag)) {
+					if (live.has(behavior.tag)) {
+						live.delete(behavior.tag);
+						behavior.onStopped?.(model);
+					}
+
+					continue;
+				}
 
 				// Wearing the tag, and never prepared: the behavior collects whatever it
 				// needs. Done here rather than once at startup so that a tag added later
@@ -704,6 +730,8 @@ export class NpcService implements OnStart {
 					prepared.add(behavior.tag);
 					behavior.prepare?.(model);
 				}
+
+				live.add(behavior.tag);
 
 				// Not due yet: the interval is measured against this behavior's own last
 				// run, so behaviors with different periods can share one loop.

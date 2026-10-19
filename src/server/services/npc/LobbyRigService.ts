@@ -1752,14 +1752,15 @@ export class LobbyRigService implements OnStart {
 	 * outlives its tag — the maps are module-level and nothing clears them — so a rig playing its second
 	 * round arrives with the rows from the first. Most of that is stale but harmless: `CatchBehavior`
 	 * re-decides once its window expires, `SeekBehavior` forgets a ball that has been destroyed or moved,
-	 * and `RespawnBehavior` *wants* the home and template it took at the start of the life. **One is not
-	 * harmless and is named rather than fixed here**: `ThrowBehavior`'s aim constraint is destroyed on a
-	 * death and, for a rig that has just thrown, by a watchdog of its own — see `holdAimThroughThrow`, which
-	 * keeps the facing up for the length of the throw's animation and clears it on a timer whether or not the
-	 * rig ever ticks again — but **not** on losing the tag, so a rig killed *or turned* mid-aim keeps an
-	 * `AlignOrientation` on its root until its next turn with the tag back on — where an empty hand clears
-	 * it. **A rig that threw just before the strip is no longer one of those**, which is the half the timer
-	 * bought.
+	 * and `RespawnBehavior` *wants* the home and template it took at the start of the life. **One was not
+	 * harmless, and this doc named it as unfixed until it turned up in a seat**: `ThrowBehavior`'s aim
+	 * constraint was destroyed on a death and, for a rig that had just thrown, by a watchdog of its own —
+	 * but **not** when the tag came off, so a rig turned mid-aim kept an `AlignOrientation` on its root and
+	 * the switched-off `AutoRotate` that came with it, and then walked to its join pad **facing whatever it
+	 * had last aimed at**. A person watching that describes it as the rig walking backwards, and the report
+	 * arrived on 2026-10-18 with "sometimes" attached — the rigs that had a target when the whistle went.
+	 * **That is what `NpcBehavior.onStopped` exists for now**; the two behaviours that needed it implement it
+	 * in their own files, and the strip below is what calls it.
 	 *
 	 * **The pad walk's own leftovers are not on that list, and both are worth naming because they were
 	 * equivalent to them.** This doc used to say that `WalkToJoinPadBehavior.arrived` stayed `true` past a

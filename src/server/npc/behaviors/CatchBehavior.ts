@@ -278,6 +278,21 @@ export function makeCatchBehavior(
 		onDied(model) {
 			clearFace(model);
 		},
+
+		/**
+		 * **The tag was taken off mid-catch** — see `NpcBehavior.onStopped`, which exists because this is the
+		 * second half of a bug `onDied` cannot reach.
+		 *
+		 * A round boundary strips `Behavior_Catching` from every rig (`LobbyRigService.setGameplayBehaviors`),
+		 * so a rig with a catch window open at that moment keeps the `AlignOrientation` and the switched-off
+		 * `AutoRotate` the window built — and then walks to its join pad facing the ball it was watching
+		 * instead of the pad, which reads as walking backwards. The window is short, so this is rarer than the
+		 * throwing behaviour's version of the same fault; it is the same fault, and it does not go away on its
+		 * own.
+		 */
+		onStopped(model) {
+			clearFace(model);
+		},
 	};
 }
 

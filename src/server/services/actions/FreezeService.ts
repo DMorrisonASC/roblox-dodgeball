@@ -120,6 +120,52 @@ interface FlashedBall {
 }
 
 /**
+ * How many bodies a splash's report names before it stops listing them.
+ *
+ * **Eight, because the interesting number is small.** A splash holds whatever is standing around one
+ * impact, which in this game is under a dozen bodies; the cap exists so that a splash in a corner of the
+ * map with a hundred parts in range cannot push one log line to a screenful. What it must not do is hide
+ * the case the line was written for — and that case is about four bodies.
+ */
+const MAX_REPORTED_BODIES = 8;
+
+/**
+ * The bodies one splash found, **each with the one-word reason it was or was not held**, as the tail of a
+ * log line.
+ *
+ * **The counts alone could not answer the report that made this necessary.** `found 2 bod(ies), spared 0,
+ * caught 0` says a splash reached two models and held neither, and says nothing about *which* two — so the
+ * two readings that matter, "the sphere only reached scenery" and "the sphere reached the rigs and refused
+ * them", print identically. The log from 2026-10-18 carried four of those inside a minute, and the answer
+ * (a practice area's own parts, with the nearest rig just outside the radius) was recoverable only by
+ * working backwards from coordinates.
+ *
+ * So every body travels with its reason — `held`, `spared` (the caller's rule refused it, see
+ * `BallComponent.splashSpares`), `no humanoid` (scenery, or a model with parts and nothing alive in it) and
+ * `no root, or dead` (a body `freeze` could not take hold of). **The reason is recorded where the decision
+ * is made** rather than worked out here from the model afterwards, because the branch that skipped the body
+ * is the only thing that knows why.
+ */
+function describeFound(notes: Array<string>): string {
+	if (notes.isEmpty()) return "nothing in range";
+
+	// **A counted loop rather than `slice`**, because the array methods this project compiles against are
+	// the `noLib` shims and `slice` is not one of them: `Property 'slice' does not exist on type 'string[]'`
+	// — the same family as `isEmpty` for `is_empty` and `size()` for `length`. See `super.config.ts`'s
+	// neighbours for the other places a Lua-flavoured collection surprises a TypeScript habit.
+	const shown = new Array<string>();
+
+	for (const note of notes) {
+		if (shown.size() >= MAX_REPORTED_BODIES) break;
+		shown.push(note);
+	}
+
+	if (shown.size() === notes.size()) return shown.join(", ");
+
+	return `${shown.join(", ")} and ${notes.size() - shown.size()} more`;
+}
+
+/**
  * Holds bodies exactly where they are for a few seconds: the third super ability's effect, and the
  * only mechanic in this game that stops somebody moving.
  *
@@ -664,6 +710,18 @@ export class FreezeService {
 	 * looks tidier: an `Include` list would have to be the bodies inside the radius, which is the list
 	 * this method exists to work out.
 	 *
+	 * **One query of the world rather than `Players:GetPlayers()` plus `CollectionService:GetTagged("NPC")`.**
+	 * That pair of lists would cover the same bodies today — a player's character and a rig are the two
+	 * kinds of body the game has — and it is the obvious way to write this. The world query wins on three
+	 * counts that matter more than the enumeration being shorter. **There is nothing to keep in step**: a
+	 * rig that is spawned, pooled or retired is inside the sphere or outside it by where it is standing,
+	 * with no list that could have missed it. **The position comes from the parts rather than from a
+	 * root lookup**: a body's root is not necessarily where the ball passed it — a limb is — and the
+	 * sphere is the shape the ability is defined in. And **it makes a player and a rig the same branch**,
+	 * which is the property that stops this ability from freezing one kind of body and not the other: the
+	 * test for "is this a body" is a `Model` with a `Humanoid` above the parts, which both kinds answer
+	 * identically, and nothing here has ever needed to know which kind it is holding.
+	 *
 	 * **A splash is one event, and this is the only place that knows it happened.** Two things come out of
 	 * one: bodies held, and the burst that says where the ball struck. The burst is built here rather than
 	 * inside {@link freeze} because `freeze` is called *per body* — four bodies caught is four calls —
@@ -676,6 +734,10 @@ export class FreezeService {
 	): Array<Model> {
 		const caught: Array<Model> = [];
 		const seen = new Set<Model>();
+
+		// Every body the sphere found, with the reason it was or was not held — see `describeFound` for why
+		// the reason travels beside the counts.
+		const notes: Array<string> = [];
 
 		// **The three numbers this method is asked about when it does nothing**, kept apart rather than
 		// derived, because each one names a different fault. See the report below for which is which.
@@ -700,12 +762,28 @@ export class FreezeService {
 
 			if (isExcluded(model)) {
 				spared += 1;
+				notes.push(`${model.Name} (spared)`);
 				continue;
 			}
 
-			if (!model.FindFirstChildWhichIsA("Humanoid")) continue;
+			if (!model.FindFirstChildWhichIsA("Humanoid")) {
+				// **Scenery, and named as such rather than dropped silently.** This is the commonest thing a
+				// splash finds — the floor it landed on, the wall behind it, the practice area's own parts —
+				// and it is the answer to "found two bodies and held none" in every case where the sphere
+				// reached no rig at all.
+				notes.push(`${model.Name} (no humanoid)`);
+				continue;
+			}
 
-			if (this.freeze(model, SUPER_CONFIG.FREEZE_DURATION_SECONDS)) caught.push(model);
+			if (this.freeze(model, SUPER_CONFIG.FREEZE_DURATION_SECONDS)) {
+				caught.push(model);
+				notes.push(`${model.Name} (held)`);
+			} else {
+				// `freeze` has already established there is a humanoid, so this is the pair it refuses on: a
+				// body with no root part, or one whose health has gone. A corpse is the case that matters —
+				// a rig killed a heartbeat ago is still standing in the sphere.
+				notes.push(`${model.Name} (no root, or dead)`);
+			}
 		}
 
 		/**
@@ -736,11 +814,17 @@ export class FreezeService {
 		 *
 		 * The radius is named too, because a splash with the wrong radius is indistinguishable from a
 		 * splash with the right one that found nobody — and the two are set in `super.config.ts`, where
-		 * somebody tuning the ability will be looking.
+		 * somebody tuning the ability will be looking. **With both radii reading `8` as of 2026-10-18, the
+		 * radius no longer says whether this was a hit or a miss**, and the line immediately before it does:
+		 * `ended on … 0 tag(s) [Freeze]` for a miss, `was tagged by … [Freeze]` for a hit.
+		 *
+		 * **And the bodies are named, each with its reason** — see `describeFound`. The counts answer "did
+		 * anything happen", and the list is what answers *why not*: a splash that found scenery and a splash
+		 * that found rigs it refused are the same two numbers and two completely different faults.
 		 */
 		print(
 			`[Freeze] splash at ${origin} — radius ${radius}, found ${found} bod(ies), ` +
-				`spared ${spared}, caught ${caught.size()}`,
+				`spared ${spared}, caught ${caught.size()} — ${describeFound(notes)}`,
 		);
 
 		return caught;

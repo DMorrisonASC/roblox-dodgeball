@@ -634,13 +634,30 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// nothing about the outcome: that body is already tagged, and a tagged body dies when the ball lands
 		// whether or not it was frozen on the way there.
 		if (ability === "Freeze") {
-			// **The ball's own position rather than the struck part's.** The splash's radius is eight studs,
-			// so where its centre sits inside that sphere changes nothing about who is caught — but this is
-			// also the point the burst is fired from, and a limb's centre is inside the limb, which would
-			// put the shards inside somebody's chest. The ball's centre at the contact is one ball radius
-			// off the skin, which is where the impact actually was.
+			// **The struck part is the splash's centre, and it is the *first* part to arrive by
+			// construction.** The `hitModels.has(character)` guard above returns for every later part of the
+			// same body, so `struck` is the part the engine reported first — which is exactly what
+			// `SUPER_CONFIG.FREEZE_HIT_RADIUS` promises ("from the body part a Freeze ball *struck*") and
+			// what `HANDOFF.md` §11 says the ability does.
+			//
+			// **It used to be the ball's own centre, and both of the places the number is documented had
+			// gone on saying "the struck part"** — so the code was the odd one out rather than the rule. The
+			// argument for the ball was that a limb's centre is *inside* the limb, so the burst would fire
+			// inside somebody's chest; the counter-argument is that the ball's centre at the contact is a
+			// ball radius *outside* the skin, which is where nothing happened. **Inside the body is the
+			// honest place for the shards to start** — they travel outward, so the effect reads as coming
+			// out of the hit — and the cost of the change is bounded: the moved centre is at most a torso's
+			// half-width, against an eight-stud radius, so the set of bodies caught is the same set.
+			//
+			// **The whole of the target list is `freezeInRadius`'s and not this branch's.** What is passed
+			// here is a point, a radius and who may be spared; the service asks the *world*
+			// (`Workspace:GetPartBoundsInRadius`), walks every part back to its model and freezes each body
+			// once. That is why a Freeze ball that strikes a **rig** freezes the players and rigs around it
+			// through exactly the same path as one that strikes a player — there is no player list and no
+			// rig list here, and deliberately so. See that method for the argument, and `splashSpares` below
+			// for the three rules that decide who is left alone.
 			this.freezes.freezeInRadius(
-				this.instance.Position,
+				struck.Position,
 				SUPER_CONFIG.FREEZE_HIT_RADIUS,
 				(model) => this.splashSpares(throwerId, model),
 			);

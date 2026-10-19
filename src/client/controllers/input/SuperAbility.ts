@@ -5,6 +5,7 @@ import { AbilityKind, ABILITY_NAMES } from "shared/ability";
 import { IS_DEV_ATTRIBUTE } from "shared/constants";
 import { POWER_ROSTER } from "shared/config/economy.config";
 import { events } from "shared/networking";
+import { playSelectTone } from "../../ui/elevation";
 
 /** Prints the binds once, every press that went out, and nothing else. */
 const DEBUG = true;
@@ -152,6 +153,12 @@ export class SuperAbility implements OnStart {
 			// Unreachable without a kind, because the guard above is the only way past it.
 			if (test === undefined) return;
 
+			// **The same tone the power key makes, and here rather than in each dev branch.** A dev key is a
+			// power being spent by name — the same act with the choice taken out — so it sounds the same; the
+			// call sits above the split rather than in both arms so the two paths cannot drift into one
+			// clicking and one not. The power key already returned above, where `usePower` makes its own.
+			playSelectTone();
+
 			// **The one dev key that is not a mark**, asked by name because the question here is which of
 			// the two requests this press goes to — and the server's router asks the same question about
 			// the same word when a box is paying.
@@ -228,6 +235,17 @@ export class SuperAbility implements OnStart {
 	public usePower(): void {
 		if (DEBUG) print(`[Super] ${POWER_KEY.Name} — asking to use the mystery box's power`);
 
+		// **The interface's own select tone — the one a shop or inventory button makes.** Spending a power is
+		// the same kind of act as spending coins: the player asking the machine to do something. It is fired
+		// here rather than at either input because this method *is* the one place both triggers converge (the
+		// key and the slot's tap), so the two cannot end up sounding different.
+		//
+		// **On the press, not on the outcome** — and here that is also the only thing available. Nothing comes
+		// back from the server (see above), so "did it work" is not a question this client can answer at the
+		// moment of the press; the acknowledgement is the attribute appearing a frame later, which is what the
+		// slot's pop already reacts to. A tone that waited for it would make every press feel unacknowledged,
+		// and one that played on both would be two clicks for one press.
+		playSelectTone();
 		this.getPowerRemote().SendToServer();
 	}
 
