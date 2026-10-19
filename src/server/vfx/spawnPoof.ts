@@ -1,0 +1,345 @@
+import { Debris, ReplicatedStorage, Workspace } from "@rbxts/services";
+import { findTemplate } from "shared/find";
+import { SPAWN_POOF_CONFIG } from "shared/config/spawnPoof.config";
+
+/** Prints every poof, with the body it was spawned for and where. */
+const DEBUG = true;
+
+/**
+ * The name of the authored effect template, and **the whole of the contract with the place file**.
+ *
+ * **A name and nothing else**, which is `HANDOFF.md` §17 and `shared/find.ts`'s rule: the template is found by
+ * walking `ReplicatedStorage` for a `Model` or a `BasePart` with this name, so whether somebody wraps it in a
+ * `VFX` folder, an `Effects` folder or nothing at all is not a fact this file may depend on. The same lookup,
+ * by the same helper, as `PierceTrail` in `BallService` and `FreezeSplash` in `FreezeService`.
+ *
+ * **The template this was written for is `BasePart > Attachment > ParticleEmitter`**, which is the shape
+ * `findTemplate` resolves a name placed on any of the three levels to: the named part, or the part that carries
+ * a named attachment or emitter. Nothing here needs to know which level was named.
+ */
+const TEMPLATE_NAME = "SpawnPoof";
+
+/**
+ * How many particles a poof should have alive at once. **Placeholder — 30.**
+ *
+ * **The count is now carried by `Rate`, not by `Emit`, and the log that asked for this is the reason.** `Emit`
+ * is a call into *one* simulation. The server has none — it has no renderer — so the particles it creates are
+ * born and expire where nobody can see them, and each client only ever simulates what the replicated properties
+ * tell it to. `Rate` is one of those properties, so the burst has to be described by it; see the emit loop.
+ *
+ * **The formula is the documented one: `Rate × Lifetime` is how many particles are alive at once** (the
+ * engine's own sample says so). Dividing this count by the template's own lifetime gives the rate that produces
+ * this many, which is why the poof keeps the author's particle look and changes only how fast they arrive.
+ *
+ * Thirty is enough for a burst to read as one event from across the arena and few enough that sixteen bodies in
+ * a lobby do not become a fog.
+ */
+const EMIT_COUNT = 50;
+
+/**
+ * The shortest lifetime a burst is spread over, in seconds. **Placeholder — 0.1.**
+ *
+ * **A guard against dividing by a template authored at zero**, which the docs describe as "a lifetime of 0 will
+ * prevent particles from emitting at all": the count would be spread over no time at all and the rate would be
+ * an infinity the engine would clamp to whatever it felt like. One tenth of a second is short enough that the
+ * burst still reads as instantaneous and long enough that the arithmetic is finite.
+ */
+const MIN_BURST_LIFETIME = 0.1;
+
+/**
+ * How far below the body's root the burst is placed, in studs. **Placeholder — -2.5.**
+ *
+ * **Negative is a world-space offset, which is the only reading that means anything here.** A character's root
+ * sits at hip height, so an effect centred on it starts *inside* the torso: the first particles appear at the
+ * waist and the burst reads as something happening to the body's middle rather than to the space it left. Two
+ * and a half studs down is below the chest for an R15 humanoid and just above the ground, so the poof sits at
+ * the feet for a body standing and hangs in the air where the feet were for one that has just jumped.
+ */
+const POOF_Y_OFFSET = -2.5;
+
+/**
+ * How long a clone is left in the world before `Debris` takes it, in seconds. **Placeholder — 2.**
+ *
+ * **Long enough for the emitter's whole burst, short enough that a boundary does not leave a cloud behind.**
+ * The burst is emitted in the frame this runs, so this is the window the particles have to play out rather than
+ * the effect's timing: the particles themselves live for whatever the template authored them to, and two
+ * seconds is past any plausible one-shot while being short enough that sixteen bodies at a boundary do not
+ * leave a haze in the lobby. It is the number to raise if a template with a long tail is being cut off, and the
+ * one to lower if the arena is left foggy.
+ */
+const EFFECT_LIFETIME = 2;
+
+/**
+ * Whether the missing-template warning has been said already.
+ *
+ * **Once per server, not once per body.** A boundary moves every player and every rig, so a warning per body
+ * would be thirty-two identical lines and no more information than the first. `BallService` keeps a `Set` for
+ * this because it looks for more than one name; this file looks for exactly one, so a boolean says the same
+ * thing.
+ */
+let templateWarned = false;
+
+/**
+ * **The one poof: a burst left standing where a body was, played wherever a body appears, disappears or is moved
+ * without walking.**
+ *
+ * **One function for every trigger, because they are one event seen from different sides.** A player joining, a
+ * player leaving, a rig standing down for them, a rig taking their seat, a round boundary teleporting everybody,
+ * a late rig snapped onto its arena spawn and a body respawning after a death are seven causes and one visible
+ * fact — *a body was not there and now it is, or it was and now it is not*. Every call site says only which
+ * body; this file says what that looks like. The triggers themselves live where the body changes, never here.
+ *
+ * **A player's character and an NPC rig are the same argument.** Both are a `Model` with a `Humanoid` and a
+ * `HumanoidRootPart` — a player's body and an `NpcService` rig — so there is no `Player` in this file at all and
+ * nothing to branch on. That is what lets `RoundService` (characters and rigs), `LobbyRigService` (rigs and a
+ * leaving character) and `RespawnService` (characters) all call it without converting anything first.
+ *
+ * **It is anchored where the body was standing and deliberately *not* welded to it.** A weld makes an effect
+ * follow a part, and following is the one thing this must not do: every caller that matters is about to move the
+ * body — a `PivotTo` at a boundary, a rig snapped onto its arena spawn — so a welded clone would be dragged to
+ * the destination and emit *there*, leaving the origin empty. **The origin is the whole point of the effect.**
+ * An anchored clone stays at the position it was given, fires its burst, is not simulated, cannot be walked
+ * into, and is taken by `Debris`.
+ *
+ * **The burst is fired by hand rather than left to the emitter's `Rate`, and that is the second half of the same
+ * argument.** A streaming template emits its first particle `1 / Rate` seconds after it enters the world, and a
+ * teleport moves the body in the same frame — so `Emit` is what guarantees particles at the place and instant the
+ * event happened, whatever the author set. See {@link BURST_COUNT}.
+ *
+ * **The template is not trusted, and that is a rule rather than a preference.** Every visual and physical
+ * property below is forced on the clone, because the failure mode of trusting the place file is a solid white
+ * block standing where a player vanished. See the block in the body for what each override is protecting.
+ *
+ * **No player is asked about, and nothing is stored.** The clone is a child of `Workspace` owned by `Debris`;
+ * this function holds no reference to the body after it reads the root, so a body destroyed in the same frame
+ * — a rig standing down, a character leaving — leaves a burst that is already in the world and already
+ * scheduled to clean itself up.
+ */
+export function playSpawnPoof(model: Model): void {
+	if (!SPAWN_POOF_CONFIG.ENABLED) return;
+
+	// **A body that has already left the world gets no effect**, and this guard is before the root lookup
+	// because a destroyed model has no parts to find: asking one for its `HumanoidRootPart` is a diagnostic
+	// error in the middle of a round boundary rather than a missing burst.
+	if (model.Parent === undefined) return;
+
+	// The root is where the effect is placed, so a body without one has nowhere to stand it. Every body this
+	// game makes has one — `NpcService` will not run a rig without it and a character's is part of the rig — and
+	// the guard is for the frame between a character being loaded and its parts arriving.
+	const root = model.FindFirstChild("HumanoidRootPart");
+	if (root === undefined || !root.IsA("BasePart")) return;
+
+	const template = findTemplate(ReplicatedStorage, TEMPLATE_NAME);
+
+	// **Said once, with everything needed to fix it.** A missing name, a misspelt name and a template never
+	// published are three different fixes and one indistinguishable symptom, so the line lists what
+	// `ReplicatedStorage` actually holds. Nothing else happens: a body with no poof still appears, and every
+	// other effect and rule in the game is untouched.
+	if (template === undefined) {
+		if (!templateWarned) {
+			templateWarned = true;
+
+			warn(`[VFX] no ${TEMPLATE_NAME} in ReplicatedStorage — bodies will appear and vanish without a poof`);
+
+			const top: string[] = [];
+			for (const child of ReplicatedStorage.GetChildren()) top.push(`${child.Name} (${child.ClassName})`);
+
+			warn(
+				`[VFX] ReplicatedStorage holds: ${top.isEmpty() ? "nothing" : top.join(", ")} — ` +
+					`a poof template is a Model or a BasePart named ${TEMPLATE_NAME}, ` +
+					`and it is found by name wherever it sits.`,
+			);
+		}
+
+		return;
+	}
+
+	const effect = template.Clone();
+	const parts = partsOf(effect);
+
+	// A template with no part in it has nowhere to stand the effect, and cloning one per boundary only to throw it
+	// away is a leak with a warning attached.
+	if (parts.isEmpty()) {
+		if (!templateWarned) {
+			templateWarned = true;
+
+			warn(
+				`[VFX] ${TEMPLATE_NAME} holds no BasePart — bodies will appear and vanish without a poof. ` +
+					"The clone is placed by its part.",
+			);
+		}
+
+		effect.Destroy();
+
+		return;
+	}
+
+	for (const part of parts) {
+		// **Invisible, because a carrier is not a picture.** The template is a `BasePart` carrying an
+		// `Attachment` and a `ParticleEmitter`; if its author left it opaque, the effect is a white block on the
+		// body and the burst inside it is hidden behind its own carrier. `Transparency` is not one of the three
+		// flags below — they govern interaction, not drawing — which is why it is forced separately here.
+		//
+		// **`DEBUG_SHOW_PART` replaces that with a red neon cube, and it is the bisect for a report of "I see
+		// nothing".** A drawn marker answers the question the log cannot: whether the clone is anywhere near the
+		// player at the moment they are looking. See that switch's doc — the cube is four studs on every axis
+		// rather than the template's own size, because a marker has to be visible from across a lobby and the
+		// template may be authored at any size at all.
+		if (SPAWN_POOF_CONFIG.DEBUG_SHOW_PART) {
+			part.Transparency = 0.3;
+			part.Material = Enum.Material.Neon;
+			part.Color = new Color3(1, 0, 0);
+			part.Size = new Vector3(5, 5, 5);
+		} else {
+			part.Transparency = 1;
+		}
+
+		// **Anchored, so the burst stays where the body was.** This is the property that makes the effect an
+		// origin rather than a passenger: the body is moved by the caller on the next line or the next frame, and
+		// an unanchored clone — welded or not — would go with it or fall out of the sky. An anchored part is not
+		// simulated at all, which is also what keeps it out of the body's physics: there is no assembly to join,
+		// so plenty of the flags below stop mattering for gameplay and start mattering for queries.
+		part.Anchored = true;
+
+		// **Massless is kept even though an anchored part is not simulated**, so that the same template run
+		// through a future caller that wants a moving copy behaves the same way. It costs nothing here.
+		part.Massless = true;
+
+		// **And no interaction of any kind**, for `FreezeService.buildBurst`'s reason: this must not be something
+		// a ball can hit, a touch can fire on, or the aim guide's ray can stop against.
+		part.CanCollide = false;
+		part.CanTouch = false;
+		part.CanQuery = false;
+
+		// **At the body's feet rather than its root**, because a root sits at hip height and a burst centred on
+		// it starts inside the torso — see {@link POOF_Y_OFFSET}. A world-space offset rather than a local one:
+		// "two and a half studs down" means the same thing however the body happens to be turned, and a body
+		// mid-jump gets a burst in the air below it, which is where it was.
+		part.CFrame = root.CFrame.add(new Vector3(0, POOF_Y_OFFSET, 0));
+	}
+
+	// **Parented to `Workspace` rather than to the body**, which is what lets the burst outlive the body: a rig
+	// standing down and a character leaving both destroy the model in the same frame as this call, and a child of
+	// that model would go with it before the particles had been drawn once.
+	effect.Parent = Workspace;
+
+	// **The burst is carried by `Rate`, and this is the fix for the poof that arrived a second or two after its
+	// body left.** `Emit` is a call into one simulation: the server has no renderer, so the particles it creates
+	// exist where no player can see them, and a client simulates only what the replicated *properties* describe.
+	// The template's own `Rate` is 3 — one particle every third of a second — which is exactly the "the effect
+	// showed up late" that was reported: the brick appeared in the frame it was made, and the particles trickled
+	// in afterwards, eventually reading as a puff long after the body was gone.
+	//
+	// **So the rate is rewritten for the clone**, from the documented relationship `Rate × Lifetime = particles
+	// alive`: {@link EMIT_COUNT} divided by the template's own lifetime gives the rate that keeps the whole burst
+	// on screen at once, with each particle still living and fading exactly as its author wrote it. Nothing about
+	// the look changes; only how quickly the particles arrive.
+	//
+	// **`Emit` is kept anyway**, because it is free, and because a template authored as a one-shot (`Rate = 0`)
+	// would otherwise have nothing to emit from on the server's copy. It is no longer what makes the effect
+	// visible.
+	//
+	// **`Enabled` is forced on**, for the same reason `Transparency` and `Anchored` are: a template left with
+	// its emitter switched off is a poof that produces nothing, and that is a Studio state this file cannot
+	// check from inside the game.
+	let emitters = 0;
+	let texture: string | undefined;
+
+	for (const descendant of effect.GetDescendants()) {
+		if (!descendant.IsA("ParticleEmitter")) continue;
+
+		emitters += 1;
+		if (texture === undefined) texture = descendant.Texture;
+
+		const lifetime = math.max(descendant.Lifetime.Max, MIN_BURST_LIFETIME);
+		descendant.Rate = EMIT_COUNT / lifetime;
+		descendant.Enabled = true;
+		descendant.Emit(EMIT_COUNT);
+
+		// **Switched off after one lifetime, so this is a burst rather than a cloud that grows.** A rate left on
+		// for the clone's whole two seconds emits twice the count, and the second half arrives as the first is
+		// expiring — a puff that gets denser instead of dissipating. One lifetime is exactly one generation: the
+		// thirty particles arrive together, live out their authored life, and the clone is taken by `Debris`
+		// shortly after the last of them goes.
+		task.delay(lifetime, () => {
+			if (descendant.Parent !== undefined) descendant.Enabled = false;
+		});
+
+		// Printed *after* the overrides, so the numbers in the log are the ones the client will simulate rather
+		// than what Studio holds — the difference is the whole point of this block.
+		if (DEBUG) print(`[VFX] emitter ${descendant.Name}: ${describeEmitter(descendant)}`);
+	}
+
+	Debris.AddItem(effect, EFFECT_LIFETIME);
+
+	// **The line that separates "never spawned" from "spawned and was invisible", and the second is the state
+	// this effect was reported in.** A clone in the world still shows nothing if the template carries no emitter
+	// whose texture is a real image (`rbxassetid://0` draws nothing and raises nothing), if its particle size or
+	// transparency sequence is degenerate, or if it was never fired. The first cannot be checked from here; it
+	// *can* be reported, and one line per spawn turns the next screenshot into a diagnosis rather than a guess.
+	if (DEBUG) {
+		print(
+			`[VFX] ${TEMPLATE_NAME} at ${model.Name} — ${root.Position} ` +
+				`(${parts.size()} part(s), ${emitters} emitter(s), ` +
+				`texture ${texture ?? "none"}, ${string.format("%.2f", EFFECT_LIFETIME)}s)`,
+		);
+	}
+}
+
+/**
+ * One emitter's authored state as a line of prose — **the properties that decide whether a running emitter
+ * produces anything a person can see.**
+ *
+ * **The same four `client/chargeEffect.ts` reports, for the same reason**: a template whose `Rate` is zero, whose
+ * `Lifetime` is zero, whose particles are size zero or fully transparent streams happily, moves its particles and
+ * never draws one — which from a seat in Studio looks exactly like an effect that never ran. `Rate` and
+ * `Lifetime` are existence, `Size` and `Transparency` are visibility, and all four are in the template's
+ * properties panel; this is the same information, in the log, beside the line that says this body got a poof.
+ */
+function describeEmitter(emitter: ParticleEmitter): string {
+	return (
+		`enabled ${emitter.Enabled}, rate ${emitter.Rate}, ` +
+		`lifetime ${rangeText(emitter.Lifetime)}, speed ${rangeText(emitter.Speed)}, ` +
+		`size ${sequenceText(emitter.Size)}, transparency ${sequenceText(emitter.Transparency)}`
+	);
+}
+
+/** A `NumberRange` as `3` when it is a single value and `3-5` when it is a spread between two. */
+function rangeText(range: NumberRange): string {
+	return range.Min === range.Max ? `${range.Min}` : `${range.Min}-${range.Max}`;
+}
+
+/** A `NumberSequence` as **its two ends** — `0.5→2` — because the middle is the shape and the ends are existence. */
+function sequenceText(sequence: NumberSequence): string {
+	const keys = sequence.Keypoints;
+	if (keys.isEmpty()) return "empty";
+
+	const first = keys[0].Value;
+	const last = keys[keys.size() - 1].Value;
+
+	return first === last ? `${first}` : `${first}→${last}`;
+}
+
+/**
+ * Every `BasePart` in a poof clone, **including the clone itself when it is one**.
+ *
+ * **`GetDescendants` so that a `Model`-wrapped template works unchanged**, which is `findTemplate`'s other
+ * accepted shape: a person is free to wrap the carrier in a `Model` while tidying their `ReplicatedStorage`, and
+ * a clone placed by one part while another sat at the template's position in `ReplicatedStorage` would be half
+ * an effect at the body and half at the far end of the map. Every part is anchored at the same spot, so a
+ * two-part poof stays one object.
+ *
+ * **The clone's own part is pushed first** because `GetDescendants` on a `BasePart` answers with its children
+ * and never with itself — which is the shape a template with no `Model` wrapper has.
+ */
+function partsOf(effect: Instance): Array<BasePart> {
+	const parts = new Array<BasePart>();
+
+	if (effect.IsA("BasePart")) parts.push(effect);
+
+	for (const descendant of effect.GetDescendants()) {
+		if (descendant.IsA("BasePart")) parts.push(descendant);
+	}
+
+	return parts;
+}

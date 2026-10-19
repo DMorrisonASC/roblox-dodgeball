@@ -16,6 +16,10 @@ import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/trans
 import { findFolder } from "shared/find";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { MATCH_MAX_PER_TEAM } from "../../config/match.config";
+// The poof helper, called at the four moments this file changes a body's existence: `spawnLobbyRig` and
+// `spawnArenaRig` (a rig appears), `retireRig` (a rig disappears) and `moveWalkersToArena` (a rig is snapped
+// into the arena without walking). The leaving player's character is the fifth, in `onPlayerLeft`.
+import { playSpawnPoof } from "../../vfx/spawnPoof";
 import {
 	BEHAVIOR_CATCHING,
 	BEHAVIOR_DODGING,
@@ -1015,6 +1019,18 @@ export class LobbyRigService implements OnStart {
 		const name = rig.Name;
 		const source = sourceOf(rig);
 
+		// **A body's last moment, and the only one that can carry a burst.** This is the one destroy site in
+		// the service — `releaseRigs`, `retireHopelessCorpses` and `reserveSeat` all come through it — so it is
+		// also the one place the "a placeholder vanished" half of the poof can be written, and it is written
+		// here rather than at the three callers for the reason the report below is written here: a fourth
+		// caller would otherwise be a fourth chance to forget it.
+		//
+		// **Called before the `Destroy`, and the burst outlives it.** The clone is parented to `Workspace` and
+		// owned by `Debris`, so destroying the rig takes the weld with it and leaves the effect standing (and,
+		// being welded and unanchored, briefly falling) for the second and a half it is scheduled for. The
+		// particles it emitted are already in the world and are not affected at all — see `vfx/spawnPoof.ts`.
+		playSpawnPoof(rig);
+
 		rig.Destroy();
 
 		print(
@@ -1157,6 +1173,24 @@ export class LobbyRigService implements OnStart {
 	 * filled, and does nothing.
 	 */
 	private onPlayerLeft(player: Player): void {
+		// **The player's own body, before anything about seats is decided.** This handler returns early for a
+		// spectator who never opted in — no seat, nothing to replace — and that early return is exactly why the
+		// burst is written first: a person who joined to watch and left again still vanished from the lobby, and
+		// the body that vanishes is theirs rather than the rig's.
+		//
+		// **This is `PlayerRemoving`, so the character is still in the world here** — the engine destroys it after
+		// this signal returns, which is why the burst is the one thing that must be started now. The clone is
+		// welded to the root and parented to `Workspace`, so the body going away a frame later takes the weld and
+		// not the effect.
+		//
+		// **And it is the only place a leaving character poofs**, which is the double-trigger rule this file
+		// keeps: the rig half of the same event is `retireRig`'s (for the rig that stood down for them) or a
+		// spawn's (for the rig that takes their seat), and neither of those plays on the player. See
+		// `playSpawnPoof`'s doc for why the helper is called from the sites where the body changes rather than
+		// from the events that describe the change.
+		const character = player.Character;
+		if (character !== undefined) playSpawnPoof(character);
+
 		const seat = this.seated.get(player) ?? this.pending.get(player);
 
 		this.pending.delete(player);
@@ -1534,6 +1568,16 @@ export class LobbyRigService implements OnStart {
 					continue;
 				}
 
+				// **The same burst the round's own teleport makes**, before the same kind of move. A rig that is
+				// still walking when the whistle goes is snapped from the middle of the lobby onto an arena spawn,
+				// and without this it is a body that vanishes from one side of the map and appears on the other —
+				// the one case in this file where a body moves without walking. The clone is welded to the root,
+				// so the particles it emits stay in the lobby while the rig leaves; see `vfx/spawnPoof.ts`.
+				//
+				// **Rigs only, and the round end's `returnRigsToLobby` is the other half.** A rig moved here has no
+				// root written anywhere else; see `RoundService.teleportTeamsToArena` for the arrived rigs this
+				// loop deliberately leaves to it.
+				playSpawnPoof(rig);
 				root.CFrame = parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
 
 				// **And the move is announced, because being put somewhere is a fact one behavior remembers
@@ -2044,6 +2088,12 @@ export class LobbyRigService implements OnStart {
 
 		this.nameRig(rig, draw.name, draw.template);
 
+		// **The burst that says a body arrived, for a body that was never anywhere else.** A lobby rig is created
+		// rather than teleported, so this is its only burst — the same call every teleport makes, welded to the
+		// same root. Named after the rig rather than before it, because the helper's own line prints
+		// `model.Name`: called before `nameRig` it would say "PlaceholderRig" six times a boundary.
+		playSpawnPoof(rig);
+
 		// **The instructions go on after the rig exists, and that order is deliberate rather than incidental.**
 		// `NpcService.spawn` starts the loop on the `NPC` tag, so the attributes are written one resumption
 		// *after* the body is managed — which the behaviour tolerates by design: a rig wearing the walk tag with
@@ -2138,6 +2188,12 @@ export class LobbyRigService implements OnStart {
 
 		this.nameRig(rig, draw.name, draw.template);
 		rig.SetAttribute(TEAM_ATTRIBUTE, side);
+
+		// **The same burst `spawnLobbyRig` plays**, and the case it is most for: a rig created *inside* a round
+		// appears out of nowhere next to players who were already fighting, and without it that reads as a body
+		// popping into existence rather than as a replacement taking a seat. See `spawnLobbyRig` for why it is
+		// called after `nameRig`.
+		playSpawnPoof(rig);
 
 		// **Said out loud, because a rig that appears mid-round is otherwise indistinguishable from one
 		// that was always there.** This is the ordinary path rather than a fault, so it is a print and not a

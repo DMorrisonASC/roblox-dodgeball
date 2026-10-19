@@ -29,6 +29,7 @@ import { MATCH_JOIN_POLL_SECONDS, MATCH_MIN_PLAYERS } from "../../config/match.c
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
 import { rigCounts, rigsOnASide, sideOfRig } from "../../npc/rigs";
+import { playSpawnPoof } from "../../vfx/spawnPoof";
 import { applyBarrierGroups } from "../../collision/CollisionGroups";
 import { RespawnService } from "../character/RespawnService";
 import { shieldCharacter } from "../character/SpawnShield";
@@ -2493,7 +2494,21 @@ export class RoundService implements OnStart {
             if (this.isPracticePlayer(player)) continue;
 
             const character = player.Character;
-            if (character) character.PivotTo(to);
+            if (!character) continue;
+
+            // **The burst that turns one assignment into a teleport, played before the move.** One call and not
+            // two: the clone is welded to the root, so what it emits is emitted where the body *was* and stays
+            // there — see `vfx/spawnPoof.ts` for why a welded effect survives the `PivotTo` without dragging its
+            // own particles along. There is therefore nothing at the destination to draw, and nothing here
+            // changes where anybody ends up: the helper reads the body and never writes to it.
+            //
+            // **Who actually sees this is narrower than it looks, and it is worth writing down because it is the
+            // opposite of the other boundary.** `transitionAround` covers the round's *roster* (`this.teams`),
+            // and this loop moves **every non-practice player** — so the spectators in the lobby are being moved
+            // with no grid over their screens, and this is the only thing that turns their cut into a teleport.
+            // The players who played the round see their own move behind the cover, and see nothing of this.
+            playSpawnPoof(character);
+            character.PivotTo(to);
         }
     }
 
@@ -2527,6 +2542,11 @@ export class RoundService implements OnStart {
             const root = rig.FindFirstChild("HumanoidRootPart");
             if (!root || !root.IsA("BasePart")) continue;
 
+            // **The rig's own burst, before the same move the players' `teleportAll` makes.** A rig is moved here
+            // rather than by `PivotTo` because `root` above is the thing being written, and the effect reads the
+            // same root, so the burst fires exactly where the body was standing. The grid covers the round's
+            // players and not the lobby's spectators, which is who sees this.
+            playSpawnPoof(rig);
             root.CFrame = spawn.add(new Vector3(0, 3, 0));
 
             // **Announced, and this is the other half of the same fault.** A home read at the first turn
@@ -2572,7 +2592,13 @@ export class RoundService implements OnStart {
     private teleportTeamsToArena() {
         for (const player of this.playersInRound()) {
             const character = player.Character;
-            if (character) character.PivotTo(this.arenaSpawnFor(player));
+            if (!character) continue;
+
+            // **The opening whistle's burst, before the move.** This is the boundary whose cut the wipe exists
+            // for, so the players themselves see the grid and not this — it is for the lobby, where everybody who
+            // did not opt in is standing and watching eight bodies leave.
+            playSpawnPoof(character);
+            character.PivotTo(this.arenaSpawnFor(player));
         }
 
         // **By the root part rather than by `PivotTo`, and that is not a style choice.** A model's pivot
@@ -2592,6 +2618,10 @@ export class RoundService implements OnStart {
             const root = rig.FindFirstChild("HumanoidRootPart");
             if (!root || !root.IsA("BasePart")) continue;
 
+            // **And the rigs, on exactly the players' terms** — the same burst before the same move, reading the
+            // same root part this line writes. A rig is a body in the round like any other and the lobby watches
+            // it leave as it watches everything else leave.
+            playSpawnPoof(rig);
             root.CFrame = this.arenaSpawnFor(rig);
 
             // **Announced, because the rig has just been put somewhere and one behavior remembers where.**

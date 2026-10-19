@@ -1,6 +1,7 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, Workspace } from "@rbxts/services";
 import { RESPAWN_AT_ATTRIBUTE } from "shared/constants";
+import { playSpawnPoof } from "../../vfx/spawnPoof";
 
 /** Prints one line per load, per schedule and per cancelled wait, naming the reason. */
 const DEBUG = true;
@@ -89,6 +90,18 @@ export class RespawnService implements OnStart {
 		// The print below is the only thing on the far side of the yield, which is why none of this is visible
 		// to a caller.
 		player.LoadCharacterAsync();
+
+		// **The body that just appeared, and the only place a player's character is announced.** With
+		// `CharacterAutoLoads` off, every character in the game is made through this method — a join, a lobby
+		// respawn, an elimination, a scheduled round respawn — so this one call is every "a player arrived
+		// somewhere" there is, and no other site has to guess when a character exists. In particular
+		// `PlayerAdded` cannot be that site: it fires before the body does.
+		//
+		// **After the yield, deliberately**, which is the only thing on this side of it: `LoadCharacterAsync`
+		// resumes once the character exists, so the read below is a statement about the body rather than about
+		// the request, and `playSpawnPoof` needs a `HumanoidRootPart` to weld to.
+		const character = player.Character;
+		if (character !== undefined) playSpawnPoof(character);
 
 		if (DEBUG) print(`[Respawn] ${player.Name}: loaded — ${reason}`);
 	}
