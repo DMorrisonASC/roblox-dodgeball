@@ -311,12 +311,10 @@ everything.
 `NPC` is the entry point; a `Behavior_*` tag enables one mechanic. A rig wearing `NPC` and no
 behaviour tag is managed and does nothing.
 
-**`Behavior_Gathering` is the one that runs *between* rounds as well as during one**, and it is the only
+**`Behavior_Gathering` is the one that runs *between* rounds rather than during one**, and it is the only
 behavior that reads the round's phase at all. Every other tag names something a rig does while a match is
-on; this one owns all three places a rig's life is spent in — it gathers the rigs onto the matchmaking pads
-while there is no match, walks them to their side's spawn on the court when a round starts, and walks them
-back to the lobby spawn they were placed on when it ends. It is also the second writer of
-`RIG_TEAM_ATTRIBUTE` — the first is `NpcService.spawn`, which `RigSpawnerService` calls with a side — because
+on; this one gathers the rigs onto the matchmaking pads while there is no match, and walks them back when
+one starts. It is also the second writer of `RIG_TEAM_ATTRIBUTE` — the first is `NpcService.spawn` — because
 a rig placed by hand in Studio arrives with no side, and this is where it is given one.
 
 **The order they go on is load-bearing, and it is the one rule in this file that is not about

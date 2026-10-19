@@ -66,30 +66,23 @@ export const BEHAVIOR_SEEKING = "Behavior_Seeking";
 export const BEHAVIOR_DODGING = "Behavior_Dodging";
 
 /**
- * Enables the gathering behavior: **the rig's three destinations and the walk between them** — a
- * matchmaking join pad while there is no match, its side's spawn on the court while a round is on,
- * and the lobby spawn it was placed on when the round ends.
+ * Enables the gathering behavior: **during an intermission the rig walks to one of the two
+ * matchmaking join pads and waits there.**
  *
  * **The one behavior that is not about the rig's own business.** Catching, throwing, seeking and
- * dodging all answer "what should this rig do next"; this one answers "where should this rig *be*".
- * It exists twice over, and it is worth naming both reasons: the join pads are where the players are
- * deciding the next match, and a rig is the only body in the game that moves itself to where a round
- * needs it — `RoundService` teleports the *players* and deliberately knows nothing about a rig, so a
- * rig that has walked out to the court is a rig that has to bring itself home again. The
+ * dodging all answer "what should this rig do next"; this one answers "where should this rig *be*
+ * while there is no round". It exists because the join pads are where the players are deciding the
+ * next match, and a rig standing in the arena while that happens is a rig in the wrong room. The
  * alternative — moving the rigs with code the round owns — would put rig placement inside
  * `RoundService`, which owns players and knows nothing about rigs; keeping it a behavior is what
  * makes it the rig's own business after all.
  *
  * **This is what `RIG_TEAM_ATTRIBUTE` is for on the reading side, and it is also where a rig with no
- * side gets one.** `NpcService.spawn` has had a call site since `RigSpawnerService` was written, and
- * a spawned rig arrives *with* a side — `spawn`'s fourth argument writes the attribute before any
- * tag goes on — so for a match rig this behavior is a *reader* of a side that already exists. A rig
- * that has none — the case every rig placed by hand in Studio is in — is given one here, by an
- * alternation that leans toward whichever side is emptier, so the rigs do not pile onto `A` and
- * leave `B` bare. That is now the only case in which this behavior chooses rather than reads, and
- * the choice is written onto the rig, so the pad a rig walks to and the side it fights for stay one
- * fact. See `GatherBehavior`, which owns the counting rule, the rotation that stops two rigs of a
- * side taking one court spawn, and the reason a rig with no side stays where it is when a round opens.
+ * side gets one.** A rig that already has a side walks to that side's pad; a rig that has none — the
+ * case every rig placed by hand in Studio is in, since `NpcService.spawn` has no call site — is given
+ * one here, by an alternation that leans toward whichever side is emptier, so the rigs do not pile
+ * onto `A` and leave `B` bare. From then on it walks to its own pad and the alternation is not asked
+ * again. See `GatherBehavior`, which owns the counting rule and the reason it is a count at all.
  *
  * **It is deliberately independent of `Behavior_Seeking` in intent and in conflict with it in
  * practice**, which is worth knowing before putting both on one rig: both move the rig with
@@ -142,20 +135,15 @@ export interface NpcBehavior {
 	 * Optional: collect whatever this behavior needs before it can run at all.
 	 *
 	 * Called once per behavior, the first time this model is seen wearing its tag
-	 * and **before** that behavior's first tick. This is where a behavior collects what it needs *once for the
-	 * whole life of the rig* — `RespawnBehavior` takes its copy of the body, and the spot the rig is standing
-	 * on, exactly here — which is what keeps `NpcService` from having to know about any of it.
+	 * and **before** that behavior's first tick. This is where a behavior that needs
+	 * something in hand asks for it — `ThrowBehavior` asks `BallService` for a ball
+	 * here — which is what keeps `NpcService` from having to know that throwing
+	 * wants a ball, or that balls exist.
 	 *
-	 * **It is not where a mechanic asks for something it is entitled to only sometimes, and the example this
-	 * doc used to give was exactly that mistake.** `ThrowBehavior` used to ask `BallService` for a ball in
-	 * `prepare`, which handed every rig a ball the moment it spawned: a rig stood on a join pad through a whole
-	 * intermission holding one, before any round had started. The rule that replaced it lives in that
-	 * behaviour's own `tick`, gated on the phase, because "is a round on" is a question only a tick knows.
-	 * See `ThrowBehavior` for the fix and `RespawnBehavior` for a use that is genuinely once per life.
-	 *
-	 * It also keeps the *rig* free of the answer: a second once-per-life need writes its own `prepare`, and
-	 * neither `NpcService` nor `spawn` changes. A behavior that needs nothing simply does not write this,
-	 * which is why it is optional.
+	 * It also keeps the *rig* free of the answer: a second throwing mechanic writes
+	 * the same three lines in its own file, and neither `NpcService` nor `spawn`
+	 * changes. A behavior that needs nothing simply does not write this, which is
+	 * why it is optional.
 	 *
 	 * A method for the same reason `tick` is.
 	 */

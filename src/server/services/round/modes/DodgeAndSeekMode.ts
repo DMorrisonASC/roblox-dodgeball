@@ -147,25 +147,20 @@ class DodgeAndSeekMode implements GameMode {
 	 * otherwise read an empty round as "zero dodgers", which is a seeker win: true only if there was
 	 * a round to win.
 	 *
-	 * **Both numbers come from the round now, and they used to come from a walk over `playersInRound()`** — a
-	 * list of `Player`s, so a round full of rigs counted as nought dodgers *and* nought seekers and was drawn on
-	 * its first tick. A rig counts for the side it stands on, by the same test the round's own roster check uses.
-	 *
-	 * **And a rig counts without being convertible, which is a real difference from the player it stands in
-	 * for.** A hit moves a *player* off `DODGERS` — that is how one count answers both halves below — but a rig's
-	 * death is `RespawnBehavior`'s and never reaches the round's `onDeath`, so a rig dodger stays a dodger for the
-	 * round. Named rather than hidden: the mode that would notice is dormant, since only Score Rush is started
-	 * (`VOTE_ENABLED = false`).
-	 *
 	 * **Dodgers win only at the clock**, even if every seeker has left. That is the rule as written,
 	 * and it is also the safe reading: a dodger win-on-absence would end the round the moment the
 	 * last seeker disconnected, which is not a thing that happened in the game.
 	 */
 	public outcome(view: RoundView): RoundOutcome | undefined {
-		const seekers = view.standingFor(SEEKERS);
-		const dodgers = view.standingFor(DODGERS);
+		const inRound = view.playersInRound();
 
-		if (seekers + dodgers === 0) return DRAW;
+		if (inRound.size() === 0) return DRAW;
+
+		let dodgers = 0;
+
+		for (const player of inRound) {
+			if (view.teamOf(player) === DODGERS) dodgers++;
+		}
 
 		if (dodgers === 0) return SEEKERS;
 

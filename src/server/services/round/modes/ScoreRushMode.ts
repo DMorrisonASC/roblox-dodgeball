@@ -71,16 +71,9 @@ class ScoreRushMode implements GameMode {
 	 * the same reason: an empty server must not sit inside a round until the clock runs out. Note
 	 * that this is *not* the same as one side leaving — a side that empties does not end the round
 	 * early, because the other side is still playing and will win on points if it still holds them.
-	 *
-	 * **"Nobody" had to be widened, and this line is the six-second round the rigs were drawing.** It
-	 * asked `playersInRound()`, which is a list of `Player`s — so four rigs standing on the court read as an
-	 * empty round, the round drew a second after the arena hold lifted, and the rigs turned round and walked
-	 * back to the lobby. The round is asked now, per side, and a rig counts for the side it stands on; the
-	 * question is a round-owned side count rather than a list each mode filters for itself, so no mode can be
-	 * rig-blind here again.
 	 */
 	public outcome(view: RoundView): RoundOutcome | undefined {
-		if (view.standingFor(TEAM_A) + view.standingFor(TEAM_B) === 0) return DRAW;
+		if (view.playersInRound().size() === 0) return DRAW;
 
 		const pointsA = view.scores.get(TEAM_A) ?? 0;
 		const pointsB = view.scores.get(TEAM_B) ?? 0;

@@ -565,9 +565,7 @@ export function voteCountAttribute(id: string): string {
  * a dead player re-enters rather than sitting the round out, and the flag was the reason a player could
  * idle instead of play. The two remaining facts it stood for are both already published elsewhere and
  * neither needs an attribute: *who is in the round* is `RoundService`'s `activePlayers` (server-side,
- * never replicated — and the players only, since a rig standing in for one is not a `Player` and is counted
- * by its own `RIG_TEAM_ATTRIBUTE`) and *a round is being played* is `ROUND_STATE_ATTRIBUTE` on the status
- * folder.
+ * never replicated) and *a round is being played* is `ROUND_STATE_ATTRIBUTE` on the status folder.
  *
  * **So a client can no longer tell "a round is on" from "I am in it", and that is the accepted cost.**
  * See `panels.ts`'s `sessionHudVisible`, which now gates on the phase or a practice zone and nothing

@@ -54,13 +54,11 @@ const PLAYING = "Playing";
 const GATHER_TICK_SECONDS = 0.5;
 
 /**
- * How close to a destination counts as being at it, in studs — the join pad, and the post on the court.
+ * How close to a destination counts as being at it, in studs — the pad, the lobby spawn, and the arena
+ * spawn alike.
  *
- * **One radius for both, because it is one question**: "is this rig where it was going?" The two differ in
- * what they mean, not in how nearly a rig has to reach them. The two destinations that are *placements* — the
- * lobby spawn a rig came from and its post on the court — do not use this radius to arrive at all: a rig is put
- * exactly on them. What it is used for there is noticing, afterwards, that the rig is no longer standing where
- * it was put, which is what sends it back.
+ * **One radius for all three, because it is one question**: "is this rig where it was going?" The three
+ * destinations differ in what they mean, not in how nearly a rig has to reach them.
  *
  * **An arrival radius rather than `MoveToFinished`,** which is the same choice `SeekBehavior` makes with
  * `BALL_CONFIG.PICKUP_RADIUS`: a humanoid that is *nearly* at its destination is at its destination, and a
@@ -73,17 +71,39 @@ const GATHER_TICK_SECONDS = 0.5;
 const ARRIVAL_STUDS = 4;
 
 /**
- * How far above the arena spawn part's own CFrame a rig is put, in studs.
+ * How much of the arena spawn part's own CFrame the rig aims at, standing on top of it, in studs.
  *
  * **The same lift `RoundService.getRandomTeamSpawn` puts on a player's spawn**, and for the same reason: the
- * spawn part *is* the spot, and a body placed at the part's origin is a body placed inside the floor. Three
- * studs is the distance from a rig's root to the ground beneath it, so the feet arrive on the part's surface
- * rather than through it — the same geometry that makes the number right for a character. The two numbers have
- * to agree or the rigs and the players stand at different heights on the same spots.
+ * spawn part *is* the spot, and a body placed at its centre is a body placed inside the floor. A rig aimed at
+ * the part's own position instead would walk up to the part, be stopped by its own collision with it and
+ * count as arrived four studs short — standing beside its post rather than on it. The two numbers have to
+ * agree or the rigs and the players stand at different heights on the same spots.
  *
  * **Placeholder — 3.**
  */
 const ARENA_SPAWN_LIFT = 3;
+
+/**
+ * How long a rig may try to reach its arena spawn before it is placed there instead, in seconds.
+ *
+ * **A stuck clock, not a round clock.** The timer is reset every tick the rig is standing at its
+ * destination, so what it measures is "this rig has been trying and failing for this long" rather than "this
+ * round has been on for this long" — a rig that arrives, is shoved off by a dodge or a ball, and walks back
+ * therefore starts a fresh count rather than inheriting the time it spent standing still.
+ *
+ * **Why there is a fallback at all, given that a walk is what is wanted.** A `MoveTo` is a straight line on
+ * the ground: it cannot open a door, jump a gap, or climb. **Whether the lobby and the court are connected
+ * for a humanoid is a property of the place file and not of this code**, and no rig has ever walked between
+ * them — every walk a rig has made so far has been inside the lobby, between a spawn part and a pad. If the
+ * court is not reachable on foot, the honest failure is a rig pressed against a wall for the whole round, and
+ * at ten seconds a round that costs nothing to find out: the `warn` names the rig and says what to look at,
+ * and the rig is put at its post so the round is still one with fighters in it. The cost of being wrong the
+ * other way — teleporting on a timer that is too short — is a pop on a walk that would have worked, which is
+ * why the number is generous rather than tight.
+ *
+ * **Placeholder — 10.**
+ */
+const ARENA_WALK_TIMEOUT_SECONDS = 10;
 
 /**
  * The range the per-round rotation's phase is drawn from, in parts.
@@ -148,24 +168,20 @@ function padFor(side: TeamLabel): BasePart | undefined {
 /**
  * Walks `root`'s rig toward `goal`, and answers whether it is standing there.
  *
- * **One function for both destinations that are walks, because "go there" is one thing.** The join pad and the
- * post on the court differ in what they mean and in nothing else about how a rig is sent to them: within
+ * **One function for all three destinations, because "go there" is one thing.** The pad, the lobby spawn and
+ * the arena spawn differ in what they mean and in nothing else about how a rig is sent to them: within
  * `ARRIVAL_STUDS` the rig is *told to stay where it is* — `MoveTo` at its own position is the engine's own
  * "stand here", the trick `SeekBehavior.stand` uses — and outside it the destination is re-issued, which is
- * what notices a destination the engine has forgotten or a body that has been shoved off course. The post is
- * the second of the two rather than the first only because a rig is *put* on it: this call is what keeps it
- * there, and what walks it back after a dodge or a ball has moved it.
+ * what notices a destination the engine has forgotten or a body that has been shoved off course.
  *
  * **Re-issued on every tick rather than once, and that is the re-aim for every destination alike.** A rig
  * that is knocked off its post, or whose `MoveTo` was replaced by another behavior's, is walked back at its
  * own next turn; the alternative is a rig that keeps a destination it took once, which is the same as a rig
  * that wanders for the rest of the round.
  *
- * **The answer is returned rather than left to the caller's own distance test, and the pad is what settles
- * that.** The pad used to spell this test out for itself — the same subtraction, the same `ARRIVAL_STUDS`, in
- * a branch of its own — and the copy drifted the way a second spelling always does: it *remembered* the answer
- * in a flag instead of re-deriving it, so "arrived" could be true of a rig that was no longer at the pad. Every
- * destination asks this function now, so the radius, the arithmetic and the meaning of "there" exist once.
+ * The answer is returned rather than left to the caller's own distance test for the reason the same test
+ * appears in three call sites: a second spelling of `root.Position.sub(goal).Magnitude <= ARRIVAL_STUDS`
+ * is a second place for the radius and the arithmetic to drift.
  */
 function walkTo(humanoid: Humanoid, root: BasePart, goal: Vector3): boolean {
 	if (root.Position.sub(goal).Magnitude > ARRIVAL_STUDS) {
@@ -182,31 +198,26 @@ function walkTo(humanoid: Humanoid, root: BasePart, goal: Vector3): boolean {
 /**
  * One round's trip to the court, for one rig.
  *
- * **A goal and nothing else.** The rig is *placed* on it rather than walked to it — see `toCourt` for the log
- * that settled that — so there is no clock to keep, no arrival to wait out and no fallback teleport: the rig
- * is at its post on the tick it is sent.
- *
- * **What is still asked every tick is whether it is *still* there**, which is what makes a rig shoved off its
- * post walk back to it instead of standing where it was pushed. That question needs the goal and nothing else.
+ * **A goal and a stuck clock, and no `arrived` flag.** Whether the rig is at its post is asked of its
+ * position on every tick rather than remembered, which is what makes a rig shoved off its post walk back to
+ * it instead of standing where it was pushed — and what makes the clock mean "trying and failing" rather
+ * than "this has been going on a while".
  */
 interface ArenaWalk {
+	/** Where on the court this rig is headed — a spawn part's position, lifted by `ARENA_SPAWN_LIFT`. */
+	goal: Vector3;
+
 	/**
-	 * Where on the court this rig stands — its side's spawn part, lifted by `ARENA_SPAWN_LIFT`, **carrying the
-	 * part's own facing**.
-	 *
-	 * **A `CFrame` rather than the position a walk would have needed, and the rotation is the reason.** A player
-	 * is moved onto exactly this value (`RoundService.getRandomTeamSpawn` hands `arenaSpawnFor` the same
-	 * `part.CFrame`), so whatever way somebody turned the spawn part in Studio is the way a person faces at the
-	 * start of a round. A rig placed by position alone arrives facing due north, and for a rig facing is not
-	 * cosmetic: `ThrowBehavior` only notices a target inside a 240° cone in front of it.
+	 * `os.clock()` at the last tick the rig was *not* at its goal, so the age of this number is how long the
+	 * rig has been trying to get there without arriving. See `ARENA_WALK_TIMEOUT_SECONDS`.
 	 */
-	goal: CFrame;
+	since: number;
 }
 
 /** What one rig is doing about the pads and the court. Kept per rig, because a behavior is one object shared by all. */
 interface Gather {
 	/**
-	 * The lobby spawn this rig calls home — where it is put back at the end of every round.
+	 * The lobby spawn this rig calls home — where it is walked back to at the end of every round.
 	 *
 	 * **Recorded on the model's first turn and never rewritten**, which is a change from what this was.
 	 * The old rule wrote it at the start of every gather walk and threw the whole row away once the rig had
@@ -217,27 +228,14 @@ interface Gather {
 	 * never come back to the lobby again. The first turn is a moment this model has one of and cannot get
 	 * wrong: a spawned rig's first turn is on the lobby spawn `RigSpawnerService` put it on, and a
 	 * replacement's is on the spawn `RespawnBehavior` rebuilt it at.
-	 *
-	 * **A whole `CFrame` rather than the position it used to be, because the return is a placement too.** The
-	 * rig comes back to the spot it started on *facing the way it started*, which costs nothing to keep and is
-	 * the same thing the court leg does with the spawn part's facing.
 	 */
-	home?: CFrame;
+	home?: Vector3;
 
-	/**
-	 * The pad the rig is walking to. Present means a gather walk is in progress.
-	 *
-	 * **No `arrived` flag sits beside it, and that is a correction rather than an omission.** "Is this rig at
-	 * its pad" is asked of its position every tick — the same `walkTo` every other destination uses — because a
-	 * remembered answer stops being true the moment a player walks through the rig. The flag this replaces had
-	 * exactly that failure and one more: it was a *second spelling* of the arrival rule `walkTo` already holds
-	 * (the same radius, the same subtraction, two places for the arithmetic to drift), and it outlived the
-	 * arrival it described — once set it was cleared only by a new walk starting, so a rig shoved off its pad
-	 * stood where it was pushed for the rest of the intermission. That mattered because the round's count of
-	 * who is on a pad (`rigsOnPads`) is a *bounds test* rather than a memory, so the two answers disagreed and
-	 * the rig was simply not counted.
-	 */
+	/** The pad the rig is walking to. Present means a gather walk is in progress. */
 	pad?: BasePart;
+
+	/** Whether the rig has reached {@link pad} and is now standing at it. */
+	arrived: boolean;
 
 	/**
 	 * This round's trip to the court, or nothing when the rig is not on one.
@@ -245,28 +243,16 @@ interface Gather {
 	 * **Present means "sent this round", and that is the guard that makes the walk fire once.** It is set the
 	 * moment a goal is picked — not when the rig arrives — so the pick happens on the rig's first `Playing`
 	 * tick and every tick after it walks toward the same spot. Cleared when the rig is back in the lobby,
-	 * which is what lets the next round pick a fresh one.
-	 *
-	 * **It is the return leg's own flag as well, and that second job is what keeps a rig on a pad.** While it
-	 * is present the rig owes a trip home; once it is cleared the rig is free to wait. The tick used to ask
-	 * "am I at home" instead, which is a question a rig standing on a pad answers *no* to — see the tick for
-	 * what that cost.
+	 * which is what lets the next round pick a fresh one, and cleared with the pad state below for the reason
+	 * given there.
 	 */
 	arena?: ArenaWalk;
 }
 
 /**
  * Gathering, for an NPC: **between rounds, stand at one of the matchmaking join pads; when a round starts,
- * be put on this rig's side of the court and stand at its post; when the round ends, be put back on the lobby
+ * walk to this rig's side of the court and stand at its post; when the round ends, walk back to the lobby
  * spawn it came from.**
- *
- * **Two of the three are placements and one is a walk, and the place file decides which.** The pad is inside
- * the lobby and so is the spawn a rig came from, so a `MoveTo` between them is a walk inside one room and it
- * works — the log has four rigs standing on the pads, counted, on every intermission. The court and the lobby
- * are separate rooms of the arena with a `Barrier` midline between them, and **no rig has ever walked from one
- * to the other**: every round the log printed `could not walk to its A/B spawn in 10s — put there instead` for
- * all four, so the walk never worked once, and a rig that spent a round's opening seconds still in the lobby
- * was throwing from there. See `toCourt` for the whole of that argument.
  *
  * **The three destinations, and why a rig has to have all three.** A rig is the only thing in the game that
  * moves itself to where a round needs it — `RoundService` teleports the *players* and deliberately knows
@@ -304,7 +290,7 @@ interface Gather {
  * killed and replaced re-enters through this same pick, so the phase is what stops a corpse's replacement
  * landing on the very spot the corpse is on.
  *
- * **What a rig does once it is at its post: nothing but stand there.** The court tick holds its position, and
+ * **What a rig does once it is at its post: nothing but stand there.** The court walk holds its position, and
  * then the rig is a *throwing* rig on a spot — `ThrowBehavior` is what looks for somebody to throw at from
  * where the rig stands, and it does not move its feet. Nothing here hunts for loose balls either, because
  * hunting is `Behavior_Seeking` and that is not one of the tags `RigSpawnerService` puts on a match rig; a rig
@@ -377,18 +363,11 @@ export function createGatherBehavior(matches: MatchService): NpcBehavior {
 	 */
 	let lastPhase: string | undefined;
 
-	/**
-	 * The rig's own row, made on first use.
-	 *
-	 * **Empty to begin with, and that is a state rather than a placeholder**: every field is optional and each
-	 * one means something is *in progress* — a home is recorded (once), a pad is being walked to, a court trip
-	 * is owed — so a rig that has just been seen is doing none of those, and the first tick after this fills in
-	 * the ones that apply.
-	 */
+	/** The rig's own row, made on first use. */
 	const stateOf = (model: Model): Gather => {
 		let state = walking.get(model);
 		if (state === undefined) {
-			state = {};
+			state = { arrived: false };
 			walking.set(model, state);
 		}
 
@@ -428,33 +407,12 @@ export function createGatherBehavior(matches: MatchService): NpcBehavior {
 	};
 
 	/**
-	 * The court: a rig with a side is **put** on its post, and stands there for the round.
+	 * The court walk: a rig with a side goes to its post, and stands there for the round.
 	 *
-	 * **Placed rather than walked, and a log settled it rather than an argument.** This was a walk with a
-	 * ten-second fallback teleport, on the reading that a placeholder which *runs* to its post reads as a
-	 * player arriving. What the place actually does to it is in the output: every rig, on both sides, printed
-	 * `could not walk to its A/B spawn in 10s — put there instead` on **every** round, so the walk never
-	 * worked once — and then kept printing it every ten seconds afterwards, which says the fallback was not
-	 * settling them either. The lobby and the court are two rooms of the arena
-	 * (`Workspace.ArenaV2.Lobby`, `Workspace.ArenaV2.Court`), the rigs are in the `Character` collision group
-	 * and the court's midline is a `Barrier` part, so a `MoveTo` from one room to the other is a walk through
-	 * architecture this behaviour can neither see nor reason about. **What that costs is not a missing walk; it
-	 * is a rig still standing in the lobby fifteen seconds into a round, throwing at what it can see from
-	 * there** — which is exactly what the log showed, four times over.
-	 *
-	 * **So a rig is put where a player is put**: the same `part.CFrame`, lifted the same three studs, and the
-	 * facing comes with it — which is why the goal is a whole `CFrame` and not a point. A player is moved onto
-	 * that CFrame by `RoundService`, so they face whatever way the builder turned the part; a rig placed by
-	 * position alone would face due north, and a rig only notices a target inside the 240° in front of it.
-	 *
-	 * **Sent on the rig's first `Playing` tick and never re-picked**, which is what `gather.arena` being
-	 * present means: the goal is chosen once and every tick after stands the rig back on it. Re-picking per
-	 * tick would put the rig on a different spawn every half second.
-	 *
-	 * **The placement happens under the round's own cover.** `RoundService` publishes `Playing` *before* it
-	 * wipes the screens and holds everybody, so the first tick after the phase flips — and therefore this
-	 * move — lands while the transition is still closing. A player never sees the rig appear, for the same
-	 * reason they never see themselves appear.
+	 * **Sent on the rig's first `Playing` tick and never re-picked**, which is the guard the class doc argues
+	 * for: `gather.arena` being present *is* "sent this round", so the goal is chosen once and every tick
+	 * after it re-issues the walk to the same spot. Picking per tick would walk the rig to a different spawn
+	 * every half second, which is a rig that crosses the court in a straight line for the whole round.
 	 *
 	 * **A rig with no side is left where it is, and that case is now nearly unreachable.** A rig that has never
 	 * been given a side throws at nobody (see `ThrowBehavior`), so it has nothing to do on a court and no court
@@ -467,17 +425,13 @@ export function createGatherBehavior(matches: MatchService): NpcBehavior {
 	 * service that owns each of those.
 	 *
 	 * **The pad is forgotten the moment the rig sets off**, which is the one line in here that is not about the
-	 * walk. It is what makes the return trip end in a *new* gather walk rather than in the wreckage of the
-	 * previous one: the rig comes home holding no pad, so the tick that finds it home picks one again.
-	 *
-	 * **And the flag this paragraph used to argue about is out of the file entirely, which is worth saying
-	 * because the paragraph was right about the trap.** It described carrying an `arrived` mark across a round
-	 * as a fault — a rig that came home, decided it had already arrived *somewhere*, and stood at its spawn
-	 * instead of taking up a pad, where the round's own count of who is on a pad could not see it. The trap was
-	 * real; the flag was the wrong place to fix it. "Is this rig at its pad" is asked of the rig's position on
-	 * every tick now, so there is no arrived-anywhere state left to carry across anything — see `Gather.pad`.
+	 * walk. `arrived` is set when a rig reaches a pad and is only ever cleared by a new walk starting, so a rig
+	 * that kept it across a round would come back to the lobby, decide it had already arrived somewhere, and
+	 * stand at its spawn instead of taking up a pad — where the round's own minimum count could not see it, and
+	 * the next round would never start. Clearing both here, at the moment the rig leaves for the court, is what
+	 * makes the return trip end in a *new* gather walk rather than in the wreckage of the previous one.
 	 */
-	const toCourt = (model: Model, humanoid: Humanoid, root: BasePart, gather: Gather): void => {
+	const walkToArena = (model: Model, humanoid: Humanoid, root: BasePart, gather: Gather): void => {
 		const side = sideOf(model);
 		if (side === undefined) return;
 
@@ -504,24 +458,45 @@ export function createGatherBehavior(matches: MatchService): NpcBehavior {
 			const slot = (arenaPhase + index) % parts.size();
 			const part = parts[slot];
 
-			walk = { goal: part.CFrame.add(new Vector3(0, ARENA_SPAWN_LIFT, 0)) };
+			walk = {
+				goal: part.Position.add(new Vector3(0, ARENA_SPAWN_LIFT, 0)),
+				since: os.clock(),
+			};
 
 			gather.arena = walk;
-
-			// Forgotten here rather than on arrival, because the return leg has to end in a *new* walk — see
-			// this method's doc.
 			gather.pad = undefined;
+			gather.arrived = false;
 
-			model.PivotTo(walk.goal);
+			humanoid.MoveTo(walk.goal);
 
 			return;
 		}
 
-		// **And every tick after the first, the rig is asked to stay where it was put.** `walkTo` is the same
-		// call the pad is made with: inside `ARRIVAL_STUDS` the rig is told to stand at its own position, and
-		// outside it a *walk* back is issued — the one thing a walk is still the right tool for here, because a
-		// rig shoved off its post by a dodge or a ball is on its own half of the court and can get back.
-		walkTo(humanoid, root, walk.goal.Position);
+		if (walkTo(humanoid, root, walk.goal)) {
+			// **Standing at the post, so the clock is not running.** Reset every tick the rig is there, which
+			// is what makes the number's age mean "trying and failing" rather than "this round has been on a
+			// while" — a rig that arrives and is then knocked off its post gets a fresh count to walk back,
+			// rather than inheriting the time it stood still and being teleported home four studs.
+			walk.since = os.clock();
+
+			return;
+		}
+
+		if (os.clock() - walk.since < ARENA_WALK_TIMEOUT_SECONDS) return;
+
+		// **The fallback, and it is deliberately the one teleport in this file.** See
+		// `ARENA_WALK_TIMEOUT_SECONDS` for the argument; the short version is that whether the lobby connects
+		// to the court on foot is a property of the place file that nothing here can know, and a rig pressed
+		// against a wall for a whole round is the worse failure. Said out loud every time it happens rather
+		// than once, because a walk that always fails is exactly the thing a person has to be told about —
+		// and this line is the only place it is visible.
+		warn(
+			`[NPC] ${model.Name}: could not walk to its ${side} spawn in ${ARENA_WALK_TIMEOUT_SECONDS}s — ` +
+				`put there instead. If this is every round, the court cannot be reached on foot from the lobby.`,
+		);
+
+		model.PivotTo(new CFrame(walk.goal));
+		walk.since = os.clock();
 	};
 
 	return {
@@ -563,87 +538,67 @@ export function createGatherBehavior(matches: MatchService): NpcBehavior {
 			const gather = stateOf(model);
 
 			// **Where this rig calls home, written on its first turn and never again.** See `Gather.home` for
-			// why it is the first turn rather than the start of the last walk, which is what it used to be —
-			// and for why it is the whole `CFrame` rather than the position: the return is a placement now, so
-			// the facing it started with is free to keep.
-			const home = gather.home ?? root.CFrame;
+			// why it is the first turn rather than the start of the last walk, which is what it used to be.
+			const home = gather.home ?? root.Position;
 			gather.home = home;
 
 			// ---- A round is on: to the court ----
 
 			if (phase === PLAYING) {
-				toCourt(model, humanoid, root, gather);
+				walkToArena(model, humanoid, root, gather);
 
 				return;
 			}
 
 			// ---- No round: home first, then a pad ----
 
-			// **The return leg, and it is a leg with an end rather than a standing order to be at home.** A rig
-			// that is out on the court when the round ends comes back to the spot it was put in before it takes
-			// up a pad again, and the two legs are not the same journey: the pad is where it *waits*, the lobby
-			// spawn is where it *lives*. Walking straight to the pad would be one leg instead of two and would
-			// usually be the shorter of the two — but the rig would then never return to its spawn, so every
-			// round would leave it a pace closer to the join pads and the walk back would stretch a little
-			// further each time. The old behaviour had this shape for free: its walk home ran at the *round
-			// start* and both ends were in the lobby, so "where I was when I set off" was always a lobby spawn.
-			// It is the walk to the court that turns the return into a leg of its own rather than the same one.
-			//
-			// **The question asked here is "is there a court trip outstanding", not "am I at home", and that
-			// distinction is the whole of the fix.** Asked the second way the answer is *no* for a rig standing
-			// on a pad as well — a pad is not home — so every single tick turned the rig around and sent it back
-			// to its spawn, and the tick that next found it home sent it out to the pad again. The rigs walked
-			// back and forth for as long as the intermission lasted, were *at* a pad for a fraction of each
-			// cycle, and never settled anywhere: which is why the round's count of them (`rigsOnPads`, a bounds
-			// test asked on the round's own tick) saw four rigs on the pads on some ticks and none on others,
-			// and why a round that did open read `A: 0 player(s) + 2 rig(s), B: 0 player(s) + 2 rig(s)` and then
-			// drew — there was nobody on a side because nobody had stayed on a pad long enough to be counted.
-			// `gather.arena` answers the first question and not the second: it is set when the rig sets off for
-			// the court and cleared here, so it is present exactly while a rig is away from home *because a
-			// round sent it there* — and once it is cleared the rig is free to wait on a pad for as long as the
-			// intermission lasts, which is what "a rig holds a spot" has to mean.
-			if (gather.arena !== undefined) {
-				// **Put back rather than walked back, for the reason the court leg is a placement.** It is the
-				// same two rooms with the same architecture between them, so a return that depends on a `MoveTo`
-				// finding its way out of the court is a return that will not happen — and a rig that never gets
-				// back is a rig that is not on a pad, which is a round that cannot start. It is placed on the
-				// CFrame it was first seen on, facing the way it started.
-				model.PivotTo(home);
+			// **Home first, and this is the return leg.** A rig that is out on the court when the round ends
+			// comes back to the spot it was put in before it takes up a pad again, and the two legs are not the
+			// same journey: the pad is where it *waits*, the lobby spawn is where it *lives*. Walking straight
+			// to the pad would be one leg instead of two and would usually be the shorter of the two — but the
+			// rig would then never return to its spawn, so every round would leave it a pace closer to the join
+			// pads and the walk back would stretch a little further each time. The old behaviour had this shape
+			// for free: its walk home ran at the *round start* and both ends were in the lobby, so "where I was
+			// when I set off" was always a lobby spawn. It is the walk to the court that turns the return into
+			// a leg of its own rather than the same one.
+			if (!walkTo(humanoid, root, home)) return;
 
-				// **Back in the lobby, so this round's trip is over.** Forgetting the goal here rather than
-				// after a walk is what stops a stale one being carried into the next round: a rig that never
-				// reached its post never set off (there is no `ArenaWalk` to forget), and a rig that did reach it
-				// is released from the journey on the tick it arrives home. Both are the honest reading of "the
-				// rig is in the lobby with no round on" — and the tick after this one walks it to a pad, which is
-				// the only journey left in this behaviour.
-				gather.arena = undefined;
-			}
+			// **Back in the lobby, so this round's trip is over.** Forgetting the goal at this end rather than
+			// on arrival at the post is what stops a stale one being walked to next round: a rig that never
+			// reached the court resumes its journey when the next round opens (its `ArenaWalk` survives, and
+			// the goal with it), and a rig that did reach it is released from the journey here. Both are the
+			// honest reading of "the rig is in the lobby with no round on".
+			gather.arena = undefined;
 
 			if (gather.pad !== undefined) {
 				// A pad that has gone — the place edited under a running server — ends the walk rather than
 				// being read for a position that is no longer meaningful. **The pad is forgotten rather than
-				// the whole row**: the row holds the rig's home, which it took on its first turn and which
+				// the whole row**: the row now holds the rig's home, which it took on its first turn and which
 				// nothing may rewrite, so throwing it away here would re-record home at wherever the rig is
 				// standing. The next tick starts a fresh walk to whatever pad the tag now names.
 				if (gather.pad.Parent === undefined) {
 					gather.pad = undefined;
+					gather.arrived = false;
 					return;
 				}
 
-				// **One walk for every destination, because "am I there yet" is one question.** Inside
-				// `ARRIVAL_STUDS` the rig is told to stand where it is, and outside it the pad is re-issued —
-				// that is `walkTo`, the *same* call the court and the lobby spawn are made with, so the radius
-				// and the arithmetic exist once in the file rather than once per destination.
-				//
-				// **It matters most here, because this is a position the round counts.** `rigsOnPads` asks
-				// whether a rig's bounds overlap the pad *part*, and it is asked on the round's own tick
-				// rather than read off anything this behaviour wrote — so a rig standing a stud short of its
-				// pad is a rig the round cannot see, whatever this file believes about it. The `arrived` flag
-				// this replaces could produce exactly that state and keep it: set once, never re-tested, so a
-				// rig shoved off its pad by a player stood where it was pushed for the rest of the
-				// intermission and was never counted again.
-				walkTo(humanoid, root, gather.pad.Position);
+				// Arrived, and standing. `MoveTo` at its own position each tick is what keeps it there rather
+				// than letting a stray destination from another behavior carry it off.
+				if (gather.arrived) {
+					humanoid.MoveTo(root.Position);
+					return;
+				}
 
+				if (root.Position.sub(gather.pad.Position).Magnitude <= ARRIVAL_STUDS) {
+					gather.arrived = true;
+					humanoid.MoveTo(root.Position);
+					return;
+				}
+
+				// Still walking. Re-issued rather than left alone, because this is the tick that notices a
+				// destination the engine has forgotten or a body that has been shoved off course; the arrival
+				// test above is what ends it.
+				humanoid.MoveTo(gather.pad.Position);
 				return;
 			}
 
@@ -660,6 +615,7 @@ export function createGatherBehavior(matches: MatchService): NpcBehavior {
 			// rig arriving anywhere, and the rig's home is the lobby spawn it was put on — a fact this
 			// behaviour takes once, on the model's first turn, and never revises. See `Gather.home`.
 			gather.pad = pad;
+			gather.arrived = false;
 
 			humanoid.MoveTo(pad.Position);
 		},

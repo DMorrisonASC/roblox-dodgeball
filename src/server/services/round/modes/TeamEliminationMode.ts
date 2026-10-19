@@ -46,22 +46,20 @@ class TeamEliminationMode implements GameMode {
 	 * time remains**: there is nothing left to win with, and that same case is what stops an empty
 	 * server from sitting inside a round until the clock runs out.
 	 *
-	 * **Counted by asking the round, per side, rather than by keeping a tally.** The round is the one place that
-	 * knows who is still playing, and a per-side count kept beside it would be a second answer to the same
-	 * question, free to disagree with the first. **The loop that used to be here walked `playersInRound()` and
-	 * counted the sides itself, and that is what made this mode rig-blind**: a rig has no `Player`, so a round of
-	 * rigs counted nought on both sides and drew on its first tick. `standingFor` answers the same question with
-	 * the rigs included, and the two counts are one call each rather than a walk.
-	 *
-	 * **What a rig cannot do is be eliminated**, which is this mode's whole rule and is worth naming rather than
-	 * leaving to be discovered: a rig's death never reaches the round (`RespawnBehavior` rebuilds it in place,
-	 * which is Score Rush's rule for a death), so a side of rigs cannot fall to zero and this mode would not end
-	 * on elimination. Counted here all the same, because the alternative — leaving rigs out of a side count — is
-	 * the version that ends the round the moment it opens.
+	 * Counted by walking the living rather than by keeping a tally. `inRound` is the one place that
+	 * knows who is still playing, and a per-side count kept beside it would be a second answer to
+	 * the same question, free to disagree with the first.
 	 */
 	public outcome(view: RoundView): RoundOutcome | undefined {
-		const standingA = view.standingFor(TEAM_A);
-		const standingB = view.standingFor(TEAM_B);
+		let standingA = 0;
+		let standingB = 0;
+
+		for (const player of view.playersInRound()) {
+			const team = view.teamOf(player);
+
+			if (team === TEAM_A) standingA++;
+			else if (team === TEAM_B) standingB++;
+		}
 
 		if (standingA === 0 && standingB === 0) return DRAW;
 		if (standingA === 0) return TEAM_B;

@@ -217,24 +217,14 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 		tag: BEHAVIOR_THROWING,
 		tickInterval: 5.0,
 
-		// **There is no `prepare` here, and its absence is a fix rather than an omission.** This behaviour
-		// used to ask for a ball the moment its tag arrived on a rig — `balls.giveBall(model)`, the same call
-		// a player's character is given one by — on the reasoning that a rig that throws needs something to
-		// throw. What that produced was a rig standing on a join pad for a whole intermission **holding a
-		// ball**: `[Ball] <rig>: trail built` printed at spawn, a ball in every rig's hand before any round
-		// had started, and a rig that looked armed in a lobby where a player is not.
-		//
-		// **Nothing is lost, because the refill below already grants it — under the round gate.** `tick`
-		// returns on `!isPlaying()` before it asks about the hand, so outside a round a rig never *acquires*
-		// a ball; inside one, the first tick with an empty hand hands it one and the throw comes a
-		// `tickInterval` later. The grant was a second door to the same room, and it was the one that could
-		// not see the phase.
-		//
-		// **What it costs, stated rather than discovered: a rig picks its ball up on its first tick of a
-		// round instead of having carried one in.** That is the same bargain a player gets — the ball is given
-		// at the start of a round, not carried through an intermission, which is what
-		// `RoundService.clearHeldBalls` enforces for a person — and the price is one `tickInterval` of an
-		// empty hand, most of which the rig spends getting to its post anyway.
+		// A rig that throws needs something to throw, and it gets it by the same call
+		// a player's character is given a ball by. Declared here, not in `NpcService`,
+		// so the next throwing mechanic asks for its own ball the same way and the tag
+		// runner never has to know what a ball is.
+		prepare(model) {
+			balls.giveBall(model);
+		},
+
 		tick(model, humanoid) {
 			// **A rig only throws while a match is on**, which is the gate this behavior never had. It is
 			// asked before the ball and before the search, because there is nothing to look for in an
