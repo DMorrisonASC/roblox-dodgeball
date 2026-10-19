@@ -131,9 +131,10 @@ const CARD_ELEVATION: 0 | 1 | 2 | 3 = 1;
  *
  * **`body1` is 16px with a 24px line height**, read out of big-ui's own `Typography` (`body1.size` and
  * `body1.lineHeight` in big-ui's `ui/theme`). It was `caption` — 12px — and that is the whole of what "too
- * small" meant: this is the smallest step up that is still a step, and the two above it are `subtitle1`
- * (16px in GothamMedium, the same size in a heavier face) and `h5` (24px), which is more than a two-name
- * row can afford.
+ * small" meant: this is the smallest step up that is still a step, and the next one up is `h5` (24px),
+ * which is more than a two-name row can afford. **`subtitle1` is 16px as well, and it is no longer a step
+ * of any kind**: that variant used to be distinguished by a heavier face, and with one font for the whole
+ * game (`UI_FONT`) the two are the same type — so the ladder above this line is sizes, not weights.
  *
  * **Naming it costs nothing and buys the whole of the size knob**: a variant is the *only* thing that
  * decides the glyph height here, so changing this line changes the names, the row heights, the card heights

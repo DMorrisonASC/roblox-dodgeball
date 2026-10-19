@@ -12,11 +12,14 @@ import Fusion from "@rbxts/fusion-3.0";
  * nobody's file.
  *
  * **Each value has exactly one writer, which is the rule that keeps this from being a dumping ground.**
- * `roundPhase` is written by `DockController` and read by both panels; `inPracticeZone` is written by
- * `DockController` too, because it was already watching that attribute for its own visibility. Each of
- * them is a connection that had to exist anyway, moved so that its answer can be *read* rather than
- * recomputed. The alternative — each HUD holding its own connection to the same attribute — is one
- * subscription per reader for one fact, which is the thing this module exists to prevent.
+ * `roundPhase` is written by `DockController` and read by the hit feed; `inPracticeZone` is written by
+ * `DockController` too, because it was already watching that attribute for its own visibility; and
+ * `participating` is written there for the same reason again — the dock is the element a round *takes
+ * away*, so the connection that answers "is this round mine" belongs with it, and three other HUDs read
+ * the answer instead of each holding the same two subscriptions. Each of them is a connection that had
+ * to exist anyway, moved so that its answer can be *read* rather than recomputed. The alternative — each
+ * HUD holding its own connection to the same attribute — is one subscription per reader for one fact,
+ * which is the thing this module exists to prevent.
  *
  * **There used to be a fourth value here, `spectating`, and its removal is the spectator removal on
  * this side of the wire.** It was a mirror of `SPECTATING_ATTRIBUTE`, written by `SpectatorController`
@@ -77,40 +80,57 @@ export const roundPhase = Fusion.Value(scope, INTERMISSION);
 export const inPracticeZone = Fusion.Value(scope, false);
 
 /**
- * Whether the round's own HUDs should be on screen: **in a round, or in a practice zone.**
+ * Whether **the local player is in the round being played** — on a side, and a round on.
+ *
+ * **This is the fact three HUDs were missing, and its absence is what made a round somebody else started
+ * take a spectator's shop away.** The phase says what the *server* is doing; this says whether any of it
+ * is about you. A player who has not opted in watching a round from the lobby is not teleported by its
+ * transition, is not held by its freeze, is not counted in its outcome — and, until this existed, was
+ * denied the one place they could spend the wait. See `DockController`'s visibility, both panels', and
+ * {@link sessionHudVisible}.
+ *
+ * **The rule is `roundZone.isParticipant`'s, named once and read as a `Value` so a HUD can watch it.**
+ * `TEAM_ATTRIBUTE` is written from the opt-in roster at every whistle and cleared for everybody who is
+ * not in it, and `setTeam` writes it for a player admitted to a round already under way — so "I have a
+ * side" and "this round is mine" are one statement, and a mid-round joiner loses the dock at the moment
+ * they are admitted rather than at the next intermission.
+ *
+ * **A `Value` rather than a `Computed`, which is the whole reason it is here at all.** The answer is an
+ * attribute read, and an attribute read inside a `Computed` is a *sample* rather than a dependency — the
+ * lesson `ArenaFreezeCountdownController`, `StatsBillboardController` and `RespawnHudController` each
+ * record about the same engine behaviour. So the connection has to exist somewhere, and it exists once,
+ * in the controller named below.
+ *
+ * **Seeded to `false`, which is the permissive value here as `Intermission` is for the phase.** A client
+ * that has not yet heard either fact is treated as not playing, so it shows a dock rather than hiding it:
+ * a button that is missing when a player looks for it is the worse failure, and it is the one this was
+ * reported as.
+ */
+export const participating = Fusion.Value(scope, false);
+
+/**
+ * Whether the round's own HUDs should be on screen: **this player is in a round, or standing in a
+ * practice zone.**
  *
  * **One expression, in one place, because four elements have to agree about it.** The Super HUD, its
  * stamina segments and the cooldown readout hide and show together, and a copy of this rule in each of
  * them is how they would come to disagree — the same argument `hudToast.ts` makes for owning the toast
  * column's numbers.
  *
- * **The two halves of the term are the two ways a player can act.** A round is the game, and a
- * practice zone is the place the game has decided a player may practise in — the zone's own rules are
- * what `PracticeZoneService` publishes, and the *dock* hides in exactly the place these HUDs appear.
- * The two conditions are deliberately not "not an intermission": a client that has not yet heard a phase
- * would then be showing a readout for a round that may not exist, which is the mistake `roundPhase`'s
- * seeding note says is the safe one for a *dock* and the wrong one for a player's own readouts.
+ * **Both halves are about the *player*, and the phase is deliberately not one of them.** A round running
+ * somewhere is not a reason to put a player's ability readouts on their screen: a spectator in the lobby
+ * has nothing armed and nothing to arm, so the numbers describe abilities they cannot use. That is the
+ * same correction the dock and the panels needed, and it is the reason `participating` exists — see it
+ * for the fact and `roundZone.isParticipant` for the rule.
  *
- * **There used to be a third term, `!spectating`, and removing it is the one place this removal is
- * visible rather than merely tidy.** The predicate asked "can this player act", and being out of the
- * round is the one way to be *in* a round and unable to act — so with the spectator flag gone the
- * predicate is now "a round is on, or a zone is", which is a question about the *world* rather than
- * about the player. Two kinds of player are affected, and both are the accepted cost of removing the
- * state rather than a surprise:
- *
- * - **A player who dies inside a round** — Score Rush respawns, so they are out for
- *   `ARENA_CONFIG.RESPAWN_DELAY_SECONDS` and then back. For those seconds the ability readouts are up
- *   over a body that does not exist yet. The respawn countdown is the readout that is true about them
- *   by then, and it is drawn in the middle of the screen rather than at the bottom, so the two do not
- *   collide — it just means a dead player sees a stack of readouts they cannot use for three seconds.
- * - **A player who joined mid-round**, who is not on a side and cannot opt in while the phase is
- *   `Playing`. They see the same stack, in the lobby, with nothing armed and nothing to arm.
- *
- * **What replaced it is not a flag and deliberately is not one.** The honest predicate would be "am I
- * in the round", and nothing on the client publishes that any more — `activePlayers` is the server's
- * and has never been replicated. Re-publishing it as an attribute is exactly the state that was
- * removed, so it is not re-added here; a client-side rule that could tell the two apart would need a
- * new fact, and inventing one was not part of this change.
+ * **This used to be `phase === PLAYING || zone`, and the two cases it knowingly accepted are both gone.**
+ * The first was a player who died inside a round: they kept the readouts over a body that did not exist
+ * yet, for the respawn delay. They still do, and that is unchanged — a dead body keeps its
+ * `TEAM_ATTRIBUTE`, so they are still *in* the round and the readouts are still theirs. The second was a
+ * player who joined mid-round, who the old note said "is not on a side and cannot opt in while the phase
+ * is `Playing`" — and both halves of that stopped being true: a joiner is admitted now
+ * (`RoundService.admitMidRoundJoins`), and until they are, they are a spectator like any other and get
+ * the dock instead of a readout for abilities they do not have.
  *
  * **A `Computed` factory rather than a `Value`**, because there is nothing to write: the answer is a
  * function of two values, and a third `Value` kept in step by a third connection would be a way to get
@@ -123,10 +143,10 @@ export function sessionHudVisible(scope: Fusion.Scope<unknown>): Fusion.Computed
 		// `use(a) === X || use(b)` would subscribe to whichever ran, so a phase that stopped matching
 		// would stop the zone flag from being watched at all — the trap `DockController`'s own comment
 		// names about its own two values.
-		const phase = use(roundPhase);
+		const inRound = use(participating);
 		const zone = use(inPracticeZone);
 
-		return phase === PLAYING || zone;
+		return inRound || zone;
 	});
 }
 

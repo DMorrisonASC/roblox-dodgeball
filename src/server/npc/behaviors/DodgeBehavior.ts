@@ -1,5 +1,6 @@
 import { Workspace } from "@rbxts/services";
 import { DODGE_CONFIG } from "shared/config/dodge.config";
+import { NPC_CONFIG } from "shared/config/npc.config";
 import { BALL_NAME } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { BEHAVIOR_DODGING, NpcBehavior } from "../Behavior";
@@ -81,29 +82,13 @@ const THREAT_HIT_RADIUS = 4;
 const THREAT_HEIGHT_BAND = 5;
 
 /**
- * The chance that a rig commits to dodging **a ball that is coming at it**.
+ * **The dodge chance lives in `NPC_CONFIG.DODGE_CHANCE_PER_BALL` now, not here.**
  *
- * **Per ball, and that is a reversal recorded rather than tidied away.** This was a *rate* — a chance
- * per second, scaled by the tick into a chance per turn — on the argument that a rate survives a change
- * of tick and a change of throw speed. What it did not survive is being *read*: "set it to 1" plainly
- * means "always dodges", and a rate of 1 meant a ball on course for half a second was dodged a little
- * over 40 % of the time, because a half-second flight is only five turns. The knob was measuring
- * *exposure* while everybody — including whoever wrote it — read it as a percentage. **The number is
- * now the number**: one roll per ball, held for as long as that ball is coming.
- *
- * **1 means the rig gets out of the way of every ball it can move away from**, which is a rig players
- * cannot hit; **0.5 is half the throws aimed at it**, and is where this would sit if a value had to be
- * chosen. What it still cannot do is dodge with something in the way, or dodge twice inside
- * `DODGE_CONFIG.COOLDOWN`.
- *
- * **What the reading costs, stated:** a lob in the air for a second and a drive that arrives in two
- * tenths now get the same chance, where the rate gave the lob more of one. What it buys is that the rig
- * commits the moment it sees the ball, so it is out of the way *before* the ball arrives rather than a
- * step ahead of it.
- *
- * **Placeholder.**
+ * It moved when this file was split into two variants: the chance is the *gated* variant's knob, and
+ * the always variant has no chance at all — so the value belongs beside the other tuning numbers
+ * rather than inside the file that serves both. The essay that argued the value's *shape* — why it is
+ * per ball rather than per second, and what that reversal cost — moved with it; see the config entry.
  */
-const DODGE_CHANCE_PER_BALL = 0.5;
 
 /**
  * How often the behaviour looks for a ball that is coming at it, in seconds.
@@ -149,15 +134,54 @@ const MIN_THREAT_SPEED = 5;
 const CAST_LIFT = 0.25;
 
 /**
- * Dodging, for an NPC: when a ball is coming at the rig, it tries to get out of the way.
+ * Dodging, for an NPC — **and the two ways to ask for it.**
  *
  * **The rig dodges the ball that will hit it, not the ball that is merely near it.** That is the
- * whole design and the first thing this file had to decide. The alternative — "a ball inside N studs
- * moving vaguely toward me" — is a third of the code and produces a rig that flinches at every ball
- * that passes on its way somewhere else, which reads as a bug rather than as an evasion. A dodge is
- * not free: it is a 15-stud commitment over `DODGE_CONFIG.DURATION` with a
+ * whole design and the first thing this behaviour had to decide. The alternative — "a ball inside N
+ * studs moving vaguely toward me" — is a third of the code and produces a rig that flinches at every
+ * ball that passes on its way somewhere else, which reads as a bug rather than as an evasion. A dodge
+ * is not free: it is a 15-stud commitment over `DODGE_CONFIG.DURATION` with a
  * `DODGE_CONFIG.COOLDOWN` behind it, so a wasted one is a rig that cannot dodge the next ball
  * because it was busy dodging a miss. See `threatAgainst` for the test itself.
+ *
+ * **Two tags, one body, and the whole difference is one question: may this rig dodge this ball?**
+ *
+ * - **`Behavior_Dodging`** answers with the coin-flip in `NPC_CONFIG.DODGE_CHANCE_PER_BALL`, which is
+ *   what that tag has always done, and it is the tag this file is named for. **Adding the sibling did
+ *   not change what this tag means** — a place-file rig already wearing it dodges exactly as often as
+ *   it did — and that is stated because the catch/throw split next door *did* change what a stable
+ *   string meant.
+ * - **`Behavior_AlwaysDodging`** answers *yes* to every ball it can move away from — the rig that
+ *   dodges everything, for a dummy meant to be evasive. `DodgeService` still bounds it: a dodge is
+ *   refused inside `DODGE_CONFIG.COOLDOWN`, so "always" means "always tries", never "dodges five
+ *   times a second". It is the thin one, in `AlwaysDodgeBehavior.ts`.
+ *
+ * **Why one tick body and two factories — and why the body is in *this* file.** The variants differ in
+ * exactly one expression — the value of `dodging` on a fresh decision — and everything around it (the
+ * anchored and movement guards, the threat test, the escape-direction search, the cooldown pre-check,
+ * the per-ball bookkeeping) is identical. Two copies would be two places to fix the next time one of
+ * those gates moves. So the body is one function, parameterised by a `shouldDodge` predicate, and each
+ * tag is a factory that supplies its own answer. {@link makeDodgeBehavior} is the internal factory; the
+ * two `create*` functions are the only things `NpcService` should see.
+ *
+ * **The body lives in the file named for the tag that is *not* the special case, and that is a
+ * reversal.** It used to live in `AlwaysDodgeBehavior.ts`, with the gated tag as a one-line wrapper in
+ * this file — which meant that the file named for the common case was the one with nothing to read in
+ * it, and the file holding everything was named for the exception. **The rule, so the next pair does not
+ * have to argue it again: the base file holds the body, and the `Always*` file is the wrapper that
+ * extends it.** So {@link makeDodgeBehavior} is here, `createDodgeBehavior` is here beside it, and
+ * `AlwaysDodgeBehavior.ts` imports this file and supplies nothing but `() => true`.
+ *
+ * **The decision is made once per ball and held — the shape a rate-per-second could not survive.**
+ * A rig that sees a ball coming decides about *that ball*, stores the answer in `pledged`, and every
+ * later turn the same ball is on course reads the stored answer rather than asking again. A different
+ * ball is a new question. So the chance means "how often a rig gets out of the way", which is what a
+ * number called a chance ought to mean — and the log that forced that reading is worth keeping: the
+ * chance used to be a rate *per second* scaled by the tick into a chance *per turn*, and six charged
+ * throws at one rig produced **fourteen turns with the ball on course and three dodges**. Nothing was
+ * broken and nothing a player could see was right — the knob was measuring *exposure* while everyone
+ * read it as a percentage, so a ball on course for 0.2 s and one on course for 0.7 s were not treated
+ * alike. See `NPC_CONFIG.DODGE_CHANCE_PER_BALL` for the value and the rest of that argument.
  *
  * **What the dodge does and does not do.** It is *pure movement* — a `LinearVelocity` on the root
  * held for the duration, plus a `PlatformStand` so the humanoid's own walk controller does not fight
@@ -167,38 +191,36 @@ const CAST_LIFT = 0.25;
  * seriously: a dodge that does not actually move the rig has achieved nothing at all, and two of the
  * gates below exist for exactly that reason.
  *
- * **The odds are the number below, because the roll happens once per ball.** A rig that sees a ball
- * coming at it rolls once, holds that answer for as long as the ball is on course, and a different ball
- * is a new question. So the chance *is* "how often a rig gets out of the way" — which is what a number
- * called a chance ought to mean.
- *
- * **It used to be a rate per second, and the log that forced the change is worth keeping.** Six charged
- * throws aimed at one rig gave **fourteen turns with the ball on course and three dodges** — which is
- * exactly a 10 %-a-turn hazard working as designed, over windows that happened to be two to four turns
- * long. Nothing was broken and nothing a player could see was right: the knob was measuring *exposure*
- * while everyone read it as a percentage. A ball that is on course for 0.2 s and one on course for
- * 0.7 s were not treated alike, and the difference was invisible from the outside.
- *
- * **What 1 costs, so it is not set by accident.** At 1 the rig dodges every ball it has room to dodge,
- * which is a rig players cannot hit — right for a training dummy that is meant to be evasive, wrong for
- * anything they are supposed to be able to hit. **0.5** gives half the throws aimed at it.
- *
  * Three things still refuse a dodge the rig has already committed to, and all three are deliberate. A
  * direction with something solid in both ways is not dodged at all — though the *decision* survives that
  * turn and is acted on as soon as there is room, because the ball is still coming. The 1.5 s cooldown
  * means one dodge per `DODGE_CONFIG.COOLDOWN`, however many balls arrive inside it. And a rig the engine
  * will not simulate cannot dodge at all, which is answered before the decision is even made.
  *
- * **What the old rate bought, recorded because the trade is real:** a ball in the air for a second used
- * to be more likely to be dodged than one arriving in two tenths. That is arguably the more *physical*
- * rule. It made the number mean something nobody could guess, and the person tuning it did not guess it
- * either — which is the whole of the argument for the simpler one.
+ * **Two of those three now *run* instead of standing, and the distinction is worth keeping straight: a
+ * refused dash is not a refused movement.** A rig on cooldown, or one whose request the service turned
+ * down because a catch window was open, still holds an escape direction it has already proved clear — so
+ * it walks it, which is strictly better than being a stationary target in the path of a ball. The other
+ * two cases still stand, because there is nothing else they can do: a rig with both ways blocked has no
+ * clear direction to walk, and a rig the engine will not simulate has no movement at all. See `runAway`
+ * below for what that walk is, what it costs, and the one case it deliberately does not cover (a roll the
+ * gated variant *declined*, which is a decision rather than an unavailability).
+ *
+ * **Both variants get this, and the file names no longer hide it.** `Behavior_Dodging` is what the arena
+ * rigs wear and `Behavior_AlwaysDodging` is the practice dummy's tag, and the body both of them share is
+ * *this* function — so a change here is a change in both places, which is the whole reason the body sits
+ * in the file a reader opens first.
  *
  * **It fetches nothing and takes nothing.** A rig holding a ball dodges exactly like an empty-handed
  * one: a ball in the hand is not a shield, and the game's own rules say so — a catcher may not catch
  * while holding, and nothing stops a holder being hit.
  */
-export function createDodgeBehavior(dodges: DodgeService, balls: BallService): NpcBehavior {
+export function makeDodgeBehavior(
+	dodges: DodgeService,
+	balls: BallService,
+	tag: string,
+	shouldDodge: (model: Model, threat: BasePart) => boolean,
+): NpcBehavior {
 	/**
 	 * When each rig last *succeeded* in dodging, on the engine's clock.
 	 *
@@ -449,8 +471,46 @@ export function createDodgeBehavior(dodges: DodgeService, balls: BallService): N
 		);
 	};
 
+	/**
+	 * **Runs instead of standing: a `MoveTo` along a direction the rig has already proved is clear.**
+	 *
+	 * **This tag's job is not to be hit, and a dodge is only one way to do that.** `DodgeService` refuses a
+	 * dash for reasons that are about the *service* rather than about the rig — a catch window open, a freeze,
+	 * the cooldown, a round that is not on — and a rig wearing this beside `Behavior_Catching` spends most of a
+	 * round inside the first of those, which is the state its log line reports as `refused — DodgeballBall is
+	 * already in hand`. What the behaviour did until now was stand exactly where it was, which is the one thing
+	 * a body in the path of a ball must not do, and from a seat it reads as a rig that has given up.
+	 *
+	 * **A walk, and not a dodge in disguise.** The direction is the one the dash would have taken and the rig
+	 * travels the same way; what it does not get is the speed, the platform stand, the ghost, the sound or the
+	 * cooldown — so it is not the dodge this behaviour is named for and does not pretend to be. A ball doing
+	 * 125 studs/s is not evaded by walking; a ball that was going to *miss* now misses by more, and a rig that
+	 * is moving is not the stationary target it was.
+	 *
+	 * **Not for a *declined* roll, deliberately.** The gated variant's `shouldDodge` answering "let this one
+	 * past" is a decision rather than an unavailability — and if a rig ran for every ball it declines, the
+	 * chance in `DODGE_CHANCE_PER_BALL` would stop meaning anything, because running is most of what dodging
+	 * buys. Only the paths where the rig *could not* dodge call this: the cooldown below, and a refusal from
+	 * the service.
+	 *
+	 * **`MoveTo` and not a velocity write**, for `SeekBehavior`'s reason: the engine's own mover owns the body,
+	 * and this is the same request that behaviour issues.
+	 *
+	 * **What it fights, named.** `Behavior_Seeking` also issues `MoveTo` — at a ball, rather than away from one
+	 * — so a rig doing both is two walkers taking turns and whichever ticks last each turn wins. That is the
+	 * same interaction `WalkToJoinPadBehavior`'s doc records for its own pair, and it is worth its cost here: a
+	 * rig running for its life and a rig fetching a ball are both doing what they were told, and the ball it
+	 * wants is usually the one away from the ball coming at it.
+	 */
+	const runAway = (model: Model, root: BasePart, direction: Vector3): void => {
+		const humanoid = model.FindFirstChildWhichIsA("Humanoid");
+		if (!humanoid) return;
+
+		humanoid.MoveTo(root.Position.add(direction.mul(NPC_CONFIG.DODGE_RUN_STUDS)));
+	};
+
 	return {
-		tag: BEHAVIOR_DODGING,
+		tag,
 		tickInterval: DODGE_TICK_SECONDS,
 
 		tick(model) {
@@ -469,15 +529,11 @@ export function createDodgeBehavior(dodges: DodgeService, balls: BallService): N
 			// is asked below, once, and only when a roll has already succeeded.
 			if (root.Anchored) return;
 
-			// **The cooldown, read from the constant the service charges against, and applied before
-			// anything else.** It bounds the rate regardless of rolls — at most one dodge per
-			// `DODGE_CONFIG.COOLDOWN` — and it is asked here as well as inside `DodgeService` because the
-			// service's refusal is a print line: a rig rolling ten times a second and asking ten times a
-			// second would fill the output with refusals.
+			// **The threat, then the direction, and only then the cooldown — and that order is the change that
+			// lets a rig on cooldown run instead of standing.** The direction used to be chosen *below* the
+			// gate, which was right while the only thing a rig could do with it was dash; now it is what a rig
+			// does when it cannot dash, so it has to be known before the gate is asked.
 			const now = os.clock();
-			const last = lastDodgedAt.get(model);
-			if (last !== undefined && now - last < DODGE_CONFIG.COOLDOWN) return;
-
 			const threat = threatAgainst(root.Position);
 			if (!threat) return;
 
@@ -495,6 +551,22 @@ export function createDodgeBehavior(dodges: DodgeService, balls: BallService): N
 				return;
 			}
 
+			// **The cooldown, read from the constant the service charges against.** It bounds the rate
+			// regardless of rolls — at most one dodge per `DODGE_CONFIG.COOLDOWN` — and it is asked here as
+			// well as inside `DodgeService` because the service's refusal is a print line: a rig rolling ten
+			// times a second and asking ten times a second would fill the output with refusals.
+			//
+			// **And a rig on cooldown runs rather than standing.** The second and a half after a dodge is the
+			// window in which a rig cannot dodge again, and standing through it is exactly what a body in the
+			// path of a ball must not do — it is the turn it gets hit on. It keeps moving along the escape
+			// direction it has already proved clear; see `runAway` for what that is and is not.
+			const last = lastDodgedAt.get(model);
+			if (last !== undefined && now - last < DODGE_CONFIG.COOLDOWN) {
+				runAway(model, root, direction);
+
+				return;
+			}
+
 			// **The movement guard, also before the roll**, for the same reason: a rig the engine will not
 			// simulate cannot dodge, so a roll spent on it is a roll spent on nothing. This is the exact
 			// half of the pair the `Anchored` check above is the cheap half of — see that comment — and it
@@ -506,23 +578,27 @@ export function createDodgeBehavior(dodges: DodgeService, balls: BallService): N
 				return;
 			}
 
-			// **The roll — once per ball, not once per turn.** `pledged` holds the answer for the ball this
-			// rig is currently facing, so a ball that stays on course for six turns is one question asked
-			// once rather than six rolls that each try again. A different ball is a new question, and that is
-			// the whole of the bookkeeping.
+			// **The decision — once per ball, not once per turn.** `pledged` holds the answer for the ball
+			// this rig is currently facing, so a ball that stays on course for six turns is one question
+			// asked once rather than six answers that each try again. A different ball is a new question,
+			// and that is the whole of the bookkeeping.
 			//
 			// **One ball at a time, which is the same shape this had as a rate**: two balls coming at once are
 			// one danger, and they share one answer, because the rig is only ever asked about the nearest.
 			//
+			// **The answer is `shouldDodge`'s, and that is the one expression the two variants differ in.**
+			// The always variant answers `true`; the gated one flips `NPC_CONFIG.DODGE_CHANCE_PER_BALL`. Both
+			// are asked *here*, once per ball, which is what makes either answer mean what it says.
+			//
 			// **And it is asked here rather than before the direction test, deliberately.** A rig with both
 			// ways blocked has not used up its decision — the answer is stored and consulted again next turn,
-			// when the ball is closer and the room may have changed. What a rig must never do is roll, decide
-			// to dodge, find no room, and then decide *again* on the next turn: that is the same ball being
-			// asked about twice, which is the rate this change exists to get away from.
+			// when the ball is closer and the room may have changed. What a rig must never do is decide to
+			// dodge, find no room, and then decide *again* on the next turn: that is the same ball being
+			// asked about twice, which is the rate the older version of this file existed to get away from.
 			let decision = pledged.get(model);
 
 			if (decision === undefined || decision.ball !== threat) {
-				decision = { ball: threat, dodging: math.random() < DODGE_CHANCE_PER_BALL };
+				decision = { ball: threat, dodging: shouldDodge(model, threat) };
 				pledged.set(model, decision);
 
 				// Said once, on the turn the rig decided — not on every turn the ball stays on course, which
@@ -543,7 +619,37 @@ export function createDodgeBehavior(dodges: DodgeService, balls: BallService): N
 			// character. Its answer is what the stamp above is set from.
 			note(model, root, threat, "dodging");
 
-			if (dodges.requestDodge(model, direction)) lastDodgedAt.set(model, os.clock());
+			if (dodges.requestDodge(model, direction)) {
+				lastDodgedAt.set(model, os.clock());
+			} else {
+				// **The service refused, so the rig runs instead of standing.** The common refusal for the
+				// rigs that wear this tag is a catch window being open — they wear `Behavior_Catching` beside
+				// it — and the others are the freeze, the zone, the round and the cooldown this file also
+				// keeps. None of them is a reason to stay in the path of a ball, and the direction the dash
+				// would have used is already chosen and already proved clear. See `runAway`.
+				//
+				// **The stamp above is left alone**, which is the point of it being stamped on success: a
+				// refusal has not happened, so no cooldown is charged here — the walk is free to repeat every
+				// turn the ball stays on course, and that repetition is what makes it a run rather than a step.
+				runAway(model, root, direction);
+			}
 		},
 	};
+}
+
+/**
+ * The gated dodger — **the tag this file is named for, and the body above with one predicate in it.**
+ *
+ * A rig wearing `Behavior_Dodging` dodges `NPC_CONFIG.DODGE_CHANCE_PER_BALL` of the balls aimed at it.
+ * The roll *is* the `shouldDodge` argument, so it is asked at the one place in the tick where a decision
+ * is made — once per ball, held for as long as that ball is on course — and nothing else about this tag
+ * differs from its sibling. See {@link makeDodgeBehavior} for the whole design, including the walk a rig
+ * makes when its dash is refused, and `AlwaysDodgeBehavior.ts` for the tag that answers `true` to the
+ * same question.
+ *
+ * **This function used to be the one-line wrapper in this file, over a body in the other one.** It is
+ * the other way round now — see the body's doc for the rule and for what the old placement cost.
+ */
+export function createDodgeBehavior(dodges: DodgeService, balls: BallService): NpcBehavior {
+	return makeDodgeBehavior(dodges, balls, BEHAVIOR_DODGING, () => math.random() < NPC_CONFIG.DODGE_CHANCE_PER_BALL);
 }

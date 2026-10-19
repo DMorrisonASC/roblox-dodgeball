@@ -1,5 +1,6 @@
 import { Service } from "@flamework/core";
-import { Workspace } from "@rbxts/services";
+import { Debris, ReplicatedStorage, Workspace } from "@rbxts/services";
+import { findTemplate } from "shared/find";
 import { SUPER_CONFIG } from "shared/config/super.config";
 import { WalkSpeedService } from "../character/WalkSpeedService";
 import { overrideOutlineColour } from "../visual/OutlineService";
@@ -58,6 +59,21 @@ const AURA_NAME = "FreezeAura";
 const FLASH_NAME = "FreezeFlash";
 
 /**
+ * What the authored splash template is called, and **the whole of the contract with it**.
+ *
+ * **A name and nothing else**, which is `HANDOFF.md` §17 and `shared/find.ts`'s rule: the template is found by
+ * walking `ReplicatedStorage` for a `Model` or a `BasePart` with this name, so where a person puts it — a `VFX`
+ * folder, an `Effects` folder, no folder at all — is not a fact this file may depend on. The same lookup, by
+ * the same helper, as the Pierce trail in `BallService`.
+ *
+ * **`FreezeSplash` rather than `FreezeBurst`**, deliberately and despite the code-built burst next door: that
+ * one is not a template at all, so the two names cannot collide, and the word *splash* is the one the rest of
+ * this ability already uses for one impact (see `freezeInRadius`'s report). A person building the effect in
+ * Studio is looking for the thing that happens *at the impact*, which is what the name says.
+ */
+const FREEZE_SPLASH_NAME = "FreezeSplash";
+
+/**
  * How long past the last particle's expiry the burst's anchor part is kept alive, in seconds.
  *
  * The part carries the emitter and nothing else, so it has to outlive the particles it fires and not
@@ -66,6 +82,114 @@ const FLASH_NAME = "FreezeFlash";
  * see, nothing will collect, and nothing needs.
  */
 const BURST_CLEANUP_MARGIN = 0.25;
+
+/**
+ * How long past the last particle's expiry a `FreezeSplash` clone is kept alive, in seconds.
+ *
+ * **{@link BURST_CLEANUP_MARGIN}'s argument, in one more place.** A splash clone is removed after the longest
+ * particle lifetime it contains, and destroying it on that exact frame would cut the last particles of the
+ * effect a frame short — a flaw nobody would attribute to a quarter of a second. It is a separate constant
+ * rather than that one borrowed because the two are attached to different things: the burst's margin is about
+ * a part this file built and knows the lifetime of, this one is about a template somebody else authored,
+ * where the particle lifetime is read back out of the clone.
+ */
+const SPLASH_CLEANUP_MARGIN = 0.25;
+
+/**
+ * Whether the missing-template warning has been said already.
+ *
+ * **Once per server, not once per splash.** A splash fires on every Freeze ball, several times a round, and a
+ * warning per impact would be forty identical lines and no more information than the first — the same
+ * argument `BallService.reportedMissingTemplates` makes for the Pierce trail, and the same shape, done with a
+ * boolean because this file looks for exactly one name.
+ */
+let splashTemplateMissingReported = false;
+
+/**
+ * Every `BasePart` inside a splash clone, **including the clone itself when it is one**.
+ *
+ * **`GetDescendants` and not `/PrimaryPart`**, which is the opposite of what `BallService.effectPartOf` does
+ * and for a reason that only exists here: a welded effect follows one part, so one part is the right thing to
+ * take hold of, while a splash is *scaled*, and scaling only the carrier of a two-part effect leaves the
+ * second part at its authored size in the middle of a 16-stud sphere. A splash's parts are only ever moved
+ * together, so the honest answer to "what is this effect made of" is all of them.
+ *
+ * **The clone's own part is added by hand** because `GetDescendants` on a `BasePart` answers with its
+ * descendants and never with itself — which is the shape a template with no `Model` wrapper has, and the most
+ * likely one for a single sphere.
+ */
+function splashPartsOf(effect: Instance): Array<BasePart> {
+	const parts = new Array<BasePart>();
+
+	if (effect.IsA("BasePart")) parts.push(effect);
+
+	for (const descendant of effect.GetDescendants()) {
+		if (descendant.IsA("BasePart")) parts.push(descendant);
+	}
+
+	return parts;
+}
+
+/**
+ * How wide `part` is **in the plane its own shape treats as its radius**, in studs — the number a splash has to
+ * divide the target diameter by.
+ *
+ * **Three shapes, because `Part.Shape` changes which axes mean what.** A `Ball` is a sphere, so all three axes
+ * are the diameter and any of them will do. A `Cylinder` is not: in Roblox the cylinder's flat circular caps
+ * face `±X`, so `X` is the length along the cylinder's axis and `Y`/`Z` *are* the diameter across it — reading
+ * `X` for a cylinder is the mistake this function exists to avoid, because it would scale a disc by its
+ * thickness. Everything else (a `Block`, a `Wedge`, a `CornerWedge`, a `MeshPart`) is read by its footprint in
+ * `X`/`Z`, which is the plane a splash is seen in and the one a freeze radius describes when it is drawn on
+ * the floor.
+ *
+ * **`max` rather than one axis, even for a block**, so that a template authored slightly elongated — a ring
+ * authored `8 × 0.2 × 8.4` because the modeler nudged it — is scaled until its *widest* span is the diameter
+ * rather than until one hand-picked axis is. A splash that is a stud too wide on one side is invisible; one
+ * that is 5% too small on the axis somebody measured is not.
+ *
+ * **The value returned is a size and not a radius.** `Size` is a full extent, so a `Ball` of `Size.X = 1` is a
+ * one-stud sphere; the caller divides the target *diameter* by this, which is why the doc says diameter
+ * everywhere and the arithmetic stays a single division.
+ */
+function radialExtentOf(part: BasePart): number {
+	if (part.IsA("Part")) {
+		if (part.Shape === Enum.PartType.Ball) return part.Size.X;
+		if (part.Shape === Enum.PartType.Cylinder) return math.max(part.Size.Y, part.Size.Z);
+	}
+
+	return math.max(part.Size.X, part.Size.Z);
+}
+
+/**
+ * How long a splash clone has to live, in seconds: **the longest particle lifetime in the template plus the
+ * cleanup margin**, or {@link SUPER_CONFIG.FREEZE_SPLASH_LIFETIME} when the template states no lifetime at all.
+ *
+ * **Read from the clone rather than configured, and that is the whole point of the template being somebody
+ * else's.** A particle emitter's `Lifetime` is authored in Studio, and it is the only number that knows how
+ * long the effect is: a splash whose particles live 1.6 seconds would be cut off at 1.25 by a configured
+ * lifetime, and one whose particles live 0.2 seconds would leave an empty part standing for a second for no
+ * reason. So the clone is asked, by walking it for emitters and taking the largest `Lifetime.Max` — the
+ * `Max` half of the range because the last particle to *appear* is the one that expires last, and the slowest
+ * of them sets the tail.
+ *
+ * **The fallback is not dead code.** A splash built only of parts — a ring, a decal, a glowing sphere — holds
+ * no emitter at all, and one whose emitter was left at a lifetime of zero holds no real number either. Both
+ * are legal templates, and both would otherwise be handed to `Debris` with a lifetime of `0 + margin`, which
+ * is a quarter of a second and would snuff the effect out before it was read.
+ */
+function splashLifetimeOf(splash: Instance): number {
+	let longest = 0;
+
+	for (const descendant of splash.GetDescendants()) {
+		if (!descendant.IsA("ParticleEmitter")) continue;
+
+		longest = math.max(longest, descendant.Lifetime.Max);
+	}
+
+	if (longest <= 0) return SUPER_CONFIG.FREEZE_SPLASH_LIFETIME;
+
+	return longest + SPLASH_CLEANUP_MARGIN;
+}
 
 /**
  * What this service remembers about one frozen body, so that the release can undo exactly what the
@@ -117,6 +241,52 @@ interface FrozenBody {
 interface FlashedBall {
 	/** The material the ball was made with, put back when the light goes off. */
 	material: Enum.Material;
+}
+
+/**
+ * How many bodies a splash's report names before it stops listing them.
+ *
+ * **Eight, because the interesting number is small.** A splash holds whatever is standing around one
+ * impact, which in this game is under a dozen bodies; the cap exists so that a splash in a corner of the
+ * map with a hundred parts in range cannot push one log line to a screenful. What it must not do is hide
+ * the case the line was written for — and that case is about four bodies.
+ */
+const MAX_REPORTED_BODIES = 8;
+
+/**
+ * The bodies one splash found, **each with the one-word reason it was or was not held**, as the tail of a
+ * log line.
+ *
+ * **The counts alone could not answer the report that made this necessary.** `found 2 bod(ies), spared 0,
+ * caught 0` says a splash reached two models and held neither, and says nothing about *which* two — so the
+ * two readings that matter, "the sphere only reached scenery" and "the sphere reached the rigs and refused
+ * them", print identically. The log from 2026-10-18 carried four of those inside a minute, and the answer
+ * (a practice area's own parts, with the nearest rig just outside the radius) was recoverable only by
+ * working backwards from coordinates.
+ *
+ * So every body travels with its reason — `held`, `spared` (the caller's rule refused it, see
+ * `BallComponent.splashSpares`), `no humanoid` (scenery, or a model with parts and nothing alive in it) and
+ * `no root, or dead` (a body `freeze` could not take hold of). **The reason is recorded where the decision
+ * is made** rather than worked out here from the model afterwards, because the branch that skipped the body
+ * is the only thing that knows why.
+ */
+function describeFound(notes: Array<string>): string {
+	if (notes.isEmpty()) return "nothing in range";
+
+	// **A counted loop rather than `slice`**, because the array methods this project compiles against are
+	// the `noLib` shims and `slice` is not one of them: `Property 'slice' does not exist on type 'string[]'`
+	// — the same family as `isEmpty` for `is_empty` and `size()` for `length`. See `super.config.ts`'s
+	// neighbours for the other places a Lua-flavoured collection surprises a TypeScript habit.
+	const shown = new Array<string>();
+
+	for (const note of notes) {
+		if (shown.size() >= MAX_REPORTED_BODIES) break;
+		shown.push(note);
+	}
+
+	if (shown.size() === notes.size()) return shown.join(", ");
+
+	return `${shown.join(", ")} and ${notes.size() - shown.size()} more`;
 }
 
 /**
@@ -415,6 +585,182 @@ export class FreezeService {
 	}
 
 	/**
+	 * **Plays the authored `FreezeSplash` template at `origin`, scaled so the effect spans `radius * 2` studs
+	 * across.**
+	 *
+	 * **Why the scale is a runtime calculation rather than a studio one, which is the entire reason this method
+	 * exists.** A template is one fixed object, and one freeze is not one fixed size: the same splash has to
+	 * draw a hit, which reaches `SUPER_CONFIG.FREEZE_HIT_RADIUS` from the body part the ball struck, and a
+	 * miss, which reaches `SUPER_CONFIG.FREEZE_MISS_RADIUS` from where the ball stopped. A part authored at
+	 * sixteen studs would be wrong for one of them, and two templates would be two things to keep looking
+	 * alike. So the template is authored at whatever size reads well in Studio and this file stretches it to
+	 * the radius the freeze actually used — **the number is passed in from {@link freezeInRadius}'s own
+	 * argument, never re-derived here**, so what is drawn and what is frozen can never disagree.
+	 *
+	 * **The radius arrives as a radius and the part is sized as a diameter**, which is the one conversion and
+	 * the place to look when an effect is twice the size it should be: `GetPartBoundsInRadius` measures from a
+	 * centre to a surface, while `Size` is a full extent, so a correct splash is `2r` across. `size = r` would
+	 * hide half of the frozen area inside the effect.
+	 *
+	 * **`math` about the template's own authored size rather than an absolute assignment**, and that is what
+	 * keeps the author's proportions. Every axis is multiplied by the same factor — the diameter divided by
+	 * the template's own radial extent, see {@link radialExtentOf} for which axis that is per shape — so a
+	 * square block becomes a square of the right width, a flat ring stays flat, and a sphere stays a sphere.
+	 * Assigning `Vector3.new(d, d, d)` to every shape instead would turn a ring into a cube and a disc into a
+	 * barrel; the axes that are not the radius are the author's to decide, and this multiplies them the same
+	 * way. (The one shape where a straight assignment *is* right is a `Ball`, where all three axes are the
+	 * diameter by definition — which is why reading the shape is still worth doing: a sphere gets one number
+	 * from three axes instead of trusting that its author made all three equal.)
+	 *
+	 * **Every part in the clone moves, not only the carrier.** A splash is one object and it is drawn as a
+	 * whole, so each part is scaled and pushed away from the pivot by the same factor; see {@link splashPartsOf}
+	 * for why a one-part weld-style carrier is not enough here. The offsets between parts scale with the parts,
+	 * so a template that is a sphere with a smaller sphere hovering above it keeps that relationship at any
+	 * radius.
+	 *
+	 * **The physics flags are the same five-ish as every other effect this service builds**, for the reason
+	 * `buildBurst` gives: this must not be something a ball can hit, a ray can find, or a player can stand on.
+	 * `Anchored = true` because a splash hangs where it happened and the template in `ReplicatedStorage` may
+	 * well be unanchored (`BallService.attachPierceEffect` has the mirror-image case), and a splash that fell
+	 * out of the sky a moment after the freeze would read as an unrelated effect.
+	 *
+	 * **Cleanup is `Debris` and the lifetime is the template's own**, see {@link splashLifetimeOf}. Nothing is
+	 * stored: this clones, plays and is forgotten — the same arrangement as the burst, and the reason a round
+	 * boundary has nothing to sweep.
+	 */
+	private playFreezeSplash(origin: Vector3, radius: number): void {
+		if (!SUPER_CONFIG.FREEZE_SPLASH_ENABLED) return;
+
+		// **By name, through the whole of `ReplicatedStorage`** — `FREEZE_SPLASH_NAME` and `shared/find.ts`.
+		const template = findTemplate(ReplicatedStorage, FREEZE_SPLASH_NAME);
+
+		// **Said once, with everything needed to fix it**, which is `BallService.attachPierceEffect`'s argument
+		// word for word: a missing name, a misspelt name and a template never published are three different
+		// fixes and one indistinguishable symptom, so the line lists what `ReplicatedStorage` actually holds.
+		// Nothing else happens — a Freeze ball with no splash still freezes everybody it should.
+		if (template === undefined) {
+			if (!splashTemplateMissingReported) {
+				splashTemplateMissingReported = true;
+
+				warn(`[VFX] no ${FREEZE_SPLASH_NAME} in ReplicatedStorage — the Freeze splash will not play`);
+
+				const top: string[] = [];
+				for (const child of ReplicatedStorage.GetChildren()) top.push(`${child.Name} (${child.ClassName})`);
+
+				warn(
+					`[VFX] ReplicatedStorage holds: ${top.isEmpty() ? "nothing" : top.join(", ")} — ` +
+						`a splash template is a Model or a BasePart named ${FREEZE_SPLASH_NAME}, ` +
+						`and it is found by name wherever it sits.`,
+				);
+			}
+
+			return;
+		}
+
+		const splash = template.Clone();
+		const parts = splashPartsOf(splash);
+
+		// A clone of a template that holds no part at all is nothing this can scale or place, and cloning one
+		// per splash only to throw it away is a leak with a warning attached.
+		if (parts.isEmpty()) {
+			if (!splashTemplateMissingReported) {
+				splashTemplateMissingReported = true;
+
+				warn(
+					`[VFX] ${FREEZE_SPLASH_NAME} holds no BasePart — the Freeze splash will not play. ` +
+						"The template is scaled and placed by its part(s).",
+				);
+			}
+
+			splash.Destroy();
+
+			return;
+		}
+
+		// **The radius, doubled, and read once** — see this method's doc for why the conversion lives here.
+		const diameter = radius * 2;
+
+		// The part whose authored width defines the effect: a `Model`'s primary part if the author set one (that
+		// is what a primary part means — the part the model *is*), otherwise the first part in the clone, which
+		// for a bare `BasePart` template is the template itself.
+		const carrier = splash.IsA("Model") && splash.PrimaryPart !== undefined ? splash.PrimaryPart : parts[0];
+		const authored = radialExtentOf(carrier);
+
+		// Guarded rather than divided blind: an engine-clamped `Size` cannot be zero, but a template with a
+		// degenerate part is one bad paste away, and `NaN`/`inf` here would put a part of no describable size
+		// in `Workspace`. A scale of `1` at least leaves the effect readable and the fault visible.
+		const scale = authored > 0 ? diameter / authored : 1;
+
+		// **Two passes about a pivot, rather than scaling each part where it stands.** Scaling a part's `Size`
+		// on its own shrinks it towards its own centre, so a multi-part effect would stay the same overall
+		// width while every piece inside it moved apart — the parts have to be pushed away from a shared
+		// centre by the same factor their sizes were multiplied by. For a `Model` that pivot is the centre of
+		// its bounding box, which is where the effect *is*; for a single part it is the part's own position,
+		// which makes the offset zero and the two passes collapse into the one obvious answer.
+		const pivot = splash.IsA("Model") ? splash.GetBoundingBox()[0].Position : parts[0].Position;
+
+		for (const part of parts) {
+			const offset = part.Position.sub(pivot);
+			part.Size = part.Size.mul(scale);
+			part.Position = pivot.add(offset.mul(scale));
+
+			// Set before parenting, `SoundEmitter`'s rule: a part that arrives in the world touchable and is
+			// made untouchable on the line after is one the solver has already seen.
+			part.Anchored = true;
+			part.CanCollide = false;
+			part.CanTouch = false;
+			part.CanQuery = false;
+
+			// **`Transparency` is not one of the flags above, and the difference cost a round of Studio time.**
+			// Those three are about *interaction*: with them off a ball passes through the part and no query
+			// finds it, and the part is still **drawn** — a solid white block over the impact, which is exactly
+			// what a carrier template looks like when its author set the collision flags and nothing else.
+			// A carrier exists to hold an `Attachment` and a `ParticleEmitter`, so it must not be seen at all;
+			// see `SUPER_CONFIG.FREEZE_SPLASH_HIDE_PARTS` for why that is forced here, on the clone, rather
+			// than trusted to the template, and for the geometry-shaped template that wants it off.
+			if (SUPER_CONFIG.FREEZE_SPLASH_HIDE_PARTS) part.Transparency = 1;
+		}
+
+		// **Measured again after the scaling rather than reusing `pivot`**, because the second pass has to know
+		// where the effect ended up, and for an asymmetric model the bounding-box centre is not where it
+		// started. One measurement here and the shift is exact for every shape.
+		const placed = splash.IsA("Model") ? splash.GetBoundingBox()[0].Position : parts[0].Position;
+		const shift = origin.sub(placed);
+
+		for (const part of parts) part.Position = part.Position.add(shift);
+
+		// Parented last, with every property already set and the whole effect already at the impact point.
+		splash.Parent = Workspace;
+
+		// **One line per spawn, ungated**, which is the house rule for a diagnostic that has to explain a
+		// screenshot somebody already has — `BallComponent`'s tag and landing lines and this service's own
+		// splash report are ungated for the same reason. It names the numbers the effect was *drawn* with: the
+		// impact point, the radius the freeze used, the diameter derived from it and the factor applied to the
+		// template. The question it answers is "did a clone appear, and was it the size of the freeze", and
+		// against a splash that looks wrong the factor is what separates a template authored at the wrong size
+		// from one placed in the wrong place.
+		print(
+			`[VFX] ${FREEZE_SPLASH_NAME} spawned at ${origin} with size ${diameter} ` +
+				`(radius ${radius}, scale ${string.format("%.2f", scale)}, ${parts.size()} part(s))`,
+		);
+
+		// **An emitter authored as a one-shot emits nothing on its own**, and that is the trap a template built
+		// for a `Debris` clone falls into: `Rate = 0` (or `Enabled = false`) is exactly how somebody authors
+		// "fire this once when something calls `Emit`", and nothing else here calls it. So the clone is walked
+		// for those emitters and fired once each — **after the parenting**, because an emitter that is not in
+		// the world emits nothing. An emitter that is already running (`Rate > 0` and enabled) is left alone:
+		// it starts when it enters the tree, and a second `Emit` on top of it would double the effect.
+		for (const descendant of splash.GetDescendants()) {
+			if (!descendant.IsA("ParticleEmitter")) continue;
+			if (descendant.Rate > 0 && descendant.Enabled) continue;
+
+			descendant.Emit();
+		}
+
+		Debris.AddItem(splash, splashLifetimeOf(splash));
+	}
+
+	/**
 	 * Lets `model` go: the anchor, the outline, the ice, the jump state and the walk speed.
 	 *
 	 * **Safe to call for a body that is already gone, which is why three things call it** — the clock, a
@@ -664,10 +1010,32 @@ export class FreezeService {
 	 * looks tidier: an `Include` list would have to be the bodies inside the radius, which is the list
 	 * this method exists to work out.
 	 *
-	 * **A splash is one event, and this is the only place that knows it happened.** Two things come out of
-	 * one: bodies held, and the burst that says where the ball struck. The burst is built here rather than
-	 * inside {@link freeze} because `freeze` is called *per body* — four bodies caught is four calls —
-	 * while an impact is one thing in one place, and a burst per body would be four bursts in one spot.
+	 * **One query of the world rather than `Players:GetPlayers()` plus `CollectionService:GetTagged("NPC")`.**
+	 * That pair of lists would cover the same bodies today — a player's character and a rig are the two
+	 * kinds of body the game has — and it is the obvious way to write this. The world query wins on three
+	 * counts that matter more than the enumeration being shorter. **There is nothing to keep in step**: a
+	 * rig that is spawned, pooled or retired is inside the sphere or outside it by where it is standing,
+	 * with no list that could have missed it. **The position comes from the parts rather than from a
+	 * root lookup**: a body's root is not necessarily where the ball passed it — a limb is — and the
+	 * sphere is the shape the ability is defined in. And **it makes a player and a rig the same branch**,
+	 * which is the property that stops this ability from freezing one kind of body and not the other: the
+	 * test for "is this a body" is a `Model` with a `Humanoid` above the parts, which both kinds answer
+	 * identically, and nothing here has ever needed to know which kind it is holding.
+	 *
+	 * **A splash is one event, and this is the only place that knows it happened.** Three things come out of
+	 * one: bodies held, the burst that says where the ball struck, and the authored `FreezeSplash` template
+	 * stretched to the same radius. Both pictures are made here rather than inside {@link freeze} because
+	 * `freeze` is called *per body* — four bodies caught is four calls — while an impact is one thing in one
+	 * place, and a burst per body would be four bursts in one spot.
+	 *
+	 * **And this is why the template splash is triggered here rather than in `BallComponent`'s two branches**,
+	 * which is where the two `freezeInRadius` calls are. The radius is *this method's own argument*: it already
+	 * has the number the hit branch passed and the number the miss branch passed, so the picture cannot be
+	 * scaled to anything other than what was frozen. A call at each of the two call sites would be the same
+	 * two constants written twice — three places that could disagree about the size of one effect, and one of
+	 * them free to be forgotten when a third call site is added. There is also exactly one call per impact
+	 * here by construction, which is the "fires once per ball" rule the two branches would have had to keep
+	 * with a flag of their own.
 	 */
 	public freezeInRadius(
 		origin: Vector3,
@@ -676,6 +1044,10 @@ export class FreezeService {
 	): Array<Model> {
 		const caught: Array<Model> = [];
 		const seen = new Set<Model>();
+
+		// Every body the sphere found, with the reason it was or was not held — see `describeFound` for why
+		// the reason travels beside the counts.
+		const notes: Array<string> = [];
 
 		// **The three numbers this method is asked about when it does nothing**, kept apart rather than
 		// derived, because each one names a different fault. See the report below for which is which.
@@ -689,6 +1061,14 @@ export class FreezeService {
 		// silently. The burst says where the ball landed, for the thrower and for everybody else.
 		this.buildBurst(origin);
 
+		// **And the authored splash on the same terms, from the same two arguments.** The template is the other
+		// picture of the same event, and it is drawn at the radius the freeze is about to use because that is
+		// the radius this method was handed — see this method's doc for why the call is here rather than at the
+		// two `freezeInRadius` call sites. A clone that fails to appear (a missing template, a template with no
+		// part) warns once and returns; nothing below depends on it, so a splash problem costs the picture and
+		// never a freeze.
+		this.playFreezeSplash(origin, radius);
+
 		for (const part of Workspace.GetPartBoundsInRadius(origin, radius)) {
 			const model = part.FindFirstAncestorWhichIsA("Model");
 			if (!model || seen.has(model)) continue;
@@ -700,12 +1080,28 @@ export class FreezeService {
 
 			if (isExcluded(model)) {
 				spared += 1;
+				notes.push(`${model.Name} (spared)`);
 				continue;
 			}
 
-			if (!model.FindFirstChildWhichIsA("Humanoid")) continue;
+			if (!model.FindFirstChildWhichIsA("Humanoid")) {
+				// **Scenery, and named as such rather than dropped silently.** This is the commonest thing a
+				// splash finds — the floor it landed on, the wall behind it, the practice area's own parts —
+				// and it is the answer to "found two bodies and held none" in every case where the sphere
+				// reached no rig at all.
+				notes.push(`${model.Name} (no humanoid)`);
+				continue;
+			}
 
-			if (this.freeze(model, SUPER_CONFIG.FREEZE_DURATION_SECONDS)) caught.push(model);
+			if (this.freeze(model, SUPER_CONFIG.FREEZE_DURATION_SECONDS)) {
+				caught.push(model);
+				notes.push(`${model.Name} (held)`);
+			} else {
+				// `freeze` has already established there is a humanoid, so this is the pair it refuses on: a
+				// body with no root part, or one whose health has gone. A corpse is the case that matters —
+				// a rig killed a heartbeat ago is still standing in the sphere.
+				notes.push(`${model.Name} (no root, or dead)`);
+			}
 		}
 
 		/**
@@ -736,11 +1132,17 @@ export class FreezeService {
 		 *
 		 * The radius is named too, because a splash with the wrong radius is indistinguishable from a
 		 * splash with the right one that found nobody — and the two are set in `super.config.ts`, where
-		 * somebody tuning the ability will be looking.
+		 * somebody tuning the ability will be looking. **With both radii reading `8` as of 2026-10-18, the
+		 * radius no longer says whether this was a hit or a miss**, and the line immediately before it does:
+		 * `ended on … 0 tag(s) [Freeze]` for a miss, `was tagged by … [Freeze]` for a hit.
+		 *
+		 * **And the bodies are named, each with its reason** — see `describeFound`. The counts answer "did
+		 * anything happen", and the list is what answers *why not*: a splash that found scenery and a splash
+		 * that found rigs it refused are the same two numbers and two completely different faults.
 		 */
 		print(
 			`[Freeze] splash at ${origin} — radius ${radius}, found ${found} bod(ies), ` +
-				`spared ${spared}, caught ${caught.size()}`,
+				`spared ${spared}, caught ${caught.size()} — ${describeFound(notes)}`,
 		);
 
 		return caught;

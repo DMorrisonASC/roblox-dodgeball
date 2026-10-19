@@ -1,5 +1,5 @@
 import { ReplicatedStorage, Workspace } from "@rbxts/services";
-import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 
 /**
@@ -36,6 +36,48 @@ export function inRound(): boolean {
 	if (!status) return false;
 
 	return status.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
+}
+
+/** What `TEAM_ATTRIBUTE` holds for each side. Two literals between two files, spelled the same way. */
+const SIDE_A = "A";
+const SIDE_B = "B";
+
+/**
+ * **Whether this player is on a side — the fact the round-edged client features gate on.**
+ *
+ * `TEAM_ATTRIBUTE` is written by `RoundService.assignTeams` from the opt-in roster, **cleared there for
+ * everybody who is not in it**, and written again by `setTeam` for a player who joins a round that is
+ * already being played. So "this player has a side" and "this player is in the round the phase is talking
+ * about" are one statement, replicated per player with no remote, no poll and no new state.
+ *
+ * **It is deliberately not "a round is on", which is {@link inRound}.** A player watching a round from the
+ * lobby is not in it: they are not teleported, not held and not counted, so the things that follow the
+ * round's edges must not act for them. The two predicates are composed where both are wanted — see
+ * {@link isParticipant} — and used alone where only one is, which is why both are exported.
+ *
+ * **The label is validated rather than merely read.** The freeze countdown used `typeIs(label, "string")`
+ * and that is the looser test: an attribute anything can write is not a side until it reads as one, which
+ * is the same reading `npc/rigs.ts`'s `sideOfRig` makes on the server, and the same one this makes here.
+ */
+export function onASide(player: Player): boolean {
+	const label = player.GetAttribute(TEAM_ATTRIBUTE);
+
+	return label === SIDE_A || label === SIDE_B;
+}
+
+/**
+ * **The rule, in one place: a player is in the round when they are on a side and a round is being
+ * played.** Both conditions, not either — the user's own wording — and the two halves fail in opposite
+ * directions, which is why both are asked: a lobby spectator has no side while the round runs, and a
+ * participant stands in the lobby while an intermission does.
+ *
+ * **This is what the camera asks**, and it lives here rather than inside the camera for the reason
+ * `inTaggedZone` does: a second copy of a rule about where the game is being played does not survive
+ * itself. The wipe asks a different question and says so — it plays for whoever is *moved*, which is
+ * {@link onASide} alone, because at a round's end the phase has already left `Playing`.
+ */
+export function isParticipant(player: Player): boolean {
+	return inRound() && onASide(player);
 }
 
 /**

@@ -7,6 +7,7 @@ import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { PLAYING } from "../../panels";
+import { onASide } from "../../roundZone";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
@@ -270,10 +271,10 @@ export class ArenaFreezeCountdownController implements OnStart {
 	/**
 	 * Which run is current, so a callback that outlives its run can tell.
 	 *
-	 * **The token `ShiftLock` cites `ThrowStateToastController` for**, and the case is the same shape: the fade
-	 * at the end of a run finishes on a timer, and a run that began during that timer would be hidden by the
-	 * previous run's parting shot. A late callback that finds a different number does nothing at all, where a
-	 * boolean "is it running" would be true for the *new* run and hide it.
+	 * **The token `ShiftLock` names**, and the case is the same shape: the fade at the end of a run finishes on
+	 * a timer, and a run that began during that timer would be hidden by the previous run's parting shot. A
+	 * late callback that finds a different number does nothing at all, where a boolean "is it running" would
+	 * be true for the *new* run and hide it.
 	 */
 	private runId = 0;
 
@@ -305,20 +306,27 @@ export class ArenaFreezeCountdownController implements OnStart {
 		 *
 		 * **`TEAM_ATTRIBUTE` is the proxy, and it is the honest one available.** The server's own answer is a
 		 * `Set` of active players inside `RoundService`, which no client can read. What a client *can* see is
-		 * this attribute, written at the start of every playing phase and **absent** for a player who is between
-		 * rounds or who joined while one was under way — which is exactly the distinction this needs. A player
-		 * with no team was not teleported into the arena and is not being held, so a number telling them how long
-		 * they cannot move would be a lie about a body standing in the lobby.
+		 * this attribute, written from the opt-in roster at the start of every round and **cleared there for
+		 * everybody who is not in it** — and written again by `setTeam` for a player who is admitted to a round
+		 * that is already being played. So it says the same thing the server's set does, about this one player,
+		 * with no remote: a player without a side was not teleported into the arena and is not being held, and a
+		 * number telling them how long they cannot move would be a lie about a body standing in the lobby.
+		 *
+		 * **The read is `roundZone.ts`'s `onASide`, the same one the camera and the wipe use.** It was a
+		 * `typeIs(label, "string")` here — the same answer for every value the server writes and a different one
+		 * for a value anything else writes — and this is now a rule three features share, so it is stated once
+		 * and validated once. That the *phase* is deliberately not part of it is that file's argument; the
+		 * countdown is driven by the transition below, which only runs in a playing phase.
 		 *
 		 * **A `Value` fed by the attribute's change signal**, the bridge `StatsBillboardController` and
 		 * `RespawnHudController` both build: an attribute read inside a `Computed` is a *sample* rather than a
 		 * dependency, so the one connection has to exist for the reactive form to be true.
 		 */
-		const onTeam = Fusion.Value(scope, typeIs(player.GetAttribute(TEAM_ATTRIBUTE), "string"));
+		const onTeam = Fusion.Value(scope, onASide(player));
 
 		scope.push(
 			player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => {
-				onTeam.set(typeIs(player.GetAttribute(TEAM_ATTRIBUTE), "string"));
+				onTeam.set(onASide(player));
 			}),
 		);
 
@@ -342,9 +350,11 @@ export class ArenaFreezeCountdownController implements OnStart {
 		 *
 		 * **The team attribute is the half that survived, and it is the right half for this element.** The
 		 * countdown is about the arena a *side* was teleported into, so "on a side" is the fact that says
-		 * whether this player was moved into it — and a mid-round joiner has no side and is left in the lobby,
-		 * so they get no number. Nothing else here changes: see `begin`, which is driven by the transition the
-		 * round publishes rather than by anything about a body.
+		 * whether this player was moved into it. **A mid-round joiner does have a side now** —
+		 * `RoundService.admitMidRoundJoins` admits them and `setTeam` publishes it — so one admitted while a
+		 * count is running sees the number, which is right: they were teleported into the same arena and are
+		 * held by the same freeze. What they can never get is a count *started* for them, because the count
+		 * follows the round's own transition rather than anything about a body. See `roundZone.ts`.
 		 *
 		 * **Reactive rather than sampled once when a run starts**, which is what keeps the team half honest —
 		 * a player who somehow gains a side mid-count gets the number, and one who loses it drops it. Both
@@ -359,8 +369,8 @@ export class ArenaFreezeCountdownController implements OnStart {
 		});
 
 		// **The two labels are built before the card**, because `Card` takes its children at construction and
-		// parents them itself — the order `CooldownHudController`'s rows are built in, and there is nothing above
-		// them to own afterwards.
+		// parents them itself — so anything that has to end up *inside* one is finished first, and there is
+		// nothing above them to own afterwards.
 		this.labels.push(this.addLabel(scope, theme));
 		this.labels.push(this.addLabel(scope, theme));
 
@@ -446,7 +456,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 		// **Shown only while a count is running**, through the same `Computed` that decides it — one value, read
 		// by the one element rather than a connection per reader. It is `Hydrate` because `Card` hands back a
 		// finished instance, and a reactive value merely *assigned* to one of its properties is never tracked as
-		// a property at all — the trap `CooldownHudController` documents at its own container.
+		// a property at all — the rule `panelChrome.ts` states at its own length.
 		Fusion.Hydrate(scope, card)({ Visible: visible });
 
 		// The viewport bound every HUD here carries: the element brings its own limit rather than trusting that
@@ -628,7 +638,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 			// The team check is repeated here rather than trusted from the edge: a player can be moved onto a
 			// side *during* the cover — that is what joining is — and the arrival that matters is the one at the
 			// moment the bodies land.
-			if (!typeIs(player.GetAttribute(TEAM_ATTRIBUTE), "string")) return;
+			if (!onASide(player)) return;
 
 			this.begin();
 		});
@@ -836,9 +846,9 @@ export class ArenaFreezeCountdownController implements OnStart {
 	 *
 	 * **The hide is on a timer rather than on the tween's signal**, with {@link runId} as the guard. A run that
 	 * began during the fade must not be hidden by the previous run's parting shot, and a token check is the
-	 * smallest thing that says so — `ShiftLock` cites `ThrowStateToastController` for the same pattern and the
-	 * same reason. A callback that arrives to find a different run does nothing at all, where a boolean "is it
-	 * running" would be true of the new run and would hide it.
+	 * smallest thing that says so — `ShiftLock` names the same pattern for the same reason. A callback that
+	 * arrives to find a different run does nothing at all, where a boolean "is it running" would be true of
+	 * the new run and would hide it.
 	 */
 	private finish(token: number): void {
 		this.stopLoop();

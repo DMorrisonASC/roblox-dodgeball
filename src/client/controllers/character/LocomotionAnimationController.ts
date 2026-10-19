@@ -1,9 +1,11 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
-import { AnimationClip, animationFor, clipFor } from "shared/animation";
-import { CHARACTER_CONFIG } from "shared/config/character.config";
+import { AnimationClip, clipIdFor } from "shared/animation";
+import { BALL_CONFIG } from "shared/config/ball.config";
+import { BodyRender, applyBodyRender, bodyRenderPlays, destroyBodyRender, startBodyRender } from "../../bodyAnimation";
 import { sprinting } from "../../sprinting";
+import { chargeStartedAt, releasedCharge } from "../../throwing";
 
 /** Prints the write once per body, and each body that was left alone and why. */
 const DEBUG = true;
@@ -84,64 +86,81 @@ const CONFIG_WEIGHT_NAME = "Weight";
  */
 const ANIMATED_SETS: AnimationClip[] = ["idle", "walk", "run", "jump"];
 
-/** The clip a body wears at this game's walk speed. A clip rather than a string: `clipFor` reads it. */
-const WALK_SET: AnimationClip = "walk";
-
-/** The clip a body wears while sprinting. See {@link WALK_SET}. */
-const RUN_SET: AnimationClip = "run";
+/**
+ * **The humanoid states this game has a clip for — the list that decides when the game defers to Roblox.**
+ *
+ * **The question is "does the game have a clip for this state", and not "is the character on the floor".** The
+ * body's own state is what says whether its legs are doing something this game has a picture of, and floor
+ * contact cannot answer it — which is the mistake this list was written to end, and it cost two visible faults.
+ * A character *seated* on a bench is welded to it rather than standing on it, so `FloorMaterial` reads `Air`,
+ * the body was read as falling, and the jump clip looped at `Movement` over Roblox's own `sit` animation. And a
+ * body that has been knocked over (`FallingDown`) rolls with its contact flickering, so the same measurement
+ * alternated tick by tick and the legs flipped between idle and jump at the poll rate.
+ *
+ * **These five are the states the four clips describe**, which is why the list is this and not something else:
+ * `Running` and `RunningNoPhysics` are the on-the-ground states in which `idle`/`walk`/`run` are decided (from
+ * speed, by `animationFor`), and `Jumping`/`Freefall`/`Landed` are the airborne ones the `jump` clip covers.
+ * **Everything else defers** — `Seated`, `FallingDown`, `Climbing`, `Swimming`, `Dead`, `PlatformStanding`,
+ * `Physics`, `GettingUp`, `Ragdoll`, `Flying` — because Roblox's `Animate` script has clips for those and this game
+ * has none: it owns the four sets in {@link ANIMATED_SETS} and leaves the script's other sets exactly as Roblox
+ * wrote them, so deferring is what lets `sit`, `climb` and `swim` be Roblox's own.
+ *
+ * **This list is the only place the question is answered.** The renderer is handed the answer and never the
+ * state's name (see `BodyConditions.deferToDefault`), and an event still outranks it: a body knocked over
+ * mid-throw still throws, because the events rank above the deferral in `bodyClipFor`.
+ */
+const OWNED_STATES: ReadonlyArray<Enum.HumanoidStateType> = [
+	Enum.HumanoidStateType.Running,
+	Enum.HumanoidStateType.RunningNoPhysics,
+	Enum.HumanoidStateType.Jumping,
+	Enum.HumanoidStateType.Freefall,
+	Enum.HumanoidStateType.Landed,
+];
 
 /**
- * How often the moving clip is re-chosen, in seconds.
+ * How often the body is re-dressed, in seconds.
  *
- * **A poll rather than an event, and twenty times a second.** The two things being watched — the
- * body's state and the speed it is travelling at — change for reasons that do not announce
- * themselves to this file: a sprint ends when the pool empties, a jump interrupts a run, a dodge
- * finishes. Fifty milliseconds is short enough that none of those reads as late, and the work is a
- * state read, a comparison and (almost always) nothing else.
+ * **A poll rather than an event, and twenty times a second.** The things being watched — the body's state, the
+ * direction it is being walked in and the sprint key — change for reasons that do not announce themselves to
+ * this file: a sprint ends when the pool empties, a jump interrupts a run, a dodge finishes. Fifty milliseconds
+ * is short enough that none of those reads as late, and the work is three reads, a comparison and (almost
+ * always) nothing else.
+ *
+ * **The events do not need the poll**, and that is worth knowing when reading a log: a throw, a catch and a
+ * dodge are attributes on the body, and the renderer reads them on every call — so a tick that finds one up
+ * plays its clip at the next tick, up to fifty milliseconds after the mark was written. That is the cost of
+ * one clock for a body whose request cannot be published to it; a rig has no such clock, because every fact it
+ * needs arrives as an attribute change instead. See `client/bodyAnimation.ts`.
  */
 const MOVEMENT_TICK_SECONDS = 0.05;
 
 /**
- * How long the change from one moving clip to the other takes, in seconds.
+ * One body this client owns, and everything needed to keep its animation in step with it.
  *
- * Crossfaded rather than switched, because this is the one seam a player is watching: they press the
- * sprint and look at the legs. Longer than the engine's own transition between its two sets, because
- * the two clips here were authored separately rather than as a pair.
+ * **State rather than locals, because the loop outlives the call that starts it** — it runs for the rest of
+ * the body's life. What it holds is the body, the two objects a body is animated through, and the ids this
+ * game has claimed from the engine's own script: see {@link LocomotionAnimationController.suppressScript} for
+ * why the last of those is needed on every tick.
  */
-const MOVEMENT_FADE_SECONDS = 0.2;
-
-/**
- * One body's moving playback: the two clips, and which of them is playing.
- *
- * **State rather than locals, because the loop outlives the call that starts it.** It has to
- * remember what it chose last time to know whether anything has changed at all, and it has to hold
- * the tracks so that one it fades out is one it can fade back in.
- */
-interface Moving {
+interface OwnedBody {
 	humanoid: Humanoid;
 	animator: Animator;
 
-	/** The clip for this game's base walk speed. */
-	walk: AnimationTrack;
+	/** The shared renderer — the same one a rig is dressed by, which is the point of this file's rewrite. */
+	body: BodyRender;
+
+	/** The four set ids claimed for this body's rig type. See {@link LocomotionAnimationController.dress}. */
+	claimed: string[];
 
 	/**
-	 * The id {@link Moving.walk} was loaded from.
+	 * Whether the last tick deferred to Roblox's own animation script, so the log line is an edge.
 	 *
-	 * **Kept rather than read back off the track.** A track can be asked what it is holding —
-	 * `AnimationTrack.Animation` — but the typings allow that to be nil, and a track whose animation
-	 * cannot be read is one this file could not recognise as its own. The id it was loaded from is
-	 * something this file already knows.
+	 * **On the row rather than re-read from the humanoid, because it is the *previous* answer that matters.** The
+	 * transition into and out of a deferral is the event worth a line, and the state itself is on the body and is
+	 * asked again every tick — a `deferToDefault` recomputed from the body each time cannot tell "still sitting"
+	 * from "just sat down", which is the whole of what this field is for. See `step`.
 	 */
-	walkId: string;
-
-	/** The clip for this game's sprint. */
-	run: AnimationTrack;
-
-	/** The id {@link Moving.run} was loaded from. See {@link Moving.walkId}. */
-	runId: string;
-
-	/** Which of the two is playing, or `none` while standing still or off the ground. */
-	playing: "walk" | "run" | "none";
+	deferring: boolean;
 }
 
 /**
@@ -174,21 +193,25 @@ interface Moving {
  * can load at all — an R6 clip on an R15 rig does not load, and the reverse — so the two ids are
  * not variants of one animation but the two animations, and a body is handed the one it can wear.
  * `DodgeService` picks its flourish the same way, for the same reason; `BallFactory` looks up a
- * hand the same way. See {@link CHARACTER_CONFIG.IDLE_ANIMATION_R6}, where the R6 column is filled
- * in for two of the four sets and blank for the other two.
+ * hand the same way. See {@link CHARACTER_CONFIG.IDLE_ANIMATION_R6} for the pair of columns: every
+ * row is filled in for both rig types, so which of the two a body wears is the only question left.
  *
  * **The choice between the walk and the sprint is this file's, not the script's.** Roblox's script
  * picks between its two moving sets by how fast the body is going, and its threshold does not fall
  * between this game's two speeds: at the base walk speed it was already choosing the same set it
  * chooses while sprinting, so one of the two clips was never seen at all. The moving clip is
  * therefore played here — on the local body, at `Movement` priority, with the script's own attempt
- * stopped — and the decision is made **by `animationFor` in `shared/animation.ts`**, from the body's
- * ground speed against {@link CHARACTER_CONFIG.RUN_ANIMATION_SPEED}, which sits between this game's
- * two speeds. That function being shared rather than written here is the newer half of this
- * paragraph: an NPC rig's clips are played by a client renderer with no `Humanoid` of its own, and
- * the two must not answer the same question differently. The claimed sets stay, and they are
- * load-bearing rather than left over: they are what the script plays in the moment before this file
- * has chosen, and they are how the script's own attempt is recognised when it makes one.
+ * stopped — and the decision is made **by `animationFor` in `shared/animation.ts`**, from the two
+ * facts this file is the only one able to gather: **whether the body has been asked to move at all,
+ * and whether the sprint key is down.** The measured speed is deliberately not consulted — see that
+ * function for the record of why, and for what the measurement cost while it was here. The sprint is
+ * the *key* rather than the sprint the server granted, which is the cost that function names and
+ * this file accepts; `client/sprinting.ts` is where the key is read, by the two files that need it.
+ * `animationFor` being shared rather than written here is the other half of this paragraph: an NPC
+ * rig's clips are played by a client renderer with no `Humanoid` of its own, and the two must not
+ * answer the same question differently. The claimed sets stay, and they are load-bearing rather than
+ * left over: they are what the script plays in the moment before this file has chosen, and they are
+ * how the script's own attempt is recognised when it makes one.
  *
  * **The local player's body, and only that one.** An animation track is started by the client that
  * owns the body and replicated from its `Animator`, which is why the default script animating one
@@ -286,286 +309,231 @@ export class LocomotionAnimationController implements OnStart {
 		if (DEBUG) print(`[Animate] ${character.Name}: ${isR15 ? "R15" : "R6"} body`);
 
 		for (const set of ANIMATED_SETS) {
-			this.claimSet(animate, animator, set, clipFor(set, isR15));
+			this.claimSet(animate, animator, set, clipIdFor(set, isR15));
 		}
 
 		// **And then the two moving clips are chosen here rather than left to the script** — see
 		// {@link LocomotionAnimationController.startMoving}. Nothing plays until the body actually
 		// moves, so this costs two track loads at spawn and nothing else.
-		this.startMoving(character, humanoid, animator, isR15);
+		this.startBody(character, humanoid, animator, isR15);
 	}
 
 	/**
-	 * Watches a body's speed and plays whichever of this game's two moving clips belongs to it.
+	 * Builds this body's renderer, remembers the ids this game has claimed, and starts the loop that keeps
+	 * the body in step with it.
 	 *
-	 * **Both ids or neither, and that is the same rule the blank ids carry.** The pair is one
-	 * decision — which of these two clips a moving body wears — and a body with only one of them has
-	 * no decision to make, so the script's own choice is left alone. Half of the choice being made
-	 * here and half by the script would be a body whose walk depended on which of the two arrived
-	 * first.
+	 * **This is where the two bodies meet, and it is the whole of the rewrite.** The renderer is `BodyAnimation`
+	 * — the same object a rig is dressed by, deciding from the same table through the same `bodyClipFor` — so a
+	 * state added to `animation.config.ts` is played on this body and on a rig alike. What is left here is the
+	 * two things that are a *player's*: the facts, which this client measures rather than receives, and the
+	 * engine's own animation script, which only a player has. Both are argued at {@link step} and
+	 * {@link suppressScript}.
 	 *
-	 * The two tracks are loaded here and played by {@link LocomotionAnimationController.follow}. They
-	 * are *not* the containers handed to the script: those hold clips the script plays, these are
-	 * clips this file plays, and they are the same asset either way — see `clipFor`.
+	 * **The claimed ids are the four the script has sets for**, read out of the shared table rather than listed
+	 * here, because "which clips the script could be playing" is a question about the vocabulary and not about
+	 * this file. A blank id stays on the list on purpose: it is the off switch for one state, so it claims
+	 * nothing and matches nothing below.
 	 */
-	private startMoving(character: Model, humanoid: Humanoid, animator: Animator, isR15: boolean): void {
-		const walkId = clipFor(WALK_SET, isR15);
-		const runId = clipFor(RUN_SET, isR15);
-
-		if (walkId === "" || runId === "") {
-			if (DEBUG) print(`[Animate] moving clips: one is unset — the script keeps the choice`);
-			return;
-		}
-
-		const walk = this.loadMovingClip(walkId, animator);
-		const run = this.loadMovingClip(runId, animator);
-		if (!walk || !run) return;
-
-		const moving: Moving = { humanoid, animator, walk, walkId, run, runId, playing: "none" };
-
-		// **Nothing is subscribed to the humanoid's `Running` event, and that is a correction.** It was the
-		// source of the speed this file decides from, on the argument that it is the engine's own measurement
-		// and costs nothing — but it is an *event*, so it reports changes, and between two of them the value a
-		// listener holds is simply the last thing it was told. Nothing about a jump goes through it. A body that
-		// had just landed wore the walk clip while standing still, and a body travelling at twenty studs wore no
-		// moving clip at all — both from that one number being stale. The measurement is taken per tick now; see
-		// `measuredSpeed`.
+	private startBody(character: Model, humanoid: Humanoid, animator: Animator, isR15: boolean): void {
+		const owned: OwnedBody = {
+			humanoid,
+			animator,
+			body: startBodyRender(character, humanoid, animator, "Animate"),
+			claimed: ANIMATED_SETS.map((set) => clipIdFor(set, isR15)),
+			// **False, and the first tick is what says otherwise.** A body arrives standing, so the first tick
+			// finds owning already true and prints nothing — which is what keeps the log to the transitions the
+			// line is for. See `OwnedBody.deferring`.
+			deferring: false,
+		};
 
 		// Spawned, because the loop is the rest of this body's life and `dress` is a handler on the
 		// way in. A body that never moves runs this loop idle for as long as it exists, which is the
 		// cost of asking the question at all.
-		task.spawn(() => this.follow(character, moving));
+		task.spawn(() => this.follow(character, owned));
 	}
 
 	/**
-	 * Re-chooses the moving clip until the body is gone, and stops everything on the way out.
+	 * Keeps the body's clip in step with what the body is doing, until the body is gone.
 	 *
 	 * **Death and despawn are the same exit**, because both end the body: `Health` at zero is a
 	 * corpse this file has no opinion about, and a character whose parent is nil has been replaced.
 	 * Either way the loop is over, and a track left playing on a body that has died is a corpse
 	 * still walking.
+	 *
+	 * **The tick is a poll because a player's facts are measured rather than published**, which is the one
+	 * asymmetry left between the two bodies: a rig's state arrives as attributes and its renderer runs on the
+	 * changes, while a body's *speed* is a quantity this client reads from its own physics and there is nothing
+	 * to be told about. Twenty times a second is short enough that no change of clip reads as late, and a tick
+	 * that agrees with the last one costs a state read — see `step` and the renderer's own guard.
 	 */
-	private follow(character: Model, moving: Moving): void {
+	private follow(character: Model, owned: OwnedBody): void {
 		// **Reported once and then not again, because a tick that fails fails twenty times a second.**
 		// The first failure is the one worth reading; twenty lines a second would bury it and the
 		// output with it.
 		let reported = false;
 
-		while (character.Parent !== undefined && moving.humanoid.Health > 0) {
+		while (character.Parent !== undefined && owned.humanoid.Health > 0) {
 			// **Guarded, because a tick can race a body that is on its way out.** The character can
 			// be destroyed between the check above and the track this tick touches — a respawn, a
 			// death — and an error raised here would end the loop *without* ending the body, which is
 			// a body that never walks with an animation again rather than one that stops walking. A
 			// failed tick is retried on the next one; only the last one before the body goes matters.
-			const [ok, err] = pcall(() => this.step(moving));
+			const [ok, err] = pcall(() => this.step(owned));
 
 			if (!ok && !reported) {
 				reported = true;
-				warn(`[Animate] moving clip: tick failed — ${err}`);
+				warn(`[Animate] tick failed — ${err}`);
 			}
 
 			task.wait(MOVEMENT_TICK_SECONDS);
 		}
 
-		moving.walk.Destroy();
-		moving.run.Destroy();
+		destroyBodyRender(owned.body);
 	}
 
 	/**
-	 * Puts the right moving clip on, or does nothing at all while the answer has not changed.
+	 * Puts the body into the clip its own state says, or writes nothing at all while the answer has not moved.
 	 *
-	 * The guard is what makes a twenty-times-a-second poll affordable: the body spends almost all of
-	 * its life in one answer, and the work of a tick that agrees with the last one is a state read.
+	 * **The guard that makes a twenty-times-a-second poll affordable is the renderer's now**, which is the whole
+	 * of what this method has to know about it: a call that arrives at the clip already playing is a comparison
+	 * and nothing else.
 	 *
-	 * **The speed is measured once here and handed to both readers** — the decision and the line
-	 * below — so the number that is printed is the number the choice was made from. It used to be the
-	 * other way round: a number that arrived from an event *between* ticks was printed next to a
-	 * decision made from it, which is how a line reading `speed 19.5` beside `none` and `speed 0.1`
-	 * beside `walk` came to be written by a rule that reads neither of those ways.
+	 * **The engine's own script is stopped first, on every tick rather than on a change.** The script re-decides
+	 * for itself — it has its own thresholds, its own `Running` handler and no idea which clips this game has
+	 * asked for — so a set it starts a frame after this file last looked is a second track on the same limbs. It
+	 * plays *our* clip (the sets are claimed with our ids, see {@link claimSet}), so the blend is invisible; what
+	 * is not invisible is it choosing a *different* set from ours, which is what this line prevents. See
+	 * {@link suppressScript}.
 	 *
-	 * **The sprint input is still read here and still printed, but it no longer decides anything.**
-	 * The clip is chosen by `animationFor` from the measurement alone, because a rig has no key to
-	 * read and the rule has to be one rule — see that function for the reversal and for what the old
-	 * key-based rule cost. What this line is for now is telling the two failures apart at a glance: a
-	 * body with the key held and a speed sitting at the walk's own figure is a sprint the *server*
-	 * refused, which is a state the old rule wore the sprint clip through and this one wears the
-	 * walking clip for, because that is what the body is doing.
+	 * **The facts are gathered here and nowhere else, because they are the facts only this client can answer
+	 * for.** What this body has been asked to do, whether it is standing on something, and which of the
+	 * humanoid's states the game has a clip for — none of which a renderer holding a body could work out for
+	 * itself. The **events** the renderer needs — a throw, a catch, a dash — are attributes on the body, written
+	 * by the server, and the renderer reads those for itself.
+	 *
+	 * **And the two facts gathered here are the *request*, not the body's traffic.** `moving` and `sprinting`
+	 * are read fresh on every tick — the humanoid's own `MoveDirection`, the walk speed it has been given, and
+	 * the sprint key — and neither needs a clock, a history or a threshold, because a request either stands or
+	 * it does not. See `animationFor`: there is nothing here left to smooth.
+	 *
+	 * **`frozen` is passed `false`, and that is a reading rather than an omission.** A player's freeze is a
+	 * walk-speed key and an anchored root (`FreezeService`), and the *key* is where this file already sees it: a
+	 * pinned body is not a body anyone has asked to walk, so `moving` is false and its legs stop. Publishing a
+	 * flag for it as well would be a second answer to a question this one has answered, and the two could
+	 * disagree. A *rig* has no such key and is published a flag instead — see `BodyState.moving`.
+	 *
+	 * **And the state is read here too, because it is the one fact this file has that the renderer must not
+	 * learn.** `OWNED_STATES` answers it, the answer travels as `deferToDefault`, and the humanoid's own
+	 * vocabulary stops at this line — which is why `BodyConditions` carries the boolean rather than the enum.
+	 * The transition is printed and the state itself is not, for the reason a per-tick print is never the right
+	 * one: a body sitting on a bench is asked twenty times a second and answers the same thing.
 	 */
-	private step(moving: Moving): void {
-		const speed = this.measuredSpeed(moving);
+	private step(owned: OwnedBody): void {
+		this.suppressScript(owned);
 
-		// **Peeked rather than watched**, which is `aiming.ts`'s arrangement: a `peek` builds no graph edge,
-		// so this poll cannot outlive the module that owns the value, and the twenty-times-a-second loop is
-		// the observer.
-		const wantsSprint = Fusion.peek(sprinting);
+		// **The deferral, decided here and nowhere else.** `FloorMaterial` is what this file used to answer with
+		// and it is the wrong question — see `OWNED_STATES` for the two faults that came of it. Read once per
+		// tick because the state can change between ticks, and compares against the row rather than against the
+		// last read so that the line below is an edge.
+		const state = owned.humanoid.GetState();
+		const deferring = !OWNED_STATES.includes(state);
 
-		const wanted = this.wantedClip(moving, speed);
-
-		if (wanted === moving.playing) return;
-
-		// **The script's attempt is stopped before ours starts**, and only for the two clips this
-		// file owns — see {@link LocomotionAnimationController.stopScriptsAttempt}. Two tracks for
-		// one pair of legs is a body blended between the clip the script chose and the clip this file
-		// chose, which is worse than either answer.
-		this.stopScriptsAttempt(moving);
-
-		if (moving.playing === "walk") moving.walk.Stop(MOVEMENT_FADE_SECONDS);
-		if (moving.playing === "run") moving.run.Stop(MOVEMENT_FADE_SECONDS);
-
-		if (wanted === "walk") moving.walk.Play(MOVEMENT_FADE_SECONDS);
-		if (wanted === "run") moving.run.Play(MOVEMENT_FADE_SECONDS);
-
-		moving.playing = wanted;
-
-		// **The choice is printed with the speed it was made at, and those two facts together are
-		// the answer to "why is the sprint animation not playing".** A body whose speed never crosses
-		// the base line never prints the second line at all, and a body whose two clips hold the same
-		// animation prints both lines and looks identical anyway — which no amount of reading the
-		// code can tell apart from the outside.
-		if (DEBUG) {
-			// **The body's own walk speed rides along**, because it is the other reason a body that is
-			// being asked to move does not. This line is printed at the moment a clip changes, which is
-			// also the moment a freeze tends to show up in the output, and a zero here would be a
-			// different fault from a character that is being asked to move and cannot.
-			//
-			// **The sprint key is printed beside it, and the three together are the whole diagnosis**: a
-			// `run` line with the key not held would be a stale read of the input, a `walk` line with the
-			// key held and a walk speed above the base would be the server refusing a sprint the client
-			// asked for, and a `none` line with the key held is a body that cannot move — into a wall, or
-			// held by something.
+		if (deferring !== owned.deferring) {
+			owned.deferring = deferring;
 			print(
-				`[Animate] moving clip: ${wanted} (sprint ${wantsSprint ? "held" : "not held"}, ` +
-					`speed ${string.format("%.1f", speed)}, ` +
-					`walk speed ${string.format("%.1f", moving.humanoid.WalkSpeed)})`,
+				`[Animate] ${owned.body.body.Name}: ${deferring ? "deferring to Roblox" : "owning"} — ` +
+					`state ${state.Name}`,
 			);
 		}
+
+		// **The request, and the whole of it: is this body being walked, and is the sprint key down.** A
+		// `MoveDirection` is the direction the last writer of the frame asked for — Roblox's own control module,
+		// and this game's `AlternativeMovementController` while the `UHJK` keys are held — so it is exactly
+		// "somebody asked this body to move", and it is stable in the way a velocity is not: a body pressed
+		// against a barrier keeps asking, and a body that has stopped stops asking on the frame its keys come up.
+		//
+		// **And the walk speed is folded in, which is the one judgement in this line.** A frozen player — a
+		// round's freeze, a duck, a hold — is still *pressing* keys, so `MoveDirection` alone would put a pinned
+		// body into the walking clip. The freeze is a walk-speed key and an anchored root; the key is what says
+		// the game has taken the legs away, and that is a different thing from a wall being in the way, which is
+		// why only the former stops the request.
+		const humanoid = owned.humanoid;
+		const moving = humanoid.MoveDirection.Magnitude > 0 && humanoid.WalkSpeed > 0;
+
+		// **The charge, measured here the way the arc is measured one file over.** `chargeStartedAt` is the
+		// instant the hold began — the one fact `ThrowController` and `CatchController` share — and dividing by
+		// `CHARGE_SECONDS` is the division `ThrowController.currentCharge` makes for the throw itself. Doing it
+		// again here rather than exporting a getter is deliberate: it is one clamp, and a getter would be a
+		// second place the charge could be answered from, which is the pair of numbers that must not drift.
+		//
+		// **`undefined` while nothing is held**, which is what tells the renderer to release the throw pose
+		// rather than hold it. See `BodyConditions.charge`.
+		const began = Fusion.peek(chargeStartedAt);
+		const charge =
+			began !== undefined ? math.clamp((os.clock() - began) / BALL_CONFIG.CHARGE_SECONDS, 0, 1) : undefined;
+
+		applyBodyRender(owned.body, {
+			moving,
+			sprinting: Fusion.peek(sprinting),
+			grounded: humanoid.FloorMaterial !== Enum.Material.Air,
+			frozen: false,
+			deferToDefault: deferring,
+			charge,
+			// **The release, which this client knows and the server will not tell it about for a round trip.**
+			// Set by `ThrowController.releaseThrow` on the frame the button comes up and cleared at the next
+			// charge or any cancellation, so a cancelled charge cannot hold a pose for a throw nobody made.
+			releasedCharge: Fusion.peek(releasedCharge),
+		});
 	}
 
 	/**
-	 * How fast the body is travelling across the ground at this instant, in studs per second.
+	 * **The speed that used to be measured here, and why it is gone.**
 	 *
-	 * **Measured from the physics rather than taken from the humanoid's `Running` event, and that is a
-	 * fix rather than a preference.** The event was the earlier source, on the argument that it is the
-	 * engine's own figure and costs nothing — but it fires when the running speed *changes*, so
-	 * between two of them the value a listener is holding is the last thing it was told. Nothing about
-	 * a jump goes through it, and what it reports on the way back down is not the body's speed at that
-	 * instant. The two symptoms were a body standing still wearing the walk clip — legs running in
-	 * place after a landing — and a body travelling at twenty studs wearing no moving clip at all.
-	 * Both are the same fault: a number that was true when it was written and is not true now.
+	 * This method read `RootPart.AssemblyLinearVelocity` — horizontally, never the fall speed — and the decision
+	 * took its magnitude. It was written to replace the humanoid's `Running` event, and the argument still reads
+	 * well: the event fires when the running speed *changes*, so between two of them a listener holds a number
+	 * that was true when it was written. **What replaced the event is exactly what the event was criticised for,
+	 * one layer down.** A velocity read on a tick is a *sample*, so a body that is barely moving crosses any line
+	 * drawn near zero several times a second — the walk speed is 20 and the measured figure for a body walking is
+	 * 20.3, which is the whole of the reason a line at 25 had to be invented — and the two faults this method's
+	 * old doc recorded ("a body standing still wearing the walk clip", "a body travelling at twenty studs wearing
+	 * no moving clip at all") were the two ends of one threshold that could not be drawn anywhere good.
 	 *
-	 * **Horizontal only, which is what the event's figure meant too.** A body's fall speed is not a
-	 * walking speed, and a body dropping off the arena wall with no keys held must not read as a body
-	 * walking. The state gate below already refuses most of that; this makes it true without leaning
-	 * on the gate.
-	 *
-	 * A body with no root part reads as still, which is the safe direction to be wrong in — a body
-	 * still being assembled has no legs to move yet either.
+	 * **So the body is asked instead of measured.** `Humanoid.MoveDirection` is what the last writer of the frame
+	 * requested — an *intent*, with no line in it — and `step` turns it and the walk speed into the two facts the
+	 * decision takes. Nothing in this file reads a velocity any more.
 	 */
-	private measuredSpeed(moving: Moving): number {
-		const velocity = moving.humanoid.RootPart?.AssemblyLinearVelocity;
-		if (velocity === undefined) return 0;
-
-		return math.sqrt(velocity.X * velocity.X + velocity.Z * velocity.Z);
-	}
 
 	/**
-	 * Which of this file's two clips the body should be wearing at this instant.
+	 * Stops the engine's animation script from playing a clip this game has claimed.
 	 *
-	 * **The decision is `animationFor`'s now, not this file's.** The rule that reads a state and names
-	 * a clip lives in `shared/animation.ts`, because an NPC rig is dressed by a client renderer that
-	 * has no `Humanoid` of its own to read and has to reach the same answer — see
-	 * `RigAnimationController`. What is left here is the translation between two vocabularies, "no
-	 * clip" and "not mine".
+	 * **This file used to play two clips of its own and let the script play the other two, and that is the half
+	 * of the old design that is gone.** The renderer plays every state now — idle, walk, run, jump, the throw,
+	 * the catch, the dodges — so the only question left about the script is how to keep it off the four sets
+	 * this game has taken. It is answered by *claiming* the sets (see {@link claimSet}, which hands the script
+	 * our ids) **and** by stopping its tracks here: the claiming makes any track it starts wear our clip, and
+	 * this makes it stop doing so for a set our own decision has since moved off. Neither half is enough alone
+	 * — claiming alone leaves the script choosing between sets on *its* thresholds, and stopping alone would
+	 * leave a moment in which it plays Roblox's own walk over ours.
 	 *
-	 * **"Not mine" is everything that is not a moving clip, and it is not a refusal.** The engine's
-	 * script has the right answer for standing still and for being in the air — the idle clip, and the
-	 * jump and fall clips — and this file has never claimed those sets: it plays two clips and leaves
-	 * the rest to the script, which is why `idle`, `jump` and "no clip at all" all mean the same thing
-	 * here. The two tracks this file owns are stopped, and the script is heard.
+	 * **Identified by what the track is playing, not by who started it.** A track cannot be asked who created
+	 * it, but it can be asked which animation it is holding — `AnimationTrack.Animation` — so the filter is "a
+	 * track wearing one of our claimed ids that is not one of the renderer's own" (`BodyAnimation.plays`). Every
+	 * other animation on the body is left untouched: an emote, a tool animation or a fall clip is a different
+	 * id, and stopping one of those would be this file eating an animation it never claimed.
 	 *
-	 * **`grounded` is read off `FloorMaterial`**, which is the same fact the server publishes for a rig
-	 * (`NpcService.publishAnimation`) so that both sides of the mapping are answering from the same
-	 * kind of read. What it costs is the one case Roblox draws differently: a body in *water* has a
-	 * floor material that is not air and would be read as walking. No clip was ever claimed for a
-	 * swimming body either, so this is the same gap the set list above already records rather than a
-	 * new one — and there is no water in the arena for it to appear in.
-	 *
-	 * **`frozen` is passed as `false`, always.** The player's own freeze is a walk-speed key and an
-	 * anchored root (`FreezeService`), which arrive at the mapping as a body that is neither moving nor
-	 * on the ground — the first two branches — so the flag has nothing to add on this side. **`throwing`
-	 * is passed as `false` for a different reason**: a player carries a ball while running, and a charge
-	 * is an input this file deliberately has no opinion about, so a player's arms are never "busy" in
-	 * the sense that flag means. Both are states the rig has and the player does not, and they are
-	 * passed as absent rather than faked.
+	 * Called on every tick rather than on a change, because the script decides on its own clock and a set it
+	 * starts a frame after this file last looked is a second track on the same limbs.
 	 */
-	private wantedClip(moving: Moving, speed: number): "walk" | "run" | "none" {
-		const grounded = moving.humanoid.FloorMaterial !== Enum.Material.Air;
-		const clip = animationFor(speed, grounded, false, false);
-
-		return clip === "walk" || clip === "run" ? clip : "none";
-	}
-
-	/**
-	 * Stops the animation script's own track for the two clips this file is responsible for.
-	 *
-	 * **Identified by what the track is playing, not by who started it.** A track cannot be asked who
-	 * created it, but it can be asked which animation it is holding — `AnimationTrack.Animation` —
-	 * and the two ids this file owns are the same ids the script's attempts are made of, because the
-	 * containers this file handed it hold those clips. So the filter is "a track wearing one of our
-	 * animations that is not one of our tracks", and every other animation on the body is left
-	 * untouched: a dodge flourish and an emote are different ids, and stopping either would be this
-	 * file eating somebody else's animation.
-	 *
-	 * Called only on the way into a clip this file is about to play, so a body it has no opinion
-	 * about is a body it does not touch.
-	 */
-	private stopScriptsAttempt(moving: Moving): void {
-		const ours = [moving.walkId, moving.runId];
-
-		for (const track of moving.animator.GetPlayingAnimationTracks()) {
-			if (track === moving.walk || track === moving.run) continue;
+	private suppressScript(owned: OwnedBody): void {
+		for (const track of owned.animator.GetPlayingAnimationTracks()) {
+			if (bodyRenderPlays(owned.body, track)) continue;
 
 			const animation = track.Animation;
-			if (animation !== undefined && ours.includes(animation.AnimationId)) {
+			if (animation !== undefined && owned.claimed.includes(animation.AnimationId)) {
 				track.Stop();
 			}
 		}
-	}
-
-	/**
-	 * The track this file plays itself, loaded and left stopped.
-	 *
-	 * **`Movement` priority, which is the priority locomotion belongs to.** `DodgeService` plays its
-	 * flourish at `Action` so that it draws over whatever the legs are doing — that is what the
-	 * flourish is for — and a moving clip played at `Action` here would bury exactly that. Played at
-	 * `Core` instead it would be buried by whatever the avatar's own animation pack was authored as.
-	 * `Movement` is the one rung that leaves both the dodge and the avatar where they were.
-	 *
-	 * Raises nothing. The id has already been proved on this body by the probe that claimed the set —
-	 * this is the same id on the same animator — but a load that fails anyway is reported and leaves
-	 * the choice to the script, because the one thing this must never do is take a body's legs away.
-	 */
-	private loadMovingClip(animationId: string, animator: Animator): AnimationTrack | undefined {
-		let track: AnimationTrack | undefined;
-
-		const [ok] = pcall(() => {
-			const animation = new Instance("Animation");
-			animation.Name = CONFIG_ANIMATION_NAME;
-			animation.AnimationId = animationId;
-
-			// Left unparented on purpose: a track holds the animation it was loaded from, which is
-			// the same arrangement the engine's own script keeps its temporary clips in.
-			track = animator.LoadAnimation(animation);
-		});
-
-		if (!ok || track === undefined) {
-			warn(`[Animate] moving clip: ${animationId} would not load — the script keeps the choice`);
-			return undefined;
-		}
-
-		track.Priority = Enum.AnimationPriority.Movement;
-
-		return track;
 	}
 
 	/**

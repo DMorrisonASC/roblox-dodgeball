@@ -33,11 +33,13 @@ class ScoreRushMode implements GameMode {
 	 * The round credits the thrower's team — see {@link GameMode.hitAward} — so the rule here is
 	 * only *how much*, which is the one thing that would change for a heavier weapon.
 	 *
-	 * **A rig's throw is not worth a point, and that is a decision, not an oversight.** `hitAward`
-	 * is not told to skip NPCs; what happens is that `RoundService` cannot resolve a thrower to a
-	 * side, and a point nobody can be credited with is not awarded. Leaving the rule to fall out of
-	 * that is honest here because an NPC has no side to credit — whereas a mode that wanted rigs to
-	 * score would have to say for *whom*, which is a question only the mode could answer.
+	 * **A rig's throw is worth a point to the rig's side, and that is a reversal the code made necessary
+	 * rather than a rule change made here.** This method still answers only *how much*; who is credited is
+	 * the round's business, and the round now resolves a rig thrower to its side exactly as it resolves a
+	 * player (`RoundService.throwerOf` → `teamOf`). Before that, a rig's throw could not be attributed at
+	 * all — so a round played *against* rigs finished at 0-0 no matter how many players their balls knocked
+	 * over, which is the shape a scoring bug takes when the missing rule is at the other end of the wire.
+	 * What this mode now says is "a hit is a point", whoever landed it.
 	 *
 	 * **There is no same-side case here, and there cannot be one.** Friendly fire is off for every
 	 * mode, refused in the throw-hit path before any damage is done — see `RoundService.isFriendlyFire`
@@ -73,7 +75,7 @@ class ScoreRushMode implements GameMode {
 	 * early, because the other side is still playing and will win on points if it still holds them.
 	 */
 	public outcome(view: RoundView): RoundOutcome | undefined {
-		if (view.playersInRound().size() === 0) return DRAW;
+		if (view.participantsInRound().size() === 0) return DRAW;
 
 		const pointsA = view.scores.get(TEAM_A) ?? 0;
 		const pointsB = view.scores.get(TEAM_B) ?? 0;

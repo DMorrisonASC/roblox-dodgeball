@@ -152,14 +152,14 @@ class DodgeAndSeekMode implements GameMode {
 	 * last seeker disconnected, which is not a thing that happened in the game.
 	 */
 	public outcome(view: RoundView): RoundOutcome | undefined {
-		const inRound = view.playersInRound();
+		const inRound = view.participantsInRound();
 
 		if (inRound.size() === 0) return DRAW;
 
 		let dodgers = 0;
 
-		for (const player of inRound) {
-			if (view.teamOf(player) === DODGERS) dodgers++;
+		for (const participant of inRound) {
+			if (view.teamOf(participant) === DODGERS) dodgers++;
 		}
 
 		if (dodgers === 0) return SEEKERS;

@@ -191,6 +191,33 @@ export interface InteractionOptions {
 }
 
 /**
+ * The interface's **select tone**, played on its own: the sound a shop or inventory button makes when it is
+ * pressed.
+ *
+ * **Why this has to be exported at all, when {@link wireInteraction} already plays it.** That helper is for a
+ * *button* — it owns the pointer's four events, a `UIScale` and a shadow, and none of that belongs to an
+ * action that arrives from the keyboard. The power slot's own tap and the power key are exactly that case:
+ * `SuperAbility.usePower` is one request with two triggers, so it is one place that has no button to be
+ * wired to. What is shared is the *tone*, which is the thing a player recognises: the same click a shop
+ * purchase makes, because spending a power with `3` is the same kind of act as spending coins in a shop.
+ *
+ * **Not the counterpart of {@link makePressResponse}, which deliberately has none.** That one drives a
+ * controls-legend chip from a key the player pressed *to play the game*, and a click from the edge of the
+ * screen for a movement key would be noise. The power key is the other case: the key **is** the interface,
+ * there is no button anywhere on screen for the player to have pressed, and silence is what would read as the
+ * key not having registered.
+ *
+ * **A function rather than an exported `Sound`**, so the pair stays private and lazily built — see
+ * {@link uiSounds} for why nothing is created at module load — and so a caller cannot hold a reference to a
+ * tone and set its volume. It plays and returns; there is nothing to configure.
+ */
+export function playSelectTone(): void {
+	// `uiSounds` is `[hover, select]`; index 1 is the select tone, and the hover tone is not this function's
+	// business — a key press has no hover state to report.
+	uiSounds()[1].Play();
+}
+
+/**
  * Makes `button` respond to a pointer: it raises on hover, drops on press, and makes both tones.
  *
  * **This is `wirePress` grown up, and the rename is the honest part of the change.** It used to wire one
@@ -312,4 +339,61 @@ export function wireInteraction(
 			settle(up, rest);
 		}),
 	);
+}
+
+/**
+ * The same press as {@link wireInteraction}, driven by a **state** instead of by a pointer.
+ *
+ * **Why this exists beside the other rather than inside it.** A button's press is something the pointer
+ * does: it begins when the button goes down, it ends when it comes up, and the pointer has no other
+ * opinion. A key on the controls legend is the other way round — nothing on the screen is being clicked,
+ * and what has a duration is the *control being held*. So the animation is the same one with the pointer
+ * replaced by whatever the caller knows: the two timings, the scale and the shadow's behaviour are all
+ * `wireInteraction`'s, which is the whole of what makes a legend key and a dock button read as the same
+ * kind of object rather than as two things that happen to move.
+ *
+ * **A setter rather than a subscription, so that eight of these are one connection.** The caller is the
+ * only thing that knows what the state *is* — this module has no idea what a key is — so the answer is
+ * handed in, and a dozen keys can be driven from one loop on one `Heartbeat`. The setter compares before it
+ * tweens, so a row that is not changing costs one comparison per frame and a press already under way is
+ * never restarted.
+ *
+ * **The travel is `PRESSED_SCALE` and on a chip that is under a pixel**, which is expected rather than a
+ * disappointment: `ELEVATION`'s doc already puts the shadow first and the scale second, and on a small
+ * surface the cue that carries the press is the shadow *going out* — the chip sitting flat on the row is
+ * what "down" looks like at this size.
+ *
+ * **No tone**, unlike {@link wireInteraction}. Those two sounds are the client's answer to a *pointer*, and
+ * a key a player pressed to do something else entirely should not click at them from the edge of the screen.
+ *
+ * **Nothing here is a `Computed`**, for `wireInteraction`'s reason: what is written is a `UIScale`, which is
+ * an instance rather than a node in the graph, and what is wanted is a tween rather than an assignment.
+ *
+ * **A caller must not also call `wireInteraction` on the same element.** Both create a `UIScale` on
+ * `visual`, and two of them on one surface is one tween fighting another.
+ */
+export function makePressResponse(
+	scope: Fusion.Scope<unknown>,
+	visual: GuiObject,
+	shadow?: UIShadow,
+): (down: boolean) => void {
+	const rest = shadow !== undefined ? shadow.Transparency : 0;
+	const scale = Fusion.New(scope, "UIScale")({ Parent: visual, Scale: 1 });
+
+	const down = new TweenInfo(PRESS_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+	const up = new TweenInfo(RELEASE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+
+	let held = false;
+
+	return (isDown: boolean): void => {
+		if (isDown === held) return;
+		held = isDown;
+
+		const info = isDown ? down : up;
+		TweenService.Create(scale, info, { Scale: isDown ? PRESSED_SCALE : 1 }).Play();
+
+		if (shadow !== undefined) {
+			TweenService.Create(shadow, info, { Transparency: isDown ? 1 : rest }).Play();
+		}
+	};
 }

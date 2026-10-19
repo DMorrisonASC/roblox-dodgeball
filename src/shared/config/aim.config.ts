@@ -1,9 +1,13 @@
 /**
- * The aim-target glow: what colour a lit target is drawn in, and what it used to be drawn as.
+ * The aim's own numbers: what colour a lit target is drawn in, what it used to be drawn as, how sensitive
+ * the mouse is for this game, and how hard a charging body is turned onto the aim.
  *
- * Read by `AimTargetController` alone today. Shared rather than client-only because nothing in it is
- * a *client's* business to decide — the colour is the game's look, and a second client that ever
- * wanted it would want the same value.
+ * Read by `AimTargetController` (the glow), `main.client.ts` (the sensitivity, once at boot) and
+ * `AimFacingController` (the responsiveness) — three readers, one file, because none of the values is a
+ * *client's* business to decide: the colour is the game's look, the sensitivity is the game's feel, and the
+ * turn rate is the game's responsiveness. A second client that ever wanted them would want the same values.
+ * **The first sentence of this doc used to name `AimTargetController` alone**, and the count is worth
+ * re-reading rather than trusting — the same lesson `platform.ts` records about its own caller count.
  *
  * **Three entries here are no longer read, and that is worth spelling out.**
  * {@link AIM_CONFIG.TARGET_MAX_DISTANCE} and {@link AIM_CONFIG.TARGET_UPDATE_HZ} configured a ray the
@@ -74,4 +78,49 @@ export const AIM_CONFIG = {
 	 * delay on something this soft.
 	 */
 	TARGET_UPDATE_HZ: 15,
+
+	/**
+	 * **Placeholder — `0.52`.** The mouse sensitivity this game runs at, written once at client start to
+	 * `UserInputService.MouseDeltaSensitivity`.
+	 *
+	 * **A multiplier on the player's own slider, not a sensitivity of its own, and that is why it is allowed
+	 * to exist at all.** `MouseDeltaSensitivity` scales whatever the player has chosen; it does not replace
+	 * it. So a player whose slider sits at the default gets half the movement they had, and a player who has
+	 * already turned theirs down gets half of *that*. The shape is the point: this game is played by turning
+	 * the view, and a view that moves twice as far per inch as the player asked for is a real obstacle — but
+	 * the player's preference is still theirs, and halving it respects the order they put it in rather than
+	 * overruling it. **If what was wanted was an absolute number, this is the wrong property**: that is
+	 * `UserGameSettings.MouseSensitivity`, the slider itself, and overwriting it is taking a setting away from
+	 * somebody. It is not written anywhere in this project, deliberately.
+	 *
+	 * **Per session and never saved**, which is the property's own behaviour rather than an arrangement here:
+	 * `UserInputService` is the session's input state, so a rejoin starts from whatever the server hands the
+	 * client, and there is nothing for this file to restore. The same reason `ShiftLock`'s cursor has no
+	 * cleanup path.
+	 *
+	 * **What it reaches, checked rather than assumed.** Roblox's own camera scripts read mouse delta through
+	 * `UserInputService`, so this is upstream of everything that turns: the ordinary camera, the custom shift
+	 * lock (which writes `MouseBehavior` and `RotationType` and lets Roblox place the camera, so it inherits
+	 * this like any other view), the aim ray, and the arc. **Nothing in this project reads a raw delta of its
+	 * own**, so there is no second reader that this would fail to reach — see `ShiftLock` for the two settings
+	 * it *does* write and for why it does not take the camera over.
+	 *
+	 * The value is a feel decision and it is deliberately modest: it makes the view steadier for aiming at a
+	 * body-sized target, which is what the game asks of it. Move it toward `1` for a faster view.
+	 */
+	MOUSE_SENSITIVITY: 0.52,
+
+	/**
+	 * **Placeholder — `30`.** How hard the body is turned onto the aim while a throw is being charged, in
+	 * `AlignOrientation.Responsiveness` units. Read by `AimFacingController` alone.
+	 *
+	 * **A responsiveness and not a duration**, because the mechanism is a constraint: the body chases the aim
+	 * with a torque, and this is how quickly that chase closes. Higher is snappier and, past the point where
+	 * the turn outruns the eye, reads as a flick; lower is a body that visibly swims into place while the
+	 * player is already holding a ball at the aim. The precedent is `ThrowBehavior.aimAt`'s rigs, which tune
+	 * the same number on the same kind of constraint — and `DodgeService`, which uses `50` for a dash that
+	 * has no time to be smooth. This is slower than the dash deliberately: a dash is a snap the player asked
+	 * for, and a throw's aim is a pose they are holding.
+	 */
+	AIM_FACING_RESPONSIVENESS: 30,
 } as const;

@@ -8,10 +8,112 @@ across files, no compiler check, and no runtime warning: a renamed tag does not 
 matching*, and the code that reads it goes quiet in exactly the way a working path also looks quiet.
 This file is the list.
 
-**Re-verified against the source 2026-10-06** (commit `5bcc374`, with the economy work uncommitted).
-The previous revision was three tags short — `MatchJoinA`, `MatchJoinB` and `ShiftLockZone` (now
-`practiceZone`) — and
-described `CharacterBarrier` and `MatchSpawner` in terms of a map that is no longer cloned.
+**Register last re-verified row by row 2026-10-11** (commit `9e2e971`): every row below was
+re-derived — the tag string, its source of truth, and at least one reader — and the prose that
+describes those rows was corrected where it disagreed. What "re-verified" does **not** cover is the
+place file: whether a part actually wears a tag is a Studio fact, marked *painted in Studio* row by
+row, and no read of `src/` can confirm it.
+
+**Re-checked 2026-10-14 against the rig-walk work** (the last commit is `28182a5`): **no string was
+added, renamed or redefined**, so every row of the register stands. That pass re-derived what the two
+seek tags *do* — the note above the register — and it found one row **wrong rather than stale**: the
+`NPC` row's reader list was four readers short, which is corrected in the register below. It did not
+re-derive the other rows. One more thing it fixed: the dated notes in this block used to call their
+changes "working-tree change, not in any commit yet", and every one of them has since landed, so they
+are labelled as landed rather than as pending.
+
+**Tags added since that re-verification, and this is the whole list:** the keep-out pair
+(`SideKeepOutA`, `SideKeepOutB`) and `Behavior_AlwaysSeeking` — three strings, which is why the count
+below reads **twenty-three**. **One number in this block is stale and is left standing rather than
+quietly corrected:** the note further down that the pair took the count to "twenty-three rather than
+twenty-one" was true for the day the pair landed and before `Behavior_AlwaysSeeking` did, and
+"twenty-one" is the count as it stood *then*. The register's own line under the table — twenty-three —
+is the count. See the two dated notes below for what each addition means.
+
+**Earlier revisions, for the record.** The revision *before* 2026-10-06 was three tags short —
+`MatchJoinA`, `MatchJoinB` and `ShiftLockZone` (now `practiceZone`) — and described `CharacterBarrier`
+and `MatchSpawner` in terms of a map that is no longer cloned. The 2026-10-06 revision (commit
+`5bcc374`) was itself three tags short of this register: `mysterySpawnPrize`, whose service landed
+after it, and the two behaviours for seeking and dodging. Those three are what the register below
+grew by.
+
+**Landed in `390e8e8`.** The six `Behavior_*` tags became nine. The catch and throw behaviours were
+split into an always-on variant and a gated one, so `Behavior_Catching` and
+`Behavior_Throwing` now name the **gated** behaviours, and `Behavior_AlwaysCatching` /
+`Behavior_AlwaysThrowing` name the always-on ones — the behaviour those two original strings used to
+describe. The dodge behaviour was then split the same way, but **without moving any string**: the new
+`Behavior_AlwaysDodging` is the always-on variant, and `Behavior_Dodging` keeps the chance-gated
+behaviour it has always had. The register and the sections below describe the source as it stands;
+commit `9e2e971` predates all of it, so **a place-file rig still wearing `Behavior_Catching` or
+`Behavior_Throwing` is now dispatched to different code than it was** (see the catching section
+below), while **a rig wearing `Behavior_Dodging` dodges exactly as often as it did**.
+
+**Landed after the 2026-10-11 re-verification: a tenth behaviour tag, `Behavior_WalkToJoinPad`.** It
+walks a placeholder rig from a lobby spawn to a join pad, and `LobbyRigService` is the thing that spawns
+those rigs at all. **Rigs are therefore no longer only painted in Studio**: eight of them are cloned from
+a `ServerStorage` template at server start and spawned through `NpcService.spawn`, so the `NPC` row below
+gains a third author, and the section on the walk tag says what the new one does. **The lobby is also kept
+full rather than merely seeded**: each player arriving stands one rig down and holds that rig's seat until
+they take a side of their own, and each departure puts a rig back in the seat that was freed — so the
+number of `Team`-bearing rigs in the lobby tracks `MATCH_MAX_PER_TEAM` per side rather than being fixed at
+boot. Nothing else in the register moved: no *string* was added here, no string changed, and no existing
+tag changed meaning. (This note called itself a working-tree change when it was written; it is committed
+and in the register below.)
+
+**And a placeholder rig's tag set now changes with the phase — the one thing here a reader should know
+before reading a log.** The same rig wears `Behavior_WalkToJoinPad` and nothing else while the lobby is
+open, and the **six** gameplay tags — `Behavior_Catching`, `Behavior_Dodging`, `Behavior_Seeking`,
+`Behavior_Pickup`, `Behavior_Throwing`, `Behavior_Respawn`, the **gated** half of each pair and never an
+`Always*` — from the moment it is holding a side inside a round until that round ends. A rig on a side
+that is *not* inside a round wears none of the six: the walk is over and the round has not started. Both
+transitions go through `LobbyRigService.setGameplayBehaviors`, which prints one line per rig per edge
+(`playing — six behaviours on` / `standing down — behaviours off`), and **no tag was added or redefined
+by any of it** — the rigs are the newest wearers of tags that already existed, which is why the count
+below is still twenty.
+
+**So what a given rig wears, in one line each:** `Behavior_WalkToJoinPad` **while it is walking to its
+pad** and nothing else; nothing at all once it has arrived and no round is on; the six above while it
+holds a side inside a round; and both of those from the moment it dies, because `RespawnBehavior` copies
+the corpse's tag set onto the body that replaces it. That last sentence is the shape every tag-set bug in
+this file has taken so far — see the walk section below for the one it caused.
+
+**Both transitions go through `LobbyRigService.setGameplayBehaviors`**, which prints one line per rig per edge
+(`playing — six behaviours on` / `standing down — behaviours off`), and **no gameplay tag was added or
+redefined by any of it** — the rigs are the newest wearers of tags that already existed. What *was* added
+later is the keep-out pair, `SideKeepOutA` and `SideKeepOutB`, which is why the count below reads twenty-three
+rather than twenty-one: two painted boxes that say which region of the court a rig may fetch a ball from.
+Nothing else in the register moved for it.
+
+**Landed 2026-10-13: the boxes' meaning is inverted, and seeking is split in two.** The pair was
+added as a *denylist* — a rig read the other side's box and skipped the balls inside it, so every remaining ball
+in `Workspace` stayed a candidate, which is how a round rig came to walk into the lobby for one. Both boxes now
+read as an **allowlist**, one per side, and a rig fetches only inside its own. That alone would leave the
+practice rigs with no region at all, so **`Behavior_AlwaysSeeking` is a new tag** for them: it reads
+`practiceZone` instead of the side boxes. The two tags carry the same behaviour — one factory in
+`SeekBehavior.ts`, parameterised by a region — and differ in nothing else. **No string was renamed**: the tag
+strings are painted in the place file, so `SideKeepOutA` still says keep-out while meaning "A's fetch region",
+which the tags' own docs in `shared/constants.ts` now state outright.
+
+**Re-checked 2026-10-14 against the rig-walk work: no string was added, renamed or redefined.** The
+register's table and every row above stand unchanged, and this paragraph exists so that a later reader
+does not have to re-derive that from the diff. What *did* change is what `Behavior_Seeking` and
+`Behavior_AlwaysSeeking` **do** — the one behaviour that moves a rig now moves it five different ways —
+and that is worth a line here because a tag's row is also a promise about what appears in the output:
+
+- A seek now issues its `MoveTo` on every turn rather than only when its target moved, and it draws an
+  arc, so the walk to a ball is no longer the straight line the sections below describe.
+- It **runs** for a ball further than `SEEK_SPRINT_DISTANCE_STUDS`, through a `Sprint` contribution on
+  `WalkSpeedService`. That is a *speed* change on a rig's body, and it is the first time a rig has had a
+  speed sum at all — see `HANDOFF.md` §17.
+- It **hops** past a body, **bluffs** an armed enemy with a sidestep, and **does not stop when its hand
+  fills** — the walk carries on past a pickup, sometimes backwards.
+- Five new `[Rig]` lines fall out of that (`sprinting to a ball`, `jump`, `walk curving`, `shuffling`,
+  `walking on after the pickup` / `backing off the pickup`), one per edge and never per tick. **A reader
+  grepping a log for a rig that is "not walking"** should know that a rig with no line at all is a rig
+  doing none of the five, which is the ordinary case.
+
+Nothing about that changes a tag: the behaviours are still dispatched by the same two strings, and the
+tags a rig wears over a round are still the six in the paragraph above.
 
 ## Why there are copies at all
 
@@ -37,20 +139,27 @@ a place file that no build touches.
 | `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.roundBallCount` (the budget) and `cleanupRoundBalls` (the sweep) |
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
-| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` on the server — the tracker that publishes the attribute, `MysteryBoxService` through its point test `insideZoneAt`, and the dodge gate for a body with no player — plus `client/roundZone.ts` for `ShiftLock` and the dodge input, one of the two tags a client reads |
-| `mysterySpawnPrize` | `shared/constants.ts`, `MYSTERY_SPAWN_TAG` | *painted in Studio* | `MysteryBoxService.report`, `.tick` and `forgetLostSpawns` — **plus `PracticeZoneService.insideZone`, which decides whether the part is on a practice floor** |
+| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` / `.insideZoneAt` on the server — the tracker that publishes the attribute; `MysteryBoxService` calls `insideZoneAt` to ask whether a spawn point is on a practice floor; and **`AlwaysSeekingBehavior` reads the tag itself to ask whether a loose ball is inside the zone** — the practice half of the seek split, and the only reader of this tag that is a behaviour. **On the client** the rule is `client/roundZone.ts` (`inTaggedZone`), which the camera (`ShiftLock.checkZone`) and the dodge input (`DodgeController`) both ask — plus `ShiftLock.reportZoneParts`, which reads the tag a second time for its own count. One of the two tags a client reads |
+| `mysterySpawnPrize` | `shared/constants.ts`, `MYSTERY_SPAWN_TAG` | *painted in Studio* | `MysteryBoxService.report`, `.tick` and `forgetLostSpawns`. It also asks `PracticeZoneService.insideZoneAt(spawn.Position)` whether a spawn point is on a practice floor — **a question about the spawn, asked of the zone, not a second reader of this tag** |
 | `MatchJoinA` | `shared/constants.ts`, `MATCH_JOIN_A_TAG` | *painted in Studio* — the part's flags are then forced from code | `MatchService.mountSide` |
 | `MatchJoinB` | `shared/constants.ts`, `MATCH_JOIN_B_TAG` | as above | as above |
+| `SideKeepOutA` | `shared/constants.ts`, `SIDE_KEEP_OUT_A_TAG` | *painted in Studio* — **invisible, `Anchored`, non-collide, non-query, non-touch**; its `Size` and `CFrame` are the whole of the region | `npc/sideZones.ts` — `fetchRegionFor` (**a rig on A reads this box**, and fetches only inside it) and `zoneCounts` (the boot line). **The reading was inverted 2026-10-13**: the pair used to be a denylist — a rig read the *other* side's box and skipped the balls inside it, so every other ball in `Workspace` stayed a candidate — and is now the allowlist that says where each side may fetch. The string is unchanged because it is painted, so **the name says "keep-out" and means "A's fetch region"** |
+| `SideKeepOutB` | `shared/constants.ts`, `SIDE_KEEP_OUT_B_TAG` | as above | as above, **read by a rig on B** |
 | `MatchJoinTouched` | `MatchService`, `DEBOUNCE_TAG` | `MatchService.touched`, on a **character** | `MatchService.touched` |
-| `NPC` | `shared/constants.ts`, `NPC_TAG` — re-exported by `npc/Behavior.ts`, which is where every server reader still imports it from | `NpcService.spawn`, `RespawnBehavior`, or painted in Studio | `NpcService`, `CollisionGroups`, `BallService`, `RoundService`, `OutlineService` — **and `client/controllers/character/RigAnimationController`, which is what animates the rigs** |
-| `Behavior_Catching` | `npc/Behavior.ts`, `BEHAVIOR_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted | `NpcService`'s per-behavior gate |
-| `Behavior_Throwing` | `npc/Behavior.ts`, `BEHAVIOR_THROWING` | as above | as above |
-| `Behavior_Pickup` | `npc/Behavior.ts`, `BEHAVIOR_PICKUP` | as above | as above |
-| `Behavior_Seeking` | `npc/Behavior.ts`, `BEHAVIOR_SEEKING` | as above | as above |
-| `Behavior_Dodging` | `npc/Behavior.ts`, `BEHAVIOR_DODGING` | as above | as above |
-| `Behavior_Respawn` | `npc/Behavior.ts`, `BEHAVIOR_RESPAWN` | as above | as above |
+| `NPC` | `shared/constants.ts`, `NPC_TAG` — re-exported by `npc/Behavior.ts`, which is where every server reader still imports it from | `NpcService.spawn` — called by `LobbyRigService` for the lobby's placeholders, and by anything else that spawns a rig — `RespawnBehavior`, or painted in Studio. **Never the `PlaceholderRig` template in `ServerStorage`**: `LobbyRigService` finds that by *name*, so it needs no tag, and a tag on it is the one studio-side fault this register has cost a session — the world-blind scan hands the template a loop, and (before `NpcService.ensureToken` refused it) a `ThrowerToken` that **every clone inherited**, which makes one token stand for eight rigs | **The readers, and this cell was incomplete until 2026-10-14** — it named `NpcService`, `CollisionGroups`, `BallService`, `RoundService`, `OutlineService` and `RigAnimationController`, and **four more were reading the tag the whole time**. **Deliberately no total here, because this list grows every time a client module watches a rig** — the same reason `HANDOFF.md`'s counts became descriptions. **Server:** `NpcService` (the boot scan, both tag signals, and the loop's own `HasTag` gate), `CollisionGroups` (the rig collision group), `BallService` (sweeping held balls off rigs at a round end), `RoundService` (`roundParticipants`, for the same sweep), `OutlineService` (the per-body `Highlight`), **`npc/detect.ts`** (the enemy scan every aim, dodge and hop goes through), **`npc/rigs.ts`** (`sideOfRig` / `rigsOnASide`). **Client:** `client/controllers/character/RigAnimationController`, which is what *animates* the rigs, **`client/hitVfx.ts`**, which walks the tagged rigs to draw an impact on one, and **`client/chargeEffect.ts`**, added 2026-10-13, which watches every tagged rig's `CHARGING_ATTRIBUTE` so the charge a rig's windup publishes can be drawn on its hand. **The client half is the half worth naming**, and it is why this row's list is longer than any other: a rig is the one body in the game whose state two machines act on, and every client-side reader of this tag is a `CollectionService` walk plus the pair of signals — which is also why a rig that leaves the world is un-dressed by the removal signal rather than by anything the server says |
+| `Behavior_Catching` | `npc/Behavior.ts`, `BEHAVIOR_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted — **plus `LobbyRigService`, which puts it on every lobby placeholder that is holding a side while a round is on** | `NpcService`'s per-behavior gate — and **gated since the catch/throw split**: a per-window 50 % decision, not the always-on window this string used to name. See the section below |
+| `Behavior_AlwaysCatching` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted — **never the placeholders** | as above — **the always-on catcher, which is the behaviour `Behavior_Catching` used to name** |
+| `Behavior_Throwing` | `npc/Behavior.ts`, `BEHAVIOR_THROWING` | `NpcService.spawn` / `RespawnBehavior` / painted — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate — **gated since the split**: it turns to face an enemy and throws at it, and issues itself no ball. See the section below |
+| `Behavior_AlwaysThrowing` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_THROWING` | `NpcService.spawn` / `RespawnBehavior` / painted — **never the placeholders** | as above — **the always-on thrower, which is the behaviour `Behavior_Throwing` used to name** |
+| `Behavior_Pickup` | `npc/Behavior.ts`, `BEHAVIOR_PICKUP` | `NpcService.spawn` / `RespawnBehavior` / painted — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate |
+| `Behavior_Seeking` | `npc/Behavior.ts`, `BEHAVIOR_SEEKING` | as above — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate — and **the *round* seek, which fetches only inside the rig's own side's box since 2026-10-13**: this string used to name a seek that fetched from anywhere in `Workspace`. `createRoundSeekBehavior` in `SeekBehavior.ts` reads `npc/sideZones.fetchRegionFor`, so a rig on A never walks for a ball outside `SideKeepOutA`, whatever room it is standing in |
+| `Behavior_AlwaysSeeking` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_SEEKING` | *painted in Studio* — **never the placeholders**, which wear `Behavior_Seeking` while a round is on | `NpcService`'s per-behavior gate — and **the *practice* seek**, `AlwaysSeekingBehavior.ts`, which fetches only inside a `practiceZone`-tagged part and nowhere else. A rig with no side has no half of the court, which is why the practice rigs need a tag of their own. **The name is a Placeholder and the odd one out**: every other `Always*` tag is the ungated twin of a gated one, and seeking has no gate — `Behavior_PracticeSeeking` would say what this is. See the section below |
+| `Behavior_Dodging` | `npc/Behavior.ts`, `BEHAVIOR_DODGING` | as above — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate — and **the chance-gated dodger, whose meaning this split did not change** (a sibling was added beside it rather than it moved). See the section below |
+| `Behavior_AlwaysDodging` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_DODGING` | as above — **never the placeholders** | as above — **the always-on dodger**, which answers yes to every ball it can move away from |
+| `Behavior_Respawn` | `npc/Behavior.ts`, `BEHAVIOR_RESPAWN` | as above — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate, which calls `onDied` when a loop ends with no health left |
+| `Behavior_WalkToJoinPad` | `npc/Behavior.ts`, `BEHAVIOR_WALK_TO_JOIN_PAD` | `LobbyRigService`, through `NpcService.spawn` | `NpcService`'s per-behavior gate — and `WalkToJoinPadBehavior` itself, which reads the rig's `WalkToJoinPad` (a `Vector3` destination) and `WalkToJoinPadSide` (the side to take **on arrival**) attributes. **It is the one behaviour tag that writes `Team`**, which is what makes the walker a round participant the moment it stands on the pad |
 
-Sixteen tags. Of them, **four are the same rule** — a tag that only means something while the part is
+Twenty-three tags. Of them, **four are the same rule** — a tag that only means something while the part is
 in the world — and the rule is now enforced by the reader rather than repeated in each one: see the
 four sections below that say so.
 
@@ -92,8 +201,9 @@ appears in this file.
   the name is what a ball is called in the log and a hand-built part with one and not the other
   should be treated as a ball. Being wrong in that direction costs a throw; the other direction
   costs a body.
-- **The in-code comments already disagree about the count**, which is the clearest argument for this
-  file: `OutlineService` says "three files have to agree", `BallSpawnerService` and `BallComponent`
+- **The in-code comments disagree about the count, and each is a different number**, which is the
+  clearest argument for this file: `OutlineService` deliberately names no number at all ("every file
+  that has to find a ball"), `BallSpawnerService` and `BallComponent`
   each name three others, and `CollisionGroups` names five — none of them names `BallComponent`
   itself. The real number is **eight occurrences of the string** — seven `const`s in seven files plus
   the decorator — and none of the comments says that.
@@ -273,7 +383,7 @@ a switch wants a pause between the two touches.
 It is worth having in this file despite being code-only, because it is a tag on a **character**, and
 a reader who knows the rest of this list will not expect that.
 
-## `NPC` and the six `Behavior_*` tags
+## `NPC` and the ten `Behavior_*` tags
 
 `NPC` is the entry point; a `Behavior_*` tag enables one mechanic. A rig wearing `NPC` and no
 behaviour tag is managed and does nothing.
@@ -310,14 +420,136 @@ pickup only it collects what happens to roll within `PICKUP_RADIUS` of wherever 
 belongs in this file because nothing in the build knows the two belong together: they are independent
 strings, and the system that runs them is deliberately independent as well.
 
-**And two tags can be a mechanic that never runs, which is the other half of that fact and is written
-down for the same reason.** `Behavior_Catching` holds a catch window **open continuously** — that is
-what a catcher is — and an open catch window refuses a dodge outright (`DodgeService.blocksDodge`).
-So a rig wearing `Behavior_Catching` and `Behavior_Dodging` is a catcher that never dodges: not a
-bug, and not a special case anywhere, but a combination nobody would guess from the two tag names.
+**And the seeker now reserves the ball it sets off for, which is a change to this tag's behaviour though not
+to its string.** `npc/ballClaims.ts` is a `Map` from ball to rig: a rig that has chosen a ball writes down
+that it has, every other rig sees that ball as taken and chooses the next nearest, and a rig whose turn
+finds *every* ball claimed **stands** instead of joining the pile. Nothing is sent between rigs — the claim
+*is* the agreement — and a claim is not a lock on the ball: whoever is inside `PICKUP_RADIUS` when a pickup
+runs takes it, so a snatch is possible and repairs itself on the loser's next turn. A claim lasts exactly as
+long as the walk: renewed on every turn of it, released on pickup, on give-up, on the target ceasing to be
+loose, and on death — plus `NPC_CONFIG.CLAIM_SECONDS` of silence as the net for the one route no hook
+covers, a `Behavior_Seeking` tag that is simply removed at a round boundary.
+
+**And two tags can be a mechanic that never runs — which now turns on *which catcher* a rig wears, where
+it used to be the only catching tag there was.** An open catch window refuses a dodge outright
+(`DodgeService.blocksDodge`), so a dodging tag beside a catching one is either starved or merely
+rationed:
+
+- **`Behavior_AlwaysCatching` starves *any* dodger.** Its window is held open continuously, so
+  `Behavior_Dodging` and `Behavior_AlwaysDodging` alike never get an opening — the rig catches and
+  nothing else. Not a bug and not a special case anywhere, but a combination nobody would guess from
+  the tag names, which is why it stays written down.
+- **`Behavior_Catching` rations them instead.** The gated catcher rolls once per window whether it is
+  a catcher at all, and asks only when the roll says yes *and* a ball is in its detection radius — so
+  it leaves the window **closed** for roughly the other half of the timeline, and a closed window is
+  exactly what a dodge needs. A rig wearing it and `Behavior_AlwaysDodging` dodges in **every** gap;
+  one wearing it and the gated `Behavior_Dodging` dodges in about half of them. Either way the two
+  actions are still mutually exclusive *at any instant* (the gate is unchanged, and still
+  `DodgeService`'s): the rig catches while its window is open and dodges in the gaps, never both at
+  once. **This is the one place the catch/throw split changed a documented behaviour, and it is the
+  point of that split** — see the note at the head of this file and `CatchBehavior`.
+
 The same gate is why a dodge cannot interrupt a catch: the two actions are mutually exclusive by
 design, for a player and for a rig alike — the difference being that a player chooses, and a rig
 cannot.
+
+**And the two catchers disagree about the ball in the hand, which is the second place the split changed a
+documented behaviour.** `Behavior_AlwaysCatching` puts down whatever it has just caught on its very next
+tick: a pure catcher needs a free hand, and dropping is what gives it one. `Behavior_Catching` **keeps
+it**, because the rigs that wear it are the lobby placeholders — they wear `Behavior_Pickup` and
+`Behavior_Throwing` beside it, and what empties their hand is the *throw*. That difference is a rig that
+plays against the version this replaced, which picked a loose ball up and put it straight back down twice a
+second for a whole round: never walking (it never left the ball), never throwing (its hand was empty half
+the time), and reading in the log as a rig that follows balls around. **The price, for anybody reading a tag
+set rather than this file:** a rig wearing `Behavior_Catching` and *not* `Behavior_Throwing` takes one ball
+and keeps it for the rest of the round — a full hand cannot catch and cannot pick up, and nothing puts that
+ball down. See `AlwaysCatchBehavior`'s tick, where the rule lives and is argued.
+
+**A death does not cost a rig its side.** `RespawnBehavior.onDied` reads the corpse's `Team` and writes it
+on the replacement, beside the tags it already carried over — without it a rig came back as a body the round
+does not count, never teleported, and one whose `detectEnemy` side read `undefined`, which made every rig on
+the field an enemy and every player a friend. `Team` is an attribute rather than a tag, so this is written
+here only because `Behavior_Respawn` is the tag that owns the rebuild.
+
+## `Behavior_WalkToJoinPad` — the one tag whose destination is written on the rig
+
+A rig wearing it walks to the point named by its own **`WalkToJoinPad`** attribute and stands there,
+taking the side named by **`WalkToJoinPadSide`** on arrival. The first is a `Vector3` and the second a
+`TeamLabel` (`"A"` / `"B"`), both written by `LobbyRigService` when it spawns the rig, which makes this
+the only behaviour in the game whose target is *handed to it* rather than found by it: the others ask the
+world a question — where is a ball, is one coming at me, is one within reach — and this one is told.
+The reason is the one that keeps the lobby out of the behaviour: a join pad is a fact about the *lobby*,
+and a behaviour that looked one up would have to know which tag a pad wears, that there are two sides,
+and where they are. Handing it a point means it can be told to walk anywhere, and being handed the side
+means it does not have to work out which of two identically-tagged pads it is standing on.
+
+**`WalkToJoinPad` and `WalkToJoinPadSide` are attribute names, not tags**, so neither is a row in the
+register above — they are named here because they are the other half of this tag's contract, and a
+reader grepping either string will find it in two files. Their source of truth is
+`WalkToJoinPadBehavior.ts`, which reads them; the writer of both is `LobbyRigService`. Nothing on the
+client knows they exist.
+
+**What the tag does not do, and what it does the moment it is done.** The walk is the whole of it: the
+body is moved with `Humanoid.MoveTo` and nothing else about it is touched on the way. Arriving is the one
+thing that changes anything — the arrival branch writes the rig's `Team` from `WalkToJoinPadSide`, and
+that single write is what turns the body from a placeholder into a round participant, because
+`npc/rigs.ts` reads exactly that attribute and nothing else.
+
+**A rig still walking is therefore on no side at all, and its writer has to allow for that.** It is a
+body crossing a lobby floor that the round ignores — which is the correct reading: it holds a *seat*
+rather than a post, and the seat it holds is the one it is walking *towards*. `LobbyRigService` counts it
+that way, from the same attribute the arrival branch will act on, so the seat it is about to take is
+neither double-filled while it walks nor reported short.
+
+**The tag comes off the rig the moment it arrives, and the behaviour takes it off itself.** That is the
+arrival branch: the walk is over, the side is written, and `WalkToJoinPadBehavior` removes its own tag from
+the body — so "a rig wearing this" means *a rig on its way to a pad* and nothing else. `LobbyRigService` relies
+on exactly that reading (`moveWalkersToArena` is its list of rigs that have not arrived, and it strips the tag
+from any that are still walking when a round opens).
+
+**And this is load-bearing rather than tidy, which one live bug is worth remembering for.** The tag comes off
+because `RespawnBehavior` hands the replacement the *corpse's* tag set: a corpse of a rig that had arrived
+still wore this tag, and the replacement also inherits the rig's attributes from the template it was cloned
+from — so a rig killed mid-round came back wearing "walk to a pad" **with** a pad to walk to, and set off from
+the arena towards the lobby the moment it stood up. The old shape (an `arrived` flag inside the behaviour)
+could not have prevented it: the state is keyed by the model, and a rebuilt rig is a new model. No tag, no
+bug — and `RespawnBehavior` also clears the destination attributes on a rebuilt rig that holds a side, so the
+two halves of the instruction cannot survive a death together.
+
+**The order rule above applies to it like any other behaviour tag.** `LobbyRigService` spawns through
+`NpcService.spawn`, which adds behaviour tags first and `NPC` last, so the tag is in place before the
+loop that will run it starts — the same rule, and the same reason, as every other entry in this file.
+
+**On its own it is inert; beside a seek tag it is a tug of war** — `Behavior_Seeking` for a round rig, `Behavior_AlwaysSeeking` for a practice one that wears both. Both move the body with
+`Humanoid.MoveTo`, and whichever ticks later in a turn wins — so a rig wearing this and `Seeking` walks
+to a ball and then back to its pad, for as long as the balls last. Nothing refuses the combination,
+because the two tags are independent strings and no runtime check could know which of two destinations
+somebody meant. Written down here for the same reason the catch/dodge interaction is: it is a
+combination nobody would guess from the tag names.
+
+## `SideKeepOutA` / `SideKeepOutB` — the two boxes that say which region of the court a rig fetches from
+
+Two invisible parts, one per side, whose **`Size` and `CFrame` are the whole of the region**. **The reading was
+inverted on 2026-10-13 and this section is written from the new side of it**: a rig on A fetches inside the box
+tagged `SideKeepOutA` and nowhere else. It used to be the other way round — a rig on A read `SideKeepOutB` and
+skipped the balls inside it — which excluded one region and left every other ball in `Workspace` a candidate.
+The pair exists because `MoveTo` cannot go round anything, so a ball the rig can see and not reach is a ball it
+walks at for a whole stall budget; a region it may fetch inside is what stops the walk being made at all. See
+`SeekBehavior`'s own doc for why every cheap way of asking "is that ball reachable" is worse than a painted box.
+
+**The side is in the tag rather than in an attribute**, so a server that finds only one of the pair can name
+which one is missing: `LobbyRigService` prints both counts on its boot line (`fetch boxes N + N`) and warns by
+name when one is absent. **A place with no box for a side is a side that fetches nothing** — that changed with
+the reading: it used to mean every ball was worth chasing. The warning is still a line rather than a refusal to
+spawn anything, because a place file is not something the server can repair, but what it is reporting is now a
+broken round rather than an ugly one.
+
+**A rig reads its own side's box, and only its own.** A ball on the other half is not a candidate, which is the
+point for the same reason it always was: reaching it means walking at a barrier. **A rig with no `Team` has no
+box at all** — a placeholder still walking to its pad, a hand-tagged rig with no side — so the round variant
+fetches nothing on its behalf, and a practice-area rig needs the tag that reads the practice zone instead:
+`Behavior_AlwaysSeeking`, in `AlwaysSeekingBehavior.ts`. That split, and the reason a practice rig and a round
+rig could not keep sharing one tag, is the section above the register.
 
 ## Cloning
 
@@ -345,11 +577,11 @@ duplicated — the source of truth is the file named.
 
 | String | Source of truth | Also spelled out in |
 | --- | --- | --- |
-| `"Armed"` | `BallFactory` sets the first value; `BallService` sets it on a hand-out and a throw | `BallComponent`, `BallPickupService`, `BallSpawnerService`, `CatchBehavior`, `CatchService` |
+| `"Armed"` | `BallFactory` sets the first value; `BallService` sets it on a hand-out and a throw | `BallComponent`, `BallPickupService`, `BallSpawnerService`, `CatchBehavior`, `CatchService`, `DodgeBehavior` (its own `ARMED_ATTRIBUTE` copy) |
 | `"ThrowerId"` | `BallService.throwBall` | `BallComponent`, `BallFactory` (cleared to `""`) |
 | `"StatsRecorded"` | `BallComponent` | — (one file, and read nowhere else; it exists so a ball cannot score twice) |
 | `"ObjectOutline"` | `OutlineService` (`OUTLINE_NAME`) | `AimTargetController` |
-| `"Playing"` / `"Intermission"` | `RoundService` publishes them as the phase name | **server:** `BallSpawnerService`, `MatchService`, `StatsService`, `SuperService`, `OutlineService`. **client:** `RoundStatusController`, `RoundResultController`, `StatsBillboardController`, `TeamRingController`, `MusicController`, `ShiftLock` |
+| `"Playing"` / `"Intermission"` | `RoundService` publishes them as the phase name | **server:** `BallSpawnerService`, `MatchService`, `StatsService`, `SuperService`, `OutlineService`, `MysteryBoxService`, `DodgeService`. **client:** `RoundStatusController`, `RoundResultController`, `StatsBillboardController`, `TeamRingController`, `MusicController`, `ShiftLock`, `roundZone.ts`, and `panels.ts` (which spells both and is what `DockController` and `ArenaFreezeCountdownController` read them through) |
 | `"LobbySpawn"` | `shared/config/arena.config.ts` (`LOBBY_SPAWN_NAME`) | `RoundService`, in the `DescendantRemoving` watcher that traces the part's disappearance. **Nothing reads this name as a spawn any more** — the lobby is a folder of `LobbySpawns` parts — so the only reason the string still exists is that watcher, which is scaffolding worth deleting once the part is traced |
 | `DodgeballBall` | `shared/constants.ts` (`BALL_NAME`) | **imported, not copied** |
 | `THROWER_TOKEN`, `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE`, `TEAM_ATTRIBUTE`, `RESPAWN_AT_ATTRIBUTE`, `COINS_ATTRIBUTE`, `OWNED_ITEMS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE`, `CROWN_ATTRIBUTE`, `STAT_HITS` / `STAT_OUTS` / `STAT_RATIO`, `BALL_ABILITY_ATTRIBUTE`, `ARMED_ABILITY_ATTRIBUTE`, `CHARACTER_BARRIER_TAG`, `MATCH_JOIN_A_TAG` / `MATCH_JOIN_B_TAG`, `MATCH_SPAWNER_TAG`, `PRACTICE_ZONE_TAG` | `shared/constants.ts` | **imported, not copied.** This is the list to check first: every one of them is read by two files or more, and every one of them is a *string* that a typo would silently break |

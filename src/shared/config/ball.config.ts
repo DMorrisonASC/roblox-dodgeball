@@ -219,7 +219,7 @@ export const BALL_CONFIG = {
 	 * "get rid of it". The two are separate numbers, tuned for separate reasons, and the
 	 * inequality is the only thing that binds them.
 	 */
-	PICKUP_RADIUS: 8,
+	PICKUP_RADIUS: 6,
 
 	/**
 	 * How often loose balls are looked for, in seconds.
@@ -258,6 +258,46 @@ export const BALL_CONFIG = {
 	THROW_MUZZLE_DISTANCE: 2,
 
 	/**
+	 * How long a body stays marked as **mid-throw** after the ball leaves its hand, in seconds.
+	 *
+	 * **Placeholder.** This is the length of the throw's own animation as far as the code is concerned:
+	 * `BallService` writes the mark when the ball is released, clears it after this long, and every client
+	 * dresses the body with the throw clip for exactly that window. Nothing here knows how long the asset
+	 * actually is — the clip streams in behind the throw, and a clip shorter than this window holds its
+	 * last frame for the remainder while a longer one is cut off when the mark clears.
+	 *
+	 * **The alternative was to let the clip decide its own end**, which needs a fact only the client has
+	 * (the track's own length, after the asset arrives) and a way for the client to tell the server —
+	 * a remote, for a number the server does not need for anything else. One tuned duration is the cheaper
+	 * shape, and it is the same one the dodge uses from the other direction (`DODGE_CONFIG.DURATION` is the
+	 * dash's length, and the dodge clip is played for it). Raise this if throws look cut off; a value
+	 * longer than the clip is visible as a body holding a pose it has finished.
+	 */
+	THROW_ANIMATION_SECONDS: 0.4,
+
+	/**
+	 * The clip a **throw** plays, per rig type — the same pair for every body that throws.
+	 *
+	 * **A rig and a player throw with the same animation, and this is where that is decided.** The clips
+	 * were supplied "for all models", which is the animation editor's phrase for an R6 export, and the
+	 * intent is that a rig's throw and a player's are the same motion: a rig reads these through
+	 * `BODY_ANIMATION.throw`, which borrows them rather than repeating the ids, and a player's throw is
+	 * played from `BallService` itself (a track started on the server, so the other players see it — a
+	 * client-started one would be that client's private flourish). One table means swapping the throw clip
+	 * is one edit, and no body can end up throwing differently for no visible reason.
+	 *
+	 * **A pair rather than a record, because there is one state here.** The dodge has four clips and keeps
+	 * a table keyed by direction (`DODGE_ANIMATION`); a throw has one, and an id per rig type is the
+	 * smallest thing that can be read correctly. The choice is not cosmetic: an R6 clip never loads onto an
+	 * R15 rig, so the wrong one is a throw that silently plays nothing.
+	 *
+	 * **An empty id is the *off* switch**, as everywhere else — the throw happens and the body keeps
+	 * whatever it was wearing.
+	 */
+	THROW_ANIMATION_R6: "rbxassetid://93233830971715",
+	THROW_ANIMATION_R15: "rbxassetid://126614918987928",
+
+	/**
 	 * Floor on the launch speed, in studs per second.
 	 *
 	 * **A floor, not the speed a ball is thrown at.** Every arc solves its own speed from the
@@ -278,10 +318,10 @@ export const BALL_CONFIG = {
 	 * **A charged player throw does not read this at all, and has nothing for it to do.** There is no solve
 	 * for it to floor, because there is no target: the hold climbs from
 	 * {@link BALL_CONFIG.CHARGE_MIN_SPEED}, which is a *launch speed* rather than a minimum anything has to
-	 * clear. So this is the floor of the **aimed** throw — the one a rig makes — and the two kinds no
-	 * longer share a speed rule.
+	 * clear. So this is the floor of the **aimed** throw, which is now made by nobody — see `planAimedThrow` —
+	 * and every throw the game actually makes is a charged one that never reads it.
 	 */
-	THROW_SPEED: 0,
+	THROW_SPEED: 50,
 
 	/**
 	 * The gravity the ball falls under, in studs per second squared — **not the world's**.
@@ -306,7 +346,7 @@ export const BALL_CONFIG = {
 	 * **Flight time is the knob, not speed.** Lowering this lengthens the ball's hang, which is what makes a
 	 * throw watchable and catchable; the speed that then covers the distance is `THROW_MAX_SPEED`'s business.
 	 */
-	BALL_GRAVITY: 80,
+	BALL_GRAVITY: 40,
 
 	/**
 	 * How much faster than the bare minimum the arcing throw is launched, as a
@@ -331,15 +371,60 @@ export const BALL_CONFIG = {
 	 * `(THROW_MAX_SPEED / THROW_ARC_SPREAD)² / gravity`, so raising this eats into
 	 * range unless {@link BALL_CONFIG.THROW_MAX_SPEED} comes up with it.
 	 *
-	 * **Read by the aimed solve and by nothing else.** A charged throw has nothing to spread — its speed is
-	 * the hold, and there is no distance in it to derive a multiplier from — so the reach figure above is
-	 * the *rig's* maximum and the player's comes from {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT}. The two kinds
-	 * of throw no longer share a speed rule, which is the whole of what that change did.
+	 * **Read by the aimed solve and by nothing else, and the aimed solve has no caller any more.** A charged
+	 * throw has nothing to spread — its speed is the hold, and there is no distance in it to derive a multiplier
+	 * from — which is why every throw the game makes comes from {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT} and the
+	 * ceiling instead. The reach figure above was written when a rig asked for a point to be reached; see
+	 * `planAimedThrow` for what happened to that path.
 	 */
 	THROW_ARC_SPREAD: 1.4,
 
 	/**
-	 * Ceiling on the automatic wind-up, in studs per second.
+	 * Ceiling on a throw's launch speed, in studs per second — **and the top of the range for both bodies, which
+	 * is the property this constant is now arranged around.**
+	 *
+	 * **Placeholder — `336`, and the figure is solved rather than chosen.** A charged throw's vertical launch is
+	 * fixed by {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT} (`v_y = sqrt(2·g·h)`, here `17.89` studs/s), so its flight
+	 * time is fixed with it (`t = 2·v_y/g`, here `0.447 s`) and its range is `t·sqrt(v² − v_y²)`. Setting that
+	 * range to `NPC_CONFIG.THROW_RANGE_STUDS` = `150` at a full hold gives `v = sqrt(2·g·h + (150/t)²)` =
+	 * `335.9`, so this is `336` and a full hold lands `150.1` studs out **measured level** — which is the
+	 * figure that matters, because a player's throw has no target and lands where it lands. **A rig throws at a
+	 * body, which sits about two and a half studs below its own hand, so the same hold reaches about `187`
+	 * studs there** — a ball launched above its mark is in the air longer — and a rig's gate is therefore
+	 * strictly inside the envelope rather than exactly on its edge. See `chargeForRange`, which is where that
+	 * drop is accounted for. **The whole table is 18.5 studs at a tap, 52.0 at a quarter, 84.8 at a half, 117.5
+	 * at three quarters and 150.1 at full** — see `planChargedThrow`, which printed the 55.3-stud version of it
+	 * until this moved.
+	 *
+	 * **The trade in one sentence: one envelope for both bodies, so raising this raises a player's throw too,
+	 * and that is the point.** A rig throws the ball a player throws — same solve, same config, same ceiling —
+	 * so the rig asks the ballistics a question instead of being given a ceiling of its own
+	 * (`chargeForRange`, the inverse of the charge-to-speed line). A rig's range gate is `150`, so a ceiling
+	 * that reached 55 left a rig past that range throwing at full charge and landing short. The alternative was
+	 * to bring the rig's gate down to meet the 55-stud envelope, and that would have restored the complaint the
+	 * gate was raised to answer — rigs holding a ball with a live enemy in plain sight and never throwing at it,
+	 * which reads from a seat as a rig that has stopped working. **The cost is that a player's throw is much
+	 * longer than it was**, and the visible half of it is the top of the hold: a half hold used to be 37 studs
+	 * and is now 85, so a shot that used to sit near the end of the charge sits nearer the middle.
+	 *
+	 * **What did not move: the shape, the hang, and the close game.** {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT} is
+	 * untouched, so the apex above the hand is the same two studs and a tap is the same 18.5-stud throw at the
+	 * same `23°` — the range grew and the arc stayed as flat as it was asked to be. The one thing worth knowing
+	 * before watching a long throw is that at full charge the launch angle is now about `3°`, and that a full
+	 * hold crosses 150 studs in the same `0.45 s` every other charge hangs for: **the reaction window is
+	 * unchanged, only the distance covered inside it.** Everything that reads a *speed* rather than a charge was
+	 * checked when this moved, and the two that could have followed it do not — the camera kick and
+	 * `throwFeedback.config.ts` both take the charge fraction, deliberately, which is why they are unmoved by a
+	 * ballistic retune. `TRAIL_LIFETIME` is the exception and does not take the charge: it is a *time*, so a
+	 * full-power throw now draws a wake about two and a half times as long as it did. See that constant.
+	 *
+	 * **The paragraphs below are the aimed solve's, and the aimed solve has no caller any more.** A rig used to
+	 * ask for a point to be reached, and this cap was the only thing slowing that flat throw down — at the flat
+	 * angle a 60-stud throw wants about 250, so a cap below that decided the throw instead of the solve, and this
+	 * figure's own flat reach was about 34 studs. Nothing reads that path now (see `planAimedThrow`), so the
+	 * sentence that used to sit here about easing this to 200 is history rather than guidance. It is kept,
+	 * unchanged, because the reach arithmetic is still what the aimed solve does if a caller ever returns — and
+	 * because a reader who finds `overhead` in the code deserves to find out whose it was.
 	 *
 	 * Note this is the *pre-spread* figure. After {@link BALL_CONFIG.THROW_ARC_SPREAD},
 	 * the furthest reachable target is `(THROW_MAX_SPEED / THROW_ARC_SPREAD)² / gravity`
@@ -358,20 +443,13 @@ export const BALL_CONFIG = {
 	 * costing range, but it would stop the throw being flat — see `MIN_THROW_ANGLE` in
 	 * `shared/Trajectory.ts`.
 	 *
-	 * **It is also the ceiling of the charged player throw, which is what keeps this number from being a
-	 * dial for the rigs alone.** A player's speed is no longer solved from a distance: the hold climbs from
-	 * {@link BALL_CONFIG.CHARGE_MIN_SPEED} to *this*, and the angle is derived from the speed so the arc peaks
-	 * at {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT}. So the furthest a player can throw is decided by these two
-	 * figures together, and neither can be moved without moving the reach — see that constant for which one
-	 * buys what.
-	 *
-	 * **And it is lower than what a click past the target used to do.** That case had no solution at all —
-	 * a target beyond the ball's reach at this speed — so the solve fell back to a 45° lob, whose range is
-	 * `v²/g`: about 195 studs, which is what "aim at the sky and it flies as far as the ball allows" was.
-	 * A full hold reaches about 67, and it is something the player does deliberately rather than something
-	 * that happens when they miss.
+	 * **And it is still below what a click past the target used to do.** That case had no solution at all — a
+	 * target beyond the ball's reach at the speed of the day — so the solve fell back to a 45° lob, whose range
+	 * is `v²/g`: about 195 studs at the `125` this held then, and about 1400 at the `336` it holds now, which is
+	 * further than any arena here is across. There is no lob any more. What is left is a throw a player asks for
+	 * deliberately, and the furthest deliberate one reaches 150 studs.
 	 */
-	THROW_MAX_SPEED: 125,
+	THROW_MAX_SPEED: 120,
 
 	// ------------------------------------------------ the charged player throw
 
@@ -383,16 +461,25 @@ export const BALL_CONFIG = {
 	 * only decides how fast a player's own hold fills up. The server's half of the rule is the four numbers
 	 * below, which are what turn that number into a launch.
 	 *
-	 * **One second, and the choice is a competition between two failures.** Too short and the middle of the
-	 * range is unreachable: a power you cannot hold is a power you cannot learn, and learning the lengths is
-	 * the whole point of replacing "click the sky" with a known maximum. Too long and the throw stops being
-	 * a throw — a full-power shot costs a second of standing with a ball in hand and, until the release, no
-	 * ball in the air. One second is about the longest hold that still reads as drawing an arm back rather
-	 * than as hesitating.
+	 * **Three seconds, which is a reversal of the argument that used to stand here.** It said one second
+	 * was the longest hold that still reads as drawing an arm back rather than hesitating — and against a
+	 * *throw*, that is still true: a full-power shot now costs three seconds of standing with a ball in hand
+	 * and, until the release, no ball in the air. What that argument was really choosing between is which
+	 * failure the hold has, and the user has picked the other one. At one second the **middle of the range**
+	 * is the failure: the whole span from a tap to full power is under a second of finger, so a half-power
+	 * throw is a timing trick rather than a decision, and the power the player meant is not one they can
+	 * reproduce. Three seconds is long enough that each of the levels in between is a length a person can
+	 * hold on purpose, which is what a charge is *for*.
+	 *
+	 * **What it costs, stated so it is not a surprise.** The charge sound is stretched to fit — see
+	 * {@link BALL_CONFIG.CHARGE_SECONDS} in `audio.config.ts`, which plays the clip at
+	 * `TimeLength / CHARGE_SECONDS`, so a two-second clip now runs at two thirds speed and sounds a third
+	 * lower. A clip recorded at about three seconds would play unshifted; that is an asset decision rather
+	 * than a code one, and `[Throw] charge sound loaded` prints the speed on every run.
 	 *
 	 * It is not a rate: nothing accumulates, and the mapping is one division. See `ChargeRequest`.
 	 */
-	CHARGE_SECONDS: 1,
+	CHARGE_SECONDS: 1.25,
 
 	/**
 	 * How high above the thrower's hand a charged throw arcs, in studs. **A peak rather than an angle, and it
@@ -400,8 +487,9 @@ export const BALL_CONFIG = {
 	 *
 	 * **Placeholder, and the value is a real throw rather than a round number.** The log's own figures put the
 	 * launch point about four and a half studs above the floor (`launch … y 210.96` against a landing at
-	 * `y 206.5`), so a peak of three above the hand puts the apex at roughly seven and a half studs — a little
-	 * over a character's head, which is where a thrown ball goes.
+	 * `y 206.5`), so the apex sits this far above that — a little over a character's head, which is where a
+	 * thrown ball goes. Both values this has held were chosen that way rather than as round numbers; the note at
+	 * the end of this block says which one it holds now and what moving it costs.
 	 *
 	 * **What this replaces, measured.** The arc used to be built by *lerping between two launch angles*, and
 	 * the peak heights that produced, from the same solve, were **9.5 studs at a tap, 21 at mid charge and 17
@@ -415,8 +503,15 @@ export const BALL_CONFIG = {
 	 * the two are not interchangeable: at full charge the reach is about `2·v·sqrt(2·g·h)/g`, which is linear in
 	 * the speed and only in the *root* of the peak. See `planChargedThrow` for the table this produces and for
 	 * the arithmetic behind "restore the old range".
+	 *
+	 * **Lowered from three to two at the user's request — "make the arc one stud lower".** The apex is now about
+	 * six and a half studs above the floor rather than seven and a half, which is a flatter, more direct-looking
+	 * throw. The cost is reach, and it is worth knowing which way it moves: full charge loses about a fifth of
+	 * its range, because the reach goes with the square *root* of this number — `sqrt(3)` against `sqrt(2)` is
+	 * the 1.22 that a fifth is measured against. Nothing else reads it, so the aim guide and the ball move
+	 * together by construction: the client draws the solve from the same constant.
 	 */
-	CHARGE_PEAK_HEIGHT: 3,
+	CHARGE_PEAK_HEIGHT: 1.5,
 
 	/**
 	 * The launch speed at zero charge, in studs per second. **Placeholder.**
@@ -528,7 +623,7 @@ export const BALL_CONFIG = {
 	 * **Zeroed, and it should stay zeroed.** A non-zero nudge is a fault in the plan being papered over.
 	 * Tune with it, write down what it took, fix the cause, and put it back to zero.
 	 */
-	THROW_LAUNCH_NUDGE: { forward: 0, left: 0, up: 1 },
+	THROW_LAUNCH_NUDGE: { forward: 0, left: 0.5, up: 0 },
 
 	/**
 	 * Launch angle of the curveball, in degrees.

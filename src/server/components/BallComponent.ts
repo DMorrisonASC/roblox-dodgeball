@@ -3,7 +3,8 @@ import { BaseComponent, Component } from "@flamework/components";
 import { Players, Workspace } from "@rbxts/services";
 import { abilityOn } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
-import { BALL_NAME, PRACTICE_ZONE_ATTRIBUTE, THROWER_TOKEN } from "shared/constants";
+import { BALL_NAME, DUCKING_ATTRIBUTE, PRACTICE_ZONE_ATTRIBUTE, THROWER_TOKEN } from "shared/constants";
+import { isDuckExempt } from "shared/duck";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
@@ -394,8 +395,11 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// because a resolution turns tags into deaths and a death is credited to this.
 			const throwerId = this.instance.GetAttribute("ThrowerId");
 			const taggedAny = this.hitModels.size() > 0;
-			this.resolveTags(throwerId);
-			this.score(taggedAny);
+			// `hitAny` is what `score` decides on, and it is narrower than `taggedAny`: a tag whose
+			// body had already died is skipped by `resolveTags` and is not a hit. `taggedAny` stays
+			// for the miss splash below, which asks whether the ball tagged anybody at all.
+			const hitAny = this.resolveTags(throwerId);
+			this.score(hitAny);
 
 			// **A Freeze ball that arrived without tagging anybody splashes where it stopped**, and the
 			// flag it asks is the one this branch already reads to count the throw: `taggedAny` was taken
@@ -418,6 +422,15 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 					(model) => this.splashSpares(throwerId, model),
 				);
 			}
+
+			// **The Pierce trail comes off here, because this is the throw's death.** The effect is a child of
+			// the ball, so the ball's own destruction takes it — but a ball that has *landed* is not
+			// destroyed, it lies on the floor until somebody collects it or it expires, and a particle
+			// emitter on a stationary ball is a plume of trail sitting in the middle of the arena for as long
+			// as that takes. `BallTrail` refused to be an emitter for exactly this reason and named this
+			// branch as the honest hook; see `BallService.detachPierceEffect` for the other two exits, and
+			// note this one is the only place that knows the throw is over while the ball lives on.
+			this.balls.detachPierceEffect(this.instance);
 
 			this.instance.SetAttribute("Armed", false);
 			return;
@@ -530,6 +543,36 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			return;
 		}
 
+		// **A duck, and this is the veto half of a rule whose other half is a collision group.**
+		//
+		// A ducking body's head and arms have been moved into a group the ball does not collide with — see
+		// `shared/duck.ts` for the parts and `CollisionGroups` for the row — so the ball *passes* rather
+		// than bouncing off. **What the group does not do is suppress `Touched`**, which is the same engine
+		// fact the practice-zone veto above relies on and the arena barrier is built on: this contact fires
+		// anyway, and without this refusal the ball would pass *and* count.
+		//
+		// **The two halves are one rule, and neither is the mechanic on its own.** A veto with no group
+		// leaves the ball visibly bouncing off a body the game says it missed; a group with no veto leaves
+		// it passing and tagging. The note in `shared/duck.ts` says the same thing from the other end, and
+		// they are deliberately written twice: a reader who finds one of them has found half a rule.
+		//
+		// **`struck` and not `otherPart`, and that is load-bearing.** `struckBodyPart` has already resolved
+		// an accessory to the limb it is worn on and the root to the torso it is jointed to, so asking the
+		// raw contact would let a hat's `Handle` be exempt while the head behind it was not. A ball into the
+		// hips is a *torso* contact and is therefore a hit — which is the whole point of the parts list:
+		// **a duck moves the head and the arms, and a low ball still hits.**
+		//
+		// **Placed beside the friendly-fire veto and before the tag**, because a tag written above could not
+		// be taken back: the ball carries its tags until it dies, and a duck that starts *after* this contact
+		// cannot save anybody. **A duck has to be up when the ball arrives.**
+		if (character.GetAttribute(DUCKING_ATTRIBUTE) === true && isDuckExempt(humanoid, struck)) {
+			if (DEBUG_CONFIG.VERBOSE_LOGS) {
+				print(`[Duck] ${character.Name}: ${struck.Name} exempted — the ball passed`);
+			}
+
+			return;
+		}
+
 		// **Heard here, which is after every reason this contact might not be a hit.** A catch returned
 		// above, a friendly hit has just returned, and the ball's own thrower and a body it has already
 		// been through were refused earlier still — so arriving at this line *is* the hit, and the
@@ -591,13 +634,30 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// nothing about the outcome: that body is already tagged, and a tagged body dies when the ball lands
 		// whether or not it was frozen on the way there.
 		if (ability === "Freeze") {
-			// **The ball's own position rather than the struck part's.** The splash's radius is eight studs,
-			// so where its centre sits inside that sphere changes nothing about who is caught — but this is
-			// also the point the burst is fired from, and a limb's centre is inside the limb, which would
-			// put the shards inside somebody's chest. The ball's centre at the contact is one ball radius
-			// off the skin, which is where the impact actually was.
+			// **The struck part is the splash's centre, and it is the *first* part to arrive by
+			// construction.** The `hitModels.has(character)` guard above returns for every later part of the
+			// same body, so `struck` is the part the engine reported first — which is exactly what
+			// `SUPER_CONFIG.FREEZE_HIT_RADIUS` promises ("from the body part a Freeze ball *struck*") and
+			// what `HANDOFF.md` §11 says the ability does.
+			//
+			// **It used to be the ball's own centre, and both of the places the number is documented had
+			// gone on saying "the struck part"** — so the code was the odd one out rather than the rule. The
+			// argument for the ball was that a limb's centre is *inside* the limb, so the burst would fire
+			// inside somebody's chest; the counter-argument is that the ball's centre at the contact is a
+			// ball radius *outside* the skin, which is where nothing happened. **Inside the body is the
+			// honest place for the shards to start** — they travel outward, so the effect reads as coming
+			// out of the hit — and the cost of the change is bounded: the moved centre is at most a torso's
+			// half-width, against an eight-stud radius, so the set of bodies caught is the same set.
+			//
+			// **The whole of the target list is `freezeInRadius`'s and not this branch's.** What is passed
+			// here is a point, a radius and who may be spared; the service asks the *world*
+			// (`Workspace:GetPartBoundsInRadius`), walks every part back to its model and freezes each body
+			// once. That is why a Freeze ball that strikes a **rig** freezes the players and rigs around it
+			// through exactly the same path as one that strikes a player — there is no player list and no
+			// rig list here, and deliberately so. See that method for the argument, and `splashSpares` below
+			// for the three rules that decide who is left alone.
 			this.freezes.freezeInRadius(
-				this.instance.Position,
+				struck.Position,
 				SUPER_CONFIG.FREEZE_HIT_RADIUS,
 				(model) => this.splashSpares(throwerId, model),
 			);
@@ -658,25 +718,30 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	}
 
 	/**
-	 * Counts this throw as a hit, once, at the ball's death — if it landed on anybody.
+	 * Counts this throw as a hit, once, at the ball's death — if it landed on a living body.
 	 *
-	 * **One throw, at most one entry — whether any body was tagged when the ball died decides it,
-	 * and nothing later may change its mind.** That is not a tidiness rule, it is what makes the
-	 * number mean what it says:
+	 * **One throw, at most one entry — whether any tagged body was still alive when the ball died
+	 * decides it, and nothing later may change its mind.** That is not a tidiness rule, it is what
+	 * makes the number mean what it says:
 	 *
 	 * - A single landing reports *every* part the ball overlaps, so without this a ball rolling to a
 	 *   stop would be a dozen hits.
 	 * - A ball that tagged three players and then hit the floor is one hit, not three. The throw
 	 *   landed on somebody; where it came to rest afterwards is not a second throw.
+	 * - A ball whose only tags are bodies that died while it was still in the air is no hit at all.
+	 *   Striking a corpse gains nothing — the death is the thing the hit would have caused, and
+	 *   another hand caused it first. This is also what makes one victim worth one hit across a
+	 *   MultiBall volley: the first ball to resolve kills the body, and every later ball that tags
+	 *   the same corpse resolves against a dead humanoid and adds nothing.
 	 * - A ball that is caught is counted nowhere: the catch returns before the ball dies, so nothing
 	 *   reaches here. The caught thrower's death is not this figure either — that is an out, and it
 	 *   is counted by the round, which is the only thing that knows an elimination happened.
 	 *
-	 * **Nothing is counted when nothing was tagged, and that is the rule rather than an omission.**
-	 * The record is hits against outs — outcomes, not throws — so a throw that lands on the floor is
-	 * a throw with no entry, and there is no such figure as a miss to add one to. The flag below is
-	 * still written either way: it means "this throw's accounting is done", which is worth being able
-	 * to say whether or not the answer was a hit.
+	 * **Nothing is counted when no living body was tagged, and that is the rule rather than an
+	 * omission.** The record is hits against outs — outcomes, not throws — so a throw that lands on
+	 * the floor is a throw with no entry, and there is no such figure as a miss to add one to. The
+	 * flag below is still written either way: it means "this throw's accounting is done", which is
+	 * worth being able to say whether or not the answer was a hit.
 	 *
 	 * **Taken at the death, not at the hit**, because a hit is no longer final — a catch can still
 	 * take it back. `StatsRecorded` is cleared by the same `Armed` transition that clears the tag
@@ -686,18 +751,24 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * Whether that names a person at all is `StatsService`'s question — a rig's token is a GUID and
 	 * falls out there, which is what keeps NPCs out of the record.
 	 */
-	private score(taggedAny: boolean): void {
+	private score(hitAny: boolean): void {
 		if (this.instance.GetAttribute("StatsRecorded") === true) return;
 
 		this.instance.SetAttribute("StatsRecorded", true);
 
-		// **A throw that tagged nobody is a miss, and nothing is told about it.** This branch used to
-		// report one to `SuperService`, which zeroed the thrower's run of hits. The count is "hits since
-		// you last died" now and has no miss reset, so there is nothing on the other end of that call —
-		// see `SuperService.noteHit` for what stood there and why it went.
+		// **A throw that hit nobody alive is a miss, and nothing is told about it.** This branch used
+		// to report one to `SuperService`, which zeroed the thrower's run of hits. The count is "hits
+		// since you last died" now and has no miss reset, so there is nothing on the other end of that
+		// call — see `SuperService.noteHit` for what stood there and why it went.
+		//
+		// **`hitAny` is narrower than "tagged anybody", and the narrowing is the point.** A ball that
+		// tagged a body which then died before this ball resolved has `hitAny` false: `resolveTags`
+		// skipped the corpse, and a death that already happened by another hand is not this throw's to
+		// claim. So the test is the same one `resolveTags` applied per body, reduced to "did any of
+		// them pass" — and it is what stops a MultiBall volley scoring twice for one victim.
 		//
 		// **The branch itself stays, and it is load-bearing rather than a leftover.** What follows it is
-		// the hit accounting, and that accounting does not re-test `taggedAny` — so deleting this as the
+		// the hit accounting, and that accounting does not re-test `hitAny` — so deleting this as the
 		// empty branch it now looks like would record every miss as a hit and raise the thrower's count
 		// for it. The `return` is the whole of what this does: a miss is a throw whose accounting is done,
 		// which is what `StatsRecorded` above has just said, and that is the end of it.
@@ -708,7 +779,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// the count alone in every mode. In Team Elimination and Dodge and Seek the thrower dies for it
 		// and the count goes anyway; in Score Rush the thrower survives, and that is the one mode where
 		// the difference is visible.
-		if (!taggedAny) return;
+		if (!hitAny) return;
 
 		const throwerToken = this.instance.GetAttribute("ThrowerId");
 		if (!typeIs(throwerToken, "string") || throwerToken === "") return;
@@ -720,7 +791,17 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// and neither owns it. `StatsService` keeps a career total and `SuperService` keeps a run in a row
 		// — different questions about one event, which is why they are handed the same token rather than
 		// one being worked out from the other.
-		this.abilities.noteHit(throwerToken);
+		//
+		// **And the run is gated here rather than inside `noteHit`, because the gate is a round fact and the
+		// round owns it.** The thrower is resolved through `throwerOf` — a `Player` for any account, or a rig
+		// only while it is in the round — and the run only moves when that body is *in this round*: a player
+		// in `activePlayers`, a rig on a side during `Playing`. A practice hit therefore records a career hit
+		// (above) but never a run, and the crown cannot grow out of one. `noteHit` takes the resolved body
+		// and no longer asks the phase itself — the participation gate subsumes it.
+		const thrower = this.rounds.throwerOf(throwerToken);
+		if (thrower !== undefined && this.rounds.isActive(thrower)) {
+			this.abilities.noteHit(thrower);
+		}
 	}
 
 	/**
@@ -791,7 +872,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * The list is emptied after the loop rather than during it, so nothing reads a half-resolved
 	 * throw.
 	 */
-	private resolveTags(throwerId: unknown): void {
+	private resolveTags(throwerId: unknown): boolean {
 		// **What question this answers:** whether the ball died on the world at all, and with how
 		// many tags owed. `landHit` below already prints one line per body it resolves, so this adds
 		// only the count — and, more importantly, the case of *zero*, where the method ran and had
@@ -806,15 +887,31 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		const token = typeIs(throwerId, "string") ? throwerId : "";
 
+		// **The answer this returns: did any tag resolve into a hit.** A tag whose body is already
+		// dead is skipped — see the doc above — and a throw whose only tags are corpses is not a hit
+		// at all: striking a body that has already died gains nothing, because the death is what the
+		// hit would have caused and another hand caused it first. Tracked here rather than re-derived
+		// by `score`, because this loop is the only place that reads the humanoid's health, and the
+		// answer is gone once the list is cleared below.
+		let hitAny = false;
+
 		for (const [model, part] of this.hitModels) {
 			const humanoid = model.FindFirstChildWhichIsA("Humanoid");
 			if (!humanoid || humanoid.Health <= 0) continue;
 
-			if (token !== "") this.rounds.registerHit(token, model);
+			hitAny = true;
+
+			// **The ability goes with the hit, because nothing can be asked about it afterwards.** A mark rides
+			// the *ball*, and by the time a client reacts to the impact this instance may already be gone — so
+			// the word is read here, once per body, and travels on the event. A Pierce ball's three bodies all
+			// name Pierce, which is what the splash counts.
+			if (token !== "") this.rounds.registerHit(token, model, abilityOn(this.instance) ?? "");
 			this.landHit(model, humanoid, part);
 		}
 
 		this.hitModels.clear();
+
+		return hitAny;
 	}
 
 	/**

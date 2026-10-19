@@ -264,4 +264,34 @@ export const AUDIO_CONFIG = {
 	 * make happen deliberately, repeatedly, and at a moment of their own choosing.
 	 */
 	THROW_CHARGE_VOLUME: 0.4,
+
+	/**
+	 * The **slot-machine spin**: the reels-and-ticker noise that runs under the power slot's shuffle for the
+	 * length of the reel and stops dead on the winning power.
+	 *
+	 * **The one id here that is played *looped* and then stopped by hand**, which is the whole reason it is not
+	 * simply a cue. Every other clip in this file is fire-and-forget: it is played, it ends when the file ends.
+	 * This one has to last exactly as long as an animation whose length is a number in another file
+	 * (`SuperHudController`'s `SHUFFLE_SECONDS`), so nothing about the clip's own length can decide when it
+	 * stops — `<Sound>:Stop()` is called from the tween's completion, and the loop is what makes it audible for
+	 * the whole reel rather than for part of it. **If a clip ever replaces this one, the loop stays**: a shorter
+	 * clip that is *not* looped is a sound that ends early and leaves the landing silent, which is the one thing
+	 * a gambling noise must not do.
+	 *
+	 * **Supplied rather than invented**, so what is unverified about it is the character rather than the
+	 * spelling: whether a loop of it under a 1.6-second deceleration reads as suspense or as a rattle, and
+	 * whether it is long enough to have an audible loop point. Both are ear judgements, and both are why the
+	 * spin's own log lines in `SuperHudController` print its start and its landing.
+	 */
+	POWER_SPIN: "rbxassetid://96725080532933",
+
+	/**
+	 * **Placeholder.** The spin's level.
+	 *
+	 * **It occupies the same band as the chest's award sound**, which is the honest comparison: both are
+	 * "something happened to your account" rather than feedback on a control. It is set slightly under the
+	 * award because it lasts several times as long — a clip running for the whole reel at an event's volume is a
+	 * noise somebody will turn the game off to escape, where a half-second one is a flourish.
+	 */
+	POWER_SPIN_VOLUME: 0.4,
 } as const;

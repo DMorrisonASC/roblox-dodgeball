@@ -216,3 +216,62 @@ export function hudTheme(): HudTheme {
 		},
 	};
 }
+
+/**
+ * The face every piece of text in the game is drawn in — **the one value that decides font style and
+ * weight for the whole client.**
+ *
+ * **`GothamMedium`, which is the heaviest non-bold face `Enum.Font` has.** The Gotham family in this enum
+ * is four faces — `Gotham` (regular), `GothamMedium`, `GothamBold` and `GothamBlack` — and
+ * `GothamSemibold` is a *deprecated alias of `GothamMedium`* rather than a fifth weight, so there is
+ * genuinely nothing between Medium and Bold to reach for. (The whole family is also an alias now: the
+ * engine maps every `Gotham*` face onto Montserrat, which is what actually renders. See the note on weight
+ * below.)
+ *
+ * **Weight and style travel in this one name, and that is forced rather than chosen.** big-ui's
+ * `TypographySpec.font` is typed `Enum.Font`, so a face is the only thing its typography table can carry —
+ * there is no separate weight field to set, and no way to express a heavier-but-still-not-bold weight
+ * (Montserrat's 600, say) through it. That would take the newer `Font` data type, which means a `FontFace`
+ * written onto every label after construction instead of a theme value; the family asset and the weight
+ * would then be a genuine pair of variables. Named here so the limit is a decision on the record rather
+ * than something to rediscover.
+ *
+ * **It is read in exactly two places**, and they are the two halves of the same job: `ThemeController`
+ * writes it into all ten typography variants — which is every label big-ui builds, including its `Button`
+ * captions — and {@link applyUiFont} corrects the components that hard-code a face of their own.
+ */
+export const UI_FONT: Enum.Font = Enum.Font.GothamBlack;
+
+/**
+ * Gives `root` and everything under it {@link UI_FONT}.
+ *
+ * **For the one thing the theme cannot reach.** Nearly every label in the game is built by a component that
+ * reads a typography variant, so writing `UI_FONT` into the theme is enough for them. big-ui's `Alert` is
+ * the exception: it hard-codes `GothamBold` for its title and `Gotham` for its message rather than reading
+ * the table (`out/components/Alert.luau`), and it takes no font prop, so the only way to bring it in line
+ * is to write the font onto the labels it made. `hudToast.mountToast` is the single call site — every toast
+ * in the game, and the hit confirmation with them, goes through that function.
+ *
+ * **A subtree rather than a label, for the same reason the walk has to be written carefully.** big-ui's
+ * `Alert` builds those two labels *inside* the frame it returns, so the frame is the thing a caller has;
+ * and `GetDescendants()` does not include the instance it was called on, so a walk-only version would miss
+ * a label handed in directly — which is how this would be used the day a second hard-coded component turns
+ * up. The root is therefore styled explicitly *and* the descendants walked.
+ *
+ * **This is the one piece of the theme that exists because of a library's shape rather than the game's**, so
+ * it is the first thing to delete if big-ui ever lets a component take a font.
+ */
+export function applyUiFont(root: Instance): void {
+	applyFontTo(root);
+
+	for (const descendant of root.GetDescendants()) applyFontTo(descendant);
+}
+
+/** The font applied to one instance, if it is the kind of instance that has text. */
+function applyFontTo(instance: Instance): void {
+	// Three guards rather than one union test: each narrows `Instance` to a concrete class that carries
+	// `Font`. `panelChrome.wrapLabels` narrows the same way.
+	if (instance.IsA("TextLabel")) instance.Font = UI_FONT;
+	else if (instance.IsA("TextButton")) instance.Font = UI_FONT;
+	else if (instance.IsA("TextBox")) instance.Font = UI_FONT;
+}

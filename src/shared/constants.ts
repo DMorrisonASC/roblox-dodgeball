@@ -201,6 +201,46 @@ export const MATCH_JOIN_A_TAG = "MatchJoinA";
 export const MATCH_JOIN_B_TAG = "MatchJoinB";
 
 /**
+ * Tag marking the region a rig **may** fetch a ball from — **one box per side, painted in Studio.**
+ *
+ * **Inverted 2026-10-13, and the inversion is the whole of it: this used to be a no-go box.** A rig used to
+ * read the *other* side's box and skip the balls inside it, which excluded one region and left every other
+ * ball in `Workspace` a candidate — so a round rig would cross to the enemy's half, or walk into the practice
+ * court or the lobby, for a loose ball, and the report that produced this change is a rig walking to the lobby
+ * for one. The reading now is the rule the user asked for: **a round rig fetches only what is inside the box
+ * painted for its own side**, and a ball anywhere else is not a candidate at all. `npc/sideZones.ts` finds the
+ * parts; `SeekBehavior` owns the test.
+ *
+ * **What it is still for.** A ball that ends up on the far side of the court is unreachable, and the way
+ * `Behavior_Seeking` discovers that is the expensive way: `MoveTo` walks a straight line and cannot go round
+ * anything, so a rig sent after it crosses the midline, is stopped by the barrier, and spends its whole
+ * patience pressed against a wall before giving up on that ball and choosing another. An allow-list skips
+ * those balls *before* the rig sets off, which is what stops the walk being made at all.
+ *
+ * **And the cost is the other direction, which is a place-file fact rather than a code one.** A box that does
+ * not cover everything a rig on that side can walk to makes the rig ignore balls it *could* reach — quieter
+ * than a rig pressed against a wall, and worse, because a side whose box is missing or too small simply stops
+ * fetching. The two counts on the boot line are the only warning there is; see `LobbyRigService`.
+ *
+ * **The names are kept although "keep-out" now reads backwards.** The strings are painted in the place file,
+ * and a rename would silently stop matching — the failure `PRACTICE_ZONE_TAG` above writes down at length — so
+ * the constant keeps its name and this doc carries the correction.
+ *
+ * **The side is in the tag rather than in an attribute**, exactly as the join parts above work — and the pair
+ * is why a server that finds only one of them can name which one is missing rather than saying "something is
+ * wrong with the arena".
+ *
+ * **`Anchored`, and invisible, and all four flags the join parts use, for the reasons that doc gives**: a box
+ * somebody can walk into must not collide, must not hand `Touched` to every ball that crosses it, and must not
+ * be what the aim preview stops on. Its `CFrame` and `Size` *are* the region — there is nothing else to
+ * configure, and moving it in Studio is the configuration.
+ */
+export const SIDE_KEEP_OUT_A_TAG = "SideKeepOutA";
+
+/** The other side's box. See {@link SIDE_KEEP_OUT_A_TAG}. */
+export const SIDE_KEEP_OUT_B_TAG = "SideKeepOutB";
+
+/**
  * Tag marking a piece of arena that keeps match balls beside it.
  *
  * **A marker, and the only thing read from it is where it is.** `BallSpawnerService` puts one ball
@@ -247,20 +287,6 @@ export const MATCH_SPAWNER_TAG = "MatchSpawner";
 export const THROWER_TOKEN = "ThrowerToken";
 
 /**
- * Attribute on a **`Player`** saying whether their clicks may throw.
- *
- * Read by the throw handler in `BallService` and written by the `2` key. On the player
- * rather than the character because it is a *preference*: a character is replaced on every
- * death, and a setting that switched itself back on when you respawned would be worse than
- * not having one — you would die, click, and throw while still looking for the ball.
- *
- * **Only an explicit `false` blocks.** A player who has never pressed the key has no
- * attribute and throws as before, so there is no default to write anywhere and no state
- * that can get stuck in a value nobody chose.
- */
-export const THROW_ENABLED = "ThrowEnabled";
-
-/**
  * Attribute on a **`Player`** naming the team they are on for the round in progress.
  *
  * Written by `RoundService` at the start of every playing phase, and read by anything that
@@ -284,6 +310,9 @@ export const TEAM_ATTRIBUTE = "Team";
  * An *instant* on the shared clock rather than a remaining time, because the reader can subtract it
  * from its own reading of that same clock. A duration would be as stale as the moment it was sent,
  * and an attribute carries no send time to correct it by.
+ *
+ * **Nothing reads it on a client any more**, since the readout that drew it as a bar was deleted; it stays
+ * published for `DUCK_READY_AT`'s reason, which is that the writer of a cooldown is the service that owns it.
  */
 export const DODGE_READY_AT = "DodgeReadyAt";
 
@@ -293,7 +322,7 @@ export const DODGE_READY_AT = "DodgeReadyAt";
  *
  * Written by `CatchService` when a catch window opens or is extended, and it covers the window
  * **plus** `ACTION_CONFIG.ACTION_LOCKOUT_SECONDS` — the tail after a catch in which a dodge is
- * refused. So the bar this feeds is the span the two actions share rather than a lock on catching:
+ * refused. So the span this covers is the one the two actions share rather than a lock on catching:
  * a catch is possible again before the instant passes, because the tail shuts the *dodge*.
  *
  * On the player for the same reason as {@link DODGE_READY_AT}: a character is replaced on every
@@ -302,12 +331,24 @@ export const DODGE_READY_AT = "DodgeReadyAt";
 export const CATCH_READY_AT = "CatchReadyAt";
 
 /**
+ * Attribute on a **`Player`** holding the server-time instant at which their next duck counts as ready
+ * again, on {@link DODGE_READY_AT}'s terms exactly: an *instant* on the shared clock, written by
+ * `DuckService` when a duck is accepted, and covering the duck **plus** `ACTION_CONFIG.ACTION_LOCKOUT_SECONDS`
+ * — the tail after a duck in which the dodge and the catch are refused.
+ *
+ * Nothing reads it yet, and it is published anyway for `readyAt.ts`'s reason: the writer of a cooldown is
+ * always the service that owns it, and a HUD that wanted a third bar should not be the thing that makes
+ * the state exist. One line here, and no reader to keep in step with it.
+ */
+export const DUCK_READY_AT = "DuckReadyAt";
+
+/**
  * Attribute on a **`Player`** holding how much sprint stamina they have left, in seconds.
  *
  * On the player for the same reason as {@link DODGE_READY_AT}: the pool outlives the character, so
  * dying does not hand out a fresh one. Written by `WalkSpeedService` at a throttled rate rather than
- * on every change — see the note below — and read by `CooldownHudController`, which draws it as a
- * third bar beside the two cooldowns.
+ * on every change — see the note below — and read by `SuperHudController`, which draws the pool as a
+ * row of segments.
  *
  * **A level, where the two instants above are deadlines, and the difference is deliberate.** A
  * deadline has to be converted into a fraction against a clock the reader does not share exactly,
@@ -388,20 +429,28 @@ export const ROUND_SCORE_A_ATTRIBUTE = "ScoreA";
 export const ROUND_SCORE_B_ATTRIBUTE = "ScoreB";
 
 /**
- * Attribute on {@link ROUND_STATUS_FOLDER}: **a count of the transitions the server has started**, bumped
- * the instant before it moves everybody.
+ * Attribute on **each `Player`**: **a count of the wipes that player has been covered for**, bumped the
+ * instant before the server moves them.
  *
- * **A counter of its own rather than the phase, and the reason is the whole point of it.** The phase is
+ * **Per player rather than one counter on the folder, and that is what makes "a wipe is something that
+ * happens to you" the shape of the code.** The cue used to be a single number on {@link ROUND_STATUS_FOLDER}
+ * that every client read and then filtered for itself — `roundZone.onASide` deciding whether it applied —
+ * which put a *judgement* on the client and left "is this for me" answerable differently on two machines.
+ * The server now names the players it covers: **the round's own roster at each boundary**, and **one player
+ * when they opt into a round already under way**. A player who has not opted in is never written to, so
+ * there is nothing for their client to decide and nothing for the two ends to disagree about.
+ *
+ * **A counter of its own rather than the phase, and the reason is still the whole point of it.** The phase is
  * published *early* on purpose: an intermission announces itself before the lobby is even looked up, because
  * a phase that is held must not read as the previous one (`RoundService` says so at length). The teleport
- * then happens later — after the lobby resolves, after the held balls and the map are dealt with — so a wipe
- * keyed on the phase would play and finish inside that gap and cover nothing at all. This is written
- * immediately before the move instead, which is what lets the client's cover close *around* the cut rather
- * than after it.
+ * then happens later — after the lobby resolves, after the held balls are dealt with — so a wipe keyed on the
+ * phase would play and finish inside that gap and cover nothing at all. This is written immediately before
+ * the move instead, which is what lets the client's cover close *around* the cut rather than after it.
  *
- * A number rather than a boolean because the count is the useful part: **any change is a transition**, so a
- * client needs no notion of which phase it is moving between, and a client that mounts mid-transition simply
- * reads a value and waits for the next one.
+ * A number rather than a boolean because the count is the useful part: **any change is a wipe**, so a client
+ * needs no notion of which boundary it is at, and a client that mounts mid-transition reads its own current
+ * value and waits for the next one — which is why a player who boots into a round already under way sees no
+ * cover for a move they were never part of.
  */
 export const ROUND_TRANSITION_ATTRIBUTE = "Transition";
 
@@ -782,23 +831,45 @@ export const EQUIPPED_ELIMINATION_ATTRIBUTE = "EquippedElimination";
  */
 export const SUPER_MULTI_BALL_COUNT_ATTRIBUTE = "SuperMultiBallCount";
 
+/**
+ * Attribute on a **`Player`** saying *a power is armed and unspent* — the fact `SuperHudController` draws
+ * its `READY` text from.
+ *
+ * `true` rather than a kind, and it is the HUD's question rather than the game's: the word "ready" is not
+ * a power's name, and the two things that make it true (a marked ball in hand, a MultiBall window with
+ * throws left) already publish what they are — `BALL_ABILITY_ATTRIBUTE` on the ball, and
+ * `SUPER_MULTI_BALL_COUNT_ATTRIBUTE` on the player. A reader that wants the *kind* has those; this is one
+ * boolean for a label that says one word. See `SuperService.armPower` for the two sources, the "done"
+ * trigger each of them has, and the four ways this is cleared.
+ *
+ * **Written only by `SuperService.publish`**, which is the same one-writer rule the rest of the HUD's
+ * readout follows: every attribute goes out together, so a client can never see a READY text beside a
+ * prize that has already been spent.
+ */
+export const POWER_READY_ATTRIBUTE = "PowerReady";
+
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 2;
 
 /**
- * Attribute on a **character `Model`** saying that the server has a dodge or catch window open on it.
+ * Attribute on a **character `Model`** saying that the server has a dodge window open on it.
  *
  * **The one thing a client cannot work out for itself, which is why it is published at all.** A window is
- * opened and closed by `DodgeService` and `CatchService` — a dash's `DURATION`, a catch's window, and the
- * early exits from both — and none of it reaches a client as state. A client that wanted to know would have
- * to re-derive those rules from its own input and from the cooldown stamps, which is the second copy of a
- * server rule this project does not keep. So the server says so instead, from `afterimage.ts` — the one
- * function that already knows a window has opened. See `startAfterimage` and `publishWindow`.
+ * opened and closed by `DodgeService` — a dash's `DURATION`, and the early exits from it — and none of that
+ * reaches a client as state. A client that wanted to know would have to re-derive those rules from its own
+ * input and from the cooldown stamps, which is the second copy of a server rule this project does not keep.
+ * So the server says so instead, from `afterimage.ts` — the one function that already knows a window has
+ * opened. See `startAfterimage` and `publishWindow`.
  *
- * **On the character rather than on the player**, which is the opposite of `THROW_ENABLED`'s choice and for
- * the opposite reason: a throw preference has to survive a death, and a window must not. An attribute on the
- * body dies with the body it describes, so there is no state to clear on a respawn and none a new body could
- * inherit from an old one.
+ * **A catch window is *not* published, because a catch draws no trail.** `CatchService` used to open one and
+ * to be published by the same path; both halves were removed on request, so a catching body is untrailed on
+ * every machine and its client draws nothing. The attribute itself is unchanged — it answers about whoever
+ * opens a window, and that is the dodge alone.
+ *
+ * **On the character rather than on the player, and that is what makes it self-clearing.** A window is a fact
+ * about a *body*: an attribute on the body dies with the body it describes, so there is no state to clear on
+ * a respawn and none a new body could inherit from an old one. A fact that has to outlive a death belongs on
+ * the player instead — `TEAM_ATTRIBUTE` is that choice, made for that reason.
  *
  * **Absent means "no window", and only a body a player owns is ever given one** — a rig has no client
  * watching it, and a catching rig opens a window every tick. Written `false` when a window closes rather than
@@ -822,7 +893,7 @@ export const AFTERIMAGE_WINDOW_ATTRIBUTE = "AfterimageWindow";
 export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
 
 /**
- * The four attributes a **rig `Model`** carries while it is doing something, which are what a client
+ * The five attributes a **rig `Model`** carries while it is doing something, which are what a client
  * animates it from. Together they are the rig's animation state, published by the server.
  *
  * **A rig is animated by the clients looking at it, and these are what they are told.** The server does
@@ -832,19 +903,29 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * and each client dresses the rig it can see. See `NpcService.publishAnimation` for the writer and
  * `RigAnimationController` for the reader.
  *
- * **The vocabulary is exactly the four facts `animationFor` branches on, and nothing else.** That is
- * deliberate rather than convenient: a state that existed on one side and not the other would be a
- * mapping function that could not be shared, which is the whole point of it. The published *speed* is
- * banded before it is written — see `ANIMATION_SPEED_BAND` — because a state carrying a measurement
- * would publish continuously, and this arrangement's entire economics is that it publishes on change.
+ * **These are the facts a clip is decided from, and `DODGE_DIRECTION_ATTRIBUTE` below is the exception that
+ * proves the rule rather than a sixth member of the set.** `animationFor`'s vocabulary is smaller still — the
+ * facts *it* branches on are the two requests, the ground and the freeze — because a *shared* mapping between
+ * a player and a rig can only branch on facts both of them have: a state that existed on one side and not the
+ * other would be a mapping that could not be shared, which is the whole point of it. A dash direction is a fact
+ * neither side's locomotion decision has any use for: it does not change which locomotion clip a body wears, it
+ * changes which *action* clip draws over it, and it is published by the service that runs the dash rather than
+ * by `NpcService`. So it lives beside these rather than among them, and an animation state added here still has
+ * to justify itself against `animationFor`.
  *
- * **Four attributes rather than one packed value.** Each is a scalar, so Roblox replicates only the one
+ * **Every fact here is a *request* or a *window*, and never a measurement, which is the property that replaced a
+ * published speed.** A measurement has no natural edge to be written on: it would have to be banded to satisfy
+ * the guard in {@link NpcService.writeAttribute}, and a band floored to zero cannot tell "creeping" from
+ * "standing". The two movement facts come from what the server *asked the rig to do* — see
+ * `NPC_ANIM_MOVING_ATTRIBUTE` — and the rest are edges by construction.
+ *
+ * **Five attributes rather than one packed value.** Each is a scalar, so Roblox replicates only the one
  * that changed, which is exactly what "bytes per rig per change" means; and none of them needs a packing
  * convention that a reader on the other side could get wrong. The alternative considered and rejected was
  * one integer of bit fields, or one delimited string: it saves nothing on the wire — a change is one
  * scalar either way — and it puts an unpacking step, and that step's bugs, on every client. The project's
  * own convention is the same one, an attribute per fact, as {@link ROUND_SCORE_A_ATTRIBUTE} beside its
- * sibling, and the client renderer asks for four names it can see.
+ * sibling, and the client renderer asks for five names it can see.
  *
  * **On the rig rather than on a folder or the wire**, for the reason the round's attributes are on a
  * folder: attributes replicate on their own, so the renderer needs no remote, no reply and no reference
@@ -852,7 +933,48 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * is for. A rig that is out of the world is not published at all (the gate `NpcService.run` keeps), so a
  * parked template in `ServerStorage` wears no state and no client animates it.
  */
-export const NPC_ANIM_SPEED_ATTRIBUTE = "AnimSpeed";
+
+/**
+ * **Whether the server has asked the rig to move** — the request, published as a fact, and the attribute this
+ * set was rebuilt around.
+ *
+ * **There was a banded *speed* here (`"AnimSpeed"`), and this is what replaced it.** The speed was the rig's
+ * measured velocity, floored into five-stud bands so that `writeAttribute`'s change guard could hold — and the
+ * floor meant every speed under five studs a second was published as *nought*, which is the same value a rig
+ * standing perfectly still publishes. A rig creeping to a ball, sliding out of a hit, or nudging itself into
+ * position therefore slid along in the standing clip, and no client could tell. The other end of the same
+ * arithmetic was worse: with the line drawn anywhere on that range, a rig's clip changed when its *velocity*
+ * wobbled rather than when it was told to do something, and every change costs a crossfade — so a rig could walk
+ * with neither clip fully worn. See `animationFor` in `shared/animation.ts` for the whole of the record.
+ *
+ * **The fact is the humanoid's running speed, and this attribute's name now says a little more than it should.**
+ * A *request* is what a player's body has — `MoveDirection`, written by the client's own input — and a rig's
+ * half was written as one twice before landing here: `Humanoid.MoveDirection` and `Humanoid:GetMoveVelocity()`
+ * are both documented as the *input*-driven pair, and both read zero for every rig in this game, because every
+ * walk here is a `Humanoid:MoveTo()` and a behaviour has no input to report. Two play sessions of every rig
+ * wearing its idle clip while walking is what that cost. What a rig has instead is `Humanoid.Running`'s speed,
+ * which the engine's own notes name as the way to tell a walking humanoid from a standing one because there is
+ * no idle *state* to ask about. See `NpcService.publishAnimation` for the whole of the reasoning and for the
+ * cost it accepts, and `NPC_CONFIG.RIG_MOVING_SPEED` for the threshold.
+ *
+ * **The name is kept although it is a slight lie.** "Asked to move" is what a *player* is, and the two bodies
+ * still answer one question for one decision (`animationFor`), which is the property this set of attributes
+ * exists to give; renaming it would touch both sides of the wire to fix a word.
+ */
+export const NPC_ANIM_MOVING_ATTRIBUTE = "AnimMoving";
+
+/**
+ * **Whether the request above is a sprint** — the other half of `NPC_ANIM_MOVING_ATTRIBUTE`, and the only thing
+ * that can separate the two moving clips once the request decides *whether* a body is moving.
+ *
+ * **Asked of `WalkSpeedService` rather than worked out here, and that is the correction.** The obvious reading
+ * would be "is the walk speed above its base", which needs to know the base — and the base is a per-rig number
+ * (16 for a rig, 20 for a player), so that comparison is a threshold that a reader has to keep in step with a
+ * config. The sprint is a *named contribution* on the walk speed, the service that owns the sum is the one that
+ * knows which contributions are on, and the rig's sprint is the same key a player's is. See
+ * `WalkSpeedService.isSprinting`.
+ */
+export const NPC_ANIM_SPRINTING_ATTRIBUTE = "AnimSprinting";
 
 /** Whether the rig is standing on something. Part of the state above; see it for the whole. */
 export const NPC_ANIM_GROUNDED_ATTRIBUTE = "AnimGrounded";
@@ -862,4 +984,295 @@ export const NPC_ANIM_FROZEN_ATTRIBUTE = "AnimFrozen";
 
 /** Whether the rig has a ball in hand, which is what a rig with one is about to throw. See the state above. */
 export const NPC_ANIM_THROWING_ATTRIBUTE = "AnimThrowing";
+
+/**
+ * Whether the body is **mid-throw** — the ball has just left its hand — for as long as the throw's own
+ * clip is worth playing.
+ *
+ * **A different fact from `NPC_ANIM_THROWING_ATTRIBUTE` immediately above, and the two names being one
+ * letter apart is the point rather than sloppiness.** `AnimThrowing` is a *condition*: this body is
+ * holding a ball and its next act is to throw it, true for as long as the ball is in the hand. This is an
+ * *event*: the ball has gone, and the body is playing the motion that sent it. A throwing rig does both
+ * in sequence — the hold pose while it carries the ball, then the throw — and a body can be one without
+ * ever being the other.
+ *
+ * **Written by `BallService` at the release and cleared a moment later**, which is why it is named beside
+ * the animation state rather than among it: the four attributes above are `NpcService`'s, published while
+ * a rig's loop runs, and this one belongs to the throw — the single funnel a player's click and a rig's
+ * behaviour both arrive through, so it is marked for every body that throws rather than for rigs alone.
+ * See {@link BALL_CONFIG.THROW_ANIMATION_SECONDS} for how long it stays up, and `RigAnimationController`,
+ * which plays the clip for exactly that window.
+ *
+ * **Absent means "not throwing"**, so a body that has never thrown and one whose throw has just finished
+ * read alike — the same convention the four above use.
+ */
+export const THROW_ANIMATION_ATTRIBUTE = "AnimThrow";
+
+/**
+ * Whether the body is **mid-catch, and which half of one** — `"attempt"` while it is reaching, `"catch"` once
+ * the ball is in its hand — for as long as the catch's own clip is worth playing.
+ *
+ * ## The value is the cause, not a flag
+ *
+ * **The type is a string rather than `true` because the two halves of a catch have to be told apart on the
+ * client, and a boolean has only one value to say them with.** An attempt and a successful catch play the same
+ * clip — they *are* the same animation, a body reaching — so nothing downstream of this attribute could
+ * distinguish them: the clip does not change when the ball arrives, which means the clip's own edge fires once,
+ * on the attempt, and the success is invisible.
+ *
+ * **And the value has to *differ* for the second write to be seen at all.** An attribute rewritten with the
+ * value it already holds fires no `AttributeChanged` — see `catchShockwave.ts`, whose doc has said so since
+ * before this change — so two writes of `true` are one event. Writing `"catch"` over `"attempt"` is a different
+ * value, so it **does** fire, and that is the whole reason this is a string: **the type is what makes the second
+ * event observable.** A flag could not, whatever fired it.
+ *
+ * ## The two causes, and the two callers
+ *
+ * Both halves go through one writer, `BallService.markCatchAnimation(model, cause)`, and the value is its
+ * argument:
+ *
+ * - **`"attempt"`** — written by `CatchService` when a catch *window* opens, at both of its sites: the ordinary
+ *   new-window branch and the endless window a dev holds open. A press that catches nothing is still a body
+ *   reaching, and the clip is the only feedback a press has.
+ * - **`"catch"`** — written by `BallService.catchBall`, the one place a ball ends up in a hand whoever caught
+ *   it, once the ball has actually arrived.
+ *
+ * A catch landing inside an earlier mark's window restarts this clock rather than stacking a second mark — see
+ * `BallService.catchBall`, which owns both ends — so **`"catch"` written over an `"attempt"` is the ordinary
+ * sequence rather than an edge case**: a body reaches on the press and is told it succeeded a fraction of a
+ * second later.
+ *
+ * **Absent means "not catching"** and is the third value the client sees, written by the same timer that set it.
+ * See {@link CATCH_CONFIG.CATCH_ANIMATION_SECONDS} for how long it stays up, `client/bodyAnimation.ts` for the
+ * one reader and the clip, and `client/catchShockwave.ts` for the reader that acts on *which* cause it was
+ * rather than on the fact that there is one.
+ */
+export const CATCH_ANIMATION_ATTRIBUTE = "AnimCatch";
+
+/**
+ * The two halves of a catch, as the values {@link CATCH_ANIMATION_ATTRIBUTE} takes.
+ *
+ * **Declared here beside the attribute and typed rather than spelled out at each end**, which is the argument
+ * `HitDirection` makes about the wire: a literal union written in two files is two places for the two strings to
+ * drift apart. `BallService` writes it, `client/bodyAnimation.ts` validates it, and `client/catchShockwave.ts`
+ * acts on it.
+ */
+export type CatchCause = "attempt" | "catch";
+
+/**
+ * **Whether this body has a catch *window* open right now** — `true` from the moment `CatchService` opens one
+ * until the moment it stops counting, and absent at every other time.
+ *
+ * ## Why it exists, and why it is not {@link CATCH_ANIMATION_ATTRIBUTE}
+ *
+ * The animation mark above is `true`-shaped for a *clip*: it is written when a window opens and again when a
+ * ball arrives, and it lapses after `CATCH_CONFIG.CATCH_ANIMATION_SECONDS` (0.6 s) whatever the window is doing
+ * — and it is deliberately **not rewritten when a window is extended**, because a rig holding a window open by
+ * asking every tick would then hold a catch pose for its whole life. So it cannot answer "is this body catching
+ * now": a 1 s window with 0.6 s of mark leaves 0.4 s in which a catching body is marked as not catching, and a
+ * window extended past its first second is marked as nothing at all.
+ *
+ * **This attribute is the window itself**, and it has exactly one writer and two readers:
+ *
+ * - **Written by `CatchService`** — `true` in the two places a window opens (the ordinary branch of
+ *   `attemptCatch` and the endless window a dev holds), cleared in `consume`, which is the *one* path every
+ *   close goes through: a ball caught, an expiry found, a death, a departure, and a dev's flag going off.
+ * - **Read by `client/controllers/character/AimFacingController`**, which turns the local player's body onto
+ *   the camera while it is set, and by **`server/npc/behaviors/CatchBehavior`**, which turns a rig onto the ball
+ *   it is waiting for. One signal for both bodies is the whole point: "catching" is one state and the two kinds
+ *   of body must not be able to disagree about it.
+ *
+ * **A `true` flag rather than a number or a word**, unlike the animation mark, because nothing reads it for a
+ * degree. Every reader asks one question — is a window open — and a value with more in it would be a value each
+ * reader has to narrow before it can answer.
+ *
+ * **An attribute rather than a Fusion value on the client**, because the window is the *server's* fact: a press
+ * that the server refuses (no free hand, a dodge lockout, a freeze) must not turn the player's body, and a
+ * client-side model of the window would turn it for the whole of a press that never opened anything. The server
+ * is also the only side that can publish it for a rig.
+ */
+export const CATCHING_ATTRIBUTE = "Catching";
+
+/**
+ * **What a rig is winding up** — the charge it is holding, as a fraction of a full hold, for as long as it holds
+ * it. A number from `0` to `1`, written by the one behaviour that runs a windup on the body.
+ *
+ * ## Who writes it, and who reads it
+ *
+ * **Written on the server, read on every client, and the two halves are deliberately not the same code.**
+ * A rig is driven by `ThrowBehavior` (and its practice twin, `AlwaysThrowBehavior`), which is the only thing
+ * that knows a windup exists; the pixels are each client's business, and `client/chargeEffect.ts` draws the
+ * looping effect on the rig's hand for as long as this is set. Nothing is sent to describe the effect — the
+ * attribute is the whole of the client's discovery, exactly as {@link CATCH_ANIMATION_ATTRIBUTE} is for the
+ * catch and {@link DUCKING_ATTRIBUTE} is for the duck.
+ *
+ * ## A number rather than a boolean — a reversal, recorded
+ *
+ * **This was a `true` flag, and the argument for it was written out here: "the only question the effect asks is
+ * 'is one being held', and a boolean is that question."** That was right for as long as it was true, and it
+ * stopped being true when a second effect arrived that needed to know *how much* — a fire ball that overlays the
+ * hold above 90 %. **A threshold cannot be asked of a flag**, and the alternatives are both worse than widening
+ * this one: a second attribute would carry the same event in two places and could disagree with itself, and a
+ * client-side model of a rig's hold is not available at all — nothing on this side knows how long a windup lasts,
+ * because the *server* solved it from a distance.
+ *
+ * **The value costs nothing to publish because it is already in hand at the moment of the write.** The tracker
+ * solves the hold before it sets anything, so this is the same write with a number in it instead of `true`, and
+ * the client's read is unchanged in shape: absent means "not winding up", and a value means "winding up, by this
+ * much".
+ *
+ * **A rig's number is constant for the whole of its hold, and a player's is not — which is the one place the two
+ * bodies differ.** A rig's charge is *solved* rather than measured (`chargeForRange` answers a distance with one
+ * number at the instant the rig decides), so a rig is above a threshold for the whole of its windup or never;
+ * a player's rises through the hold on a clock and crosses thresholds on the way. Nothing reads this for a
+ * player — see the asymmetry below.
+ *
+ * **Absent means "not winding up"**, the convention every attribute in this block uses, written with `undefined`
+ * rather than with `0` so that "holding nothing" and "not holding" are not two spellings of one state.
+ *
+ * ## The asymmetry, stated because it is the design rather than an oversight
+ *
+ * **A player's charge is not published.** A player's hold is measured on their own machine
+ * (`client/throwing.ts` owns the start instant) and the server learns nothing until the release arrives carrying
+ * the number — so the player's *own* effects are drawn by the client that owns the body, computed from that one
+ * value, and **a player does not telegraph their charge to anybody else**. A rig's does, and that is the point of
+ * the windup: a rig holds for the length of a throw a player would have held, so a person watching sees it
+ * coming, which is what makes a rig dodgeable. Publishing a player's charge would be a new remote and new server
+ * state, and it is not this.
+ */
+export const CHARGING_ATTRIBUTE = "Charging";
+
+/**
+ * The three shapes a rig's throw can take — **the vocabulary {@link THROW_WALK_ATTRIBUTE} carries.**
+ *
+ * A rig that plants to throw is a stationary target for the whole of its windup, and a person can read and
+ * time that; so two of the three shapes walk, and they walk differently:
+ *
+ * - **`moveAndAim`** walks through the hold and throws on the move. The charge is solved again at the release
+ *   against the distance the release measured, so the ball is solved from where the body *is*.
+ * - **`moveThenPlant`** walks its carry-through and then stops, and the hold refuses to release while the body
+ *   is still moving (`NPC_ANIM_MOVING_ATTRIBUTE`). That refusal is the whole difference between this and
+ *   `moveAndAim`, and it is what makes the shape read as a body taking a step and planting.
+ * - **`plantNow`** stands and throws. This is the shape every rig had before the three-way split, and it is
+ *   still the one `AlwaysThrowBehavior` takes: that rig's hand is never filled by a pickup, so it has no
+ *   carry-through to walk and never draws a shape at all.
+ *
+ * **Drawn once, on the turn the shape is decided, and never re-decided.** See
+ * `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE` and `NPC_CONFIG.THROW_CARRY_THROUGH_CHANCE`, which are two
+ * cumulative bands of a single roll so that the three shares are absolute and cannot overlap; `ThrowBehavior`
+ * is the only place a shape is chosen.
+ */
+export type ThrowWalk = "moveAndAim" | "moveThenPlant" | "plantNow";
+
+/**
+ * Attribute on a **rig's `Model`** holding which of the three {@link ThrowWalk} shapes this hold took.
+ *
+ * **A second attribute rather than a word inside {@link CHARGING_ATTRIBUTE}, and that is forced rather than
+ * tidy.** The charge is a *number* and the client reads it as one — absent means "not winding up", a value
+ * means "winding up, by this much" — so a shape written into that attribute would be a string where every
+ * reader of it expects a number.
+ *
+ * **It travels on the body because the two halves of the question live in two behaviours.** `SeekBehavior`
+ * owns where a rig walks and `ThrowBehavior` owns the hold, and neither holds a reference to the other; the
+ * fact is about a *body* for the length of a hold, which is the same class of fact as the charge beside it and
+ * the same reason it is published rather than passed.
+ *
+ * **What each side does with it, one line each.** `ThrowBehavior.beginWindup` writes it, and the *release*
+ * reads its own copy off its own record rather than off this attribute — because the release happens after
+ * `endWindup` has cleared it. `SeekBehavior`'s pickup walk reads it on its own turn and does one of three
+ * things: keeps walking (`moveAndAim`), is told nothing at all and falls through to its ordinary leg
+ * (`moveThenPlant`, which is what lets a walking rig keep walking to wherever it was going), or stands
+ * (`plantNow`).
+ *
+ * **`endWindup` is its only clearer**, exactly as it is for the charge: a hold that ends for any reason — a
+ * release, the target going away, an expiry — ends with both attributes gone, so a rig cannot be left wearing
+ * a shape it is no longer throwing by.
+ *
+ * **Re-added after a revert dropped it and left its two readers in place**, which is why this doc is terser
+ * than its neighbours in this block: the original was lost with the revert rather than recovered, so the
+ * paragraphs above are read off `ThrowBehavior` and `SeekBehavior` — the two files that use it — rather than
+ * restored from the file it used to sit in.
+ */
+export const THROW_WALK_ATTRIBUTE = "ThrowWalk";
+
+/**
+ * Attribute on a **rig's `Model`** holding the power a collected mystery box is paying for, or `""` for
+ * none.
+ *
+ * **The rig's half of the mystery prize, and deliberately a different mechanic wearing a related name.** A
+ * player's box writes a prize in `SuperService` and that prize is consumed by a *press*; a rig has no key to
+ * press, so its prize waits here on the model and is consumed by the rig's *next throw* — see `ThrowBehavior`
+ * and `AlwaysThrowBehavior`, which read this and hand it to `BallService.markHeldBall` or
+ * `BallService.activateMultiBall`. The two prizes are different mechanics sharing a noun; a reader must not
+ * treat this as the player's mystery prize under another spelling.
+ *
+ * **One slot, and `""` is the empty case.** A rig with a full slot ignores a box — no queue, no overwrite —
+ * and the slot is cleared after the throw that spends it, success or failure, so a refused mark or a refused
+ * throw cannot strand the rig with a prize it can never use. The value is one of the words in
+ * `shared/ability.ts`, the same vocabulary a player's prize speaks, and `pendingAbilityOn` is the one reader
+ * that narrows the raw string back to that vocabulary.
+ *
+ * **On the model rather than in a record, because a rig has nothing to persist.** It is a fact about the
+ * body — the same class of fact as {@link CHARGING_ATTRIBUTE}, which is also a rig-model attribute — and it
+ * dies with the body it is written on. It is *not* the player's {@link SUPER_CHARGE_ATTRIBUTE}, a boolean on
+ * a `Player`; the two differ in the same way {@link CHARGING_ATTRIBUTE} and {@link SUPER_CHARGE_ATTRIBUTE}
+ * do, and a reader asking "is this body charging a throw" is not asking the question this answers.
+ *
+ * **A client could read it, and nothing does yet.** It is a string a rig wears like the rest of its published
+ * state, so the day a rig's pending power should show on its body — a glow, an icon — the fact is already on
+ * the model and needs no remote to be seen.
+ */
+export const PENDING_ABILITY_ATTRIBUTE = "PendingAbility";
+
+/**
+ * Which way a body that is mid-dash went, as one of `DodgeDirection`'s four words — on the **dodging
+ * model**, player or rig, for the length of the dash.
+ *
+ * **The fact the dodge clips need and nothing on the client can work out.** The four dodge clips are
+ * directional, and the direction of a dash is decided by `DodgeService` on the server from the request
+ * the client sent: the client knows which way it *asked* to go, and not which way the dash actually went
+ * — a refusal, a heading the server flattened away, or a dash replaced by a newer one all produce a
+ * different answer from what was asked for.
+ *
+ * **Written by `DodgeService` and not by `NpcService`, which is why it is not named among the four
+ * above.** `NpcService` publishes a rig's *condition* while its loop runs; a dash is an action any body
+ * can take, a player's character included, and the service that runs it is the service that writes this.
+ * The renderer reads it on the same `AttributeChanged` connection it reads the rest of the state on, so
+ * no wiring in the renderer is specific to it.
+ *
+ * **Set at the start of the dash and cleared when it ends, which is the whole of its lifetime.** Absent
+ * means "not dashing", so a body that has never dodged and one whose dash has just finished read the
+ * same way — and a reader that arrives mid-dash reads the direction rather than having to infer one.
+ * A dodge that is replaced by a newer dodge has the newer direction written over it, which is correct:
+ * the clip should follow the dash that is actually in flight.
+ *
+ * **The direction is relative to the body's facing, not to the world** — see `dodgeDirectionOf`, which is
+ * where the four words are defined and where the frame they are measured in is argued.
+ */
+export const DODGE_DIRECTION_ATTRIBUTE = "DodgeDirection";
+
+/**
+ * Whether a body is ducking **right now**, on the **ducking model** — player or rig, for the length of
+ * the duck.
+ *
+ * **A flag rather than an end time, and the two readers are why.** The hit test and every action gate
+ * want the same thing — "is this body ducking at this instant" — and a countdown written into the
+ * attribute would make each of them compare it against a clock. The server's `os.clock` is not the
+ * client's, and an attribute is a value that replicates, so a number in here would be read by a
+ * different machine's clock than wrote it; an end time published as an instant would need
+ * `GetServerTimeNow`, and then every asker carries a subtraction. One boolean with no arithmetic in it
+ * is the smaller thing, and the service already owns the clock that ends it.
+ *
+ * **Server-written, which is what makes it unforgeable.** A client cannot author it: an attribute a
+ * client writes on its own character does not replicate, so the only value the server ever sees is its
+ * own. That is the property `PRACTICE_ZONE_ATTRIBUTE` has, and it is the whole reason the input path is
+ * a *request* — see the `duck` remote.
+ *
+ * **What reads it.** `BallComponent.handleTouch` asks it of the body a contact resolved to, and refuses
+ * the contact when the resolved part is an exempt limb; `DodgeService`, `CatchService`, `BallService`'s
+ * throw path and `BallPickupService` each ask it before acting, which is what makes a duck a committed
+ * stance rather than a free extra; and `client/bodyAnimation.ts` reads it as the body's fourth published
+ * action mark, which is how one clip reaches both bodies.
+ */
+export const DUCKING_ATTRIBUTE = "Ducking";
 

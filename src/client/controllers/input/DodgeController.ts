@@ -227,7 +227,7 @@ export class DodgeController implements OnStart {
 
 		this.heldKeys.add(key);
 
-		if (UserInputService.IsMouseButtonPressed(DODGE_BUTTON)) this.tryDodge();
+		if (UserInputService.IsMouseButtonPressed(DODGE_BUTTON)) this.press();
 	}
 
 	/**
@@ -246,19 +246,20 @@ export class DodgeController implements OnStart {
 
 		this.rightDown = true;
 
-		this.tryDodge();
+		this.press();
 	}
 
 	/**
-	 * Sends a dodge in the direction the held keys point, if that is a direction at all.
+	 * **The keyboard's dodge: the right-click completed by the keys that are down.** Called by both orders, and
+	 * public because the cluster's Dodge button is a second way to ask for the same request — see {@link push},
+	 * which is the one thing about it that differs.
 	 *
-	 * Reached from both orders, which is why the direction is worked out here rather than at either
-	 * call site: all the two events decide between them is *when* the combination became complete.
-	 * The combo is the held keys sorted and joined — {@link comboOf} — which is the same string the
-	 * double-tap binding built for its gesture, and for the same reason: the order the keys went
-	 * down in cannot be part of what the input means.
+	 * The direction is worked out here rather than at either call site: all the two events decide between them is
+	 * *when* the combination became complete. The combo is the held keys sorted and joined — {@link comboOf} —
+	 * which is the same string the double-tap binding built for its gesture, and for the same reason: the order
+	 * the keys went down in cannot be part of what the input means.
 	 */
-	private tryDodge(): void {
+	public press(): boolean {
 		const combo = comboOf(this.heldKeys);
 
 		// **Right-click alone is nothing.** Every direction in this game is a key, so a click with no
@@ -268,7 +269,7 @@ export class DodgeController implements OnStart {
 		// shouting about, only worth a line when the logs are being read.
 		if (combo === "") {
 			if (DEBUG) print(`[Dodge] right-click with no movement key held`);
-			return;
+			return false;
 		}
 
 		// Not a dodge input — `W`+`S`, three keys at once. **The table is the rule and an absent row
@@ -277,65 +278,152 @@ export class DodgeController implements OnStart {
 		// the two would be inventing an answer. See `COMBO_AXES`.
 		if (!isDodgeCombo(combo)) {
 			if (DEBUG) print(`[Dodge] ${combo} is not a direction to dodge in`);
-			return;
+			return false;
 		}
 
-		this.requestDodge(combo);
+		// **The key's row *is* a direction, and it is the only thing this path has to turn into one.** Unreachable
+		// as `undefined` — `isDodgeCombo` just said the row exists — and written as a guard rather than an `as`
+		// because an assertion here would be a claim about a table in another file.
+		const axis = COMBO_AXES[combo];
+		if (axis === undefined) return false;
+
+		const axes = this.cameraAxes();
+		if (axes === undefined) return false;
+
+		return this.requestDodge(combo, dodgeDirection(axis, axes[0], axes[1]), axes[0]);
 	}
 
 	/**
-	 * Sends one dodge request, for the direction `combo` means to the camera.
+	 * **The cluster's dodge, and the one decision this feature needed: the direction is the stick's.**
 	 *
-	 * Only the direction is decided here, and only because this is the one machine
-	 * that can see a key: distance, duration and cooldown all belong to the server.
+	 * On a keyboard the direction is *input* — a set of keys, which `COMBO_AXES` turns into a camera-space axis
+	 * and the camera then turns into a heading. A touch device has no such keys, and the thing the player is
+	 * already doing with the direction they want is pushing the stick, so the direction is read from the body
+	 * instead: `Humanoid.MoveDirection` is exactly the world direction the movement input asked for, which is
+	 * the stick's own answer after the engine has converted it and the body has been told.
 	 *
-	 * `combo` is passed in rather than read off {@link heldKeys} here, so that the one caller which
-	 * has already decided the held keys are a direction is the one that says which — this method's
-	 * question is "may this go out", not "is this an input".
+	 * **`MoveDirection` rather than the stick itself, because the engine already owns the conversion.** Reading
+	 * the control module's thumbstick directly would be a second reader of the thing `Humanoid` exists to
+	 * expose, and it would have to be found, typed and kept working across a Roblox update — for a vector the
+	 * body already has.
+	 *
+	 * **The camera is read for the frame the direction was decided in, and the direction is not re-derived from
+	 * it.** A key gets multiplied by the camera's axes because that is what a key *means* ("away from the
+	 * camera"); the stick has already been through that conversion, so its heading is sent as it stands and the
+	 * camera is read only for the reference the clip is classified against. See `dodgeDirectionOf` for that rule.
+	 *
+	 * **A centred stick is refused rather than guessed at**, which is the same answer the keyboard gives a
+	 * right-click with no key down — a dodge towards nothing is not a direction, and the two candidate guesses
+	 * (the body's facing, the camera's heading) are both answers the player did not give. Nothing happens, and
+	 * the log says which of the two refusals it was.
 	 */
-	private requestDodge(combo: string): void {
-		// **The state first, because it is not a clock.** `DodgeService.requestDodge` asks the same question
-		// and is the authority: a dodge is something you do in a round or in a tagged zone, and outside both
-		// there is nothing left for the rest of this method to decide. Asked here so that a press in the
-		// lobby does not go out on the wire and come back a refusal a round trip later.
-		if (!inRoundOrZone(this.player.Character)) {
-			if (DEBUG) print(`[Dodge] ${combo} + right-click outside a round and outside a zone`);
-			return;
+	public push(): boolean {
+		const humanoid = this.findHumanoid();
+		if (humanoid === undefined) {
+			if (DEBUG) print(`[Dodge] the button with nothing to move`);
+
+			return false;
 		}
 
-		if (this.findHumanoid() === undefined) {
-			if (DEBUG) print(`[Dodge] ${combo} + right-click with nothing to move`);
-			return;
+		const move = flattenToGround(humanoid.MoveDirection);
+		if (move === undefined) {
+			if (DEBUG) print(`[Dodge] the button with the stick centred — nothing to dodge towards`);
+
+			return false;
 		}
 
+		const axes = this.cameraAxes();
+		if (axes === undefined) return false;
+
+		return this.requestDodge("the stick", move, axes[0]);
+	}
+
+	/**
+	 * The camera's ground heading and its ground right, or `undefined` when there is no camera to take either
+	 * from — with the two refusal lines, because a camera that is not there and a camera pointed straight up are
+	 * different faults and this is the only place that can tell them apart.
+	 *
+	 * **Both are flattened**, so an aim at the floor still dodges along it: the camera's own pitch is dropped, and
+	 * the right vector is taken from the camera rather than crossed from the heading, so it stays correct with the
+	 * camera pointed straight down. That is the read every path shares — the keyboard builds its direction from
+	 * these, and the stick's own heading is classified against them.
+	 */
+	private cameraAxes(): [Vector3, Vector3] | undefined {
 		const camera = Workspace.CurrentCamera;
 		if (!camera) {
 			if (DEBUG) print(`[Dodge] no camera to take a heading from`);
-			return;
+
+			return undefined;
 		}
 
-		// Heading and right are both flattened: the camera's own pitch is dropped so
-		// an aim at the floor still dodges along it, and the right vector is taken
-		// from the camera rather than crossed from the heading, so it stays correct
-		// with the camera pointed straight down.
 		const forward = flattenToGround(camera.CFrame.LookVector);
 		const right = flattenToGround(camera.CFrame.RightVector);
 		if (!forward || !right) {
 			if (DEBUG) print(`[Dodge] the camera has no heading to dodge along`);
-			return;
+
+			return undefined;
 		}
 
-		const direction = dodgeDirection(combo, forward, right);
-		if (!direction) return;
+		return [forward, right];
+	}
 
+	/**
+	 * Sends one dodge request: the direction to go, and the frame it was decided in.
+	 *
+	 * **`label` is for the log and nothing else.** It used to be the combo, because the combo was the only
+	 * input; now that a stick can ask for a dodge too, the thing both paths have in common is a *direction* —
+	 * so the parameter that used to be the input is a word for the log line, and `"the stick"` is what the
+	 * cluster's button sends.
+	 *
+	 * **`direction` is a world heading and `forward` is the frame it was read in**, and the two are passed in
+	 * together because everything between them is the caller's: a key becomes a direction by being multiplied
+	 * by the camera's axes, and a stick is already one — so the only thing left to decide here is whether this
+	 * request may go out at all.
+	 *
+	 * **The gates come before the send, and each one is here rather than at a call site because both paths ask
+	 * it.** `inRoundOrZone` first, because it is not a clock: `DodgeService.requestDodge` asks the same question
+	 * and is the authority, and asking it here is what stops a press in the lobby going out on the wire and
+	 * coming back a refusal a round trip later. Then the body, then the camera — all three of which the caller
+	 * has usually already read, and none of which is worth a parameter that says so.
+	 *
+	 * Returns whether the request went out.
+	 */
+	private requestDodge(label: string, direction: Vector3, forward: Vector3): boolean {
+		if (!inRoundOrZone(this.player.Character)) {
+			if (DEBUG) print(`[Dodge] ${label} + the button outside a round and outside a zone`);
+
+			return false;
+		}
+
+		if (this.findHumanoid() === undefined) {
+			if (DEBUG) print(`[Dodge] ${label} + the button with nothing to move`);
+
+			return false;
+		}
+
+		// **And the frame the direction was decided in, which is the camera's heading — not the body's facing.**
+		// The clip a dodge wears is chosen by classifying the direction in the frame the decision was made
+		// in, and for a player that frame is the camera: `W` means "away from the camera" because that is
+		// what the key does, and the body is free to be pointing anywhere while it does it. Classifying
+		// against the body instead was the earlier version, and it produced the wrong clip roughly half the
+		// time — `RotationType` is `MovementRelative`, so the body turns to face wherever it is moving, and
+		// a dodge asked for a moment after an `S` press is classified against a body that has already
+		// turned to face the way it is about to go. See `dodgeDirectionOf`, which states the rule.
+		//
+		// **It is sent rather than re-derived on the server**, which has no camera to read, and it is the
+		// same vector the heading above was built from — so the two are in one frame by construction rather
+		// than by two reads happening to agree.
 		if (DEBUG) {
 			print(
-				`[Dodge] ${combo} + right-click → (${string.format("%.2f", direction.X)}, ` +
-					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)})`,
+				`[Dodge] ${label} + the button → (${string.format("%.2f", direction.X)}, ` +
+					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)}) ` +
+					`camera (${string.format("%.2f", forward.X)}, ${string.format("%.2f", forward.Y)}, ` +
+					`${string.format("%.2f", forward.Z)})`,
 			);
 		}
 
-		this.getDodgeRemote().SendToServer(direction);
+		this.getDodgeRemote().SendToServer(direction, forward);
+		return true;
 	}
 
 	/** The local character's humanoid, while it is alive. */
@@ -365,10 +453,18 @@ function isDodgeCombo(combo: string): boolean {
 	return COMBO_AXES[combo] !== undefined;
 }
 
-/** Where `combo` points, given the camera's heading and its right. */
-function dodgeDirection(combo: string, forward: Vector3, right: Vector3): Vector3 | undefined {
-	const axis = COMBO_AXES[combo];
-	if (!axis) return undefined;
-
+/**
+ * Where `axis` points, given the camera's heading and its right.
+ *
+ * **The axis rather than the combo, which is the change the cluster forced.** A key's row in `COMBO_AXES` is a
+ * camera-space axis, so the keyboard's direction is this call with the row; the stick's is already a world
+ * direction and never reaches here. Both paths therefore agree about what a direction *is* — one arithmetic
+ * step, in one place — rather than one of them being written out beside the other.
+ *
+ * `Unit` and no refusal: the two terms are a unit axis on the camera's own perpendicular vectors, so the sum
+ * cannot be a zero vector, and the `undefined` this used to return came from a lookup that has moved to the
+ * caller that owns the table.
+ */
+function dodgeDirection(axis: Vector3, forward: Vector3, right: Vector3): Vector3 {
 	return forward.mul(axis.Z).add(right.mul(axis.X)).Unit;
 }

@@ -65,27 +65,30 @@ export const MATCH_BALL_COUNT = 8;
 export const MATCH_TOUCH_DEBOUNCE_SECONDS = 0.5;
 
 /**
- * How long a startable roster must sit still before the sides start the match by themselves.
- * **Placeholder — 5.**
+ * How often the round checks the roster while it is being played, in seconds. **Placeholder — 0.1.**
  *
- * **A settle window rather than a trigger, and that is the whole of the rule.** A match starts when the
- * sides have been startable *and unchanged* for this long — so the clock begins the moment the second
- * player steps onto the empty side, and any further change puts it back to zero. That grace period is
- * what keeps "pick your side" alive: a player can cross from the `A` pad to the `B` one without the
- * match firing out from under them, because every touch, move and departure restarts the window.
+ * **A poll, because the roster's owner cannot call the round.** `RoundService` reads `MatchService` and
+ * must not be read back — that is the constructor cycle the status folder in `ReplicatedStorage` exists
+ * to avoid — so a player who touches a pad mid-round is a fact the round has to *notice*. The revision
+ * is the same one `LobbyRigService` polls for its seats, and the cost is one number read a turn, with
+ * the roster walked only on the turns where it moved.
  *
- * **Five seconds because the walk it has to cover takes about two.** A switch is a short journey across
- * a lobby, and the one this project's own logs measured — one pad at 15:02:17.1, the other at
- * 15:02:19.3 — took 2.3 seconds. The window has to be comfortably longer than that, or a player who
- * changes their mind mid-crossing is locked out by their own footsteps; doubling it also covers the
- * debounce, which swallows a second touch inside half a second.
- *
- * **It is counted on the intermission's own ticks**, so the real wait is this plus up to one tick — see
- * the loop in `RoundService`. Both ends are worth knowing: lowering it towards zero makes a match start
- * as soon as both sides have somebody (at `0`, on the very next tick), and raising it only delays every
- * match.
+ * **A tenth of a second, which is the whole of the join's latency.** The round's own tick is a whole
+ * second, and a player who touched a pad and then stood in the lobby watching themselves not arrive for
+ * a second would be judging the feature on the delay rather than on the game. Ten times a second is the
+ * same cadence the catch and dodge behaviours run at. See `RoundService.watchMidRoundJoins`.
  */
-export const MATCH_SETTLE_SECONDS = 5;
+export const MATCH_JOIN_POLL_SECONDS = 0.1;
+
+/*
+ * **`MATCH_SETTLE_SECONDS` is gone.** It held a startable roster still for five seconds before the round
+ * opened, and it was the *only* thing that ended an intermission — the clock in `RoundService` merely
+ * wrapped. That made an intermission's length depend on when the roster last changed rather than on the
+ * clock: five seconds after a round ended (the rigs still hold their sides), and twenty-two at boot (the
+ * rigs spawn side-less and have to walk to their pads first). The clock ends the intermission now, and
+ * balancing — a full pad sends the extra body to the other one — is what makes a still-moving roster a
+ * non-issue instead of a reason to wait.
+ */
 
 /**
  * How far the sign can be read from, in studs. **Placeholder — 500, which is further than any lobby.**

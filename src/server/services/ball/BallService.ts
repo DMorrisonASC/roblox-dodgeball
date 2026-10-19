@@ -4,16 +4,23 @@ import {
 	ARMED_ABILITY_ATTRIBUTE,
 	BALL_ABILITY_ATTRIBUTE,
 	BALL_SIZE,
+	CATCH_ANIMATION_ATTRIBUTE,
+	CatchCause,
+	DUCKING_ATTRIBUTE,
 	PICKUP_LOCKED_UNTIL,
 	THROWER_TOKEN,
-	THROW_ENABLED,
+	THROW_ANIMATION_ATTRIBUTE,
 } from "shared/constants";
 import { NPC_TAG } from "../../npc/Behavior";
 import { BALL_CONFIG } from "shared/config/ball.config";
+import { throwAnimationWindowSeconds } from "shared/animation";
+import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { abilityOn, isBallAbility, AbilityKind } from "shared/ability";
+import { abilityOn, isBallAbility, pendingAbilityOn, AbilityKind } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
+import { findTemplate } from "shared/find";
+import { resolveDodgeable } from "shared/dodge";
 import { REMOTES } from "shared/remotes";
 import { events } from "shared/networking";
 import {
@@ -27,7 +34,6 @@ import { LaunchPlan, leftAxis } from "shared/Trajectory";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
-import { emitWindBurst } from "./WindBurst";
 import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
 import { EconomyService } from "../economy/EconomyService";
@@ -36,6 +42,24 @@ import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
 
 const DEBUG = true; // prints the mode, speed and angle of each throw
+
+/**
+ * **The throw and catch clips are no longer played here, and this note is what stands in for the three
+ * functions that did.**
+ *
+ * This service used to load a track for a player's throw and a player's catch (`throwAnimationId`,
+ * `catchAnimationId`, `playActionAnimation`), on the argument that a player's body is animated on that
+ * player's own client and a server-started track was therefore what made the other players see it. The
+ * argument was sound and the arrangement was still wrong: the *rigs* were drawn from a published mark by
+ * every client, so the game had two ways of playing one clip — and a state added for one body did nothing
+ * for the other, which is the split this was all for.
+ *
+ * **What replaced it is one renderer for both bodies.** The mark written below is the whole of this
+ * service's part, and `client/controllers/character/BodyAnimator.ts` plays the clip from it — for a rig on
+ * every client, for a player's own body on the client that owns it. The clips themselves are
+ * `BODY_ANIMATION`'s rows, so both bodies wear the same asset, and the fact that a client-started track on
+ * a player's own character replicates is what makes a throw seen by everybody rather than by its thrower.
+ */
 
 /**
  * How far a client's claimed launch point may sit from the thrower's hand as the
@@ -92,6 +116,56 @@ const CATCH_EMITTER_NAME = "CatchEmitter";
  * the name as an argument.
  */
 const THROW_EMITTER_NAME = "ThrowEmitter";
+
+/**
+ * The name of the Pierce effect template — **the whole of the contract with the place file, and the name
+ * every copy of it wears on a ball.**
+ *
+ * **Found by name, recursively, and never by path.** `ReplicatedStorage.VFX.PierceTrail` is what this used
+ * to look up, and it was wrong for the reason `HANDOFF.md` §17 gives about the body effects: the contract
+ * with an authored template is *its name and nothing else* — a folder is something a person renames from
+ * `VFX` to `Effects`, a wrapper `Model` is something they add or drop, and either one would silently break a
+ * lookup that encoded it. {@link findTemplate} walks all of `ReplicatedStorage` instead, so
+ * `ReplicatedStorage.VFX.PierceTrail`, `ReplicatedStorage.Effects.PierceTrail` and a loose
+ * `ReplicatedStorage.PierceTrail` are the same template to this file.
+ *
+ * **One name for both jobs.** A clone keeps its template's name, so the lookup that finds the template and
+ * the lookup that takes a spent effect off a ball are the same `FindFirstChild` — which is what makes "is
+ * there a stray effect on this ball" a question anybody can ask of the instance tree. See
+ * {@link BallService.detachPierceEffect} for the three places that ask it.
+ *
+ * **The effect itself is never built here.** The trail is a `BasePart` carrying an `Attachment` and a
+ * `ParticleEmitter`, authored in Studio; this file clones it and welds the clone to the ball and has no
+ * opinion about rate, colour or lifetime, so the effect can be retuned without a build.
+ */
+const PIERCE_EFFECT_NAME = "PierceTrail";
+
+/**
+ * What the weld holding the effect to the ball is called.
+ *
+ * Named rather than left as `WeldConstraint` for the reason the emitter names are: the effect's whole
+ * arrangement is "a child of the ball, held by one weld", and a reader looking at a ball in the Explorer
+ * — or a leftover check grepping for a weld that outlived its part — has no other handle on it. The
+ * weld is a child of the effect part, so it cannot outlive it; the name is for the reader.
+ */
+const PIERCE_WELD_NAME = "PierceEffectWeld";
+
+/**
+ * The template names this file has already warned about, so a missing one is reported **once per name**
+ * rather than once per throw.
+ *
+ * **A `Set` of names rather than a boolean, which is the clients' own pattern** — `hitVfx`, `windBurst`,
+ * `chargeEffect` and `catchShockwave` each keep a `warnedTemplates` set for exactly this — and the reason it
+ * is a set even with one name in it today is that "one missing template swallows the warning for the other"
+ * is the failure a boolean has. A second effect added to this file gets its own line for free.
+ *
+ * **One shot rather than every throw**, because the fault is the same fault every time: a Pierce ball is
+ * thrown about once a second in a busy round, and a warn per throw would bury every other line in the log
+ * inside a minute. What that costs is named in the client copies' docs and applies here too: a warning that
+ * fires once and then goes quiet is indistinguishable, from the seat, from code that never ran — which is
+ * why the missing-template line is a `warn` and not a `print` behind `DEBUG`.
+ */
+const reportedMissingTemplates = new Set<string>();
 
 /**
  * How often a loose ball is checked for having stopped, in seconds.
@@ -181,6 +255,28 @@ const MAX_PHYSICS_FPS = 240;
  */
 function physicsRate(): number {
 	return math.clamp(Workspace.GetRealPhysicsFPS(), MIN_PHYSICS_FPS, MAX_PHYSICS_FPS);
+}
+
+/**
+ * The `BasePart` inside a cloned effect — the thing a weld can hold — or nothing.
+ *
+ * **Three shapes rather than one, because the template is somebody else's decision.** An effect built as a
+ * single `BasePart` carrying its `Attachment` and emitter (which is what the Pierce trail is) is its own
+ * part; one built as a `Model` is held at its `PrimaryPart`; and a `Model` whose author never set a
+ * primary part — easy to leave unset, and invisible in Studio until something asks — falls back to its
+ * first `BasePart` child. All three are the same question, "which part is this effect *at*", and the
+ * fallback is why the caller does not have to reject a model-shaped template.
+ *
+ * **Not recursive on purpose.** A model that holds no `BasePart` directly is a folder of models or
+ * something stranger, and picking a deep descendant would attach the weld to one piece of an effect whose
+ * other pieces were never made to move with it.
+ */
+function effectPartOf(effect: Instance): BasePart | undefined {
+	if (effect.IsA("BasePart")) return effect;
+	if (effect.IsA("Model")) return effect.PrimaryPart ?? effect.FindFirstChildWhichIsA("BasePart");
+	if (effect.IsA("Folder")) return effect.FindFirstChildWhichIsA("BasePart");
+
+	return undefined;
 }
 
 /**
@@ -276,6 +372,38 @@ export class BallService implements OnStart {
 	 */
 	private readonly heldBalls = new Map<Model, HeldBall>();
 
+	/**
+	 * Which throw each model's mid-throw mark belongs to, so a newer throw is not cleared by an older
+	 * timer.
+	 *
+	 * **The mark is written twice in quick succession in one real case**: a dev with `InfiniteBalls` — and
+	 * anybody whose hand refills fast enough — can throw again inside
+	 * {@link BALL_CONFIG.THROW_ANIMATION_SECONDS}, and two timers for one attribute means the first one to
+	 * fire clears a mark the second throw still owns. The animation is then cut off after a fraction of a
+	 * second, which looks exactly like the clip failing to load. A counter costs one map write per throw and
+	 * makes the clear conditional on "no newer throw has happened".
+	 *
+	 * **It holds only live marks, so it cannot grow.** A mark that is superseded is replaced, not added to,
+	 * and whichever throw is newest deletes its own entry when its timer fires — so the map is as large as
+	 * the number of bodies mid-throw, which is at most a handful.
+	 */
+	private readonly throwMarks = new Map<Model, number>();
+
+	/**
+	 * Which catch each model's mid-catch mark belongs to, so a newer catch is not cleared by an older timer.
+	 *
+	 * **`throwMarks`' twin, and the case it covers is the one a catcher actually produces.** A body with its
+	 * window held open (`AlwaysCatchBehavior`, or a dev with `InfiniteCatch`) can take a second ball inside
+	 * {@link CATCH_CONFIG.CATCH_ANIMATION_SECONDS}, and two timers for one attribute means the first to fire
+	 * clears a mark the second catch still owns — a clip cut off after a fraction of a second, which looks
+	 * exactly like the clip failing to load. The counter makes the clear conditional on "no newer catch has
+	 * happened", which is the whole of "a re-catch restarts the window rather than stacking one".
+	 *
+	 * It holds only live marks, so it cannot grow: a superseded mark is replaced rather than added to, and
+	 * the newest catch deletes its own entry when its timer fires.
+	 */
+	private readonly catchMarks = new Map<Model, number>();
+
 	constructor(
 		private readonly factory: BallFactory,
 		private readonly dev: DevService,
@@ -309,15 +437,6 @@ export class BallService implements OnStart {
 	onStart() {
 		this.throwRemote = this.createThrowRemote();
 		this.throwRemote.OnServerEvent.Connect((player, heading, charge, curve, claim) => {
-			// Whether this player throws at all, asked before anything else in here: a click that
-			// is not meant to throw should not reach the part of this that reads a direction and
-			// solves an arc. Only an explicit `false` blocks — a player who has never pressed the
-			// key has no attribute and throws as before. See `THROW_ENABLED`.
-			if (player.GetAttribute(THROW_ENABLED) === false) {
-				if (DEBUG) print(`[Ball] ${player.Name}: throw refused — throwing is switched off`);
-				return;
-			}
-
 			// **The heading: a vector, and otherwise any vector at all.** This is the one argument that
 			// cannot be *wrong*, because a player may aim wherever they like and the solve answers a heading by
 			// flattening it and taking its compass direction — a lexicographic "valid range" here would be a
@@ -464,7 +583,98 @@ export class BallService implements OnStart {
 		// for the two to be talking about different places.
 		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.CATCH, CATCH_EMITTER_NAME);
 
+		// **And the body is marked as mid-catch, which is what the catch's own clip is played from.** The mark
+		// is shared with the *attempt*: `CatchService` calls the same method when a window opens, so a body that
+		// reached for a ball and did not get one is drawn reaching exactly like a body that did. See
+		// {@link markCatchAnimation}, which owns the mark and is the only thing that writes it.
+		this.markCatchAnimation(model, "catch");
+
 		return true;
+	}
+
+	/**
+	 * Marks `model` as mid-catch — **the one writer of `CATCH_ANIMATION_ATTRIBUTE`, called by both halves of
+	 * catching.**
+	 *
+	 * **A catch and an attempt are the same animation, so they are the same mark.** This method is reached when
+	 * the ball actually arrives in a hand ({@link catchBall}) and when an attempt is *accepted* with no ball in
+	 * sight (`CatchService.attemptCatch`) — because the body is doing the same thing either way: reaching. A
+	 * catch that never comes has to be visible as much as one that does; it is the only feedback a press has.
+	 *
+	 * **One writer rather than two, and that is the whole reason this is public at all.** The mark's lifetime is
+	 * a counter plus a timer, and two services each holding their own copy would leave two timers racing over
+	 * one attribute: an older one fires, finds an attribute a newer mark still owns, and clears it early —
+	 * cutting the clip off after a fraction of a second, which reads exactly like a clip that failed to load.
+	 * So the machinery lives beside the catch it belongs to, and the catch *window* asks for it.
+	 *
+	 * **A throw's mark still standing is dropped first, and that is the one guard the two actions need between
+	 * them.** A body can throw and catch inside `CATCH_ANIMATION_SECONDS` — the thrown ball is gone, the hand is
+	 * free, and a second ball arriving is an ordinary catch — and without this the renderer would be holding the
+	 * catch branch *behind* the throw branch (`bodyClipFor` ranks the throw first) and would replay the catch
+	 * clip the moment the throw's own mark expired: a catch pose a fifth of a second after the catch. Dropping
+	 * the older mark says the honest thing instead — the newer action owns the limbs — and the throw's own timer
+	 * is already written to notice that its mark is gone and leave the attribute alone. **The other order needs
+	 * nothing**: a throw inside a catch window takes the limbs because the throw outranks the catch, and the
+	 * catch mark expires behind it without ever being played again.
+	 *
+	 * **A mark on a body already marked restarts the window rather than stacking one**, which is the counter
+	 * below and the timer at the end of this method working together: the newer mark owns the attribute, and the
+	 * older timer finds it does not and leaves it alone. This is the case a catcher actually produces — a press
+	 * after a press, or the same body catching twice inside half a second.
+	 *
+	 * **`cause` is the value rather than a note about it, and that is a change of job rather than of wording.**
+	 * It used to be for the log and nothing else — the two callers differed only in what the output said. It is
+	 * now what the attribute *carries*, because a catch written over an attempt has to be a **second observable
+	 * event** on the client: both halves play the same clip, so the clip cannot tell them apart, and an
+	 * attribute rewritten with the value it already holds fires nothing. `true` for both was one event where
+	 * there are two. The reader that acts on it is `client/catchShockwave.ts`, which draws the white attempt and
+	 * the green catch.
+	 */
+	public markCatchAnimation(model: Model, cause: CatchCause): void {
+		this.clearAnimationMark(model, THROW_ANIMATION_ATTRIBUTE, this.throwMarks);
+
+		const catchMark = (this.catchMarks.get(model) ?? 0) + 1;
+		this.catchMarks.set(model, catchMark);
+		model.SetAttribute(CATCH_ANIMATION_ATTRIBUTE, cause);
+
+		// **One line per mark.** The clip itself is drawn by the client that owns the body — every client for a
+		// rig, its own for a player — and each of those prints its own line when it changes clip
+		// (`[Animate] <name>: catch — Action`, `[Rig] <name>: catch — Action`). This line is the *server's*
+		// half, and it says the fact was published, which is the one thing a client's silence cannot tell you.
+		if (DEBUG) {
+			print(
+				`[Ball] ${model.Name}: catch animation mark — ${cause}, ` +
+					`${CATCH_CONFIG.CATCH_ANIMATION_SECONDS}s`,
+			);
+		}
+
+		task.delay(CATCH_CONFIG.CATCH_ANIMATION_SECONDS, () => {
+			// A newer mark owns the attribute by now; its own timer is the one that clears it, so this leaves it
+			// alone rather than cutting a later reach short.
+			if (this.catchMarks.get(model) !== catchMark) return;
+
+			this.catchMarks.delete(model);
+			model.SetAttribute(CATCH_ANIMATION_ATTRIBUTE, undefined);
+		});
+	}
+
+	/**
+	 * Drops an action mark on `model` if one is up — **the whole of how one action supersedes another.**
+	 *
+	 * Nothing is stopped and nothing is scheduled here: the mark's owner has a timer of its own, and every
+	 * one of those timers is written to check whether it still owns the mark before clearing anything. So
+	 * removing the entry *is* the supersede — the older timer finds somebody else's mark (or none) and leaves
+	 * the attribute and its track where the newer action put them.
+	 *
+	 * The map is a parameter rather than this being two methods, because the rule is about the marks and not
+	 * about which action owns them: a third action clip would call this with its own map and need nothing
+	 * else.
+	 */
+	private clearAnimationMark(model: Model, attribute: string, marks: Map<Model, number>): void {
+		if (!marks.has(model)) return;
+
+		marks.delete(model);
+		model.SetAttribute(attribute, undefined);
 	}
 
 	/**
@@ -526,9 +736,11 @@ export class BallService implements OnStart {
 			// still see and act on.
 			this.heldBalls.delete(model);
 
-			// The dropper, when there is one. A rig can never mark a ball — it has no key to press —
-			// so this is the ordinary path with a guard rather than a case being handled: an NPC
-			// dropping a ball forfeits nothing because there is nothing on it to forfeit.
+			// The dropper, when there is one. A rig can now mark a ball — its next throw after a mystery box
+			// applies the pending ability — but it still forfeits nothing here: a rig holds no charge, and its
+			// pending slot is the *throw's* to clear, not this path's. So the guard stays the ordinary path:
+			// an NPC dropping a marked ball destroys it exactly as a player's does, and `forfeitCharge` is the
+			// one thing a rig skips, because there is nothing of its own on the ball to forfeit.
 			const player = Players.GetPlayerFromCharacter(model);
 			if (player) this.abilities.forfeitCharge(player);
 
@@ -544,6 +756,10 @@ export class BallService implements OnStart {
 			// other to live on a person. Free rather than paid, because nothing was thrown: see
 			// {@link refillFromBuff}.
 			this.refillFromBuff(model, false);
+
+			// **A dropped mark is a power the player has lost**, so the HUD stops saying ready — the ball that
+			// carried it is a destroyed instance and can never be thrown. See `syncArmedPower`.
+			this.syncArmedPower(model);
 
 			return true;
 		}
@@ -644,6 +860,11 @@ export class BallService implements OnStart {
 
 		held.ball.Destroy();
 
+		// **And if that ball was the armed one, the player is no longer ready.** The last of the five sites —
+		// a round cleanup, a death's own removal, or anything else that takes a ball out of the world. See
+		// `syncArmedPower`; the read finds an empty hand, because the entry went first.
+		this.syncArmedPower(model);
+
 		if (DEBUG) print(`[Ball] ${model.Name}'s ball was destroyed`);
 
 		return true;
@@ -666,6 +887,28 @@ export class BallService implements OnStart {
 	 * do — the *holding*.
 	 */
 	private attachToHand(model: Model, ball: BasePart): boolean {
+		// Scope: BallService.attach — every route a ball takes into a hand, four of them per rig per turn.
+		if (DEBUG_CONFIG.PROFILE) debug.profilebegin("BallService.attach");
+		const attached = this.attachToHandBody(model, ball);
+		if (DEBUG_CONFIG.PROFILE) debug.profileend();
+		return attached;
+	}
+
+	/**
+	 * The body of {@link attachToHand}, split off **only** so the scope above can wrap it.
+	 *
+	 * **Why a second method rather than the pair written into the body.** The body returns `false` from a
+	 * missing hand and a held ball's replacement, and `true` at the end; a `profileend` written at the last
+	 * statement would be skipped on the first of those, leaving an open band. The split makes the pairing
+	 * structural — one statement between `begin` and `end`, every exit a return into it — and the extra
+	 * frame is paid whether the flag is on or off, so the recording is not measuring a different call graph
+	 * from the one the game runs.
+	 *
+	 * **Nothing inside yields**, which is what makes the scope legal at all: there is no `task.wait`, no
+	 * `Humanoid` move and no `Sound:Play()` that waits inside either half. The only yield in this file is
+	 * the settle loop's `task.wait`, four hundred lines past the end of this method.
+	 */
+	private attachToHandBody(model: Model, ball: BasePart): boolean {
 		// The same hand the ball was placed at, asked of the factory rather than looked up again
 		// here: one rig-type rule, in one file, for both the placing and the welding.
 		const hand = this.factory.getRightHand(model);
@@ -769,6 +1012,14 @@ export class BallService implements OnStart {
 		// mean reaching into the contact path for a case with no symptom.
 		CollisionIgnore.clear(ball);
 
+		// **And the Pierce trail, for the same reason and with a louder symptom.** It is a child of the ball,
+		// and a child of a ball survives a catch — so a caught Pierce ball would arrive in the catcher's hand
+		// still wearing the trail of the throw it was caught out of: an effect that says "this ball is Pierce"
+		// on a ball whose ability `setBallAbility` above has just cleared. The end-of-throw branch in
+		// `BallComponent` covers the throw that lands on something; this covers the one that was caught, which
+		// never touches the world at all and therefore never reaches that branch.
+		this.detachPierceEffect(ball);
+
 		// **And then the arm, if this player is carrying one — the other end of the dev shortcut.**
 		//
 		// An armed dev has no ball to put an ability on, so the ability waits on the *player* and moves
@@ -806,12 +1057,18 @@ export class BallService implements OnStart {
 		// sets on one ball would be twice the density at twice the cost, and would throw off
 		// the angles the cross-section is built from. Nothing is built at all when the trail
 		// is switched off — see `BallTrail.attach`.
-		// **And the trail the holder brings to it, which is the one thing here that is about a player
-		// rather than about a ball.** The colours come from the record rather than from an attribute, so
+		// **And the trail the holder brings to it, which is the one thing here that is about a *body* rather
+		// than about a ball.** The colours come from the record rather than from an attribute for a player, so
 		// a client cannot talk its way into a trail — see `EconomyService.equippedTrailColors`. Handing
 		// them in on every attach, including the adopt-existing branch, is what makes a ball picked up
 		// from somebody else change its trail to its new holder's rather than keeping the last one's.
-		const trail = BallTrail.attach(ball, this.economy.equippedTrailColors(owner));
+		//
+		// **The model is handed over rather than the player resolved from it, and that is the change that lets
+		// a rig wear one.** `owner` above is `Players.GetPlayerFromCharacter(model)` and is therefore `undefined`
+		// for every rig — which is how this line used to read a rig as "nothing equipped, use the grey default".
+		// The question being asked is about the *body holding the ball*, and a body is what this function has;
+		// the economy works out which kind it is. See `EconomyService.equippedTrail` for the two answers.
+		const trail = BallTrail.attach(ball, this.economy.equippedTrailColors(model));
 
 		// **The one line that says which trail this ball actually got**, and its three facts are the three the
 		// appearance depends on: who is holding it, what the *record* says they are wearing, and whether the
@@ -846,6 +1103,12 @@ export class BallService implements OnStart {
 		grip.Parent = ball;
 
 		this.heldBalls.set(model, { ball, trail });
+
+		// **The hand is full again, so the armed power is whatever this ball carries** — nothing for an
+		// ordinary hand-out or a caught ball (a caught mark is cleared above), and a dev's arm when the ball
+		// this arrived with picked one up. See `syncArmedPower`, of which this is the site that covers both
+		// of the ways a power becomes armed without a press.
+		this.syncArmedPower(model);
 
 		return true;
 	}
@@ -882,6 +1145,159 @@ export class BallService implements OnStart {
 		} else {
 			this.freezes.detachAura(ball);
 		}
+	}
+
+	/**
+	 * **Puts the authored Pierce trail on `ball`: clone the template out of `ReplicatedStorage`, hold it on
+	 * the ball with a `WeldConstraint`, and let the ball's own lifetime be the effect's.**
+	 *
+	 * **Why a weld rather than parenting alone.** A child of a moving part does not move with it — Roblox
+	 * has no transform inheritance between a part and its children — so a clone parented to the ball would
+	 * sit in the air at the throw's launch point while the ball flew away, which is a surprisingly quiet
+	 * failure: the effect exists, it emits, and nothing is wrong with it except that it is in the wrong
+	 * place for ever. A `WeldConstraint` is the engine's own answer to "these two parts are one object":
+	 * with `Part0 = ball` and `Part1 = effect` it locks the *relative* offset the two had at the moment the
+	 * weld was parented, and from then on the effect follows the ball's position and rotation exactly — the
+	 * solver moves one assembly, so the trail cannot lag a frame behind the ball, which is what a
+	 * `RunService.Heartbeat` re-parent would do.
+	 *
+	 * **And it is a `WeldConstraint` rather than a `Motor6D` or a rigid `Weld`.** A `Motor6D` exists to be
+	 * *animated* — it carries a `Transform` a rig's joints write — and nothing wants to move this effect
+	 * relative to its ball. A `Weld` welds the *parts'* surfaces at a `C0`/`C1` offset, which means a
+	 * rotation authored between them, which is one more number to get wrong in a file that has no opinion
+	 * about how the effect is oriented. The constraint is the one that says only what is true here: keep
+	 * these two where they are, together.
+	 *
+	 * **Five properties, and every one of them is about not changing how the ball flies.** An effect
+	 * welded to a projectile joins the projectile's **assembly**, and an assembly is what the solver
+	 * integrates — so a part that is `Anchored` would pin the ball in place, a part with mass would make the
+	 * ball heavier than the plan, the aim guide and `launchCorrection` all assume it is, and a part that
+	 * collides or answers queries would turn a ball that passes through people into a ball that hits them.
+	 * Hence: `Anchored = false` (a template sitting in `ReplicatedStorage` is usually anchored, and the weld
+	 * would be silently undone), `Massless = true`, `CanCollide = false`, `CanTouch = false` and
+	 * `CanQuery = false`. **`Massless` is the one worth knowing about**: without it the throw's trajectory
+	 * changes the moment a Pierce ball is thrown, and nothing in this file would be able to tell you why.
+	 *
+	 * **The part is moved onto the ball before the weld is made.** A `WeldConstraint` holds the offset the
+	 * two parts had when it was parented, and the template's own position in `ReplicatedStorage` means
+	 * nothing relative to a ball at the other end of the map — so the clone is placed at the ball's
+	 * `CFrame` first, and the weld then locks *that* (a zero offset). Anything the author offset inside the
+	 * template travels with the template's own hierarchy: an `Attachment`'s position, a second part welded
+	 * to the first, and the emitter's `EmissionDirection` are all relative to the part, and none of them are
+	 * touched here.
+	 *
+	 * **Parented to the ball, and that is the cleanup.** The ball is destroyed by a round ending, by
+	 * `removeBall`, and by a ball expiry — three routes, one place to undo the effect, and the copy goes
+	 * with the instance. A ball is *also* reused (thrown, caught, thrown again), which is why the effect is
+	 * taken off explicitly when a throw ends rather than only at the ball's death; see
+	 * {@link detachPierceEffect}.
+	 */
+	private attachPierceEffect(ball: BasePart): void {
+		// **One effect per throw, so any older one goes first.** Both ordinary routes out of a throw detach
+		// already, so this line is about the route nobody has thought of yet: a ball that reaches a second
+		// Pierce throw still wearing the first trail's copy would be a ball with two emitters on it, which
+		// is a denser effect rather than an error, and would be almost impossible to attribute to this
+		// method from a screenshot.
+		this.detachPierceEffect(ball);
+
+		// **By name, through the whole of `ReplicatedStorage`** — see `PIERCE_EFFECT_NAME`, `shared/find.ts`
+		// and `HANDOFF.md` §17: the contract with an authored template is its name, and where it sits (a `VFX`
+		// folder, an `Effects` folder, or no folder at all) is a thing a person moves. The helper resolves a
+		// name on the part, on the attachment inside it, or on the emitter inside that, to the part to clone.
+		const template = findTemplate(ReplicatedStorage, PIERCE_EFFECT_NAME);
+
+		// **Said once per name, and with everything the reader needs to fix it.** The fix is a Studio job, so
+		// the line names the template, says what shape it has to be, and then lists what `ReplicatedStorage`
+		// actually holds — because "no template" is true of a name that is absent, a name that is misspelt and
+		// a template that was never published, which are three different fixes and one indistinguishable
+		// symptom. Everything after this returns quietly: a Pierce ball with no trail still flies, still
+		// passes through bodies and still tags them, so this is not a fault that should stop a throw.
+		if (template === undefined) {
+			if (!reportedMissingTemplates.has(PIERCE_EFFECT_NAME)) {
+				reportedMissingTemplates.add(PIERCE_EFFECT_NAME);
+
+				warn(`[VFX] no ${PIERCE_EFFECT_NAME} in ReplicatedStorage — the Pierce trail will not play`);
+
+				const top: string[] = [];
+				for (const child of ReplicatedStorage.GetChildren()) top.push(`${child.Name} (${child.ClassName})`);
+
+				warn(
+					`[VFX] ReplicatedStorage holds: ${top.isEmpty() ? "nothing" : top.join(", ")} — ` +
+						`a template is a BasePart carrying an Attachment and a ParticleEmitter, ` +
+						`and it is found by name wherever it sits.`,
+				);
+			}
+
+			return;
+		}
+
+		const effect = template.Clone();
+		const part = effectPartOf(effect);
+
+		// A template with no part in it cannot be welded to anything, and cloning a fresh copy every throw
+		// that is immediately thrown away would be a leak with a warn attached.
+		if (part === undefined) {
+			if (!reportedMissingTemplates.has(PIERCE_EFFECT_NAME)) {
+				reportedMissingTemplates.add(PIERCE_EFFECT_NAME);
+
+				warn(
+					`[VFX] ${PIERCE_EFFECT_NAME} has no BasePart in it — the Pierce trail will not play. ` +
+						"The template is cloned and welded by its part.",
+				);
+			}
+
+			effect.Destroy();
+
+			return;
+		}
+
+		// **Before it joins the ball's assembly, not after** — see this method's doc for what each one is
+		// protecting. Set on the clone, so the template in `ReplicatedStorage` is left as its author built
+		// it and the next throw starts from the same state.
+		part.Anchored = false;
+		part.Massless = true;
+		part.CanCollide = false;
+		part.CanTouch = false;
+		part.CanQuery = false;
+
+		// The effect sits on the ball, and the weld locks that in. Placed before parenting so the part is
+		// never briefly somewhere else in the world — and `CFrame` rather than `Position` because the
+		// template's own rotation is not a fact about the ball.
+		part.CFrame = ball.CFrame;
+		effect.Parent = ball;
+
+		// **The weld last, with its parts assigned before it is parented.** A `WeldConstraint` that enters
+		// the tree with a `Part0` or `Part1` still unset is a constraint on nothing, and one parented before
+		// its parts are placed would lock the offset they had at that instant. Assigning both first and
+		// parenting once is the order that cannot go wrong.
+		const weld = new Instance("WeldConstraint");
+		weld.Name = PIERCE_WELD_NAME;
+		weld.Part0 = ball;
+		weld.Part1 = part;
+		weld.Parent = part;
+	}
+
+	/**
+	 * **Takes the Pierce trail off `ball`: the one line every route out of a throw ends on.**
+	 *
+	 * The effect is a child of the ball, so a destroyed ball takes it with it and needs nothing. Everything
+	 * else does, because **a ball outlives its throws**: it is caught, put back in a hand, and thrown again
+	 * as an ordinary ball, and a trail that survived that would be a Pierce effect on a ball that carries no
+	 * Pierce — the visual half of an ability the gameplay half has already cleared. There are three exits,
+	 * and each is someone else's moment:
+	 *
+	 * - **The end of a throw** — the world-contact branch in `BallComponent`, which is where `Armed` goes
+	 *   off and every tag resolves. That is the throw's death, and a trail whose throw is over is a trail
+	 *   emitting on a ball lying on the floor.
+	 * - **A ball arriving in a hand** — `attachToHand`, beside `CollisionIgnore.clear`: a caught ball never
+	 *   touches the world, and this is the moment it stops being a throw.
+	 * - **Another Pierce throw** — {@link attachPierceEffect} clears the old copy before making a new one.
+	 *
+	 * Public because the first of those is `BallComponent`'s to see and this service is already injected
+	 * there; the other two are this file's own.
+	 */
+	public detachPierceEffect(ball: BasePart): void {
+		ball.FindFirstChild(PIERCE_EFFECT_NAME)?.Destroy();
 	}
 
 	/**
@@ -959,9 +1375,9 @@ export class BallService implements OnStart {
 	 * Throws whatever `model` is holding, **as `request` states it** — charged for a player, aimed at a point
 	 * for a rig.
 	 *
-	 * Keyed on the **model**, so an NPC's throw is this function with a different model and target in
-	 * it rather than a second copy of the throw. A `Player` is still around, but never as the thing
-	 * being thrown from: the remote handlers in {@link onStart}, the charge and MultiBall
+	 * Keyed on the **model**, so an NPC's throw is this function with a different model and a different
+	 * request in it rather than a second copy of the throw. A `Player` is still around, but never as the
+	 * thing being thrown from: the remote handlers in {@link onStart}, the charge and MultiBall
 	 * bookkeeping — which belongs to a player rather than to a body — and the dev check that lets a
 	 * flagged dev throw with an empty hand.
 	 *
@@ -981,6 +1397,31 @@ export class BallService implements OnStart {
 	 * ask while there is nothing to throw.
 	 */
 	public throwBall(model: Model, request: ThrowRequest, claimedLaunch?: Vector3): boolean {
+		// Scope: BallService.throw — the release itself, gates and trail arming included.
+		if (DEBUG_CONFIG.PROFILE) debug.profilebegin("BallService.throw");
+		const thrown = this.throwBallBody(model, request, claimedLaunch);
+		if (DEBUG_CONFIG.PROFILE) debug.profileend();
+		return thrown;
+	}
+
+	/**
+	 * The body of {@link throwBall}, split off **only** so the scope above can wrap it.
+	 *
+	 * **Why a second method rather than the pair written into the body.** Three `return false` gates sit
+	 * between the top of the original and any work at all — frozen, ducking, empty hand — so a `profileend`
+	 * at the bottom would be reached only by a throw that actually happened, and every refused throw would
+	 * leave the MicroProfiler holding an open band. The split makes the pairing structural instead of a
+	 * thing to remember, and this is the method most likely to grow a fourth gate later.
+	 *
+	 * **The scope covers the whole release**, including `task.delay` for the throw mark and the trail arming
+	 * — `task.delay` schedules and returns, so nothing here yields and the `profileend` is always reached in
+	 * the same resumption. The only `task.wait` in this file is the settle loop's, far below this method.
+	 *
+	 * **`trajectory` work is not included**: nothing in this method computes an arc. A rig's aim is
+	 * `SeekBehavior`'s and its launch point is `ThrowBehavior`'s, which is why a recording that shows a wide
+	 * `BallService.throw` is pointing at the release rather than at the aiming.
+	 */
+	private throwBallBody(model: Model, request: ThrowRequest, claimedLaunch?: Vector3): boolean {
 		// **A frozen body does not throw, and the gate is here rather than on the remote.** `throwBall` is
 		// the only thing in the game that throws — a player's click and a rig's behavior both arrive here,
 		// which is `ActionService`'s own note about where a throw gate belongs — so a check in the remote
@@ -991,6 +1432,19 @@ export class BallService implements OnStart {
 		// ball actually left — so a frozen player loses nothing for the throw they could not make.
 		if (this.freezes.isFrozen(model)) {
 			if (DEBUG) print(`[Ball] ${model.Name}: throw refused — frozen`);
+
+			return false;
+		}
+
+		// **A ducking body does not throw, and the gate is here for the freeze gate's reason above.** A duck is
+		// a *committed stance* — that is the whole trade the mechanic makes — so the body that ducks has given
+		// up its throw for the duration along with its walk. The gate is read off the body's published
+		// attribute rather than through an injected `DuckService`, which is the same choice `BallComponent`
+		// makes: the attribute is written by the one service that owns the duck, it is authorless from a
+		// client's point of view, and it is the fact both halves of the exemption already read. One writer,
+		// three readers, no second copy of the state.
+		if (model.GetAttribute(DUCKING_ATTRIBUTE) === true) {
+			if (DEBUG) print(`[Ball] ${model.Name}: throw refused — ducking`);
 
 			return false;
 		}
@@ -1019,6 +1473,47 @@ export class BallService implements OnStart {
 		// the catch check both read this one token.
 		ball.SetAttribute("Armed", true);
 		ball.SetAttribute("ThrowerId", this.tokenOf(model));
+
+		// **And the body is marked as mid-throw, which is what the throw's own clip is played from.** This is
+		// the moment the file already calls "the release", and it is the only place in the game a ball leaves a
+		// hand — a player's click and a rig's behavior both arrive at this method — so one mark here covers every
+		// body that throws. **The clip is drawn by the client that owns the body**, which is the same client for
+		// a player's character and *every* client for a rig: the server writes the fact and loads no track at
+		// all. It used to load one for a player, and that is gone — see the note above `THROW_ANIMATION_SECONDS`
+		// in `ball.config.ts` and `client/controllers/character/BodyAnimator.ts`, which is the renderer both
+		// bodies share.
+		//
+		// **Cleared on a timer rather than when the ball lands.** The mark means "this body is in the middle
+		// of the throw *motion*", which is over long before the ball is; a mark that lasted the flight would
+		// leave a rig mid-throw for a second and a half. See `THROW_ANIMATION_ATTRIBUTE` for the pair it forms
+		// with the ball-in-hand state, and `BALL_CONFIG.THROW_ANIMATION_SECONDS` for the length and why it is
+		// a tuned number rather than the clip's own.
+		const throwMark = (this.throwMarks.get(model) ?? 0) + 1;
+		this.throwMarks.set(model, throwMark);
+		model.SetAttribute(THROW_ANIMATION_ATTRIBUTE, true);
+
+		// **The window is the clip's own remaining length, and it stopped being a function of the charge.**
+		// The clip was held at its wind-up for the charge and then played at `charge ×` normal speed, so the
+		// motion used to need `0.63 / speed` seconds after the release. It now plays at `1×` for every throw —
+		// the charge is carried by the camera while the button is held instead — so the mark lasts exactly as
+		// long as the clip's motion, and `throwAnimationWindowSeconds` is the single place that says so. The
+		// arithmetic still lives in `shared/animation.ts` so the client playing the clip and this mark cannot
+		// disagree about it, and the `max` keeps `THROW_ANIMATION_SECONDS` as a floor for a clip that is
+		// somehow shorter than the constant.
+		//
+		// **This is the only server-side change the hold needed, and it is not enforcement of the animation.**
+		// The client still decides everything visual; what this buys is that the mark is up for as long as the
+		// motion it authorises.
+		const animationWindow = math.max(BALL_CONFIG.THROW_ANIMATION_SECONDS, throwAnimationWindowSeconds());
+
+		task.delay(animationWindow, () => {
+			// A newer throw owns the mark by now; its own timer is the one that clears it, so this leaves the
+			// attribute alone rather than cutting a later throw's window short.
+			if (this.throwMarks.get(model) !== throwMark) return;
+
+			this.throwMarks.delete(model);
+			model.SetAttribute(THROW_ANIMATION_ATTRIBUTE, undefined);
+		});
 		this.setPromptEnabled(ball, true);
 		// Airborne now, so the rod can start drawing behind it. Absent when the trail is
 		// switched off in config, which is the whole of what that flag does at runtime.
@@ -1030,7 +1525,7 @@ export class BallService implements OnStart {
 		// way it is resolvable here: `throwForPlayer` knows the `Player` and hands this method a character, and
 		// the hand's own record holds no owner. A rig answers `undefined`, which is the default, which is what
 		// a rig's ball should be. A repaint of the live trail, never a rebuild — see `BallTrail.setColors`.
-		held.trail?.setColors(this.economy.equippedTrailColors(Players.GetPlayerFromCharacter(model)));
+		held.trail?.setColors(this.economy.equippedTrailColors(model));
 		held.trail?.setArmed(true);
 
 		// The client runs this exact same plan to draw its aim guide, so the throw
@@ -1039,10 +1534,10 @@ export class BallService implements OnStart {
 		// `planChargedThrow` itself.
 		//
 		// **The one branch in the whole throw, and it is deliberately two lines wide.** A charged throw is
-		// solved from a heading and a power, which is everything the wire carried; an aimed one is solved from
-		// a point and one of the three named arcs, which is what a rig's behavior has. See `ThrowRequest` for
-		// why they are tagged rather than guessed at, and `shared/throw.ts` for why there are two solves at
-		// all.
+		// solved from a heading and a power — which is everything the wire carries *and* everything a rig's
+		// behavior builds now, so this is the arm every throw in the game takes — while the aimed one is solved
+		// from a point and one of the three named arcs. See `ThrowRequest` for why the two are still tagged
+		// rather than guessed at, and `shared/throw.ts` for why there are two solves at all.
 		const releasePosition = ball.Position;
 		const ownLaunch = getThrowMuzzle(model);
 		const launch = this.acceptLaunch(ownLaunch, claimedLaunch);
@@ -1095,7 +1590,23 @@ export class BallService implements OnStart {
 				? `charged ${string.format("%.2f", request.charge)}${request.curve ? " bend" : ""}`
 				: `${request.arc}`;
 
-		if (DEBUG) {
+		// **Gated on the config as well as on this file's own `DEBUG`, and that is the fix for the log volume
+		// measured on 2026-10-17.** `const DEBUG = true` above is a build-time switch for the *lifecycle* lines
+		// — who threw, who caught, what ended on a part — and those are the ones worth having on. This block is
+		// not one of them: it is a per-throw measurement of eight `string.format`s, `describeThrow` and
+		// `describeMuzzle`, and `describeMuzzle` walks the model to find the torso and head. With eight rigs
+		// throwing, that is two or three of these a second, forever, and `VERBOSE_LOGS: false` did not touch a
+		// single one of them because this file never read the flag.
+		//
+		// **What is kept, because it is not diagnostic.** Everything outside this block runs regardless — the
+		// collision ignore, the trail, the armed token, the network owner — so silencing the line changes what
+		// the log says and nothing about what the throw does.
+		//
+		// **The `at N fps` number goes with it, which is a real loss and is noted rather than hidden:** it is
+		// `Workspace:GetRealPhysicsFPS()`, the server's actual physics-step rate, and the 2026-10-17 log caught
+		// the server at 29–46 of them during a rig-heavy stretch. Turning it back on for one run is how the next
+		// frame-time reading is taken — see `DEBUG_CONFIG.PROFILE` beside this flag in `debug.config.ts`.
+		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
 			// Both halves of the correction, and only the second one is ever zero for a reason: a
 			// straight throw's line has no pull in it, so its log line is the one it always was.
 			const curvePull = new Vector3(correction.X, 0, correction.Z).Magnitude;
@@ -1167,6 +1678,15 @@ export class BallService implements OnStart {
 
 			for (const body of bodies) CollisionIgnore.between(ball, body);
 
+			// **And the trail, from the same test and at the same moment.** The two halves of a Pierce throw
+			// are the same fact read once: the collision ignores are what the *contact* solver is told, and
+			// this is what the *player* is told, so a branch that set one up and not the other would be a
+			// throw that behaves like Pierce and looks ordinary — or, worse, a mark the shot never carried.
+			// It is attached here rather than at the mark because the effect belongs to the flight: a ball
+			// marked and never thrown should not be trailing particles around a hand, and a ball marked and
+			// then thrown twice should wear the trail once, per throw.
+			this.attachPierceEffect(ball);
+
 			if (DEBUG) {
 				print(
 					`[Ball] ${model.Name}: Pierce — set up to pass through ` +
@@ -1218,22 +1738,16 @@ export class BallService implements OnStart {
 		// this call site owes it.
 		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.THROW, THROW_EMITTER_NAME);
 
-		// **And the gust of air the throw leaves, at the same point and for the same reason.** The line above
-		// is where the throw is *heard*; this is where it is *seen*, and both are the ball at the instant it
-		// was given velocity — one moment, two senses, which is why they are adjacent rather than fired from
-		// two places that would have to agree about when a throw happens.
+		// **The gust of air that used to fire from this line is gone**, deleted with `WindBurst.ts` on
+		// 2026-10-13 at the user's instruction. It was the second thing at this point — the throw *heard* above,
+		// the throw *seen* here — and what replaced it is a Studio-authored template on the thrower's own body,
+		// drawn by every client from the throw mark this method writes at the release. See
+		// `client/windBurst.ts`, where the effect lives now, and `throwFeedback.config.ts`, which records what
+		// went with it and the one lesson it cost to learn.
 		//
-		// **Built by the server, so everybody sees it**, which is the same choice the sound makes: a burst
-		// built on the thrower's own machine would be a gust only the thrower was standing in. Nothing is
-		// sent and no client is asked, so this adds no wire and no validation — the server is already the one
-		// deciding that this throw happened, because this line is inside that decision.
-		//
-		// **A rig's throw comes through this same line**, because `ThrowBehavior` calls `throwBall` like any
-		// other thrower. That is deliberate rather than overlooked: a rig displaces air when it throws for the
-		// same reason a player does, and the alternative would be a per-caller flag whose only purpose is to
-		// make one thrower's throws look different from another's. See `WindBurst.ts`, which tidies itself
-		// away on its own timer and is owed nothing by this call site.
-		emitWindBurst(ball.CFrame, model.Name);
+		// **One property of this call site is worth keeping in mind**: a player's throw and a rig's both arrive
+		// here, so a mark written at this point is the one road by which both bodies can be given a visible
+		// release. That is why the new effect needs no per-caller flag either.
 
 		ball.CanCollide = true;
 		// **And the query half comes back with it**, which is the other end of `attachToHand`'s
@@ -1285,6 +1799,12 @@ export class BallService implements OnStart {
 
 			if (DEBUG) print(`[Ball] ${model.Name}: refilled by InfiniteBalls`);
 		}
+
+		// **The throw is the done trigger for a ball-carried power**, and this is the line after the hand has
+		// been emptied (and possibly refilled with an ordinary ball). The marked ball is in the air now and
+		// carries its ability to whatever it hits — but the *player* is no longer holding a loaded ball, which
+		// is the fact the HUD's `READY` text is drawn from. See `syncArmedPower`.
+		this.syncArmedPower(model);
 
 		return true;
 	}
@@ -1364,7 +1884,7 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * The server half of a MultiBall request: buys `player` a window.
+	 * The server half of a MultiBall request: buys `owner` a window.
 	 *
 	 * **The handler is here and the state is in `SuperService`**, which is {@link markHeldBall}'s split
 	 * for its reason — this service owns hands and holds the dev flags, and that service counts charges
@@ -1374,108 +1894,138 @@ export class BallService implements OnStart {
 	 *
 	 * **Two ways in, and neither of them is spelled as a key in this file.** A dev's own MultiBall key
 	 * comes straight here, and a mystery box reaches it through {@link useMysteryPower}, which asks the
-	 * window which power it is paying for. Naming a key here would be a second copy of a binding that
+	 * window which power it is paying for. A rig reaches it from `ThrowBehavior`, with the kind read off
+	 * its `PENDING_ABILITY_ATTRIBUTE` slot. Naming a key here would be a second copy of a binding that
 	 * lives in the controller which owns it — and a comment that says "press `4`" goes stale, silently,
 	 * on the day the binding moves. This one did.
 	 *
-	 * **Four questions, in the order that costs least to answer, and every refusal is a print** rather
-	 * than a thrown error, for `markHeldBall`'s reason: a key press is not a fault, and the log is where
-	 * the reason belongs.
+	 * **Four questions for a player, in the order that costs least to answer, and every refusal is a
+	 * print** rather than a thrown error, for `markHeldBall`'s reason: a key press is not a fault, and the
+	 * log is where the reason belongs. The same split {@link markHeldBall} now has applies here: the rule
+	 * preconditions — a living body, a window that is not already open — run for every owner through one
+	 * code path, and the access preconditions — ownership, the round-or-zone gate, a charge or a prize, the
+	 * dev bypass — are the only place a `Player`/`Model` branch exists. A rig's access is the pending slot
+	 * and nothing else.
 	 *
 	 * **What a press commits the player to is the one place the two abilities part company.** A mark
-	 * waits for a ball and spends nothing; this spends the charge on the spot and starts the clock, so a
-	 * player who asks for a window and throws nothing has still paid for the ten seconds they did not use.
-	 * See `SuperService.activateMultiBall`, where that decision is argued.
+	 * waits for a ball and spends nothing; this spends the charge on the spot and starts the window, so a
+	 * player who asks for a window and throws nothing has still paid for the throws they did not use. A
+	 * rig's slot is spent by the throw site, so it too pays on the throw rather than on this call.
+	 * See `SuperService.activateMultiBall`, where the window itself is decided.
 	 */
-	private activateMultiBall(player: Player): void {
+	public activateMultiBall(owner: Player | Model): void {
 		// **A living body**, the same test the mark makes and the throw makes in effect: there is no hand
-		// to fill and no player to put a clock on.
-		const character = player.Character;
+		// to fill and no body to put a window on. The owner is narrowed only to find the body — a rig is its
+		// own character, the `Model` the ball is a child of.
+		const character = owner.IsA("Player") ? owner.Character : owner;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		if (!character || !humanoid || humanoid.Health <= 0) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no living body`);
+			if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no living body`);
 
 			return;
 		}
 
-		const dev = this.dev.isDev(player);
+		// **The access preconditions — the only owner-type branch in this method.** A player is asked for
+		// ownership, the round-or-zone gate and a charge or a prize (or the dev bypass); a rig is asked only
+		// that its pending slot names MultiBall. The rule axis above — a living body — and the rule axis
+		// below — a window already open — run for both bodies through one code path.
+		if (owner.IsA("Player")) {
+			const dev = this.dev.isDev(owner);
 
-		// **MultiBall has to be owned too**, which is the same lock the marks carry: the window is a power
-		// unlocked by the chest, and this is where an unowned one is refused. A dev bypasses it as they
-		// bypass the round-or-zone gate and the charge below.
-		if (!dev && !this.economy.ownsPower(player, "MultiBall")) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — not owned`);
+			// **MultiBall has to be owned too**, which is the same lock the marks carry: the window is a power
+			// unlocked by the chest, and this is where an unowned one is refused. A dev bypasses it as they
+			// bypass the round-or-zone gate and the charge below.
+			if (!dev && !this.economy.ownsPower(owner, "MultiBall")) {
+				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — not owned`);
 
-			return;
+				return;
+			}
+
+			// **A dev is exempt from the round-or-zone gate, and that exemption is the shortcut's whole point**
+			// — a standing start in Studio is usually an intermission in the lobby, where a power has nothing to
+			// act on. Asked of `SuperService` rather than read from the status folder here, so the rule that
+			// grants a charge and the rule that lets one be spent stay one line in one file, exactly as the mark
+			// does it — and see `SuperService.inRoundOrZone` for why that one line is now a round *or a practice
+			// zone* rather than a round alone.
+			if (!dev && !this.abilities.inRoundOrZone(owner)) {
+				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no round and no practice zone`);
+
+				return;
+			}
+
+			// **The charge, a mystery prize, or the dev bypass.** A dev opens a window holding no charge of
+			// their own, which is what makes this testable from a standing start — the mark handler's shortcut,
+			// on the other key.
+			//
+			// **The second term is the whole of what the mystery box does to a game.** While a prize is held the
+			// charge test is satisfied without a charge existing, so the power is paid for by the box. It is
+			// one `||` rather than a branch because there is nothing else about the request that changes:
+			// ownership above, and the round-or-zone gate above that, are asked exactly as they were, which is
+			// what keeps a box from being a way to use a power in the lobby or without owning it. See
+			// `SuperService.isMysteryActive`, and `markHeldBall` below for the mark's half of the same rule.
+			//
+			// **And `isMysteryActive` no longer means "the clock is still running".** It means a prize is held,
+			// which is the difference between a power that is free *for ten seconds* and one that is free *until
+			// it is used*: the box's power is available from the moment it is collected until the player spends
+			// it, however long that takes. The spend is below.
+			const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
+			if (!charged && !dev) {
+				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no charge and no mystery prize`);
+
+				return;
+			}
+		} else {
+			// **A rig's access is the pending slot, and it is the whole of the access axis for a rig.** No
+			// charge, no mystery prize, no dev bypass — the slot is what pays, and it must name MultiBall. The
+			// round-or-zone gate is deliberately not asked of a rig: a rig reaches this method only from its
+			// throw behaviours, which are themselves gated to a round or a practice zone by the tags they wear,
+			// so a rig that is here is already somewhere a power can act.
+			if (pendingAbilityOn(owner) !== "MultiBall") {
+				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no pending MultiBall`);
+
+				return;
+			}
 		}
 
-		// **A dev is exempt from the round-or-zone gate, and that exemption is the shortcut's whole point**
-		// — a standing start in Studio is usually an intermission in the lobby, where a power has nothing to
-		// act on. Asked of `SuperService` rather than read from the status folder here, so the rule that
-		// grants a charge and the rule that lets one be spent stay one line in one file, exactly as the mark
-		// does it — and see `SuperService.inRoundOrZone` for why that one line is now a round *or a practice
-		// zone* rather than a round alone.
-		if (!dev && !this.abilities.inRoundOrZone(player)) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no round and no practice zone`);
-
-			return;
-		}
-
-		// **The charge, a mystery prize, or the dev bypass.** A dev opens a window holding no charge of
-		// their own, which is what makes this testable from a standing start — the mark handler's shortcut,
-		// on the other key.
-		//
-		// **The second term is the whole of what the mystery box does to a game.** While a prize is held the
-		// charge test is satisfied without a charge existing, so the power is paid for by the box. It is
-		// one `||` rather than a branch because there is nothing else about the request that changes:
-		// ownership above, and the round-or-zone gate above that, are asked exactly as they were, which is
-		// what keeps a box from being a way to use a power in the lobby or without owning it. See
-		// `SuperService.isMysteryActive`, and `markHeldBall` below for the mark's half of the same rule.
-		//
-		// **And `isMysteryActive` no longer means "the clock is still running".** It means a prize is held,
-		// which is the difference between a power that is free *for ten seconds* and one that is free *until
-		// it is used*: the box's power is available from the moment it is collected until the player spends
-		// it, however long that takes. The spend is below.
-		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
-		if (!charged && !dev) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — no charge and no mystery prize`);
-
-			return;
-		}
-
-		// **A second press is refused rather than restarted**, and the answer is the "no" the mark handler
-		// gives a second mark: the player has asked for something they already have, and one charge does
+		// **A second ask is refused rather than restarted**, and the answer is the "no" the mark handler
+		// gives a second mark: the owner has asked for something they already have, and one charge does
 		// not buy two windows. Returned as a boolean by the service rather than asked as a question here,
-		// because opening a window and answering whether one was opened are the same act.
-		if (!this.abilities.activateMultiBall(player)) {
-			if (DEBUG) print(`[Super] ${player.Name}: MultiBall refused — a window is already open`);
+		// because opening a window and answering whether one was opened are the same act — and it is the
+		// "no stacking" rule precondition, asked of both bodies through the one call.
+		if (!this.abilities.activateMultiBall(owner)) {
+			if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — a window is already open`);
 
 			return;
 		}
 
-		// **A dev opens windows without earning them**, so there is nothing of theirs to spend — the same
-		// bypass `throwForPlayer` applies to a mark, applied here to the same kind of press. Asked at the
-		// call site rather than inside `SuperService` for the reason that one gives: only the caller knows
-		// who pressed.
-		//
-		// **Both currencies are settled here, and only the charge is a dev's to bypass.** The box's prize is
-		// real state, so a dev spends it like anybody — exempting them is what let a box's power be used
-		// over and over, and the person who notices that is the person testing. See
-		// `SuperService.spendMysteryPrize` for the argument.
-		//
-		// **The kind is passed, so a press for a power the box did not roll leaves the prize alone.** A dev
-		// opening a MultiBall window while holding a Pierce does not spend the Pierce; a player using the
-		// box's own key always matches, because it uses the kind it just read from `mysteryPowerOf`.
-		//
-		// **The prize is asked about the charge before `spendCharge` takes it away**, which is the order
-		// that makes "a charge paid, so the box is kept" true. Called the other way round, the prize would
-		// read "no charge" and be eaten by a press the charge had already paid for.
-		this.abilities.spendMysteryPrize(player, "MultiBall");
-		if (!dev) this.abilities.spendCharge(player);
+		// **A player spends the currencies that paid for the window; a rig spends nothing here**, because a
+		// rig has no charge and no mystery prize to spend, and its slot is cleared by the throw site after
+		// the throw — the counterpart to the spend below. Only the player's half touches `SuperService`'s
+		// spend methods, which remain `Player`-keyed.
+		if (owner.IsA("Player")) {
+			// **A dev opens windows without earning them**, so there is nothing of theirs to spend — the same
+			// bypass `throwForPlayer` applies to a mark, applied here to the same kind of press. Asked at the
+			// call site rather than inside `SuperService` for the reason that one gives: only the caller knows
+			// who pressed.
+			//
+			// **Both currencies are settled here, and only the charge is a dev's to bypass.** The box's prize is
+			// real state, so a dev spends it like anybody — exempting them is what let a box's power be used
+			// over and over, and the person who notices that is the person testing. See
+			// `SuperService.spendMysteryPrize` for the argument.
+			//
+			// **The kind is passed, so a press for a power the box did not roll leaves the prize alone.** A dev
+			// opening a MultiBall window while holding a Pierce does not spend the Pierce; a player using the
+			// box's own key always matches, because it uses the kind it just read from `mysteryPowerOf`.
+			//
+			// **The prize is asked about the charge before `spendCharge` takes it away**, which is the order
+			// that makes "a charge paid, so the box is kept" true. Called the other way round, the prize would
+			// read "no charge" and be eaten by a press the charge had already paid for.
+			this.abilities.spendMysteryPrize(owner, "MultiBall");
+			if (!this.dev.isDev(owner)) this.abilities.spendCharge(owner);
+		}
 
-		// **And the hand is filled on the way in**, which is one of the two free refills: a player who
-		// opens a window on an empty hand cannot use the ten seconds they have just paid for. See
-		// {@link refillFromBuff}.
+		// **And the hand is filled on the way in**, which is one of the two free refills: a body who opens
+		// a window on an empty hand cannot use the throws they have just paid for. See {@link refillFromBuff}.
 		this.refillFromBuff(character, false);
 	}
 
@@ -1551,14 +2101,17 @@ export class BallService implements OnStart {
 	 * answers.
 	 */
 	private refillFromBuff(model: Model, spent: boolean): boolean {
-		const player = Players.GetPlayerFromCharacter(model);
-		if (!player) return false;
+		// **The owner of the window is whoever this body is, and that is a `Player` *or* the rig itself.**
+		// `GetPlayerFromCharacter` answers `undefined` for a rig, so the owner falls back to the model — which
+		// is exactly how a rig's window, keyed on its `Model`, is found. This was the line that used to read a
+		// rig as "no window to answer from", and the fallback is the whole of the widening.
+		const owner = Players.GetPlayerFromCharacter(model) ?? model;
 
 		// Nothing to fill. A hand holding a ball is not a hand this has any business in — which is also
-		// what stops a window opened by a player who is already holding one from spending the count.
+		// what stops a window opened by a body who is already holding one from spending the count.
 		if (this.getHeldBall(model)) return false;
 
-		if (spent && !this.abilities.consumeMultiBallBall(player)) return false;
+		if (spent && !this.abilities.consumeMultiBallBall(owner)) return false;
 
 		// Asked after the spend: the throw is paid for either way, and what the window still holds decides
 		// whether this ball is replaced. See this method's doc for why `5` has to mean five throws.
@@ -1566,7 +2119,7 @@ export class BallService implements OnStart {
 		// **`isMultiBallActive` rather than a separate "has it balls left" test**, which is the rename that
 		// followed the window losing its clock: an open window and a window with a throw in it are the same
 		// condition now, so the second name was one test written twice. See `SuperService.isMultiBallActive`.
-		if (!this.abilities.isMultiBallActive(player)) return false;
+		if (!this.abilities.isMultiBallActive(owner)) return false;
 
 		this.giveBall(model);
 
@@ -1682,23 +2235,33 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * Marks the ball `player` is holding as carrying `kind`.
+	 * Marks the ball `owner` is holding as carrying `kind`.
 	 *
-	 * **The handler for the ability key, and the whole of what a press does.** Four questions, asked in
-	 * the order that costs least to answer, and every refusal is a print rather than a thrown error — a
-	 * key press is not a fault, and the log is where the reason belongs.
+	 * **The handler for the ability key, and the rig's throw path, both arrive here.** For a player this
+	 * is the whole of what a press does — the questions below, asked in the order that costs least to
+	 * answer, and every refusal is a print rather than a thrown error, because a key press is not a fault
+	 * and the log is where the reason belongs. A rig reaches it from `ThrowBehavior` with a kind read off
+	 * its `PENDING_ABILITY_ATTRIBUTE` slot, and the two bodies differ on one axis only.
 	 *
-	 * **Why the handler is here and not in `SuperService`.** Two of the four questions are this
-	 * service's: where the ball is (it owns hands, and `getHeldBall` exists for this) and what a player
-	 * may do (the dev flags are already held here). Putting it there would mean `SuperService` depending
-	 * on hands — the wrong direction for a service whose whole job is to count two things. As it stands
-	 * that service is asked one question, `hasCharge`, and never has to find a ball.
+	 * **Two axes, and the split is the design.** The *rule* preconditions — the kind is a ball ability, the
+	 * body is alive, the held ball is unmarked — run for every owner before the owner is known, so a future
+	 * rule of that shape (a "no stacking" rule is the standing example) lands on a rig and a player through
+	 * one code path. The *access* preconditions are the only place a `Player`/`Model` branch exists: a
+	 * player is asked for ownership, the round-or-zone gate and a charge or a prize (or the dev bypass),
+	 * and a rig is asked only that its pending slot names `kind`.
+	 *
+	 * **Why the handler is here and not in `SuperService`.** Two of the questions are this service's: where
+	 * the ball is (it owns hands, and `getHeldBall` exists for this) and what a body may do (the dev flags
+	 * are already held here). Putting it there would mean `SuperService` depending on hands — the wrong
+	 * direction for a service whose whole job is to count two things. As it stands that service is asked one
+	 * question, `hasCharge`, and never has to find a ball.
 	 *
 	 * **The charge is not spent here, deliberately.** See `SuperService.spendCharge`: the charge follows
 	 * the ball, so a mark that is never thrown costs nothing, and a player who marks a ball and changes
-	 * their mind has not paid for a throw they did not make.
+	 * their mind has not paid for a throw they did not make. A rig's slot is likewise not spent here — it is
+	 * cleared by the throw site after the throw, so a refused mark cannot strand it.
 	 */
-	private markHeldBall(player: Player, kind: unknown): void {
+	public markHeldBall(owner: Player | Model, kind: unknown): void {
 		// **The wire is not typed**, so what arrives is checked rather than trusted — the same treatment
 		// `WalkSpeedService.setSprinting` gives its own argument, and for its reason: a client can send
 		// anything, and this is the line that turns a string into a value the rest of the code can use.
@@ -1709,134 +2272,181 @@ export class BallService implements OnStart {
 		// to write an ability onto a ball needs to know. Without the narrower check, a client could send
 		// the word for a player-level buff and have it stamped on a ball, where the HUD would then report
 		// it as a loaded ability that nothing implements.
+		//
+		// **A rule precondition, and the first of three that run before the owner is known.** Whether a
+		// word is a ball ability is the same question for a rig as for a player, so it sits ahead of every
+		// `Player`/`Model` branch — which is the whole of the split this method now has.
 		if (!typeIs(kind, "string") || !isBallAbility(kind)) {
-			warn(`[Super] ${player.Name}: mark refused — not an ability a ball can carry (${tostring(kind)})`);
+			warn(`[Super] ${owner.Name}: mark refused — not an ability a ball can carry (${tostring(kind)})`);
 			return;
 		}
 
-		// **A living body**, which is the same test the throw makes in effect: a player with no character
+		// **A living body**, which is the same test the throw makes in effect: a body with no character
 		// has no hand to be holding anything in. Not a poll of the *round's* roster either — a player who is
 		// out of the round has a dead body or none, and the ball is a child of the body either way, so the
 		// body is the honest question and the roster would be a second answer to it. (This used to name the
 		// spectator attribute to say the same thing; that state is gone and the test is unchanged.)
-		const character = player.Character;
+		//
+		// **The second rule precondition, and the owner is narrowed only to *find the body*.** A rig is its
+		// own character — its `Model` is the thing the ball is a child of — so `character` is the player's
+		// character for a player and the rig itself for a rig, and everything after this treats the two
+		// identically.
+		const character = owner.IsA("Player") ? owner.Character : owner;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		if (!character || !humanoid || humanoid.Health <= 0) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no living body`);
-
-			return;
-		}
-
-		// **A dev is exempt from the round-or-zone gate, and that exemption is the point of the shortcut.**
-		// The rule the key exists for is "a dev can exercise this from a standing start", and a standing
-		// start in Studio is usually an intermission in the lobby — where a power has nothing to act on,
-		// which is the same reason the gate itself refuses there.
-		const dev = this.dev.isDev(player);
-
-		// **The power has to be owned, which is the newest gate and sits before the round's.** A key that
-		// marks a ball is a request to use a power the player may not have unlocked yet: the chest grants
-		// powers, and this is the lock the chest opens. Asked of `EconomyService`, which owns the roster —
-		// the dev bypass skips it exactly as it skips the round-or-zone gate and the charge.
-		if (!dev && !this.economy.ownsPower(player, kind)) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — ${kind} not owned`);
-
-			return;
-		}
-
-		// **Otherwise, only where a power can do anything: a round is being played, or this body is standing
-		// in a practice zone.** Asked of `SuperService` rather than read from the status folder here, so the
-		// rule that grants a charge and the rule that lets one be spent stay one line in one file — a second
-		// copy could let a charge be earned in a round a ball could not be marked in. The zone half is
-		// `DodgeService.requestDodge`'s rule; see `SuperService.inRoundOrZone` for why the two actions share
-		// it, and for the bug that came of this one half being missing here.
-		if (!dev && !this.abilities.inRoundOrZone(player)) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no round and no practice zone`);
+			if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no living body`);
 
 			return;
 		}
 
 		const ball = this.getHeldBall(character);
 
-		// **No ball in hand, and a dev: the arm goes on the player instead.**
-		//
-		// This is the whole of the shortcut. A dev in Studio usually has nothing to mark — the arena's
-		// spawners only stock the floor while a round is playing, so outside one there is no ball to pick
-		// up, and `InfiniteBalls` is a flag they have to find first — so "mark the held ball" is a rule
-		// that cannot be exercised from a standing start. Arming the *player* moves the
-		// ability one step earlier: it waits on them, and the next ball that arrives in their hand takes it
-		// up. See `attachToHand`, which is where that happens, and {@link ARMED_ABILITY_ATTRIBUTE} for why
-		// the arm lives on the player rather than the body.
-		//
-		// **A non-dev is refused here exactly as before.** The arm is not a second way to mark a ball, it is
-		// the dev bypass's second shape — so the refusal below is unchanged, and the order of the two
-		// branches does not matter to anybody who cannot already use the shortcut.
-		//
-		// **And a mystery prize outranks the arm, which stands down rather than replacing it.** Both are the
-		// same slot in a player's hands — "the power my next press uses" — so they cannot both be held, and
-		// the tie goes to the one that cost something: a box is consumed the moment it is walked into, so
-		// destroying its prize to arm a shortcut would throw away a power the player went and collected,
-		// while the arm costs nothing and can be asked for again a second later. This is also what
-		// `useMysteryPower` promises for an empty hand: press the key early and the player is *still holding
-		// their power* when they pick a ball up. The prize itself clears any arm already set, from the other
-		// end — see `SuperService.holdMysteryPrize`.
-		if (!ball) {
-			if (!dev) {
-				if (DEBUG) print(`[Super] ${player.Name}: mark refused — no ball in hand`);
-
-				return;
-			}
-
-			if (this.abilities.isMysteryActive(player)) {
-				if (DEBUG) print(`[Super] ${player.Name}: mark refused — a mystery prize is waiting on a ball`);
-
-				return;
-			}
-
-			player.SetAttribute(ARMED_ABILITY_ATTRIBUTE, kind);
-
-			if (DEBUG) {
-				print(`[Super] ${player.Name}: armed ${kind} — the next ball they take up will carry it`);
-			}
+		// **Already carrying something, which is a second press of the same key or two presses close
+		// together. Not a second ability, and the first mark is not overwritten either** — the third rule
+		// precondition, "no stacking", and it runs for both bodies before any access question: a second
+		// mark is refused whoever is asking, because the rule is about the *ball* and not about the owner.
+		if (ball !== undefined && abilityOn(ball) !== undefined) {
+			if (DEBUG) print(`[Super] ${owner.Name}: mark refused — the held ball is already marked`);
 
 			return;
 		}
 
-		// Already carrying something, which is a second press of the same key or two presses close
-		// together. Not a second ability, and the first mark is not overwritten either: the player has
-		// asked for the same thing twice and the answer to that is no.
-		if (abilityOn(ball) !== undefined) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — the held ball is already marked`);
+		// **The access preconditions — the only place this method has an owner-type branch.** What a body
+		// must bring to be allowed to mark is a per-owner fact. A player brings ownership, the round-or-zone
+		// gate, and a charge or a mystery prize, with the dev bypass sitting in for all three; a rig brings
+		// its pending-ability slot and nothing else. The two arms substitute one access story for the other,
+		// and the mark below is one line they share.
+		if (owner.IsA("Player")) {
+			// **A dev is exempt from the round-or-zone gate, and that exemption is the point of the shortcut.**
+			// The rule the key exists for is "a dev can exercise this from a standing start", and a standing
+			// start in Studio is usually an intermission in the lobby — where a power has nothing to act on,
+			// which is the same reason the gate itself refuses there.
+			const dev = this.dev.isDev(owner);
 
-			return;
-		}
+			// **The power has to be owned, which is the newest gate and sits before the round's.** A key that
+			// marks a ball is a request to use a power the player may not have unlocked yet: the chest grants
+			// powers, and this is the lock the chest opens. Asked of `EconomyService`, which owns the roster —
+			// the dev bypass skips it exactly as it skips the round-or-zone gate and the charge.
+			if (!dev && !this.economy.ownsPower(owner, kind)) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — ${kind} not owned`);
 
-		// **The charge, a mystery prize, or the dev bypass.** A dev marks a ball holding no charge of their
-		// own, which is what makes this testable without six hits in a row first.
-		//
-		// **Written out at both sites rather than inside `SuperService`, and the line it draws is worth the
-		// repetition.** The two sites differ in what they do next (a mark, a window) and agree only on this
-		// test — and this test is not the whole gate either: ownership and `inRoundOrZone` above are asked
-		// before it, so a helper named for the question a caller has ("may this player use a power") would
-		// read as the whole of it while being one term of it. What *is* shared is the part that is one rule
-		// rather than one sentence — see `SuperService.inRoundOrZone`.
-		const charged = this.abilities.hasCharge(player) || this.abilities.isMysteryActive(player);
-		if (!charged && !dev) {
-			if (DEBUG) print(`[Super] ${player.Name}: mark refused — no charge and no mystery prize`);
+				return;
+			}
 
-			return;
+			// **Otherwise, only where a power can do anything: a round is being played, or this body is standing
+			// in a practice zone.** Asked of `SuperService` rather than read from the status folder here, so the
+			// rule that grants a charge and the rule that lets one be spent stay one line in one file — a second
+			// copy could let a charge be earned in a round a ball could not be marked in. The zone half is
+			// `DodgeService.requestDodge`'s rule; see `SuperService.inRoundOrZone` for why the two actions share
+			// it, and for the bug that came of this one half being missing here.
+			if (!dev && !this.abilities.inRoundOrZone(owner)) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no round and no practice zone`);
+
+				return;
+			}
+
+			// **No ball in hand, and a dev: the arm goes on the player instead.**
+			//
+			// This is the whole of the shortcut. A dev in Studio usually has nothing to mark — the arena's
+			// spawners only stock the floor while a round is playing, so outside one there is no ball to pick
+			// up, and `InfiniteBalls` is a flag they have to find first — so "mark the held ball" is a rule
+			// that cannot be exercised from a standing start. Arming the *player* moves the
+			// ability one step earlier: it waits on them, and the next ball that arrives in their hand takes it
+			// up. See `attachToHand`, which is where that happens, and {@link ARMED_ABILITY_ATTRIBUTE} for why
+			// the arm lives on the player rather than the body.
+			//
+			// **A non-dev is refused here exactly as before.** The arm is not a second way to mark a ball, it is
+			// the dev bypass's second shape — so the refusal below is unchanged, and the order of the two
+			// branches does not matter to anybody who cannot already use the shortcut.
+			//
+			// **And a mystery prize outranks the arm, which stands down rather than replacing it.** Both are the
+			// same slot in a player's hands — "the power my next press uses" — so they cannot both be held, and
+			// the tie goes to the one that cost something: a box is consumed the moment it is walked into, so
+			// destroying its prize to arm a shortcut would throw away a power the player went and collected,
+			// while the arm costs nothing and can be asked for again a second later. This is also what
+			// `useMysteryPower` promises for an empty hand: press the key early and the player is *still holding
+			// their power* when they pick a ball up. The prize itself clears any arm already set, from the other
+			// end — see `SuperService.holdMysteryPrize`.
+			if (ball === undefined) {
+				if (!dev) {
+					if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no ball in hand`);
+
+					return;
+				}
+
+				if (this.abilities.isMysteryActive(owner)) {
+					if (DEBUG) {
+						print(`[Super] ${owner.Name}: mark refused — a mystery prize is waiting on a ball`);
+					}
+
+					return;
+				}
+
+				owner.SetAttribute(ARMED_ABILITY_ATTRIBUTE, kind);
+
+				if (DEBUG) {
+					print(`[Super] ${owner.Name}: armed ${kind} — the next ball they take up will carry it`);
+				}
+
+				return;
+			}
+
+			// **The charge, a mystery prize, or the dev bypass.** A dev marks a ball holding no charge of their
+			// own, which is what makes this testable without six hits in a row first.
+			//
+			// **Written out at both sites rather than inside `SuperService`, and the line it draws is worth the
+			// repetition.** The two sites differ in what they do next (a mark, a window) and agree only on this
+			// test — and this test is not the whole gate either: ownership and `inRoundOrZone` above are asked
+			// before it, so a helper named for the question a caller has ("may this player use a power") would
+			// read as the whole of it while being one term of it. What *is* shared is the part that is one rule
+			// rather than one sentence — see `SuperService.inRoundOrZone`.
+			const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
+			if (!charged && !dev) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no charge and no mystery prize`);
+
+				return;
+			}
+		} else {
+			// **A rig's access is the pending slot, and it is the whole of the access axis for a rig.** No
+			// charge, no mystery prize, no dev bypass, no arm — the slot is what pays, and it must name the
+			// same kind this call asks for. A rig reaches here only from its throw behaviours, which read the
+			// slot first, so this is the same test read from the other end; it exists so that no other caller
+			// can mark a rig's ball without a box behind it.
+			if (ball === undefined) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no ball in hand`);
+
+				return;
+			}
+
+			if (pendingAbilityOn(owner) !== kind) {
+				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no pending ${kind}`);
+
+				return;
+			}
 		}
 
 		this.setBallAbility(ball, kind);
 
-		// **The tag says which of the two paid, and it used to name only the charge.** Both are true of
-		// `charged` here, so a line that said "the charge is still held" about a player the *box* paid for
-		// would be a log asserting a charge that does not exist — and the spend below removes the box's
-		// prize and never a charge it never had.
+		// **The power is armed as of this line, and the HUD is told.** The mark is the ball's, so this service
+		// is the only thing that can say so — see `syncArmedPower`. It runs for a rig too, where it returns
+		// immediately: a rig's armed state is its pending slot and nothing on the HUD reads it.
+		this.syncArmedPower(character);
+
+		// **The line says which of the two paid, and it used to name only the charge.** For a player both
+		// terms of `charged` are in play, so the line that names the charge or the prize for a player is kept
+		// word for word; a rig has no charge and no prize to name, so its line names the slot instead. The
+		// branch here is a log line's, not a rule's — the mark itself is one code path above it.
 		if (DEBUG) {
-			print(
-				`[Super] ${player.Name}: ${ball.Name} marked as ${kind}` +
-					`${charged ? " — paid for, and the charge or the prize will be spent" : " — dev bypass, nothing held"}`,
-			);
+			if (owner.IsA("Player")) {
+				const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
+
+				print(
+					`[Super] ${owner.Name}: ${ball.Name} marked as ${kind}` +
+						`${charged ? " — paid for, and the charge or the prize will be spent" : " — dev bypass, nothing held"}`,
+				);
+			} else {
+				print(`[Super] ${owner.Name}: ${ball.Name} marked as ${kind} — the pending prize paid`);
+			}
 		}
 	}
 
@@ -1861,6 +2471,42 @@ export class BallService implements OnStart {
 	 */
 	public getHeldBall(model: Model): BasePart | undefined {
 		return this.heldBalls.get(model)?.ball;
+	}
+
+	/**
+	 * **Tells `SuperService` what power the body is holding, so the HUD's `READY` text follows the ball.**
+	 *
+	 * This service owns hands and the ball owns the mark, so this is the side of the line that can answer
+	 * "is this player holding a loaded ball" — and `SuperService` deliberately never touches a ball ("nothing
+	 * in this file touches a ball"), which is why the answer has to be handed over rather than asked for. It
+	 * is the arm/complete pair in `SuperService` that this drives: `armPower` when there is a mark to report
+	 * and `completePower` when there is not.
+	 *
+	 * **The answer is *derived* here on every call, rather than a kind being passed in.** Every call site is
+	 * already a moment the hand's contents changed, and reading the truth at each of them is what makes a
+	 * missed edge impossible to spell: a caller cannot report the wrong kind, because it reports nothing at
+	 * all. The alternative — passing the kind from the site that knows it — would be a second copy of a fact
+	 * the ball is holding, and the two would disagree exactly when a ball was replaced inside one of the
+	 * sites rather than before or after it.
+	 *
+	 * **Five call sites, and every one is a moment the project already treats as "this ball's fate
+	 * changed":** the mark landing ({@link markHeldBall}), a ball arriving in a hand ({@link
+	 * attachToHandBody}'s tail — which is also how a dev's arm becomes a mark), the throw
+	 * ({@link throwBallBody}'s tail, after any refill), the drop ({@link dropBall}), and the ball being
+	 * destroyed ({@link removeBall}).
+	 *
+	 * **A rig is skipped.** A rig's armed state is its pending slot on the body and the mark on its ball, and
+	 * it has no HUD to tell — `SuperService.armPower` and `completePower` are `Player`-keyed for that reason.
+	 * Every rig path comes through these same five sites, so this guard is the whole of the difference.
+	 */
+	private syncArmedPower(model: Model): void {
+		const player = Players.GetPlayerFromCharacter(model);
+		if (player === undefined) return;
+
+		const kind = abilityOn(this.getHeldBall(model));
+
+		if (kind === undefined) this.abilities.completePower(player);
+		else this.abilities.armPower(player, kind);
 	}
 
 	/**

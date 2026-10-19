@@ -1,6 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage } from "@rbxts/services";
-import { MATCH_JOIN_A_TAG, MATCH_JOIN_B_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { MATCH_JOIN_A_TAG, MATCH_JOIN_B_TAG, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
 import {
 	MATCH_MAX_PER_TEAM,
@@ -12,6 +12,7 @@ import {
 	MATCH_TOUCH_DEBOUNCE_SECONDS,
 } from "../../config/match.config";
 import { TEAM_A, TEAM_B, TeamLabel } from "../round/team";
+import { rigCounts } from "../../npc/rigs";
 
 /** Prints every opt-in, refusal and opt-out. The sign is player-facing; this is the record. */
 const DEBUG = true;
@@ -92,11 +93,12 @@ function sideCount(team: TeamLabel, counts: MatchCounts): number {
  * whether a match may begin, and the counts on the two signs let a dev see a 4v1 and ask somebody to
  * move.
  *
- * **A match starts when the sides are ready and have stopped moving, and the waiting is the round's.**
+ * **A match starts when the intermission's clock runs out, and the timing is the round's.**
  * `canStart()` answers "could a match begin"; nothing here acts on the answer, because starting a match
- * is the round's business and this service does not know what a round is — `RoundService` samples
- * `canStart` and {@link rosterRevision} once an intermission tick and asks for a match once the roster
- * has held still for `MATCH_SETTLE_SECONDS`. See the loop in `RoundService` for the window, and
+ * is the round's business and this service does not know what a round is — `RoundService` asks `canStart`
+ * once an intermission tick and opens the round when the clock reaches zero with the answer `true`.
+ * There is no settle window any more: a roster still moving at the whistle is the roster the round starts
+ * on, and the sides are balanced as bodies arrive. See the loop in `RoundService`, and
  * `RoundService.requestMatch` for the door a dev uses when they would rather not wait.
  *
  * **That delay is not timidity — it is what keeps the paragraph above true.** A match that began the
@@ -202,13 +204,14 @@ export class MatchService implements OnStart {
 	/**
 	 * How many times the roster has changed, ever.
 	 *
-	 * **For the one reader that has to tell "the same roster" from "a new one".** `RoundService` samples
-	 * this once an intermission tick to know whether the sides have stopped changing, so that a match can
-	 * start on its own; see `MATCH_SETTLE_SECONDS`. Nothing else needs it, and nothing should write to it —
-	 * the only thing that moves the number is a mutation of the roster itself.
+	 * **For the one reader that has to tell "the same roster" from "a new one".** `LobbyRigService` samples
+	 * it to decide whether any seat has moved since it last looked, which is what keeps a per-poll rebalance
+	 * cheap. Nothing else needs it, and nothing should write to it — the only thing that moves the number is
+	 * a mutation of the roster itself. (**The round used to read it too**, to wait for a roster that had
+	 * stopped changing; that window is gone and the clock ends the intermission now.)
 	 *
 	 * Read this rather than {@link countsFor} for that question. A player moving from one side to the other
-	 * is a change to the roster and a no-op to the counts, and the move is the case the window is about.
+	 * is a change to the roster and a no-op to the counts, and the move is the case a poll is about.
 	 */
 	public rosterRevision(): number {
 		return this.revision;
@@ -228,12 +231,21 @@ export class MatchService implements OnStart {
 	}
 
 	/**
-	 * Whether a match could start right now: enough players, and a side that is not over its cap.
+	 * Whether a match could start right now: enough *available* bodies, one a side, and no side over its
+	 * player cap.
+	 *
+	 * **The body count is now players and rigs, and a practice-zone player is neither.** "Available" is
+	 * the word that changed: a rig on a side is a body that will play, and a player standing in a practice
+	 * zone is a body that will not — the first is counted, the second is not, and the two together are
+	 * what let a rig-only lobby start a round and keep a practice-zone player from starting one. The rig
+	 * derivation is `rigsOnASide` in `npc/rigs.ts`, shared with `RoundService` so the two services cannot
+	 * come to different answers about which rigs hold a side.
 	 *
 	 * **Three questions, and each of them is a different refusal to explain.** The total is
-	 * {@link MATCH_MIN_PLAYERS}, then one player a side — because a match with one side in it is not a
-	 * match — and then the cap, which cannot currently be exceeded (a side refuses a player rather than
-	 * growing) and is checked anyway because this is the method a caller asks "may a match start", and an
+	 * {@link MATCH_MIN_PLAYERS} bodies, then one body a side — because a match with one side in it is not
+	 * a match — and then the cap, which counts *players* only. A rig does not fill a side's player quota,
+	 * which is the rule "a side is full only when it has that many players" kept intact; the cap is still
+	 * checked rather than assumed, because this is the method a caller asks "may a match start", and an
 	 * answer that assumed its own caller's bookkeeping would be the wrong place to save a comparison.
 	 *
 	 * **Two callers, and they want different things from the same answer.** `RoundService.requestMatch`
@@ -245,8 +257,22 @@ export class MatchService implements OnStart {
 	public canStart(): boolean {
 		const counts = this.countsFor();
 
-		if (counts.a + counts.b < MATCH_MIN_PLAYERS) return false;
-		if (counts.a < 1 || counts.b < 1) return false;
+		let a = 0;
+		let b = 0;
+
+		for (const [player, team] of this.opted) {
+			if (player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true) continue;
+
+			if (team === TEAM_A) a++;
+			else b++;
+		}
+
+		const rigs = rigCounts();
+		a += rigs.a;
+		b += rigs.b;
+
+		if (a + b < MATCH_MIN_PLAYERS) return false;
+		if (a < 1 || b < 1) return false;
 
 		return counts.a <= MATCH_MAX_PER_TEAM && counts.b <= MATCH_MAX_PER_TEAM;
 	}
@@ -263,13 +289,16 @@ export class MatchService implements OnStart {
 	 *
 	 * **The refusals and the no-op, in the order they are asked.**
 	 *
-	 * 1. **The match has started** — `RoundStatus.State` is `Playing`, so both parts are inert and the
-	 *    roster is locked. This is refused *before the roster is read*, so a mid-match touch cannot even
-	 *    see who is on a side, let alone move them. The line is printed rather than swallowed because a
-	 *    part that does nothing reads as a broken part, and the moment a player is most likely to try is
-	 *    the moment they are watching a match they are not in.
-	 * 2. **Already on the requested side** — a no-op with no print. They are where they asked to be, and a
-	 *    line saying so would be noise on every brush past the part.
+	 * 1. **Already on the requested side** — a no-op with no print. They are where they asked to be, and a
+	 *    line saying so would be noise on every brush past the part. Asked first because it is the one
+	 *    answer that holds whatever the phase is doing.
+	 * 2. **A switch while a round is being played** — `RoundStatus.State` is `Playing` and this player
+	 *    already holds a side, so the move is refused and says so. **An arrival is not a switch and is
+	 *    never refused**, which is the reversal this list used to open with: the pads are live during a
+	 *    round now, and touching one joins the round that is being played — `RoundService` admits them to
+	 *    that side, puts them on its spawn and shields them, within a tenth of a second. What stays locked
+	 *    is *crossing*: the round's own team table was filled from this roster at the whistle, and a body
+	 *    changing sides is a decision about the round rather than about the roster.
 	 * 3. **The requested side has room** — placed, or *moved* if they were standing on the other side.
 	 *    A move is one `set`: the side they left loses a player and the side they joined gains one, and
 	 *    both signs are repainted by {@link updateSigns} because the switch changed both numbers.
@@ -282,28 +311,50 @@ export class MatchService implements OnStart {
 	 * a refusal — so a caller never has to ask again.
 	 */
 	public optIn(player: Player, side: TeamLabel): TeamLabel | undefined {
-		// **The lock, and the reason it is asked first.** A switch is allowed only while sides are still
-		// being picked, and this service learns that from the phase the round publishes rather than by
-		// asking the round — see the class doc. Nothing below runs on this path, deliberately: no read of
-		// the roster, no print about counts, no chance of a half-made move.
-		if (this.phase() === PLAYING) {
-			if (DEBUG) print(`[Match] ${player.Name}: the match has started — the roster is locked`);
+		const existing = this.opted.get(player);
+
+		// **The no-op first, and the reason it can be first is that it is phase-blind.** Somebody brushing
+		// past the part they are already standing on is where they asked to be, before a round and during
+		// one alike.
+		if (existing === side) return existing;
+
+		// **The half of the old lock that stays: a side cannot be crossed while a round is being played.**
+		// A player who has *no* side is not covered by this — they are the join, and the round notices them
+		// through the revision bumped below, within `MATCH_JOIN_POLL_SECONDS`. Asking the phase here rather
+		// than refusing at the top of the method is the whole of the change: this used to refuse everything
+		// during a round, and it now refuses only the move. See the doc above.
+		if (existing !== undefined && this.phase() === PLAYING) {
+			if (DEBUG) print(`[Match] ${player.Name}: the match has started — sides are locked until it ends`);
 
 			return undefined;
 		}
-
-		const existing = this.opted.get(player);
-		if (existing === side) return existing;
 
 		const counts = this.countsFor();
 
-		if (!this.hasRoom(side, counts)) {
-			if (DEBUG) print(`[Match] ${player.Name}: side ${side} is full — try the other part`);
+		// **Balanced at the part: a full side sends you to the other one rather than turning you away.**
+		// The sign you walked into is a *preference*, not an instruction — if four are already there, the
+		// fifth goes to the other pad. That is the user's rule and it reverses what stood here: this used
+		// to refuse and print "try the other part", on the argument that falling back would put somebody
+		// on a side they did not ask for. What it actually did was leave them standing in the lobby
+		// watching a side that was one body short of a match, with the fix being to walk ten studs and
+		// touch something else. Nobody is refused for a reason they can act on faster than we can.
+		let placed = side;
 
-			return undefined;
+		if (!this.hasRoom(placed, counts)) {
+			const other = placed === TEAM_A ? TEAM_B : TEAM_A;
+
+			if (!this.hasRoom(other, counts)) {
+				if (DEBUG) print(`[Match] ${player.Name}: both sides are full — nobody else can play`);
+
+				return undefined;
+			}
+
+			placed = other;
+
+			if (DEBUG) print(`[Match] ${player.Name}: side ${side} is full — balanced onto ${placed}`);
 		}
 
-		this.opted.set(player, side);
+		this.opted.set(player, placed);
 		this.revision++;
 		this.updateSigns();
 
@@ -312,11 +363,11 @@ export class MatchService implements OnStart {
 
 			// Two sentences rather than one, because "in" on a second touch would be a lie: the log is the
 			// record of the roster, and a move is a different fact from an arrival.
-			if (existing === undefined) print(`[Match] ${player.Name}: in — side ${side}, ${now}`);
-			else print(`[Match] ${player.Name}: moved to side ${side}, ${now}`);
+			if (existing === undefined) print(`[Match] ${player.Name}: in — side ${placed}, ${now}`);
+			else print(`[Match] ${player.Name}: moved to side ${placed}, ${now}`);
 		}
 
-		return side;
+		return placed;
 	}
 
 	/**

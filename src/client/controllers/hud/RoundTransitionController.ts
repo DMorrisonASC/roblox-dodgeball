@@ -1,8 +1,8 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
-import { ReplicatedStorage, RunService } from "@rbxts/services";
+import { Players, RunService } from "@rbxts/services";
 import { TRANSITION_CONFIG } from "shared/config/transition.config";
-import { ROUND_STATUS_FOLDER, ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
+import { ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
 import { getTransitionScreenGui } from "../../ui/screenGui";
 
 /** Prints when a wipe starts and when it comes off, which is how a wipe is told from a round without one. */
@@ -103,28 +103,47 @@ export class RoundTransitionController implements OnStart {
 	 */
 	private readonly scope = Fusion.scoped();
 
+	/**
+	 * The player whose screen this is — **the one instance the cue is read from, since the cue is per player.**
+	 *
+	 * **There is no gate any more, and the absence is the change.** This used to watch one counter on the round
+	 * folder and ask `roundZone.onASide` whether the wipe applied to it, which made "am I opted in" a client
+	 * judgement — and a judgement the server could come to differently, since it is the server that knows who
+	 * it is covering. The server now bumps this attribute on the players it covers and on nobody else, so a
+	 * wipe arriving on this player's attribute *is* the answer: a spectator is never written to, and a player
+	 * opting into a live round is written to alone.
+	 */
+	private readonly player = Players.LocalPlayer;
+
 	/** Whether a wipe is on screen right now. Its own guard, so two can never overlap. */
 	private running = false;
 
 	public onStart(): void {
-		// Spawned rather than done inline, on every other HUD controller's argument: mounting waits for
-		// the round folder, which the *server* creates, and a controller's `onStart` is the wrong place to
-		// hold up the rest of the client's boot.
-		task.spawn(() => this.mount());
+		this.mount();
 	}
 
+	/**
+	 * **Subscribes to this player's own wipe counter**, and nothing else.
+	 *
+	 * **This used to be spawned, and the reason it no longer is is the cue moving to the player.** The wait was
+	 * `ReplicatedStorage.WaitForChild(ROUND_STATUS_FOLDER)` — the round folder is created by the *server*, and
+	 * mounting before it replicated would have thrown inside `onStart` — while an attribute on the local
+	 * player is there from the first frame this controller exists. So there is nothing left to hold the
+	 * client's boot for, and the mount is one read and one subscription.
+	 */
+
 	private mount(): void {
-		const status = ReplicatedStorage.WaitForChild(ROUND_STATUS_FOLDER);
+		const player = this.player;
 
 		/**
-		 * The transition counter as last seen, which is what makes this an *edge* rather than a state.
+		 * This player's wipe counter as last seen, which is what makes this an *edge* rather than a state.
 		 *
 		 * **The seed fires nothing, and that is the rule a mid-round mount turns on.** A client that boots into
-		 * a round that is already under way has missed the transition this would have covered and has been
-		 * looking at the arena since its first frame — a wipe for it would be a cover over a world the player
-		 * has already seen. Seeding from the value the server has already published means "was this client here
-		 * for that transition" is answered by the server's own count rather than by a guess about time.
-		 * `MusicController` seeds its phase for the same reason and says so the same way.
+		 * a round that is already under way has missed the wipe this would have covered and has been looking at
+		 * the arena since its first frame — a grid for it would be a cover over a world the player has already
+		 * seen. Seeding from the value the server has already published means "was this client here for that
+		 * wipe" is answered by the server's own count rather than by a guess about time. `MusicController` seeds
+		 * its phase for the same reason and says so the same way.
 		 *
 		 * **And the counter is why this file no longer watches the phase at all.** The phase is published early
 		 * on purpose — an intermission announces itself before the lobby has been looked up, because a phase
@@ -133,27 +152,35 @@ export class RoundTransitionController implements OnStart {
 		 * exactly what happened: at the round's end the player saw the lobby and *then* a curtain over it. See
 		 * `ROUND_TRANSITION_ATTRIBUTE`.
 		 */
-		const initial = status.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+		const initial = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
 		let last = typeIs(initial, "number") ? initial : 0;
 
 		// Subscribed after the seed, so the seed cannot be clobbered by a change that landed mid-mount —
 		// and the handler re-reads the attribute rather than trusting the signal, which carries no value.
 		this.scope.push(
-			status.GetAttributeChangedSignal(ROUND_TRANSITION_ATTRIBUTE).Connect(() => {
-				const value = status.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+			player.GetAttributeChangedSignal(ROUND_TRANSITION_ATTRIBUTE).Connect(() => {
+				const value = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
 				if (!typeIs(value, "number")) return;
 
-				// **Any change is a transition**, because the count only moves forward and only the server
-				// writes it — so there is no phase to name, no direction to work out, and no way for two
-				// successive transitions to look alike.
+				// **Any change is a wipe**, because the count only moves forward and only the server writes it —
+				// so there is no boundary to name, no direction to work out, and no way for two successive
+				// wipes to look alike.
 				if (value === last) return;
 
 				last = value;
+
+				// **A mid-round opt-in is covered too, and that is a reversal of what this comment used to
+				// say.** It argued the opposite on a property of the cue: the counter moved only at a
+				// boundary, so a player admitted into a round already being played arrived between two of
+				// them, had no bump to answer, and got "the camera and no wipe, which is the pair the rule
+				// asks for". The server now bumps that player's own counter as it admits them, so the pair
+				// that rule wanted is the pair this file plays — and the rule itself is now the server's
+				// to state rather than this file's to infer.
 				this.play();
 			}),
 		);
 
-		if (DEBUG) print(`[Transition] watching ${ROUND_TRANSITION_ATTRIBUTE} — mounted at ${last}`);
+		if (DEBUG) print(`[Transition] watching ${ROUND_TRANSITION_ATTRIBUTE} on ${player.Name} — mounted at ${last}`);
 	}
 
 	/**
@@ -163,7 +190,7 @@ export class RoundTransitionController implements OnStart {
 	 * **The movement is a `RenderStepped` loop rather than a `TweenService` tween**, and that is the
 	 * codebase's answer rather than a preference — there is no `TweenService` anywhere in `src`, and the
 	 * thing it is used for elsewhere is a *reading of a clock* written per frame
-	 * (`CooldownHudController`'s bar fills), which is exactly what this is. **One loop for the whole
+	 * (`chargeEffect`'s charge, for one), which is exactly what this is. **One loop for the whole
 	 * grid**: every cell shares one `GROW_SECONDS` and one `REVEAL_SECONDS`, so the only thing that differs
 	 * between them is *when* they take their turn, and 240 separate tween objects would be 240 things to
 	 * keep in step with two numbers.
@@ -279,8 +306,8 @@ export class RoundTransitionController implements OnStart {
 		let revealElapsed = 0;
 		let stage: TransitionStage = "grow";
 
-		// **`RenderStepped` rather than `Heartbeat`**, and not for `CooldownHudController`'s reason (that
-		// one reads a clock, so its only cost is how smoothly it is sampled). This one *writes* the frame
+		// **`RenderStepped` rather than `Heartbeat`**, and not for the reason a clock-reading loop picks it (a
+		// read's only cost is how smoothly it is sampled). This one *writes* the frame
 		// that is about to be drawn, so running before the draw is the point: a heartbeat would land after
 		// the frame it describes and the movement would lag the camera by one frame for its whole life.
 		const connection = RunService.RenderStepped.Connect((delta) => {

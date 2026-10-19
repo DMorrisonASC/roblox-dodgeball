@@ -12,9 +12,11 @@ import {
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SHIFT_LOCK_CONFIG } from "shared/config/shiftLock.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
-import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
-import { inTaggedZone } from "../../roundZone";
+import { isMobile } from "../../platform";
+import { getScreenSpaceGui } from "../../ui/screenGui";
+import { inTaggedZone, isParticipant } from "../../roundZone";
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. */
 const PLAYING = "Playing";
@@ -24,6 +26,40 @@ const INTERMISSION = "Intermission";
 
 /** Prints the lock's transitions. See `shared/config/debug.config.ts` — they are behind the gate too. */
 const DEBUG = true;
+
+/**
+ * The sight's size, in pixels. **Placeholder — 44.**
+ *
+ * **About the size of the cursor it stands in for, and not tied to it.** A mouse icon is drawn by the operating
+ * system at whatever size that system gives a pointer, so there is no number in this project that matches it —
+ * this is the size a crosshair reads at on a phone screen, big enough to be a mark and small enough not to cover
+ * the thing being aimed at. It is a fixed square rather than a fraction of the viewport, because that is what a
+ * cursor is: one bitmap of one size, in the middle of the screen, on every device.
+ */
+const SIGHT_SIZE = 44;
+
+/**
+ * **Whether the camera diagnostics are on. `false` — this is a switch for one session, and it costs a log line
+ * a frame while it is on.**
+ *
+ * **Its own constant rather than `DEBUG_CONFIG.VERBOSE_LOGS`, and that is deliberate.** Turning the verbose
+ * gate on would also turn on `ThrowProbe`, which builds a whole `Trajectory` per throw, and `ThrowController`'s
+ * marker-jitter report — so the session that measures the camera would be a session where the throw path is
+ * doing work it does not do in a real game. `DEBUG_CONFIG.PROFILE` would be the other candidate and is the
+ * wrong shape too: those are named MicroProfiler bands, and a camera *feel* question is answered from a text
+ * log rather than from a flame chart. This switch turns on four lines of this file's own measuring and nothing
+ * else, which is what makes the numbers comparable to a session with it off.
+ *
+ * **The four lines are specified in {@link ShiftLock.reportCamera}, with what each one distinguishes.** What a
+ * reader brings back is a five-second recording taken in a practice zone with the lock on, while walking and
+ * turning — and the summary lines are the ones that decide the shape of the fault.
+ *
+ * Turn it on by editing this line, take the session, and put it back.
+ */
+const CAMERA_DIAGNOSTICS = false;
+
+/** How long the diagnostic rollup accumulates before printing, in seconds. One second, so the lines pair. */
+const CAMERA_DIAGNOSTIC_PERIOD = 1;
 
 /** The phase the round folder is publishing, or nothing while it has not published one yet. */
 function phaseOf(status: Instance): string | undefined {
@@ -77,11 +113,14 @@ function cameraSettings(): UserGameSettings | undefined {
  * the two can never be on at once and fight over the same two settings.
  *
  * **Two things ask for it, and neither of them is the player.** While a round is being played the lock
- * is on for everyone, because the throw is aimed from the centre of the screen — the camera *is* the
- * aim, and a crosshair that followed the body instead of the view would be pointing somewhere the
- * player is not looking. Outside a round it is off, and the player is free to run around and look at
- * the lobby — **except inside a zone somebody places** ({@link PRACTICE_ZONE_TAG}), where it comes
- * back so a practice throw lines up the way a real one will.
+ * is on for **the players who are in it** — on a side, having opted in — because the throw is aimed from
+ * the centre of the screen — the camera *is* the aim, and a crosshair that followed the body instead of
+ * the view would be pointing somewhere the player is not looking. **Not for the whole server**, which is
+ * what it used to mean: a player watching a round from the lobby is not teleported by its transition, not
+ * held by its freeze, and has nothing to aim from the middle of the screen, so the camera is theirs until
+ * they join one. Outside a round it is off, and the player is free to run around and look at the lobby —
+ * **except inside a zone somebody places** ({@link PRACTICE_ZONE_TAG}), where it comes back so a practice
+ * throw lines up the way a real one will.
  *
  * **There used to be a third and it was the player's own key. It is gone.** `~` handed the camera back
  * — even in the middle of a round — on the argument that a player who would rather have their ordinary
@@ -137,6 +176,13 @@ function cameraSettings(): UserGameSettings | undefined {
  * arrived wearing rather than a forced default: there is nothing to undo, and the capture is what lets a
  * release hand back a cursor somebody else set instead of inventing one.
  *
+ * **And the cursor is only half of the sight, which is the thing that was missing on a phone.**
+ * `MouseIcon`/`MouseBehavior` describe a pointer, and a touch device has none: its throw is aimed along the
+ * camera's own axis (`ThrowController.getThrowDirection`) and nothing was drawing where that pointed. So the
+ * lock draws the same crosshair — the same {@link SHIFT_LOCK_CONFIG.LOCKED_CURSOR} id — on the screen itself,
+ * on the platforms with no cursor to set. See {@link applySight}, which is a third call in `applyState`
+ * beside {@link writeSettings} and {@link applyOffset} rather than part of either.
+ *
  * **The camera offset is per *character*, and only that.** `RotationType` and `MouseBehavior` belong to
  * the user, so they are written once and hold across every respawn; the offset lives on the `Humanoid`,
  * so it has to be put back on each new body — see {@link watchCharacter}. The lock itself deliberately
@@ -185,8 +231,34 @@ export class ShiftLock implements OnStart {
 	private restingCursor?: string;
 	private restingCursorEnabled?: boolean;
 
-	/** What the round says: a round is being played, so the camera is held for everybody. */
-	private phaseLocked = false;
+	/**
+	 * The sight the lock draws on a touch device, or nothing before the first lock.
+	 *
+	 * **A scope of its own, because this element's life is not the file's.** Everything else here is a
+	 * subscription made once at {@link mount} and handed to the mount's scope; the sight cannot be, because it
+	 * is created on the first lock rather than at mount (see {@link applySight}) — so it is made inside
+	 * `sightScope`, which exists for exactly one element and is never torn down. The alternative was to build it
+	 * at mount unconditionally, which would put an invisible `ImageLabel` in the GUI of every desktop client for
+	 * the whole session.
+	 */
+	private readonly sightScope = Fusion.scoped();
+	private sight?: ImageLabel;
+
+	/**
+	 * What the round says: **the local player is in the round being played** — on a side, and a round on.
+	 * **Both halves, and this is a narrowing of what it used to mean.** The field was `phaseLocked`, set
+	 * from the phase alone, so the camera was held for *everybody* in the server while a round ran —
+	 * including a player in the lobby who had never opted in and was not in the round, not teleported by
+	 * its transition and not held by its freeze. The user's rule is "you need to opt in and a round to be
+	 * playing", and `roundZone.ts`'s `isParticipant` is that rule stated once for both this and the wipe.
+	 *
+	 * **The two halves arrive by different routes, which is why there are two subscriptions below.** A
+	 * phase change says "the round started or ended"; a change to this player's own `TEAM_ATTRIBUTE` says
+	 * "the roster decided something about me" — and the second can happen with no phase change at all,
+	 * because a player who walks onto a pad while a round is being played is admitted to it mid-flight.
+	 * That player is a participant and gets the camera; see `RoundService.admitMidRoundJoins`.
+	 */
+	private roundLocked = false;
 
 	/** What the zone says: the local player's body is inside a tagged box right now. */
 	private inZone = false;
@@ -208,6 +280,18 @@ export class ShiftLock implements OnStart {
 	 * {@link reportZoneParts} for the log that made a one-time count untenable.
 	 */
 	private reportedZoneParts?: number;
+
+	/** The camera's view direction last frame, for the rotational delta {@link reportCamera} measures. */
+	private lastLook?: Vector3;
+
+	/** Frames sampled in the current diagnostic second, its mean, its mean of squares, and its worst frame. */
+	private sampleFrames = 0;
+	private sampleSum = 0;
+	private sampleSquares = 0;
+	private sampleMax = 0;
+
+	/** Seconds accumulated toward the next `[Camera] summary` line. See {@link CAMERA_DIAGNOSTIC_PERIOD}. */
+	private sampleSeconds = 0;
 
 	public onStart(): void {
 		// **The first line is printed here, before anything else below it can fail, and that is not
@@ -262,11 +346,36 @@ export class ShiftLock implements OnStart {
 		// **Nothing but the folder is captured**, so a timer that fires after the phase has moved on reads
 		// the *current* attribute rather than the one that scheduled it — and two timers that fire in an
 		// unexpected order cannot disagree, because `applyState` does nothing when the state is already the
-		// one asked for. That is what makes this safe without the token `ThrowStateToastController` needs:
-		// a late timer there would *hide* a message; here it recomputes the same answer.
+		// one asked for. That is what makes this safe without a dismissal token: a late timer in a HUD would
+		// *hide* a message; here it recomputes the same answer.
 		scope.push(
 			status.GetAttributeChangedSignal(ROUND_STATE_ATTRIBUTE).Connect(() => {
-				task.delay(this.phaseDelay(phaseOf(status)), () => this.applyPhase(phaseOf(status)));
+				task.delay(this.phaseDelay(phaseOf(status)), () => this.applyRound());
+			}),
+		);
+
+		// **And the other half of the rule: this player's own side.** `TEAM_ATTRIBUTE` is written at each
+		// whistle from the roster and cleared for everybody who is not in it, and written again by
+		// `RoundService.setTeam` when a player is admitted to a round that is already being played — so it
+		// is the one per-player fact that says "the round is about *me*". Without this subscription the
+		// camera would need a phase change to notice, and a mid-round join has none: they would be
+		// teleported into the arena with their ordinary camera and stay that way until the next boundary.
+		//
+		// **The delay is zero for a change made inside a live round, and the ordinary cover's length
+		// otherwise.** The phase subscription above waits because the server publishes a phase and *then*
+		// moves everybody behind a closing grid — the delay is what lines the camera up with that move.
+		// There is no such move here: a mid-round join is teleported straight into the arena, uncovered, so
+		// the camera has nothing to wait for and arrives with the body. A side written while the phase is
+		// still `Intermission` is the round-*start* write — `assignTeams` runs before the phase is published
+		// — and that one takes the transition's own delay, which is what keeps the lock from snapping on
+		// while the player is still standing in the lobby under the grid. See `applyRound`, which reads the
+		// attribute again when the timer fires rather than trusting the values captured here.
+		scope.push(
+			this.player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => {
+				const phase = phaseOf(status);
+				const delay = phase === PLAYING ? 0 : this.phaseDelay(phase);
+
+				task.delay(delay, () => this.applyRound());
 			}),
 		);
 
@@ -277,7 +386,7 @@ export class ShiftLock implements OnStart {
 		// point.** A client that has just mounted is not watching for a teleport: the move is either long
 		// behind it or arriving with the body it is spawning. There is no moment to line up with, so waiting
 		// would be a second of the wrong camera for somebody who has done nothing.
-		this.applyPhase(phaseOf(status));
+		this.applyRound();
 
 		scope.push(this.player.CharacterAdded.Connect((character) => this.watchCharacter(character)));
 
@@ -413,14 +522,24 @@ export class ShiftLock implements OnStart {
 	}
 
 	/**
-	 * Reports what the phase says, and lets {@link refresh} work out what that means.
+	 * Reports whether this player is in the round, and lets {@link refresh} work out what that means.
 	 *
-	 * **When it runs is the caller's business, not its own.** It is called straight through with the seed and
-	 * a cover's length late with a change — see {@link mount} and {@link phaseDelay} for why those differ —
-	 * and it deliberately holds no opinion about which it is: all it does is record what the phase says and
-	 * let {@link refresh} work out what that means. So `phaseLocked` describes the phase as of the last time
-	 * this was called, which during a transition is a phase the server published a fraction of a second
-	 * earlier.
+	 * **It asks `isParticipant`, which reads both facts itself rather than being handed a phase.** That is
+	 * what lets one method answer both subscriptions in {@link mount}: a phase change and a change to this
+	 * player's own side are two different events, and "am I in the round" is the same question at either
+	 * one. It is also what makes a delayed call safe — the second paragraph of the subscription's comment
+	 * counts on a late timer reporting the *current* world, and a method that re-reads both attributes
+	 * cannot report any other.
+	 *
+	 * **No parameter, where it used to take the phase.** It recorded `phase === PLAYING`; the phase is now
+	 * one half of a question that is not about the phase alone, and the half that a caller could have passed
+	 * in without going stale is the half the caller is not there to report.
+	 *
+	 * **When it runs is still the caller's business, not its own.** It is called straight through with the
+	 * seed, a cover's length late with a phase change, and immediately or a cover late with a side change —
+	 * see {@link mount} and {@link phaseDelay} for why those differ — and it deliberately holds no opinion
+	 * about which it is. So `roundLocked` describes the world as of the last time this was called, which
+	 * during a transition is a roster the server wrote a fraction of a second earlier.
 	 *
 	 * **The phase is one input rather than the rule.** It used to release the lock outright on
 	 * entering the intermission and hand the camera to the zone check; now it only reports whether a
@@ -432,10 +551,10 @@ export class ShiftLock implements OnStart {
 	 * player's `~` release was taken back — on the one edge it should be, a round *starting* rather than a
 	 * round being played, so that any later publication of `Playing` could not clear a release the player
 	 * had just set mid-round. With no release there is nothing to take back, and the edge test went with
-	 * it: this now records the phase and does nothing else.
+	 * it: this now records the answer and does nothing else.
 	 */
-	private applyPhase(phase: string | undefined): void {
-		this.phaseLocked = phase === PLAYING;
+	private applyRound(): void {
+		this.roundLocked = isParticipant(this.player);
 
 		this.refresh();
 	}
@@ -532,11 +651,16 @@ export class ShiftLock implements OnStart {
 	/**
 	 * Works out whether the camera should be held, from the two things that can ask for it.
 	 *
-	 * **The round and the zone are added, and neither can undo the other.** A round being played holds the
-	 * camera for everybody and keeps holding it whatever the player does with their feet; a zone asks for
-	 * the same lock outside a round. That is what makes the zone safe to check at all times: it can *add*
-	 * the lock, but it can never take away one the round is holding — so a player who walks out of a lobby
-	 * zone mid-round is still locked, which is the rule the round exists to have.
+	 * **The round and the zone are added, and neither can undo the other.** A player who is *in* the round
+	 * is held for the whole of it and stays held whatever they do with their feet; a zone asks for the same
+	 * lock outside a round. That is what makes the zone safe to check at all times: it can *add* the lock,
+	 * but it can never take away one the round is holding — so a player who walks out of a lobby zone
+	 * mid-round is still locked, which is the rule the round exists to have.
+	 *
+	 * **The first input is "in the round", not "a round is on", and that narrowing is the user's rule.** It
+	 * used to be the phase alone, which held the camera for a player in the lobby who had opted into nothing
+	 * and was in nothing; see the field's own comment. What is unchanged is the reading order below, so the
+	 * line still names the round when the round is why.
 	 *
 	 * **There used to be a third input, and it could refuse both.** It was the player's `~` release, and it
 	 * outranked these two, which was the only way to get the ordinary camera back in the middle of a round.
@@ -549,9 +673,9 @@ export class ShiftLock implements OnStart {
 	 * for their camera back — there is no such ask any more.
 	 */
 	private refresh(): void {
-		const asking = this.phaseLocked ? "the round" : this.inZone ? "the zone" : "nothing is asking for it";
+		const asking = this.roundLocked ? "the round" : this.inZone ? "the zone" : "nothing is asking for it";
 
-		if (this.phaseLocked || this.inZone) {
+		if (this.roundLocked || this.inZone) {
 			this.lock(asking);
 		} else {
 			this.unlock(asking);
@@ -581,7 +705,64 @@ export class ShiftLock implements OnStart {
 		}
 
 		this.writeSettings(on);
+		this.applySight(on);
 		this.applyOffset();
+	}
+
+	/**
+	 * **The sight: the crosshair, drawn on the screen itself, for the platform that has no cursor to put it in.**
+	 *
+	 * **The desktop's third effect and the mobile's second, and they are the same effect reached two ways.** On a
+	 * desktop the cursor *is* the crosshair: `MouseIcon` is set to {@link SHIFT_LOCK_CONFIG.LOCKED_CURSOR} and
+	 * `MouseBehavior.LockCenter` holds it in the middle of the screen, which is what makes the aim read — see
+	 * `ThrowController.getThrowDirection`, which shoots its ray through that pixel. **A phone has neither a
+	 * cursor nor a place to put one**, so the lock had no visible marker on it at all: the camera moved to the
+	 * shoulder and the throw started going wherever the middle of the screen pointed, with nothing on the screen
+	 * saying where that was. This draws the same image at the same place, so the two platforms say the same thing
+	 * about where a throw will go.
+	 *
+	 * **The same `LOCKED_CURSOR` id rather than a second asset**, deliberately: it is the art of the sight, and a
+	 * second id here would be two pictures to keep looking alike — and the one place a player compares the two
+	 * platforms is this shape in the middle of their screen.
+	 *
+	 * **It is a sibling of the HUD rather than part of one.** The lock is not a HUD: it is a camera rule that
+	 * three readouts happen to move with, and it is on for players who have no HUD element in mind at all. So the
+	 * aim marker belongs to the thing that owns the aim, and any HUD that ever wants to draw over it can — the
+	 * rung is below the dock's.
+	 *
+	 * **Nothing says "touch device" here except the one test**, which is the same `isMobile()` the two control
+	 * surfaces use: a client with a keyboard has a cursor, and drawing a second crosshair on top of it would be
+	 * the same mark twice.
+	 */
+	private applySight(on: boolean): void {
+		if (!isMobile()) return;
+
+		if (this.sight === undefined) {
+			// Built on the first lock rather than at mount, so a client that never locks never makes an instance.
+			// **Into its own GUI**, and that is what makes the position below two scale numbers rather than
+			// arithmetic: a `ScreenGui` with `None` insets has the screen for its coordinate space, so
+			// `(0.5, 0.5)` *is* the middle of the screen — and the middle of the screen is where the throw goes,
+			// because a phone aims along the camera's own axis. See `getScreenSpaceGui`, which carries the
+			// argument for the GUI this lives in and for why the shared one cannot do this job.
+			const sight = Fusion.New(this.sightScope, "ImageLabel")({
+				Name: "AimSight",
+				Image: SHIFT_LOCK_CONFIG.LOCKED_CURSOR,
+				BackgroundTransparency: 1,
+				// A fixed square at the middle of the screen: the shape the desktop's cursor has, which is a
+				// bitmap of one size rather than a thing that scales with the viewport.
+				Size: UDim2.fromOffset(SIGHT_SIZE, SIGHT_SIZE),
+				AnchorPoint: new Vector2(0.5, 0.5),
+				Position: UDim2.fromScale(0.5, 0.5),
+				// **`Visible` is not a `Computed` and has no `Value` behind it**, because this controller *is* the
+				// state: `applyState` is the only writer of the lock and it hands the answer in on its way past.
+			});
+
+			sight.Parent = getScreenSpaceGui();
+			this.sight = sight;
+		}
+
+		this.sight.Visible = on;
+		if (DEBUG) print(`[ShiftLock] sight ${on ? "up" : "down"}`);
 	}
 
 	/**
@@ -647,6 +828,14 @@ export class ShiftLock implements OnStart {
 	 * **What it writes is not `CAMERA_OFFSET` itself**, and the difference is the whole of
 	 * {@link offsetForBody}. Called on every state change *and* once a frame while locked — see
 	 * {@link watchOffset}, which is the half that keeps the shoulder on one side of the screen.
+	 *
+	 * **It is exact, and there is no easing here any more.** An exponential ease lived on this method for one
+	 * revision, chasing the recomputed value, and it was the wrong medicine: the fault was never that the
+	 * value moved too far in a frame, it was that the value was **applied in a different body frame from the
+	 * one it was computed in**, which turns the body's own turn into camera motion. An ease blurs a 180° whip
+	 * into a sway and leaves the flaw in place — which is exactly what it did. The cause is fixed in
+	 * {@link watchOffset} by writing one step before the camera reads, where the conversion cancels exactly;
+	 * with nothing left to damp, a smoothing constant would be a lag with no job.
 	 */
 	private applyOffset(): void {
 		const humanoid = this.humanoid;
@@ -671,6 +860,14 @@ export class ShiftLock implements OnStart {
 	 * unchanged.** That is the property worth holding on to: the shoulder a player is used to is exactly
 	 * where it was, and the change is visible only in the poses that used to be wrong.
 	 *
+	 * **The conversion is only valid in the frame it was computed in, and that is what {@link watchOffset}'s
+	 * binding order buys.** Written down as algebra, because the whole of the wobble is in it: this returns
+	 * `R⁻¹ · (C · intent)` for the body's rotation `R` and the camera's `C`, and the engine applies the result
+	 * in `R` — so the world offset is `C · intent`, the intent rotated into camera space, with `R` cancelling.
+	 * **That cancellation only happens while both `R`s are the same frame's.** Bound after the camera, they
+	 * are not — the value is computed against one body orientation and applied against the next — and what
+	 * survives is the body's own turning, which is a 180° swing every time the player reverses direction.
+	 *
 	 * Falls back to the raw vector when either frame is missing — no body, or no camera yet — because an
 	 * unconverted offset is simply the old behaviour, which is the better failure: a shoulder in the wrong
 	 * place for a frame, rather than a `nil` written into a property.
@@ -688,12 +885,38 @@ export class ShiftLock implements OnStart {
 	/**
 	 * Keeps the offset camera-relative for as long as the client is running, from the render step.
 	 *
-	 * **A one-frame lag, and it is the right side to be on.** Bound one step *after*
-	 * `RenderPriority.Camera`, so the camera has already placed itself for this frame and the yaw being
-	 * read is the current one; the offset written here is the one the next frame's camera will use. A
-	 * shoulder that is a frame behind a mouse that moved a pixel in the meantime is not something an eye
-	 * can find, and running *first* instead would read the previous frame's camera for the same lag with
-	 * less obvious ordering.
+	 * **Bound *before* `RenderPriority.Camera` — two steps before, with `cameraShake` between — and that
+	 * reversal is the fix for "moving back and forward wobbles the camera".**
+	 *
+	 * The whole of it is a frame ordering that looks harmless and is not. `Humanoid.CameraOffset` is applied in
+	 * the *body's* frame, and the value written here is computed by converting the camera-space intent into
+	 * that frame — so **the conversion is only exact if the body frame used to write is the body frame used to
+	 * apply**. Bound after the camera, it is not: the camera reads the property before this file writes it, so
+	 * frame N's value is applied in frame N+1's body, and the world result is rotated by however far the body
+	 * turned in between. **The body turns on its own** — `RotationType` is `MovementRelative`, so it faces the
+	 * way it is walking — and walking backwards turns it through 180°. The shoulder therefore swings round the
+	 * character every time the player reverses direction, which is the reported symptom exactly, and the
+	 * reason it shows up on *movement* rather than on turning the view.
+	 *
+	 * **Writing before the camera takes the body out of the sum entirely.** The camera applies the property
+	 * moments later in the same frame, in the same body frame this file read to compute it: `R⁻¹ · (C · intent)`
+	 * applied in `R` is `C · intent`, with `R` gone. What is left is that `C` is the previous frame's camera
+	 * rotation, so the offset trails the view by one mouse movement — a degree or two, a couple of hundredths
+	 * of a stud, and not something an eye can find.
+	 *
+	 * **The old argument is kept because it was half right, and the half it missed is the interesting part.**
+	 * This was bound at `Camera.Value + 1` on the reasoning that the yaw read would then be the current
+	 * frame's, and that "a shoulder a frame behind a mouse that moved a pixel in the meantime is not something
+	 * an eye can find". Both clauses are true. What the reasoning did not weigh is that the *other* one-frame
+	 * lag — the one on the body's rotation — is 180° when a player reverses, not a pixel. It is also why a
+	 * smoothing pass over the written value improved this without fixing it: **an ease blurs a whip into a
+	 * sway**, and cannot remove a rotation that is applied in a frame the value was not computed in. That ease
+	 * has been taken back out; see {@link applyOffset}.
+	 *
+	 * **`cameraShake` moved with it**, to `Camera.Value - 1`. It composes on this file's value, so it has to
+	 * run after this write and before the camera reads — which also means it now adds its kick to *this*
+	 * frame's shoulder rather than to the previous one's. See its own doc, where the ordering argument is
+	 * rewritten on the same finding.
 	 *
 	 * **Bound once and never unbound**, with the lock checked inside it. The lock comes and goes several
 	 * times a session — a round, a zone — and a binding re-established on each of those would be a second
@@ -705,8 +928,139 @@ export class ShiftLock implements OnStart {
 	 * replaced is a value that was only ever right in the pose where the body and the camera agree.
 	 */
 	private watchOffset(): void {
-		RunService.BindToRenderStep("ShiftLockOffset", Enum.RenderPriority.Camera.Value + 1, () => {
+		// **The two mount-time diagnostic lines, printed before the binding is made** — see
+		// `reportCameraSources`, which is where the reading of the source is written down and why it is
+		// printed rather than argued.
+		if (CAMERA_DIAGNOSTICS) this.reportCameraSources();
+
+		// **`Camera.Value - 2`, with `cameraShake` at `- 1` and the camera itself at `0`.** This file writes
+		// the shoulder, the shake adds its kick on top, and then the camera reads the sum — which is what
+		// makes the body frame the same one on both sides of the conversion. See the doc above.
+		RunService.BindToRenderStep("ShiftLockOffset", Enum.RenderPriority.Camera.Value - 2, (delta) => {
 			if (this.isLocked()) this.applyOffset();
+
+			// **The measurement still runs here**, and reading the view one frame before the camera sees this
+			// value costs nothing: what it measures is how far the *camera* rotated between frames, which is a
+			// property of the camera rather than of this write. See {@link reportCamera}.
+			if (CAMERA_DIAGNOSTICS) this.reportCamera(delta);
 		});
+	}
+
+	/**
+	 * **The camera diagnostics, and what each of the four lines is for.** All of them are behind
+	 * {@link CAMERA_DIAGNOSTICS}, which is off.
+	 *
+	 * *"The camera, when custom shift lock is on, is a little wobbly and not smooth."* That sentence had four
+	 * possible causes and three different fixes, and the answer turned out to be none of the four as written:
+	 * nothing in `src/client` writes `Camera.CameraType` or `Camera.CFrame` (so the camera is never taken
+	 * over), the two things that write *something* — this file writing `Humanoid.CameraOffset` and
+	 * `CameraZoomController` writing `Camera.FieldOfView` — write different properties on different objects
+	 * and cannot fight, and there was no missing ease to add. **What there was, was a frame of ordering**:
+	 * the offset is expressed in the body's frame and was written *after* the camera read it, so each value
+	 * was applied against the next frame's body — which turns the body's own turning into camera motion.
+	 * Every reverse of direction turned the body through 180° and swung the shoulder with it. See
+	 * {@link watchOffset}, which is where that is fixed and where the whole of it is written down.
+	 *
+	 * **These lines stay because the fix should be verifiable rather than taken on trust.** With
+	 * `CAMERA_DIAGNOSTICS` on, the same five seconds of walking back and forth should now show a `max` on the
+	 * same order as its `mean`; before the reordering it did not.
+	 *
+	 * - **`[Camera] frame — delta N.NN° — dt N.NNms`**, once a frame while locked: how far the view rotated
+	 *   in the frame, and how long the frame was. **The pair is the point** — a smooth pan has a *steady*
+	 *   delta for its dt, and a wobble is the same total movement arriving unevenly.
+	 * - **`[Camera] summary — N frames, mean N.NN°, max N.NN°, stddev N.NN°`**, once a second: the rollup that
+	 *   decides between the two shapes a wobble can have. **`max ≫ mean` is jitter** — most frames near
+	 *   still with occasional jumps — and **`max ≈ mean` with a high `stddev` is an oscillation**, which is
+	 *   what a one-frame feedback path produces. Those two want different fixes, which is why neither this
+	 *   file nor the report guesses at one.
+	 * - **`[Camera] write — priority N — type Enum.CameraType.X`**, once on mount: this file's render
+	 *   priority and the camera's actual type, so "is something else placing this camera" is answered from
+	 *   the log rather than from a comment.
+	 * - **`[Camera] sources — shiftLock …, zoom …`**, once on mount: which of the two camera controls in this
+	 *   client touches `Camera.CFrame`. The answer is neither, and the line says what each one does touch.
+	 *
+	 * **What this costs while it is on, stated so it is not mistaken for the fault it is measuring**: a print
+	 * per frame is sixty prints a second, which floods the output and costs frames of its own. That distortion
+	 * is why the flag is off by default and why the *summary* line is the one to read — it is an aggregate
+	 * over real frames, and the per-frame line is there to be spot-checked rather than read through.
+	 */
+	private reportCamera(delta: number): void {
+		const camera = Workspace.CurrentCamera;
+		if (!camera) return;
+
+		const look = camera.CFrame.LookVector;
+
+		// **The angle between this frame's view and the last one**, which is the camera's own rotational
+		// delta and needs no input reading: whatever moved it — the mouse, the camera scripts, a constraint —
+		// is in this number. `acos` of a clamped dot product is the only way to get it from two unit vectors,
+		// and the clamp is not decoration: rounding can push the dot to 1.0000001 and `acos` of that is NaN.
+		if (this.lastLook !== undefined) {
+			const degrees = math.deg(math.acos(math.clamp(look.Dot(this.lastLook), -1, 1)));
+
+			print(
+				`[Camera] frame — delta ${string.format("%.2f", degrees)}° — ` +
+					`dt ${string.format("%.1f", delta * 1000)}ms`,
+			);
+
+			this.sampleFrames += 1;
+			this.sampleSum += degrees;
+			this.sampleSquares += degrees * degrees;
+			this.sampleMax = math.max(this.sampleMax, degrees);
+		}
+
+		this.lastLook = look;
+		this.sampleSeconds += delta;
+
+		if (this.sampleSeconds >= CAMERA_DIAGNOSTIC_PERIOD) this.reportCameraSummary();
+	}
+
+	/** The once-a-second rollup {@link reportCamera} accumulates toward. See its doc for how it is read. */
+	private reportCameraSummary(): void {
+		const frames = this.sampleFrames;
+
+		this.sampleSeconds = 0;
+		this.sampleFrames = 0;
+		this.sampleSum = 0;
+		this.sampleSquares = 0;
+		this.sampleMax = 0;
+
+		// A locked player who has not moved at all produces one frame and no samples beyond it; a second with
+		// nothing in it says nothing rather than printing `mean NaN`.
+		if (frames === 0) return;
+
+		const mean = this.sampleSum / frames;
+		// Population stddev from the running sums, and clamped at zero because a mean and a mean of squares
+		// computed in floating point can put the variance a hair below zero on a perfectly still camera.
+		const variance = math.max(0, this.sampleSquares / frames - mean * mean);
+
+		print(
+			`[Camera] summary — ${frames} frames, mean ${string.format("%.2f", mean)}°, ` +
+				`max ${string.format("%.2f", this.sampleMax)}°, ` +
+				`stddev ${string.format("%.2f", math.sqrt(variance))}°`,
+		);
+	}
+
+	/**
+	 * The two once-on-mount lines: what this file writes, at which priority, and what the camera's type is.
+	 *
+	 * **Read from the running camera rather than asserted from the source**, because the question the log has
+	 * to answer is "is something else placing this camera" and the only honest answer is what the client is
+	 * holding right now. A `CameraType` of `Custom` means Roblox's own scripts are placing it and this file is
+	 * feeding them an offset — which is the arrangement the class doc argues for and the one that makes a
+	 * `CFrame` writer elsewhere the thing to look for if the wobble is ever attributed.
+	 */
+	private reportCameraSources(): void {
+		const camera = Workspace.CurrentCamera;
+
+		print(
+			`[Camera] write — priority ${Enum.RenderPriority.Camera.Value + 1} — ` +
+				`type ${camera !== undefined ? tostring(camera.CameraType) : "no camera"}`,
+		);
+
+		// **`false` for the zoom, and the qualifier is not hedging.** `CameraZoomController` writes
+		// `FieldOfView` and nothing else — a different property on a different object — so it cannot fight
+		// this file for the `CFrame`. Neither of them writes one at all; what this file writes is
+		// `Humanoid.CameraOffset`, which the camera scripts then read.
+		print(`[Camera] sources — shiftLock true, zoom false — neither writes CFrame (offset and field of view)`);
 	}
 }

@@ -43,7 +43,7 @@ export const CHARACTER_CONFIG = {
      * the two only mean anything together. See
      * {@link CHARACTER_CONFIG.STAMINA_DRAIN_PER_SECOND}.
      */
-    STAMINA_MAX_SECONDS: 3,
+    STAMINA_MAX_SECONDS: 6,
 
     /**
      * How fast the pool empties while sprinting, in seconds of stamina per second of sprinting.
@@ -53,7 +53,7 @@ export const CHARACTER_CONFIG = {
      * longer, which is the knob to reach for when the pool's *duration* reads wrong but its
      * *size* — the bar's proportions — reads right.
      */
-    STAMINA_DRAIN_PER_SECOND: 1,
+    STAMINA_DRAIN_PER_SECOND: 0.5,
 
     /**
      * How fast the pool refills once recovery has started, in seconds of stamina per second.
@@ -81,6 +81,28 @@ export const CHARACTER_CONFIG = {
      * pool behave the way it does.
      */
     STAMINA_RECOVERY_DELAY_SECONDS: 0.5,
+
+    /**
+     * **Placeholder — `8`.** The speed a body is limited to while an action that wants it planted is running:
+     * a throw being charged, or a catch window.
+     *
+     * **A ceiling, not a base and not a bonus.** A charge holds the throw clip at its windup pose and a catch
+     * window is a body with its hands up waiting for a ball; a body that keeps its full `20` — or its sprinting
+     * `35` — through either one slides across the ground, which is what this number is for. It is applied by
+     * `WalkSpeedService` as `min(sum of contributions, this)`, so it composes with everything else the service
+     * already sums: a frozen body is still frozen at `0`, a slowed body is still slower, and a **sprinting**
+     * catcher or thrower is held at `8` rather than at `20 + 15`.
+     *
+     * **Named for aiming and applied to more than aiming, which is the honest record of how it arrived.** The
+     * throw's cap was asked for by this name; the catch's cap then asked to reuse *the aiming speed* rather
+     * than invent a second number, so one constant serves both. A second name for the same `8` would be two
+     * numbers free to drift apart the first time somebody tuned a stance, so there is one — this one — and
+     * every action that wants a body slowed while it stands in it reads it here.
+     *
+     * Below `BASE_WALK_SPEED` by design, and above the `0` an anchor would mean: a body can still shuffle to
+     * line itself up, which is the difference between a stance and a stun.
+     */
+    AIMING_WALK_SPEED: 8,
 
     /**
      * How long a freshly spawned player cannot be hurt, in seconds.
@@ -116,12 +138,21 @@ export const CHARACTER_CONFIG = {
      * Roblox's business rather than ours — its script picks between them by how fast the body is
      * going — so both are claimed, with these ids.
      *
-     * **An empty id is the *off* switch, and it is how a rig opts out of one set.** The controller
-     * leaves that set exactly as Roblox made it, which is what the two blank R6 lines below are for:
-     * only the R15 renders of idle and jump were uploaded, so an R6 body keeps the default standing
-     * and jumping animations and still wears this game's walk and sprint. Blank rather than filled
-     * with the R15 ids on purpose — the probe would refuse them on an R6 body anyway, and a config
-     * that says what it means beats one that says something the loader is expected to reject.
+     * **An empty id is the *off* switch, and it is how a body opts out of one set.** The controller
+     * leaves that set exactly as Roblox made it. **No row below is empty any more**, and that is a
+     * change: the R6 idle and jump rows used to be blank, because only the R15 renders of those two
+     * had been uploaded, so an R6 body kept Roblox's default standing and jumping animations while
+     * wearing this game's walk and sprint. The R6 half has since been supplied — and supplied "for all
+     * models", which is the animation editor's phrase for an R6 export — so the four pairs are now
+     * complete and every body in the game wears them.
+     *
+     * **These four pairs are the clips for *every* body, not only for players**, which is worth stating
+     * because the file's name says otherwise. A rig reads them through `BODY_ANIMATION`, which borrows
+     * these four rows rather than repeating the ids — so a walking rig and a walking player are wearing
+     * the same animation by construction, and changing one clip changes it for both. The rig table adds
+     * the states a player has no clip for (a ball in hand, a dodge, a throw); these four are the ones
+     * they share, and the user's whole point in supplying them was that players and rigs should not be
+     * seen wearing different animations for the same thing.
      *
      * **Every id here was checked against Roblox's asset API, and the R15 column was replaced on
      * 2026-10-01 because of what that check found.** The ids that used to sit there were emotes —
@@ -134,8 +165,8 @@ export const CHARACTER_CONFIG = {
      * **Quoted with the `rbxassetid://` prefix and never as a bare number.** The loader treats a
      * bare number as a name and finds nothing, which is the trap the dodge ids record at length.
      */
-    IDLE_ANIMATION_R6: "",
-    IDLE_ANIMATION_R15: "rbxassetid://109708134574404",
+    IDLE_ANIMATION_R6: "rbxassetid://120076256264870",
+    IDLE_ANIMATION_R15: "rbxassetid://107017385887434",
 
     WALK_ANIMATION_R6: "rbxassetid://71443035611308",
     WALK_ANIMATION_R15: "rbxassetid://136049554497965",
@@ -143,28 +174,21 @@ export const CHARACTER_CONFIG = {
     RUN_ANIMATION_R6: "rbxassetid://138082827258827",
     RUN_ANIMATION_R15: "rbxassetid://112953741427605",
 
-    JUMP_ANIMATION_R6: "",
-    JUMP_ANIMATION_R15: "rbxassetid://108854279734771",
+    JUMP_ANIMATION_R6: "rbxassetid://123624426349034",
+    JUMP_ANIMATION_R15: "rbxassetid://134059415042386",
 
     /**
-     * The speed at or above which a body wears the sprint clip, in studs per second.
+     * **There was a `RUN_ANIMATION_SPEED` line here, and there is not one any more.**
      *
-     * **A third number between the two above it, rather than either of them used directly.** The
-     * sprint's clip is the sprint's *speed*'s clip — see the block above, where a clip and a speed
-     * are one decision — but neither end of that pair can serve as the line: at
-     * {@link CHARACTER_CONFIG.BASE_WALK_SPEED} a walking body measures slightly *above* its own walk
-     * speed (20.3 against a walk speed of 20.0 is what the animation output shows, because
-     * `WalkSpeed` is what the mover is asked for and the assembly is what actually moves), so a line
-     * drawn at 20 would put a walking body in the running clip; and a line drawn at the sprint's own
-     * 35 is crossed late, leaving a body that is clearly sprinting in the walking clip while it
-     * accelerates.
+     * It was the speed at or above which a body wore the sprint clip: a third number sitting between
+     * {@link CHARACTER_CONFIG.BASE_WALK_SPEED} and the sprint speed, because neither end of that pair could
+     * serve as the line on its own — a walking body *measures* slightly above its own walk speed (20.3 against
+     * a walk speed of 20.0, because `WalkSpeed` is what the mover is asked for and the assembly is what
+     * actually moves), so a line drawn at 20 would have put a walking body in the running clip.
      *
-     * **Read by `animationFor`, which is the only reader** — a shared rule, so both the player's
-     * controller and the rig renderer cross this line in the same place.
-     *
-     * **Placeholder.** 25 sits between them with room on both sides: a walking body is 4 studs below
-     * it, a sprinting one 10 above, and a body *pushed* past a walk keeps the walking clip until it
-     * is pushed most of the way to a sprint.
+     * **That measurement is the reason the line is gone rather than retuned.** A clip is now chosen from what a
+     * body was *asked* to do, and a request has no gradient for a threshold to sit in: see `animationFor` in
+     * `shared/animation.ts` for the rule and for the full record of what the speed comparison cost while it was
+     * here. The two speeds above stay, of course — they are what a body actually moves at.
      */
-    RUN_ANIMATION_SPEED: 25,
 } as const;

@@ -2,23 +2,31 @@ import { GameModeId } from "shared/gameMode";
 import { RoundOutcome, TEAM_A, TEAM_B, TeamLabel } from "../team";
 
 /**
- * What a landed hit tells a mode.
+ * What a landed hit tells a mode: **the two bodies, as participants.**
  *
- * The victim is a `Player` rather than the model the ball touched, because every mode that cares
- * about a hit cares about the *person*: a point, a side, a role. Resolving the model is the
- * round's job, done once, where the rest of is-this-a-player already lives — a mode has no
- * business knowing that an NPC rig is a `Model` with no `Player` behind it.
+ * **Both ends are `RoundParticipant` — a person or a rig — and every mode in this game ignores both.** The
+ * *amount* is all any of the three answers today (`ScoreRushMode` returns `1`, `TeamEliminationMode` returns
+ * `undefined`, `DodgeAndSeekMode` refuses the question), and the *attribution* is the round's:
+ * `RoundService.registerHit` credits the thrower's side through `teamOf`, which answers for a rig exactly as
+ * it answers for a player. So the union is the honest type for a question a mode may one day want to ask with
+ * a rig in the answer, rather than a shape that has to be widened the day one does.
  *
- * A thrower is optional because a rig can throw. That is not an edge case to be papered over: a
- * mode that scores has to decide what an NPC's hit is worth, and the honest place for that
- * decision is the mode, not a silent default here.
+ * **What changed here, because the old shape was argued for and lost.** The victim was a `Player`, on the
+ * grounds that "every mode that cares about a hit cares about the *person*" — true of the modes, and it made
+ * a rig's body unrepresentable at the round's own end of the same wire: a ball that knocked a rig over reached
+ * neither the board, nor the score, nor the log, because the first thing `registerHit` did was look for a
+ * `Player` behind the model and give up. A mode with a use for "which *kind* of body was hit" narrows; that is
+ * what `RoundParticipant` is for.
+ *
+ * `thrower` stays optional for the reason it always was: a token that names nobody — an unknown thrower, a rig
+ * that has since been destroyed — resolves to nothing, and a mode must not be handed a lie in its place.
  */
 export interface HitEvent {
-	/** The player whose throw landed, or `undefined` when a rig threw it. */
-	readonly thrower?: Player;
+	/** Whoever threw it: a player or a rig, or `undefined` when the token named neither. */
+	readonly thrower?: RoundParticipant;
 
-	/** The player it landed on. */
-	readonly victim: Player;
+	/** What it landed on: a player's character, or a rig. */
+	readonly victim: RoundParticipant;
 }
 
 /**
@@ -44,6 +52,23 @@ export interface DeathEvent {
 }
 
 /**
+ * One body the round is playing with: **a person, or a rig holding a seat on a side.**
+ *
+ * **The union is named rather than spelled out at each signature, and the name is the point rather
+ * than a convenience.** A participant is either a `Player` — the thing `MatchService` counts,
+ * `StatsService` records and every economy rule is about — or a `Model`, which is the only thing an
+ * NPC can be: a rig has no `Player`, no `UserId`, and nothing behind it to credit. Code that means
+ * "one of the two, and I do not care which" says `RoundParticipant`; code that means "a person"
+ * keeps saying `Player`, and the compiler then points at every place the two have been conflated.
+ *
+ * **What this is not:** a licence to treat a participant as a player. Every read of a person-only
+ * fact — `UserId`, `Character`, the roster map, a statistic — has to narrow first, and that is the
+ * point: a union that compiles everywhere is a union that hides where a rig is about to be treated
+ * as a person. `RoundService.teamOf` is the one place the round itself tells the two apart.
+ */
+export type RoundParticipant = Player | Model;
+
+/**
  * Everything a mode is allowed to know about the round in progress.
  *
  * **Read-only, and narrow on purpose.** A mode is a set of decisions; the round is the thing that
@@ -56,7 +81,16 @@ export interface DeathEvent {
  */
 export interface RoundView {
 	/**
-	 * Everyone still in the round. Nobody who has left, died out or is watching.
+	 * Everyone in the round: the players in it, and the rigs standing on a side.
+	 *
+	 * **Widened from players to participants, and the reason is that a mode's questions are about the
+	 * round rather than about people.** Every reader of this member asks one of three things — is
+	 * anybody left, how many stand on each side, how many dodgers remain — and a rig on a side stands,
+	 * has a side and can be knocked down. An answer that left it out would be a mode judging a round on
+	 * a roster it could not see, and that was a live defect rather than a hypothetical: an all-rig
+	 * round read as empty, and the mode ended it with a draw on its first tick. See
+	 * `RoundService.participantsInRound` for what counts as being in the round, and
+	 * `RoundService.playersInRound` for the narrower query a player-only caller still has.
 	 *
 	 * A method rather than a property, and that is the compiler's rule rather than this interface's:
 	 * **roblox-ts does not support getters** — "Getters and Setters are not supported!" — so a value
@@ -64,10 +98,10 @@ export interface RoundView {
 	 * the set it describes, would be a second answer to "who is playing", which is the exact thing
 	 * this design spends its effort avoiding.
 	 */
-	playersInRound(): ReadonlyArray<Player>;
+	participantsInRound(): ReadonlyArray<RoundParticipant>;
 
-	/** The side a player is on, or `undefined` if they are not in the round. */
-	teamOf(player: Player): TeamLabel | undefined;
+	/** The side a participant is on, or `undefined` if they are not in the round. */
+	teamOf(participant: RoundParticipant): TeamLabel | undefined;
 
 	/** Points per side. Empty for a mode that does not keep score — see {@link GameMode.scores}. */
 	readonly scores: ReadonlyMap<TeamLabel, number>;

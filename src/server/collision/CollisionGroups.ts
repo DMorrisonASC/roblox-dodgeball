@@ -1,5 +1,7 @@
 import { CollectionService, PhysicsService, Players, Workspace } from "@rbxts/services";
 import { CHARACTER_BARRIER_TAG } from "shared/constants";
+import { DEBUG_CONFIG } from "shared/config/debug.config";
+import { DUCK_GROUP } from "shared/duck";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { NPC_TAG } from "../npc/Behavior";
 
@@ -34,11 +36,12 @@ const BALL_GROUP = "Ball";
  * only for as long as the body is in the zone — see {@link setPracticePlayer}.
  *
  * **A second character group rather than a flag on one part**, because the rule it carries is about
- * *pairs*: a practice player must not collide with another practice player, and must not collide with
- * a ball, while colliding with the world, the midline and every ordinary character exactly as they
- * would have done. A group is the only mechanism the engine offers for a statement about a pair, and
- * the alternative — `NoCollisionConstraint` between this body and every ball in flight — would have to
- * be rebuilt on every throw and undone on every landing.
+ * *pairs*: a practice player must not collide with a ball, and — like every other character — must
+ * not collide with any other character, while still colliding with the world and the midline exactly
+ * as an ordinary body does. The one thing that makes the group worth having now is the ball half: a
+ * group is the only mechanism the engine offers for a statement about a pair, and the alternative —
+ * `NoCollisionConstraint` between this body and every ball in flight — would have to be rebuilt on
+ * every throw and undone on every landing.
  */
 const PRACTICE_GROUP = "PracticePlayer";
 
@@ -164,11 +167,27 @@ function registerGroups(): void {
 		Workspace.RegisterCollisionGroup(PRACTICE_GROUP);
 	}
 
-	// **Only the three rows that are not the engine's defaults.** A freshly registered group
-	// collides with everything, so the first line below is already true without being said — stated
-	// anyway, because it is the row the wall exists for. The two rows this leaves out are the
-	// defaults (`Character` against `Default` collides, `Character` against `Character` collides),
-	// and leaving them out is what lets the matrix be read as what it is: the exceptions.
+	// **`DUCK_GROUP` is registered here, with the other groups, rather than down beside the duck's own
+	// row — and the ordering is load-bearing rather than tidy.** The character block below writes pairs
+	// that name it as a body group, and the engine *raises* "Both collision groups must be registered"
+	// for a row naming a group it has not seen — an error, not a return. Thrown from the middle of this
+	// function it takes the whole of `startCollisionGroups` with it, and that call sits before
+	// `Flamework.ignite()` in `main.server.ts`: no matrix, no character membership, and no services at
+	// all. A group called {@link DUCK_GROUP} is a group like any other and belongs where the others are
+	// made.
+	if (!PhysicsService.IsCollisionGroupRegistered(DUCK_GROUP)) {
+		PhysicsService.RegisterCollisionGroup(DUCK_GROUP);
+	}
+
+	if (!Workspace.IsCollisionGroupRegistered(DUCK_GROUP)) {
+		Workspace.RegisterCollisionGroup(DUCK_GROUP);
+	}
+
+	// **Only the rows that are not the engine's defaults, stated as the exceptions they are.** A
+	// freshly registered group collides with everything, so the first line below is already true
+	// without being said — stated anyway, because it is the row the wall exists for. The two rows that
+	// follow it are the exceptions: the midline lets `Default` (the arena, the props, the edge walls)
+	// through, and lets another wall through, and nothing else about the wall is special.
 	PhysicsService.CollisionGroupSetCollidable(BARRIER_GROUP, CHARACTER_GROUP, true);
 	PhysicsService.CollisionGroupSetCollidable(BARRIER_GROUP, DEFAULT_GROUP, false);
 	PhysicsService.CollisionGroupSetCollidable(BARRIER_GROUP, BARRIER_GROUP, false);
@@ -177,10 +196,38 @@ function registerGroups(): void {
 	Workspace.CollisionGroupSetCollidable(BARRIER_GROUP, DEFAULT_GROUP, false);
 	Workspace.CollisionGroupSetCollidable(BARRIER_GROUP, BARRIER_GROUP, false);
 
-	// **The rows the practice zone adds, and they are three.** Everything else it needs is the engine
-	// default — a practice player collides with the world, the midline and ordinary characters exactly
-	// as they would have done — so only the exceptions are written, which is what lets these three be
-	// read as the whole of what the zone changes about physics.
+	// **Character bodies pass through each other — everywhere, always, and this block is the whole of
+	// that rule.** The three groups a character can be made of are `Character` (a player's body or a
+	// rig's, accessories included), `PracticePlayer` (the same body while it stands in a practice zone)
+	// and `DUCK_GROUP` (the head and arms, for the length of a duck), and no two of them collide —
+	// whatever state a round or a zone is in. The old rule let a practice player through another
+	// practice player and nobody else; the new one lets every character through every character, which
+	// is the user's decision and not something this file argues with.
+	//
+	// **What this is not: a change to the ball, the wall, or the world.** `Ball` still collides with
+	// `Character` (a ball must hit a body), `Barrier` still collides with every character group (a body
+	// is stopped by the midline), and every character group still collides with `Default` (a body
+	// stands on the floor and against a wall). Those rows are the engine's defaults and are deliberately
+	// not written here — writing the exceptions and only the exceptions is what lets this block be read
+	// as the whole of what "characters pass through each other" changes about physics.
+	PhysicsService.CollisionGroupSetCollidable(CHARACTER_GROUP, CHARACTER_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(CHARACTER_GROUP, PRACTICE_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(CHARACTER_GROUP, DUCK_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(PRACTICE_GROUP, PRACTICE_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(PRACTICE_GROUP, DUCK_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(DUCK_GROUP, DUCK_GROUP, false);
+
+	Workspace.CollisionGroupSetCollidable(CHARACTER_GROUP, CHARACTER_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(CHARACTER_GROUP, PRACTICE_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(CHARACTER_GROUP, DUCK_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(PRACTICE_GROUP, PRACTICE_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(PRACTICE_GROUP, DUCK_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(DUCK_GROUP, DUCK_GROUP, false);
+
+	// **The two rows the ball needs, and the practice zone is now the only place a character's
+	// collision with a *ball* depends on where they stand.** `Ball` against `Character` stays the
+	// engine's default (colliding), so a ball still hits an ordinary body; `Ball` against
+	// `PracticePlayer` is off, which is the whole of what the zone's group still does for a ball.
 	//
 	// **`Barrier` against `Ball` is the row the `Ball` group forced, and it is not new behaviour.** It
 	// used to be spelled `Barrier` against `Default`, back when every ball was a `Default` part. The
@@ -190,16 +237,42 @@ function registerGroups(): void {
 	// ball through the wall, and the two rows are now about two different populations.
 	PhysicsService.CollisionGroupSetCollidable(BARRIER_GROUP, BALL_GROUP, false);
 	PhysicsService.CollisionGroupSetCollidable(BALL_GROUP, PRACTICE_GROUP, false);
-	PhysicsService.CollisionGroupSetCollidable(PRACTICE_GROUP, PRACTICE_GROUP, false);
 
 	Workspace.CollisionGroupSetCollidable(BARRIER_GROUP, BALL_GROUP, false);
 	Workspace.CollisionGroupSetCollidable(BALL_GROUP, PRACTICE_GROUP, false);
-	Workspace.CollisionGroupSetCollidable(PRACTICE_GROUP, PRACTICE_GROUP, false);
 
-	// **The two rows nothing else can catch, printed for the same reason the wall's are.** A group is a
+	// ---------------------------------------------------------------- the duck
+	//
+	// **The duck's one row, and it is the whole of what a duck changes about physics.** A ducking body's
+	// head and arms are moved out of `Character` and into `DUCK_GROUP` for the length of the duck, and the
+	// pair below is the *only* one that stops colliding with a *ball* — a ducking body still collides with
+	// the world, the midline and props exactly as it did, and its passing through other characters is the
+	// general character rule in the block above rather than anything the duck adds. See `shared/duck.ts`
+	// for which parts move, and `DuckService` for when.
+	//
+	// **A group rather than a per-ball constraint, and the practice zone is why that is knowable.** The
+	// other shape — `CollisionIgnore.between(ball, part)` for every part and every ball in flight — needs
+	// a registry of what is in the air, a change to the throw, and cleanup that holds the handles it was
+	// handed: `CollisionIgnore.clear` takes *every* ignore off a part, the thrower's own and a Pierce
+	// ball's included, so it cannot be used for this. A group is one row, the engine applies it to every
+	// ball in the world the instant the group is written, and undoing it is writing the group back.
+	//
+	// **A collision group does not suppress `Touched`, and the duck needs that to be true.** It is the
+	// same engine fact the practice-zone note above relies on and the arena barrier is built on: the ball
+	// stops *bouncing* off a ducking head, and the contact still fires — which is what lets
+	// `BallComponent` refuse it. **The two halves are one rule**: a veto alone would leave the ball
+	// visibly bouncing off a body the game says it missed, and the group alone would leave it counting.
+	//
+	// **The group itself is registered at the top of this function, with the other groups**, because the
+	// character block above names it as a body group and a row naming an unregistered group is an error
+	// rather than a no-op. Only the duck's own row lives here.
+	PhysicsService.CollisionGroupSetCollidable(DUCK_GROUP, BALL_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(DUCK_GROUP, BALL_GROUP, false);
+
+	// **The rows nothing else can catch, printed for the same reason the wall's are.** A group is a
 	// name the engine either accepted or did not, and a row that failed to take is a rule that is
-	// *silently* absent: a ball bouncing off somebody in a practice zone, and two players in one who
-	// cannot walk through each other. Both look like "the zone is half working", which is the hardest
+	// *silently* absent: a ball bouncing off somebody in a practice zone, and two characters who still
+	// stop at each other. Both look like "the collision matrix is half working", which is the hardest
 	// kind of report to act on.
 	print(
 		`[Collision] ${BALL_GROUP}/${PRACTICE_GROUP} collides — service ` +
@@ -211,6 +284,12 @@ function registerGroups(): void {
 		`[Collision] ${PRACTICE_GROUP}/${PRACTICE_GROUP} collides — service ` +
 			`${PhysicsService.CollisionGroupsAreCollidable(PRACTICE_GROUP, PRACTICE_GROUP)}, ` +
 			`world ${Workspace.CollisionGroupsAreCollidable(PRACTICE_GROUP, PRACTICE_GROUP)}`,
+	);
+
+	print(
+		`[Collision] ${CHARACTER_GROUP}/${CHARACTER_GROUP} collides — service ` +
+			`${PhysicsService.CollisionGroupsAreCollidable(CHARACTER_GROUP, CHARACTER_GROUP)}, ` +
+			`world ${Workspace.CollisionGroupsAreCollidable(CHARACTER_GROUP, CHARACTER_GROUP)}`,
 	);
 
 	// **Both registries, printed rather than assumed.** Two `true`s mean one store behind two sets
@@ -449,6 +528,22 @@ export function setPracticePlayer(model: Model, practice: boolean): void {
  * that is not in the list.
  */
 export function applyBarrierGroups(): void {
+	// Scope: Collision.applyBarrierGroups — every round boundary, so it should be a spike, not a level.
+	if (DEBUG_CONFIG.PROFILE) debug.profilebegin("Collision.applyBarrierGroups");
+	applyBarrierGroupsBody();
+	if (DEBUG_CONFIG.PROFILE) debug.profileend();
+}
+
+/**
+ * The body of {@link applyBarrierGroups}, split off **only** so the scope above can wrap it.
+ *
+ * **Why a second function rather than the pair written into the body.** The function's work is a walk of
+ * the midline walls with early exits per part; the split makes the scope's pairing structural instead of
+ * depending on there being no `return` between `begin` and `end`. The cost is one call per boundary —
+ * which is the point of measuring it here: this runs a handful of times a round, and if it is showing up
+ * in a recording at all it is because it is doing something it should not, not because it is called often.
+ */
+function applyBarrierGroupsBody(): void {
 	let assigned = 0;
 	let report = "";
 

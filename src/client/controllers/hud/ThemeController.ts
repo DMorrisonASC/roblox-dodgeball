@@ -1,5 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 import { configureTheme } from "@rbxts/big-ui";
+import type { TypographyOverride, TypographyVariant } from "@rbxts/big-ui";
+import { UI_FONT } from "../../ui/hudTheme";
 
 /**
  * The five colours the whole theme is built from, and the only hexes in the game's UI.
@@ -142,6 +144,27 @@ const TEXT_INVERSE = WHITE;
 const BACKGROUND_DEFAULT = derive(BEACH_STORM, { value: -0.1 });
 
 /**
+ * Every typography variant big-ui has, **written out because a type is not enumerable.**
+ *
+ * Ten names, and the list exists so that one font can be written into all ten by a loop — see {@link UI_FONT}
+ * and the typography override at the top of `onStart`. It is the one place in this file that has to be kept
+ * in step with the library: a variant a later big-ui adds is a variant this list misses, and its labels
+ * would keep big-ui's own face until it is added here.
+ */
+const TYPOGRAPHY_VARIANTS: TypographyVariant[] = [
+	"h4",
+	"h5",
+	"h6",
+	"subtitle1",
+	"subtitle2",
+	"body1",
+	"body2",
+	"button",
+	"caption",
+	"overline",
+];
+
+/**
  * Puts the game's palette into big-ui, once, before anything is built.
  *
  * **This has to be the first thing that runs on the client.** big-ui's components read the theme
@@ -162,6 +185,15 @@ const BACKGROUND_DEFAULT = derive(BEACH_STORM, { value: -0.1 });
 @Controller({ loadOrder: -100 })
 export class ThemeController implements OnStart {
 	public onStart(): void {
+		// **One face written into every variant, because that is the only shape `configureTheme` takes.**
+		// big-ui merges typography a variant at a time — `ui/theme`: `for variant, spec in
+		// pairs(overrides.typography) do mergeInto(Typography[variant], spec)` — so "one font for the game" is
+		// unavoidably ten entries. The loop is what keeps that one *decision* rather than ten chances to leave
+		// a variant behind, which is the failure worth preventing: a variant the list forgets keeps big-ui's
+		// own face and is the one label in the game drawn in something else.
+		const fonts: TypographyOverride = {};
+		for (const variant of TYPOGRAPHY_VARIANTS) fonts[variant] = { font: UI_FONT };
+
 		configureTheme({
 			palette: {
 				common: {
@@ -233,10 +265,22 @@ export class ThemeController implements OnStart {
 				radiusLarge: 12,
 				radiusPill: 999,
 			},
-			// Typography and zIndex are deliberately absent, so big-ui's defaults stand. The type
-			// scale is built for a document and every size on it is larger than a HUD wants, which
-			// is why the HUD picks a small variant per label instead of the theme picking one for
-			// everything. Layering is `ScreenGui.DisplayOrder`'s job here, not the theme's.
+			// **The sizes and the line heights are still big-ui's; only the face is the project's.** This key
+			// used to be absent altogether, on the argument that the type scale is built for a document and
+			// every size on it is larger than a HUD wants — which is still true, and is why the HUD still picks
+			// a small variant per label instead of the theme picking one size for everything. What the key is
+			// here for is narrower than that argument: it carries {@link UI_FONT} into all ten variants, so one
+			// constant decides the face the whole game is drawn in. See the loop at the top of this method for why
+			// that is ten entries rather than one.
+			//
+			// **The consequence, named rather than discovered:** with one face, variants stop being
+			// distinguished by weight. `body1` and `subtitle1` are both 16px and were Gotham against
+			// GothamMedium; `body2`/`subtitle2` are both 14px and were the same pair apart; `button` was the
+			// only 14px face that was bold. All three pairs now resolve to identical type, and **the size is the
+			// only thing left that tells a variant from its neighbour** — which is what a HUD actually uses it
+			// for, so the hierarchy survives as a scale rather than as a set of weights.
+			typography: fonts,
+			// Layering is still `ScreenGui.DisplayOrder`'s job here, not the theme's.
 		});
 	}
 }

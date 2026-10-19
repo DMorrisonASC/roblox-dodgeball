@@ -1,6 +1,7 @@
 import { Alert } from "@rbxts/big-ui";
 import type { AlertSeverity } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
+import { applyUiFont } from "./hudTheme";
 import { getHudScreenGui } from "./screenGui";
 import { addViewportConstraint } from "./viewportConstraint";
 
@@ -69,8 +70,8 @@ export const TOAST_GAP = 8;
  * Slot `0` is the bottom of the column and slot `1` sits directly above it. **A toast that can be up
  * at the same time as another takes a slot of its own rather than sharing one** — two toasts in the
  * same slot are two toasts drawn on top of each other, which reads as one toast with garbled text
- * rather than as two things happening at once. Toasts that can never both be up (the throw warning and
- * the throw confirmation) deliberately share a slot, which is why this is numbered rather than named.
+ * rather than as two things happening at once. A toast that can never be up at the same time as another
+ * may share one deliberately, which is why this is numbered rather than named.
  */
 export function toastOffset(slot: number): number {
 	return TOAST_BOTTOM_OFFSET + slot * (TOAST_HEIGHT + TOAST_GAP);
@@ -80,7 +81,13 @@ export function toastOffset(slot: number): number {
 export interface ToastOptions {
 	/** The wrapper's name, which is also the base of the alert's own name. */
 	name: string;
-	title: string;
+	/**
+	 * The alert's heading — and **optional, because `Alert` reads an absent one as "no heading at all"**: it
+	 * builds the title label only when the prop is not `nil` (`Alert.luau`: `if props.title ~= nil then`), so
+	 * a toast whose whole content is one line does not have to carry a blank line above it. A toast that says
+	 * everything in its message passes nothing here.
+	 */
+	title?: string;
 	message: string;
 	severity: AlertSeverity;
 	/** Whether this toast is on screen. A `UsedAs`, so a `Value` or a `Computed` can drive it. */
@@ -101,8 +108,14 @@ export interface ToastOptions {
  * `Visible` is passed in rather than assigned afterwards, because a graph object has to be part
  * of the props a `New` is given to be tracked as a property — assigning one onto an instance
  * that already exists is the shape that silently does nothing.
+ *
+ * **It returns the wrapper, and that is for the one caller whose content changes.** big-ui's `Alert` reads
+ * `title` and `message` once, while it is being built — its content *is* its construction — so a toast that
+ * has to say something different next time cannot be told to; it has to be replaced. A caller that replaces
+ * its own toast therefore needs the thing to destroy, and asking for it back from the GUI by name would be
+ * the same fact written twice. Every existing caller ignores this.
  */
-export function mountToast(scope: Fusion.Scope<unknown>, options: ToastOptions): void {
+export function mountToast(scope: Fusion.Scope<unknown>, options: ToastOptions): Frame {
 	const wrapper = Fusion.New(scope, "Frame")({
 		Name: options.name,
 		Size: new UDim2(0, TOAST_WIDTH, 0, 0),
@@ -121,6 +134,14 @@ export function mountToast(scope: Fusion.Scope<unknown>, options: ToastOptions):
 	addViewportConstraint(scope, wrapper);
 
 	const alert = Alert(scope, { severity: options.severity, title: options.title, message: options.message });
+
+	// **The one place in the client where the project's font has to be applied by hand.** big-ui's `Alert` builds
+	// its title and message as labels inside the frame it returns, each with a face of its own hard-coded rather
+	// than read from the typography table — see `hudTheme.applyUiFont` for that argument, and `UI_FONT` for the
+	// value. This call site covers every toast in the game, the hit confirmation's included, because they all
+	// come through this function.
+	applyUiFont(alert);
+
 	// `Alert` names its root "Alert", and two of those in the Explorer say nothing about which
 	// is which — the same reason the containers elsewhere are renamed off their component name.
 	alert.Name = `${options.name}Body`;
@@ -131,4 +152,6 @@ export function mountToast(scope: Fusion.Scope<unknown>, options: ToastOptions):
 	// inherits them. Nothing here has to know that respawning happens, and nothing here is
 	// per-character, so it survives a respawn by never having been attached to one.
 	wrapper.Parent = getHudScreenGui();
+
+	return wrapper;
 }

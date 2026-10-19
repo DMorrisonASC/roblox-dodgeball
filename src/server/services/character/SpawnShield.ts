@@ -67,12 +67,18 @@ export function startSpawnShield(): void {
  * one per player rather than one per life. `OutlineService` hooks the same signal the same way.
  */
 function watch(player: Player): void {
-    player.CharacterAdded.Connect((character) => protect(character));
+    player.CharacterAdded.Connect((character) => shieldCharacter(character));
 }
 
 /**
  * Gives `character` a shield for {@link CHARACTER_CONFIG.SPAWN_SHIELD_SECONDS} seconds, and only
  * that long.
+ *
+ * **Exported because there is a second caller beside the `CharacterAdded` connection**, and it is the
+ * one case a birth does not cover: a player who joins a round that is already being played is a body
+ * that already exists, moved into the arena by `RoundService` rather than given a new body by it. They
+ * are put on a team spawn with everybody's attention on the arena, so arriving without this is arriving
+ * with a ball already in the air. Every other shield in the game comes from {@link watch}.
  *
  * **Two removals and one addition.** Everything already on the body goes first — that is the
  * engine's `SpawnLocation` shield, if the spawn it chose had one — then ours is added and destroyed
@@ -90,7 +96,7 @@ function watch(player: Player): void {
  * it. The window closes when ours does, so nothing is watching a living character afterwards for a
  * connection nobody needs.
  */
-function protect(character: Model): void {
+export function shieldCharacter(character: Model): void {
     const stripped = stripShields(character);
 
     const shield = new Instance("ForceField");

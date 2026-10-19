@@ -266,7 +266,6 @@ export class RoundResultController implements OnStart {
 			onActivate: () => this.dismiss(),
 		});
 		dismiss.Parent = header;
-
 		// The title observes the `Value` directly — a big-ui label takes a `UsedAs<string>`, so a
 		// `Value` is already the right shape and a `Computed` wrapping one would be a graph built to
 		// do nothing. The heading is the one label here whose text changes, which is why it is fed

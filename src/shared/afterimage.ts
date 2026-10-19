@@ -58,7 +58,9 @@
  * leaving them in makes every ghost heavier than the thing it is imitating. `Trail`s are dropped for a
  * third reason — a trail inside a ghost would draw its own streak through the smear.
  *
- * **Idempotent, because a catching rig re-asks for its window every tick.** See `startAfterimage`.
+ * **Idempotent, because the same body is asked about more than once** — the dodge asks once per dash and each
+ * client asks once per window it is told about, and the catch used to be the case that asked on every tick.
+ * See `startAfterimage`.
  */
 
 import { Players, RunService, TweenService, Workspace } from "@rbxts/services";
@@ -107,14 +109,16 @@ const FOLDER_NAME = IS_SERVER ? SERVER_FOLDER_NAME : LOCAL_FOLDER_NAME;
  * Publishes that the server has a window open on this body, or that it has closed one.
  *
  * **Server only, and that guard is load-bearing rather than an optimisation.** This attribute is the whole of
- * how a client knows when to emit: a window is opened and closed by `DodgeService` and `CatchService` on the
- * server, and neither sends the client anything about it. So a client writing here would be answering its own
+ * how a client knows when to emit: a window is opened and closed on the server by whichever action opens one
+ * — the dodge's dash, and nothing else today; the catch used to open one at every catch window, see
+ * `CatchService` — and none of them sends the
+ * client anything about it. So a client writing here would be answering its own
  * question with its own echo — the entry the *server* had not closed would read as closed until the server
  * next changed it, and the local trail would stop early and stay stopped.
  *
  * **Only for a body a player owns**, which is the case for a character and never true for a rig. Either
- * reason is enough on its own: a rig has no client watching it, and a catching rig opens a window every tick,
- * so the attribute would be churn on the busiest thing in the place. A body no player owns carries no
+ * reason is enough on its own: a rig has no client watching it, and a dash on a rig would therefore be
+ * published to nobody who could draw it. A body no player owns carries no
  * attribute at all, which is how a client tells "not mine" from "mine, and open".
  */
 function publishWindow(model: Model, open: boolean): void {
@@ -182,9 +186,11 @@ interface Trail {
 /**
  * Every open trail, keyed on the *model*.
  *
- * An entry exists only while a body is inside a dodge or catch window. **Its presence is the idempotency
- * guard**: a catching NPC asks for a window every tick, so this is called on the same body many times a
- * second, and a second entry would be a second loop emitting on top of the first.
+ * An entry exists only while a body is inside a window that draws one — a dash, today and alone. **Its
+ * presence is the idempotency guard**: a second ask for the same body has to be recognisable as one, because
+ * a second entry would be a second loop emitting on top of the first. The case that made this ask arrive
+ * dozens of times a second was a rig holding a catch window open across ticks, and the catch no longer draws
+ * a trail — see `startAfterimage` for what that leaves.
  */
 const trails = new Map<Model, Trail>();
 
@@ -212,22 +218,34 @@ let counted = false;
 /**
  * Starts leaving ghosts behind `model`, if it is not already doing so.
  *
- * **Called on the *model*, like everything else about these two windows**, which is what makes a character
- * and a rig the same case — see `DodgeService` and `CatchService`, both of which are keyed that way for the
- * same reason.
+ * **Called on the *model*, like everything else about these windows**, which is what makes a character and a
+ * rig the same case — see `DodgeService`, and `CatchService` for the window that used to draw one.
  *
- * **Idempotent, and that is a requirement rather than a nicety.** `CatchService.attemptCatch` is called by
- * a catching NPC's behaviour on every tick — asking that often is *how* a rig keeps a window open — so this
- * arrives here dozens of times a second for one body. A second trail for the same model would be a second
- * loop spawning a second set of ghosts, and the only visible difference would be a smear twice as dense as
- * the one that was asked for.
+ * **Idempotent, and that is a requirement rather than a nicety.** A caller that asks while a trail is already
+ * emitting gets exactly one trail: the second entry would be a second loop spawning a second set of ghosts,
+ * and the only visible difference would be a smear twice as dense as the one that was asked for. **The caller
+ * that exercised it was the catch** — a rig re-asking for its window on every tick, for a window that could
+ * stay open for as long as the rig lived — and the catch no longer draws a trail, see below. What is left
+ * asking is the dodge (which ends any dash in flight, and its trail with it, before it starts another) and
+ * each client's own echo of the published window; both ask once per window, so the guard stays as the
+ * *contract* rather than because a caller is currently relying on it.
  *
- * **Returns whether *this* call is the one that started the trail**, which is the whole of what a caller
- * that also has to arm something else needs to know. `CatchService` is that caller: its window can be
- * *extended* long after the trail stopped, and it has to restart the trail and re-arm the timer that ends
- * it, without arming a second timer the times the trail never stopped. `true` here means "there was nothing
- * emitting until now"; `false` means "already running, nothing changed", which is the ordinary answer for a
- * catching rig and for every dodge after the first.
+ * **Returns whether *this* call is the one that started the trail.** `true` means "there was nothing emitting
+ * until now"; `false` means "already running, nothing changed". **Nothing reads it today**: the one caller
+ * that needed it was `CatchService`, whose window could be *extended* long after its trail had stopped, so it
+ * restarted the trail there and re-armed the timer that ended it without arming a second timer on the times
+ * the trail never stopped. The catch no longer opens a trail at all — see the paragraph below — so the value
+ * stays as the honest answer rather than because a caller is waiting on it.
+ *
+ * **Which actions open a window, as this stands: the dodge, and nothing else.** A dash opens one for its whole
+ * length — `startAfterimage` in `DodgeService.startDash`, the matching `stopAfterimage` in `endDash` — so a
+ * dodging body drags a short smear behind it, which is what a dodge looks like and the cue this file exists
+ * for. **The catch used to open one too, for the length of a catch window, and that half was removed on
+ * request**: a trail behind a body says "this body is mid-dodge", and a body reaching for a ball is not
+ * dodging, so the cue was pointing at the wrong action on the wrong body. `CatchService`'s two asks and its
+ * stop are each marked where they stood. Everything else here — the emitter, the two folders, the publish
+ * path — is unchanged and has the caller it always had, and every `ACTION_CONFIG.AFTERIMAGE_*` number is
+ * still read on every dash.
  *
  * **The window is published from here as well as the trail being started**, which makes this the server's
  * announcement and not only its own emission: a client cannot watch for a window nobody has told it about,
@@ -255,11 +273,13 @@ export function startAfterimage(model: Model): boolean {
  * Stops leaving ghosts behind `model`. Whatever is already in the world finishes fading on its own.
  *
  * **Called on every way the window can close**, which is what makes the trail follow the window rather than
- * the cooldown: `DodgeService.endDash` is the single exit from a dash, and `CatchService.consume` is the
- * single exit from a catch window.
+ * the cooldown: `DodgeService.endDash` is the single exit from a dash, and it is the whole of the caller list
+ * now — `CatchService.consume` used to be the same thing for a catch window, and that call was removed with
+ * the trail it ended.
  *
- * Safe on a body that never had a trail, for the reason `CatchService.consume` gives about its own map: most
- * calls are the catch asking after a body that is not catching.
+ * **Safe on a body that never had a trail**: it is a map delete, so a caller that cannot be sure anything is
+ * emitting — a dash ending for a body whose trail was already stopped a moment ago, a body that was never in
+ * a dash at all — does not have to find out first.
  *
  * **Closing the window is announced from here**, the pair of `startAfterimage`'s announcement, so the two
  * cannot get out of step: a client hears about exactly the windows this side opened and closed. See
@@ -268,16 +288,16 @@ export function startAfterimage(model: Model): boolean {
 export function stopAfterimage(model: Model): void {
 	const wasOpen = trails.delete(model);
 
-	// **Only a window that was open can close.** The ordinary call here is the catch asking about a body that
-	// is not catching, and publishing `false` for a window that never opened would be a write per tick per
-	// body for no reader.
+	// **Only a window that was open can close.** A dash that ends by being replaced has a predecessor whose
+	// trail is already stopped, and publishing `false` for a window that never opened would be a write for a
+	// reader that has nothing to do with it.
 	//
-	// **The attribute deliberately flaps with the trail rather than with the window**, because that is what
-	// the trail itself does: `CatchService.armAfterimageTimer` stops the emission when its timer expires and
-	// `attemptCatch` asks again on the next tick, so a window held open across many timers is a trail that
-	// stops and restarts. Publishing each end of that leaves a client's own trail doing what the server's is
-	// doing, which is the requirement — a client that kept emitting through the gap would be the one place
-	// the two disagreed.
+	// **The attribute follows the trail rather than the window**, because that is what a client draws: it
+	// starts its own emission on `true` and stops it on `false`, so each of those has to be written from the
+	// state the trail is actually in rather than from the state the action is in. The case that made this worth
+	// spelling out was the catch — its trail could stop on a timer and start again on the next attempt, so one
+	// window was many trails — and the catch no longer opens a trail at all, so the flapping is a dodge
+	// replacing a dodge. The rule is unchanged: whatever the trail does, the attribute does.
 	if (wasOpen) publishWindow(model, false);
 }
 
@@ -335,13 +355,17 @@ function emitGhost(model: Model, trail: Trail): void {
 /**
  * Leaves one ghost at the body's current position, if it has moved far enough to be worth one.
  *
- * **The movement gate, and the case it exists for is a rig that catches continuously.** A catch window is
- * held open by a rig re-asking for it every tick, which means an NPC's window can be open for as long as it
- * survives — minutes, not a second. On a rate alone, a *standing* catcher would spawn a stack of identical
- * ghosts on one spot for as long as it stood there: a solid pillar of copies, growing forever, which is both
- * the ugliest possible reading of a motion cue and the most expensive one. A ghost at the position the last
- * ghost was already at adds nothing to a smear — it is a copy of a copy — so the gate is also what keeps the
- * trail's density *even* instead of proportional to how patient a body is.
+ * **The movement gate, and the case that put it here has gone — it is kept rather than removed.** That case
+ * was a rig that catches continuously: a catch window is held open by re-asking for it every tick, so an NPC's
+ * window could be open for as long as it survived — minutes, not a second — and on a rate alone a *standing*
+ * catcher would spawn a stack of identical ghosts on one spot for as long as it stood there: a solid pillar of
+ * copies, growing forever, which is both the ugliest possible reading of a motion cue and the most expensive
+ * one. A ghost at the position the last ghost was already at adds nothing to a smear — it is a copy of a copy
+ * — so the gate is also what keeps the trail's density *even* instead of proportional to how patient a body
+ * is. **The catch no longer draws a trail and a dash always clears the threshold many times over** (see the
+ * arithmetic below), so nothing in the project trips this today. It stayed because the alternative is a trail
+ * that is only correct for the fastest thing that can use it, and because the next long-lived window would
+ * otherwise have to rediscover the pillar.
  *
  * The threshold's real effect, stated exactly rather than flatteringly: a body walking at the base speed of
  * 20 studs/s covers about a stud between two ghosts, so nothing at full pace ever trips this. A body moving

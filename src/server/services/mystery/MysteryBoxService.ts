@@ -1,9 +1,15 @@
 import { OnStart, Service } from "@flamework/core";
-import { Players, ReplicatedStorage, RunService, Workspace } from "@rbxts/services";
-import { AbilityKind } from "shared/ability";
+import { CollectionService, Players, ReplicatedStorage, RunService, Workspace } from "@rbxts/services";
+import { AbilityKind, pendingAbilityOn } from "shared/ability";
 import { POWER_ROSTER } from "shared/config/economy.config";
 import { MYSTERY_CONFIG } from "shared/config/mystery.config";
-import { MYSTERY_SPAWN_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import {
+	MYSTERY_SPAWN_TAG,
+	NPC_TAG,
+	PENDING_ABILITY_ATTRIBUTE,
+	ROUND_STATE_ATTRIBUTE,
+	ROUND_STATUS_FOLDER,
+} from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { EconomyService } from "../economy/EconomyService";
 import { SuperService } from "../super/SuperService";
@@ -56,8 +62,8 @@ interface LiveBox {
 	 */
 	base: CFrame;
 	/**
-	 * The players this box has already refused — **the guard against a repeated `Touched`, and the only
-	 * thing in this service that is per-player rather than per-box.**
+	 * The bodies this box has already refused — **the guard against a repeated `Touched`, and the only
+	 * thing in this service that is per-body rather than per-box.**
 	 *
 	 * **A box that survives fires `Touched` again**, on every arm swing and every step through it, and
 	 * without this the roll and the refusal would run again each time: a player standing in a box while
@@ -65,16 +71,21 @@ interface LiveBox {
 	 * they are already holding one. So a refusal is *remembered* here.
 	 *
 	 * **On the row rather than in a container of the service's own, so it dies with the box.** A record of
-	 * "this box refused this player" is only meaningful while that box is on that spawn point, and a box
+	 * "this box refused this body" is only meaningful while that box is on that spawn point, and a box
 	 * that is removed takes every reason to remember anyone with it — which is what keeps this out of the
 	 * business of being swept on a timer, at a round boundary and on a disconnect separately.
 	 *
+	 * **A `Player | Model` since a rig began collecting (2026-10-14)**, and the same membership-only
+	 * question is asked of either: a player is refused while `SuperService` says they still hold a prize,
+	 * and a rig while its `PENDING_ABILITY_ATTRIBUTE` slot is still full. See `collectForRig` for the
+	 * rig's half of the re-test.
+	 *
 	 * **What is in here is *who*, never *why*.** The reason is re-asked of the world when the guard runs
-	 * rather than remembered, and that is the difference between a player being locked out of a box until
-	 * they walk out of it and a player being handed it the moment they use the power they were holding. See
+	 * rather than remembered, and that is the difference between a body being locked out of a box until
+	 * they walk out of it and a body being handed it the moment they use the power they were holding. See
 	 * {@link collect} for the guard itself.
 	 */
-	refused: Set<Player>;
+	refused: Set<Player | Model>;
 }
 
 /**
@@ -544,13 +555,22 @@ export class MysteryBoxService implements OnStart {
 		const character = otherPart.FindFirstAncestorOfClass("Model");
 		if (!character) return;
 
-		// Not a character check by name or by class — `GetPlayerFromCharacter` is the engine's own answer,
-		// and it returns nothing for the arena, a barrier or an NPC rig.
-		const player = Players.GetPlayerFromCharacter(character);
-		if (!player) return;
-
+		// **A dead body collects nothing, and the test is on the `Humanoid` rather than on the round** — the
+		// rule precondition both bodies share, asked before the owner is known: a body at nought health is one
+		// whose round is over, and a prize handed to it would be spent in the seconds after the respawn.
 		const humanoid = character.FindFirstChildOfClass("Humanoid");
 		if (!humanoid || humanoid.Health <= 0) return;
+
+		// **A player and a rig are the two bodies that can collect, and the engine tells them apart.** The
+		// old line here returned early for anything `GetPlayerFromCharacter` did not answer — which is how a
+		// rig could walk through a box a thousand times and never take it. The rig's half is
+		// {@link collectForRig}, reached only when there is no player behind the body.
+		const player = Players.GetPlayerFromCharacter(character);
+		if (player === undefined) {
+			this.collectForRig(spawn, live, character);
+
+			return;
+		}
 
 		// **Already refused, and refused for a reason that still holds.** The question is asked of the world
 		// rather than read off the record: `refused` remembers *who*, and this line asks whether what was true
@@ -607,6 +627,61 @@ export class MysteryBoxService implements OnStart {
 	}
 
 	/**
+	 * The rig's half of a collection: the prize is written onto the model, not held in `SuperService`.
+	 *
+	 * **A rig has no `Player` and no key to press**, so the player's prize — a row in `SuperService`
+	 * consumed by a press — is the wrong shape for it. Its prize is {@link PENDING_ABILITY_ATTRIBUTE}, a
+	 * single string on the model that the rig's next throw applies; the two prizes are **different
+	 * mechanics sharing a noun**, and that is the sentence a reader must not lose: a player's box buys a
+	 * press, a rig's buys one throw.
+	 *
+	 * **One slot, and a full one ignores the box.** No queue and no overwrite: a rig already carrying a
+	 * pending ability walks through a second box and leaves it standing, exactly as a player who already
+	 * holds a prize does. The `refused` record means the same thing here it means for a player — *who* —
+	 * and the re-test is the same question asked of the world: has the slot emptied since the refusal.
+	 *
+	 * **Gated on the `NPC` tag rather than on the humanoid alone.** A humanoid model that is not a rig is
+	 * not a participant and takes nothing; the tag is the one fact that makes a body a rig, and it is the
+	 * same fact the rest of the game uses for that.
+	 */
+	private collectForRig(spawn: BasePart, live: LiveBox, model: Model): void {
+		if (!CollectionService.HasTag(model, NPC_TAG)) return;
+
+		// **Already refused, and the slot is still full** — the re-test against the world, not a timeout, and
+		// the pair to the player's line above: a rig that throws its pending ability while standing in the box
+		// collects the next box on its next touch, without having to walk out and back in first.
+		if (live.refused.has(model) && pendingAbilityOn(model) !== undefined) return;
+
+		if (pendingAbilityOn(model) !== undefined) {
+			live.refused.add(model);
+
+			if (DEBUG) {
+				print(`[Mystery] ${model.Name}: already holding a pending ability — the box stays`);
+			}
+
+			return;
+		}
+
+		const kind = this.roll(model);
+
+		// A non-player draws from the whole roster, so this is unreachable — kept as the same guard the
+		// player path carries, because the roll's shape is the thing a reader follows and not its current
+		// reachability.
+		if (kind === undefined) {
+			live.refused.add(model);
+
+			return;
+		}
+
+		model.SetAttribute(PENDING_ABILITY_ATTRIBUTE, kind);
+		this.remove(spawn);
+
+		if (live.inZone) this.scheduleRestock(spawn);
+
+		if (DEBUG) print(`[Mystery] ${model.Name}: ${kind} — pending, applied to the rig's next throw`);
+	}
+
+	/**
 	 * Puts a practice floor's box back a couple of seconds after one was **taken**.
 	 *
 	 * **A delayed raise rather than a shorter tick**, because the two rates are different rules: the tick is
@@ -633,29 +708,67 @@ export class MysteryBoxService implements OnStart {
 	}
 
 	/**
-	 * Rolls one power the player owns.
+	 * Rolls one power the owner may be granted.
 	 *
-	 * **Over `POWER_ROSTER`, asked of `EconomyService.ownsPower` one member at a time** — the roster itself
-	 * lives in `shared/config/economy.config.ts` and the *ownership* answer lives in `EconomyService`, and
-	 * this is the join between them. The alternative, reading the player's record directly, would mean this
-	 * file knowing the shape of an economy record to answer a question the economy already answers.
+	 * **A player rolls over the powers they own**, asked of `EconomyService.ownsPower` one member at a time
+	 * — the roster itself lives in `shared/config/economy.config.ts` and the *ownership* answer lives in
+	 * `EconomyService`, and this is the join between them. The alternative, reading the player's record
+	 * directly, would mean this file knowing the shape of an economy record to answer a question the economy
+	 * already answers.
 	 *
-	 * **Nothing owned means nothing granted, and the box stays where it is.** The alternative — a fallback
-	 * to the whole roster — would make a box a way to *obtain* a power rather than to use one, which is the
-	 * mechanic the chest owns. What changed is the box's fate: `collect` used to take the box *before* this
-	 * ran, so a player who owned nothing lost a box for a roll that could not pay out. The box is now taken
-	 * only when something was granted, and this returning `undefined` is one of the two ways that does not
-	 * happen — see {@link collect}, which is where the decision moved to.
+	 * **A rig draws from the whole roster, and that is not a second roll but the same one read for a different
+	 * owner.** "Which of what you have" is a *player's* question — the box stands in for a charge, so it must
+	 * only pay for a power the player could already use. A rig owns everything (`EconomyService.ownsPower`
+	 * answers `true` for any non-`Player`), so the whole roster *is* the owned list, and building it through
+	 * the ownership question would be a loop over three strings to recover the constant it started from. The
+	 * two arms differ only in where the candidate list comes from, never in what a roll is.
+	 *
+	 * **Nothing owned means nothing granted, and the box stays where it is** — a player-only case, since a
+	 * rig's arm always has the whole roster to draw from. The alternative — a fallback to the whole roster
+	 * for a player — would make a box a way to *obtain* a power rather than to use one, which is the mechanic
+	 * the chest owns. What changed is the box's fate: `collect` used to take the box *before* this ran, so a
+	 * player who owned nothing lost a box for a roll that could not pay out. The box is now taken only when
+	 * something was granted, and this returning `undefined` is one of the two ways that does not happen — see
+	 * {@link collect}, which is where the decision moved to.
 	 */
-	private roll(player: Player): AbilityKind | undefined {
+	private roll(owner: Player | Model): AbilityKind | undefined {
+		// **The rig arm first, because it is the shorter and because the player arm below is the original
+		// untouched.** A non-`Player` owner owns every member of the roster, so the roll is the roster itself.
+		if (!owner.IsA("Player")) {
+			// `math.random(1, n)` is inclusive at both ends, so the index is the whole array and never its end.
+			return POWER_ROSTER[math.random(1, POWER_ROSTER.size()) - 1];
+		}
+
 		const owned = new Array<AbilityKind>();
 
-		for (const kind of POWER_ROSTER) if (this.economy.ownsPower(player, kind)) owned.push(kind);
+		for (const kind of POWER_ROSTER) if (this.economy.ownsPower(owner, kind)) owned.push(kind);
 
 		if (owned.size() === 0) return undefined;
 
 		// `math.random(1, n)` is inclusive at both ends, so the index is the whole array and never its end.
 		return owned[math.random(1, owned.size()) - 1];
+	}
+
+	/**
+	 * The live box parts, for anything that has to walk to one.
+	 *
+	 * **The one public answer to "where are the boxes", and the seek is its caller.** The boxes are not
+	 * tagged — the tag is on the *spawn points*, and a box is a part this service makes and parents straight
+	 * to `Workspace`, so a tag scan answers the wrong question and a name scan answers a question this file's
+	 * own note says nothing should ever ask. The map is the truth, and this is the one read of it that leaves
+	 * the service: the seek gets the floor and picks from it, exactly as it gets balls from
+	 * `BallPickupService.looseBalls`.
+	 *
+	 * **A fresh array per call, like `looseBalls`**, because the caller walks it once and there are never more
+	 * than {@link MYSTERY_CONFIG.MAX_TOTAL} of them — the copy is nothing next to the tag walk a scan would
+	 * pay, and it keeps the boxes' container this service's own.
+	 */
+	public liveBoxes(): BasePart[] {
+		const boxes: BasePart[] = [];
+
+		this.boxes.forEach((live) => boxes.push(live.box));
+
+		return boxes;
 	}
 
 	/** Takes a box away, if it is still there. Silent when it is not, which is the ordinary second call. */

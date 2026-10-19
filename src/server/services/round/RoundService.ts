@@ -12,30 +12,35 @@ import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import { findFolder } from "shared/find";
 import { events, HitDirection, RoundResultRow } from "shared/networking";
 import {
+    PRACTICE_ZONE_ATTRIBUTE,
     ROUND_MODE_ATTRIBUTE,
     ROUND_STATE_ATTRIBUTE,
     ROUND_TIME_ATTRIBUTE,
     ROUND_TRANSITION_ATTRIBUTE,
     ROUND_WINNER_ATTRIBUTE,
     TEAM_ATTRIBUTE,
+    THROWER_TOKEN,
 } from "shared/constants";
 // A second import from the same module rather than folding these into the block above, which is what the
 // next tidy-up should do: the block is long and alphabetically grouped, and adding two names to it means
 // re-reading it to find the right slot. Flagged rather than left silent.
 import { ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE } from "shared/constants";
-import { MATCH_MIN_PLAYERS, MATCH_SETTLE_SECONDS } from "../../config/match.config";
+import { MATCH_JOIN_POLL_SECONDS, MATCH_MIN_PLAYERS } from "../../config/match.config";
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
+import { rigCounts, rigsOnASide, sideOfRig } from "../../npc/rigs";
 import { applyBarrierGroups } from "../../collision/CollisionGroups";
 import { RespawnService } from "../character/RespawnService";
+import { shieldCharacter } from "../character/SpawnShield";
 import { BallService } from "../ball/BallService";
 import { FreezeService } from "../actions/FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
+import { NpcService } from "../npc/NpcService";
 import { MatchService } from "../match/MatchService";
 import { StatsService } from "../stats/StatsService";
 import { EconomyService } from "../economy/EconomyService";
 import { SuperService } from "../super/SuperService";
-import { GameMode, RoundView } from "./modes/GameMode";
+import { GameMode, RoundParticipant, RoundView } from "./modes/GameMode";
 import { DEFAULT_MODE } from "./modes/registry";
 import { SCORE_RUSH } from "./modes/ScoreRushMode";
 import { roundStatusFolder } from "./roundStatus";
@@ -69,6 +74,17 @@ const ARENA_FREEZE_KEY = "ArenaFreeze";
  * own hold, deliberately, so that anyone who has read one of them has read both.
  */
 const ARENA_FREEZE_SPEED = -1000;
+
+/**
+ * How long after a landed hit a death is still attributed to it, in seconds. **Placeholder — 0.5.**
+ *
+ * **Sized against a chain that is ordinarily zero frames apart.** `registerHit` runs immediately before
+ * `landHit`, whose `TakeDamage` is what fires `Died` — so the real gap is under a millisecond and this number
+ * only decides how much slack the engine's own delivery of `Died` gets. It must be short enough that a later
+ * death cannot be credited to a hit aimed at somebody else; the victim compare in {@link announceWipe} is the
+ * primary guard for that, and this is the second.
+ */
+const WIPE_ATTRIBUTION_SECONDS = 0.5;
 
 /**
  * What a boundary's transition does beyond covering the screen and moving everybody.
@@ -203,8 +219,12 @@ export class RoundService implements OnStart {
      * Points per side, for a mode that keeps score. See {@link RoundView.scores}.
      *
      * Public because it *is* part of the view a mode is handed: modes read this service through
-     * the `RoundView` interface, so a private field would have to be copied out per call. Cleared
-     * at the opening of every round, so no score survives into the one after it.
+     * the `RoundView` interface, so a private field would have to be copied out per call.
+     *
+     * **Cleared as a round ends, and published on the spot** — see `finishRound`, which has the argument
+     * for why the clear left the round boundary. The boundary clears it as well, for a round that is
+     * discarded rather than finished; the two are reached by different events and the second is the
+     * guarantee.
      */
     public readonly scores = new Map<TeamLabel, number>();
 
@@ -286,6 +306,33 @@ export class RoundService implements OnStart {
     private finished = false;
 
     /**
+     * The roster revision this round has already admitted, so the join watch walks the roster only on the
+     * turns where something changed.
+     *
+     * **`-1` rather than the figure at the whistle, and that is a decision rather than a default.** The
+     * watch starts *after* `assignTeams` has run, so a player who opts in during the transition — after the
+     * whistle and before the watch's first turn — is a roster member the round-start loop never saw. An
+     * initial value of "whatever the revision is now" would treat that join as already handled and leave
+     * them standing in the lobby as a spectator holding a seat. `-1` makes the watch's first turn look at
+     * the roster, and `teams` is what tells it who is already in. See `watchMidRoundJoins`.
+     */
+    private admittedRevision = -1;
+
+    /**
+     * The players whose admission into this round is **in flight** — covered, and about to be placed.
+     *
+     * **A set rather than one more tick of state on the player, and the cover is why it has to exist.** An
+     * admission now waits `TRANSITION_COVER_SECONDS` for that player's own grid to close before the body is
+     * moved, and the loop that admits keeps running: another player opting in during that wait bumps the
+     * roster revision, `admitMidRoundJoins` walks the roster again, and the player still standing under a
+     * cover has **no `TEAM_ATTRIBUTE` yet** — so `teams.has(player)` says "not admitted" and they would be
+     * covered, moved and printed a second time. This is the record that says "already on their way in".
+     *
+     * Cleared the moment the admission lands or fails, so it never outlives the second it describes.
+     */
+    private readonly admitting = new Set<Player>();
+
+    /**
      * The mode a match is waiting to open on.
      *
      * **The request and the flag are one field on purpose.** "Has a match been asked for" and "which mode
@@ -293,8 +340,8 @@ export class RoundService implements OnStart {
      * boundary consumes it. A separate `pending: boolean` beside it would be a second answer that could
      * disagree with the mode sitting next to it.
      *
-     * **Two things set it, through the one method that does.** The intermission's settle window sets it for
-     * a roster that has stopped changing — see `MATCH_SETTLE_SECONDS` — which is how a match normally
+     * **Two things set it, through the one method that does.** The intermission's clock sets it when it runs
+     * out with a roster that can play — see the loop in this file — which is how a match normally
      * begins, and a dev's `!dev match` sets it as the manual override. Both go through {@link startMatch},
      * so there is exactly one place the field is written and exactly one line saying a match is coming.
      *
@@ -334,6 +381,25 @@ export class RoundService implements OnStart {
      */
     private statusFolder!: Folder;
 
+    /**
+     * **The last hit this round heard about, and the body it landed on** — the join between a death and the
+     * throw that caused it.
+     *
+     * **One record, not a log**, because only the most recent hit can be the cause of the death being handled
+     * right now: `Died` fires out of the `TakeDamage` that `landHit` runs immediately after `registerHit`, and
+     * a second hit cannot land between the two. A list would be a history nothing asks for, and the thing that
+     * makes a stale entry harmless is the victim compare in {@link announceWipe} rather than the list's length.
+     *
+     * **Written only while a round is being played**, which is where it is read: `announceWipe` runs from
+     * `eliminate`, and a lobby hit cannot eliminate anybody. It is not cleared at a boundary — the next hit of
+     * the next round overwrites it, and a record older than {@link WIPE_ATTRIBUTION_SECONDS} is refused.
+     *
+     * **`victim` is an `Instance` rather than a `Model`**, because it is only ever compared by identity and the
+     * thing it is compared against is a `Player` — two Roblox type declarations share no members but the base
+     * class, and typing it as `Model` made the comparison a type error that said nothing useful.
+     */
+    private lastHit?: { readonly thrower: Player; readonly victim: Instance; readonly at: number };
+
     constructor(
         private readonly dev: DevService,
         private readonly balls: BallService,
@@ -345,6 +411,7 @@ export class RoundService implements OnStart {
         private readonly freezes: FreezeService,
         private readonly speeds: WalkSpeedService,
         private readonly respawns: RespawnService,
+        private readonly npcs: NpcService,
     ) {}
 
     onStart() {
@@ -465,9 +532,9 @@ export class RoundService implements OnStart {
     /**
      * Asks for a match to open on `mode`, at the next round boundary.
      *
-     * **The only thing that sets {@link pendingMatch}, and it has two callers.** The intermission's settle
-     * window is the normal one — it asks for a roster that has stopped changing, see
-     * `MATCH_SETTLE_SECONDS` — and {@link requestMatch} is the manual override behind a dev's `!dev match`.
+     * **The only thing that sets {@link pendingMatch}, and it has two callers.** The intermission's clock is
+     * the normal one — it asks for the match the moment it reaches zero with a roster that can play — and
+     * {@link requestMatch} is the manual override behind a dev's `!dev match`.
      * Both arrive here because the boundary below wants the same
      * thing from either of them: one mode, consumed once, and a `Round started` with a line above it saying
      * which of the two it was.
@@ -506,10 +573,11 @@ export class RoundService implements OnStart {
 
         if (!this.matches.canStart()) {
             const counts = this.matches.countsFor();
+            const rigs = rigCounts();
 
             print(
-                `[Round] ${player.Name} asked for a match — refused, needs ${MATCH_MIN_PLAYERS} player(s) with` +
-                    ` one a side, and the roster is A ${counts.a}, B ${counts.b}`,
+                `[Round] ${player.Name} asked for a match — refused, needs ${MATCH_MIN_PLAYERS} bodies` +
+                    ` with one a side (players A ${counts.a}, B ${counts.b}; rigs A ${rigs.a}, B ${rigs.b})`,
             );
 
             return;
@@ -523,14 +591,21 @@ export class RoundService implements OnStart {
     // ---- The round, as a mode is allowed to see it (`RoundView`) ----
 
     /**
-     * Everyone still in the round.
+     * The round's **players**, and only them — the narrower query.
      *
-     * The one place that knows who is playing is `activePlayers`, and a mode reads it through
-     * this rather than being handed the set itself — a mode able to `delete` from it would be a
-     * mode able to eliminate somebody, and that is a decision for the round.
+     * The one place that knows who is playing *among people* is `activePlayers`, and a caller that
+     * means "a person" reads it through this rather than being handed the set itself — a caller able
+     * to `delete` from it would be able to eliminate somebody, and that is a decision for the round.
      *
-     * Built fresh on each read rather than kept in step beside the set: the only reader is the
-     * outcome check, once a second, and a second collection maintained in parallel would be a
+     * **It stopped being what a mode reads when rigs became participants**, which is why it is still
+     * here and no longer on `RoundView`. Both readers left are about a *character*: holding bodies
+     * still on the arena's opening beat, and {@link teleportTeamsToArena}, which pairs each player with
+     * the body they walk around in. A rig has neither, so widening this one would have made both of
+     * them narrow on every line; a second accessor costs one method and keeps the distinction visible
+     * at the place it is made. See {@link participantsInRound} for what a mode reads.
+     *
+     * Built fresh on each read rather than kept in step beside the set: the readers are one loop at a
+     * round boundary and one at a spawn, and a second collection maintained in parallel would be a
      * second answer to the same question.
      *
      * A method and not a getter because **roblox-ts does not support getters** — see `RoundView`.
@@ -545,9 +620,99 @@ export class RoundService implements OnStart {
         return players;
     }
 
-    /** Which side a player is on, or nothing if they are not in this round. */
-    public teamOf(player: Player): TeamLabel | undefined {
-        return this.teams.get(player);
+    /**
+     * Everyone in the round: **the players, and the rigs standing on a side.**
+     *
+     * **This is the participant accessor a mode reads**, and it is assembled from facts that already
+     * exist rather than from a collection of its own. The players are `activePlayers`, which
+     * `assignTeams` fills at the opening whistle. The rigs are *derived* — see {@link rigsInRound} —
+     * and deriving them is what keeps this honest: there is no second set to fall out of step with the
+     * attribute that says which side a rig is on, so a rig cannot be in the round and side-less, or
+     * side-less and counted.
+     *
+     * **What this is not:** not the roster the *server* is judged by, and not a list to act on
+     * blindly. `rosterOutcome` asks a different question of the same bodies — whether a side still has
+     * anybody *here* — and a caller that wants to move somebody or read a statistic wants one of the
+     * two narrower queries rather than this one. See `RoundParticipant` for why the union is named
+     * instead of spelled out at each signature.
+     */
+    public participantsInRound(): ReadonlyArray<RoundParticipant> {
+        const participants: RoundParticipant[] = [];
+
+        for (const player of this.activePlayers) participants.push(player);
+        for (const rig of this.rigsInRound()) participants.push(rig);
+
+        return participants;
+    }
+
+    /**
+     * The rigs in this round: **every `NPC`-tagged model in the world that is standing on a side.**
+     *
+     * **The side is the whole of the opt-in, and it is an attribute rather than a set.** A player
+     * walks into a join part and `MatchService` writes them down; a rig has no join part to walk into,
+     * so what it has instead is the same `TEAM_ATTRIBUTE` the round already publishes for players,
+     * painted on the rig in Studio. That is what gives this change the property it wants most: **a rig
+     * with no `Team` attribute is untouched by any of it** — the practice dummies, the rigs
+     * `NpcService.spawn` makes, and every rig in every place file nobody has told which side it is on —
+     * so nothing about the game as it stands changes until a side is painted on a rig.
+     *
+     * **Derived per read rather than snapshotted at the opening whistle, and the cost is named.** The two
+     * kinds of participant become participants by different routes: a rig counts from the tick its side is
+     * painted — whoever paints the attribute *is* the opt-in, and there is nothing to refuse — while a
+     * player comes through `MatchService`'s roster and then this file's own admission, which is the round
+     * start for anybody who chose before the whistle and `admitMidRoundJoins` for anybody who chose after
+     * it. **This used to say a player who arrives mid-round is not in the round at all**, on the grounds
+     * that `optIn` refused to add anybody to a side while the phase was `Playing`: that lock is gone — the
+     * pads are live during a round — and what survives of it is the refusal to *cross* sides mid-round.
+     *
+     * **The list itself comes from `rigsOnASide`, the one place the tag, the world and the side tests
+     * are written.** This used to walk `NPC_TAG` here and test each rig against `TEAM_ATTRIBUTE`; that
+     * walk moved out to `npc/rigs.ts` the moment `MatchService.canStart` needed the same list during an
+     * intermission, where this method's own `Playing` gate would answer "nobody". What stays here is the
+     * gate rather than the walk: the `Playing` gate is the rule `isFriendlyFire` states about a side —
+     * **between rounds a side means nothing** — so there is nobody here to be in a round.
+     *
+     * **A rig that is down is still in the round.** Its death is `RespawnBehavior`'s, which brings the
+     * body back, so a knocked-down rig holds its side's seat exactly as a Score Rush player does between
+     * a death and their respawn, and a side whose only participant is a rig that has just been hit is a
+     * side that has not lost. That is the same reading `rosterOutcome` takes of a player, and it is why
+     * nothing here watches for a rig's death — there is nothing for the round to decide about it.
+     */
+    private rigsInRound(): ReadonlyArray<Model> {
+        if (this.state !== RoundState.Playing) return [];
+
+        const rigs: Model[] = [];
+
+        for (const { rig } of rigsOnASide()) rigs.push(rig);
+
+        return rigs;
+    }
+
+    /**
+     * Which side a participant is on, or nothing if they are not in this round.
+     *
+     * **Two stores behind one question, and that is the honest shape of it.** A player's side is in
+     * `teams`, the round's own table — the one `assignTeams` fills and `rosterOutcome` counts, kept
+     * because it outlives a player leaving the server. A rig's side is only ever the attribute: there
+     * is no roster entry for a body `MatchService` has never heard of, and inventing a second table
+     * here would be the parallel collection this design spends its effort avoiding.
+     *
+     * **And a *character* answers with its player's side, which is a widening of this answer rather than a
+     * second rule in it.** Everything the round asks this about arrives as a *model* — the victim of a
+     * thrown ball, the catcher of one, whoever the ball touched — and the side of a character model is
+     * not on the model: `assignTeams` writes `TEAM_ATTRIBUTE` on the `Player`, because the roster is
+     * player-keyed and a character is replaced on every death. So a resolver that understood only a
+     * `Player` and a rig could not answer the question the hit path asks most often, and the hit path's
+     * own answer used to be `undefined` for *everybody* — which is why a rig's throw and a rig's body
+     * were both outside the round's records entirely. See `registerHit`.
+     */
+    public teamOf(participant: RoundParticipant): TeamLabel | undefined {
+        if (participant.IsA("Player")) return this.teams.get(participant);
+
+        const player = Players.GetPlayerFromCharacter(participant);
+        if (player !== undefined) return this.teams.get(player);
+
+        return sideOfRig(participant);
     }
 
     /**
@@ -566,15 +731,59 @@ export class RoundService implements OnStart {
      * `MatchService.optIn` for the rule that replaced it.
      *
      * What is still the round's rather than anybody else's is the two things below: the table the round
-     * counts from, and the attribute that publishes a side to everything outside this service. The roster
-     * says who is playing and which side they are on; the round is what makes that true.
+     * counts its *players* from, and the attribute that publishes a side to everything outside this
+     * service. The roster says who is playing and which side they are on; the round is what makes that
+     * true.
+     *
+     * **Rigs are not assigned here, and their absence is the design rather than a gap.** There is no
+     * roster entry for a rig to be read out of and no map to fill from one: a rig's side is painted on
+     * the rig in the place file, so the opening whistle has nothing to write for it. So this method is
+     * not what puts a rig in the round — {@link rigsInRound} derives that from the attribute on every
+     * read — and the table below stays a table *about people*, which is what lets `MatchService`, the
+     * economy and the result board go on reading it as one. See {@link participantsInRound} for the
+     * list that holds both kinds of body.
+     *
+     * **And a player in a practice zone is skipped in the loop itself**, for the opposite reason from a
+     * rig: they *do* have a roster entry, but they are unavailable, so the entry is read and refused.
+     * The two skips together are the whole rule — the round's sides are the players who opted in and are
+     * still available, and the rigs somebody painted a side on. Everyone else is watching.
      */
     private assignTeams(): void {
         this.teams.clear();
 
+        // **`TEAM_ATTRIBUTE` is published from scratch, because it is the client's only view of "am I in
+        // this round".** It was written at each whistle and cleared *nowhere*, so a player who played the
+        // last round and did not re-opt in kept the side they had until they left the game, and every client
+        // that reads the attribute (the round wipe's gate, the shift lock, the freeze countdown) went on
+        // treating them as a participant for the whole of the intermission and into the next round. Clearing
+        // first means the attribute says "on a side" rather than "was on a side once", which is the fact those
+        // three readers need and the only per-player fact the server publishes.
+        //
+        // **It is also the cheaper half of the alternative.** `panels.ts` records that a client-side "am I in
+        // the round" predicate was refused once, because the honest answer was `activePlayers` and
+        // re-publishing it would have been inventing state; that reasoning holds and this invents nothing —
+        // the attribute already exists, is already replicated, and is already read by one of the three
+        // readers. What was missing was the clear.
+        //
+        // **Nothing observable is lost by clearing here rather than writing per frontier.** This runs before
+        // the phase is published and before the transition is announced, so no frame passes in which a
+        // participant reads `Playing` with no side; and a player who is *not* in the roster this round has no
+        // side to lose, which is the whole point.
+        for (const player of Players.GetPlayers()) {
+            player.SetAttribute(TEAM_ATTRIBUTE, undefined);
+        }
+
         const assigned = this.matches.roster();
 
         for (const [player, team] of assigned) {
+            // **A player standing in a practice zone is not put on a side**, even if they are still on
+            // the roster: they opted in before walking into the zone, or the zone swallowed them since,
+            // and the whole of "undisturbed" is that this method does not make them play. Leaving them
+            // out here is what keeps them out of `activePlayers` and therefore off the teleport, the
+            // freeze and the outcome — the same skip `MatchService.canStart` makes on the same attribute,
+            // which is how the two halves of "who plays" stay in agreement.
+            if (this.isPracticePlayer(player)) continue;
+
             this.teams.set(player, team);
             player.SetAttribute(TEAM_ATTRIBUTE, team);
         }
@@ -585,6 +794,161 @@ export class RoundService implements OnStart {
         // gives everybody a side and no hits, which is what takes last round's crowns off. See
         // `SuperService.refreshCrowns`.
         this.abilities.refreshCrowns();
+    }
+
+    /**
+     * **Watches the roster while a round is being played, which is what makes a pad live during one.**
+     *
+     * **A poll, because the roster's owner cannot call the round.** `MatchService` reads the phase out of
+     * the status folder precisely so that this file can read *it* without a constructor cycle, and the
+     * cost of that arrangement is that a fact about the roster can only be noticed here. It is the same
+     * arrangement `LobbyRigService` uses for its seats, for the same reason, and the revision is the same
+     * number: one read a turn, and the roster walked only on the turns where it moved.
+     *
+     * **Started after the round's own admission of the roster and stopped by the phase.** The round body
+     * spawns this once per round — see `gameLoop` — and the loop ends when `this.state` leaves `Playing`,
+     * which is the line entering an intermission writes. A join during an intermission is not this
+     * method's business at all: `assignTeams` takes the whole roster at the next whistle, so the only
+     * window this exists for is the one where a round is already under way.
+     *
+     * **Why a player can be in the roster and not in the round at all, stated because it is the thing
+     * being repaired.** `assignTeams` gates on the phase: a player whose opt-in lands while a round is
+     * being played is written to the roster and to *nothing else* — not to `teams`, not to
+     * `activePlayers` — because the boundary that fills both has already passed. Before this watch the
+     * result was a player holding a seat, standing in the lobby, invisible to the round and with no rig
+     * left to fill the seat they were holding: the pad refused them, and the seat arithmetic had already
+     * stood a placeholder down for them.
+     */
+    private async watchMidRoundJoins(): Promise<void> {
+        while (this.state === RoundState.Playing) {
+            task.wait(MATCH_JOIN_POLL_SECONDS);
+
+            this.admitMidRoundJoins();
+        }
+    }
+
+    /**
+     * **Everyone in the roster who is not in this round yet is put in it, on the side they chose.**
+     *
+     * **All three of the round's own answers, in the order the round-start loop makes them.** `setTeam`
+     * writes the side to the table the round counts from *and* to the player, so every reader of a side —
+     * `teamOf`, the outlines, the signs — agrees within the same frame; `activePlayers.add` is what
+     * membership means everywhere else in this file; `resetForRound` gives them the same clean streak the
+     * other participants got at the whistle, since a run of hits belongs to a round.
+     *
+     * **And no crown call at the end, unlike the round start.** `setTeam` recomputes the crowns itself,
+     * because a side change is what a crown is compared across; `assignTeams` has to do it separately only
+     * because that loop writes `teams` directly rather than going through this method. Reaching for a second
+     * refresh here would be a call that does nothing, five hundred times a second.
+     *
+     * **The body is moved and shielded, and the shield is the half that is not obvious.** They are put on
+     * their side's *arena spawn* — `arenaSpawnFor`, the same call the opening teleport and a respawn both
+     * make — while a thrown ball may already be in the air and every rig on the field is live. A body
+     * placed into a round in progress with no protection is a body that can be hit before it has seen the
+     * arena, so it gets the same `ForceField` a respawn gets. See `SpawnShield`, whose other caller is the
+     * `CharacterAdded` connection — the case a *new* body is the thing being protected.
+     *
+     * **A player with no body yet is still admitted**, and that is deliberate rather than a gap: they go
+     * into `teams` and `activePlayers` now, so the `CharacterAdded` handler that places a round player at
+     * their side's spawn — see `handlePlayerJoined` — puts their body in the arena when it arrives
+     * instead of in the lobby. The alternative, waiting for a body, would leave a dead player's seat
+     * unfilled for as long as their respawn took.
+     *
+     * **A practice-zone player is skipped**, and the skip is the same one the round start makes for the
+     * same reason: entering a zone is a statement that you are not playing, and `assignTeams` does not put
+     * such a player on a side even when the roster holds one. What that costs is stated: they keep the
+     * roster seat — the lobby's rig count still accounts for them, which is right, because they are a
+     * person in the server — and they stay out of the round until the next one, because nothing re-reads
+     * the zone once they leave it.
+     *
+     * **Nothing is done to the *seat*, and that is `LobbyRigService`'s half.** Their arriving in the
+     * roster is the change that service polls for, so the rig that was holding their side's seat stands
+     * down within its own quarter of a second, in the arena, and the side is left with the same number of
+     * bodies it had. Two polls, two services, and neither has to know the other exists.
+     */
+    private admitMidRoundJoins(): void {
+        // **A round that has been decided is not one to join.** `finishRound` sets this before the loop
+        // exits, and the intermission that follows teleports everybody to the lobby: admitting somebody in
+        // the ticks between the two would put them in the arena only to be swept out of it.
+        if (this.finished) return;
+
+        const revision = this.matches.rosterRevision();
+        if (revision === this.admittedRevision) return;
+
+        this.admittedRevision = revision;
+
+        for (const [player, side] of this.matches.roster()) {
+            if (this.teams.has(player)) continue;
+            if (this.admitting.has(player)) continue;
+            if (this.isPracticePlayer(player)) continue;
+
+            // **Recorded before the spawn, because the cover is a wait and this loop is not.** For the length
+            // of that wait the player has no side, so `teams` cannot answer "already on their way in" — see
+            // the field. Everything else about the admission lives in `admitWithCover`.
+            this.admitting.add(player);
+
+            // **Spawned rather than awaited, so one player's cover does not hold the whole round.** This runs
+            // inside the round's own loop, and awaiting the cover here would stop the countdown, everybody's
+            // scoring and every other admission for the length of one grid.
+            task.spawn(() => this.admitWithCover(player, side));
+        }
+    }
+
+    /**
+     * **Admits one player into a round already under way, behind a wipe of their own.**
+     *
+     * **The cover goes up before the side is written, which is the opposite order to the round-start one and
+     * deliberately so.** At a whistle the roster is admitted and then moved together under one cover; here
+     * there is one player and one cover, and until it closes they are still a spectator. Writing the side
+     * first would make them a *participant standing in the lobby* for the length of the grid — counted by
+     * `rosterOutcome`, targetable by every rig's enemy scan, and hittable by a ball thrown out of the arena —
+     * which is the same fault `moveWalkersToArena` exists to prevent for a rig.
+     *
+     * **The cue is that player's own attribute**, through {@link bumpTransition}, so nobody else's screen
+     * moves: an opt-in is one person's cut, and every other player is mid-round and looking at a court that is
+     * not changing. The round's clock is not held either — `transitionAround` holds it because a *boundary*
+     * must not start counting behind a cover, and there is no boundary here.
+     *
+     * **Checked again after the cover rather than only before it.** A cover is long enough for the player to
+     * leave the server, for the round to be decided (`finishRound` sets `finished`, and the intermission behind
+     * it sweeps everybody to the lobby), or for the same player to have been admitted by another route. Each of
+     * those ends the admission without writing anything.
+     */
+    private async admitWithCover(player: Player, side: TeamLabel): Promise<void> {
+        if (TRANSITION_CONFIG.ENABLED) {
+            this.bumpTransition(player);
+
+            task.wait(TRANSITION_COVER_SECONDS);
+        }
+
+        // **The in-flight record goes first**, so no guard below can leave a player who can never be admitted
+        // again this round.
+        this.admitting.delete(player);
+
+        if (player.Parent === undefined) return;
+        if (this.finished) return;
+        if (this.teams.has(player)) return;
+
+        this.abilities.resetForRound(player);
+        this.setTeam(player, side);
+        this.activePlayers.add(player);
+
+        const character = player.Character;
+
+        if (character) {
+            character.PivotTo(this.arenaSpawnFor(character));
+            shieldCharacter(character);
+        }
+
+        // **Said out loud, because this is a round changing its own sides mid-play.** The mode's outcome
+        // counting, the rigs' targeting and the scoreboard all read the side this writes, so a line naming who
+        // arrived and where is the only trace of why the counts moved. It now lands *after* the cover rather
+        // than instantly, which is the second thing it records: the gap between this line's timestamp and the
+        // wipe's is how a reader tells a covered admission from an uncovered one.
+        print(
+            `[Round] ${player.Name}: joined mid-round — side ${side}, ` +
+                `${character ? "on the arena spawn" : "their body lands on that side's spawn when it arrives"}`,
+        );
     }
 
     /**
@@ -611,43 +975,73 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Who has won, judged only by who is still **connected to the server**.
+     * Who has won, judged only by **who is still here on a side**.
      *
-     * **Counted from `Players`, not from `activePlayers`, and that distinction is the entire point.**
-     * A mode counts who is still *in the round*: somebody eliminated in Team Elimination is out of the
-     * round while being very much still in the game, and somebody who died in Score Rush is out of it
-     * for a moment and then back. Neither of those should end anything, and neither does — they are
-     * still in `Players`, so they still count for their side here.
+     * **Counted from `Players` and the rigs, not from `activePlayers`, and that distinction is the
+     * entire point.** A mode counts who is still *in the round*: somebody eliminated in Team Elimination
+     * is out of the round while being very much still in the game, and somebody who died in Score Rush is
+     * out of it for a moment and then back. Neither of those should end anything, and neither does — they
+     * are still in `Players`, so they still count for their side here.
      *
      * A player who has **left** is a different fact, and one only the server knows. They are gone from
      * `teams` the moment `PlayerRemoving` fires, so this counts them out on that same tick — which is
      * what makes a departure end a round immediately rather than at the next countdown tick, and what
      * makes it end even while a dev has rounds frozen. Leaving is not pausable.
      *
-     * **Both sides empty is a draw.** The case where everybody left: it is the honest answer, and it
-     * is also what stops an empty server sitting inside a round for ever — the same reason every mode
-     * answers that case the same way.
+     * **A rig counts here, and this is what "the round is its participants" means from this side.** A
+     * rig never connects and never leaves, so the question asked of one is the same question asked of a
+     * player in a different form: *is this side's seat still occupied?* A rig standing on A is a body on
+     * A that can throw, be hit and be knocked down, so a round whose sides are two sets of rigs has two
+     * occupied sides — which is the whole of why it is played rather than drawn. Before this loop the
+     * count saw no players at all and answered `DRAW` on the round's first tick, about six seconds in,
+     * from behind the opening freeze. See {@link rigsInRound} for what counts as a rig in the round, and
+     * note that a rig that is *down* still counts: `RespawnBehavior` brings the body back on a short
+     * clock, which is the same shape a Score Rush player's death has.
      *
-     * **A mid-round joiner counts for neither side.** Team assignment happens at the opening whistle, and
-     * `MatchService.optIn` refuses to add anybody to a side while the phase is `Playing` — so a player who
-     * arrives mid-round is not in `teams` at all and is watching rather than playing. One consequence worth
-     * knowing: a joiner arriving cannot rescue a side that has just emptied, because they are not on a side
-     * to rescue it with.
+     * **One side empty is a win for the other, and a rig only makes that rule stricter.** A place file
+     * that paints a side on rigs of one team and not the other is an arena with an empty side, so the
+     * round is handed to the occupied one on its first tick — the same answer a team that has all left
+     * gets, by the same three lines. Worth knowing before testing: rigs on both sides or the round ends
+     * before anybody has thrown anything.
+     *
+     * **Both sides empty is a draw.** The case where nobody is left on either side: it is the honest
+     * answer, and it is also what stops an empty server sitting inside a round for ever — the same
+     * reason every mode answers that case the same way.
+     *
+     * **A mid-round joiner counts, and can rescue a side — which is a reversal.** Team assignment happens at
+     * the opening whistle, so this used to be where a player who arrived mid-round was counted out: they
+     * were not in `teams` at all, and were watching rather than playing. They are admitted now, by
+     * `admitMidRoundJoins` — so a player who walks onto a pad during a round is a body on that side from the
+     * next count, and **their arrival can keep a side that is about to empty in the round**. That is the
+     * point of joining a live round rather than an accident of it: the side they chose is their side, and
+     * this count is the only place a side's fate is decided. A rig was already counted on the tick its side
+     * was painted — see {@link rigsInRound} — so the two kinds of body now arrive the same way, within a
+     * second of saying so.
      */
     private rosterOutcome(): RoundOutcome | undefined {
-        let connectedA = 0;
-        let connectedB = 0;
+        // **Named for what both kinds of body share, which is being *here*.** A player is here while they
+        // are still connected; a rig is here while it is standing in the world on a side. "Connected"
+        // would be a word about players only, and this count is not only about players any more.
+        let presentA = 0;
+        let presentB = 0;
 
         for (const player of Players.GetPlayers()) {
             const team = this.teams.get(player);
 
-            if (team === TEAM_A) connectedA++;
-            else if (team === TEAM_B) connectedB++;
+            if (team === TEAM_A) presentA++;
+            else if (team === TEAM_B) presentB++;
         }
 
-        if (connectedA === 0 && connectedB === 0) return DRAW;
-        if (connectedA === 0) return TEAM_B;
-        if (connectedB === 0) return TEAM_A;
+        for (const rig of this.rigsInRound()) {
+            const team = this.teamOf(rig);
+
+            if (team === TEAM_A) presentA++;
+            else if (team === TEAM_B) presentB++;
+        }
+
+        if (presentA === 0 && presentB === 0) return DRAW;
+        if (presentA === 0) return TEAM_B;
+        if (presentB === 0) return TEAM_A;
 
         return undefined;
     }
@@ -703,6 +1097,42 @@ export class RoundService implements OnStart {
         // hits — is passed here, and the service does the earning, the counters and the milestone
         // checks in one call. See `EconomyService.onRoundEnded`.
         this.economy.onRoundEnded(outcome, this.teams, this.roundHits);
+
+        // **And the lifetime figures are written now, because this is the instant they stop moving.** A
+        // hit and an out are only counted while the phase is `Playing`, so a round end is the boundary a
+        // record can be saved at — until this line existed the store heard about a round only when the
+        // player left or three minutes went by, and a server that crashed in between lost it.
+        //
+        // **No roster is passed, and that is not an oversight.** `playersInRound()` is `activePlayers`, and
+        // `eliminate` removes from that set *during* the round — so the list at this point is missing exactly
+        // the players whose `outs` went up. The stats service sweeps every record it holds and skips the
+        // unchanged ones; see `StatsService.onRoundEnded`.
+        //
+        // Spawned inside that call rather than awaited, so the intermission below opens on the beat it would
+        // have opened on without this.
+        this.stats.onRoundEnded();
+
+        // **The scoreboard is wiped as the round ends, and that moved here from the boundary.** It used to be
+        // cleared at the *opening of the next round*, on the argument that a round's final score should be
+        // readable for the whole intermission that follows — the same lifetime the result panel's rows have.
+        // **The client's score bar reads both of those attributes in every phase now, so that argument stopped
+        // paying**: what a lingering pair of numbers buys between rounds is a board that says `4 – 2` with no
+        // round in progress to have scored it, and what it costs is that the *new* round's board cannot be
+        // told from the old one's until somebody scores. Cleared here, the intermission reads `0 – 0` and the
+        // numbers on screen are always the current round's — which is what a scoreboard is. **Nothing is lost
+        // by it:** the result of a round is the winner's attribute and the result panel, not this pair, and
+        // both are written a few lines above this one.
+        //
+        // **The wipe happens behind the round-end transition cover**, which is why it will not read as a
+        // flicker: `TRANSITION_CONFIG.WIPE_AT_ROUND_END` puts the cover up for the whole boundary, and the
+        // board underneath is already `0 – 0` by the time it comes down.
+        //
+        // **The clear at the boundary below stays, and it is not redundant.** This one runs for every round
+        // that *finishes*; that one runs for a round that is discarded without finishing — a dev command, a
+        // server shut down mid-round — so the next round cannot open onto somebody else's score. The rule is
+        // stated twice because the two are reached by different events, and the second one is the guarantee.
+        this.scores.clear();
+        this.publishScores();
 
         print(`[Round] ${result}`);
     }
@@ -777,20 +1207,69 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Whether there are too few players for a round to be worth starting.
+     * Whether there are too few *available* bodies for a round to be worth starting.
      *
-     * **Asked of `Players`, and not of `activePlayers` — that is not a style choice.**
-     * `activePlayers` is who is *in the round*, and it is empty for the whole of an intermission:
-     * it is cleared as the intermission opens and filled again when the round does. A check against
-     * it would read zero every single time and freeze the intermission for ever, which is the trap
-     * this comment exists to stop anybody walking back into.
+     * **Counts connected players who are not in a practice zone, and the rigs on a side.** Those are
+     * the two kinds of body that could play the next round, and they are the whole of what "minimum"
+     * can honestly mean now that a rig holds a seat and a practice zone holds a player out of the game.
+     * A player standing in a practice zone is connected but unavailable — they are not teleported, not
+     * frozen and not put on a side, so counting them here would let one body hold the intermission open
+     * for a round it will never play. A rig is the opposite: never connected, always standing, and on a
+     * side exactly when somebody has painted one on it.
+     *
+     * **Asked of the connected players and the rigs, and not of `activePlayers` — that is not a style
+     * choice.** `activePlayers` is who is *in the round*, and it is empty for the whole of an
+     * intermission: it is cleared as the intermission opens and filled again when the round does. A
+     * check against it would read zero every single time and freeze the intermission for ever, which is
+     * the trap this comment exists to stop anybody walking back into.
      *
      * **Only the start of a round is gated by this.** A round that drops below the minimum mid-play
      * runs to its finish — a result that changed because somebody's connection did is not a result,
-     * and the round already has its own rules for a side that empties out.
+     * and the round already has its own rules for a side that empties out. A server whose only humans
+     * are in a practice zone, and which has no rigs, still freezes — that is the requirement rather
+     * than a side effect: there is nobody available to play for.
      */
     private belowMinimum(): boolean {
-        return Players.GetPlayers().size() < ARENA_CONFIG.MIN_PLAYERS;
+        const available = this.availablePlayers() + rigsOnASide().size();
+
+        return available < ARENA_CONFIG.MIN_PLAYERS;
+    }
+
+    /**
+     * How many connected players are **available to play** — everyone who is not standing in a practice
+     * zone.
+     *
+     * **A practice zone is a player opting out, read off the attribute rather than the geometry.**
+     * `PracticeZoneService` owns the bounds test and publishes the answer, so this is an attribute read
+     * like every other reader's — the same one `BallComponent`, `DodgeService` and `SuperService` each
+     * make for their own rule. A *player* is counted rather than a character for the reason the old
+     * minimum counted players: a player between bodies is still somebody who could walk out of the zone
+     * and play, and a body is not the thing a match is made of.
+     */
+    private availablePlayers(): number {
+        let available = 0;
+
+        for (const player of Players.GetPlayers()) {
+            if (this.isPracticePlayer(player)) continue;
+
+            available++;
+        }
+
+        return available;
+    }
+
+    /**
+     * Whether `player` is standing in a practice zone, read from the attribute `PracticeZoneService`
+     * publishes.
+     *
+     * **The one predicate the round's own guards share.** Every place this file would otherwise touch a
+     * player on the round's behalf — teleporting them, freezing them, stripping their ball, clearing a
+     * streak — asks this first, so "a practice-zone player is undisturbed" is one test rather than a
+     * dozen copies of it that can drift apart. It is deliberately a method rather than a module helper,
+     * because the answer is only ever wanted where the round acts on a player.
+     */
+    private isPracticePlayer(player: Player): boolean {
+        return player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true;
     }
 
     /**
@@ -825,7 +1304,8 @@ export class RoundService implements OnStart {
      *
      * **Four steps, in this order, and each one is load-bearing.**
      *
-     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE}, which is the clients' cue to close their grids. A counter
+     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE} **on every player this boundary covers** — the round's
+     *    roster, not everybody in the server — which is each client's cue to close its grid. A counter
      *    rather than the phase, because the phase is published early by design — see that constant — and a
      *    wipe keyed on it would have finished and gone before this ran.
      * 2. Wait `TRANSITION_COVER_SECONDS`: the clients' own closing time plus a step of latency, so that the
@@ -871,11 +1351,14 @@ export class RoundService implements OnStart {
         const wiping = TRANSITION_CONFIG.ENABLED && (options.wipe ?? true);
 
         if (wiping) {
-            const current = this.statusFolder.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
-            this.statusFolder.SetAttribute(
-                ROUND_TRANSITION_ATTRIBUTE,
-                (typeIs(current, "number") ? current : 0) + 1,
-            );
+            // **One bump per player this boundary covers, and the roster is what says who that is.** `teams`
+            // is the table `assignTeams` fills at the whistle and `roundOutcome` counts, and nothing clears it
+            // until the next `assignTeams` — so at a round's *start* it holds the players just admitted, and
+            // at its *end* it still holds the players who played it. **A player who never opted in is in
+            // neither**, which is the whole of "a wipe is not for a spectator": they are moved back to the
+            // lobby with everybody else and see the cut, and no grid closes over a room they were already
+            // watching. See `ROUND_TRANSITION_ATTRIBUTE` for why the cue is per player at all.
+            for (const [player] of this.teams) this.bumpTransition(player);
 
             print(
                 `[Round] transition — cover in ${TRANSITION_COVER_SECONDS}s, then the move, ` +
@@ -912,6 +1395,26 @@ export class RoundService implements OnStart {
     }
 
     /**
+     * **Tells one player's client to close its grid, one step before the move they are being covered for.**
+     *
+     * **The unit is a player rather than a round, and that is the change this exists for.** A boundary covers
+     * the round's roster — see `transitionAround`, which loops it — while a player opting into a round already
+     * under way is covered *alone*: see {@link admitWithCover}, which is the reason this is a helper rather
+     * than two lines inside the boundary. The alternative shape, one counter on the status folder that every
+     * client reads, cannot express "this one is yours" without a second attribute saying who the bump was
+     * for, and a client comparing its own name against a payload is the same judgement in a worse place.
+     *
+     * **A counter, and idempotent per change**: a client plays on any change, so a value that repeated would
+     * be a wipe that never happens. The read is validated because an attribute is a string or a number
+     * anybody may write — `onASide`'s reason, and `sideOfRig`'s.
+     */
+    private bumpTransition(player: Player): void {
+        const current = player.GetAttribute(ROUND_TRANSITION_ATTRIBUTE);
+
+        player.SetAttribute(ROUND_TRANSITION_ATTRIBUTE, (typeIs(current, "number") ? current : 0) + 1);
+    }
+
+    /**
      * Holds every player still, from the instant the transition landed them there.
      *
      * **The arena-entry freeze: the round's opening beat.** A round begins by moving everybody from the lobby
@@ -938,6 +1441,24 @@ export class RoundService implements OnStart {
      * ball — arrives wearing its own fresh base speed and can walk. Left as it is: closing it means
      * re-applying the key from `CharacterAdded` for the length of the window, which is machinery for a case
      * that needs the round to have already been played at.
+     *
+     * **A rig is not held *here*, and the second half of that is a reversal.** This hold is one
+     * contribution in a *character's* speed sum, and a rig has no such sum: `WalkSpeedService` is the
+     * players' authority for how fast a body may walk, while a rig moves because its own behaviours drive
+     * its humanoid. Holding one would mean reaching for the ability's freeze — which anchors a body and
+     * draws a block of ice — or writing rigs into the speed service, and both of those are decisions about
+     * NPCs rather than about who is in the round. So the loop above stays a loop over people, and this
+     * hold is not the place a rig's freeze is kept.
+     *
+     * **What this doc used to say next was that a rig was free to throw during the beat they are held
+     * still, and that is no longer true.** The rig's half of the freeze is kept next door, by the service
+     * that owns the rigs: `LobbyRigService.refillAtRoundStart` gives a rig none of its six gameplay
+     * behaviours until `ARENA_CONFIG.ARENA_FREEZE_SECONDS` after the move, so a rig has nothing that could
+     * walk, pick up, catch, dodge or throw while this hold is on. That is the mechanism a rig needs rather
+     * than a second copy of this one — a walk-speed hold would leave the throwing, catching and dashing
+     * untouched, which is the whole of what the complaint was about. **The constant below and that delay
+     * are one number read twice**, not two durations made to agree: this file's hold and the rigs'
+     * withholding both begin at the move and both end at `ARENA_FREEZE_SECONDS`.
      */
     private holdArenaEntry(): void {
         // **The match's players, for the reason the teleport above is theirs.** Everybody present used to be
@@ -963,8 +1484,11 @@ export class RoundService implements OnStart {
      *
      * **Every player, rather than the list that was held**, and that is safe because `removeModifier` is a
      * documented no-op for a key a model never had: anybody who arrived during the hold has no such
-     * contribution and is left exactly as they are — which is also the right treatment of them, since a player
-     * who joins mid-round is watching it rather than in it, and lands in the lobby.
+     * contribution and is left exactly as they are — which is also the right treatment of them, because the
+     * hold is measured from a landing they were not present for. **A player who joins during the freeze is
+     * admitted by the join watch once this has returned**, not by anything here: `watchMidRoundJoins` is
+     * spawned on the line after `transitionAround` for exactly that reason, so the freeze never has to know
+     * who was standing there when it started.
      *
      * **The elapsed figure is passed in rather than measured here**, because what is worth reporting is the
      * length of the hold, which began at the move — not the length of this call, which is the same tick.
@@ -990,6 +1514,14 @@ export class RoundService implements OnStart {
         player.CharacterAdded.Connect((character) => {
             const humanoid = character.WaitForChild("Humanoid") as Humanoid;
             humanoid.Died.Connect(() => this.handleDeath(player));
+
+            // **A practice-zone player is not the round's to place.** Their body arrives wherever the
+            // engine spawns it and is left there — neither the arena nor the lobby is where somebody who
+            // is practicing belongs, and this handler is the round's own reach into respawning. Skipping
+            // the placement is the whole of what "undisturbed" asks of this path; the `Died` connection
+            // above still stands, because a practice-zone player who dies still needs a body back, and
+            // `handleDeath` loads one without moving it anywhere.
+            if (this.isPracticePlayer(player)) return;
 
             const root = character.WaitForChild("HumanoidRootPart") as BasePart;
 
@@ -1035,6 +1567,16 @@ export class RoundService implements OnStart {
 
     /**
      * A character died. What that means is the mode's to say.
+     *
+     * **A rig does not come here, and the round has one thing to say about that.** A rig's death is
+     * `RespawnBehavior`'s: it notices the body go down, waits `NPC_CONFIG.RESPAWN_DELAY_SECONDS` and
+     * puts a live copy back where the rig was authored — which is the same shape a player's respawn has,
+     * and the reason a rig can be knocked down in a round without the round losing its side's seat. That
+     * behaviour is where a rig's death is *handled*, and the round's side of it is the opposite of an
+     * action: a rig that is down is still in the round (see {@link rigsInRound}), so there is nothing to
+     * record, nothing to eliminate, and no body to hand back to anybody. Written down here rather than
+     * left to be discovered, because this is where a reader looks for a rig's death and an absence with
+     * no explanation reads exactly like an oversight.
      *
      * The three cases below are ordered by what the round already knows, and only the last one is
      * a question: outside a round there is nothing to decide, somebody already out is still out,
@@ -1186,11 +1728,60 @@ export class RoundService implements OnStart {
         this.stats.recordOut(player);
         this.roundOuts.set(player, (this.roundOuts.get(player) ?? 0) + 1);
 
+        // **And the wipe, before the body is handed back.** It has to be *here* rather than in `finishRound`,
+        // because the round-end path is the loop's and up to a tick later, while the thrower's caption has to
+        // say what their throw just did. See {@link announceWipe} for what it asks, and note that this changes
+        // nothing about when the round actually ends — `finishRound` still runs where it always did.
+        this.announceWipe(player);
+
         // **And a body, immediately — which is why this death did not gain a delay.** Elimination means *out of
         // the round*, not *out of the game*: an eliminated player is a player in the lobby with a character to
         // watch from, which is what the engine used to provide on its own clock and what this load provides at
         // the moment it is wanted. Every path that is not the round's own respawn takes its body now.
         this.respawns.loadNow(player, "eliminated");
+    }
+
+    /**
+     * **Tells the thrower that their hit took the last body on the other side — `WIPEOUT!` is theirs.**
+     *
+     * **A wipe is a fact only the server has, which is the whole reason for the event.** The victim's client
+     * could see its own body fall; it cannot see that it was the last one, and it cannot ask a mode what an
+     * empty side means — a mode that keeps score does not care, and one that counts heads does. So the answer
+     * is computed here, once, at the only moment it is knowable: the elimination that empties a side.
+     *
+     * **Three questions, in the order they can fail, and each is a different silence.**
+     *
+     * 1. **Was there a hit at all, and was it this death?** `lastHit` is written by `registerHit`, which runs
+     *    immediately before `landHit` in `BallComponent.resolveTags` — so for a death caused by a ball it is
+     *    this ball. A death caused by anything else (a reset, a fall, a dev command) has no hit behind it, and
+     *    a death not caused by the *last* hit is refused by the victim compare. The clock is the second guard
+     *    and is only there for an engine that delivers `Died` late — see {@link WIPE_ATTRIBUTION_SECONDS}.
+     * 2. **Was the round decided by it?** `roundOutcome` is the round's own answer — the same one the loop
+     *    asks — and a `DRAW` or an `undefined` means this elimination emptied nothing that matters (or emptied
+     *    both sides), so there is no wipe to celebrate.
+     * 3. **Did the *thrower* win it?** The outcome names a side, and the thrower's side has to be that one. A
+     *    side can also empty because somebody left or because a rig was the last body — neither is a wipe by
+     *    the thrower, and the second has no thrower to tell at all.
+     *
+     * **Addressed to the thrower rather than broadcast**, which is a first for this file's events: every other
+     * one is a thing everybody can see, while this is a caption on one screen. **The name still travels**, so
+     * the receiving client makes the same comparison it makes for `hitImpact` instead of trusting the
+     * addressing — and so the line reads the same in a log either way.
+     *
+     * **It sends at most once a round.** The elimination that empties a side is the last one that can happen,
+     * and a second one would have to find an outcome for a round already decided.
+     */
+    private announceWipe(victim: Player): void {
+        const hit = this.lastHit;
+        if (hit === undefined) return;
+        if (hit.victim !== victim) return;
+        if (os.clock() - hit.at > WIPE_ATTRIBUTION_SECONDS) return;
+
+        const outcome = this.roundOutcome();
+        if (outcome !== TEAM_A && outcome !== TEAM_B) return;
+        if (this.teamOf(hit.thrower) !== outcome) return;
+
+        events.Server.Get("teamWipe").SendToPlayer(hit.thrower, hit.thrower.Name);
     }
 
     /** Put `player` on `team` — in the table the round counts from, and on the player. */
@@ -1203,6 +1794,68 @@ export class RoundService implements OnStart {
         // mid-round carries the count it has already earned into a new comparison. See
         // `SuperService.refreshCrowns`.
         this.abilities.refreshCrowns();
+    }
+
+    /**
+     * **The body a thrower token names — a person, or a rig — or nothing if it names neither.**
+     *
+     * A token is the whole of what an arriving ball knows about who threw it, and the two kinds of thrower
+     * carry two kinds of token: a player's is their `UserId` as text, and a rig's is a GUID that
+     * `NpcService.start` issues. `playerFromToken` covers the first and by design answers nothing for the
+     * second — which is the right rule for a *statistic*, because a rig has no account to file one against,
+     * and the wrong rule for a *side*, because a rig holding a seat on a side has one. So the GUID is
+     * matched against the rigs this round is playing with.
+     *
+     * **A scan, priced at the only moment it is asked.** A hit or a catch resolves a token once, when a ball
+     * has already landed or been caught, so this walks `rigsInRound()`'s handful of models a handful of times
+     * a round — nothing here runs per frame, and `StatsService`'s objection to resolving a model from a token
+     * is about a scan on every *landing*, which is a different quantity from a scan on every *outcome*.
+     * The O(1) alternative is to stamp the thrower's side on the ball at the throw, and it was rejected for
+     * where it puts the fact: a side is this service's table plus an attribute, so the stamp would be written
+     * by `BallService`, which knows nothing about sides, or by this service at a moment it is not told about.
+     *
+     * **Only rigs in the round are considered** — `rigsInRound()`'s `Playing` gate and its side test
+     * together. A rig with no side has no side to be credited, so a token matching one resolves to nothing
+     * and the hit is unattributed, exactly as an unknown token is.
+     *
+     * **Public since a rig's hit began counting toward the crown (2026-10-14).** `BallComponent.score`
+     * asks this to resolve the thrower it is about to credit, so the streak's round-participation gate can
+     * be asked of the resolved body — the same resolution the hit records already use, lent out rather than
+     * copied.
+     */
+    public throwerOf(throwerToken: string): RoundParticipant | undefined {
+        const player = playerFromToken(throwerToken);
+        if (player !== undefined) return player;
+
+        for (const rig of this.rigsInRound()) {
+            if (rig.GetAttribute(THROWER_TOKEN) === throwerToken) return rig;
+        }
+
+        return undefined;
+    }
+
+    /**
+     * Whether `participant` is in *this* round — **the round-participation gate the streak reads.**
+     *
+     * **The same read {@link handleDeath} makes of a dying player, asked of the whole union now.** A
+     * player is a participant exactly while they are in `activePlayers` — the set `assignTeams` fills at
+     * the opening whistle and `eliminate` empties — and a rig while it is in {@link rigsInRound}, which is
+     * the `Playing`-gated list of side-bearing rigs. A practice player, a lobby spectator and a rig with no
+     * side all answer `false`, which is the whole of the rule that keeps a hit outside a round from moving
+     * a run.
+     *
+     * **A rig resolved by {@link throwerOf} is always in `rigsInRound` already**, so the rig half of this
+     * test is about a body handed in some other way; the player half is the half that matters, because
+     * `throwerOf`'s player arm does not phase-gate.
+     */
+    public isActive(participant: RoundParticipant): boolean {
+        if (participant.IsA("Player")) return this.activePlayers.has(participant);
+
+        for (const rig of this.rigsInRound()) {
+            if (rig === participant) return true;
+        }
+
+        return false;
     }
 
     /**
@@ -1223,24 +1876,26 @@ export class RoundService implements OnStart {
      * teammate. A side only means something while a round is being played, so that is the only time
      * this says yes.
      *
-     * **A throw nobody can be credited with is not friendly fire.** A rig throws with a GUID token,
-     * which names no player and therefore no side; and a victim who is not a player, or not in the
-     * round, has no side either. In both cases there is no side to be friendly *with*, and the
-     * honest answer is to let the hit happen rather than to invent a rule for it.
+     * **A throw nobody can be credited with is not friendly fire, and neither is one on a body with no
+     * side.** Both ends go through {@link teamOf} and {@link throwerOf}, so a rig sits at *both* ends of
+     * this question exactly like a player does: a rig on A throwing at a rig on A is friendly fire and is
+     * refused, and a rig on A is protected from a player on A. An unknown token, or a body with no side —
+     * a lobby spectator, a practice player, a hand-tagged rig nobody gave a side to — still has no side to
+     * be friendly with, and the honest answer there is to let the hit happen rather than to invent a rule.
      */
     public isFriendlyFire(throwerToken: string, victim: Model): boolean {
         if (this.state !== RoundState.Playing) return false;
 
-        const thrower = playerFromToken(throwerToken);
+        const thrower = this.throwerOf(throwerToken);
         if (thrower === undefined) return false;
 
-        const shooterTeam = this.teams.get(thrower);
+        const shooterTeam = this.teamOf(thrower);
         if (shooterTeam === undefined) return false;
 
-        const victimPlayer = Players.GetPlayerFromCharacter(victim);
-        if (victimPlayer === undefined) return false;
+        const victimTeam = this.teamOf(victim);
+        if (victimTeam === undefined) return false;
 
-        return this.teams.get(victimPlayer) === shooterTeam;
+        return victimTeam === shooterTeam;
     }
 
     /**
@@ -1256,37 +1911,125 @@ export class RoundService implements OnStart {
      * anybody is on, and a mode's `hitAward` is never asked what a hit on one's own side is worth.
      * A guard here for that case would be unreachable, which is why there is not one.
      *
-     * **Recorded for scoring, for the board, for stats, and for the log — and no mode is asked
-     * about hit cause.** The round is told about a hit so that a mode which keeps score can award
-     * the point, so that the throw reaches `StatsService`, so that the player who landed it goes up
-     * the round's own count for the result panel, and so that the *pair* goes into the round's hit
-     * log — four readers of one event, which is why it all happens in one method. Nothing anywhere
-     * asks whether a death was a throw or a reset, which is why the round keeps no *cause*: a hit
-     * arrives as a hit or it does not arrive.
+     * **A hit is a hit whoever is at either end, and the attribution is this file's rather than the ball's.**
+     * Both ends resolve through `teamOf`, so a ball that lands on a rig reaches the round's records exactly
+     * as one that lands on a player does: the thrower's side is credited. The two records that stay
+     * *person-shaped* are named here rather than left to be discovered — `roundHits` and the hit log are about
+     * a person's throws and about a pair of people, and a rig has neither a row on the result panel nor a
+     * `UserId` for the feed to draw, so a rig's throw raises nobody's count and logs no entry. The career
+     * figure is the same story from the other end: `StatsService.recordHit` is called from `BallComponent`
+     * with the *thrower's* token and answers "not a person" for a GUID, because a lifetime record is keyed by
+     * account. Damage is not, because damage lives in the ball and knows nothing about accounts — which is why
+     * a rig's throw has always killed the player it landed on even while it scored nothing.
+     *
+     * **Recorded for scoring, for the board, and for the log — and no mode is asked about hit cause.**
+     * The round is told about a hit so that a mode which keeps score can award the point, so that the
+     * player who landed it goes up the round's own count for the result panel, and so that the *pair*
+     * goes into the round's hit log — three readers of one event, which is why it all happens in one
+     * method. **The career figure is deliberately not one of them**: `StatsService.recordHit` is called
+     * by `BallComponent`, which owns the throw, and this method is told about a hit rather than being the
+     * door every fact about one goes through. This paragraph used to list stats as a fourth reader here,
+     * which was wrong about where the wire runs. Nothing anywhere asks whether a death was a throw or a
+     * reset, which is why the round keeps no *cause*: a hit arrives as a hit or it does not arrive.
+     *
+     * **What changed on 2026-10-18: the cosmetic half is no longer the round's.** `hitImpact` — the event
+     * `hitVfx` and `hitConfirm` read — is now sent before the phase gate, so an impact draws in every phase and
+     * a player can watch and tune it in a practice zone. That makes one sentence above read differently:
+     * **"only a cross-team hit ever arrives" is a fact about a round and not about the lobby**, because
+     * `isFriendlyFire` answers `false` outside one by its own design. Nothing below the gate moves — the phase
+     * test is the first line of the round's half — so a same-side contact outside a round is announced and
+     * recorded nowhere, which is the honest reading of a throw with no round to be in.
      */
-    public registerHit(throwerToken: string, victim: Model): void {
-        if (this.state !== RoundState.Playing) return;
+    public registerHit(throwerToken: string, victim: Model, ballAbility: string): void {
+        // **The cosmetic half — the impact every client draws — is sent *before* the round gate, and that is
+        // the whole of why this method now starts here.** `hitImpact` is read by `hitVfx` and by
+        // `hitConfirm`, and both are about a *body being hit* rather than about the round: the burst on a
+        // practice dummy and the splash over the thrower's own screen are wanted in the lobby, in a practice
+        // zone and in the middle of a round alike. It used to be sent at the bottom, behind
+        // `state !== Playing`, so a ball landing on anything outside a round drew nothing anywhere — which is
+        // exactly the place a player throws freely enough to judge what a hit feels like.
+        //
+        // **Nothing is recorded here.** No counter, no log entry, no side check, no score: the records below
+        // are still the round's alone and are still behind the gate two lines down. The two facts are told
+        // apart deliberately — *a ball landed on a body* is true in every phase, and *this round has a hit in
+        // it* is true only while one is being played.
+        //
+        // **Resolved once, above the gate, because the board and the log need the same answer below.** The
+        // token is a `UserId` for a player and a GUID for a rig, and matching a rig's GUID to its rig is
+        // `throwerOf`'s job; a second lookup further down would be the same scan twice.
+        //
+        // **An unresolved token still draws nothing, and outside a round that is every rig's throw.**
+        // `throwerOf`'s player arm answers in any phase, while its rig arm walks `rigsInRound()` — a `Playing`
+        // gated list — so a rig throwing in the lobby has no resolvable name and no payload with half a
+        // subject is sent. A player's throw always resolves, which is the case that matters here: the splash
+        // is compared against the *local player's* name.
+        const thrower = this.throwerOf(throwerToken);
 
-        const victimPlayer = Players.GetPlayerFromCharacter(victim);
-        if (victimPlayer === undefined || !this.activePlayers.has(victimPlayer)) return;
+        // **Which power the throw was carrying, and why the ball's answer is not always the whole of it.**
+        // `abilityOn` reports the mark on the ball — Pierce, Freeze — and cannot report MultiBall at all:
+        // `isBallAbility` says a ball cannot carry it, because a MultiBall window is a buff on a *player* that
+        // supplies ordinary balls, not a mark that rides one. So the window is asked here instead, which is the
+        // one place the two halves can be joined: the splash needs one word for "was this throw a power", and
+        // this is the only code that holds both the throw and the thrower.
+        //
+        // **The empty string rather than `undefined`**, on `BALL_ABILITY_ATTRIBUTE`'s convention — the client
+        // has one value to test instead of two spellings of "none".
+        let power = ballAbility;
 
-        // **Resolved once, here, above the scoring gate below.** Three things below need the thrower
-        // and two of them are above the gate, so the lookup cannot live inside the scoring block: the
-        // board is a fact about who landed a hit and the log is a fact about *two* people, and neither
-        // is a question about what a hit is worth — so both are kept for every mode, including the
-        // scoreless ones, which have a result panel like anybody else. Under the gate, Team
-        // Elimination's board would be empty for ever.
-        const thrower = playerFromToken(throwerToken);
+        if (power === "" && thrower !== undefined && this.abilities.isMultiBallActive(thrower)) {
+            power = "MultiBall";
+        }
 
         if (thrower !== undefined) {
+            events.Server.Get("hitImpact").SendToAllPlayers(victim.Name, thrower.Name, power);
+        }
+
+        if (this.state !== RoundState.Playing) return;
+
+        // **The victim's side, asked of the body.** A player's character answers through its `Player` and
+        // is still required to be *active* — a spectator is not in this round, and neither is a practice
+        // player, whose absence from `teams` is what `teamOf` reports — while a rig answers with its own
+        // attribute. One question, one answer, both kinds of body.
+        const victimPlayer = Players.GetPlayerFromCharacter(victim);
+        if (victimPlayer !== undefined && !this.activePlayers.has(victimPlayer)) return;
+
+        const victimTeam = this.teamOf(victim);
+        if (victimTeam === undefined) return;
+
+        // **The hit is remembered for the length of one death, because that is the only moment a wipe can be
+        // told apart.** `announceWipe` runs inside `eliminate`, and the join it needs is "which throw took
+        // *this* body". The chain is `registerHit` → `landHit` → `TakeDamage` → `Died` → `handleDeath` →
+        // `eliminate`, so this line and that one are one throw apart; the victim compare in `announceWipe` is
+        // what stops a stale record from claiming a death it did not cause.
+        //
+        // **Players only.** `teamWipe` is addressed to a player and a rig has no client to caption, so a rig's
+        // throw is not recorded — the record exists only for the case that can be drawn.
+        if (thrower !== undefined && thrower.IsA("Player")) {
+            this.lastHit = { thrower: thrower, victim: victim, at: os.clock() };
+        }
+
+        // **The thrower was resolved above the round gate, and this is what is left of the paragraph that used
+        // to introduce the lookup here.** What it said still holds of everything below: the board is a fact
+        // about who landed a hit and the log is a fact about *two* people, neither is a question about what a
+        // hit is worth, and both are kept for every mode — a scoreless mode has a result panel like anybody
+        // else, and under the scoring gate below Team Elimination's board would be empty for ever.
+        //
+        // **The board and the log stay records about *people*, and that is not the same gap it looked like.**
+        // The result panel is drawn per person — a row, a name, a face — so a rig's throw raises nobody's
+        // count and writes no entry in the feed; what a rig's throw is worth is its *side's* point, below.
+        // A player's throw is counted whichever kind of body it landed on, because "how many throws landed"
+        // is a fact about the thrower, and the log needs a pair of people at both ends by construction.
+        if (thrower !== undefined && thrower.IsA("Player")) {
             this.roundHits.set(thrower, (this.roundHits.get(thrower) ?? 0) + 1);
 
-            // **And the pair, which is the one fact neither count above can hold.** Written here rather than
-            // anywhere else because this is the moment both ends are known as *players*: the token has just
-            // been resolved to a thrower and the victim has already been resolved and checked against the
-            // round. See `logHit` for the two conditions that can still refuse an entry.
-            this.logHit(thrower, victimPlayer);
+            if (victimPlayer !== undefined) this.logHit(thrower, victimPlayer);
         }
+
+        // **Was: the `hitImpact` send, here.** It has moved to the top of this method, above the round gate,
+        // because an impact is a fact in every phase and a round is not — see the paragraph there. Nothing
+        // else moved with it, which is why the send is not repeated for the hits that reach this far: every
+        // one of them already went out two lines into the method. See `networking.ts` on `hitImpact` for the
+        // two names and their order, and `hitVfx` and `hitConfirm` for the readers.
 
         // **A mode that keeps no score is not asked what a hit is worth.** See `GameMode.scores`:
         // a scoreless mode has no hit rule to state, so asking anyway would make every mode carry a
@@ -1295,10 +2038,14 @@ export class RoundService implements OnStart {
         // a scoring question: a mode with no points may still need to know a throw landed.
         if (!this.mode.scores) return;
 
-        const award = this.mode.hitAward({ thrower, victim: victimPlayer }, this);
+        const award = this.mode.hitAward({ thrower, victim }, this);
         if (award === undefined || thrower === undefined) return;
 
-        const scoring = this.teams.get(thrower);
+        // **The point goes to the thrower's side, whoever threw it** — the rule `GameMode.hitAward` states
+        // and the one part of a hit this file attributes itself. A rig's throw used to be unattributable
+        // here, so a round played against rigs scored nothing at all while their balls were knocking players
+        // over: this line, and `throwerOf` above, are the whole of that fix.
+        const scoring = this.teamOf(thrower);
         if (scoring === undefined) return;
 
         this.scores.set(scoring, (this.scores.get(scoring) ?? 0) + award);
@@ -1390,19 +2137,20 @@ export class RoundService implements OnStart {
      * Publishes both sides' points, so the client can draw a scoreboard.
      *
      * **One writer, called wherever `scores` moves**, and that is the whole reason this is a method rather than
-     * a `SetAttribute` at each site: the map changes in three places — a hit award, a catch point, and the
-     * clear at the opening of a round — and two attributes written in three places is six chances for one side
-     * to be published without the other. A reader would then draw a scoreboard whose halves disagree, which is
-     * worse than drawing none.
+     * a `SetAttribute` at each site: the map changes in four places — a hit award, a catch point, and the
+     * clear at each end of a round's life: as it finishes and as the next one opens — and two attributes
+     * written in four places is eight chances for one side to be published without the other. A reader would
+     * then draw a scoreboard whose halves disagree, which is worse than drawing none.
      *
      * **Both sides are written on every change, including changes that move only one.** Writing an unchanged
      * value is cheap and fires no changed-signal, so the redundant write costs nothing and buys the guarantee
      * that the pair is never observable half-updated.
      *
      * **It is not gated on the mode**, deliberately. The two scoring paths are already guarded by
-     * `mode.scores`, so a scoreless mode never reaches them; the clear at a round's opening does reach here,
-     * and writes `0` for a mode that keeps no score — which is the truthful answer rather than a missing one,
-     * and it is what stops the previous round's numbers lingering into a mode that has none.
+     * `mode.scores`, so a scoreless mode never reaches them; both clears do reach here, and write `0` for a
+     * mode that keeps no score — which is the truthful answer rather than a missing one. **That matters more
+     * than it did**, because the client's bar is drawn in every mode now: it shows `0 – 0` for a mode that
+     * keeps no score, and this is the write that put it there.
      */
     private publishScores(): void {
         this.statusFolder.SetAttribute(ROUND_SCORE_A_ATTRIBUTE, this.scores.get(TEAM_A) ?? 0);
@@ -1431,10 +2179,12 @@ export class RoundService implements OnStart {
      * award only where `mode.scores` is true. `registerHit` carries the same gate, for the same
      * reason, and the two read the same flag.
      *
-     * **An NPC's throw, caught, punishes nobody and scores nothing.** `playerFromToken` answers
-     * `undefined` for a GUID, which is the entire rule: a thrower with no player has no side, and a
-     * point nobody can be credited with is not awarded — the same fall-out a rig's hit has in
-     * `registerHit`.
+     * **And a rig obeys this rule exactly as a player does, at both ends.** The thrower resolves through
+     * {@link throwerOf}, so a caught throw that came from a rig kills that rig — the rig comes back through
+     * `RespawnBehavior`, which is the same door a ball's damage sends it through — and the catcher's side is
+     * credited through {@link teamOf}, so a rig's catch scores for the rig's side. Both were "nobody" before
+     * this: catching a rig's throw punished nobody and scored nothing, which read as the rule being switched
+     * off whenever an NPC was on the field.
      */
     public resolveCaughtThrower(throwerToken: string, catcher: Model): void {
         // No round, no sides, nothing to resolve: between rounds a catch is just a catch.
@@ -1442,20 +2192,71 @@ export class RoundService implements OnStart {
 
         if (this.isFriendlyFire(throwerToken, catcher)) return;
 
-        const thrower = playerFromToken(throwerToken);
+        const thrower = this.throwerOf(throwerToken);
         if (thrower === undefined) return;
 
-        // The death goes through `Died → handleDeath`, the same chain a landed hit takes: the mode
-        // decides what the death means, and this file does not decide it here twice.
-        const humanoid = thrower.Character?.FindFirstChildWhichIsA("Humanoid");
+        // **Neither end is punished unless both ends are *in this round*, and that is a guard the method
+        // was missing rather than a refinement of one it had.** `teamOf` answers "which side are they on, or
+        // nothing if they are not in this round" — so this is the round asking whether the catch happened to
+        // anybody it is responsible for, before it kills anybody.
+        //
+        // **What its absence cost, reported from a seat:** a player practising in a zone threw at a practice
+        // rig, the rig's catch window ate the ball, and this method killed the *thrower* — a player the round
+        // itself had already decided was not in it (`assignTeams` deliberately leaves anybody standing in a
+        // zone off a side, and the death line reads `in the round false`). The mode then correctly declined
+        // to act on the death, so nothing was scored and nobody was eliminated — but the *body* was dead, so
+        // `RespawnService` put a live one back at a lobby spawn, and a player who had been practising found
+        // themselves teleported across the map. "When alwaysCatchNPC catches my ball, I die and then
+        // teleport somewhere far away" is exactly this line, and the teleport is the respawn that follows
+        // a death nobody should have taken.
+        //
+        // **The catcher is checked too, and that is the same rule at the other end.** A rig with no side
+        // catching a participant's throw is a catch made *outside* the round — a practice dummy, a lobby rig
+        // reaching a ball near the barrier — and the honest reading is the one `isFriendlyFire` gives an
+        // unknown body everywhere else: the contact happened, and the round has no opinion about it. Scoring
+        // it would credit a side the catcher is not on.
+        //
+        // **The hit path is deliberately not changed.** A side-less *victim* of a thrown ball is a different
+        // case with a different answer — and a practice-zone body is never tagged at all, which the ball
+        // prints as `in a practice zone — carried on past them`.
+        if (this.teamOf(thrower) === undefined || this.teamOf(catcher) === undefined) {
+            if (DEBUG_CONFIG.VERBOSE_LOGS) {
+                print(`[Round] ${catcher.Name}: catch not resolved — the thrower is not in this round`);
+            }
+
+            return;
+        }
+
+        // **And everybody is told whose body just paid for that throw, which is the cosmetic half of the kill
+        // below.** A caught throw is the one moment the *thrower* is the punished end, so the effect is drawn on
+        // their body — red — and it goes out for both kinds of body and both kinds of catcher, because a rig's
+        // throw being caught is the common case in a round against rigs and the thrower there has no client of
+        // its own to be told privately. See `networking.ts` on `caughtThrow` for why it is an event of its own
+        // rather than a flag on `hitImpact`, and `hitVfx` for the only reader.
+        //
+        // **Sent here rather than beside the kill, and the difference is the guards above.** Everything that
+        // reaches this line is a catch the round is about to act on: both ends in this round, both ends on
+        // opposite sides, and a thrower that resolved. A friendly catch, a catch between rounds and one from a
+        // thrower the round cannot attribute all returned before it — so the red effect can never say "you are
+        // out" about a throw nobody is out for.
+        //
+        // **Nothing here is a record.** No counter, no score, no feed entry — the points and the death below are
+        // the record, and this is only the sentence the clients draw.
+        events.Server.Get("caughtThrow").SendToAllPlayers(thrower.Name, catcher.Name);
+
+        // The death goes through `Died → handleDeath` for a player, the same chain a landed hit takes: the
+        // mode decides what the death means, and this file does not decide it here twice. **A rig has no
+        // `Died → handleDeath` chain and needs none** — its `Humanoid` is killed here and `RespawnBehavior`
+        // rebuilds it, which is what makes this one call correct at both ends rather than two rules.
+        const humanoid = thrower.IsA("Player")
+            ? thrower.Character?.FindFirstChildWhichIsA("Humanoid")
+            : thrower.FindFirstChildWhichIsA("Humanoid");
+
         if (humanoid && humanoid.Health > 0) humanoid.TakeDamage(CATCH_DEATH_DAMAGE);
 
         if (!this.mode.scores) return;
 
-        const catcherPlayer = Players.GetPlayerFromCharacter(catcher);
-        if (catcherPlayer === undefined) return;
-
-        const team = this.teams.get(catcherPlayer);
+        const team = this.teamOf(catcher);
         if (team === undefined) return;
 
         this.scores.set(team, (this.scores.get(team) ?? 0) + GAME_MODE_CONFIG.CATCH_POINTS);
@@ -1598,21 +2399,31 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * The arena spawn for `player`'s side — one of that side's spawn parts, picked at random.
+     * The arena spawn for `participant`'s side — one of that side's spawn parts, picked at random.
      *
      * **The one place the side-to-spawn mapping lives**, so a round's opening teleport and a
-     * respawn mid-round cannot send the same player to different ends of the arena. A player
-     * with no team — somebody who joined while a round was already under way — is treated as
-     * A's, here and at the round start alike; they are not in `activePlayers`, so this is the
-     * only moment it ever matters for them.
+     * respawn mid-round cannot send the same player to different ends of the arena. A participant
+     * with no side — a player who joined while a round was already under way — is treated as
+     * A's, here and at the round start alike; for a player that is not in `activePlayers`, so this is
+     * the only moment it ever matters for them, and for a rig the case cannot arise at all: holding a
+     * side is what puts it in the round.
+     *
+     * **It takes a participant rather than a player, and that is the whole of how a rig is spawned.**
+     * The side comes from {@link teamOf}, which answers for both kinds of body, so one rule serves the
+     * opening teleport, a player's respawn and a rig's placement — and a rig and a player on the same
+     * side land among the same parts by construction rather than by two lookups that agree. What the
+     * caller then does with the answer differs, and that difference stays in the caller: a character is
+     * moved by `PivotTo`, a rig by its root part. See {@link teleportTeamsToArena}.
      *
      * **The pick is made here rather than at either call site**, which is what makes a respawn land
      * as spread out as the opening whistle: both go through this method, so there is no second place
      * for the two to disagree — the same reason the side mapping is here. It follows that the draw
      * is per *call*, so a returning player is not sent back to the spot they died on.
      */
-    private arenaSpawnFor(player: Player): CFrame {
-        return this.getRandomTeamSpawn(findArena(), this.teams.get(player) === TEAM_B ? TEAM_B : TEAM_A);
+    private arenaSpawnFor(participant: RoundParticipant): CFrame {
+        const team = this.teamOf(participant);
+
+        return this.getRandomTeamSpawn(findArena(), team === TEAM_B ? TEAM_B : TEAM_A);
     }
 
     /**
@@ -1660,32 +2471,134 @@ export class RoundService implements OnStart {
         return parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
     }
 
-    /** Everyone to one place. The lobby's business: no side is on the lobby's side. */
+    /**
+     * Everyone to one place. The lobby's business: no side is on the lobby's side.
+     *
+     * **Players only — and the rigs are moved back by {@link returnRigsToLobby} on the same frame**, which is a
+     * decision this paragraph used to argue the *other* way. It read: a rig's own place is the one its author
+     * put it in, kept in `RespawnBehavior`'s `homes` map, which this service cannot read and should not own —
+     * so a rig stayed where the last round left it. That reasoning is about a rig *authored into the arena*,
+     * and it stopped being true the moment the placeholders arrived: their authored place is a **lobby** spawn
+     * (they walk from there to a join pad), and a round that leaves them on the court leaves the next
+     * intermission with an empty lobby and eight rigs standing in the arena. The map this method was supposed
+     * to be honouring is the wrong map for them — `homes` is "where a rig was standing when it was first seen",
+     * which for a placeholder is wherever the boot seeding put it, and that is exactly where returning it goes.
+     *
+     * **And a practice-zone player is not moved either**, for the opposite reason: they are the round's
+     * business in no sense at all, and "undisturbed" begins with not being moved by a boundary they are
+     * not part of. See {@link isPracticePlayer}, which is the test the loop below applies to every body.
+     */
     private teleportAll(to: CFrame) {
         for (const player of Players.GetPlayers()) {
+            if (this.isPracticePlayer(player)) continue;
+
             const character = player.Character;
             if (character) character.PivotTo(to);
         }
     }
 
     /**
-     * Each side to its own spawn, for the start of a round.
+     * **Every rig on a side goes back to a lobby spawn, one rig per spawn.**
      *
-     * Resolved through {@link arenaSpawnFor} per player, and that is what makes a bad place
+     * The other half of the boundary `teleportAll` does for players, and it is deliberately *not* that method
+     * with a lower filter: a player and a rig differ in what "the lobby" means for them. Players are all put on
+     * one spawn because they walk apart on their own; rigs cannot, so each is given its **own** draw from the
+     * lobby spawns — the same per-rig placement `LobbyRigService.spawnLobbyRig` makes at boot and for the same
+     * reason, a place where eight bodies do not arrive in one spot.
+     *
+     * **By the root part, not by `PivotTo`**, which is the convention this file already keeps for rigs
+     * (`teleportTeamsToArena` places them the same way): a model with no `PrimaryPart` pivots at the centre of
+     * its bounding box, so a pivot can put a rig's feet inside the floor it was aimed at.
+     *
+     * **A side is the whole of who is moved**, through `rigsOnASide` rather than `rigsInRound` — the latter is
+     * gated on the round being played, and this runs at the boundary where the phase has just *stopped* being
+     * `Playing`. A rig with no `Team` is left exactly where it is, which is what keeps a hand-tagged rig in a
+     * practice area out of it.
+     *
+     * **What the rig does next is not this method's business.** It arrives in the lobby with its side still
+     * written on it — the seat it holds — and `LobbyRigService` sends it to its own pad a moment later; this
+     * moves a body, and where a rig *belongs* inside the lobby is a fact about pads.
+     */
+    private returnRigsToLobby(): void {
+        for (const { rig } of rigsOnASide()) {
+            const spawn = this.lobbySpawn();
+            if (spawn === undefined) return;
+
+            const root = rig.FindFirstChild("HumanoidRootPart");
+            if (!root || !root.IsA("BasePart")) continue;
+
+            root.CFrame = spawn.add(new Vector3(0, 3, 0));
+
+            // **Announced, and this is the other half of the same fault.** A home read at the first turn
+            // still points at an arena spawn once the rig has been in a round, so a rig killed between
+            // rounds came back standing on the field instead of in the lobby. See `NpcBehavior.onPlaced`.
+            this.npcs.announcePlaced(rig);
+        }
+    }
+
+    /**
+     * Each side to its own spawn, for the start of a round — **the players and the rigs alike.**
+     *
+     * Resolved through {@link arenaSpawnFor} per participant, and that is what makes a bad place
      * file safe: a missing part raises on the *first* lookup, before the first character has
      * been moved, so nothing ends up half-sent to a side that does not exist.
      *
-     * **The match's players only, which is what leaves everybody else in the lobby.** This used to move
-     * every player in the server, and with opt-in that would be the whole feature undone in one line: a
-     * player standing in the lobby would be teleported into the arena and asked to play a match they
-     * never joined. `activePlayers` is exactly the roster at this point — filled a few lines above and
-     * emptied at every intermission — so this is the roster by construction rather than by a second filter
-     * that could disagree with it.
+     * **The match's players and the round's rigs, which is what still leaves everybody else in the
+     * lobby.** This used to move every player in the server, and with opt-in that would be the whole
+     * feature undone in one line: a player standing in the lobby would be teleported into the arena and
+     * asked to play a match they never joined. `activePlayers` is exactly the player roster at this point
+     * — filled a few lines above and emptied at every intermission — so this is the roster by construction
+     * rather than by a second filter that could disagree with it. The rigs are the same idea one layer
+     * out: `rigsInRound` is the rigs *on a side*, so a rig nobody has given a side to is standing where
+     * its author put it and is not moved, exactly as a player who never touched a join part is not.
+     *
+     * **Two loops rather than one over `participantsInRound`, and the split is the point.** A player is
+     * moved by their *character* — a body that has to be read and guarded, because a player between a
+     * death and a respawn has none — while a rig *is* the body. Sharing one loop would mean narrowing a
+     * union on every iteration to find that out, which is the opposite of what the named union in
+     * `RoundParticipant` is for; two loops each say what they are moving, and the third line of each is
+     * the only place the two bodies genuinely differ.
+     *
+     * **Teleported rather than walked, and this is the decision that had to be argued.** A rig that runs
+     * to its post reads better than one that snaps there — but nothing in the game walks a rig to a
+     * *post*: the seek behaviour walks a rig to a loose ball and the pickup takes it, so the only thing
+     * that could carry a rig from the lobby to a spawn is a behaviour written for it, which means a new
+     * tag, a new behaviour file and a race against `ARENA_FREEZE_SECONDS` — for rigs the freeze does not
+     * even hold. A rig that arrives with the players is also a rig that exists in the arena from the
+     * round's first tick, which is what makes it a participant rather than a spectator that may or may
+     * not turn up. The cost, stated plainly: a rig's arrival is a cut rather than a run, and with the
+     * transition's cover switched off a rig teleported across the arena is visibly teleported.
      */
     private teleportTeamsToArena() {
         for (const player of this.playersInRound()) {
             const character = player.Character;
             if (character) character.PivotTo(this.arenaSpawnFor(player));
+        }
+
+        // **By the root part rather than by `PivotTo`, and that is not a style choice.** A model's pivot
+        // is its `PrimaryPart` if it has one and the centre of its bounding box otherwise. The spot this
+        // aims at is `spawn.CFrame` lifted three studs, which is where a *character's* humanoid root
+        // belongs: a character has a primary part, so `PivotTo` puts the root there, while a rig with
+        // none would have its *centre* put there and its feet left in the platform. `RespawnBehavior`
+        // places a rig by its root for the same reason and says so at length, and the root is also the
+        // part `resolveDodgeable` and `detectEnemy` address a rig through — so this is the one part of a
+        // rig the rest of the game already agrees on.
+        //
+        // **No root, no move, and nothing said about it.** A model wearing the tag with no
+        // `HumanoidRootPart` is not a rig: `NpcService` will not run a body it cannot own or animate, and
+        // `RespawnBehavior.prepare` returns on the same condition. There is nothing to place and nobody
+        // to tell.
+        for (const rig of this.rigsInRound()) {
+            const root = rig.FindFirstChild("HumanoidRootPart");
+            if (!root || !root.IsA("BasePart")) continue;
+
+            root.CFrame = this.arenaSpawnFor(rig);
+
+            // **Announced, because the rig has just been put somewhere and one behavior remembers where.**
+            // `RespawnBehavior` reads a rig's home the first time it sees it alive and — until this line —
+            // never again, so a rig born in the lobby kept a lobby home for life and came back there every
+            // time it died in a round. See `NpcBehavior.onPlaced` and `NpcService.announcePlaced`.
+            this.npcs.announcePlaced(rig);
         }
     }
 
@@ -1712,9 +2625,16 @@ export class RoundService implements OnStart {
      * Asked of every player on the server rather than of `activePlayers`, which is empty at this
      * point: it is filled from `GetPlayers`, below this, and a player who joined mid-round was in
      * neither.
+     *
+     * **Asked of every player except the ones in a practice zone**, which is the one correction the
+     * zone forces on this loop: a player standing in one is not on their way into a round, so their
+     * ball is not the round's to destroy — the same skip `roundParticipants` makes on the other
+     * boundary, and the same reason.
      */
     private clearHeldBalls() {
         for (const player of Players.GetPlayers()) {
+            if (this.isPracticePlayer(player)) continue;
+
             const character = player.Character;
             if (character) this.balls.removeBall(character);
         }
@@ -1833,9 +2753,17 @@ export class RoundService implements OnStart {
 
             // **No hold at this boundary**, and the absence is the point: the round is over, so there is
             // nothing to hold anybody for — the only thing being covered here is the move back to the lobby.
-            await this.transitionAround(() => this.teleportAll(lobby), {
-                wipe: TRANSITION_CONFIG.WIPE_AT_ROUND_END,
-            });
+            // **And the rigs move with them**, in the same closure rather than in a second transition: they are
+            // the same kind of thing being sent to the same room, and the cover that hides one hides both.
+            await this.transitionAround(
+                () => {
+                    this.teleportAll(lobby);
+                    this.returnRigsToLobby();
+                },
+                {
+                    wipe: TRANSITION_CONFIG.WIPE_AT_ROUND_END,
+                },
+            );
 
             // **The cleanup that has to happen here, and the ordering that used to matter.** The held
             // balls go first, and the reason is structural rather than a preference: a ball in a hand is
@@ -1870,7 +2798,9 @@ export class RoundService implements OnStart {
             //
             // Written unconditionally over every player, including ones who died into this boundary: the
             // release is silent when there is nothing to release, so a death that already took the prize
-            // costs a call and no second publication.
+            // costs a call and no second publication. The one exception is a player in a practice zone,
+            // who was never in the round and therefore holds nothing the round's end should reach for —
+            // the skip in the loop below.
             //
             // **And every wait for a body, in the same loop because it is the same kind of thing.** A player
             // who died inside the round and was still counting down when it was decided has *no character at
@@ -1880,8 +2810,20 @@ export class RoundService implements OnStart {
             // intermission is a place with nothing at stake, so the body is wanted now rather than in three
             // seconds. See `RespawnService.cancel`, whose flag exists for precisely this caller.
             for (const player of Players.GetPlayers()) {
+                // **A practice-zone player is left alone.** Their windows, prizes and waits are not the
+                // round's to close — a prize collected outside a round is not lost to a round it never
+                // entered, and a body they are waiting for is not a body the round owes anybody.
+                if (this.isPracticePlayer(player)) continue;
+
                 this.abilities.clearMultiBall(player);
                 this.abilities.releaseMysteryPrize(player, "the round ended");
+                // **And nothing stays armed into the intermission**, which is the third thing this sweep takes
+                // away and the only one that is not a row of state: a marked ball is a fact about the *ball*,
+                // so `SuperService` is only ever told about it for the HUD's sake. Left alone, a player who
+                // marked a ball and never threw it would carry a `READY` text into the lobby, where no power
+                // can be used — a promise the next round would then break. `completePower` is silent when
+                // there is nothing armed, which is the ordinary case in this loop.
+                this.abilities.completePower(player);
                 this.respawns.cancel(player, true);
             }
 
@@ -1929,115 +2871,135 @@ export class RoundService implements OnStart {
             // further down, which is how a match normally begins, and a dev's `!dev match` as the manual
             // override.
             //
-            // **The clock still runs, and wraps rather than reaching zero.** The number on the HUD is the
-            // honest sign that the server is alive, and freezing it for a wait with no promised end would
-            // read as a hung server — the same lie the held intermission used to tell. So the countdown
-            // restarts at its full length each time it reaches zero: the clock says the server is running by
-            // moving rather than by stopping, and a wrap is not a round boundary.
+            // **The clock ends an intermission, and it is the only thing that does.** It reaches zero and
+            // the round opens; the wrap survives only in the one case with no end to reach — an empty server
+            // — see the expiry below. *(It used to wrap always, and the round was opened by a separate
+            // five-second settle window instead, which is how one intermission came to last five seconds and
+            // the next twenty-two.)*
+            //
+            // **No settle window and nothing to count**, so the only number the loop carries is `elapsed`,
+            // which exists for the vote window alone.
             let elapsed = 0;
 
-            // **The settle window's two numbers, counted on the clock's own ticks.**
+            // **The intermission is now measured against a clock rather than counted in iterations, and
+            // this is the fix for "why was the first one longer than the second".** The old line was
+            // `task.wait(1); this.timeRemaining--`, which reads as one second per tick and is not one:
+            // `task.wait(1)` resumes on the first frame *after* a second, so every tick is a little over a
+            // second and sixteen of them are a little over sixteen. On a busy server "a little" is a lot.
+            // Measured in a live log on 2026-10-17: `Intermission started` at 21:09:42.571 and
+            // `starting on its own` at 21:10:03.355 — **20.8 seconds for a 16-second intermission**, which
+            // is the same class of fault as the settle window this loop used to have and reads to a player
+            // as exactly the same thing: the number on the HUD is not the time they are waiting.
             //
-            // `settledFor` is how many ticks the roster has been startable and unchanged, and `roster` is
-            // the roster that count was last measured against. Both are declared out here rather than inside
-            // the loop because both have to survive a wrap: the countdown going round again is a fact about
-            // the clock, not about the sides, and a grace period that reset itself every sixteen seconds
-            // would be a match that never started.
-            let settledFor = 0;
-            let roster = this.matches.rosterRevision();
+            // **So the number is derived from time that actually passed.** `os.clock()` is monotonic and
+            // unaffected by the loop's own lateness, which means a slow tick no longer costs an
+            // intermission anything — it just gets counted in the next read. The `++`/`--` pair is gone;
+            // the loop turns once a second, which is the *resolution* of the display, not the clock.
+            let clockStarted = os.clock();
 
             while (this.pendingMatch === undefined) {
                 // A paused tick does nothing at all: no second off the clock, no change of
                 // state, no teleport. The phase resumes from whatever the clock said when it
                 // was switched off, which is the whole difference between pausing and ending.
                 //
-                // **A server below the minimum freezes in exactly the same way**, and for the same
-                // reason: there is nobody to start a match for. This single line is where "freeze,
-                // don't skip" lives — and it is the *only* thing that stops the clock, which is the
-                // honest reading of it: with one player in the server the clock stands still because no
-                // match could be started anyway.
-                //
-                // **And the settle count goes with the clock.** A paused or half-empty server is not
-                // accumulating a start: the sides may well still be startable from before, and a match that
-                // began the instant the population came back would open while nobody was there to see it.
-                if (this.isRoundsPaused() || this.belowMinimum()) {
-                    settledFor = 0;
+                // **A server below the minimum no longer freezes with it.** The clock used to stand still
+                // until there were `MIN_PLAYERS` bodies *on a side* — and at boot there are none, because
+                // the lobby's rigs are still walking to their pads and take no side until they arrive. So
+                // the first intermission's clock did not start for ten-odd seconds and then needed its whole
+                // countdown, while every later one started ticking the instant the previous round ended. The
+                // freeze was there to stop a half-empty server burning an intermission it could not use, and
+                // the expiry below does that job honestly instead: an empty server counts down, fails to
+                // start, and goes round again with the HUD still moving.
+                if (this.isRoundsPaused()) {
+                    // **A pause does not eat the clock, and with a wall clock that has to be said out loud.**
+                    // The old count-then-`continue` version was immune by accident: a held tick simply never
+                    // decremented. A `os.clock()` reading keeps advancing while the loop is parked, so the
+                    // origin is shifted forward by however long the hold lasted — the intermission resumes
+                    // from the second it was stopped at, which is what "paused" has to mean if it is not to
+                    // secretly mean "skipped ahead".
+                    const pausedAt = os.clock();
                     task.wait(1);
+                    clockStarted += os.clock() - pausedAt;
                     continue;
                 }
 
                 // The vote opens on the intermission's **first running second**, which is not the
-                // same moment as the intermission *starting*: a server below the minimum is frozen
-                // above, so its intermission has not really begun and the window should not be open
-                // while nobody is there to vote. Opening it here rather than once before the loop
-                // is also what lets a server that fills up thirty seconds later still get this vote.
+                // same moment as the intermission *starting*: a held server is parked above, so its
+                // intermission has not really begun and the window should not be open while a dev has
+                // it stopped. Opening it here rather than once before the loop is also what reopens the
+                // window after a wrap — see the expiry below, which is now the only thing that wraps.
                 //
                 // **Switched off, and left standing.** See `VOTE_ENABLED` — the vote is not offered any
                 // more, and the call stays where it is so that turning it back on is that one line.
                 if (VOTE_ENABLED && elapsed === 0) this.votes.openVote();
 
                 task.wait(1);
-                this.timeRemaining--;
                 elapsed++;
+                this.timeRemaining = math.max(
+                    0,
+                    ARENA_CONFIG.INTERMISSION_SECONDS - math.floor(os.clock() - clockStarted),
+                );
 
-                // **The wrap.** Reaching zero is not the end of anything now, it is the clock going round
-                // again — and `elapsed` goes round with it, so a wrapped intermission behaves like a fresh
-                // one to anything counting running seconds, the vote window above included.
+                // **The expiry, and the whole of the start rule.** The clock ends an intermission; there is
+                // no second gate beside it and nothing to settle. Three readings of zero:
+                //
+                // - **a match can start** — hold at `0`, and the block below opens it on this tick;
+                // - **nothing here to play for** (`belowMinimum`) — wrap, because the number moving is how
+                //   the HUD says the server is alive and an empty server should not sit at `0` looking hung;
+                // - **bodies here but one side empty** — hold at `0`, because a round cannot open and
+                //   somebody still has to choose. Every tick re-asks, so the moment a side is picked the
+                //   match opens. **This is the only case where an intermission outruns its clock**, and
+                //   balancing is what keeps it rare: nobody is left stranded on a side that is full.
                 if (this.timeRemaining <= 0) {
-                    this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
-                    elapsed = 0;
+                    if (this.matches.canStart()) {
+                        this.timeRemaining = 0;
+                    } else if (this.belowMinimum()) {
+                        this.timeRemaining = ARENA_CONFIG.INTERMISSION_SECONDS;
+                        elapsed = 0;
+                        // The wrap re-bases the clock as well, or the next intermission would be over the
+                        // instant it started — the origin is what "16 seconds" is measured from, and this is
+                        // the one branch that begins a fresh one without leaving the loop.
+                        clockStarted = os.clock();
+                    } else {
+                        this.timeRemaining = 0;
+                    }
                 }
 
                 this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
                 if (VOTE_ENABLED && elapsed === GAME_MODE_CONFIG.VOTE_SECONDS) this.votes.closeVote();
 
-                // **The normal start: a roster that is ready and has stopped moving.**
+                // **The start: the clock ran out with a roster that can play.**
                 //
                 // **Nobody has to ask for a match for one to happen, and that is the design rather than a
-                // fallback.** A server whose sides are full and have stopped moving keeps opening rounds by
-                // itself; `!dev match` is the override beside it, for a dev who does not want to wait out
-                // the window. Both arrive at the same door — see {@link startMatch} — so nothing below cares
-                // which of the two this is.
+                // fallback** — the intermission's own length is the request. `!dev match` is the override
+                // beside it, for a dev who does not want to wait the clock out. Both arrive at the same
+                // door — see {@link startMatch} — so nothing below cares which of the two this is.
                 //
-                // **Read against the revision rather than the counts, and a side switch is why.** `countsFor`
-                // cannot see the change that matters most here — a player crossing from `A` to `B` leaves it
-                // identical — and that crossing is exactly the move this window exists to wait out. Any
-                // touch, move, departure or clearing moves the number, so comparing it is the question "is
-                // this the same roster I was looking at a second ago".
-                //
-                // **A roster that is not startable resets the count rather than pausing it**, so one player
-                // waiting alone on a pad does not carry a half-elapsed window into the instant somebody joins
-                // them: the match then starts a full `MATCH_SETTLE_SECONDS` after the sides were complete,
-                // which is the window the last arrival is owed.
-                const current = this.matches.rosterRevision();
+                // **No settle window and no revision read.** A roster still moving at the whistle is simply
+                // the roster the round starts on: a last-second side switch *is* a roster change, and the
+                // sides are balanced as bodies arrive rather than held still for — see `MatchService.optIn`
+                // and `sideWithRoom` in `npc/rigs.ts`. Waiting for the roster to stop changing was what made
+                // one intermission five seconds and the next twenty-two.
+                if (this.timeRemaining !== 0) continue;
 
-                if (current !== roster) {
-                    roster = current;
-                    settledFor = 0;
-                } else if (this.matches.canStart()) {
-                    settledFor++;
+                const counts = this.matches.countsFor();
+                const rigs = rigCounts();
 
-                    if (settledFor >= MATCH_SETTLE_SECONDS) {
-                        // **Two lines, because two places know the two facts.** `startMatch` says what is
-                        // coming and in which mode; this says the request came from the roster rather than
-                        // from a dev, which is the normal path and the one worth being able to tell apart
-                        // in the output from somebody having typed `!dev match`.
-                        const counts = this.matches.countsFor();
+                // **The rigs are counted separately rather than folded into the player counts**, so the line
+                // names both kinds of body: `countsFor` is the players `MatchService` knows, and `rigCounts`
+                // is the derivation a rig-only round starts on. A rig-only start therefore prints two zeroes
+                // under "players" and two under "rigs" — the honest shape of a match with no people in it —
+                // rather than a bare `A: 0, B: 0` that reads as a fault.
+                print(
+                    `[Round] starting on its own — the ${ARENA_CONFIG.INTERMISSION_SECONDS}s intermission ` +
+                        `ran out (players A: ${counts.a}, B: ${counts.b}; rigs A: ${rigs.a}, B: ${rigs.b})`,
+                );
 
-                        print(
-                            `[Round] starting on its own — the sides held still for ${MATCH_SETTLE_SECONDS}s` +
-                                ` (A: ${counts.a}, B: ${counts.b})`,
-                        );
-
-                        // The same door the dev command uses, so the field still has exactly one writer — and
-                        // a request that arrived a moment earlier still wins, because this branch is only
-                        // reached while it is unset.
-                        this.startMatch(SCORE_RUSH);
-                    }
-                } else {
-                    settledFor = 0;
-                }
+                // The same door the dev command uses, so the field still has exactly one writer — and a
+                // request that arrived a moment earlier still wins, because this branch is only reached
+                // while it is unset.
+                this.startMatch(SCORE_RUSH);
             }
 
             await this.waitWhilePaused();
@@ -2183,19 +3145,27 @@ export class RoundService implements OnStart {
             // attributes, and the mode has to be true before the sides it paints are.
             this.statusFolder.SetAttribute(ROUND_MODE_ATTRIBUTE, this.mode.id);
 
-            // A fresh scoreboard for a fresh round: a round that inherited one would be starting
-            // in the middle of somebody else's game. The round is also un-finished here — it is
-            // exactly the flag's lifetime — so a round ended early by a leaver cannot leave the next
-            // one unable to finish at all.
+            // **The scores are cleared here as well as at the round's end, and the two are not redundant.**
+            // `finishRound` wipes them for every round that *finishes*, which is the normal path and the one
+            // the HUD reads; this clears them for a round that is discarded without finishing — a dev command,
+            // a server with rounds switched off mid-round — so a fresh round cannot open onto somebody else's
+            // numbers. The round is also un-finished here — it is exactly the flag's lifetime — so a round
+            // ended early by a leaver cannot leave the next one unable to finish at all.
             this.scores.clear();
             this.publishScores();
 
-            // **Both boards go with the scoreboard, and so does the hit log, and here rather than where
-            // the round ends.** Cleared at `finishRound` they would empty the panel that reads them one
-            // frame before the intermission they are meant to fill: a board is the round's *record*, so it
-            // has to outlive the round by exactly as long as the intermission does, and clearing it at the
-            // next round's opening is what gives it that lifetime — which is the hit log's lifetime too, by
-            // the same argument and on the same line. See `roundHits`, `roundOuts` and `roundHitLog`.
+            // **Both boards go with the hit log, and here rather than where the round ends.** Cleared at
+            // `finishRound` they would empty the panel that reads them one frame before the intermission they
+            // are meant to fill: a board is the round's *record*, so it has to outlive the round by exactly as
+            // long as the intermission does, and clearing it at the next round's opening is what gives it that
+            // lifetime — which is the hit log's lifetime too, by the same argument and on the same line. See
+            // `roundHits`, `roundOuts` and `roundHitLog`.
+            //
+            // **The scoreboard is the one that no longer goes with them, and the difference is who reads it.**
+            // These three are read by the result panel, which is drawn *between* rounds and would have nothing
+            // to draw if they were cleared as a round ended; the two score attributes are read by a scoreboard
+            // that is on screen in every phase and is *about the round being played*, so a figure left standing
+            // over an intermission is the one thing it must not show. See `finishRound` for the whole of it.
             this.roundHits.clear();
             this.roundOuts.clear();
             this.roundHitLog.clear();
@@ -2211,10 +3181,24 @@ export class RoundService implements OnStart {
             // player who is out of the round and respawns is sent back to the lobby by the same branch a
             // joiner takes — see `handlePlayerJoined`.
             //
-            // **The streak is cleared for everybody, in the round or not**, and that is the one thing in here
-            // that is not about the roster: a run of hits is a fact about the round that has just ended, and
-            // somebody who sat this one out did not earn the one they were carrying.
+            // **The rigs are the one thing added to the round since, and nothing is added for them here.** A
+            // rig's side is painted on the rig rather than assigned, so this boundary has nothing to write
+            // for one and `activePlayers` stays a set of *people* — see `rigsInRound`, which derives the
+            // round's rigs from that attribute on every read. What that buys is that this loop, and every
+            // player-only reader downstream of it, goes on meaning exactly what it meant before.
+            //
+            // **The streak is cleared for everybody except a player in a practice zone**, and that is the
+            // one thing in here that is not about the roster: a run of hits is a fact about the round that
+            // has just ended, and somebody who sat this one out did not earn the one they were carrying. A
+            // practice-zone player is the exception for a different reason — they are not sitting one out,
+            // they are outside the round entirely, and the run they are building against the practice rigs
+            // is not the round's to wipe. The skip in the loop below is that one exception made explicit.
             for (const player of Players.GetPlayers()) {
+                // **A practice-zone player is not part of this boundary at all**: no streak reset, no
+                // roster question, no `activePlayers`. The comment above states why their run is left
+                // standing; this line is where that exception is applied.
+                if (this.isPracticePlayer(player)) continue;
+
                 // **A run of hits belongs to a round, and this is where a round begins.** Beside the
                 // score board and the two boards cleared above, and for their reason: a streak is a fact
                 // about the round that has just ended, so it is cleared where the next one opens rather
@@ -2229,6 +3213,13 @@ export class RoundService implements OnStart {
                 // question: `teams` was filled a few lines above by `assignTeams` from the players who
                 // picked a side, so membership of it *is* participation, and being added to `activePlayers`
                 // is what that means to the rest of this service.
+                //
+                // **"Membership is participation" is a rule about *players*, and that is now something this
+                // line has to say**, because the round gained a second kind of participant. A rig is in the
+                // round because `TEAM_ATTRIBUTE` says which side it is on, not because anything was written
+                // down about it here — so there is no entry to test and nothing to add, and `rigsInRound` is
+                // the whole of that decision. Keeping the two apart is what lets `teams` stay a map of
+                // people for `MatchService`, the economy and the result board to read.
                 //
                 // **This used to publish the answer as `SPECTATING_ATTRIBUTE`, once per player per round,
                 // and that is the write that has gone.** Both statements below are load-bearing in opposite
@@ -2270,6 +3261,23 @@ export class RoundService implements OnStart {
                 holdEveryoneFor: ARENA_CONFIG.ARENA_FREEZE_SECONDS,
             });
 
+            // **And the one thing that keeps the pads live while this round is being played.** The roster
+            // was taken at the whistle by `assignTeams` above, and nothing else in this file will look at
+            // it again until the next one — so a player who walks into a join part now is written to the
+            // roster by `MatchService` and to nothing else, which makes this the only thing that can put
+            // them in the round. Spawned rather than awaited, and it ends itself when the phase leaves
+            // `Playing`. See `watchMidRoundJoins` for the whole argument, including why it is a poll.
+            task.spawn(() => this.watchMidRoundJoins());
+
+            // **The round's clock is measured the same way the intermission's now is, and it is started
+            // *here* rather than where `timeRemaining` was set.** The two are different moments on purpose:
+            // the number is published at its full length before `transitionAround`, and the comment above is
+            // explicit that it does not move until that returns — so the origin belongs at the top of the
+            // loop, which is the first tick after the arena freeze lifts. Starting it a few lines higher
+            // would hand the round back the five seconds the hold costs, which is the exact fault the
+            // intermission's 20.8-for-16 measurement was.
+            let roundStarted = os.clock();
+
             while (this.timeRemaining > 0) {
                 // **The round may already be over**, decided from outside this loop: a player leaving
                 // can empty a side, and `PlayerRemoving` records that the moment it happens rather
@@ -2287,7 +3295,10 @@ export class RoundService implements OnStart {
                 }
 
                 task.wait(1);
-                this.timeRemaining--;
+                this.timeRemaining = math.max(
+                    0,
+                    ARENA_CONFIG.ROUND_SECONDS - math.floor(os.clock() - roundStarted),
+                );
                 this.statusFolder.SetAttribute(ROUND_TIME_ATTRIBUTE, this.timeRemaining);
 
                 // Checked after the clock moves, so a round ends on the tick its last second
@@ -2494,11 +3505,19 @@ function arenaProblem(arena: Model | undefined): string | undefined {
  *
  * A player's character can be missing outright — between a death and a respawn, or as somebody is
  * leaving — which is why it is read rather than assumed.
+ *
+ * **A player in a practice zone is skipped**, and the skip is the point of the phrase "could be holding
+ * a ball *when a round ends*": a practice-zone player never entered the round, so nothing in their hand
+ * is the round's to take — stripping it would be the round reaching into the one place it is not wanted.
+ * Read off the attribute, the same way {@link RoundService.isPracticePlayer} reads it, because
+ * `PracticeZoneService` is the owner of the answer and this file asks rather than re-tests the geometry.
  */
 function roundParticipants(): Model[] {
     const participants: Model[] = [];
 
     for (const player of Players.GetPlayers()) {
+        if (player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true) continue;
+
         const character = player.Character;
         if (character) participants.push(character);
     }

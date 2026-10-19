@@ -59,12 +59,51 @@ export type HitDirection = "AtoB" | "BtoA";
 
 export const events = Net.Definitions.Create({
 	/**
-	 * Client → server: this character wants to dodge in this direction.
+	 * Client → server: this character wants to dodge in this direction, measured in this frame.
+	 *
+	 * **Two facts rather than one, and the second is the frame the first was measured in** — the camera's
+	 * heading, flattened. Which of the four dodge clips the dash wears is
+	 * `dodgeDirectionOf(direction, reference)`, and what that reference is decides what a key means: measured
+	 * against the camera, `S` is a backward dodge whenever it is pressed, which is what the player pressing
+	 * it expects. Measured against the *body* instead — the earlier version — it is whichever direction the
+	 * body has finished turning to face, because `RotationType` is `MovementRelative` and the body tracks its
+	 * own movement: a player pressed the key for a backward dodge and got the forward clip, or a different
+	 * clip depending on how long they held the key first. A rig's dodge is the other way round and does not
+	 * travel this wire at all: its direction is *motion*, chosen by its AI, so the server classifies it
+	 * against the rig's own facing — which the server owns, so there is no lag to argue about.
+	 *
+	 * **The reference rather than a decided word.** The client could classify this itself and send the word,
+	 * and for a player that would be the smaller payload — but it would put a second copy of the rule in the
+	 * client for players while a rig's dodge stayed classified on the server, which is two answers to what
+	 * `S+D` means waiting to disagree. Sending the frame keeps exactly one classifier.
+	 *
+	 * **The cost is one `Vector3` per dodge** — three floats, at most once every `DODGE_CONFIG.COOLDOWN`
+	 * seconds — and it decides nothing about the dash: the direction is what the dash uses, the reference is
+	 * used only to name the clip.
+	 *
+	 * **A zero reference means "I did not send one"**, not "my camera faces nowhere": the reader flattens the
+	 * value, and a direction with no horizontal part is the same absence as no value at all — which is the
+	 * path that leaves the classification to the server's own read.
 	 *
 	 * Server-bound only. The movement replicates on its own, so there is nothing
 	 * to send back and no reason for a second event.
 	 */
-	dodge: Net.Definitions.ClientToServerEvent<[direction: Vector3]>(),
+	dodge: Net.Definitions.ClientToServerEvent<[direction: Vector3, reference: Vector3]>(),
+
+	/**
+	 * Client → server: this character wants to duck.
+	 *
+	 * Carries nothing, on `catch`'s terms and for its reason — a key press is the only fact the client
+	 * has that the server does not, and the server already knows *who* pressed it. There is even less to
+	 * say here than there: a duck has no direction, no duration and no target, and every rule that
+	 * decides whether one happens is server-side. See `DuckService`.
+	 *
+	 * **A request rather than a state, and that is not a formality.** A client that sent "I am ducking"
+	 * would be describing a body the server has to trust it about, and the duck is a hit exemption — the
+	 * one thing in the game a client must not be able to grant itself. The server answers this out of
+	 * its own state and writes the attribute itself, which is what keeps the exemption unforgeable.
+	 */
+	duck: Net.Definitions.ClientToServerEvent<[]>(),
 
 	/**
 	 * Client → server: this character wants to try to catch.
@@ -84,17 +123,6 @@ export const events = Net.Definitions.Create({
 	 * anything the client said about it would be a claim rather than a fact.
 	 */
 	drop: Net.Definitions.ClientToServerEvent<[]>(),
-
-	/**
-	 * Client → server: this player wants the opposite of whatever their throwing setting
-	 * currently is.
-	 *
-	 * **A request to flip, not a value to set.** Sending the setting itself would make the
-	 * wire the description of a state, and a client that lost track of it — after a
-	 * respawn, say — could switch throwing on for a player who had it off. Flipping what
-	 * the server holds cannot disagree with the server, whatever the client believes.
-	 */
-	toggleThrow: Net.Definitions.ClientToServerEvent<[]>(),
 
 	/**
 	 * Client → server: this player wants to use whatever power the mystery box gave them.
@@ -133,19 +161,36 @@ export const events = Net.Definitions.Create({
 	 * Client → server: whether this player is now holding the sprint key.
 	 *
 	 * **A level, and the only event here that sends a value the server could not work out for
-	 * itself.** `toggleThrow` above argues the opposite case at length — a request to flip rather
-	 * than a value to set, because the server owns the setting and a client that had lost track of
-	 * it could otherwise switch throwing *on* for somebody who had it off. The reasoning there is
-	 * about *authority*, not about values on the wire, and it does not reach this event: the server
-	 * holds no opinion about whether a key is down, and no way to discover it. That is a fact only
-	 * the client has, so the client is the only thing that can report it, and the honest shape of a
-	 * held key is a boolean that stays true until it is false.
+	 * itself.** Every other request on this wire either carries nothing or names something the
+	 * server then checks, because the server owns the state and a client that had lost track of it
+	 * must not be able to assert it. That reasoning is about *authority*, not about values on the
+	 * wire, and it does not reach this event: the server holds no opinion about whether a key is
+	 * down, and no way to discover it. That is a fact only the client has, so the client is the only
+	 * thing that can report it, and the honest shape of a held key is a boolean that stays true
+	 * until it is false.
 	 *
 	 * Nothing is validated on the far side and nothing needs to be: an untrue `true` buys a player
 	 * fifteen studs per second for as long as their stamina lasts, which is what the same player
 	 * gets by holding the key, and running out stops it either way. See `WalkSpeedService`.
 	 */
 	setSprinting: Net.Definitions.ClientToServerEvent<[active: boolean]>(),
+
+	// **`setCharging` used to sit here, was removed, and is back carrying something else.** It first reported
+	// whether a player was holding the throw button so that `WalkSpeedService` could stop the stamina pool
+	// refilling during a charge. **That hold is gone** — see `WalkSpeedService.poolHold` for why a hold whose
+	// length the player controls is a lockout rather than a rule about resting — and the event went with it.
+	//
+	// It returns for the *speed cap*: a charge is a stance with its windup held, so a charging body is limited to
+	// `CHARACTER_CONFIG.AIMING_WALK_SPEED` while it holds, and the server has no way to observe a hold — the
+	// start time lives on the client (`client/throwing.ts`) and the server only hears of the throw when the
+	// release arrives. So this is `setSprinting`'s shape and `setSprinting`'s trust argument: a level that only
+	// the client can know, reported as a boolean and believed, because an untrue `true` costs the player their
+	// own movement speed and buys nothing else.
+	//
+	// **A level and not an event**, deliberately: a missed "start" would leave a body capped for ever if the
+	// server tracked only that, and a level is idempotent — the client re-sends whenever the answer changes, and
+	// a lost message is corrected by the next charge the player starts or ends.
+	setCharging: Net.Definitions.ClientToServerEvent<[active: boolean]>(),
 
 	/**
 	 * Client → server: this player wants the ball in their hand to carry this ability.
@@ -240,6 +285,112 @@ export const events = Net.Definitions.Create({
 	roundHit: Net.Definitions.ServerToClientEvent<[hitter: string, victim: string, direction: string]>(),
 
 	/**
+	 * Server → client: **one hit landed on a body, whoever either end was, named with the victim first.**
+	 * This is what the impact effect is drawn from, and it is a second event about a hit rather than a second
+	 * version of the one above.
+	 *
+	 * **Why it is not `roundHit` with more callers.** That event is the *feed's*, and its shape follows from
+	 * that: it carries a direction so a row can be painted in two team colours, and it is sent only for hits
+	 * with a person at both ends — `RoundService.logHit` is the sole sender and is reached only when the
+	 * thrower is a `Player` and the victim is too, because the board and the log are records about people. A
+	 * rig's throw and a ball that lands on a rig therefore produce no `roundHit` at all, and in a round played
+	 * against rigs those are most of the hits in it. **A cosmetic effect cannot live on an event that is
+	 * gated on both ends being people**, so it gets its own.
+	 *
+	 * **Two names, and one string covers both kinds of body.** The victim's *model* name is the player's name
+	 * for a character and the rig's own name for a rig, so a client compares against `Players.LocalPlayer.Name`
+	 * exactly as it would for the feed; the thrower is named the same way. What it deliberately does **not**
+	 * carry is the direction, the sides or a count: the effect's colour is which template is cloned, so none
+	 * of that is read, and a field nothing reads is a field that will be believed later.
+	 *
+	 * **Victim first, and the order is the design**: a hit is an impact *at the body it landed on*, so the
+	 * subject of the sentence is the victim and the thrower is what it is told about. A reader that is in
+	 * neither end draws nothing.
+	 *
+	 * **Sent from `RoundService.registerHit`, which is where both ends resolve to something with a name** —
+	 * the thrower arrives as a token that is a `UserId` for a player and a GUID for a rig, and matching a
+	 * rig's GUID to its rig is `throwerOf`'s job.
+	 *
+	 * **And sent in every phase, which is a reversal recorded rather than a quiet widening.** This used to be
+	 * gated with the round — `registerHit` returned before sending unless one was being played — so a ball
+	 * landing on a practice dummy, or on a player in the lobby, drew nothing anywhere. An impact is a fact
+	 * about a *body* rather than about a round, and both of its readers are cosmetic (`hitVfx` draws the
+	 * burst, `hitConfirm` draws the splash), so the send now happens before the round gate and only the
+	 * round's own records stay behind it. **What still does not draw outside a round is a rig's throw**:
+	 * `throwerOf`'s rig arm walks `rigsInRound()`, which is `Playing`-gated, so a rig throwing in the lobby
+	 * resolves to nothing and no half-subject payload is sent. A player's throw always resolves.
+	 *
+	 * **A third field, `ability` — the power the throw was carrying, `""` when it carried none.** Added for the
+	 * escalating splash: `hitConfirm` counts the bodies one throw took and has to know whether to escalate past
+	 * `MULTI HIT!` into `SMASH!` and `RAMPAGE!`, and a client cannot answer that for itself. The two attributes
+	 * that could have said so are both gone by the time an impact is drawn — `BALL_ABILITY_ATTRIBUTE` rides the
+	 * ball, which has already landed, and `ARMED_ABILITY_ATTRIBUTE` is consumed when the mark is applied.
+	 * **`"MultiBall"` is filled in by `registerHit` rather than read off the ball**, because a MultiBall throw
+	 * is a window on the *player* and its balls carry no mark: `isBallAbility` reports `false` for it, so the
+	 * name can never arrive from `abilityOn`. An empty string rather than a `nil`, on
+	 * `BALL_ABILITY_ATTRIBUTE`'s convention — every reader has one empty value to test.
+	 *
+	 * **It is not a record and nothing accumulates from it.** `roundHit` and `roundHitLog` remain the round's
+	 * history of a hit between two people; this is the same event told to the clients that have to draw it,
+	 * and `hitVfx` and `hitConfirm` are its readers.
+	 */
+	hitImpact: Net.Definitions.ServerToClientEvent<[victim: string, thrower: string, ability: string]>(),
+
+	/**
+	 * Server → client: **a throw was caught, and the body that has to wear the consequence is the thrower's.**
+	 * Named thrower first, catcher second — the body being drawn on is the subject, exactly as {@link
+	 * hitImpact} puts the victim first.
+	 *
+	 * **Why a third event, and not a flag inside `hitImpact`.** A caught throw is not a hit: nothing was
+	 * tagged, no damage was dealt and the ball never reached the body it was aimed at. It is also the *only*
+	 * moment in the game where the player who is punished is the one whose ball was stopped — so a client
+	 * cannot derive it from anything it already receives. `hitImpact` could not carry it either: its two
+	 * names are "the body it landed on" and "the arm that threw it", and the meaning of the pair is the
+	 * opposite of this one, so a flag would make every reader re-learn what a hit is.
+	 *
+	 * **Sent from `RoundService.resolveCaughtThrower` rather than from the ball**, and *after* that method's
+	 * guards — so it goes out exactly where the catch actually punishes somebody. A friendly catch returns
+	 * before it (nothing happened to the thrower), a catch between rounds returns (there is no round to be
+	 * out of), and an unresolved thrower — a rig whose throw cannot be attributed — returns too, because a
+	 * payload with no thrower is a body nobody can draw on. Everything that reaches the send is a thrower the
+	 * round is about to kill, which is the sentence the effect says.
+	 *
+	 * **Two names and nothing else.** The thrower's *model* name is the player's name for a character and the
+	 * rig's own name for a rig, so one string answers both — the same convention {@link hitImpact} uses for
+	 * its pair. The catcher is carried only so the client's log line can name both ends; nothing is drawn on
+	 * the catcher's body from this event, because the catch's own burst is `catchShockwave`'s and reads the
+	 * `AnimCatch` mark instead.
+	 *
+	 * **Broadcast, not targeted at the thrower.** A rig's throw being caught is the common case in a round
+	 * against rigs and there is no player end to target; and the body it happened to is one everybody can see.
+	 */
+	caughtThrow: Net.Definitions.ServerToClientEvent<[thrower: string, catcher: string]>(),
+
+	/**
+	 * Server → client: **your throw took the last body on the other side** — the round is decided by your hit,
+	 * and your screen says `WIPEOUT!`.
+	 *
+	 * **Why this cannot be derived on the client.** A wipe is a fact about a *side*: it needs every body on
+	 * that side, their healths, the mode's own rule about what a side running out means, and the rigs the
+	 * client may not even be watching. A client can see the body it hit fall over; it cannot see that it was
+	 * the last one, and it certainly cannot see the mode's answer. So the confirmation is the server's, and
+	 * this event is that confirmation.
+	 *
+	 * **Sent to one player rather than broadcast**, which is the first event in this file that is. Everything
+	 * else here is a thing everybody can see (a hit, a catch, a feed); a wipe is a caption on the thrower's
+	 * own screen, and the other clients already get the result panel when the round finishes. **It carries the
+	 * thrower's name anyway** — the same pair `hitImpact` sends — so the one client that receives it can make
+	 * the same comparison it makes for every other event rather than trusting the addressing.
+	 *
+	 * **Sent from `RoundService.announceWipe`, which `eliminate` calls**, and only when the round's own
+	 * outcome function says the victim's side is now empty *and* the winner is the thrower's side. It fires at
+	 * most once a round: the elimination that empties a side is the last one that can happen. **It is not a
+	 * record and changes nothing** — the result is published by `roundResult` on its own path, and this is the
+	 * caption that path has no place for.
+	 */
+	teamWipe: Net.Definitions.ServerToClientEvent<[thrower: string]>(),
+
+	/**
 	 * Client → server: this player wants to spend coins on a Power Chest.
 	 *
 	 * **Carries nothing, for {@link multiBall}'s reason.** The chest's price, the roster and this
@@ -319,18 +470,18 @@ export const events = Net.Definitions.Create({
 	 * three different sentences a player cannot distinguish by watching nothing happen; an equip's
 	 * refusals are all "that request was not valid", which a correct client never sends and which is not
 	 * worth a sentence. The acknowledgement is the attribute changing, which replicates on its own — the
-	 * same shape `toggleThrow` and `markHeldBall` use.
+	 * same shape `markHeldBall` uses.
 	 */
 	equipCosmetic: Net.Definitions.ClientToServerEvent<[slot: string, id: string]>(),
 
 	/**
 	 * Client → server: this player wants the named power in or out of their item-box pool.
 	 *
-	 * **A toggle rather than a setter, on {@link toggleThrow}'s precedent and for its exact reason.** The
-	 * wire carries a request to *flip* one power, not a pool to install, so a client that has lost track
-	 * of what it has — which is any client that has just joined, or joined back — cannot assert a pool the
-	 * server disagrees with. Flipping what the server already holds is a change the server can make
-	 * correctly whatever the client believes, which is the property a setter does not have.
+	 * **A toggle rather than a setter.** The wire carries a request to *flip* one power, not a pool to
+	 * install, so a client that has lost track of what it has — which is any client that has just joined,
+	 * or joined back — cannot assert a pool the server disagrees with. Flipping what the server already
+	 * holds is a change the server can make correctly whatever the client believes, which is the property a
+	 * setter does not have.
 	 *
 	 * **The pool is not ownership, and this cannot grant anything.** The named power must be one the player
 	 * already owns, checked against the record — so the worst a malicious client can do is put something it

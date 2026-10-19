@@ -15,6 +15,12 @@
  * (`teleportAll`). A camera that moves like that reads as a cut — the world and everything the player was
  * looking at change at once — and this is the thing that is on screen instead.
  *
+ * **And a third, smaller case: one player opting into a round already under way.**
+ * `RoundService.admitWithCover` puts them on their side's spawn with the grid up too — but on *their* screen
+ * alone, because nobody else's camera moves. That is why the cue is an attribute on each **player** rather
+ * than one counter on the round folder (`ROUND_TRANSITION_ATTRIBUTE`): a wipe is a thing that happens to a
+ * player, not an event in the round, and who is covered is the server's answer rather than each client's.
+ *
  * **What it is not.** It is not a loading screen: there is nothing to *wait for* — the arena is already in
  * the world before anybody is moved onto it — and no rule of the game depends on anybody having seen the
  * wipe. What it does cost is time, and both of the round's clocks are held for exactly its length so that

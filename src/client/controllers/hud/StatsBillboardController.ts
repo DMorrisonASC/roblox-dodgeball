@@ -1,11 +1,12 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, ReplicatedStorage } from "@rbxts/services";
+import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { STATS_CONFIG } from "shared/config/stats.config";
 import {
 	CROWN_ATTRIBUTE,
+	NPC_TAG,
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
 	STAT_HITS,
@@ -108,6 +109,21 @@ export class StatsBillboardController implements OnStart {
 		// and HUDs do, for the same reason.
 		for (const player of Players.GetPlayers()) this.watch(player, state, scope, theme);
 
+		// **Rigs wear the crown the same way a player does, and this is the rig half of the same watch.**
+		// The rigs are found by tag rather than by watching `Workspace`, the same read
+		// `RigAnimationController` makes and for the same reason; a rig has no stats record, so the crown is
+		// the only thing hung on its head, and it is read off the model — the crown flag lives on the body
+		// for a rig, where it lives on the player for a player. Both are the one attribute.
+		for (const instance of CollectionService.GetTagged(NPC_TAG)) {
+			if (instance.IsA("Model")) this.attachCrown(instance, scope);
+		}
+
+		scope.push(
+			CollectionService.GetInstanceAddedSignal(NPC_TAG).Connect((instance) => {
+				if (instance.IsA("Model")) this.attachCrown(instance, scope);
+			}),
+		);
+
 		if (DEBUG) print(`[HUD] stat billboards and crowns up — ${Players.GetPlayers().size()} players`);
 	}
 
@@ -200,8 +216,18 @@ export class StatsBillboardController implements OnStart {
 		// on the *player* rather than on the body, because that is where the server wrote it — and that is
 		// the whole of what a respawn costs: the answer did not change, so the only thing that has to be
 		// rebuilt is the billboard, which is what this method is for.
-		const crowned = watchFlag(scope, player, CROWN_ATTRIBUTE);
+		this.mountCrown(head, watchFlag(scope, player, CROWN_ATTRIBUTE), scope);
+	}
 
+	/**
+	 * Hangs the crown on one head — **the one construction, shared by a player's head and a rig's.**
+	 *
+	 * **Built here rather than at each caller** because the crown is the same `BillboardGui` whichever kind
+	 * of body it sits on, and the whole point of the widening is that a rig and a player wear the same crown
+	 * off the same code. `crowned` is the flag to draw from — a `Value` fed by whichever instance carries
+	 * `CROWN_ATTRIBUTE`, a `Player` for a player and the `Model` for a rig.
+	 */
+	private mountCrown(head: BasePart, crowned: Fusion.Value<boolean>, scope: Fusion.Scope<unknown>): void {
 		const crown = new Instance("BillboardGui");
 		crown.Name = CROWN_NAME;
 		crown.Adornee = head;
@@ -228,6 +254,29 @@ export class StatsBillboardController implements OnStart {
 		// crown drawn into a box it was not made for is a crown that looks wrong at every distance.
 		image.ScaleType = Enum.ScaleType.Fit;
 		image.Parent = crown;
+	}
+
+	/**
+	 * Hangs the crown on a rig's head, **and nothing else — a rig has no stats record to draw.**
+	 *
+	 * **The rig half of the same crown a player wears.** The flag is read off the *model* (the server
+	 * writes `CROWN_ATTRIBUTE` on the rig's body, where it writes it on the `Player` for a player), and the
+	 * billboard is the same construction {@link mountCrown} makes for a player. Cleaned up when the rig
+	 * leaves the world — destroyed by `RespawnBehavior`, or taken out of `Workspace` — the same signal
+	 * `RigAnimationController` uses for the same reason.
+	 */
+	private attachCrown(model: Model, parent: Fusion.Scope<unknown>): void {
+		const head = model.WaitForChild("Head") as BasePart;
+
+		const scope = Fusion.innerScope(parent);
+
+		scope.push(
+			model.AncestryChanged.Connect(() => {
+				if (!model.IsDescendantOf(Workspace)) Fusion.doCleanup(scope);
+			}),
+		);
+
+		this.mountCrown(head, watchFlag(scope, model, CROWN_ATTRIBUTE), scope);
 	}
 }
 
@@ -282,20 +331,22 @@ function countOf(player: Player, name: string): number {
 /**
  * A boolean attribute as a `Value`, for {@link watchCount}'s reason and in exactly its shape.
  *
- * **The crown's flag is watched on the player and never on the body**, which is what makes a respawn
- * free: the answer did not change, so the only thing to rebuild is the billboard — and every body gets
- * one of those because every body runs {@link StatsBillboardController.attach}. An attribute that was
- * never written reads as `false`, which is the honest answer for a player who has not been crowned.
+ * **The crown's flag is watched on whichever instance carries it — a `Player` for a player, the `Model`
+ * for a rig** — and never on the body for a player, which is what makes a player's respawn free: the
+ * answer did not change, so the only thing to rebuild is the billboard. For a rig the instance *is* the
+ * body, and the flag dies with it, so the rig's read is rebuilt by the tag's added-signal instead. An
+ * attribute that was never written reads as `false`, which is the honest answer for a body that has not
+ * been crowned.
  */
-function watchFlag(scope: Fusion.Scope<unknown>, player: Player, name: string): Fusion.Value<boolean> {
-	const state = Fusion.Value(scope, flagOf(player, name));
+function watchFlag(scope: Fusion.Scope<unknown>, instance: Instance, name: string): Fusion.Value<boolean> {
+	const state = Fusion.Value(scope, flagOf(instance, name));
 
-	scope.push(player.GetAttributeChangedSignal(name).Connect(() => state.set(flagOf(player, name))));
+	scope.push(instance.GetAttributeChangedSignal(name).Connect(() => state.set(flagOf(instance, name))));
 
 	return state;
 }
 
 /** A boolean attribute, or `false`. */
-function flagOf(player: Player, name: string): boolean {
-	return player.GetAttribute(name) === true;
+function flagOf(instance: Instance, name: string): boolean {
+	return instance.GetAttribute(name) === true;
 }

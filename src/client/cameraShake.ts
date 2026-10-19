@@ -1,5 +1,8 @@
+import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService } from "@rbxts/services";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { THROW_FEEDBACK_CONFIG } from "shared/config/throwFeedback.config";
+import { chargeStartedAt } from "./throwing";
 
 /**
  * The kick the thrower's own camera takes when the ball leaves their hand.
@@ -29,9 +32,11 @@ import { THROW_FEEDBACK_CONFIG } from "shared/config/throwFeedback.config";
  * is not a state change, it is the steady state of a locked player. Two consequences follow, and the second
  * is why this file does not simply capture once:
  *
- * - A value captured at the start of a shake does not *survive* shift lock for the shake's duration, it
- *   *suppresses* it: for about ten frames the shoulder stops tracking the body, because the last write of
- *   each frame is this one. That is a fraction of a stud of drift at the shake's own length and is accepted.
+ * - A value captured at the start of a shake does not need to *survive* shift lock for the shake's duration,
+ *   because the two no longer compete for the frame: `ShiftLock` writes the shoulder first and this module
+ *   adds to it, so the shoulder keeps tracking the body through a shake. Before the reordering below it did
+ *   not — the last write of each frame was this one's, so the shoulder stood still for the shake's length,
+ *   which was the same drift seen from the other side.
  * - **A capture taken once and restored at the end can be left holding the wrong value permanently**, which
  *   is not a fraction of a stud and is not acceptable. Unlock shift lock during a shake — a round boundary, a
  *   zone entry — and `ShiftLock` writes the zero, the shake finishes a few frames later and writes the
@@ -45,12 +50,21 @@ import { THROW_FEEDBACK_CONFIG } from "shared/config/throwFeedback.config";
  * about, and a second thing that wants a camera kick — a dodge, a landing — should be able to call this
  * without the throw's input handler growing a camera.
  *
- * **The binding, and why not a plain `RenderStepped` connection.** Two reasons, and they point the same way.
- * The write has to land where `ShiftLock`'s does — after the camera has placed itself for the frame, so the
- * offset is read by the *next* frame's camera, which is the one-frame lag that file documents and accepts —
- * and it has to land **after** `ShiftLock`'s own step, so the value read below is the one shift lock just
- * computed rather than the previous frame's. `Enum.RenderPriority.Camera.Value + 2` is one above
- * `ShiftLockOffset`, which makes that order a fact rather than a coincidence of registration.
+ * **The binding, and why not a plain `RenderStepped` connection.** Two conditions, and the second one changed
+ * after this file was written. It has to land **after** `ShiftLock`'s own step, so the value read below is the
+ * one shift lock just computed for this frame rather than the previous frame's — that condition is unchanged.
+ * It also has to land **before the camera reads the property**, which is the condition it now shares with
+ * shift lock's own write, for a reason that file's doc carries in full: `Humanoid.CameraOffset` is applied in
+ * the *body's* frame, so a value written after the camera has placed itself is applied against the *next*
+ * frame's body orientation and picks up the body's own turning as camera motion. That is what "the camera
+ * wobbles when I walk backwards" was. **`Enum.RenderPriority.Camera.Value - 1`, one above `ShiftLockOffset`'s
+ * `- 2`**, makes both conditions facts rather than a coincidence of registration: this file adds its kick to
+ * this frame's shoulder and the camera reads the sum moments later in the same frame.
+ *
+ * **That reordering improved this module rather than merely moving it, and the improvement is worth stating.**
+ * The kick used to be added, after the camera, to a shoulder the camera had already read — so what the player
+ * saw was a kick riding on the *previous* frame's shoulder. Now it rides on the current one: the offset is the
+ * correct shoulder plus the shake, with no frame of drift under the jolt.
  *
  * **Bound on the first kick and unbound at the end, which is the opposite of `ShiftLock`'s arrangement and
  * for the opposite reason.** That one binds once and lives forever because the lock comes and goes several
@@ -74,6 +88,23 @@ const BINDING_NAME = "ThrowCameraShake";
 const LATERAL_RATIO = 0.5;
 
 /**
+ * **Placeholder — `0.06`.** How far the camera trembles at a *full* charge, in studs — the amplitude of the
+ * shake that is held for as long as the throw button is down, and the visual the charge level is carried by
+ * now that the animation plays at its authored speed.
+ *
+ * **Scaled by the *square* of the charge**, so a fresh hold is still and the last quarter of the bar is where
+ * a player feels it — a linear ramp is noticeable from the first frame and then has nowhere to go. It is an
+ * offset, not a rotation: small position noise reads as effort, and small *rotation* noise reads as a fault.
+ *
+ * **An offset rather than a bigger release kick**, because the release kick is already sized by the charge and
+ * happens once — it says "how hard" after the fact. This says it *while the player is still choosing*.
+ */
+const CHARGE_TREMBLE_STUDS = 0.06;
+
+/** **Placeholder — `7`.** How many times a second the charge tremble oscillates. */
+const CHARGE_TREMBLE_HZ = 7;
+
+/**
  * The offset the property held before this shake touched it — the value the restore writes back.
  *
  * Not `SHIFT_LOCK_CONFIG.CAMERA_OFFSET`: what is captured is whatever `ShiftLock` had actually written, which
@@ -94,6 +125,16 @@ let written: Vector3 | undefined;
 
 /** How long the shake has been running, in seconds, from the last kick. */
 let elapsed = 0;
+
+/**
+ * **Whether a kick is in flight**, which `elapsed` alone can no longer answer.
+ *
+ * It could while a shake was the only reason to be bound: an untouched `elapsed` of `0` still meant "in
+ * flight" and the step only ever ran during a shake. A *charge* is a reason to be bound with no kick behind
+ * it, and it can last zero seconds — so `elapsed < SHAKE_SECONDS` would have read a held button as a shake at
+ * full amplitude. This flag is the honest test, and it is set in exactly one place.
+ */
+let kicking = false;
 
 /**
  * How much of `SHAKE_MAGNITUDE` this kick gets, as the fraction of a full charge the throw was.
@@ -143,9 +184,12 @@ export function shakeCamera(charge: number): void {
 
 	scale = math.clamp(charge, THROW_FEEDBACK_CONFIG.SHAKE_MINIMUM_FRACTION, 1);
 	elapsed = 0;
+	kicking = true;
 
 	if (!bound) {
-		RunService.BindToRenderStep(BINDING_NAME, Enum.RenderPriority.Camera.Value + 2, step);
+		// `Camera.Value - 1`: after `ShiftLockOffset` (`- 2`) and before the camera itself (`0`). See the
+		// module doc for why both writes have to be inside the frame the camera is about to read.
+		RunService.BindToRenderStep(BINDING_NAME, Enum.RenderPriority.Camera.Value - 1, step);
 		bound = true;
 	}
 }
@@ -194,29 +238,116 @@ function step(deltaSeconds: number): void {
 		base = live;
 	}
 
-	if (elapsed >= THROW_FEEDBACK_CONFIG.SHAKE_SECONDS) {
+	if (kicking && elapsed >= THROW_FEEDBACK_CONFIG.SHAKE_SECONDS) {
 		// **The restore, and it is the captured value rather than `Vector3.zero`.** Zero is `ShiftLock`'s to
 		// write and only while the player is unlocked; writing it here would take the shoulder offset off a
 		// locked player's camera for as long as nothing else happened to want it back.
+		kicking = false;
+	}
+
+	const charge = chargeProgress();
+
+	// **Neither effect is running, so give the property back and stop.** `charge === undefined` is "no button
+	// down", and it is read live rather than latched, so a charge that ends mid-kick leaves the kick alone.
+	if (!kicking && charge === undefined) {
 		humanoid.CameraOffset = base;
 		written = undefined;
 		finish();
 		return;
 	}
 
-	const kicked = base.add(offsetAt(elapsed / THROW_FEEDBACK_CONFIG.SHAKE_SECONDS));
+	// **`offset` and not `next`** — `next` is a Luau builtin and roblox-ts rejects the identifier outright, the
+	// same family as `local` and `nil`. See the project's notes on reserved names.
+	let offset = base;
 
-	humanoid.CameraOffset = kicked;
-	written = kicked;
-	elapsed += deltaSeconds;
+	if (kicking) {
+		offset = offset.add(offsetAt(elapsed / THROW_FEEDBACK_CONFIG.SHAKE_SECONDS));
+		elapsed += deltaSeconds;
+	}
+
+	// **The charge tremble is added on top of the kick rather than replacing it** — same rule as the kick's:
+	// whatever is there, plus this module's contribution. A release during a hold therefore drops the tremble
+	// on the frame the button comes up and lets the kick play out from wherever it had got to.
+	if (charge !== undefined) {
+		offset = offset.add(trembleAt(charge));
+	}
+
+	humanoid.CameraOffset = offset;
+	written = offset;
 }
 
 /** Unbinds the step. Called from the step itself on the frame the shake ends. */
 function finish(): void {
+	kicking = false;
+
 	if (!bound) return;
 
 	RunService.UnbindFromRenderStep(BINDING_NAME);
 	bound = false;
+}
+
+/**
+ * **How far into its charge the player is, `0…1`, or `undefined` when no button is down** — read from the same
+ * `chargeStartedAt` the throw itself reads, so the camera and the ball cannot disagree about how long the hold
+ * has been.
+ *
+ * **Live rather than pushed**, and that is what makes the tremble grow without a single event: the step is
+ * already running at frame rate for the charge's whole duration, so the only thing the level needs is a clock.
+ * Pushed, it would need a connection per charge or a `Change` on every frame of the hold.
+ */
+function chargeProgress(): number | undefined {
+	const startedAt = Fusion.peek(chargeStartedAt);
+
+	if (startedAt === undefined) return undefined;
+
+	return math.clamp((os.clock() - startedAt) / BALL_CONFIG.CHARGE_SECONDS, 0, 1);
+}
+
+/**
+ * The offset at `charge`, **zero at a fresh hold and {@link CHARGE_TREMBLE_STUDS} at a full one.**
+ *
+ * Squared, so the first half of the bar is nearly still and the second half is where it becomes visible — the
+ * level the player is shown by the camera should feel like it is *building*, and a linear ramp is already
+ * obvious at a quarter charge and then has nothing left to say at full.
+ *
+ * **Two frequencies again, for {@link LATERAL_RATIO}'s reason**: one sine on both axes traces a line, and a
+ * line is a vibration rather than a strain. The vertical one is the primary, and the lateral one runs at `1.7×`
+ * so the pair beat rather than share a period — a tremble that repeats exactly is easy for the eye to cancel.
+ */
+function trembleAt(charge: number): Vector3 {
+	const amplitude = CHARGE_TREMBLE_STUDS * charge * charge;
+	const t = os.clock() * CHARGE_TREMBLE_HZ * 2 * math.pi;
+
+	return new Vector3(math.sin(t) * amplitude, math.sin(t * 1.7) * amplitude, 0);
+}
+
+/**
+ * **Binds the step for as long as the throw button is held**, so the charge has something to tremble.
+ *
+ * One connection for the session, and it does almost nothing: it compares "is a charge running" with the
+ * answer it gave last frame and touches the render step only on the edge. That is the same shape as `ShiftLock`
+ * (a permanent watcher, because the state comes and goes) sitting under a step that is bound only when it has
+ * something to write — `shakeCamera` does the unbinding on the frame both effects are done.
+ *
+ * **The binding is `shakeCamera`'s, deliberately**: one step, one name, one owner. A second binding writing
+ * `CameraOffset` would either clobber the first or depend on the order two steps happened to be registered in —
+ * which is exactly the class of bug that made the camera wobble when it was moved before the camera itself.
+ */
+export function startChargeTremble(): void {
+	let wasCharging = false;
+
+	RunService.Heartbeat.Connect(() => {
+		const charging = Fusion.peek(chargeStartedAt) !== undefined;
+
+		if (charging === wasCharging) return;
+
+		wasCharging = charging;
+
+		if (charging && !bound) {
+			RunService.BindToRenderStep(BINDING_NAME, Enum.RenderPriority.Camera.Value - 1, step);
+			bound = true;
+		}
+	});
 }
 
 /**
