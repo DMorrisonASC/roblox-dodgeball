@@ -2817,6 +2817,13 @@ export class RoundService implements OnStart {
 
                 this.abilities.clearMultiBall(player);
                 this.abilities.releaseMysteryPrize(player, "the round ended");
+                // **And nothing stays armed into the intermission**, which is the third thing this sweep takes
+                // away and the only one that is not a row of state: a marked ball is a fact about the *ball*,
+                // so `SuperService` is only ever told about it for the HUD's sake. Left alone, a player who
+                // marked a ball and never threw it would carry a `READY` text into the lobby, where no power
+                // can be used — a promise the next round would then break. `completePower` is silent when
+                // there is nothing armed, which is the ordinary case in this loop.
+                this.abilities.completePower(player);
                 this.respawns.cancel(player, true);
             }
 

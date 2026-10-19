@@ -831,6 +831,23 @@ export const EQUIPPED_ELIMINATION_ATTRIBUTE = "EquippedElimination";
  */
 export const SUPER_MULTI_BALL_COUNT_ATTRIBUTE = "SuperMultiBallCount";
 
+/**
+ * Attribute on a **`Player`** saying *a power is armed and unspent* — the fact `SuperHudController` draws
+ * its `READY` text from.
+ *
+ * `true` rather than a kind, and it is the HUD's question rather than the game's: the word "ready" is not
+ * a power's name, and the two things that make it true (a marked ball in hand, a MultiBall window with
+ * throws left) already publish what they are — `BALL_ABILITY_ATTRIBUTE` on the ball, and
+ * `SUPER_MULTI_BALL_COUNT_ATTRIBUTE` on the player. A reader that wants the *kind* has those; this is one
+ * boolean for a label that says one word. See `SuperService.armPower` for the two sources, the "done"
+ * trigger each of them has, and the four ways this is cleared.
+ *
+ * **Written only by `SuperService.publish`**, which is the same one-writer rule the rest of the HUD's
+ * readout follows: every attribute goes out together, so a client can never see a READY text beside a
+ * prize that has already been spent.
+ */
+export const POWER_READY_ATTRIBUTE = "PowerReady";
+
 /** Diameter of the ball, in studs. */
 export const BALL_SIZE = 2;
 

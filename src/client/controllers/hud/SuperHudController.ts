@@ -9,11 +9,12 @@ import { IMAGES_CONFIG } from "shared/config/images.config";
 import {
 	ARMED_ABILITY_ATTRIBUTE,
 	MYSTERY_POWER_ATTRIBUTE,
+	POWER_READY_ATTRIBUTE,
 	STAMINA_ATTRIBUTE,
 	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
 } from "shared/constants";
 import { sessionHudVisible } from "../../panels";
-import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { HudTheme, hudTheme, UI_FONT } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 import { SuperAbility } from "../input/SuperAbility";
@@ -202,6 +203,51 @@ const STACK_GAP = 10;
 const COUNT_GAP = 6;
 
 /**
+ * The word above the slot while a power is armed: **`READY`, static, and the whole of what this HUD says
+ * about a power that is loaded and waiting.**
+ *
+ * **One word and no animation, by design.** The slot already has the vocabulary for a power *arriving*
+ * (the reel) and for one *going* (the pop); this is the third state either of those would be wrong for —
+ * a power that is simply there, waiting for the player to throw it — and a state is what a label is for.
+ * A pulse or a fade would be a fourth thing moving on a HUD whose job in this corner is to be glanced at.
+ *
+ * **Upper case, matching every other word this client draws at a player** (`hitConfirm`'s ladder,
+ * the round's own labels), and short enough to fit over a 56-pixel slot at a readable size.
+ */
+const READY_TEXT = "READY";
+
+/**
+ * The label's box, in pixels. **Placeholder — the same shape of guess `ICON_SIZE` is.**
+ *
+ * `TextScaled` fills whatever box it is given, so this is "how big the word is" rather than a letter size:
+ * 88 × 22 over a 56-pixel slot puts the word a little wider than the plate it sits above, which is what
+ * makes it read as this stack's label rather than as text floating over the screen. The height is the
+ * number to move first if it reads as too loud — the width only decides the letter size.
+ */
+const READY_WIDTH = 88;
+const READY_HEIGHT = 22;
+
+/**
+ * How far above the slot's top edge the label's *bottom* sits, in pixels. **Placeholder.**
+ *
+ * A gap rather than an overlap, because the plate is 0.9 transparent — a word drawn across its top edge
+ * would read through the plate and land on the icon underneath. The value is under the stack's own
+ * `STACK_GAP` (10) and that is deliberate: this is one label attached to the slot, not a third row of
+ * furniture, so it belongs closer to the thing it describes than the stamina lights do.
+ */
+const READY_GAP = 4;
+
+/**
+ * The outline's thickness, in pixels. **Placeholder — and smaller than `hitConfirm`'s `4` on purpose.**
+ *
+ * That splash is a 150-pixel box scaled by the viewport, so its `4` is roughly three per cent of the
+ * letters; this label is 22 pixels tall, where `4` would eat the word and read as a blob. `2` is the same
+ * proportion at this size, and the *pair* is what matters: white glyphs inside the theme's near-black
+ * outline, which is the one combination that survives a bright court, a dark rig and everything between.
+ */
+const READY_STROKE_THICKNESS = 2;
+
+/**
  * The one ability this file names by hand, because it is the one that has a number on it.
  *
  * **Everything else here works in ids and in whatever the server published.** The slot's icon is an id out of
@@ -250,7 +296,15 @@ interface PowerSlot {
 }
 
 /**
- * The power slot and the stamina pool, bottom centre: an icon with three lights under it.
+ * The power slot and the stamina pool, bottom centre: an icon with three lights under it, and — while a
+ * power is armed and unspent — the word `READY` on a line above it.
+ *
+ * **The word is the newest of the three and the only one that is not a picture.** The icon says *which*
+ * power, the lights say how much sprint is left, and `READY` says the one thing neither of them can: that
+ * what you are holding is loaded and waiting, so the next throw (or the next press, for a window) is the one
+ * that spends it. It is drawn from `POWER_READY_ATTRIBUTE`, which `SuperService` publishes from the two
+ * things that can be armed — a mark on the ball in hand, and a MultiBall window with throws left — so this
+ * file never infers a state the server has not stated. See {@link addReadyLabel}.
  *
  * **One slot, not two, and the second box in the reference is gone.** The old readout had an "ability"
  * row *and* a separate idea of what the ball was carrying; the slot now answers one question — which power
@@ -374,6 +428,23 @@ export class SuperHudController implements OnStart {
 		const glowing = Fusion.Value(scope, false);
 
 		/**
+		 * **Whether a power is armed and unspent — read straight off `POWER_READY_ATTRIBUTE` and nothing
+		 * else.**
+		 *
+		 * Seeded from an attribute read taken before the loop starts, so a client that mounts while a power is
+		 * already armed (a rejoin, a respawn, a round that started while this was loading) shows the word
+		 * immediately rather than at the next edge — the same seeding `previousPrize` does for the reveal, and
+		 * for the same reason.
+		 *
+		 * **This is a `Value` rather than a second thing the loop decides from, which is what keeps the label
+		 * honest.** The loop writes it once per frame from the attribute; the label's `Visible` is bound to it;
+		 * nothing else in this file reads or writes it. The server owns the answer — see `SuperService.armPower`
+		 * for the two sources and the four completions — and this file never infers "ready" from a ball, a
+		 * count or an arm of its own.
+		 */
+		const ready = Fusion.Value(scope, player.GetAttribute(POWER_READY_ATTRIBUTE) === true);
+
+		/**
 		 * **The reel's faces, and why the list is the config's rather than the player's roster.** Every power in
 		 * the game is shuffled past — including the ones this player does not own — because that is what makes
 		 * the reveal a tease rather than a confirmation, and `IMAGES_CONFIG.ABILITY_ICONS` is the only thing that
@@ -396,6 +467,14 @@ export class SuperHudController implements OnStart {
 		}
 
 		const slot = this.addIconSlot(scope, theme, iconId, usesLeft, glowing, reelFaces);
+
+		// **The READY word, over the slot rather than in the column**, and that is the layout decision: a child
+		// of the column would be a fourth thing its `UIListLayout` positions, so a word that comes and goes
+		// would move the icon and the stamina lights every time a power was armed and spent — the same reason
+		// `PowerSlot.pop` is played on the plate inside a frame the layout owns rather than on the frame
+		// itself. As a child of the slot's own frame it rides with the stack, inherits the column's
+		// `Visible`, and costs the layout nothing at all.
+		this.addReadyLabel(scope, theme, slot.frame, ready);
 
 		// Built *after* the slot and given its frame as a parent, because it is anchored to that frame's left
 		// edge — see {@link addCount}. The *outer* frame rather than the plate inside it, deliberately: the
@@ -566,6 +645,14 @@ export class SuperHudController implements OnStart {
 				usesLeft.set(shownKind === MULTI_BALL_KIND ? multiBall : undefined);
 
 				staminaUnits.set(staminaOf(player.GetAttribute(STAMINA_ATTRIBUTE)));
+
+				// **And the one word about an armed power, off the one attribute the server publishes for it.**
+				// No inference here: `SuperService` decides what "armed" means for both kinds of power (a mark
+				// carried by the ball in the hand, a MultiBall window with throws left) and publishes the
+				// answer, so this line is a read rather than a rule. That is also why the label cannot say
+				// ready for a power the server has already spent — the attribute goes false in the same
+				// publication that spends it.
+				ready.set(player.GetAttribute(POWER_READY_ATTRIBUTE) === true);
 			}),
 		);
 
@@ -1118,6 +1205,70 @@ export class SuperHudController implements OnStart {
 		});
 
 		return label;
+	}
+
+	/**
+	 * **The word `READY` above the slot: this HUD's one statement that a power is armed and unspent.**
+	 *
+	 * **Static, and that is the requirement rather than a stage it is at.** The slot already has a vocabulary
+	 * for a power arriving (the reel) and for one going (the pop); this is the third state, a power that is
+	 * simply *there* waiting for the throw that spends it, and a state is what a label is for. A pulse, a
+	 * fade or a pop here would be a fourth thing moving on a HUD whose job in this corner is to be glanced at
+	 * — and it would compete with the two cues that do mean something.
+	 *
+	 * **Styled from `hitConfirm`'s splash, and the two properties that matter are the font and the stroke
+	 * mode.** `UI_FONT` is the face every word in this client is drawn in; `TextScaled` is what sizes the
+	 * letters within a fixed box (so the word is the same shape on a phone and on a monitor rather than one
+	 * pixel size that is right on exactly one screen); and the `UIStroke` is `Contextual`, which outlines the
+	 * *letters*. `Border` is the other mode and strokes the label's own invisible rectangle, which puts
+	 * nothing around the word at all — see that file's note, which is where this pair was worked out. **The
+	 * colours are the theme's**, `onAccent` inside `trough`, which is the same white-inside-near-black pair
+	 * the splash uses, and no `Color3.fromRGB` anywhere: a palette change stays one file's business.
+	 *
+	 * **A plain `Instance` for the stroke**, for `buildSplash`'s reason: it is configured once and nothing
+	 * ever drives it, so there is no property for the graph to track. The label's `Visible` *is* tracked —
+	 * it is bound to the loop's `Value` in the props, which is what makes one attribute on the player the
+	 * whole of this element's behaviour.
+	 *
+	 * **A child of the slot's frame rather than of the column**, and that is the layout decision: a column
+	 * child would be a fourth row the `UIListLayout` positions, so a word that appears and disappears would
+	 * shift the icon and the stamina lights on every arm and every spend. Anchored to the slot's own top edge
+	 * it rides with the stack, inherits the column's `Visible`, and moves nothing.
+	 */
+	private addReadyLabel(
+		scope: Fusion.Scope<unknown>,
+		theme: HudTheme,
+		slot: Frame,
+		ready: Fusion.Value<boolean>,
+	): void {
+		const label = Fusion.New(scope, "TextLabel")({
+			Name: "Ready",
+			Parent: slot,
+			// Bottom edge at the slot's top edge, less the gap; centred horizontally. Relative in x and an
+			// offset in y, so neither number is derived from the slot's size — the frame is `ICON_SIZE` square
+			// and this sits `READY_GAP` above it.
+			AnchorPoint: new Vector2(0.5, 1),
+			Position: new UDim2(0.5, 0, 0, -READY_GAP),
+			Size: UDim2.fromOffset(READY_WIDTH, READY_HEIGHT),
+			BackgroundTransparency: 1,
+			Font: UI_FONT,
+			Text: READY_TEXT,
+			TextColor3: theme.colors.onAccent,
+			TextScaled: true,
+			TextXAlignment: Enum.TextXAlignment.Center,
+			TextYAlignment: Enum.TextYAlignment.Center,
+			// **The one reactive property in this method**, bound to the loop's `Value` rather than to the
+			// attribute directly: `mount`'s loop is the only reader of the player's attributes in this file,
+			// and a second subscription here would be a second reader of one fact.
+			Visible: ready,
+		});
+
+		const stroke = new Instance("UIStroke");
+		stroke.Name = "Outline";
+		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual;
+		stroke.Color = theme.colors.trough;
+		stroke.Thickness = READY_STROKE_THICKNESS;
+		stroke.Parent = label;
 	}
 
 	/**

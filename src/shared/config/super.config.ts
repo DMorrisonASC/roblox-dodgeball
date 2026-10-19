@@ -313,6 +313,61 @@ export const SUPER_CONFIG = {
 	FREEZE_BURST_GRAVITY_SCALE: 1,
 
 	/**
+	 * Whether the authored `FreezeSplash` template plays where a Freeze ball landed.
+	 * **Placeholder — creation switch.**
+	 *
+	 * **A fourth peer rather than a replacement, and the difference between this and
+	 * {@link FREEZE_BURST_ENABLED} is who owns the look.** The burst is built in code from the numbers above —
+	 * a texture, a count, a speed, a colour — because there was no template when it was written. This one is
+	 * somebody else's Studio object, cloned by name and **scaled at runtime to the radius the freeze actually
+	 * used**, which is the thing a static template cannot know: one ball freezes eight studs around the body
+	 * it struck and eight around where it stopped, and the same template has to draw both.
+	 *
+	 * **Both play when both are on, and that is deliberate for exactly one review round.** Turning this on
+	 * next to the burst is how somebody decides which of the two is the splash they want; the loser is
+	 * switched off by its own flag, and neither flag changes anything about the freeze itself. Off means the
+	 * clone is never made — not made and hidden.
+	 */
+	FREEZE_SPLASH_ENABLED: true,
+
+	/**
+	 * Whether a `FreezeSplash` clone's parts are made invisible before the clone is placed.
+	 * **Placeholder — on, and it is the shape every "carrier" template needs.**
+	 *
+	 * **`Transparency` and the three flags are not the same kind of property, which is the whole of why this
+	 * exists.** `CanCollide`, `CanTouch` and `CanQuery` are about *interaction*: with them off a ball flies
+	 * through the part and no query finds it, and the part is still drawn — a solid white block sitting over
+	 * the impact, which reads as a bug in the game rather than as an unedited template.
+	 * `Transparency = 1` is the one that stops it being drawn. A template whose author left it opaque is a
+	 * splash made of a block, and the effect inside it is invisible through it.
+	 *
+	 * **Forced here rather than left to the template, and that is deliberate**: this is a value somebody has to
+	 * remember to set in Studio after every re-upload, and the failure mode is a white cube in the middle of the
+	 * arena — loud, ugly, and impossible to attribute from a screenshot. It is written on the clone and never on
+	 * the template, so `ReplicatedStorage` is left exactly as its author built it.
+	 *
+	 * **Off is for a template that is *geometry*** — a ring, a disc, a glowing shell with particles around it.
+	 * Those want to be seen, and this switch is the way to say so without editing code.
+	 */
+	FREEZE_SPLASH_HIDE_PARTS: true,
+
+	/**
+	 * How long a `FreezeSplash` clone stays in the world when the template's own emitters do not say, in
+	 * seconds. **Placeholder — 1 is the guess.**
+	 *
+	 * **A fallback, not the usual answer.** A splash clone is cleaned up after the *longest particle lifetime
+	 * it contains* plus a small margin — see `SPLASH_CLEANUP_MARGIN` in `FreezeService` — because the author
+	 * of the template set that number and it is the only figure that knows how long the effect is. This
+	 * constant is what is used when the template holds no emitter, or holds one that lives for zero seconds —
+	 * a splash made only of parts, or an emitter left at its defaults — so that the clone is still removed
+	 * rather than left as a part nothing will ever collect.
+	 *
+	 * Long enough to see, short enough that a splash does not sit in the arena: the same order as the burst's
+	 * own lifetime, and the number to move if a template's particles are authored to linger.
+	 */
+	FREEZE_SPLASH_LIFETIME: 1,
+
+	/**
 	 * Whether a Freeze ball wears an aura while it is being held. **Placeholder — creation switch.**
 	 *
 	 * The third of the three, and a peer of the other two for their reason: this one is about a *ball

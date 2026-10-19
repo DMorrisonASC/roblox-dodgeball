@@ -757,6 +757,10 @@ export class BallService implements OnStart {
 			// {@link refillFromBuff}.
 			this.refillFromBuff(model, false);
 
+			// **A dropped mark is a power the player has lost**, so the HUD stops saying ready — the ball that
+			// carried it is a destroyed instance and can never be thrown. See `syncArmedPower`.
+			this.syncArmedPower(model);
+
 			return true;
 		}
 
@@ -855,6 +859,11 @@ export class BallService implements OnStart {
 		this.heldBalls.delete(model);
 
 		held.ball.Destroy();
+
+		// **And if that ball was the armed one, the player is no longer ready.** The last of the five sites —
+		// a round cleanup, a death's own removal, or anything else that takes a ball out of the world. See
+		// `syncArmedPower`; the read finds an empty hand, because the entry went first.
+		this.syncArmedPower(model);
 
 		if (DEBUG) print(`[Ball] ${model.Name}'s ball was destroyed`);
 
@@ -1094,6 +1103,12 @@ export class BallService implements OnStart {
 		grip.Parent = ball;
 
 		this.heldBalls.set(model, { ball, trail });
+
+		// **The hand is full again, so the armed power is whatever this ball carries** — nothing for an
+		// ordinary hand-out or a caught ball (a caught mark is cleared above), and a dev's arm when the ball
+		// this arrived with picked one up. See `syncArmedPower`, of which this is the site that covers both
+		// of the ways a power becomes armed without a press.
+		this.syncArmedPower(model);
 
 		return true;
 	}
@@ -1785,6 +1800,12 @@ export class BallService implements OnStart {
 			if (DEBUG) print(`[Ball] ${model.Name}: refilled by InfiniteBalls`);
 		}
 
+		// **The throw is the done trigger for a ball-carried power**, and this is the line after the hand has
+		// been emptied (and possibly refilled with an ordinary ball). The marked ball is in the air now and
+		// carries its ability to whatever it hits — but the *player* is no longer holding a loaded ball, which
+		// is the fact the HUD's `READY` text is drawn from. See `syncArmedPower`.
+		this.syncArmedPower(model);
+
 		return true;
 	}
 
@@ -2406,6 +2427,11 @@ export class BallService implements OnStart {
 
 		this.setBallAbility(ball, kind);
 
+		// **The power is armed as of this line, and the HUD is told.** The mark is the ball's, so this service
+		// is the only thing that can say so — see `syncArmedPower`. It runs for a rig too, where it returns
+		// immediately: a rig's armed state is its pending slot and nothing on the HUD reads it.
+		this.syncArmedPower(character);
+
 		// **The line says which of the two paid, and it used to name only the charge.** For a player both
 		// terms of `charged` are in play, so the line that names the charge or the prize for a player is kept
 		// word for word; a rig has no charge and no prize to name, so its line names the slot instead. The
@@ -2445,6 +2471,42 @@ export class BallService implements OnStart {
 	 */
 	public getHeldBall(model: Model): BasePart | undefined {
 		return this.heldBalls.get(model)?.ball;
+	}
+
+	/**
+	 * **Tells `SuperService` what power the body is holding, so the HUD's `READY` text follows the ball.**
+	 *
+	 * This service owns hands and the ball owns the mark, so this is the side of the line that can answer
+	 * "is this player holding a loaded ball" — and `SuperService` deliberately never touches a ball ("nothing
+	 * in this file touches a ball"), which is why the answer has to be handed over rather than asked for. It
+	 * is the arm/complete pair in `SuperService` that this drives: `armPower` when there is a mark to report
+	 * and `completePower` when there is not.
+	 *
+	 * **The answer is *derived* here on every call, rather than a kind being passed in.** Every call site is
+	 * already a moment the hand's contents changed, and reading the truth at each of them is what makes a
+	 * missed edge impossible to spell: a caller cannot report the wrong kind, because it reports nothing at
+	 * all. The alternative — passing the kind from the site that knows it — would be a second copy of a fact
+	 * the ball is holding, and the two would disagree exactly when a ball was replaced inside one of the
+	 * sites rather than before or after it.
+	 *
+	 * **Five call sites, and every one is a moment the project already treats as "this ball's fate
+	 * changed":** the mark landing ({@link markHeldBall}), a ball arriving in a hand ({@link
+	 * attachToHandBody}'s tail — which is also how a dev's arm becomes a mark), the throw
+	 * ({@link throwBallBody}'s tail, after any refill), the drop ({@link dropBall}), and the ball being
+	 * destroyed ({@link removeBall}).
+	 *
+	 * **A rig is skipped.** A rig's armed state is its pending slot on the body and the mark on its ball, and
+	 * it has no HUD to tell — `SuperService.armPower` and `completePower` are `Player`-keyed for that reason.
+	 * Every rig path comes through these same five sites, so this guard is the whole of the difference.
+	 */
+	private syncArmedPower(model: Model): void {
+		const player = Players.GetPlayerFromCharacter(model);
+		if (player === undefined) return;
+
+		const kind = abilityOn(this.getHeldBall(model));
+
+		if (kind === undefined) this.abilities.completePower(player);
+		else this.abilities.armPower(player, kind);
 	}
 
 	/**

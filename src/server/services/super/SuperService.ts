@@ -9,6 +9,7 @@ import {
 	ARMED_ABILITY_ATTRIBUTE,
 	CROWN_ATTRIBUTE,
 	MYSTERY_POWER_ATTRIBUTE,
+	POWER_READY_ATTRIBUTE,
 	PRACTICE_ZONE_ATTRIBUTE,
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
@@ -196,6 +197,29 @@ export class SuperService implements OnStart {
 	 */
 	private readonly mystery = new Map<Player, MysteryPrize>();
 
+	/**
+	 * **The power each player has armed and not yet spent** — the truth behind `POWER_READY_ATTRIBUTE`, and
+	 * the only container in this file that is player-only.
+	 *
+	 * **Why it exists when the mark is already on the ball.** A ball-carried power is a property of the
+	 * *ball* (`BALL_ABILITY_ATTRIBUTE`), and this service deliberately never touches one — so the HUD, which
+	 * has one player's attributes and no ball, could not otherwise tell "my ball is loaded" from "my ball is
+	 * ordinary". `BallService` is the side of that line that holds the ball, so it is the side that reports
+	 * the two moments: armed when the mark lands, complete when that ball's fate changes. See
+	 * {@link armPower} for the arming sites and the four completions, and {@link completePower} for why a
+	 * completion names no kind.
+	 *
+	 * **A `Map` of kinds rather than a `Set`**, which is the shape the prompt-sized question would settle for:
+	 * one boolean would answer the HUD today and have to be joined to a second attribute the first time a log
+	 * line or a label wants to name the power. The kind is also what makes a late completion harmless — see
+	 * `completePower`.
+	 *
+	 * **`Player` and not `Player | Model`, unlike both of its siblings.** A rig has no HUD, no arm and no
+	 * `POWER_READY_ATTRIBUTE` to publish; its own equivalent is the pending slot on the body and the mark on
+	 * the ball, both of which already exist. Widening this key would be a row nothing reads.
+	 */
+	private readonly armed = new Map<Player, AbilityKind>();
+
 	public onStart(): void {
 		// **The one leak this service can have.** Both containers are keyed on a `Player`, so a player
 		// who leaves would otherwise keep their row for the life of the server. The charge is
@@ -218,6 +242,11 @@ export class SuperService implements OnStart {
 			// became a prize — the timer a live window used to schedule is gone, so the only thing that
 			// could ever have been left running for this player is a row, and the row is what this deletes.
 			this.mystery.delete(player);
+
+			// **And the armed row, on the same argument and with one difference worth a line.** The other two
+			// are state a player *has*; this one is state a player's *ball* has, copied here for the HUD — so
+			// deleting it strands nothing at all, because the mark it described left the game with the body.
+			this.armed.delete(player);
 
 			// **And the crown is recomputed, because the player who just left may have been the reason
 			// somebody else was not wearing it.** A team's highest hitter leaving hands the crown to
@@ -323,6 +352,19 @@ export class SuperService implements OnStart {
 			// clock: without one, the only way to lose it is to be killed, which is a thing the game is already
 			// about. See {@link releaseMysteryPrize} for the other endings.
 			this.releaseMysteryPrize(owner, "died");
+
+			// **And whatever was armed goes with them**, which is the third of the three things a death ends
+			// here and the only one that is not a `MultiBall` question. A marked ball in a dead player's hand is
+			// about to be destroyed with the body (`RoundService` removes a dying player's ball), so the mark is
+			// gone whether or not this line is here — but the *attribute* is what the HUD reads, and a body
+			// looking at a `READY` text it can no longer spend is the ghost this clear exists to prevent. See
+			// {@link completePower}.
+			//
+			// **A MultiBall window is not this method's to close, and on a death it is already closed**: the
+			// round's own `handleDeath` calls `clearMultiBall` before it reaches here, and the derived `ready`
+			// in `publish` follows the count rather than a row. That is why the death path needs one line here
+			// and none for the window.
+			this.completePower(owner);
 		} else {
 			// A rig's prize is its `PENDING_ABILITY_ATTRIBUTE` slot, not a row here, and its streak row dies
 			// with the body it is keyed on — `RespawnBehavior` is about to destroy the model. The delete is
@@ -504,6 +546,66 @@ export class SuperService implements OnStart {
 	}
 
 	/**
+	 * **Records that `player` has a power armed and unspent, and publishes the fact** — one of the two
+	 * moments the HUD's `READY` text is drawn from.
+	 *
+	 * **Every power has an arming moment and a "done" moment, they live in different files, and neither of
+	 * them is this service's** — that is the whole of the pattern, and the reason it is two methods rather
+	 * than a callback registry or a per-power class:
+	 *
+	 * - **Arming is the moment a power becomes ready to fire.** For a ball-carried power it is the mark
+	 *   landing on the ball in the player's hand — `BallService.markHeldBall`, and `attachToHand` for the
+	 *   case where a dev's arm is taken up by the first ball to arrive. MultiBall has nothing to record:
+	 *   a window with throws left *is* an armed power, so `publish` derives it (see `ready` below) rather
+	 *   than keeping a second row that could disagree with the count.
+	 * - **The done trigger is whatever ends that power's life, and it is written at the site that already
+	 *   knows.** A ball's four are the throw (`throwBallBody`), the drop (`dropBall`), and the two ways the
+	 *   ball stops being the one in that hand (`attachToHand`'s replace, `removeBall`'s destroy); MultiBall's
+	 *   is the last throw (`consumeMultiBallBall` closes the window, and the derivation follows it), a death,
+	 *   and the round ending. **A future power of neither shape** — a banana placed on the floor — adds one
+	 *   line at its placement site and nothing at all here, which is the property this exists for.
+	 *
+	 * **The alternative that was refused: a registry of per-power cleanup callbacks.** It reads as the more
+	 * extensible answer, and it is the one place where the "done" condition would be *described* rather than
+	 * *observed* — so a power whose ending arrives twice, or not at all, would be a bug inside this file
+	 * rather than a missing line in the file that owns the condition. Every ending in this game is already an
+	 * event some other service handles; this service only needs to be told, and told the same way each time.
+	 *
+	 * **Re-arming replaces rather than stacks**, which is all a player can do: one ball in a hand, one window
+	 * at a time. A second mark inside a round is the ordinary case (mark, throw, mark again), and it is the
+	 * same power or a different one — both read as "armed" and both are cleared by the same completion.
+	 */
+	public armPower(player: Player, kind: AbilityKind): void {
+		this.armed.set(player, kind);
+
+		this.publish(player);
+
+		if (DEBUG) print(`[Super] ${player.Name}: ${kind} armed — the HUD says ready until it is spent`);
+	}
+
+	/**
+	 * **Ends whatever power `player` had armed**, and publishes it gone.
+	 *
+	 * **Silent when nothing was armed**, for `clearMultiBall`'s reason: four callers fire for every player
+	 * they touch (a throw, a drop, a death, a round ending) and most of them find nothing to clear, so the
+	 * guard is the `delete`'s own answer rather than a test in front of it.
+	 *
+	 * **No kind argument, and that is a decision rather than a shortcut.** A caller knows *a* power ended
+	 * but not reliably *which*: a player can mark, throw, and mark again inside a round, and a body can be
+	 * disarmed by something that never knew what was armed (a ball destroyed by a round cleanup). Asking the
+	 * caller to name the kind would let a completion for Freeze clear a Pierce armed a moment later, and the
+	 * question every real caller is answering is "this body's armed power is over" — which is true whatever
+	 * it was holding.
+	 */
+	public completePower(player: Player): void {
+		if (!this.armed.delete(player)) return;
+
+		this.publish(player);
+
+		if (DEBUG) print(`[Super] ${player.Name}: armed power over — nothing is ready`);
+	}
+
+	/**
 	 * Takes the charge away because it has been used, because the ball carrying it was thrown.
 	 *
 	 * **Spent on the throw and not on the press, and this is the one decision in the file worth stating
@@ -615,6 +717,19 @@ export class SuperService implements OnStart {
 		// **There used to be a second one beside it** — the deadline of the window this prize replaced —
 		// and it is gone with the clock it described. A held prize has no end to publish.
 		player.SetAttribute(MYSTERY_POWER_ATTRIBUTE, this.mystery.get(player)?.kind ?? "");
+
+		// **And whether anything is armed, which is the one attribute here that is *derived* rather than
+		// stored.** Two things make a player ready: a power they have marked onto the ball in their hand
+		// (this service's `armed` row, written by `BallService` at the two ends of that ball's fate) and a
+		// MultiBall window with throws left — and the window is *asked* rather than copied, so the count and
+		// the text can never disagree about whether the window is running. That is the same rule the line
+		// above follows for the count itself: ask the thing that knows, publish the answer.
+		//
+		// **`true` rather than the kind**, because the HUD draws one word. A reader that wants which power is
+		// armed has `MYSTERY_POWER_ATTRIBUTE` (a held prize), `SUPER_MULTI_BALL_COUNT_ATTRIBUTE` (a window),
+		// and the ball's own `BALL_ABILITY_ATTRIBUTE`; this is the yes/no the label needs. See
+		// `POWER_READY_ATTRIBUTE`.
+		player.SetAttribute(POWER_READY_ATTRIBUTE, this.armed.has(player) || this.isMultiBallActive(player));
 	}
 
 	/**
