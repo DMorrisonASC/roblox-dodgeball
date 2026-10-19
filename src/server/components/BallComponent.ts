@@ -23,6 +23,7 @@ import { FreezeService } from "../services/actions/FreezeService";
 import { RoundService } from "../services/round/RoundService";
 import { StatsService } from "../services/stats/StatsService";
 import { SuperService } from "../services/super/SuperService";
+import { BadgeService } from "../services/badges/BadgeService";
 
 /**
  * The tag every dodgeball carries — **the same string as this component's own `tag: "Ball"`, which
@@ -177,6 +178,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		private readonly rounds: RoundService,
 		private readonly abilities: SuperService,
 		private readonly freezes: FreezeService,
+		private readonly badges: BadgeService,
 	) {
 		super();
 	}
@@ -523,6 +525,14 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// ball in that case, and nothing below should resolve a throw that is no longer in the
 			// air.
 			if (this.balls.catchBall(character, this.instance)) {
+				// **The round's badge count, and it goes here rather than in `CatchService.consume`.** That
+				// method is the *close* of a window and not the catch of a ball — it runs for an expiry, a
+				// death, a departure and a spent attempt alike — so counting it would hand `wall` and
+				// `safeHands` to anybody who merely pressed the key. This line is the one place a ball has
+				// actually been caught, and it is inside the `catchBall` answer for the same reason: a catch
+				// that could not attach a ball is not a catch.
+				this.badges.recordCatch(character);
+
 				this.resolveCatch(character, throwerId);
 			}
 			return;

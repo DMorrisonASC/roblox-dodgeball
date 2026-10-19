@@ -1,9 +1,10 @@
 import { CollectionService, Workspace } from "@rbxts/services";
-import { BALL_NAME, TEAM_ATTRIBUTE } from "shared/constants";
+import { BADGES_ATTRIBUTE, BALL_NAME, TEAM_ATTRIBUTE } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { TEAM_A, TEAM_B } from "../../services/round/team";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
+import { ragdoll } from "../ragdoll";
 import {
 	WALK_TO_JOIN_PAD_AT_ATTRIBUTE,
 	WALK_TO_JOIN_PAD_ATTRIBUTE,
@@ -106,40 +107,29 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 			const root = model.FindFirstChild("HumanoidRootPart");
 			if (!humanoid || !root || !root.IsA("BasePart")) return;
 
-			// **The engine's own ragdoll, left switched on — and this is a reversal, with the old line quoted
-			// rather than deleted.** This stood as `= false` from 2026-09-22, when this file first landed
-			// (commit `c267524`, "NPC spawns after killed"), on the argument that the corpse had to be kept
-			// whole "for the one thing this behavior still needs a corpse for: its name and its tags". It even
-			// named its own cost: *"a death that reads as a body falling over rather than as an explosion."*
-			// That is exactly what the user asked about months later — *"the rigs stopped ragdolling"* — and
-			// the answer is this one property, which is why flipping it back is the whole of the fix.
+			// **The joints are kept, and `onDied` turns them into sockets — the third position on this line, and
+			// the two before it are worth keeping because each was a real attempt.**
 			//
-			// **The reason it was set no longer holds, and that is checkable rather than a matter of taste.**
-			// `true` breaks the joints that hold the corpse's limbs to it — the `Motor6D`s — and destroys
-			// nothing else: the `Model` keeps its `Name`, its children, its attributes and its
-			// `CollectionService` tags, so every read `onDied` makes below — `GetTags(model)`,
-			// `GetAttribute(TEAM_ATTRIBUTE)`, `model.Parent`, the `Humanoid.Health` guard, `dropBall(model)` —
-			// answers the same on a ragdolled corpse as on a rigid one. (A ball welded into a dead rig's hand
-			// may come loose on the same break rather than three seconds later; `dropBall` below is the
-			// explicit path and is happy either way.) **Nothing anywhere clones a corpse either**, which is the
-			// trap this line was really guarding against: the template is taken in `prepare` while the rig is
-			// **alive and on its feet** (see this file's own opening argument), so a corpse in pieces is a
-			// thing nothing reads.
+			// - `= false` from 2026-09-22 (commit `c267524`, "NPC spawns after killed"), on the argument that
+			//   the corpse had to stay whole "for the one thing this behavior still needs a corpse for: its name
+			//   and its tags". The body then *fell over like a plank*: never limp, and the user's complaint
+			//   months later — *"the rigs stopped ragdolling"* — was this line.
+			// - `= true` on 2026-10-19, which is the engine's own ragdoll and is **not** one: it destroys every
+			//   `Motor6D` at the moment of death, so the rig comes *apart* — limbs as separate bodies, scattered
+			//   a few studs, impossible to read as a death. The user's answer to that was immediate: *"the rigs
+			//   are breaking apart instead of rag dolling."*
+			// - `= false` again, **paired with `ragdoll()` in `onDied`** — the only one of the three that is a
+			//   ragdoll: the joints are left intact here so that there is something to swap, and the swap
+			//   replaces each `Motor6D` with a `BallSocketConstraint` at the same offset, so the limb stays
+			//   attached and stops being driven. See `npc/ragdoll.ts` for the mechanism and for why the offsets
+			//   and the limits are the whole of what makes it read correctly.
 			//
-			// **What comes back with it, named because it is the point and because it has two real costs.**
-			// The death is an explosion of limbs rather than a plank toppling over — what a rig did before
-			// 2026-09-22 and what the user remembers. The costs: the limbs scatter a few studs, so a corpse
-			// occupies a slightly wider patch of floor for `RESPAWN_DELAY_SECONDS`; and a limb is still a
-			// `Character`-group part, so a thrown ball can strike it and stop on it exactly as it could on the
-			// rigid corpse. Neither is scored — `BallComponent.resolveTags` skips any body whose
-			// `Humanoid.Health <= 0` — and neither is new, because `LobbyRigService`'s own doc already
-			// describes rigs left "in pieces" as an ordinary state for a corpse it has to retire.
-			//
-			// **A *connected* ragdoll is a different feature and not this line.** Keeping the body in one limp
-			// piece means swapping each `Motor6D` for sockets on death — a mechanic with its own bookkeeping,
-			// its own cleanup and its own look. The engine's is a setting, it is what the game had, and it is
-			// what "ragdolling" meant here. Stated so the next reader does not go looking for a synthesiser.
-			humanoid.BreakJointsOnDeath = true;
+			// **The corpse is still whole, which means the original argument is satisfied as well.** A socketed
+			// corpse keeps its `Name`, its children, its attributes and its `CollectionService` tags, and this
+			// file's template was taken while the rig was **alive and on its feet**, so nothing here has ever
+			// read a corpse's shape. **Nothing clones a corpse either** — see `rigPool.ts`, which records the
+			// same fact for the same reason.
+			humanoid.BreakJointsOnDeath = false;
 
 			// A rig that has already been replaced arrives with its home *and* its template
 			// carried over from the rig it replaced — including a template that was taken while
@@ -217,6 +207,22 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 		},
 
 		onDied(model) {
+			// **The corpse goes limp here, synchronously, and the rebuild does not wait for it.** The conversion
+			// has to happen on the frame of the death: a rig whose joints are still driving it for the
+			// three-second delay would stand in its death pose until it was replaced, and the sockets would then
+			// be applied to a body already on its way out. `ragdoll` is idempotent — it converts whatever
+			// `Motor6D`s are left and answers nought the second time — so the line is safe even if a death were
+			// ever reported twice.
+			//
+			// **The count is printed, because it is the one thing that distinguishes "the ragdoll did not
+			// happen" from "the ragdoll happened and the limits are wrong".** A body that falls over stiffly has
+			// either no sockets or sockets with a cone of nought; the number answers which, per rig, at the
+			// moment it matters. **Nought is printed too**, which is the line that says a rig had no `Motor6D`s
+			// to convert at all — a welded or static template rather than a jointed one — and without it that
+			// case would look exactly like a ragdoll with bad limits.
+			const joints = ragdoll(model);
+			if (DEBUG) print(`[NPC] ${model.Name}: ragdolled — ${joints} socket(s)`);
+
 			task.spawn(() => {
 				const name = model.Name;
 
@@ -274,6 +280,21 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// anybody can write is not a side until it reads as one.
 				const label = model.GetAttribute(TEAM_ATTRIBUTE);
 				const team = label === TEAM_A || label === TEAM_B ? label : undefined;
+
+				// **And the strip the round gave it, read off the corpse for the same reason as the three above
+				// — this is the last moment it can be read at all.** A badge is a sentence about the *round the
+				// rig has just played*, and the body wearing it is a copy of a template taken while that rig was
+				// alive, which is to say before the round said anything about it. So without this line the strip
+				// dies with the corpse: a rig killed in the last seconds of a round came back blank a second
+				// after earning it, and a lobby full of blank heads was reported as "the badges were not
+				// shown". The write itself now happens after the boundary (see `BadgeService.publish`), and this
+				// is the other half: a rebuild *anywhere* inside the fifteen-second window carries the strip
+				// across rather than dropping it.
+				//
+				// **`""` is deliberately not carried.** An empty value means "this round said nothing about this
+				// body", and the replacement already says nothing about it — copying it would be writing a fact
+				// that is already true, on a body that is not yet in the world.
+				const worn = model.GetAttribute(BADGES_ATTRIBUTE);
 
 				// Scope: Npc.Respawn.clone — the one expensive statement in the rebuild, on its own band
 				// because it is the only part of this thread whose cost is not a handful of writes.
@@ -355,6 +376,17 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 
 					rig.Parent = Workspace;
 				}
+
+				// **The strip goes back on before the tags do**, so a rig that is rebuilt inside the badge window
+				// is never briefly a rig with no badges: the client mounts a billboard when `NPC_TAG` arrives and
+				// reads the attribute at that moment, so a value written after the tag would be a visible flicker
+				// rather than a missing line — and a value written *only* on the attribute signal would be no
+				// line at all for a client that had not been told about the old body.
+				//
+				// **Copied rather than re-derived**, because nothing in this file knows what a badge is: the
+				// value is one string the server wrote, and moving it from one instance to another is the whole
+				// of what a rebuild owes it. See `BADGES_ATTRIBUTE` in `shared/constants.ts`.
+				if (typeIs(worn, "string") && worn !== "") rig.SetAttribute(BADGES_ATTRIBUTE, worn);
 
 				// **Written before the entry point arrives, exactly like the tags two lines down**, so the
 				// loop that starts on `NPC` finds a body that already has its side rather than one that

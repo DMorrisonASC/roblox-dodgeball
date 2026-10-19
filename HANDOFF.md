@@ -351,7 +351,10 @@ src/server/
   services/zone/PracticeZoneService.ts   zone membership -> PRACTICE_ZONE_ATTRIBUTE
   services/npc/NpcService.ts     + npc/Behavior.ts, npc/behaviors/*, npc/rigs.ts, npc/sideZones.ts,
                                  npc/rigPool.ts (the name and body pool every placeholder rig is drawn
-                                 from — nothing is reused while a live rig wears it), and
+                                 from — nothing is reused while a live rig wears it),
+                                 npc/rigTemplate.ts (the boot audit of every rig template under
+                                 `ServerStorage`, named by full path, plus the one spawn gate — it
+                                 reports and repairs nothing), and
                                  npc/lobbySpawns.ts (a lobby seat *by side*: the parts under
                                  `LobbySpawns/A` and `/B` carrying `TEAM_ATTRIBUTE`, with a
                                  whole-folder fallback and one warning when the place file has not
@@ -397,7 +400,7 @@ src/client/
                                  `pop`; `catchPrompt.ts` uses the first and deliberately not the
                                  second), elevation.ts, panelChrome.ts
   controllers/                   CoreGuiController.ts (shared core-GUI wiring)
-  controllers/hud/               RoundStatus, RoundResult, RoundTransition, LoadingScreen,
+  controllers/hud/               RoundStatus, RoundTransition, LoadingScreen,
                                  RespawnHud, CurrencyHud, SuperHud, StatsBillboard, ScoreHud,
                                  CooldownHud, ThrowStateToast, ControlsLegend, ModeVote,
                                  ArenaFreezeCountdown, Dock, Shop, Inventory, Theme
@@ -517,11 +520,28 @@ Then `await this.waitWhilePaused();` and back to the intermission.
   they leave rather than on the next tick — measured in a live log at **27 ms** from disconnect to
   `[Round] Team A won`.
 - `finishRound(outcome)` is **idempotent** via `this.finished`. In order: print the score for scoring
-  modes, write `ROUND_WINNER_ATTRIBUTE`, `sendResult(outcome)`, **`this.economy.onRoundEnded(outcome,
-  this.teams, this.roundHits)`**, print `[Round] <result>`. Two callers reach it (the tick and
-  `PlayerRemoving`) and the first wins.
-- `sendResult(outcome)` returns immediately on `DRAW`; otherwise it builds one row per winning-side
-  player from `roundHits`/`roundOuts`, sorts by hits, and sends `roundResult` to everyone.
+  modes, write `ROUND_WINNER_ATTRIBUTE`, **`this.economy.onRoundEnded(outcome, this.teams,
+  this.roundHits)`**, **`this.stats.onRoundEnded()`**, **`this.badges.onRoundEnded(outcome,
+  this.badgeSubjects())`**, wipe the score, print `[Round] <result>`. Two callers reach it (the tick and
+  `PlayerRemoving`) and the first wins. **A draw reaches the badges**, which is the one thing the deleted
+  board never did.
+- **The end-of-round board is gone (2026-10-19).** `sendResult`, its `roundResult` event and
+  `RoundResultController` were deleted together — the controller was the event's only reader, so all three
+  went. What a round publishes about itself now is `BADGES_ATTRIBUTE`, one comma-joined id list per body,
+  for fifteen seconds or until the next `Playing` edge. Two consequences worth knowing: `roundOuts` has no
+  reader left (see its field note in `RoundService`), and `roundHits` has exactly one
+  (`EconomyService.onRoundEnded`'s performance bonus).
+- **`BADGES_ATTRIBUTE` is written by `badges.publish()`, not by `onRoundEnded` (2026-10-19).** The sets are
+  derived at `finishRound`, because the counters only live that long, and then *held* — because every body
+  the write could land on is about to be moved or replaced by the boundary. `publish()` is called in the
+  intermission's own section, immediately after `transitionAround(...)` has run `teleportAll` and
+  `returnRigsToLobby`, and it starts the fifteen-second clock there rather than at the derivation. **The
+  fault it fixes:** a write at `finishRound` landed on corpses, and `RespawnBehavior` rebuilds a rig from a
+  template taken while that rig was *alive* — so a rig killed in the last seconds of a round came back blank
+  a second after earning its strip. Eight strips were written and three were visible, which was reported as
+  "the badges were not shown". `RespawnBehavior` now carries the attribute across a rebuild for the same
+  reason, and `BadgeService.clearAll` sweeps rigs by `NPC_TAG` because a rebuilt body can hold a value this
+  service never wrote to.
 
 ### Death and elimination
 
@@ -809,13 +829,12 @@ wrong:
 | Controller | Shows | Reads |
 |---|---|---|
 | `RoundStatusController` | phase, clock, mode name, player count | `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE` |
-| `RoundResultController` | the end-of-round board | those two + the `roundResult` event |
 | `RoundTransitionController` | the grid wipe | `ROUND_TRANSITION_ATTRIBUTE` |
 | `LoadingScreenController` | the join overlay | no attribute — three runtime signals |
-| `RespawnHudController` | tenths countdown, above centre | `RESPAWN_AT_ATTRIBUTE` |
+| `RespawnHudController` | **two lines** above centre (`0.44` down): the tenths countdown as `h4` seconds + dimmer `subtitle1` tenths, and beneath it `Hit by <name>` — the splash's own styling (`ui/actionSplash.ts`) rather than a copy of it | `RESPAWN_AT_ATTRIBUTE`, `LAST_HIT_BY_ATTRIBUTE` |
 | `CurrencyHudController` | `Coins: N`, under the shop button | `COINS_ATTRIBUTE` |
 | `SuperHudController` | streak / charge / armed ability / MultiBall window | the four `SUPER_*` attributes + the held ball's mark |
-| `StatsBillboardController` | per-head hit/out record, and the crown | `STAT_HITS`, `STAT_OUTS`, `CROWN_ATTRIBUTE` |
+| `StatsBillboardController` | **the round's badges, or** the per-head hit/out record — one billboard, two contents; a rig wears the badge strip alone. **The crown visual is retired** (`CROWN_ATTRIBUTE` still drives `EconomyService.checkMilestones`; the `onFire` badge is the picture now) | `BADGES_ATTRIBUTE`, `STAT_HITS`, `STAT_OUTS` |
 | `HitLogController` | who you hit / who hit you, top left, during a round | the `roundHit` event |
 | `CooldownHudController` | dodge / catch / stamina bars | `DODGE_READY_AT`, `CATCH_READY_AT`, `STAMINA_ATTRIBUTE` |
 | `ThrowStateToastController` | throwing on/off toast | `THROW_ENABLED` |
@@ -1368,6 +1387,12 @@ should return this file and no other.*
   on a second death. `RESPAWN_AT_ATTRIBUTE` publishes the *instant* the body is due on
   `Workspace:GetServerTimeNow()`, which is what lets `RespawnHudController` draw a smooth countdown
   with no remote, no local timer and no second answer to "how long is the wait".
+- **The countdown's second line — `Hit by <name>` — is a second attribute on the same player.**
+  `LAST_HIT_BY_ATTRIBUTE` is written by `RoundService.registerHit` **at the tag** (a player's
+  `DisplayName`, a rig's `Name`), from the `thrower` that method has already resolved, and cleared by
+  `RoundService` when a body arrives and at the `Playing` edge. **It cannot come from `roundHit`**: that
+  event is sent only with a person at *both* ends, so it can never name a rig's throw — which in a round
+  against rigs is most of them.
 
 ---
 

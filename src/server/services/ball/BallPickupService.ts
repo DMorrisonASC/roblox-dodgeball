@@ -7,6 +7,7 @@ import { lockoutElapsed } from "../actions/actionLock";
 import { BallService } from "./BallService";
 import { CatchService } from "../actions/CatchService";
 import { DodgeService } from "../actions/DodgeService";
+import { BadgeService } from "../badges/BadgeService";
 
 /**
  * The tag every ball carries.
@@ -39,6 +40,7 @@ export class BallPickupService implements OnStart {
 		private readonly balls: BallService,
 		private readonly dodges: DodgeService,
 		private readonly catches: CatchService,
+		private readonly badges: BadgeService,
 	) {}
 
 	public onStart() {
@@ -102,7 +104,16 @@ export class BallPickupService implements OnStart {
 		const ball = this.nearestLooseBall(entity.root.Position, radius);
 		if (!ball) return false;
 
-		return this.balls.pickupBall(model, ball);
+		const taken = this.balls.pickupBall(model, ball);
+
+		// **The round's badge count, for a ball that actually changed hands.** `pickupBall` can refuse — a hand
+		// that filled between the search and this line — and the pickup loop runs for every player on a tick,
+		// so counting the attempt would count the same ball for somebody standing over it. `fetchDog` is the
+		// badge that reads this, and it is a joke about running for other people's balls only if the number is
+		// the ones actually taken.
+		if (taken) this.badges.recordPickup(model);
+
+		return taken;
 	}
 
 	/**

@@ -1,10 +1,11 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage } from "@rbxts/services";
-import { MATCH_JOIN_A_TAG, MATCH_JOIN_B_TAG, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { MATCH_JOIN_A_TAG, MATCH_JOIN_B_TAG, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
 import {
 	MATCH_MAX_PER_TEAM,
 	MATCH_MIN_PLAYERS,
+	MATCH_SIDE_LOCK_SECONDS,
 	MATCH_SIGN_MAX_DISTANCE,
 	MATCH_SIGN_OFFSET_Y,
 	MATCH_SIGN_SIZE,
@@ -329,6 +330,34 @@ export class MatchService implements OnStart {
 			return undefined;
 		}
 
+		// **And the same lock for the last seconds of an intermission — a switch, never an arrival.** A
+		// crossing changes two counts at once, and the seat arithmetic that answers it is a poll plus a rig's
+		// walk; started two seconds before the whistle it is still moving when `RoundService.assignTeams` fills
+		// its table, which is how a side opens a round a body short. **A player with no side is never refused**,
+		// on the rule above: they are the body that makes the sides even, and the lock exists to protect a
+		// roster that has already been balanced rather than to stop one being balanced.
+		//
+		// **The clock, not the phase, and that is what keeps a stuck intermission playable.** A round that
+		// cannot start — one side empty, the server below the minimum — publishes `0` and re-asks every tick,
+		// and `0` is exactly when somebody *has* to be able to cross. So the test is a running clock at or
+		// under `MATCH_SIDE_LOCK_SECONDS`, and `0` reads as unlocked.
+		if (existing !== undefined) {
+			const left = this.intermissionSecondsLeft();
+
+			if (left !== undefined && left > 0 && left <= MATCH_SIDE_LOCK_SECONDS) {
+				if (DEBUG) {
+					// A tenth, not a whole number: with whole seconds published, the refusal should say the same
+					// figure the HUD is showing rather than a rounded one of its own.
+					print(
+						`[Match] ${player.Name}: ${string.format("%.1fs", left)} to the whistle — ` +
+							`sides are locked, ${existing} stands`,
+					);
+				}
+
+				return undefined;
+			}
+		}
+
 		const counts = this.countsFor();
 
 		// **Balanced at the part: a full side sends you to the other one rather than turning you away.**
@@ -602,14 +631,49 @@ export class MatchService implements OnStart {
 	 * touch, and nothing at boot.
 	 */
 	private phase(): string | undefined {
+		const folder = this.status();
+		if (folder === undefined) return undefined;
+
+		const value = folder.GetAttribute(ROUND_STATE_ATTRIBUTE);
+
+		return typeIs(value, "string") ? value : undefined;
+	}
+
+	/**
+	 * **How many seconds the intermission has left, or nothing when there is no number to read.**
+	 *
+	 * The same folder and the same lazy find as {@link phase}, and the same argument for asking it rather
+	 * than the round: this is the clock `RoundStatusController` draws, published once a tick while an
+	 * intermission runs and once a tick while a round does, and the *phase* is what says which of the two
+	 * this reading is. The caller only ever asks it about a player who already holds a side, which cannot
+	 * reach here during a round — see `optIn`'s first lock.
+	 *
+	 * **`undefined` rather than `0` when the folder or the field is missing**, because the two mean
+	 * opposite things to the caller: no reading is "no lock", and nought is "the clock has run out", which
+	 * is an intermission that is either starting this tick or stuck waiting for a side.
+	 */
+	private intermissionSecondsLeft(): number | undefined {
+		const folder = this.status();
+		if (folder === undefined) return undefined;
+
+		const value = folder.GetAttribute(ROUND_TIME_ATTRIBUTE);
+
+		return typeIs(value, "number") ? value : undefined;
+	}
+
+	/**
+	 * The round's status folder, found the first time it is asked for and kept.
+	 *
+	 * **One finder for both readings above**, so the two cannot come to different answers about whether the
+	 * folder exists — and so the lazy-find argument (`phase`) is written once rather than beside each call.
+	 */
+	private status(): Folder | undefined {
 		const folder = this.statusFolder ?? ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
 		if (folder === undefined || !folder.IsA("Folder")) return undefined;
 
 		this.statusFolder = folder;
 
-		const value = folder.GetAttribute(ROUND_STATE_ATTRIBUTE);
-
-		return typeIs(value, "string") ? value : undefined;
+		return folder;
 	}
 
 	/**

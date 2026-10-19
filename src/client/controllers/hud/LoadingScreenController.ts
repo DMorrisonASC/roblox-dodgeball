@@ -31,12 +31,13 @@ const LOADING_BACKGROUND = "rbxassetid://105758313826117";
 /**
  * Where the overlay sits in the ZIndex order: **above everything else the game draws.**
  *
- * The ladder as it stands: the ordinary HUDs leave `ZIndex` at its default of `1`, the shop panel
- * is `SHOP_CONFIG.PANEL_Z_INDEX` (`10`), and the round-result panel is
- * `RoundResultController`'s `PANEL_Z_INDEX` (`20`) — which describes itself as being above everything
- * this game draws, and was, until this. This takes the next number up and the two files below it are
- * left alone, because a loading screen is not a third panel competing for the screen: it is what is
- * in front of the game while there is no game to look at yet.
+ * The ladder as it stands: the ordinary HUDs leave `ZIndex` at its default of `1` and the shop panel
+ * is `SHOP_CONFIG.PANEL_Z_INDEX` (`10`). **The end-of-round panel used to sit above both at `20` and it is
+ * gone** — `RoundResultController` was deleted on 2026-10-19 with the round's badges replacing it, and the
+ * badges are drawn in world space above a head, where no `ZIndex` reaches. So `20` is free and this file
+ * takes `30` anyway rather than moving down: a loading screen is not a third panel competing for the
+ * screen, it is what is in front of the game while there is no game to look at yet, and leaving the gap
+ * keeps the ladder's numbers meaning what they said.
  *
  * **Every instance this file makes carries it too, and that is the `raiseZIndex` rule rather than
  * tidiness.** Roblox only draws a child above its parent when the child's `ZIndex` is at least the
@@ -44,7 +45,7 @@ const LOADING_BACKGROUND = "rbxassetid://105758313826117";
  * own text. The two panels need a helper that walks their subtree because big-ui's `Card` builds
  * children they never hold; this file builds its own `Frame` and asks `Text` for its labels, so the
  * number is written on each one as it is made and nothing has to be walked. See `raiseZIndex` in
- * `RoundResultController` for the trap itself.
+ * `panelChrome.ts` for the trap itself — the copy that lived in `RoundResultController` went with it.
  */
 const LOADING_Z_INDEX = 30;
 

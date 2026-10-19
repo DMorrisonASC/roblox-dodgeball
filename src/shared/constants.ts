@@ -602,6 +602,34 @@ export const PRACTICE_ZONE_ATTRIBUTE = "PracticeZone";
 export const RESPAWN_AT_ATTRIBUTE = "RespawnAt";
 
 /**
+ * Attribute on a **`Player`** naming the body that landed the latest hit on them — a display name for a
+ * player, a rig's own `Name` for a rig — and absent when there is nothing to report.
+ *
+ * **A string on the player, because the reader is a HUD label drawn over a dead body.** The countdown beside
+ * it already reads `RESPAWN_AT_ATTRIBUTE` off the same instance, so this is the second half of one sentence
+ * ("waiting `n` seconds, hit by `x`") read from one channel: no remote, no event, nothing to miss while a
+ * client is still loading, and the value is already there when the countdown first appears.
+ *
+ * **It cannot come from `roundHit`.** That event — the feed's, and `HitLogController`'s only source — is sent
+ * only for a hit with a person at *both* ends, and in a round played against rigs most hits have a rig at one
+ * of them. **`hitImpact` would work and was not used**, because its thrower field is a `Name` and this wants
+ * the *display* name for a player; the server is where that difference can be decided.
+ *
+ * **Written by `RoundService.registerHit`, at the tag**, which is where a hit becomes the round's and where
+ * both ends are already resolved — so naming the attacker costs no second lookup. The consequence is
+ * deliberate and matches the hit feed: **a throw you catch still leaves its thrower's name here**, because the
+ * name was written when the ball tagged you and a catch is a save rather than an erasure.
+ *
+ * **Cleared in two places, both in `RoundService`**: when a body arrives (that is the end of the wait this
+ * attribute dresses) and at the `Playing` edge for the whole roster (a round that has just started has no hits
+ * in it). Without the second, a first death of a round could name the previous round's thrower.
+ *
+ * **`nil` rather than `""` for "nobody".** An attribute's absence is the client's one test, and a second
+ * spelling of the same absence is a second thing to keep in step.
+ */
+export const LAST_HIT_BY_ATTRIBUTE = "LastHitBy";
+
+/**
  * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
  *
  * Written by `BallService.dropBall`, read by `BallPickupService`. On the ball rather than
@@ -730,6 +758,27 @@ export const SUPER_CHARGE_ATTRIBUTE = "SuperCharge";
  * clients could then disagree about who is hot. The server decides, and this is the decision.
  */
 export const CROWN_ATTRIBUTE = "Crown";
+
+/**
+ * Attribute on a **`Player`**, or on a rig's **`Model`**, holding the badges that body earned in the round
+ * that has just finished — one comma-joined string of ids, and `""` for none.
+ *
+ * **The one fact the badge system publishes, and it is published to both kinds of body.** A player's badges
+ * go on the `Player` and a rig's on the `Model`, for `CROWN_ATTRIBUTE`'s reason: the answer outlives a body,
+ * and a respawn then costs the client nothing but a new billboard. A rig *is* a body and is replaced whole,
+ * so its attribute dies with it — which is correct, because a rig's round ends with the rig.
+ *
+ * **An attribute rather than a remote**, for the reason `STAT_HITS` gives: it replicates on its own, so the
+ * display needs nothing to ask and nothing to wait for. **A string rather than children or JSON**, and
+ * `""` rather than an absent attribute — both argued at `shared/badges.ts`, which owns the encoding and the
+ * vocabulary.
+ *
+ * **It has a lifetime and only one.** Written by `BadgeService.onRoundEnded` at the moment the round is
+ * decided, cleared fifteen seconds later or at the next round's `Playing` edge, whichever comes first, and
+ * never written during play. See that service for the window and for the rule that a set made only of rib
+ * badges is published as the empty string.
+ */
+export const BADGES_ATTRIBUTE = "Badges";
 
 /**
  * Attribute on a **`Player`** holding how many coins they own.

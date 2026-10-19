@@ -175,9 +175,11 @@ const PAD_EDGE_MARGIN = NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS;
  * **The one thing that is not a rebalance is a join, and that is deliberate.** A player walking into the
  * lobby has not chosen a side, so the arithmetic has nothing to say about which seat they will take —
  * and the requirement is that arriving *displaces somebody*, visibly, rather than leaving a ninth body in
- * a room built for eight. So `reserveSeat` destroys a rig outright, records which side it was holding,
- * and that record is then counted as a held seat until the player chooses. It is the only place in this
- * file that makes a decision the seat count cannot make for it.
+ * a room built for eight. So `reserveSeat` destroys a rig outright, records which side it was holding, and
+ * that record is then counted as a held seat **until the player chooses — or until its term runs out**, at
+ * which point the seat goes back to a rig (`holdSeat`). Without the term a pad shows one rig fewer than the
+ * match will field for as long as somebody stands undecided, and a round that cannot open keeps it that way
+ * for ever. It is the only place in this file that makes a decision the seat count cannot make for it.
  *
  * **Nothing here keeps a list of rigs, and that is the design rather than an omission.** The rigs are
  * derived on every use — the ones holding a side from `npc/rigs.ts`, the ones still walking from the walk
@@ -314,8 +316,13 @@ export class LobbyRigService implements OnStart {
 	 * {@link seatsHeld} wobble with the thing it was measuring.
 	 *
 	 * **A record in here counts as a held seat**, which is what stops the rebalance from spawning back the
-	 * rig this player displaced a moment later. It is released the moment it stops being true: when the
-	 * player appears in the roster, because they have taken a seat of their own, or when they leave.
+	 * rig this player displaced a moment later. It is released the moment it stops being true, and there are
+	 * three such moments: when the player appears in the roster, because they have taken a seat of their own;
+	 * when they leave, which `onPlayerLeft` owns; and **when its term runs out** — see `holdSeat` and
+	 * `releaseSeatIfUnused`, which are the only writer of this map and the expiry that goes with it. The
+	 * third one is new: a reservation counted as a seat means a pad shows one rig fewer than the match will
+	 * field for as long as a player stands undecided, and `releasePendingSeats` only gives those seats back
+	 * at the *whistle* — which never comes if the round cannot open.
 	 */
 	private readonly pending = new Map<Player, TeamLabel>();
 
@@ -1100,9 +1107,62 @@ export class LobbyRigService implements OnStart {
 
 		this.retireRig(victim, `${player.Name} arrived — stood down (${side ?? "no side known"})`);
 
-		if (side !== undefined) {
-			this.pending.set(player, side);
-		}
+		if (side !== undefined) this.holdSeat(player, side);
+	}
+
+	/**
+	 * **Records the seat as held for `player`, on a term rather than for ever.**
+	 *
+	 * Two callers and one meaning — see {@link pending} — and this is the only writer of that map. Making it
+	 * a method is what puts the term on *both* ways a record is made: a join, where a rig was destroyed and
+	 * the seat is owed back if nobody takes it, and the roster letting go of a player at the end of a round,
+	 * where the seat is theirs until they choose again.
+	 *
+	 * **What the term adds, said against what already existed.** A round start already gives every
+	 * reservation back: `releasePendingSeats` clears the whole map inside the refill at the whistle, and the
+	 * side gets a rig in the arena. What was left unrepaired is the *wait*: for as long as an intermission
+	 * runs, a pad shows one rig fewer than the match will field, and when the round cannot open at all — one
+	 * side empty, the server below `MATCH_MIN_PLAYERS` — the intermission wraps for ever and nothing ever
+	 * releases the record, so that side stays a rig short indefinitely. The term bounds the first case to
+	 * fifteen seconds and is the only repair the second case has. {@link releaseSeatIfUnused} is the expiry.
+	 */
+	private holdSeat(player: Player, side: TeamLabel): void {
+		this.pending.set(player, side);
+
+		task.delay(NPC_CONFIG.SEAT_RESERVATION_SECONDS, () => this.releaseSeatIfUnused(player, side));
+	}
+
+	/**
+	 * **The loan ends: the seat a player has not taken goes back to a rig.**
+	 *
+	 * **Three guards, and each is a different reason the record is already gone or already right.** The
+	 * record must still name *this* side — a later write replaced it, or `onPlayerLeft` removed it; the
+	 * player must still be in the server — `onPlayerLeft` owns a departure, it puts a rig in the seat at
+	 * once, and a second rig here would be a ninth body in a room built for eight; and they must still hold
+	 * no roster seat — they chose, which is the outcome the reservation existed for.
+	 *
+	 * **Then one deletion and one rebalance, and the rebalance is what fills the seat.** `rebalanceBody`
+	 * re-reads both counts, finds the side one short, and spawns a rig into it — a lobby rig walking to its
+	 * pad, or an arena rig with its side already written, which is the phase rule the whole file keeps.
+	 *
+	 * **Nothing is refused, and nothing is charged to the player.** The pads stay live; a player who chooses
+	 * after their loan ended is placed exactly as before, and their side then goes over its cap so
+	 * `releaseRigs` stands one rig down. That is the same pair of events a join performs, paid once, and it
+	 * is the honest price of not leaving a pad a body short for a whole intermission.
+	 */
+	private releaseSeatIfUnused(player: Player, side: TeamLabel): void {
+		if (this.pending.get(player) !== side) return;
+		if (!player.IsDescendantOf(Players)) return;
+		if (this.matches.roster().has(player)) return;
+
+		this.pending.delete(player);
+
+		print(
+			`[Rig] ${player.Name}: no side after ${NPC_CONFIG.SEAT_RESERVATION_SECONDS}s — ` +
+				`the seat on ${side} is a rig's again`,
+		);
+
+		this.rebalance();
 	}
 
 	/**
@@ -1969,7 +2029,7 @@ export class LobbyRigService implements OnStart {
 			if (roster.has(player)) continue;
 			if (!player.IsDescendantOf(Players)) continue;
 
-			this.pending.set(player, side);
+			this.holdSeat(player, side);
 		}
 
 		this.seated.clear();

@@ -65,6 +65,26 @@ export const MATCH_BALL_COUNT = 8;
 export const MATCH_TOUCH_DEBOUNCE_SECONDS = 0.5;
 
 /**
+ * **How long before a round starts the sides stop accepting a switch**, in seconds. **Placeholder — 3.**
+ *
+ * **Only a *switch* is refused; an arrival is never refused**, and that split is the whole rule. A player
+ * with no side is a body the lobby is short, so refusing them would be refusing the one thing that makes
+ * the sides even — while a player *crossing* changes two counts at once, and the repair that follows costs
+ * a rig a spawn and another rig a walk. Started 2 seconds before the whistle, that repair is still running
+ * when `RoundService.assignTeams` fills its table, which is how a side enters a round a body short.
+ *
+ * **`3` seconds is sized against the repair rather than against the player.** The seat arithmetic lands on
+ * the next `SEAT_POLL_SECONDS` tick and the rig then walks, so three seconds covers the count and most of
+ * the walk; a longer lock would strand somebody who meant to move on the wrong pad for a whole round, and
+ * a shorter one would not cover the poll.
+ *
+ * **Held at nought means unlocked.** An intermission whose clock has run out but that cannot start yet —
+ * one side empty, or the server below the minimum — publishes `0`, and that is exactly the moment a player
+ * *must* be allowed to move. The lock reads a clock that is still running, so it cannot fire there.
+ */
+export const MATCH_SIDE_LOCK_SECONDS = 3;
+
+/**
  * How often the round checks the roster while it is being played, in seconds. **Placeholder — 0.1.**
  *
  * **A poll, because the roster's owner cannot call the round.** `RoundService` reads `MatchService` and

@@ -811,7 +811,7 @@ export const BALL_CONFIG = {
 	 * Long enough to cover the fall and the roll to a stop; short enough that a ball put
 	 * down deliberately does not look like a ball nobody can ever have.
 	 */
-	DROP_PICKUP_LOCKOUT: 1.0,
+	DROP_PICKUP_LOCKOUT: 2.0,
 
 	// ------------------------------------------------------------- appearance
 

@@ -19,6 +19,23 @@ export const NPC_CONFIG = {
 	RESPAWN_DELAY_SECONDS: 3,
 
 	/**
+	 * How far a rig's joints may bend in a ragdoll, in degrees — **the one dial on the corpse's floppiness.**
+	 * **Placeholder — 45.**
+	 *
+	 * **What it is for.** `npc/ragdoll.ts` swaps each `Motor6D` for a `BallSocketConstraint` at the moment a
+	 * rig dies, so the body goes limp instead of coming apart. A ball joint with no limit is free to rotate a
+	 * whole turn in every direction, and a corpse that has fallen then folds itself into shapes no skeleton
+	 * makes — that reads as a broken rig rather than a limp one. This cone stops each joint where a joint
+	 * stops. It is used for the cone and for both twist bounds, because two numbers here would be two dials
+	 * for one impression.
+	 *
+	 * **What the value trades.** Smaller is a stiffer corpse — limbs that hold their angle and land like a
+	 * mannequin; larger is floppier and eventually impossible, with knees bending the wrong way. Forty-five
+	 * degrees is roughly a shoulder's and a knee's honest range, and the number to move is this one.
+	 */
+	RAGDOLL_LIMIT_DEGREES: 45,
+
+	/**
 	 * How often a rig's network ownership is re-asserted, in seconds.
 	 *
 	 * **Ownership is the one thing about a rig that something other than this project can change.**
@@ -624,6 +641,34 @@ export const NPC_CONFIG = {
 	 * playing" for one event.
 	 */
 	SEAT_POLL_SECONDS: 0.25,
+
+	/**
+	 * **How long a destroyed rig's seat stays reserved for the player who arrived before the rig comes
+	 * back**, in seconds. **Placeholder — 15.**
+	 *
+	 * **The reservation is a loan, and this is its term.** A player joining the lobby stands one rig down
+	 * (`LobbyRigService.reserveSeat`) and the seat is counted as held until they choose a side — which is
+	 * what stops the lobby holding a ninth body in a room built for eight.
+	 *
+	 * **A round already ends that loan, and the term is what covers the wait before one.** `releasePendingSeats`
+	 * clears every record inside the refill at the whistle, so a player who joined and never chose is not a
+	 * seat once the round starts — the side gets its rig in the arena. What is left is the intermission
+	 * itself: 16 seconds in which that pad shows one rig fewer than the match will field, and — when the
+	 * round cannot open at all, because a side is empty or the server is below `MATCH_MIN_PLAYERS` — an
+	 * intermission that wraps for ever, where nothing releases the seat and `rebalance` cannot repair it
+	 * because the record reads as a held seat. That is the state a rig short *stays* short.
+	 *
+	 * **`15` is sized against the walk, not against a mood.** A lobby spawn to a join pad is about sixty
+	 * studs and takes four or five seconds at walking speed; a player who also reads the HUD, or who joins
+	 * mid-load and sees the game a few seconds late, needs a few more. Past fifteen seconds of standing
+	 * still the honest reading is "not playing" — and the cost of being wrong is one rig spawning and, if
+	 * they *do* choose afterwards, one rig standing down, which is the same pair of events the lobby
+	 * performs every time a player arrives.
+	 *
+	 * **Nothing is refused when the loan ends.** The pads stay live and a late opt-in still places the
+	 * player; the seat simply changes hands back to a rig in the meantime.
+	 */
+	SEAT_RESERVATION_SECONDS: 5,
 
 	/**
 	 * How long a rig's claim on a fetch target survives without being renewed, in seconds.

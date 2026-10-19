@@ -38,6 +38,7 @@ import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
 import { EconomyService } from "../economy/EconomyService";
 import { FreezeService } from "../actions/FreezeService";
+import { BadgeService } from "../badges/BadgeService";
 import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
 
@@ -410,6 +411,7 @@ export class BallService implements OnStart {
 		private readonly abilities: SuperService,
 		private readonly freezes: FreezeService,
 		private readonly economy: EconomyService,
+		private readonly badges: BadgeService,
 	) {
 		// **Switching `InfiniteBalls` on hands the dev a ball, if their hand is empty.**
 		//
@@ -1418,6 +1420,15 @@ export class BallService implements OnStart {
 		if (DEBUG_CONFIG.PROFILE) debug.profilebegin("BallService.throw");
 		const thrown = this.throwBallBody(model, request, claimedLaunch);
 		if (DEBUG_CONFIG.PROFILE) debug.profileend();
+
+		// **The round's badge count, and only for a throw that actually left.** `throwBallBody` answers `false`
+		// for a frozen body, a ducking one and an empty hand, and a rig asks on a tenth-of-a-second timer — so
+		// counting the *attempt* would give every frozen rig a throw a tick and make `sprayAndPray` fire on
+		// bodies that never released anything. Here rather than inside the body because this is the one line
+		// that knows the answer, and it is outside the profile band because it is one increment rather than
+		// part of the release.
+		if (thrown) this.badges.recordThrow(model);
+
 		return thrown;
 	}
 

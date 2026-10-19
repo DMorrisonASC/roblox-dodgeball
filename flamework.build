@@ -14,7 +14,6 @@
 		"roblox-dodgeball:out/client/controllers/hud/LoadingScreenController@LoadingScreenController": "client/controllers/hud/LoadingScreenController@LoadingScreenController",
 		"roblox-dodgeball:out/client/controllers/hud/ModeVoteController@ModeVoteController": "client/controllers/hud/ModeVoteController@ModeVoteController",
 		"roblox-dodgeball:out/client/controllers/hud/RespawnHudController@RespawnHudController": "client/controllers/hud/RespawnHudController@RespawnHudController",
-		"roblox-dodgeball:out/client/controllers/hud/RoundResultController@RoundResultController": "client/controllers/hud/RoundResultController@RoundResultController",
 		"roblox-dodgeball:out/client/controllers/hud/RoundStatusController@RoundStatusController": "client/controllers/hud/RoundStatusController@RoundStatusController",
 		"roblox-dodgeball:out/client/controllers/hud/RoundTransitionController@RoundTransitionController": "client/controllers/hud/RoundTransitionController@RoundTransitionController",
 		"roblox-dodgeball:out/client/controllers/hud/ScoreHudController@ScoreHudController": "client/controllers/hud/ScoreHudController@ScoreHudController",
@@ -73,7 +72,8 @@
 		"roblox-dodgeball:out/client/controllers/camera/CameraZoomController@CameraZoomController": "client/controllers/camera/CameraZoomController@CameraZoomController",
 		"roblox-dodgeball:out/client/controllers/hud/MobileControlsController@MobileControlsController": "client/controllers/hud/MobileControlsController@MobileControlsController",
 		"roblox-dodgeball:out/client/controllers/input/TouchJoystickController@TouchJoystickController": "client/controllers/input/TouchJoystickController@TouchJoystickController",
-		"roblox-dodgeball:out/client/controllers/character/AimFacingController@AimFacingController": "client/controllers/character/AimFacingController@AimFacingController"
+		"roblox-dodgeball:out/client/controllers/character/AimFacingController@AimFacingController": "client/controllers/character/AimFacingController@AimFacingController",
+		"roblox-dodgeball:out/server/services/badges/BadgeService@BadgeService": "server/services/badges/BadgeService@BadgeService"
 	},
 	"metadata": {}
 }

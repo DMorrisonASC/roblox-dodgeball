@@ -2,6 +2,7 @@ import { Flamework } from "@flamework/core";
 import { Players } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
 import { startCollisionGroups } from "./collision/CollisionGroups";
+import { auditRigTemplates } from "./npc/rigTemplate";
 import { startSpawnShield } from "./services/character/SpawnShield";
 
 print("[main] igniting");
@@ -11,6 +12,27 @@ print("[main] igniting");
 // `CharacterBarrier` parts into the `Barrier` group at the round boundary, which is the first thing
 // that reads the group. Registering after the ignite would be registering after that had already run.
 startCollisionGroups();
+
+// **The rig templates, read here rather than by a service, and before the ignite on purpose.**
+//
+// **What it is for.** A rig template is a place-file object this code treats as a contract and cannot read:
+// `LobbyRigService` draws one out of `ServerStorage."NPCs"` and `NpcService.spawn` clones it, so a script, a
+// tag, an anchored part or a missing `Head` inside that model is inherited by every rig in the session while
+// `src/` says nothing about it. This prints what is in the file, one line per fault, naming the offending
+// instance's full path. See `npc/rigTemplate.ts` for the checks and for why it repairs nothing.
+//
+// **Before the ignite rather than after, and the difference is which file it describes.** Every service's
+// start-up runs inside `ignite()`, and the world-blind scan in `NpcService.onStart` hands a loop to a
+// **tagged** model wherever it sits — a template in `ServerStorage` included — whose first turn calls
+// `dressRig` and writes a trail onto the place file's model. So a pass after the ignite would report a
+// template that the runtime had already begun decorating, and one *before* it reports the place file as it
+// was saved, which is the question this is asked. Nothing in the pass needs a service: it reads
+// `ServerStorage`, `CollectionService` and the tree.
+//
+// **And it sits beside `startCollisionGroups` for the same reason that call is here**: both are boot facts
+// that something later depends on, and neither is a round, a body or a HUD, so neither belongs in a service
+// whose own doc would then have to explain why it walks the whole of `ServerStorage`.
+auditRigTemplates();
 
 Flamework.addPaths("src/server/services");
 Flamework.addPaths("src/server/components");

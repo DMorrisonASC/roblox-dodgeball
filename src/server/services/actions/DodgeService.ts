@@ -17,6 +17,7 @@ import { FreezeService } from "./FreezeService";
 import { extendReadyAt, publishReadyAt } from "./readyAt";
 import { emitSound } from "../ball/SoundEmitter";
 import { insideZone } from "../zone/PracticeZoneService";
+import { BadgeService } from "../badges/BadgeService";
 
 /** Prints what every dodge request did, and why it did nothing. */
 const DEBUG = true;
@@ -157,7 +158,11 @@ export class DodgeService implements OnStart {
 	 */
 	private duckState?: DuckState;
 
-	constructor(private readonly dev: DevService, private readonly freezes: FreezeService) {}
+	constructor(
+		private readonly dev: DevService,
+		private readonly freezes: FreezeService,
+		private readonly badges: BadgeService,
+	) {}
 
 	/**
 	 * Hands this service the catch window it has to respect. Called by `CatchService` itself.
@@ -365,6 +370,14 @@ export class DodgeService implements OnStart {
 		// factor, not a tie-break: all three are the same kind of event, so all three are told the same
 		// way.
 		emitSound(entity.root.CFrame, model.Name, SOUND_CONFIG.DODGE, DODGE_EMITTER_NAME);
+
+		// **And the round's badge count, on the line after the sound and for the sound's own reason.** Everything
+		// above this sentence has returned for a reason the dodge did not happen — no humanoid, a catch in the
+		// way, a cooldown, a direction that is not one — so arriving here *is* the dodge, and a refused attempt
+		// is not counted by construction rather than by a condition written here. The counters are keyed on the
+		// body, which folds to its `Player`; a rig's dodge is counted under its model, because a rig has a head
+		// for the badge strip to hang over.
+		this.badges.recordDodge(model);
 
 		return true;
 	}

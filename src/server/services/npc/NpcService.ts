@@ -25,6 +25,7 @@ import { createRespawnBehavior } from "../../npc/behaviors/RespawnBehavior";
 import { createRoundSeekBehavior } from "../../npc/behaviors/SeekBehavior";
 import { createThrowBehavior } from "../../npc/behaviors/ThrowBehavior";
 import { createWalkToJoinPadBehavior } from "../../npc/behaviors/WalkToJoinPadBehavior";
+import { reportRigTemplateOnce } from "../../npc/rigTemplate";
 import { BallPickupService } from "../ball/BallPickupService";
 import { BallService } from "../ball/BallService";
 import { CatchService } from "../actions/CatchService";
@@ -246,6 +247,31 @@ export class NpcService implements OnStart {
 	 * asks for itself when its tag is seen. See `NpcBehavior.prepare`.
 	 */
 	public spawn(template: Model, cframe: CFrame, behaviorTags: string[]): Model {
+		// **The one gate on the one spawn path, and it reports rather than refuses.**
+		//
+		// **Where it sits, and why exactly one place.** This is the only route a rig takes into the world —
+		// `LobbyRigService` calls it twice (`spawnLobbyRig`, `spawnArenaRig`) and nothing else calls it at all
+		// — so a check here is a check on every cloned rig, and one at each caller would be two places to
+		// forget when a third caller arrives. It runs *before* `Clone`, because the fault is the template's
+		// rather than the copy's and a line printed after the copy exists reads as though the copy were wrong.
+		//
+		// **Nothing is refused, and the argument is a lobby rather than a taste.** The two structural faults —
+		// no `Humanoid`, no `HumanoidRootPart` — are already refused where refusing costs nothing: `readRigPool`
+		// excludes such a model from the draw, so it is never handed to this method. Everything else this can
+		// find (a script, a tag, an anchored part, a missing `Head`) still produces a body that walks, fights
+		// and dies — badly, or without a strip over its head — while a refusal here would be a signature change
+		// in the one path every rig takes, and the side it empties is the one the next round is played from.
+		// **An empty lobby is worse than a strange rig**, so the file reports and the place file is fixed.
+		// Writing `""` to a template's tag, or deleting its script, would also work and would be a boot pass
+		// mutating the place file — see `npc/rigTemplate.ts` for why that is refused as a category.
+		//
+		// **Not consulted for a respawn.** `RespawnBehavior` clones a template it took from a **live rig**, not
+		// from a place-file model, and its copy is a body rather than a template: the clone path strips every
+		// tag from it and reads the corpse's tags and `Team` back on. Gating that path would be asking a
+		// question about a file that is not involved, and it would fire on the tags the rebuild deliberately
+		// re-adds.
+		reportRigTemplateOnce(template, "spawn");
+
 		const model = template.Clone();
 
 		// **A pooled rig comes out unanchored, because a body this project made has to be able to move.** This
@@ -272,6 +298,24 @@ export class NpcService implements OnStart {
 
 			descendant.Anchored = false;
 		}
+
+		// **And the pivot is the root, whatever the template's `PrimaryPart` happens to be.** `PivotTo` moves a
+		// model until its *pivot* reaches the target, and a model's pivot is its `PrimaryPart` when it has one
+		// and its `WorldPivot` when it does not — both of which are place-file state and neither of which is
+		// necessarily anywhere near the body. **On 2026-10-19 a lobby rig spawned from `Skxz_ixi` landed with
+		// its `HumanoidRootPart` 41.5 studs below the spawn point** while the other seven landed on theirs —
+		// read off `playSpawnPoof`'s line, which prints the root, not the target — so that template's pivot was
+		// 41.5 studs above its root and every clone was placed 41.5 studs into the floor. From a chair that is
+		// "one of the rigs is in the ground", and nothing in the log says which file to open.
+		//
+		// **A clone is a body this code made, so this is where it is fixed** — the same division the unanchoring
+		// above makes ("the template is the place file's business, the clone is ours"), and the same conclusion
+		// `LobbyRigService.teleportRigsToArena` reached by hand when it wrote `root.CFrame` instead of pivoting.
+		// `PrimaryPart` covers both bad cases at once, because the pivot prefers it over `WorldPivot`; a
+		// template whose root is nowhere near its body is still wrong, and `npc/rigTemplate.ts` names it by
+		// path rather than letting this line hide it.
+		const pivotRoot = model.FindFirstChild("HumanoidRootPart");
+		if (pivotRoot !== undefined && pivotRoot.IsA("BasePart")) model.PrimaryPart = pivotRoot;
 
 		model.PivotTo(cframe);
 		model.Parent = Workspace;

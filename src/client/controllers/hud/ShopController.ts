@@ -652,7 +652,8 @@ export class ShopController implements OnStart {
 	 * verbatim), which leaves only the success branch unobserved: it needs a wallet with 50 coins in it.
 	 *
 	 * `Get` yields, which is why the whole of this runs from `mount`'s `task.spawn` rather than inline —
-	 * the same note `RoundResultController` makes about its own subscription.
+	 * the same note every HUD in this directory makes about a subscription it has to wait for. (It named
+	 * `RoundResultController` when that panel existed; the argument is about `Get`, not about the panel.)
 	 */
 	private watchChest(): void {
 		this.chestRemote = events.Client.Get("openPowerChest");

@@ -10,8 +10,9 @@ import {
 } from "shared/config/transition.config";
 import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import { findFolder } from "shared/find";
-import { events, HitDirection, RoundResultRow } from "shared/networking";
+import { events, HitDirection } from "shared/networking";
 import {
+    LAST_HIT_BY_ATTRIBUTE,
     PRACTICE_ZONE_ATTRIBUTE,
     ROUND_MODE_ATTRIBUTE,
     ROUND_STATE_ATTRIBUTE,
@@ -42,6 +43,8 @@ import { MatchService } from "../match/MatchService";
 import { StatsService } from "../stats/StatsService";
 import { EconomyService } from "../economy/EconomyService";
 import { SuperService } from "../super/SuperService";
+import { BadgeService } from "../badges/BadgeService";
+import type { BadgeSubject } from "../badges/BadgeService";
 import { GameMode, RoundParticipant, RoundView } from "./modes/GameMode";
 import { DEFAULT_MODE } from "./modes/registry";
 import { SCORE_RUSH } from "./modes/ScoreRushMode";
@@ -140,9 +143,10 @@ const HIT_LOG_CAP = 5;
 
 /**
  * **`HitDirection` was declared here and now lives in `shared/networking.ts`**, immediately above the
- * `roundHit` event that carries it — the home and the argument `RoundResultRow` already had. The two
- * names it holds are a shared vocabulary rather than a server-side detail now that a client reads one
- * and paints two colours from it, and the reason it is a *value on the wire* at all is written there.
+ * `roundHit` event that carries it — the home the round-result rows used to have, before that type and its
+ * event were deleted on 2026-10-19. The two names it holds are a shared vocabulary rather than a server-side
+ * detail now that a client reads one and paints two colours from it, and the reason it is a *value on the
+ * wire* at all is written there.
  */
 
 /**
@@ -153,10 +157,10 @@ const HIT_LOG_CAP = 5;
  * rig's GUID — names no person, so a rig is on neither end of an entry, and a thrower with no side has
  * no direction to give. See {@link RoundService.logHit}, which is the one place either rule is applied.
  *
- * **`Player` references rather than names**, unlike `RoundResultRow`, and the difference is the
- * lifetime: that row travels to a client after the roster is gone, so it has to be self-contained;
- * this log never leaves the server and the people in it are still connected while the round is being
- * read. A name here would be a copy of something `Players` will answer for as long as the entry can
+ * **`Player` references rather than names**, unlike everything this game puts on the wire, and the
+ * difference is the lifetime: a wire type travels to a client after the roster is gone, so it has to be
+ * self-contained; this log never leaves the server and the people in it are still connected while the round
+ * is being read. A name here would be a copy of something `Players` will answer for as long as the entry can
  * be read. **The names a client sees are written at the send**, in {@link RoundService.logHit}, which
  * is the one place the entry is turned into something that can travel.
  *
@@ -268,6 +272,14 @@ export class RoundService implements OnStart {
      * **Dodge and Seek never puts anything in it.** Every death in that mode converts instead of
      * eliminating, so `eliminate` is never reached and the board shows nought outs for a whole round
      * — which is the mode's answer rather than a gap in the counting. See `DodgeAndSeekMode.onDeath`.
+     *
+     * **It has no reader since the result panel was deleted (2026-10-19), and it is kept rather than
+     * removed.** `roundHits` is still read — `EconomyService.onRoundEnded` pays a performance bonus out of
+     * it — but this one's only reader was `sendResult`, which went with `RoundResultController`. The badge
+     * system counts its own outs, because a rig's strip is drawn above a rig's head and this map has no rig
+     * in it. So the write below is currently dead weight, and the honest choice is to say so here rather
+     * than to delete a count the next display will want: it costs one integer per player per round and it is
+     * the only place the round remembers who went out.
      */
     private readonly roundOuts = new Map<Player, number>();
 
@@ -414,6 +426,7 @@ export class RoundService implements OnStart {
         private readonly speeds: WalkSpeedService,
         private readonly respawns: RespawnService,
         private readonly npcs: NpcService,
+        private readonly badges: BadgeService,
     ) {}
 
     onStart() {
@@ -775,6 +788,20 @@ export class RoundService implements OnStart {
             player.SetAttribute(TEAM_ATTRIBUTE, undefined);
         }
 
+        // **And the attacker's name goes with the side, for the same reason and at the same moment.** A new round
+        // has no hits in it, so a player entering it with last round's killer still on their `Player` would see
+        // that name the first time they die to something anonymous — a fall, a reset — before a single ball of
+        // this round has touched them. Cleared here rather than in `finishRound` because this is the edge that
+        // *starts* the round: what matters is that the value cannot survive into it, and this loop already
+        // walks exactly the players whose per-round state has to be reset.
+        //
+        // **It clears for everybody, including players not in this round's roster**, which is the same rule
+        // `TEAM_ATTRIBUTE` above follows: the attribute describes one round, and a player watching from the
+        // lobby has no round to be described by.
+        for (const player of Players.GetPlayers()) {
+            player.SetAttribute(LAST_HIT_BY_ATTRIBUTE, undefined);
+        }
+
         const assigned = this.matches.roster();
 
         for (const [player, team] of assigned) {
@@ -1092,12 +1119,26 @@ export class RoundService implements OnStart {
         // `events.roundResult` sets out.
         this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, outcome);
 
-        this.sendResult(outcome);
+        // **The result panel used to be sent from here, and it is gone with its controller.** `sendResult` —
+        // the per-player rows, the sort, the `roundResult` event — was deleted rather than kept, because the
+        // only reader was `RoundResultController` and both went together. The end of a round is a *ceremony*
+        // now rather than a ledger: see `BadgeService.onRoundEnded` below, which publishes what kind of round
+        // it was above each head for fifteen seconds. The winner's attribute above stays exactly where it was,
+        // because that is the round's vocabulary rather than one HUD's, and anything that wants to ask "who
+        // won" between rounds still asks there.
+        //
+        // **A draw reaches the badges too**, which is the one thing the deleted board never did: `sendResult`
+        // returned early on a draw because a board belongs to a side. A badge does not.
 
-        // **The economy is told after the board is out**, so a payout cannot be observed before the
+        // **The economy is told after the winner is written**, so a payout cannot be observed before the
         // result it is paying for. Everything the round knows — the winner, the rosters, each player's
         // hits — is passed here, and the service does the earning, the counters and the milestone
         // checks in one call. See `EconomyService.onRoundEnded`.
+        //
+        // **`roundHits` is still passed, and it is now the only reader of it.** The result panel was the
+        // other one; the badges keep their own participant-keyed count, because a rig lands hits and has no
+        // row in this map. So this call is the reason the map is still written, and that is stated here
+        // rather than left to be discovered by whoever next asks what reads it.
         this.economy.onRoundEnded(outcome, this.teams, this.roundHits);
 
         // **And the lifetime figures are written now, because this is the instant they stop moving.** A
@@ -1113,6 +1154,21 @@ export class RoundService implements OnStart {
         // Spawned inside that call rather than awaited, so the intermission below opens on the beat it would
         // have opened on without this.
         this.stats.onRoundEnded();
+
+        // **And the round's badges, derived from everything above and published above each head.** This is
+        // the third call of the round's tail, beside the economy's and the stats', and it is placed after
+        // both because it reads what the round counted rather than what it pays.
+        //
+        // **Everything it needs is passed rather than injected, and that is what keeps the dependency one
+        // way.** `BadgeService` knows nothing about `RoundService`; the round hands it the population and the
+        // winner, which are the two facts only the round has. The alternative — the badge service asking
+        // `playersInRound()` and `rigsOnASide()` for itself — is a service depending on the service that
+        // calls it, which Flamework cannot construct and which is the cycle `team.ts` exists to avoid.
+        //
+        // **Called for a draw too.** A board belongs to a side and a draw has none, which is why the deleted
+        // `sendResult` returned early on one; a badge describes a performance, and a 4–4 round is full of
+        // them.
+        this.badges.onRoundEnded(outcome, this.badgeSubjects());
 
         // **The scoreboard is wiped as the round ends, and that moved here from the boundary.** It used to be
         // cleared at the *opening of the next round*, on the argument that a round's final score should be
@@ -1140,55 +1196,42 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Hands the finished round's board to the clients that watched it.
+     * **The bodies the finished round's badges are derived for**: everybody on a side, players and rigs.
      *
-     * **Sent from here because here is where the result is decided, once.** `finishRound` is
-     * idempotent and is reached by two paths — the tick that notices a side has emptied, and a
-     * `PlayerRemoving` that empties one — so a send at either of those call sites would be two sends
-     * for one round. This line is inside the guard, which is what makes it one.
+     * **Handed to `BadgeService` rather than asked for by it**, and the reason is the dependency: a service
+     * that resolved the round's population itself would need `teams` and `rigsOnASide()`, both of which live
+     * here, and a service depending on the one that calls it is a constructor cycle Flamework cannot build.
+     * The round already knows the answer — it is the roster plus the rigs — so it hands it over with each
+     * body's side already resolved, which is the one fact a per-side "most" badge cannot look up later.
      *
-     * **A draw sends nothing, and that is the panel's empty state.** A board belongs to a side, and a
-     * round nobody won has no side to list — so the absence of a message *is* "no panel", rather
-     * than a message carrying an empty list that every reader would have to interpret the same way.
-     * It also keeps a word off the wire: `"draw"` is the round's own vocabulary, between this file
-     * and the HUD that no longer needs it, and the client never has to know it.
+     * **Players come from `Players.GetPlayers()`, not from `teams`**, which is the same choice the deleted
+     * `sendResult` made and for the same reason: a player who left during the round is still a key in
+     * `teams`, pointing at somebody who is not here to wear anything. A leaver is simply absent — and the
+     * side most often emptied is the losing one, whose players are the ones `almost` is for.
      *
-     * **Built from `Players.GetPlayers()` rather than from `teams`.** A player who left during the
-     * round is still in `teams`, as a reference to somebody who is not here — and a board is a thing
-     * to print names from, so it is built from the players who are actually here to be named. A
-     * leaver is simply absent, which under the roster rule is most often the losing side anyway.
+     * **A side is required**, because a body with no side was not in the round: `teams` has no entry for a
+     * spectator and `rigsOnASide()` skips a rig nobody painted one on. Both skips are the rule rather than a
+     * filter applied here.
      *
-     * **Ordered here rather than on the client.** The ranking is a fact about the round, and the
-     * counter it reads lives on this machine: sending the rows in order is what keeps "sorted by
-     * hits" from being decided once per client, each in its own way. Ties break on name, so two
-     * players on the same count cannot change places between two draws of the same board.
+     * **A rig's attribute goes on the `Model`**, since a rig has no `Player`; see `BADGES_ATTRIBUTE`. A rig
+     * destroyed in the fifteen-second window simply takes its badges with it, which is correct — the round
+     * ended with it.
      */
-    private sendResult(outcome: RoundOutcome): void {
-        if (outcome === DRAW) return;
-
-        const rows: RoundResultRow[] = [];
+    private badgeSubjects(): BadgeSubject[] {
+        const subjects: BadgeSubject[] = [];
 
         for (const player of Players.GetPlayers()) {
-            if (this.teams.get(player) !== outcome) continue;
+            const side = this.teams.get(player);
+            if (side === undefined) continue;
 
-            // Four facts: what the row prints, and what it draws. The id is the one that is not
-            // printed — a thumbnail is looked up by user id, and the row that needs one may name
-            // somebody who has since left this server. See `RoundResultRow`.
-            rows.push({
-                userId: player.UserId,
-                name: player.Name,
-                hits: this.roundHits.get(player) ?? 0,
-                outs: this.roundOuts.get(player) ?? 0,
-            });
+            subjects.push({ body: player, name: player.Name, side });
         }
 
-        // **A `boolean` comparator, and not the number one JavaScript habits reach for.**
-        // roblox-ts's `Array.sort` is an alias for Lua's `table.sort`, which is told whether the
-        // first argument comes first rather than how the two compare — a `b.hits - a.hits` here
-        // would be a number where a truth value was wanted, and would not compile.
-        rows.sort((a, b) => (a.hits === b.hits ? a.name < b.name : a.hits > b.hits));
+        for (const { rig, team } of rigsOnASide()) {
+            subjects.push({ body: rig, name: rig.Name, side: team });
+        }
 
-        events.Server.Get("roundResult").SendToAllPlayers(this.mode.id, outcome, rows);
+        return subjects;
     }
 
     /**
@@ -1514,6 +1557,21 @@ export class RoundService implements OnStart {
 
     private handlePlayerJoined(player: Player) {
         player.CharacterAdded.Connect((character) => {
+            // **A body arriving ends the sentence the countdown was drawing.** `LAST_HIT_BY_ATTRIBUTE` names the
+            // thrower of the latest hit, and it exists for one wait: from the tag to `RespawnService` handing the
+            // body back. `RESPAWN_AT_ATTRIBUTE` is cleared by that same load, so the two attributes have the same
+            // lifetime — and this is the only place the round is told a body exists, for every kind of load
+            // (a join, a lobby respawn, an elimination, the round's own delayed one).
+            //
+            // **Cleared here rather than in `RespawnService`**, which owns the other half of the pair: that service
+            // is about *when* a body exists, and this is a round fact about *who last hit you*. It is also the
+            // clear that makes a death with no hit behind it — a fall, a reset, a dev command — show no name
+            // rather than the previous death's.
+            //
+            // **First, and before the yield below**, so the attribute is gone on the frame the body exists rather
+            // than one `WaitForChild` later.
+            player.SetAttribute(LAST_HIT_BY_ATTRIBUTE, undefined);
+
             const humanoid = character.WaitForChild("Humanoid") as Humanoid;
             humanoid.Died.Connect(() => this.handleDeath(player));
 
@@ -1729,6 +1787,13 @@ export class RoundService implements OnStart {
 
         this.stats.recordOut(player);
         this.roundOuts.set(player, (this.roundOuts.get(player) ?? 0) + 1);
+
+        // **And the badges' out, which is a third count of the same fact and not a duplicate of either above.**
+        // It is a third because the two above answer questions this one cannot: a lifetime figure is not the
+        // round's, and `roundOuts` is keyed on people — while the badge strip is drawn above every head in the
+        // round, rigs included. A rig is never eliminated (the round has no concept of it), so this is the only
+        // out the badge system will ever see and it is always a player's.
+        this.badges.recordOut(player);
 
         // **And the wipe, before the body is handed back.** It has to be *here* rather than in `finishRound`,
         // because the round-end path is the loop's and up to a tick later, while the thrower's caption has to
@@ -1998,6 +2063,55 @@ export class RoundService implements OnStart {
         const victimTeam = this.teamOf(victim);
         if (victimTeam === undefined) return;
 
+        // **What the victim's screen says while they are waiting for a body.** `RespawnHudController` draws two
+        // things — how long, and who — and the second is this attribute: the body that landed the latest hit on
+        // this player. **Written here, at the tag, because this is where a hit becomes *the round's***;
+        // everything above this line is cosmetic (the impact, sent in every phase) or a gate that did not pass,
+        // and everything below is a hit between two bodies that have sides.
+        //
+        // **The thrower was resolved above the gate, so this costs no second lookup.** `throwerOf` answers with a
+        // `Player` for a `UserId` token and with the rig `Model` for a rig's GUID, which is the whole of why one
+        // branch covers both kinds of body — and why this cannot be derived from `roundHit`, whose sender refuses
+        // a hit with a rig at either end. The rig case is the one the client could not have named for itself.
+        //
+        // **A player is named by `DisplayName`, a rig by its `Name`, and nothing marks which is which.** The
+        // display name is what a player is called on their own screen; a rig has only the alias
+        // `LobbyRigService.nameRig` drew, which is already what its billboard shows. A `(rig)` suffix was
+        // considered and refused: a rig in this project is dressed, named and animated to be hard to tell from a
+        // person, and a marker here would be the one tell on the screen that says otherwise.
+        //
+        // **An unresolved thrower clears rather than leaves the previous name.** A hit whose token names nobody —
+        // a rig rebuilt mid-throw — has no attacker to credit, and showing the *previous* one would be a wrong
+        // fact rather than a missing one. `undefined` rather than `""`, on `LAST_HIT_BY_ATTRIBUTE`'s own note.
+        //
+        // **The catch consequence, stated where it is caused.** A throw that tags a body and is then caught *by
+        // that body* has already written this line, and the catch does not take it back: the countdown is only
+        // drawn while `RESPAWN_AT_ATTRIBUTE` is counting, so the name is only seen if that body dies of
+        // something else before it comes back — and `HitLogController`'s row for the same tag is not withdrawn
+        // either. Both are the same reading: the feed and this line record hits, not deaths.
+        if (victimPlayer !== undefined) {
+            victimPlayer.SetAttribute(
+                LAST_HIT_BY_ATTRIBUTE,
+                thrower === undefined ? undefined : thrower.IsA("Player") ? thrower.DisplayName : thrower.Name,
+            );
+        }
+
+        // **The badge counter, and it is fed from here rather than from the ball because this is where a hit
+        // becomes *the round's*.** Everything above this line is either cosmetic (the impact, sent in every
+        // phase) or a gate that did not pass; everything below is a hit in a round being played, between two
+        // bodies that have sides. That is exactly the population the badges are about.
+        //
+        // **Both ends and both kinds**, which is the difference from `roundHits` below: that map is about a
+        // person's throws and a rig has no row in it, while a badge is a strip above a head and a rig has a
+        // head. So a rig's landing counts, a rig's body taking a hit counts, and the pair is the one the
+        // `revenge` and `perfectionist` rules are read from.
+        //
+        // **The thrower may be unresolved** — a token naming nobody, which is every rig throw outside the
+        // round and possible inside one for a rig that has been rebuilt mid-throw. There is nobody to award
+        // anything to, and the victim's own `hitsTaken` is not the round's to count when the hit came from
+        // nowhere, so the whole record is skipped rather than half-written.
+        if (thrower !== undefined) this.badges.recordHit(thrower, victim);
+
         // **The hit is remembered for the length of one death, because that is the only moment a wipe can be
         // told apart.** `announceWipe` runs inside `eliminate`, and the join it needs is "which throw took
         // *this* body". The chain is `registerHit` → `landHit` → `TakeDamage` → `Died` → `handleDeath` →
@@ -2052,6 +2166,22 @@ export class RoundService implements OnStart {
 
         this.scores.set(scoring, (this.scores.get(scoring) ?? 0) + award);
         this.publishScores();
+
+        // **Whether this point was the one that decided the round — `clutch`'s whole rule.** The mode is asked
+        // the only question that can answer it: would the round end *now*, on this score? A mode that ends on a
+        // target answers yes the instant the target is reached, which is exactly the point the badge is for.
+        //
+        // **The marginal case, named rather than hidden.** A mode that also ends on the clock reports a winner
+        // when the clock has run out and one side is ahead, so a hit landing in the sub-second between the
+        // clock reaching zero and the tick that ends the round would be recorded as the winning point. Every
+        // other hit is unambiguous, and this one is a point scored by the side that then won, on the last
+        // second — which is close enough to "clutch" that the alternative (a `finishRound`-time comparison
+        // against a target this file would have to know) buys precision at the cost of a rule about a mode
+        // living in the round.
+        //
+        // **The first one wins**, which `BadgeService` enforces: a second hit before the tick is not a second
+        // winning point.
+        if (thrower !== undefined && this.mode.outcome(this) !== undefined) this.badges.recordWinningPoint(thrower);
     }
 
     /**
@@ -2106,8 +2236,8 @@ export class RoundService implements OnStart {
         // defect nobody could see in either file alone.
         //
         // **Names rather than the `Player`s themselves**, because a `Player` reference does not survive the
-        // trip and a name is what a row draws — see `RoundResultRow` for the same conversion for the same
-        // reason.
+        // trip and a name is what a row draws — the same conversion every wire type in this project makes, and
+        // the one the deleted round-result rows made most visibly.
         //
         // **To everyone, which is the change this made when the HUD stopped being a pair of personal lists
         // and became the round's feed.** It was a `SendToPlayers` over the two of them, which read as the
@@ -2128,8 +2258,9 @@ export class RoundService implements OnStart {
      * **There is no caller yet, and that is the task rather than an oversight.** The log was asked for as
      * data with the display deferred, so this exists to make the data *readable* rather than merely
      * written: a private list nothing can get at is not a log. When the HUD arrives it will need a wire as
-     * well — a `Player` reference does not survive the trip to a client, which is why `RoundResultRow`
-     * carries an id and a name — and this is the shape that conversion will be written against.
+     * well — a `Player` reference does not survive the trip to a client, which is why every wire type in
+     * `shared/networking.ts` carries names rather than references — and this is the shape that conversion
+     * will be written against.
      */
     public hitLog(): ReadonlyArray<RoundHitEntry> {
         return this.roundHitLog;
@@ -2835,6 +2966,17 @@ export class RoundService implements OnStart {
                 },
             );
 
+            // **And the round's badges are written here, not where they were derived**, which is the fix for a
+            // strip that was never seen. `finishRound` derives them because the counters are only alive at that
+            // instant, but every body it could have written to is about to be moved: the two calls above send
+            // the players to the lobby and the rigs to their own spawns, and — the one that actually cost the
+            // feature — `RespawnBehavior` destroys and recopies every rig that was mid-death, which after a
+            // scoring round is most of them. A write that landed on a corpse was a write onto a body that was
+            // replaced a second later by a copy that had never heard of it. This is the first line at which
+            // the bodies are the ones the intermission will actually be spent with, and it is behind the cover,
+            // so the strip appears as the cover lifts rather than fading in halfway through it.
+            this.badges.publish();
+
             // **The cleanup that has to happen here, and the ordering that used to matter.** The held
             // balls go first, and the reason is structural rather than a preference: a ball in a hand is
             // welded to a *character*, so it is not a descendant of the arena and a sweep of the arena
@@ -3198,6 +3340,14 @@ export class RoundService implements OnStart {
             );
 
             this.state = RoundState.Playing;
+
+            // **The badge window is over the moment a round starts, whatever the fifteen-second timer says.**
+            // This is the backstop half of the two boundaries `BadgeService` owns: the timer is the rule, and
+            // this is the guarantee, because a held intermission can outlast fifteen seconds and a server with
+            // rounds switched off may never reach a `Playing` edge at all. Called before the roster is
+            // assigned, so no client ever sees a body wearing last round's badges in this one — and idempotent,
+            // because the ordinary case is that the sweep already ran.
+            this.badges.onPlayingStart();
 
             // **The mode is the one that was asked for, and everything else plays Score Rush.** Resolved once,
             // here, rather than read live: a mode is fixed for the length of the round it opened, so a round

@@ -164,11 +164,13 @@ export class RoundStatusController implements OnStart {
 			// reversal is the user's call rather than a correction of that argument.
 			//
 			// **The intermission's clock is still published and still read; nothing else about it moves.** Its
-			// figure is what `RoundResultController` measures its dismissal deadline against and what
-			// `MusicController` times the intermission's fade out with, so this is one sentence on one label rather
-			// than a change to the round. **And a third face used to live here** — `Waiting for players — n/min`,
-			// for an intermission frozen below the minimum — which went when the clock became the whole line; what
-			// stands here now is the opposite decision taken in the same place.
+			// figure is what `MusicController` times the intermission's fade out with, so this is one sentence
+			// on one label rather than a change to the round. (It was also what `RoundResultController` measured
+			// its dismissal deadline against; that panel is gone, and the badges it was replaced by are cleared
+			// by `BadgeService`'s own fifteen-second clock rather than by this figure.) **And a third face used
+			// to live here** — `Waiting for players — n/min`, for an intermission frozen below the minimum —
+			// which went when the clock became the whole line; what stands here now is the opposite decision
+			// taken in the same place.
 			let line = phase === PLAYING ? `${seconds}s` : phase;
 
 			// The mode, appended once one has been named. **Where this comment used to say it named the round *to
