@@ -262,10 +262,12 @@ export class RoundStatusController implements OnStart {
 		 */
 		card.BackgroundTransparency = BOARD_TRANSPARENCY;
 
-		// **Into the shared readout column, which is where a HUD element belongs.** The column is in the shared
-		// `ScreenGui` — see `ui/screenGui.ts`, which owns both and records why the band is not in a GUI of its
-		// own. Its doc also carries the point this line used to make at length: `ScreenInsets` chooses the
-		// region a GUI draws in, and only an offset moves something within it.
+		// **Into the shared readout column, which is where a HUD element belongs.** The column is in
+		// `getFullScreenGui` — see `ui/screenGui.ts`, which owns both and records why the band is not in a GUI
+		// of its own, and why these two readouts are in the one GUI that is *not* gated on the device: they are
+		// pinned to the top edge of the screen, and on a phone the gated region starts a topbar-plus-cutout
+		// lower than it does on a desktop. Its doc also carries the point this line used to make at length:
+		// `ScreenInsets` chooses the region a GUI draws in, and only an offset moves something within it.
 		wrapper.Parent = getHudColumn();
 
 		if (DEBUG) {

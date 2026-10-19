@@ -147,12 +147,13 @@ const SPLASH_GUI_NAME = "SplashGui";
 /**
  * Where the splash GUI sits against the shared one, in the `ScreenGui` order.
  *
- * **Zero is the shared GUI's value, and it is the default** — nothing in this project sets
- * `DisplayOrder`, so `HudGui` has been at `0` all along, and every panel's layering has been
- * `ZIndex` *inside* it. This is a different ladder: `DisplayOrder` orders whole `ScreenGui`s against
- * each other and it wins outright, so a pixel drawn by the GUI at `1` is drawn over every pixel of
- * the GUI at `0`, whatever either tree's `ZIndex` says. That is exactly what a full-screen splash
- * needs, and exactly why one cannot be built out of the shared GUI's tree.
+ * **Zero is the HUD plane.** `HudGui` never sets `DisplayOrder` at all, so it is the default `0`, and every
+ * panel's layering has been `ZIndex` *inside* it — while the other GUIs on that plane (`FullScreenGui`,
+ * `ScreenSpaceGui`, `StickGui`) set the same `0` explicitly, because they are new instances with no inherited
+ * value to rely on and the rung is part of what each of them is. This is a different ladder: `DisplayOrder`
+ * orders whole `ScreenGui`s against each other and it wins outright, so a pixel drawn by the GUI at `1` is
+ * drawn over every pixel of the GUI at `0`, whatever either tree's `ZIndex` says. That is exactly what a
+ * full-screen splash needs, and exactly why one cannot be built out of the shared GUI's tree.
  */
 const SPLASH_DISPLAY_ORDER = 1;
 
@@ -241,6 +242,63 @@ export function getHudScreenGui(): ScreenGui {
 	return gui;
 }
 
+/** The name of the GUI for HUD furniture measured from the screen's own corner rather than the gated region. */
+const FULL_SCREEN_GUI_NAME = "FullScreenGui";
+
+/**
+ * Its rung on the `DisplayOrder` ladder: **`-1`, one below the HUD plane**, which is the whole reason this
+ * constant exists rather than reusing `0`.
+ *
+ * **A whole-GUI ladder is the only way to be covered by a panel, and this GUI needs to be.** `ZIndex` orders
+ * siblings inside one tree and says nothing across two `ScreenGui`s, so the readout column being drawn in a GUI
+ * of its own would otherwise float *over* the shop and the inventory panel — which are mounted in
+ * {@link getHudScreenGui} at `PANEL_Z_INDEX` and are the one thing in this client that must be able to cover
+ * the screen. A negative rung puts these two readouts under everything the HUD draws, which is what a `ZIndex`
+ * of `0` inside the shared GUI used to mean for them.
+ *
+ * **And it is still under both covers**, which is all any rung below the HUD plane has to promise: the splash
+ * at `1` and the wipe at `2` cover this GUI exactly as they cover the rest.
+ */
+const FULL_SCREEN_DISPLAY_ORDER = -1;
+
+/**
+ * The `ScreenGui` for HUD furniture that has to be measured from **the screen's own top-left corner on every
+ * device**, rather than from whatever region {@link getHudScreenGui} picks for this client.
+ *
+ * **Its one tenant is the round's readout column** — the score plate and the clock, both mounted through
+ * {@link getHudColumn} — and the reason is the one thing about them that is not a HUD panel: they are pinned to
+ * the *top edge of the screen*, and their position is the same number on every device. On a mobile client the
+ * gated region starts below Roblox's chrome **and** below the device's cutouts, which on a phone puts those two
+ * readouts a topbar-plus-notch lower than they sit on a desktop for no reason the player can see. They are the
+ * one pair in this client that looked wrong on a phone *because* the gate was working as written, so the gate is
+ * not asked — question 1 of the rule at the top of this file has an answer here: the number they are placed
+ * with is a distance from the top of the screen.
+ *
+ * **Why a `ScreenGui` and not a child of the shared one, which is forced rather than chosen.** `ScreenInsets`
+ * belongs to the `ScreenGui` and a child cannot opt out of its parent's, so there is no way to say "this tree's
+ * `y = 0` is the screen's" from inside the HUD's tree. Same mechanism as the splash's, opposite requirement: a
+ * cover must reach the screen's edges, and these two must be measured from it.
+ *
+ * **What this function used to be is why it is documented at this length: it was a copy of
+ * {@link getHudScreenGui} that looked up the *same* `GUI_NAME`.** So it never made a second GUI — it found the
+ * shared one, and then wrote `ScreenInsets.None` onto it. That is the create/find disagreement the rule at the
+ * top of this file spends a paragraph forbidding, performed by a helper whose entire name promised a second GUI,
+ * and it cost exactly what that paragraph says such a bug costs: **two writers of one property, last call wins**,
+ * so on a mobile client the whole HUD's region depended on whether the dock or a HUD controller happened to run
+ * last. It is a GUI of its own now, with a name of its own, and the only thing that writes its region is the
+ * branch above.
+ *
+ * **Why not {@link getScreenSpaceGui}, which is `None` on the same terms.** That GUI's rule is narrower than
+ * "no insets": its tenants are placed with *screen numbers* — a mouse position, an `AbsolutePosition` read off
+ * the engine's own touch controls — and the readout column is placed as a fraction of its region like any other
+ * HUD element. Same region, different reason, and this file's two questions are made of that difference. The
+ * day one of the two needs a different `DisplayOrder` it also costs nothing to have kept them apart.
+ *
+ * **The cost, stated so it is not a surprise in a screenshot**: `y = 0` here is the true top of the screen, so
+ * these two readouts are drawn *under* Roblox's chrome rather than below it — which on a desktop is the
+ * decision {@link COLUMN_TOP_INSET} already recorded, now made on both devices. The column is centre-anchored,
+ * so the one piece of that chrome with any width — the menu button in the top-left corner — clears it.
+ */
 export function getFullScreenGui(): ScreenGui {
 	// `PlayerGui` is not a typed member of `Player` in these typings (nor is `Backpack`), so it is
 	// found like any other child and the cast names the class rather than guessing it.
@@ -248,24 +306,26 @@ export function getFullScreenGui(): ScreenGui {
 
 	const insets = Enum.ScreenInsets.None;
 
-	// By name first, then checked for class: a `Folder` somebody happened to call `HudGui` is not
+	// By name first, then checked for class: a `Folder` somebody happened to call `FullScreenGui` is not
 	// this GUI, and falling through to create the real one is the right answer. The same two-step
 	// the round folder and the throw remotes already use.
-	const existing = playerGui.FindFirstChild(GUI_NAME);
+	const existing = playerGui.FindFirstChild(FULL_SCREEN_GUI_NAME);
 	if (existing?.IsA("ScreenGui")) {
 		existing.ResetOnSpawn = false;
 		reportDrift(existing, insets);
 		existing.ScreenInsets = insets;
+		existing.DisplayOrder = FULL_SCREEN_DISPLAY_ORDER;
 		return existing;
 	}
 
 	const gui = new Instance("ScreenGui");
-	gui.Name = GUI_NAME;
+	gui.Name = FULL_SCREEN_GUI_NAME;
 	gui.ResetOnSpawn = false;
 	gui.ScreenInsets = insets;
+	gui.DisplayOrder = FULL_SCREEN_DISPLAY_ORDER;
 	gui.Parent = playerGui;
 
-	reportCreated(gui, `the device gate — ${deviceSentence()}`);
+	reportCreated(gui, "None on both devices — its tenants are pinned to the screen's own top edge");
 
 	return gui;
 }
@@ -281,11 +341,15 @@ const COLUMN_NAME = "TopReadouts";
 /**
  * How far below the top of the region the column sits, in pixels. **Placeholder — 14.**
  *
- * **"The region" rather than "the safe region", because the device gate makes the two different on a desktop
- * client**: the shared GUI insets on a mobile client and does not on a desktop one, so this offset starts below
- * Roblox's chrome on a phone and at the true top of the screen on a desktop. **This is the one number in this
- * file whose meaning moves with that decision** — see the rule at the top of the file, and
- * {@link getHudScreenGui}'s second bullet for what a desktop client does with it.
+ * **"The region" is the screen on every device now, and that is a change rather than a phrasing.** The column
+ * used to be mounted in {@link getHudScreenGui}, whose region is the device gate's answer — the safe area on a
+ * phone, the screen itself on a desktop — so this same number meant "below Roblox's chrome" on one and "below the
+ * true top" on the other, and the readouts sat a topbar-and-notch lower on mobile than on a desktop. They are in
+ * {@link getFullScreenGui} now: `y` here is a distance from the top of the **screen** on both, which is the only
+ * reading of "the top of the screen" that can be the same picture on two devices. See that function for the
+ * argument, for the bug it used to be, and for the one thing this costs — these readouts draw *under* Roblox's
+ * chrome on a client whose topbar is opaque behind them. The column is centre-anchored, so the menu button in the
+ * top-left corner clears it.
  *
  * **This is one number where there used to be two, and the two are worth the paragraph.** The score bar sat at
  * its own offset and the clock sat at *its* own offset, in the same GUI from the same origin — so the two were
@@ -410,7 +474,13 @@ export function getHudColumn(): Frame {
 		Padding: gap,
 	});
 
-	frame.Parent = getHudScreenGui();
+	// **The full-screen GUI rather than the shared one, and this is the line the two readouts' position hangs
+	// off.** These are the only HUD elements in this client pinned to the *top edge of the screen* rather than
+	// to a corner of the safe region, and on a phone the safe region starts a topbar-plus-cutout lower — which
+	// read as "the timer and the score are too low on mobile" while the gate was doing exactly what it says.
+	// The column is centre-anchored, so the screen's own top is where it belongs on both devices; see
+	// `getFullScreenGui` for the region argument and for what this call used to do instead.
+	frame.Parent = getFullScreenGui();
 
 	column = frame;
 
@@ -433,9 +503,9 @@ export function getHudColumn(): Frame {
  * gate is not asked.
  *
  * **A second GUI rather than a setting on the first, and this is forced rather than chosen.** `Do not change
- * getHudScreenGui` is not a style rule: eleven HUD controllers parent into it, the region they get is the
- * decision the gate at the top of this file makes, and nothing that mounts beside them may move because a
- * cover needed a different origin. The alternative — a flag on the helper, or the caller setting the property —
+ * getHudScreenGui` is not a style rule: every HUD panel and controller in this client parents into it, the
+ * region they get is the decision the gate at the top of this file makes, and nothing that mounts beside them
+ * may move because a cover needed a different origin. The alternative — a flag on the helper, or the caller setting the property —
  * would put a screen-wide decision in the hands of whichever HUD mounted last.
  *
  * **`PlayerGui` holding two `ScreenGui`s is expected, and it is not the thing that helper exists to

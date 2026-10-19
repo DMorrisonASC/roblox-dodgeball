@@ -1,6 +1,6 @@
 import { Players, Workspace } from "@rbxts/services";
 import { BALL_NAME, BALL_TAGGED_TEAM_ATTRIBUTE, TEAM_ATTRIBUTE } from "shared/constants";
-import { hudTheme, UI_FONT } from "./ui/hudTheme";
+import { styleSplashText } from "./ui/actionSplash";
 
 /** Prints that the prompt is up, and every ball it decides about. */
 const DEBUG = true;
@@ -35,10 +35,12 @@ const PROMPT_HEIGHT = 26;
 const PROMPT_STUDS_OFFSET = 3.5;
 
 /**
- * How thick the outline is, in pixels. **Placeholder.**
+ * How thick the outline is, in pixels. **Placeholder — 2.**
  *
- * The splash's own number is 4 for a word 150 pixels tall; this box is 36 tall, so the outline has to be thinner
- * or it closes up the counters of the letters. Two is the same proportion at this size.
+ * **The one thing the shared style cannot default for two callers**, which is why `styleSplashText` takes it as
+ * an argument: an outline is a proportion of the word rather than a distance. The splash's own number
+ * (`SPLASH_STROKE_THICKNESS` in `ui/actionSplash.ts`) is 4 for a word 150 pixels tall; this box is 26, so the
+ * outline has to be thinner or it closes up the counters of the letters. Two is the same proportion at this size.
  */
 const PROMPT_STROKE_THICKNESS = 2;
 
@@ -62,10 +64,12 @@ const PROMPT_STROKE_THICKNESS = 2;
  * addressed to. The thrower's side sees nothing at all, which is also why this is an attribute on the ball
  * rather than anything sent to "everybody": a client with no matching `TEAM_ATTRIBUTE` never builds a box.
  *
- * **Not a splash and deliberately not animated.** `hitConfirm` is the style reference — white letters, `UI_FONT`,
- * `TextScaled`, a `UIStroke` in `Contextual` mode — but it is the *style* that is copied, not the animation: that
- * one is a caption that flashes and leaves, and this is a label that stays while its cause is true. Nothing here
- * tweens, pops or fades; it exists exactly as long as the attribute says it should.
+ * **Not a splash and deliberately not animated.** The letters are styled by `styleSplashText` in
+ * `ui/actionSplash.ts` — the same white-on-outline look as the `HIT!` caption — but it is the *style* that is
+ * shared, never the animation: that one is a caption that flashes and leaves, and this is a label that stays
+ * while its cause is true. Nothing here tweens, pops or fades. It is not that the pop was forgotten —
+ * `createActionSplash` exists for a caller that wants one — it is that a prompt appearing with a flourish would
+ * be announcing an event, and there is no event: the ball is simply still in the air.
  *
  * **Built in code rather than cloned from a template.** Unlike `hitVfx`'s effects, this is a piece of UI with one
  * string in it and no authoring left to do: a `BillboardGui`, a `TextLabel` and a `UIStroke`, all of which the
@@ -73,7 +77,6 @@ const PROMPT_STROKE_THICKNESS = 2;
  */
 export function startCatchPrompt(): void {
 	const player = Players.LocalPlayer;
-	const theme = hudTheme();
 
 	// Said at boot, for `hitVfx`'s reason: a module with a subscription and no controller around it is started by
 	// hand from `main.client.ts`, and a prompt that never appears and one that was never wired print the same
@@ -127,7 +130,7 @@ export function startCatchPrompt(): void {
 		// land here — so the box is left alone rather than rebuilt.
 		if (shown.has(ball)) return;
 
-		shown.set(ball, build(ball, theme.colors.onAccent, theme.colors.trough));
+		shown.set(ball, build(ball));
 	};
 
 	/** Attaches the two listeners to one ball, and answers for it immediately. */
@@ -180,11 +183,16 @@ export function startCatchPrompt(): void {
  * suspender that already holds. `Adornee` is still set, because a `BillboardGui` is drawn at its adornee's
  * position whether or not it is parented to it.
  *
- * **The style is `hitConfirm`'s**: `UI_FONT`, `TextScaled` to fill the box, white letters, and a `UIStroke` in
- * `ApplyStrokeMode.Contextual`. **`Contextual` is the load-bearing half** — `Border` strokes the label's own
- * rectangle, which on an invisible label is a box around nothing; `Contextual` outlines the glyphs.
+ * **The style is `ui/actionSplash.ts`'s, and this file is half the reason it was extracted.** White letters in
+ * `UI_FONT`, `TextScaled` to fill the box, centred both ways, a `UIStroke` in `ApplyStrokeMode.Contextual` —
+ * **`Contextual` is the load-bearing half**, because `Border` strokes the label's own rectangle, which on an
+ * invisible label is a box around nothing.
+ *
+ * **Styling only, and `styleSplashText` is the right half of the module to call.** `createActionSplash` is the
+ * one that can pop, and a prompt that popped would be claiming *something happened* about a ball that is still
+ * in the air — see this file's header for why the prompt is deliberately still.
  */
-function build(ball: BasePart, textColour: Color3, outline: Color3): BillboardGui {
+function build(ball: BasePart): BillboardGui {
 	const gui = new Instance("BillboardGui");
 	gui.Name = PROMPT_NAME;
 	gui.Adornee = ball;
@@ -200,21 +208,11 @@ function build(ball: BasePart, textColour: Color3, outline: Color3): BillboardGu
 	const label = new Instance("TextLabel");
 	label.Name = "Word";
 	label.Size = UDim2.fromScale(1, 1);
-	label.BackgroundTransparency = 1;
-	label.Font = UI_FONT;
-	label.Text = PROMPT_TEXT;
-	label.TextColor3 = textColour;
-	label.TextScaled = true;
-	label.TextWrapped = true;
-	label.TextXAlignment = Enum.TextXAlignment.Center;
-	label.TextYAlignment = Enum.TextYAlignment.Center;
-
-	const stroke = new Instance("UIStroke");
-	stroke.Name = "Outline";
-	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual;
-	stroke.Color = outline;
-	stroke.Thickness = PROMPT_STROKE_THICKNESS;
-	stroke.Parent = label;
+	// Font, colour, `TextScaled`, the two alignments, the transparent background and the stroke all come from
+	// here — **so a palette change is one file rather than a search for every label that copied it**. The only
+	// thing this call decides is the stroke's weight, because an outline is a proportion of the word rather than
+	// a distance: 4 pixels around a 150-pixel caption and 2 around a 26-pixel one are the same outline.
+	styleSplashText(label, { strokeThickness: PROMPT_STROKE_THICKNESS, text: PROMPT_TEXT });
 
 	label.Parent = gui;
 	gui.Parent = ball;

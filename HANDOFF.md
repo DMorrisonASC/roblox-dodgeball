@@ -1,12 +1,42 @@
 # Handoff — roblox-dodgeball
 
 A guide for a fresh session. Written 2026-09-28 against a green build (`npm run build` → exit 0);
-**brought up to date 2026-10-17** against a green build with the persistence pass in the tree (the
-last commit is `a73c0a7`, and that pass is **uncommitted** — see §12b and §15 item 24). Earlier
-revisions: 2026-10-16 at `196a5b3` with the mobile input surface and the GUI region rule, 2026-10-14
+**brought up to date 2026-10-19** against `efcbc37` plus one uncommitted change from the same day (the
+readout column moved to `getFullScreenGui()` — §9, §10). Earlier revisions: 2026-10-17 at
+`a73c0a7` (the persistence pass, **since committed as `008963b`** — the paragraph below used to call it
+uncommitted), 2026-10-16 at `196a5b3` with the mobile input surface and the GUI region rule, 2026-10-14
 at `9b47369`, 2026-10-11 at `9e2e971`, 2026-10-06 at `5bcc374`. Where this file and the source disagree,
 the source wins — and the tag count in §7 is deliberately not quoted here (it is `TAGS.md`'s own table,
 which is the count).
+
+**What has landed since the 2026-10-17 revision** (`git log a73c0a7..efcbc37`, and it is the whole of
+`196a5b3..efcbc37` that §4, §7, §10, §15 and §16 were brought in step with). Five things:
+
+1. **The throw is aimed with the cursor, and the envelope under it is 30→54 studs** (`efcbc37`). A
+   `ChargeRequest` now carries the world point under the crosshair; `reachTo` caps the hold to the hold
+   that covers that distance and takes the heading from the muzzle→point line, which is what removed the
+   third-person camera's parallax. A curve's lateral pull is timed to the flight to *that point* instead
+   of to the ballistic hang. `CHARGE_MIN_SPEED` is 50, `THROW_MAX_SPEED` 90 and `CHARGE_PEAK_HEIGHT` 0.9,
+   so every hold hangs 0.6 s. **§7 has the model; §15 items 29–33 are what it left open**, including the
+   four comment blocks that still quote the old 336 / 150-stud throw.
+2. **`CATCH IT!` is on screen** (`c063f37`). The server publishes the side a tagged ball owes
+   (`BALL_TAGGED_TEAM_ATTRIBUTE`), and `client/catchPrompt.ts` draws one `BillboardGui` over each live
+   ball whose owed side is the local player's own — the victim and their teammates, nobody on the
+   thrower's side. The same commit split the lobby's seats **by side** (`npc/lobbySpawns.ts`, reading
+   `LobbySpawns/A` and `/B` by `TEAM_ATTRIBUTE`), which is the fix for rigs returning to the wrong end of
+   the lobby.
+3. **The spawn poof is one helper for all fifteen call sites** (`4769c8f`; `server/vfx/spawnPoof.ts`).
+   It is anchored where the body stood and deliberately **not** welded to it, and it delivers its burst by
+   raising the emitter's `Rate` for a window rather than by `Emit` — the same server-side-emission lesson
+   §10 already records for the gust, and the reason a clone left at the template's `Rate = 3` drew nothing.
+   **Confirmed in Studio** (§16).
+4. **The lobby's rigs are drawn from a pool and they walk to their own join pad** (`d7af44d`, merging
+   `npc-playing-rounds`; the earlier attempt on `main` was reverted at `169885e` and `286ae45`).
+   `npc/rigPool.ts` guarantees no two live rigs share a name or a body, and
+   `behaviors/WalkToJoinPadBehavior.ts` is the walk, on `SeekBehavior`'s movement law.
+5. **Walk speed is a set of contributions under a set of caps** (`3194128`, `b3a1cf3`; §17), and the HUD
+   grew the hit tally with a `WIPEOUT!` caption that outranks every other line (`d69a099`). The power slot
+   became one slot that a prize and a dev's arm take turns in, with one crown a side (`f699436`).
 
 **What has landed since the 2026-10-16 revision.** One thing, and it is the first change to how the two
 DataStores are written since either service was created:
@@ -288,7 +318,8 @@ src/shared/                      runs on both sides
   ringPattern.ts                 the white RGBA halo/band/rosette maths for the team rings
   config/*.ts                    arena, ball, catch, dodge, gameMode, npc, action, aim,
                                  character, debug, economy, images, mystery, ring, shiftLock, shop,
-                                 sound, stats, super, throwFeedback, transition, ui
+                                 sound, stats, super, throwFeedback, transition, ui — plus
+                                 animation, audio, cameraZoom, duck and spawnPoof
 
 src/server/
   main.server.ts                 boot: collision groups, ignite, CharacterAutoLoads = false, shield
@@ -318,8 +349,17 @@ src/server/
   services/visual/OutlineService.ts   per-body Highlight, team colours, freeze override
   services/mystery/MysteryBoxService.ts  the tagged spawn points, the box, the chest prize
   services/zone/PracticeZoneService.ts   zone membership -> PRACTICE_ZONE_ATTRIBUTE
-  services/npc/NpcService.ts     + npc/Behavior.ts, npc/behaviors/*
+  services/npc/NpcService.ts     + npc/Behavior.ts, npc/behaviors/*, npc/rigs.ts, npc/sideZones.ts,
+                                 npc/rigPool.ts (the name and body pool every placeholder rig is drawn
+                                 from — nothing is reused while a live rig wears it), and
+                                 npc/lobbySpawns.ts (a lobby seat *by side*: the parts under
+                                 `LobbySpawns/A` and `/B` carrying `TEAM_ATTRIBUTE`, with a
+                                 whole-folder fallback and one warning when the place file has not
+                                 been split). `behaviors/WalkToJoinPadBehavior.ts` is the walk to a
+                                 match join part, on the same movement law as `SeekBehavior`
   components/BallComponent.ts    the throw -> hit path (friendly-fire guard, tag deferral, splash)
+  vfx/spawnPoof.ts               `playSpawnPoof(model)` — the one appear/disappear effect, anchored
+                                 where the body stood and deliberately not welded to it (§10, §15)
   dev/                           DevService + dev.config (chat commands and flags)
   config/                        match.config.ts, outline.config.ts
 
@@ -341,11 +381,21 @@ src/client/
                                  via `roundHit`, the rest via `hitImpact`), the catch's shockwave, and
                                  the charge — a loop on the hand, the fire ball over 90 %, and the
                                  driver for the gust at the thrower's feet. See §17
-  ui/                            screenGui.ts (the five `ScreenGui`s and the written rule for which
-                                 one a thing belongs in — HudGui, SplashGui, TransitionGui,
-                                 ScreenSpaceGui, StickGui; **see §9 before moving anything visual**),
-                                 hudTheme.ts, viewportConstraint.ts, hudToast.ts, elevation.ts,
-                                 panelChrome.ts
+  catchPrompt.ts                 `startCatchPrompt()` — the `CATCH IT!` `BillboardGui` on a live ball
+                                 that has hit somebody on this client's own side. Another plain module,
+                                 started from `main.client.ts` like the others; it owns one prompt per
+                                 tagged ball and reads only published attributes, so it never asks the
+                                 server whether a catch is owed (§7)
+  ui/                            screenGui.ts (every `ScreenGui` in the client and the written rule for
+                                 which one a thing belongs in — HudGui, FullScreenGui, SplashGui,
+                                 TransitionGui, ScreenSpaceGui, StickGui, **plus `getHudColumn()`**, the
+                                 one frame the score plate and the clock share; **see §9 before moving
+                                 anything visual**), hudTheme.ts, viewportConstraint.ts, hudToast.ts,
+                                 **actionSplash.ts** (the `HIT!` look and its one pop, extracted so a
+                                 second caller can share it — `styleSplashText` styles any `TextLabel`
+                                 and never animates; `createActionSplash` adds the frame and an opt-in
+                                 `pop`; `catchPrompt.ts` uses the first and deliberately not the
+                                 second), elevation.ts, panelChrome.ts
   controllers/                   CoreGuiController.ts (shared core-GUI wiring)
   controllers/hud/               RoundStatus, RoundResult, RoundTransition, LoadingScreen,
                                  RespawnHud, CurrencyHud, SuperHud, StatsBillboard, ScoreHud,
@@ -624,6 +674,27 @@ comments are gone with it, and the only thing worth keeping is the one-line hist
     tagged bodies die when the ball hits something that is not a body, in the world branch
     (`resolveTags` -> `landHit` -> `TakeDamage`). A catch before then clears the tags and nobody
     dies. Other balls are scenery unless the throw already owes a tag.
+- **The charged throw's envelope, and the cursor that now caps it.** Every body throws the same law
+  (`shared/throw.ts`): `CHARGE_MIN_SPEED` **50** to `THROW_MAX_SPEED` **90**, with a vertical fixed by
+  `CHARGE_PEAK_HEIGHT` at `sqrt(2·g·h)` = 6 studs/s. So every hold hangs the same **0.6 s** and the hold
+  changes the *distance* only — **29.8 studs at a tap and 53.9 at a full one, on level ground.** A player's
+  cursor became an input on 2026-10-19: `reachTo` raycasts the point under it, caps the charge to the hold
+  that covers that distance, and takes the heading from the muzzle→point line (which is also what removed
+  the third-person camera's parallax). **It is a cap and never a solve** — a point beyond the hold's reach
+  lands short, along the line the player aimed. Two consequences are open items rather than settled
+  behaviour: the cap bottoms out at charge 0, which is still a 30-stud throw, and a point nearer than
+  `MIN_AIM_RANGE` is discarded outright (§15 items 29–30).
+- **A curve's pull is timed to the flight to the point aimed at**, not to the ballistic hang.
+  `reachTo` returns that flight with the charge, and `planChargedThrow` hands the same number to the
+  lateral cancellation and to `plan.flightTime`, which `BallService.applyAcceleration` uses to remove the
+  force. Those were two different figures, and on a target below the hand the difference left about six
+  studs of residual bow at the shipped `CURVE_STRENGTH`.
+- **`CATCH IT!` is a prompt, not a rule.** A ball that has tagged somebody is still in the air and still
+  owes that body a death, so catching it before it lands releases every tag. The server publishes the
+  tagged *side* on the ball (`BALL_TAGGED_TEAM_ATTRIBUTE`, written in the tag branch and cleared on every
+  path the tag can end), and `client/catchPrompt.ts` draws one `BillboardGui` over any live ball whose
+  tagged side equals the local player's own `TEAM_ATTRIBUTE` — the victim and their teammates, and
+  nobody on the thrower's side. No remote, no event: the attribute *is* the answer to "is a catch owed".
 
 ---
 
@@ -697,15 +768,26 @@ that file and is worth reading rather than paraphrasing:
 
 | GUI | Region | Its tenants |
 |---|---|---|
-| `HudGui` — `getHudScreenGui()` | **gated**: safe on mobile, screen origin on desktop | every HUD panel, the two readouts in `getHudColumn()`, `ui/hudToast.ts` |
+| `HudGui` — `getHudScreenGui()` | **gated**: safe on mobile, screen origin on desktop | every HUD panel, `ui/hudToast.ts`, the shop and inventory panels |
+| `FullScreenGui` — `getFullScreenGui()` | `None` on both, and at `DisplayOrder -1` so the HUD's own panels cover it | the round's readout column (`getHudColumn()` — the score plate and the clock), which is the one HUD pair pinned to the **top edge of the screen** rather than to a corner of the safe region |
 | `StickGui` — `getStickScreenGui()` | **gated** (mobile in practice: nothing calls it on a desktop) | the joystick's ring, thumb and movement pad |
 | `ScreenSpaceGui` — `getScreenSpaceGui()` | `None` on both | the aim sight, the mobile button cluster — both placed with screen numbers |
 | `SplashGui` — `getSplashScreenGui()` | `None` on both | the join overlay — a cover must reach the screen's edges |
 | `TransitionGui` — `getTransitionScreenGui()` | `None` on both | the round-start wipe, for the splash's reason |
 
 **A `ScreenGui` of its own is earned only by something that has to draw where the HUD's contents must
-not** — those four things and nothing else. Wanting to sit lower down the screen is an **offset**, never a
-region.
+not** — a cover that reaches the screen's edges, an element placed with screen numbers, a control that
+lives in touch space, or a readout pinned to the screen's own top. **Wanting to sit lower down the screen
+is an offset, never a region; wanting the same *picture* on two devices is a region**, and that is the only
+reason `FullScreenGui` exists.
+
+**And `FullScreenGui` was quietly the HUD's GUI until 2026-10-19**, which is why it is worth reading before
+trusting any older note about it: the accessor looked up the same `GUI_NAME` as `getHudScreenGui`, so it
+returned `HudGui` and then wrote `None` onto it — the create/find disagreement the rule above forbids,
+performed by a helper whose name promised a second GUI. The dock was its only caller, so on a mobile client
+the *whole* HUD's region depended on whether the dock or a HUD controller ran last; the dock is on
+`getHudScreenGui` now (it is anchored to the bottom edge, where the safe region is what a phone's home
+indicator lives outside of) and the readouts are the GUI's only tenant.
 
 **The device test is `client/platform.ts`'s `isMobile()`** and there are seven callers, no two asking the
 same question: which control surface to draw (two HUDs), the shoulder lock, the sprint's share of the walk
@@ -745,9 +827,28 @@ wrong:
 | `InventoryController` | owned cosmetics, equip buttons, milestone conditions | `OWNED_COSMETICS_ATTRIBUTE`, `EQUIPPED_TRAIL_ATTRIBUTE`, `EQUIPPED_ELIMINATION_ATTRIBUTE` |
 | `ThemeController` | configures the big-ui theme | — |
 
-Two shared pieces worth knowing about: `ui/hudToast.ts` (the bottom-centre toast column, used by the
-throw toast) and the small module-scoped Fusion values (`aiming.ts`, `sprinting.ts`, `throwing.ts`,
-`cameraShake.ts`) that carry one fact between two controllers without either depending on the other.
+Three shared pieces worth knowing about: `ui/hudToast.ts` (the bottom-centre toast column, used by the
+throw toast), `ui/actionSplash.ts` (the `HIT!` look and its one pop — **the style and the animation are
+separate calls on purpose**, see below) and the small module-scoped Fusion values (`aiming.ts`,
+`sprinting.ts`, `throwing.ts`, `cameraShake.ts`) that carry one fact between two controllers without either
+depending on the other.
+
+**`ui/actionSplash.ts` is the answer to "apply the hit-confirm look somewhere else", and it is split in two.**
+`styleSplashText(label, { strokeThickness, fit })` applies the theme's font, colour, centring and a `Contextual`
+`UIStroke` — plus `TextScaled` + `TextWrapped` unless `fit: false` — to **any** `TextLabel`, in a panel or a
+`BillboardGui`, and **starts no animation**. `createActionSplash(scope, parent)` builds a screen-space frame
+with that label and returns a handle whose `show(text)` is static and whose `pop(text)` plays the five steps
+(pop `Back`/`Out`, settle, hold, fade). **Styling never animates; `pop` is the only thing that tweens.** The
+stroke thickness is a per-caller argument, because an outline is a proportion of the word (`hitConfirm` passes
+4 for a 150-pixel box, `catchPrompt` 2 for a 26-pixel one, `ArenaFreezeCountdownController` 1 because its card
+scale draws it at 6). `fit: false` is for a caller whose size comes from a typography variant and a `UIScale`
+rather than from its box — the countdown is the only one. Every colour and the face come from `hudTheme()`
+**read per call**, so a palette change stays one file. **Two consequences worth carrying:** `hitConfirm.ts`
+keeps the caption ladder and the event wiring and nothing else; and because `UIStroke.Transparency` is
+independent of `TextTransparency`, **anything that fades styled text must fade the stroke it got back** — the
+countdown keeps one per label (`strokes` / `strokeOf`) and fades it on every arrival, departure and hide.
+`catchPrompt.ts` uses `styleSplashText` and deliberately not `createActionSplash` — a prompt is state, not an
+event.
 
 ---
 
@@ -913,6 +1014,69 @@ Roughly in commit order (`git log` from 2026-09-28):
   `ui/screenGui.ts` gained the written two-question rule, one `edgeAnchoredInsets()` for all four gated
   writes, a `[screenGui]` line per GUI created, and one clause corrected in `hitConfirm.ts`, whose comment
   had asserted that the shared GUI is always inset.
+
+**Completed 2026-10-17 → 2026-10-19** (`git log 196a5b3..efcbc37`; §16 records the four lines the
+2026-10-19 capture added to the confirmed list, and §15 items 29–33 are the five things it left open):
+
+- **The rigs that fill the lobby, and the walk to a join pad.** `npc/rigPool.ts` draws a name and a body
+  from what is *free*, so no two live rigs share either; `behaviors/WalkToJoinPadBehavior.ts` walks a rig
+  to its match join part under the same movement law as `SeekBehavior`. **This landed through the
+  `npc-playing-rounds` merge (`d7af44d`)**, and the earlier attempt on `main` was reverted first
+  (`169885e`, `286ae45`) — read the merge, not the reverted commits.
+- **`WalkSpeedService` rebuilt as contributions plus caps** (`3194128`, `b3a1cf3`). One `Base` + `Sprint`
+  sum per body, with a separate `caps` map under `ACTION_CAP_KEY`, and `enforceActionCaps()` on every
+  `Heartbeat` — so the aiming ceiling (`AIMING_WALK_SPEED`, 8) is decided live rather than written once
+  and hoped over, which is what makes it impossible for a stale cap to stick after a stance ends.
+- **The power slot, one crown a side, a held aim pose, spread-out pad walks, and the Pierce trail**
+  (`f699436`). A prize now displaces a dev's armed ability in the one slot rather than beside it (§11).
+- **`hitConfirm` gained the tally and the `WIPEOUT!` caption** (`d69a099`), which is the one caption the
+  client cannot work out for itself and therefore outranks everything.
+- **`playSpawnPoof(model)`** (`4769c8f`; `server/vfx/spawnPoof.ts`, `config/spawnPoof.config.ts`) — the
+  one appear/disappear/teleport effect, called from fifteen sites across `RoundService`,
+  `LobbyRigService` and `RespawnService`. **It is anchored where the body stood and deliberately not
+  welded to it**, and it delivers its burst by raising `Rate` for a window rather than by `Emit` — the
+  same server-side-emission lesson the deleted gust left behind (§17): what replicates is the emitter's
+  **properties**, so a clone at `Rate = 3` emitted nothing anyone could see.
+- **The `CATCH IT!` prompt, the sided lobby spawns, and `BALL_TAGGED_TEAM_ATTRIBUTE`** (`c063f37`; §7).
+  `lobbySpawns.ts` reads `LobbySpawns/A` and `/B` by `TEAM_ATTRIBUTE` for a rig's seat, and
+  `RoundService.returnRigsToLobby` was moved onto it — the side-less `lobbySpawn()` was the wrong-side
+  bug. The ball now publishes the side it owes, and the client draws the prompt from that alone.
+- **The cursor as the throw's aim point, the curve's timing, and the retuned envelope** (`efcbc37`;
+  §7). `ChargeRequest` gained `aim`; `reachTo` caps the hold to the point under the cursor and supplies
+  the heading from the muzzle; `planChargedThrow` times a curve's lateral cancellation to the flight to
+  *that point* rather than to the ballistic hang. `CHARGE_MIN_SPEED` is 50 and `CHARGE_PEAK_HEIGHT` is
+  0.9, which is a **30→54-stud** envelope on level ground — not the 150 studs that function's own
+  comment still describes (§15 item 29).
+- **The round's two readouts moved to `getFullScreenGui()`** (uncommitted at the time of writing,
+  2026-10-19). The score plate and the clock are the one HUD pair pinned to the **top edge of the screen**,
+  and in the gated GUI the safe region put them a topbar-plus-cutout lower on a phone than on a desktop —
+  which reads as "the timer and the scoreboard are too low on mobile". `getHudColumn()` parents into
+  `getFullScreenGui()` now, so `COLUMN_TOP_INSET` is a distance from the *screen's* top on both devices.
+  **The accessor had to be fixed first**: it looked up `HudGui`'s name, so it returned the shared GUI and
+  wrote `None` onto it, which made every earlier attempt to use it a no-op — see §9. `DockController`
+  moved to `getHudScreenGui()`, because a bottom-anchored dock wants the safe region.
+- **The hit-confirm look became `ui/actionSplash.ts`** (uncommitted at the time of writing, 2026-10-19),
+  at the user's request — *"let's extract the style and animation… the animation will not be automatically
+  added to text. But it would be great if it could be added if needed"*. The style was already copied in
+  two files (`hitConfirm.ts` and `catchPrompt.ts`) and the second one's doc said so. **The split is the
+  contract**: `styleSplashText(label, { strokeThickness })` styles any `TextLabel` and starts no tween;
+  `createActionSplash(scope, parent)` returns `{ show, pop, hide }` where only `pop` animates. The five
+  steps, the box (`760 × 150`, top `0.26`, cap `0.86 × 0.24`), the `Back` easing and the generation token
+  moved with it; the caption ladder, `HIT_WINDOW_SECONDS` and the event wiring stayed in `hitConfirm.ts`,
+  which now reads no theme at all — the module reads `hudTheme()` per call. **One roblox-ts trap hit here
+  again**: the `ActionSplash` interface declared `show(text: string): void` methods, and `rbxtsc` refuses
+  an object literal whose member is an arrow function for a declared *method* (§3) — declare them as
+  function-typed properties instead.
+- **The arena-freeze countdown wears the same style** (same day, same uncommitted change), at the user's
+  request — *"apply this same `splashStyle()` to the countdown that plays when the round is first starting
+  and the models are frozen"*. `ArenaFreezeCountdownController.addLabel` now calls
+  `styleSplashText(label, { strokeThickness: 1, fit: false })`, so each number gets the splash's font,
+  white and `Contextual` `trough` outline. **Two things were not a copy-paste:** `fit: false` keeps the
+  `h4` variant plus the card's `NUMBER_SCALE` as the only two decisions about type size (turning
+  `TextScaled` on would have made a third, and `AutomaticSize.X` would be measuring text it sized itself);
+  and the stroke had to be **faded everywhere the number fades** — a crossing's departure, an arrival,
+  "Start"'s fade-out and `resetLabels` — because `UIStroke.Transparency` is not part of its label's
+  `TextTransparency`. Left alone, every tick would have left a black outline of a number that had gone.
 
 ### Completed since the 2026-10-11 revision (the four in the header, in detail)
 
@@ -1293,7 +1457,9 @@ Carried over from the previous handoff where still live, plus what this revision
       depend on". **Fixed in this pass, and the sentence is now a description rather than a count** (§10).
       For the record, re-derived from the source: **eleven** HUD controllers call `getHudScreenGui()`,
       plus `ui/hudToast.ts` and this file's own `getHudColumn()` — thirteen call sites, not the fourteen
-      the previous pass recorded.
+      the previous pass recorded. *(As of 2026-10-19 the total is still thirteen but the members changed:
+      `getHudColumn()` parents into `getFullScreenGui()` and `DockController` moved onto
+      `getHudScreenGui()` — §9.)*
     - **`src/client/ui/panelChrome.ts`** — "there are nine builders that each do exactly what the shop's
       own private method did before". The file exports about twenty builders.
     - **`src/shared/config/economy.config.ts`** — "The launch milestone table — six achievements,
@@ -1323,11 +1489,13 @@ Carried over from the previous handoff where still live, plus what this revision
 15. **`NPC_CONFIG.THROW_RANGE_STUDS` (150) promises more than the shared throw envelope delivers.**
     The rig-only gate is the distance at which a rig will *decide* to throw; the shared law every body
     throws under (`chargeForRange` / `chargeSpeed` / `peakAngle`, both bodies sending `kind: "charged"`)
-    reaches about **79 studs to a body's root and 65 to level ground** at a full hold. So a rig with a
-    target between roughly 79 and 150 studs telegraphs a full 1.25 s windup and then **throws short** —
-    the most visible half of the windup doing nothing. It is the last rig-only number in the throw.
-    Lowering it to about 80 would make the gate and the power agree; the alternative is leaving a
-    deliberate "throws at anything it can see" and accepting the wasted windups.
+    reaches about **79 studs to a body's root and 54 to level ground** at a full hold — the 79 is
+    unchanged since this item was written, the level figure was **65 before the 2026-10-19 retune and is
+    54 now** (§10, §15 item 29). So a rig with a target between roughly 79 and 150 studs telegraphs a
+    full 1.25 s windup and then **throws short** — the most visible half of the windup doing nothing. It
+    is the last rig-only number in the throw. Lowering it to about 80 would make the gate and the power
+    agree; the alternative is leaving a deliberate "throws at anything it can see" and accepting the
+    wasted windups.
 16. **`LobbyRigService`'s doc argues from a premise that is now false.** Around line 987 it explains that
     the arena freeze cannot reach a rig because "there is no speed sum for a rig to hold back". Since
     2026-10-14 **a rig has a speed sum** (`Base` + `Sprint`, §17). The conclusion is unaffected —
@@ -1371,11 +1539,12 @@ region gate above, and none has been looked at in Studio.**
     space only while the GUI insets — a future caller on a non-mobile client would put the ring one inset
     up and to the left of the corner its home is a fraction of. `platform.ts`'s "the platform does not
     change mid-session" is what makes that impossible today.
-23. **The working tree carries an uncommitted stamina retune, and it is not this pass's.**
-    `CHARACTER_CONFIG.STAMINA_MAX_SECONDS` is `3 → 6` and `STAMINA_DRAIN_PER_SECOND` is `1 → 0.5` (twice
-    the pool, half the drain), which doubles the sprint's duration; the comments above those two constants
-    still describe the old pair and were left alone deliberately. Expect it when you diff the tree, and
-    do not "fix" it.
+23. **The stamina retune is no longer an uncommitted diff; the stale comments beside it are still
+    there.** `CHARACTER_CONFIG.STAMINA_MAX_SECONDS` is `6` and `STAMINA_DRAIN_PER_SECOND` is `0.5` (twice
+    the pool, half the drain), which doubles the sprint's duration — committed as of 2026-10-19, where this
+    item used to say the tree carried it. **What has not moved is the prose**: the doc blocks above those
+    two constants still describe the old `3` / `1` pair, so read them against the numbers. Do not "fix"
+    the values; the comments want their own line.
 
 **Found by the 2026-10-17 persistence pass. None of these is a bug found in code — they are the
 residue of that pass, and each is a decision left open rather than a mistake left in.**
@@ -1407,6 +1576,50 @@ residue of that pass, and each is a decision left open rather than a mistake lef
     the same twenty-second window. There is no case today where a different window would help — the
     note exists because the `CloseReason` argument is right there and unused, and because a `Restart`
     against a slow store is the case where knowing *why* we are shutting down would be worth having.
+
+**Found by the 2026-10-19 throw pass. Item 29 is comments only; 30–32 are behaviour decisions left
+open; 33 is the measurement that would settle the report all four came out of.**
+
+29. **The throw's comments quote numbers the config stopped holding, and the config is right.**
+    `THROW_MAX_SPEED` is `90` and `CHARGE_MIN_SPEED` is `50`, which is **29.8 → 53.9 studs** on level
+    ground. The prose says otherwise in four places: `THROW_MAX_SPEED`'s own note still reads "336",
+    `planChargedThrow`'s still prints a table of *"18.5 / 52.0 / 84.8 / 117.5 / 150.1"* and calls the
+    full hold 150 studs, `CHARGE_PEAK_HEIGHT`'s still derives `v_y = 7.75`, a `0.77 s` hang and "about
+    34 studs at a tap and 69 at a full hold" from a value that is now 0.9 (`v_y` 6, hang 0.6), and
+    `peakAngle`'s still names "`CHARGE_MIN_SPEED` = 45" as the floor it is weighed against. **Nothing
+    behaves wrongly** — every reader takes the config — but a reader who trusts the prose sizes the
+    throw wrong by a factor of three. One pass, comments only.
+30. **The shortest throw is ~30 studs, so the cursor cannot name a nearer target.** `reachTo`'s cap
+    bottoms out at charge 0, and charge 0 *is* `CHARGE_MIN_SPEED`, which covers 29.8 studs. Point at a
+    body 10 studs away with a full hold and the ball is fired 30 studs along that line — past it, by up
+    to 24 studs. The guide draws the same overshoot, so the preview is honest; what the cap cannot do is
+    the one thing a cap is for at close range. Lowering `CHARGE_MIN_SPEED` to ~20 would put the floor
+    at 11 studs and leave the top of the hold untouched (`6/20 = 0.3` keeps `peakAngle` far from its
+    45° clamp). A tuning decision, not a fix, which is why it is here rather than in the tree.
+31. **`MIN_AIM_RANGE` discards exactly the aim a player makes at arm's length.** A point under 2 studs
+    (flat) from the muzzle returns `undefined`, so the throw falls back to the **held charge and the
+    camera's bearing** — a 1.00 hold becomes 54 studs past a body standing on top of the thrower. The
+    capture that produced item 30 had `[Aim] arc: … at 1 studs` and `at 2 studs` immediately before two
+    full-charge releases. Whether to keep the guard (the direction from the muzzle to a point at its own
+    feet is centimetres of noise) or to clamp the direction instead is open. What is already established
+    is that "full charge, target at arm's length" is currently the *worst* case rather than the best.
+32. **A throw that meets another ball is `carried on past it` in the code and deflected by the engine.**
+    `BallComponent.handleTouch` decides a loose ball is scenery unless the throw already owes a tag — but
+    balls are in the `Ball` group and `Ball` vs `Ball` is left at the engine's default, so a solid ball
+    in the way *does* turn the throw. The log carries both halves: dozens of `— a ball, and this throw
+    owes nobody — carried on past it`, and the two that ended on one (`#103`, `#383`). One row —
+    `CollisionGroupSetCollidable(BALL_GROUP, BALL_GROUP, false)` — makes the stated rule true; the cost
+    is balls sinking into each other where they pile on the floor. This is the closest thing in the code
+    to "a collision knocked my throw off", so it is the first thing to try if a throw ever visibly turns.
+33. **`VERBOSE_LOGS` is off, and with it every throw's commanded velocity.** The one line that can say
+    whether a ball left with the speed the plan asked for —
+    `[Ball] <name>: charged 1.00 … studs/s at … deg, release … -> launch … | muzzle … | boost … at N fps`
+    — is behind `DEBUG_CONFIG.VERBOSE_LOGS`. In the 2026-10-19 capture it never ran, so "the ball did not
+    move" and "the ball moved to the wrong place" are indistinguishable in that log. Note what is *not* a
+    candidate, because the report suspected it: collision with the holder is already off at
+    `BallService.throwBallBody` (`CollisionIgnore.between(ball, model)`, one constraint per part) and
+    again by group in a practice zone (`Ball` vs `PracticePlayer`). One run with the flag on reads the
+    launch directly.
 
 ---
 
@@ -1452,6 +1665,21 @@ two of them are reachable in a Studio session at all.
   right foot → between the feet), so the placement is not what the log spoke to.
 - `[VFX] no HitNeutral in ReplicatedStorage — that hit effect will not play` — a confirmation by
   *absence*, and the reason item 14 exists.
+- **The spawn poof, at both ends of a round, and the user's own verdict on it was "this looked good".**
+  `[VFX] SpawnPoof at <name> — x, y, z (1 part(s), 1 emitter(s), texture rbxassetid://…, 2.00s)` fires
+  once per body at the round-end teleport, and the effect was seen. **That is the confirmation for the
+  delivery described in §10**: the burst is the emitter's `Rate` raised for a window, not an `Emit`, and
+  a clone left at the template's own `Rate = 3` had drawn nothing at all.
+- `[Ball] <name>: flight owned by the server` on every player throw in the 2026-10-19 capture, on frame
+  one and with no `(took N frames)` — so `ball.SetNetworkOwner()` at the release does hand the flight to
+  the server's solver, which is the half of the launch a client-owned assembly could otherwise drag back
+  to the hand.
+- `[Aim] arc: <part> at N studs -> <model>` printing **on change rather than per frame** while a charge
+  is held, and `[Aim] <model>: lit=true` / `out=true` following it — the target glow and the drawn arc
+  agree about what the throw is aimed at, which is the point of both being computed in `updateGuide`.
+- `[VFX] FreezeSplash spawned at … with size 16 (radius 8, scale 16.00, 1 part(s))` beside the ball's
+  own `ended on … [Freeze]` line — the splash's proportional scaling (§10) reading as a 16-stud
+  diameter for an 8-stud radius, from a template authored at one stud of radial extent.
 
 **Observed, but about systems that no longer exist — do not treat as current:**
 
@@ -1625,7 +1853,7 @@ is that the next recording will name it.
 
 | Document | What it is | State |
 |---|---|---|
-| `HANDOFF.md` | this file | current as of **2026-10-16**, against a green build with the mobile input surface and the GUI region rule in the tree (last commit `196a5b3`). §9 gained the `ScreenGui` section, §10 gained the joystick story, §4 gained `platform.ts` and `TouchJoystickController`, §15 gained items 20–23. **§5–§8, §11–§14, §16 and §17 stand as the 2026-10-14 revision left them** — see the scope paragraphs at the top, and note that anything in them describing the shared GUI's region is superseded by §9 |
+| `HANDOFF.md` | this file | current as of **2026-10-19**, against `efcbc37` plus one uncommitted change from the same day (the readout column moved to `getFullScreenGui()`). That pass brought **§4, §7, §9, §10, §15 and §16** in step with everything committed since `196a5b3` — the rig pool and the lobby walk, the walk-speed contributions and caps, the power slot, `playSpawnPoof`, the `CATCH IT!` prompt with the sided lobby spawns, and the cursor-driven throw. §15 gained items 29–33 and §16 the four log lines the 2026-10-19 capture confirmed. **§5, §6, §8 and §11–§14 stand as the 2026-10-16 revision left them, and §17 as 2026-10-17** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted |
 | `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of 2026-10-14. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
 | `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **a record, not a description.** It documents the retired mock (five tabs, a box picture with odds); the panel was rewritten onto the economy and `ui/panelChrome.ts`, and a caveat banner at the top now says so. Kept because **§7's arithmetic still holds** (the panel really does collapse below ~700 px of viewport height) and §8's ruled-out list is still worth not re-treading. §5 and §6 were corrected on 2026-10-16 for the shared GUI's region, which is a *device* decision now (§9) |
 | `README.md` | upstream roblox-ts boilerplate — its entire content is the line `First commit` | says nothing about this project; ignore it |

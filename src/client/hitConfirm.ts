@@ -1,10 +1,9 @@
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, TweenService } from "@rbxts/services";
+import { Players } from "@rbxts/services";
 import { CATCH_ANIMATION_ATTRIBUTE } from "shared/constants";
 import { events } from "shared/networking";
-import { hudTheme, UI_FONT } from "./ui/hudTheme";
+import { createActionSplash } from "./ui/actionSplash";
 import { getHudScreenGui } from "./ui/screenGui";
-import { addViewportConstraint } from "./ui/viewportConstraint";
 
 /** Prints once at boot, and one line per confirmation. */
 const DEBUG = true;
@@ -19,7 +18,8 @@ const DEBUG = true;
  * same order and the same voice as a cooldown warning. It is now a short line high on the screen that **pops**:
  * a `Back`-eased scale that overshoots past full size and settles back, holds, and fades. The change is
  * physical rather than cosmetic, because a success is a moment rather than a statement about the game's state.
- * See {@link playSplash} for the five steps and {@link SPLASH_EASING} for the one that decides how it feels.
+ * See `ui/actionSplash.ts` for the five steps, the easing that decides how it feels, and the box the word is
+ * drawn in — **this file decides *which word* and *when*, and that file decides what a splash is made of**.
  *
  * **The event is `hitImpact`, and that choice is the whole of whether this works at all.** `roundHit` — the
  * event the hit feed reads — is sent only for hits with a person at both ends (`RoundService.logHit` is
@@ -90,12 +90,13 @@ const DEBUG = true;
  *   so it fires in every phase — see `RoundService.registerHit`. The round's records, the damage and `hitVfx`
  *   are untouched.
  * - **Not queued.** A second *throw* replaces the splash on screen rather than waiting behind the first — see
- *   {@link playSplash} for why that is the right trade for MultiBall, and for the generation token that makes an
- *   interrupted sequence stop rather than hide the splash that replaced it. **Hits within one throw are not
- *   replaced at all: they are summed** — see the aggregation section above for the window and the token.
+ *   `ActionSplash.pop` in `ui/actionSplash.ts` for why that is the right trade for MultiBall, and for the
+ *   generation token that makes an interrupted sequence stop rather than hide the splash that replaced it.
+ *   **Hits within one throw are not replaced at all: they are summed** — see the aggregation section above for
+ *   the window and the token.
  * - **Not a toast any more.** `mountToast`, its column slot and the two-second hold are all gone with the
- *   `Alert`; what replaces them are the splash's own five steps, below, and a hold short enough to be a beat
- *   rather than a message.
+ *   `Alert`; what replaces them are the splash's own five steps, in `ui/actionSplash.ts`, and a hold short
+ *   enough to be a beat rather than a message.
  * - **Not a scoreboard.** The caption says *how big the throw was*, once, and then it is gone — nothing here
  *   totals a match, remembers a best, or reports anything to the server. A count that is still on screen when
  *   the next throw lands has already been replaced.
@@ -106,7 +107,6 @@ export function startHitConfirm(): void {
 	// was never wired print the same nothing.
 	if (DEBUG) print(`[HUD] splash up — "${HIT_TEXT}" … "${WIPEOUT_TEXT}" on a throw I land, "${CATCH_TEXT}" on every catch`);
 
-	const theme = hudTheme();
 	const scope = Fusion.scoped();
 
 	// **Built once here, at mount, rather than on the frame a hit lands.** The first splash is the one moment
@@ -114,7 +114,11 @@ export function startHitConfirm(): void {
 	// constructions, and doing them inside a `hitImpact` handler would put them in the same frame as the impact
 	// the player is watching. The price is an invisible label over the game for a session — `Visible = false` and
 	// `TextTransparency = 1` until the first success — which is the cheaper of the two.
-	const parts = buildSplash(scope, theme.colors.onAccent, theme.colors.trough);
+	//
+	// **The theme is not read here any more.** It was, for two colours passed straight into the splash's
+	// constructor; `createActionSplash` reads `hudTheme()` itself on every call, which is what makes a palette
+	// change one file rather than a search for the arguments that used to carry it.
+	const splash = createActionSplash(scope, getHudScreenGui());
 
 	// **The tally a splash is drawn from.** A throw can land on several bodies — a Pierce ball goes through
 	// three — and each body is its own `hitImpact`, so a splash per event would say `HIT!` three times in a
@@ -124,7 +128,7 @@ export function startHitConfirm(): void {
 
 	// **The token that ends a tally, bumped by every hit and by a wipe.** A `task.delay` cannot be cancelled,
 	// so the token is how a later hit both *extends* the window and disowns the earlier timer — the pattern
-	// `playSplash` already uses for its own sequence. An object rather than two `let`s so a closure cannot
+	// `ActionSplash.pop` already uses for its own sequence. An object rather than two `let`s so a closure cannot
 	// capture one half of the tally and disagree with the other.
 	let tallyToken = 0;
 
@@ -169,7 +173,7 @@ export function startHitConfirm(): void {
 
 			const text = textForHits(count, power);
 
-			playSplash(parts, text);
+			splash.pop(text);
 
 			if (DEBUG) print(`[HUD] splash — ${text} (${count} hit(s)${power ? ", power" : ""})`);
 		});
@@ -190,213 +194,15 @@ export function startHitConfirm(): void {
 
 		wipeGuardUntil = os.clock() + WIPE_GUARD_SECONDS;
 
-		playSplash(parts, WIPEOUT_TEXT);
+		splash.pop(WIPEOUT_TEXT);
 
 		if (DEBUG) print(`[HUD] splash — ${WIPEOUT_TEXT}`);
 	});
 
 	watchOwnCatch(() => {
-		playSplash(parts, CATCH_TEXT);
+		splash.pop(CATCH_TEXT);
 
 		if (DEBUG) print(`[HUD] splash — ${CATCH_TEXT}`);
-	});
-}
-
-/** What the splash is made of, named once so the two functions below cannot disagree about it. */
-interface SplashParts {
-	/**
-	 * **The wrapper, and it is the thing whose `Visible` is toggled.**
-	 *
-	 * The label has a `Visible` too, and turning *that* on while the wrapper is hidden draws nothing at all —
-	 * which is what this module did for the length of one edit. A child's visibility is a fact about the child;
-	 * a hidden parent hides it regardless, so the parent is the only one worth writing.
-	 */
-	readonly frame: Frame;
-
-	readonly label: TextLabel;
-	readonly scale: UIScale;
-	readonly stroke: UIStroke;
-}
-
-/**
- * **The one splash, built once and reused**, because there is at most one of these on screen at a time.
- *
- * **A `Frame` wrapper with a `UIScale` on it, and the *why* is the whole of decision two.** The three ways to
- * grow a piece of text are a `Size` tween, a `UIScale`, and `TextScaled` — and `TextScaled` is not an animation
- * at all, it is how the label *fits* its box, so it is the wrong tool for the growth. A `Size` tween would
- * re-run that fitting on every frame, and the text would be re-measured and re-kerned sixty times during a
- * 0.15-second pop, which is where a "snap" starts to shimmer. **`UIScale` is a transform**: the layout size is
- * decided once (a fixed pixel box, capped by the viewport) and the scale multiplies it afterwards, so the pop
- * costs nothing per frame and the text is measured exactly once. That is the one that snaps.
- *
- * **`TextScaled` is still what sizes the letters within that box**, which is the responsive requirement rather
- * than a preference: the label fills its frame and the frame is capped by {@link addViewportConstraint}, so a
- * phone gets smaller letters and an ultrawide gets no larger than {@link SPLASH_WIDTH}. A pixel font size here
- * would be one number that is right on exactly one screen.
- *
- * **The stroke is the legibility half**, and it wraps the *letters* rather than the label — see
- * `ApplyStrokeMode.Contextual` in the body, which is the whole difference between an outline and a black box.
- * **The pair is white text inside the theme's near-black outline**, which is the one combination that survives
- * a bright court, a dark rig and everything between. **The colour carries no meaning on purpose**: the two
- * outcomes are told apart by their words, because a caption that is up for half a second cannot also spend that
- * half-second teaching a colour code. Both colours come from the theme — **nothing here is a
- * `Color3.fromRGB`**, which is the rule that keeps a palette change to one file.
- */
-function buildSplash(scope: Fusion.Scope<unknown>, textColour: Color3, outline: Color3): SplashParts {
-	const frame = Fusion.New(scope, "Frame")({
-		Name: SPLASH_NAME,
-		// **Anchored in the middle and placed high**, not at `0.5, 0.5`: the crosshair and the arena's own
-		// centre are what the player is looking at, and a word over them is a word in the way. `0.26` of the
-		// region is the upper third, above the line the throw arc is read along and below the round's top
-		// readouts — see `screenGui.ts`'s `COLUMN_TOP_INSET` for the band it must clear.
-		AnchorPoint: new Vector2(0.5, 0.5),
-		Position: new UDim2(0.3, 0, SPLASH_TOP_FRACTION, 0),
-		Size: UDim2.fromOffset(SPLASH_WIDTH, SPLASH_HEIGHT),
-		BackgroundTransparency: 1,
-		Visible: false,
-	});
-
-	// **The phone and ultrawide caps, in one call**, because a pixel box is correct on the screen it was chosen
-	// on and only there: 760 pixels is two thirds of a 1080p width and wider than a phone's whole viewport.
-	addViewportConstraint(scope, frame, { maxFraction: SPLASH_MAX_FRACTION });
-
-	const label = Fusion.New(scope, "TextLabel")({
-		Name: "Word",
-		Parent: frame,
-		Size: UDim2.fromScale(1, 1),
-		BackgroundTransparency: 1,
-		Font: UI_FONT,
-		// **The colour the word will be, written once here rather than per splash.** Both outcomes are white
-		// now, so there is nothing for a `playSplash` call to decide — a colour argument on it would be a
-		// parameter with one value, which is a knob that lies about being a knob.
-		//
-		// **The text starts empty rather than at one of the ladder's words**, because there is no default
-		// caption: the word is chosen per throw by `textForHits`, and a label holding `HIT!` until then would
-		// be a third place the ladder is written, one that would keep saying `HIT!` if the ladder changed.
-		Text: "",
-		TextColor3: textColour,
-		TextScaled: true,
-		TextWrapped: true,
-		TextXAlignment: Enum.TextXAlignment.Center,
-		TextYAlignment: Enum.TextYAlignment.Center,
-		// **Transparent until a splash plays**, so the label existing changes nothing on screen.
-		TextTransparency: 1,
-	});
-
-	// Plain `Instance`s rather than `Fusion.New`, because neither is a value the graph ever drives: the scale is
-	// written by a tween and read by nobody, and the stroke is configured once. `Fusion.New` exists to make a
-	// property reactive, and a reactive property here would fight the tween for the same number.
-	const stroke = new Instance("UIStroke");
-	stroke.Name = "Outline";
-	// **`Contextual`, which is the whole of "outline the letters" — and the fix for a black box around the
-	// word.** `Border` is the other mode, and it strokes the *element's own rectangle*: a label is a 760 × 150
-	// invisible box with a line of text somewhere inside it, so a `Border` stroke draws that box and puts
-	// nothing around the glyphs at all. On anything meant to outline text the mode is always `Contextual`;
-	// `Border` is for panels and buttons.
-	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual;
-	stroke.Color = outline;
-	stroke.Thickness = SPLASH_STROKE_THICKNESS;
-	stroke.Transparency = 1;
-	stroke.Parent = label;
-
-	const scale = new Instance("UIScale");
-	scale.Name = "Pop";
-	scale.Scale = 1;
-	// **On the frame, not on the label.** A `UIScale` grows its instance about that instance's anchor point, so
-	// the frame's `AnchorPoint` of `(0.5, 0.5)` is what makes the word expand from its own centre rather than
-	// from a corner — and the frame is the thing with the anchor.
-	scale.Parent = frame;
-
-	frame.Parent = getHudScreenGui();
-
-	return { frame: frame, label: label, scale: scale, stroke: stroke };
-}
-
-/**
- * **The five steps, and the token that lets a second success interrupt the first.**
- *
- * 1. **Reset** — scale to `0`, text and stroke opaque, visible. Everything the previous splash left is
- *    overwritten in one resumption, so a splash that was interrupted mid-fade does not inherit an alpha.
- * 2. **Pop in** — scale to {@link SPLASH_OVERSHOOT} in {@link SPLASH_IN_SECONDS}, **`Back`/`Out`**, which is
- *    the one that makes it feel like a Wii Sports caption: the curve overshoots past the target and settles
- *    back onto it, so the word arrives *at* the viewer rather than growing toward them.
- * 3. **Settle** — back to `1.0` in {@link SPLASH_SETTLE_SECONDS}. The overshoot in step 2 is the snap; this is
- *    the rebound that leaves the word at its resting size, and it is `Quad` rather than `Back` so the rebound
- *    does not add a *second* bounce — one overshoot reads as impact, two read as a wobble.
- * 4. **Hold** — {@link SPLASH_HOLD_SECONDS}, long enough to read a caption without becoming a message.
- * 5. **Fade** — text and stroke to fully transparent, `Quad`/`In`, then `Visible = false`. The outline fades
- *    with the letters rather than after them, because an outline that outlived its word would be a visible
- *    outline of nothing.
- *
- * **Replace rather than queue, and the reason is MultiBall.** A rig's MultiBall window throws five times in a
- * few seconds, and a player can land two of them inside a tenth of a second; a queue would still be drawing
- * the first `HIT!` while the second hit is being read, which is a splash describing an older moment than the
- * one on screen. **Replacing can cut the first one short, and that is the trade taken**: the newest success is
- * the one worth showing, and the splash is a caption rather than a message, so nothing is lost by retiring it
- * early. What *would* break is the interrupted sequence's own timers — they are still sleeping — so every
- * splash carries {@link splashToken}'s value, and a sequence whose token is stale returns at its next step
- * instead of hiding or fading the splash that replaced it. That is the same "a timer can only be ignored"
- * pattern `LobbyRigService`'s dismissal used, moved here when the toast went.
- */
-function playSplash(parts: SplashParts, text: string): void {
-	splashToken += 1;
-	const token = splashToken;
-
-	// **Stop what the last splash is still doing, and this is not the same job as the token.** The token makes
-	// an interrupted *sequence* return at its next step; it cannot stop a tween that is already running, and a
-	// fade in flight would go on driving `TextTransparency` to `1` underneath the opaque word this call is about
-	// to write. So the tweens are cancelled here — before the reset — and every tween a splash starts is
-	// recorded for exactly this line.
-	for (const running of activeTweens) running.Cancel();
-
-	activeTweens = new Array<Tween>();
-
-	// **The word, and not its colour.** The label's colour is white for both outcomes and is written once, in
-	// `buildSplash`, so there is nothing here for a call to decide — see that function for why the difference
-	// between a hit and a catch is the word rather than the colour.
-	parts.label.Text = text;
-	parts.label.TextTransparency = 0;
-	// **The wrapper, not the label** — a hidden parent hides its children whatever their own `Visible` says.
-	// See `SplashParts.frame`.
-	parts.frame.Visible = true;
-	parts.stroke.Transparency = SPLASH_STROKE_TRANSPARENCY;
-	parts.scale.Scale = 0;
-
-	task.spawn(() => {
-		const popIn = TweenService.Create(
-			parts.scale,
-			new TweenInfo(SPLASH_IN_SECONDS, SPLASH_EASING, Enum.EasingDirection.Out),
-			{ Scale: SPLASH_OVERSHOOT },
-		);
-		activeTweens.push(popIn);
-		popIn.Play();
-		popIn.Completed.Wait();
-		if (token !== splashToken) return;
-
-		const settle = TweenService.Create(
-			parts.scale,
-			new TweenInfo(SPLASH_SETTLE_SECONDS, SPLASH_SETTLE_EASING, Enum.EasingDirection.Out),
-			{ Scale: 1 },
-		);
-		activeTweens.push(settle);
-		settle.Play();
-		settle.Completed.Wait();
-		if (token !== splashToken) return;
-
-		task.wait(SPLASH_HOLD_SECONDS);
-		if (token !== splashToken) return;
-
-		const fadeInfo = new TweenInfo(SPLASH_OUT_SECONDS, SPLASH_OUT_EASING, Enum.EasingDirection.In);
-		const fadeText = TweenService.Create(parts.label, fadeInfo, { TextTransparency: 1 });
-		const fadeStroke = TweenService.Create(parts.stroke, fadeInfo, { Transparency: 1 });
-		activeTweens.push(fadeText);
-		activeTweens.push(fadeStroke);
-		fadeText.Play();
-		fadeStroke.Play();
-		fadeText.Completed.Wait();
-		if (token !== splashToken) return;
-
-		parts.frame.Visible = false;
 	});
 }
 
@@ -540,141 +346,10 @@ const HIT_WINDOW_SECONDS = 0.15;
  */
 const WIPE_GUARD_SECONDS = 0.4;
 
-/** The splash's name in the GUI, so it can be found by the same name in a log or the Explorer. */
-const SPLASH_NAME = "ActionSplash";
-
 /**
- * The splash's box, in pixels, and **the one pair of numbers here that is a design size rather than a tuned
- * one.** `TextScaled` fills whatever box it is given, so this is "how big the word is", and the viewport cap
- * below is what turns it into "how big it may be *here*".
- *
- * **760 × 150 is a word about a seventh of a 1080p screen tall** — big enough to read without looking away
- * from the arena, small enough that it covers nothing the next throw needs. **Placeholder.**
+ * **The splash's text is not this module's shape.** The word's box, its position, its outline and the whole
+ * five-step pop moved to `ui/actionSplash.ts` when a second caller wanted the same look — see that file for the
+ * geometry and the easing, and `ActionSplash.pop` for the sequence. What stays here is the ladder, the window
+ * and the wiring: **which word**, and **when**, rather than what a splash is made of.
  */
-const SPLASH_WIDTH = 760;
-const SPLASH_HEIGHT = 150;
 
-/**
- * Where the splash sits, as a fraction of the region the HUD is in — **the upper third, not the middle.**
- *
- * **The middle of the screen is where the game is being aimed at.** The aim sight is at `(0.5, 0.5)`, the throw
- * arc is read along the centre line, and the body being thrown at is on it; a word over that is a word in the
- * way of the next throw. `0.26` clears the round's own top readouts — a column starting 14 pixels below the top
- * and about 90 pixels tall in the worst case, see `screenGui.ts`'s `COLUMN_TOP_INSET` — and stays well above the
- * crosshair. **Placeholder.**
- */
-const SPLASH_TOP_FRACTION = 0.26;
-
-/**
- * The most of the viewport the splash may take — **the phone and ultrawide cap**, handed to
- * {@link addViewportConstraint} and read there as "whichever is tighter" against the pixel box above.
- *
- * **86 % across leaves a margin**, because a label touching both edges is clipped by a pixel of rounding on a
- * narrow screen; **24 % down is a quarter of the screen's height**, which is what stops a landscape phone from
- * giving the word a box taller than the arena is drawn on. Neither binds at a desktop size, which is the point
- * of a cap rather than a size. **Placeholder.**
- */
-const SPLASH_MAX_FRACTION = new Vector2(0.86, 0.24);
-
-/**
- * How thick the word's outline is, in pixels. **Placeholder — 4.**
- *
- * **An outline rather than a shadow**, because what it has to survive is a bright court behind bright letters:
- * a shadow separates a word from a *dark* background, an outline separates it from any background at all.
- */
-const SPLASH_STROKE_THICKNESS = 4;
-
-/**
- * How opaque the outline is while the word is up — `0` is fully opaque, so this is very slightly transparent.
- * **Placeholder — 0.15.**
- *
- * **Not full strength, and the reason is taste rather than legibility.** A black outline at full opacity around
- * a 150-pixel word reads as a sticker; a breath of transparency lets the court into the edge, and the letters
- * stay the loudest thing in the frame.
- */
-const SPLASH_STROKE_TRANSPARENCY = 0.15;
-
-/**
- * How long the pop takes, in seconds. **Placeholder — 0.15.**
- *
- * **Short enough to be a snap rather than a grow.** A scale animation reads as *something happening* until about
- * a fifth of a second; past that it reads as an element arriving, which is a different feeling. This is the one
- * number to lengthen if a hit ever reads as twitchy, and shortening it past about a tenth loses the overshoot
- * entirely — at that point the eye sees only the final size.
- */
-const SPLASH_IN_SECONDS = 0.15;
-
-/** The rebound from the overshoot back to rest, in seconds. **Placeholder — 0.1.** */
-const SPLASH_SETTLE_SECONDS = 0.1;
-
-/**
- * How far past full size the pop goes, as a scale. **Placeholder — 1.15.**
- *
- * **A small overshoot, because the easing already overshoots.** `Back`/`Out` travels past its destination and
- * returns to it, so the visible peak is this number plus the curve's own excursion. Larger and the word reads
- * as a punch-in on a combat hit rather than as a confirmation; smaller and the overshoot is invisible beside the
- * easing's own.
- */
-const SPLASH_OVERSHOOT = 1.15;
-
-/** How long the word rests at full size before fading, in seconds. **Placeholder — 0.5.** */
-const SPLASH_HOLD_SECONDS = 0.5;
-
-/** How long the fade takes, in seconds. **Placeholder — 0.2.** */
-const SPLASH_OUT_SECONDS = 0.2;
-
-/**
- * **The easing the pop uses — the number that decides whether this reads as arcade or as UI.**
- *
- * **`Back`/`Out`, and `Elastic` was considered and refused.** `Elastic` is the more literally "Wii Sports"
- * curve, and it is too bouncy for the frequency: a hit lands several times a round and a MultiBall window can
- * land three inside two seconds, so a curve that wobbles for half a second is a curve that is *still wobbling*
- * when the next hit arrives — the splashes would overlap into one vibrating word. `Back` overshoots once and
- * stops, which is the arcade feel with a shape that survives being played every few seconds.
- *
- * **Placeholder**, in the sense that it is the value to change if the splash reads wrong: `Quad` is the calm
- * alternative and `Quint` the sharper one. It is a *constant* rather than a literal inside the tween because
- * the settle and the fade have styles beside it, and three `Enum.EasingStyle` literals in one function is how a
- * person ends up editing the wrong one.
- */
-const SPLASH_EASING: Enum.EasingStyle = Enum.EasingStyle.Back;
-
-/**
- * The easing the rebound uses. **`Quad` rather than `Back`, deliberately.**
- *
- * **One overshoot reads as impact; two read as a wobble.** The pop already carries the overshoot, so running
- * the settle on `Back` as well would add a second, smaller bounce *after* the word had arrived — which is the
- * `Elastic` problem in miniature. `Quad`/`Out` closes the last fifteen per cent smoothly.
- */
-const SPLASH_SETTLE_EASING: Enum.EasingStyle = Enum.EasingStyle.Quad;
-
-/**
- * The easing the fade uses — `Quad`/`In`, so the word leaves slowly and then is gone rather than dropping at
- * once. **Placeholder.**
- */
-const SPLASH_OUT_EASING: Enum.EasingStyle = Enum.EasingStyle.Quad;
-
-/**
- * Bumped by every splash, and captured by every step of the sequence that plays one.
- *
- * **The house pattern for a run of timers that cannot be cancelled.** A tween already playing and a
- * `task.wait` already sleeping can only be *ignored*, so each step acts only while the token it captured is
- * still current — which is what makes "replace" work: an interrupted splash returns at its next step instead
- * of hiding or fading the splash that replaced it. See {@link playSplash}.
- */
-let splashToken = 0;
-
-/**
- * Every tween the splash has started and not yet finished — **the list that lets a replacement stop the last
- * one mid-flight.**
- *
- * **The token alone is not enough, which is why this exists beside it.** A token stops a *sequence* from
- * taking its next step; a tween that is already playing goes on writing its property until it finishes, and a
- * fade cancelled only politically would keep the word invisible under a splash that had just made it opaque.
- * `Tween.Cancel()` is the only thing that stops one.
- *
- * **Rebuilt rather than trimmed.** The list holds at most three tweens and is thrown away by the next splash,
- * so there is nothing to prune — and this build's `Array` has no `clear` to prune with. A finished tween left
- * on the list is harmless: `Cancel()` on a completed tween does nothing.
- */
-let activeTweens = new Array<Tween>();

@@ -8,8 +8,9 @@ import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/trans
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { PLAYING } from "../../panels";
 import { onASide } from "../../roundZone";
+import { SPLASH_STROKE_TRANSPARENCY, styleSplashText } from "../../ui/actionSplash";
 import { getHudScreenGui } from "../../ui/screenGui";
-import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { hudTheme } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints on mount — the line that says the controller ran at all. */
@@ -103,6 +104,22 @@ const CARD_WIDTH = 220;
  * wanted the on-screen size multiplies by this, and a reader who wanted the layout reads them.
  */
 const NUMBER_SCALE = 6;
+
+/**
+ * How thick the numbers' outline is, **in the label's own pixels rather than the screen's** — the card's
+ * `NUMBER_SCALE` multiplies it, so one pixel here is drawn at six.
+ *
+ * **A number and its outline are the same look as the splash in `ui/actionSplash.ts`, at a proportion rather
+ * than at a number.** That style's own `SPLASH_STROKE_THICKNESS` is 4 around a 150-pixel word, about 2.7 % of
+ * its height; `h4`'s 34-pixel letters drawn through this card at `6` are 204 tall, whose 2.7 % is 5.5 — and
+ * 5.5 divided back out through the card's scale is this. **Placeholder — 1.**
+ *
+ * **It scales with the number, which is the property worth keeping.** The scale that grows a number out of the
+ * camera is a `UIScale` on the label, and a `UIStroke` is a child of the label, so the outline thickens with the
+ * word it outlines instead of staying a fixed width around a word that is changing size — the same reason the
+ * splash puts its `UIScale` on the frame rather than tweening a font size.
+ */
+const COUNTDOWN_STROKE_THICKNESS = 1;
 
 /**
  * How long the outgoing number takes to leave, in seconds. **Placeholder — 0.15.**
@@ -259,6 +276,17 @@ export class ArenaFreezeCountdownController implements OnStart {
 	/** The two labels and the scale on each, and which of them is in front — see {@link cross}. */
 	private readonly labels = new Array<TextLabel>();
 	private readonly scales = new Array<UIScale>();
+
+	/**
+	 * The outline on each label, **in the same order as {@link labels}.**
+	 *
+	 * **A stroke is not part of its label's `TextTransparency`,** which is the whole reason this list exists: every
+	 * number in this sequence leaves by fading, and an outline left at its resting opacity would outlive the word
+	 * it surrounds as an outline of nothing. Every place that fades a `TextTransparency` fades its stroke too, and
+	 * {@link strokeOf} is how they find each other.
+	 */
+	private readonly strokes = new Array<UIStroke>();
+
 	private front = 0;
 
 	/** The frame loop for the run, and the delay that will start one. */
@@ -371,8 +399,8 @@ export class ArenaFreezeCountdownController implements OnStart {
 		// **The two labels are built before the card**, because `Card` takes its children at construction and
 		// parents them itself — so anything that has to end up *inside* one is finished first, and there is
 		// nothing above them to own afterwards.
-		this.labels.push(this.addLabel(scope, theme));
-		this.labels.push(this.addLabel(scope, theme));
+		this.labels.push(this.addLabel(scope));
+		this.labels.push(this.addLabel(scope));
 
 		/**
 		 * **The countdown is a card, transparent, fixed in size, and it lays nothing out.**
@@ -579,15 +607,34 @@ export class ArenaFreezeCountdownController implements OnStart {
 	 * **The colour is written onto the returned instance rather than passed as a prop.** big-ui's `Text.color`
 	 * is a palette *vocabulary* — `"primary"`, `"errorMain"` and so on — resolved against big-ui's own palette,
 	 * and an unrecognised value falls through to the default silently rather than erroring. A `Color3` belongs on
-	 * the instance, which is what the other HUDs do too.
+	 * the instance, which is what the other HUDs do too — and `styleSplashText` does exactly that.
+	 *
+	 * **The look itself is the splash's, from `ui/actionSplash.ts`**, at the user's request: this is the second
+	 * thing on the screen whose only job is to be taken in at a glance while the player cannot move, so it now
+	 * wears the same letters as the `HIT!` caption — white in `UI_FONT`, pinned inside a `Contextual` near-black
+	 * outline, which is the pairing that survives a bright court behind a bright word.
+	 *
+	 * **`fit: false` is the one part of the style switched off**, and the reason is that it is the part which
+	 * describes a *box* rather than an appearance: `TextScaled` derives the type size from the label's size, and
+	 * this label's size is already decided twice — once by the `h4` variant and once by the card's
+	 * `NUMBER_SCALE`. Turning it on would add a third decision about the same number, and the `AutomaticSize.X`
+	 * the crossing depends on would be measuring text whose size it had just set. The vertical centring the
+	 * style writes is still wanted and still applied — see `LABEL_HEIGHT` for why this box is taller than its
+	 * text.
+	 *
+	 * **The stroke it returns is kept rather than dropped in a local**, because an outline is not part of its
+	 * label's `TextTransparency`: every number here leaves by fading, and an outline left at its resting opacity
+	 * would outlive its word as an outline of nothing. The list is {@link strokes}, and {@link strokeOf} is how a
+	 * fade finds the right one.
 	 *
 	 * **`onAccent` is the theme's white.** There is no entry called `white`, and the spec's rule is to use one if
 	 * it exists rather than to add one: `Palette.common.white` is already mapped as `onAccent` for text drawn on
 	 * a filled surface, and this is the same ink for the same reason — a foreground that has to stay legible on
 	 * whatever is behind it. Adding a second name for the same value would be the semantic drift `coin`'s doc
-	 * argues against.
+	 * argues against. **It now arrives through `splashStyle()`** rather than being read here, which is what makes
+	 * this number and the splash the same white by construction rather than by two files naming it.
 	 */
-	private addLabel(scope: Fusion.Scope<unknown>, theme: HudTheme): TextLabel {
+	private addLabel(scope: Fusion.Scope<unknown>): TextLabel {
 		const label = Text(scope, {
 			text: "",
 			variant: "h4",
@@ -599,19 +646,33 @@ export class ArenaFreezeCountdownController implements OnStart {
 		label.AutomaticSize = Enum.AutomaticSize.X;
 		label.AnchorPoint = new Vector2(0.5, 0.5);
 		label.Position = UDim2.fromScale(0.5, 0.5);
-		// **Written down because the box is taller than the text.** With a fixed `LABEL_HEIGHT` and a `UIScale`
-		// that carries the outgoing number past it, this is what keeps the *text* on the centre line rather than
-		// above it — see `LABEL_HEIGHT`.
-		label.TextYAlignment = Enum.TextYAlignment.Center;
-		label.TextColor3 = theme.colors.onAccent;
+
+		// **The shared style, then the two states it deliberately does not decide.** Nothing here is `TextScaled`
+		// or `TextWrapped` — that is `fit: false` — and the alignments and transparent background it does write are
+		// the ones this label already wanted.
+		const stroke = styleSplashText(label, { strokeThickness: COUNTDOWN_STROKE_THICKNESS, fit: false });
+		// Hidden to begin with: the label starts fully transparent, and an outline at its resting opacity around
+		// invisible letters is more visible than the number would be.
+		stroke.Transparency = 1;
+
 		label.TextTransparency = 1;
 		label.Visible = false;
 		// Carried on the labels as well as the card — see the note where the card's own `ZIndex` is set.
 		label.ZIndex = COUNTDOWN_Z_INDEX;
 
 		this.scales.push(Fusion.New(scope, "UIScale")({ Parent: label, Scale: 1 }));
+		this.strokes.push(stroke);
 
 		return label;
+	}
+
+	/**
+	 * The outline that belongs to `label` — **looked up by the instance rather than by an index**, because a
+	 * crossing flips the index it holds immediately after it reads the two labels: an index taken afterwards
+	 * would name the word that is arriving. See {@link strokes} for why the outline is tracked at all.
+	 */
+	private strokeOf(label: TextLabel): UIStroke {
+		return this.strokes[this.labels.indexOf(label)];
 	}
 
 	/**
@@ -759,6 +820,9 @@ export class ArenaFreezeCountdownController implements OnStart {
 		const leaving = this.labels[this.front];
 		const arriving = this.labels[1 - this.front];
 		const leavingScale = this.scales[this.front];
+		// Read *before* the flip: `strokeOf` names the word that is leaving, and after the next line `this.front`
+		// is the one arriving.
+		const leavingStroke = this.strokeOf(leaving);
 
 		this.front = 1 - this.front;
 
@@ -784,6 +848,10 @@ export class ArenaFreezeCountdownController implements OnStart {
 
 		TweenService.Create(leavingScale, away, { Scale: OUT_SCALE }).Play();
 		TweenService.Create(leaving, away, { TextTransparency: 1 }).Play();
+		// **The outline leaves with its letters**, on the same tween: `TextTransparency` says nothing about a
+		// stroke, so a number faded without this would leave a black outline of a word that is no longer there —
+		// and it would do it on every tick of every countdown. See `strokes`.
+		TweenService.Create(leavingStroke, away, { Transparency: 1 }).Play();
 
 		task.delay(OUT_SECONDS, () => {
 			// A run that ended inside the delay, or a later crossing that somehow overtook this one: neither can
@@ -833,12 +901,18 @@ export class ArenaFreezeCountdownController implements OnStart {
 		arriving.TextTransparency = 1;
 
 		const arrivingScale = this.scales[this.labels.indexOf(arriving)];
+		const arrivingStroke = this.strokeOf(arriving);
 		arrivingScale.Scale = IN_SCALE;
+		arrivingStroke.Transparency = 1;
 
 		const into = new TweenInfo(IN_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
 
 		TweenService.Create(arrivingScale, into, { Scale: 1 }).Play();
 		TweenService.Create(arriving, into, { TextTransparency: 0 }).Play();
+		// **To the style's own resting opacity rather than to `0`**, which is the number `styleSplashText` writes
+		// onto every outline it makes: the splash's is a breath off fully opaque, and an outline that arrived at
+		// full strength would be the one outline in the game that did not match it.
+		TweenService.Create(arrivingStroke, into, { Transparency: SPLASH_STROKE_TRANSPARENCY }).Play();
 	}
 
 	/**
@@ -857,6 +931,9 @@ export class ArenaFreezeCountdownController implements OnStart {
 		const leaving = new TweenInfo(START_FADE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In);
 
 		TweenService.Create(label, leaving, { TextTransparency: 1 }).Play();
+		// The outline goes with it, on the same tween — see `strokes`. "Start" is the one arrival with nothing
+		// behind it, so an outline left standing here would be the outline of a word nobody can see.
+		TweenService.Create(this.strokeOf(label), leaving, { Transparency: 1 }).Play();
 
 		task.delay(START_FADE_SECONDS, () => {
 			if (token !== this.runId) return;
@@ -905,6 +982,9 @@ export class ArenaFreezeCountdownController implements OnStart {
 			label.Visible = false;
 			label.TextTransparency = 1;
 			this.scales[index].Scale = 1;
+			// **The outline as well, and this is the line that stops a run inheriting the last one's ghost**: a
+			// label left mid-fade keeps its stroke at whatever opacity the fade had reached.
+			this.strokes[index].Transparency = 1;
 		}
 	}
 }

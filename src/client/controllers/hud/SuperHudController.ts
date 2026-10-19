@@ -1120,7 +1120,8 @@ export class SuperHudController implements OnStart {
 
 			task.spawn(() => {
 				// **`Completed` fires on a cancel too**, so the token is what decides whether this is the spin the
-				// slot actually finished or one that a newer call replaced — the same pattern `playSplash` uses.
+				// slot actually finished or one that a newer call replaced — the same pattern `ActionSplash.pop`
+				// uses (`ui/actionSplash.ts`).
 				tween.Completed.Wait();
 				if (token !== spinToken) return;
 
@@ -1216,19 +1217,22 @@ export class SuperHudController implements OnStart {
 	 * fade or a pop here would be a fourth thing moving on a HUD whose job in this corner is to be glanced at
 	 * — and it would compete with the two cues that do mean something.
 	 *
-	 * **Styled from `hitConfirm`'s splash, and the two properties that matter are the font and the stroke
-	 * mode.** `UI_FONT` is the face every word in this client is drawn in; `TextScaled` is what sizes the
-	 * letters within a fixed box (so the word is the same shape on a phone and on a monitor rather than one
-	 * pixel size that is right on exactly one screen); and the `UIStroke` is `Contextual`, which outlines the
-	 * *letters*. `Border` is the other mode and strokes the label's own invisible rectangle, which puts
-	 * nothing around the word at all — see that file's note, which is where this pair was worked out. **The
-	 * colours are the theme's**, `onAccent` inside `trough`, which is the same white-inside-near-black pair
-	 * the splash uses, and no `Color3.fromRGB` anywhere: a palette change stays one file's business.
+	 * **Styled the same way the splash is — the pair lives in `ui/actionSplash.ts` — and the two properties
+	 * that matter are the font and the stroke mode.** `UI_FONT` is the face every word in this client is drawn
+	 * in; `TextScaled` is what sizes the letters within a fixed box (so the word is the same shape on a phone
+	 * and on a monitor rather than one pixel size that is right on exactly one screen); and the `UIStroke` is
+	 * `Contextual`, which outlines the *letters*. `Border` is the other mode and strokes the label's own
+	 * invisible rectangle, which puts nothing around the word at all — see `styleSplashText`'s note, which is
+	 * where this pair was worked out. **The colours are the theme's**, `onAccent` inside `trough`, which is the
+	 * same white-inside-near-black pair the splash uses, and no `Color3.fromRGB` anywhere: a palette change
+	 * stays one file's business. **Written inline rather than through `styleSplashText`** because this label is
+	 * a `Fusion.New` props table, and the helper writes properties after construction — the same values in two
+	 * shapes, and the reactive `Visible` below is what keeps this one a props table.
 	 *
-	 * **A plain `Instance` for the stroke**, for `buildSplash`'s reason: it is configured once and nothing
-	 * ever drives it, so there is no property for the graph to track. The label's `Visible` *is* tracked —
-	 * it is bound to the loop's `Value` in the props, which is what makes one attribute on the player the
-	 * whole of this element's behaviour.
+	 * **A plain `Instance` for the stroke**, for the reason `actionSplash.ts` gives: it is configured once and
+	 * nothing ever drives it, so there is no property for the graph to track. The label's `Visible` *is*
+	 * tracked — it is bound to the loop's `Value` in the props, which is what makes one attribute on the
+	 * player the whole of this element's behaviour.
 	 *
 	 * **A child of the slot's frame rather than of the column**, and that is the layout decision: a column
 	 * child would be a fourth row the `UIListLayout` positions, so a word that appears and disappears would

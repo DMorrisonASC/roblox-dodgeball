@@ -16,10 +16,14 @@ const DEBUG = true;
 /**
  * The ZIndex of the whole bar, and every descendant of it.
  *
- * **Above the other HUDs and below the panels**, which is the rung a readout belongs on: the dock is 5 and
- * a panel is 10 (`PANEL_Z_INDEX`), so a score that can be covered by a panel is correct and a score that
- * covered a panel would not be. See {@link raiseZIndex} for why every descendant has to carry this number
- * rather than only the bar: a container raised above its children paints its own background over them.
+ * **Against the rest of the screen this number no longer decides anything, and that is the 2026-10-19
+ * change.** The bar lives in the readout column, and the column lives in `FullScreenGui`, whose `DisplayOrder`
+ * is `-1` — `ZIndex` orders siblings within one tree and says nothing across two `ScreenGui`s, so whether a
+ * panel covers the score (a panel is `PANEL_Z_INDEX` = 10, in the shared HUD GUI) is now the GUI ladder's
+ * answer rather than this number's. What is left for it is inside the column, where the bar and the clock do
+ * not overlap at all — the `UIListLayout` places them — so its only remaining job is to be the baseline the
+ * bar's own descendants are raised to. See {@link raiseZIndex} for why every descendant has to carry it rather
+ * than only the bar: a container raised above its children paints its own background over them.
  */
 const SCORE_Z_INDEX = 4;
 

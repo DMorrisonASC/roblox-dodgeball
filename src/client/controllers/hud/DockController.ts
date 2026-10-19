@@ -7,7 +7,7 @@ import { inPracticeZone, participating, roundPhase, togglePanel } from "../../pa
 import { isParticipant } from "../../roundZone";
 import { addElevation, wireInteraction } from "../../ui/elevation";
 import { hudTheme } from "../../ui/hudTheme";
-import { getFullScreenGui, getHudScreenGui } from "../../ui/screenGui";
+import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, with the phase the dock is reading — the line that says it mounted and what it saw. */
@@ -247,7 +247,14 @@ export class DockController implements OnStart {
 		this.addDockButton(dock, "Shop", "primary", "contained", 1, () => togglePanel("shop"));
 		this.addDockButton(dock, "Inventory", "secondary", "outlined", 2, () => togglePanel("inventory"));
 
-		dock.Parent = getFullScreenGui();
+		// **The shared HUD GUI, and it used to be `getFullScreenGui`.** That call looked up the *same* name as
+		// the HUD's GUI and so returned this very `ScreenGui` while writing `ScreenInsets.None` onto it — which
+		// is why the import of both was here and why the whole HUD's region depended on which controller ran
+		// last. `getFullScreenGui` is a GUI of its own now (and holds the round's readout column), so this line
+		// has to name the GUI the dock actually wants: a HUD panel anchored to the *bottom* edge, where the safe
+		// region is the thing a phone's home indicator lives outside of. `DOCK_BOTTOM_INSET` is measured from
+		// that edge, on both devices, which is what it always meant.
+		dock.Parent = getHudScreenGui();
 	}
 
 	/**
