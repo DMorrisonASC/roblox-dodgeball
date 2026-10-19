@@ -198,6 +198,23 @@ interface Windup {
 	readonly walk: ThrowWalk;
 
 	/**
+	 * **How wide this throw was rolled, if it was** — the error drawn on the decision turn and carried to the
+	 * release. `undefined` is a true throw, which is the common case.
+	 *
+	 * **An offset rather than a point, and that is the difference between a wide throw and a stale one.** A point
+	 * would be where the target stood when the rig decided; the hold is up to a second and a quarter long and the
+	 * two shapes that walk move the rig twenty studs in that time, so an absolute point would send every wide throw
+	 * at the body's *old* position — a systematic short-or-long bias every watcher could learn, which is the one
+	 * kind of error a miss rate must not produce. The offset is re-applied to wherever the target is each turn, by
+	 * the same `missedPoint` call the facing and the release both use, so the facing and the ball agree and a wide
+	 * throw still leads a moving body.
+	 *
+	 * **It is here rather than in the caller for `Windup.walk`'s reason**: the release runs after `endWindup`, so
+	 * anything the release needs has to be on this row before it goes. One draw, one row, one throw.
+	 */
+	readonly miss?: Miss;
+
+	/**
 	 * Identifies this windup against the others this rig will hold.
 	 *
 	 * **The expiry timer's whole guard.** A rig winds up again and again, so a timer armed for one hold has to
@@ -251,68 +268,87 @@ interface ThrowLine {
 }
 
 /**
- * A deliberate miss: how far off this throw is aimed, which way, and the point that produces.
+ * A deliberate miss: how far off this throw is aimed, and which way.
  *
- * **Precomputed into a target rather than left as a vector and a description**, because the two readers of
- * it want different things — `throwBall` wants the point to solve to, and the log line wants the studs and
- * the side in the words a person reads — and deriving either from the other at the call site is how the
- * line and the ball would come to disagree about the same throw.
+ * **An offset and not a point, which is the one thing about its shape worth arguing.** The obvious version of
+ * this carried the offset *and* the point it produced, so the throw site could hand `throwBall` a target — and
+ * that version was wrong the moment the roll moved to the decision turn. A hold is up to a second and a quarter
+ * long, two of the three throw shapes walk, and a target may have moved the whole time; a stored point is where
+ * the body *was*, so every wide throw would be aimed at a stale position. A systematic error like that is the one
+ * a watcher can name and predict, which is the opposite of what a misclick is for. An offset can be re-applied to
+ * whatever point the aim is at *now*, by {@link missedPoint}, which is why the facing and the ball can keep
+ * tracking a moving body while still being wrong by the same few studs.
+ *
+ * **Exported, and it is the pair's rather than this file's**: `AlwaysThrowBehavior` records the same offset on its
+ * own windups and re-applies it with {@link missedPoint}, which is what makes a practice rig wide by the same
+ * studs as a gated one for the same draw.
  */
-interface Miss {
+export interface Miss {
 	/** How far off the aim is, in studs. Never zero — see `THROW_MISS_STUDS_MIN`. */
 	readonly studs: number;
 
 	/** Which way, in the rig's own terms: `1` is its right, `-1` its left. */
 	readonly side: number;
-
-	/** The point to aim at instead: the true target moved sideways by {@link Miss.studs}. */
-	readonly target: Vector3;
 }
 
 /**
- * Rolls for this throw's aim: nothing at all when it is aimed true, or a point a few studs to one side.
+ * Moves `aimPoint` sideways by `miss` — **the one place a deliberate miss becomes a point, used by everybody who
+ * needs one.**
  *
- * **A rig is fallible on purpose, and the miss is in the *release* rather than the posture.** The roll
- * happens here, at the moment the throw fires, and it offsets the *point the ball is solved to*: the rig
- * has already turned onto its true target and the aim constraint is already down (see the tick, which
- * calls this after `clearAim`), so the body stays pointed at the player it meant to hit and only the ball
- * goes wide. That is what reads as a misclick — a rig that turned *away* from its target instead would
- * read as one that cannot aim, which is a different and worse character. **The turn is deliberately
- * untouched by this function**: it is handed a point and returns a point, and nothing it does is visible
- * to `aimAt`.
+ * **Both readers of a recorded miss call this rather than doing the arithmetic**: the tick, which turns the body
+ * onto the point it is about to throw at, and the release, which aims the ball at it. That is what makes the
+ * telegraph honest — a rig holding a wide throw is visibly pointed a few studs off the player, and the ball goes
+ * where the body is pointed. Two copies of `aimPoint.add(right * side * studs)` would be two chances for the turn
+ * and the throw to disagree about the same mistake, which would read as a rig that flinched at the last moment.
  *
- * **The design the alternative would cost.** Every throw a rig makes is a solved shot to the target's
- * own position, so without a miss term a rig never misses at any range the angle gate passes — and a
- * round against something that cannot miss reads as an opponent rather than as a player. The user's
- * request was to "add some randomness to make them intentionally throw a few studs to the left or right,
- * to simulate real player misclicks"; this is that, and the numbers are in `NPC_CONFIG`.
+ * **The rig's own right, flattened, read fresh every call** — so a rig that has turned since it decided still
+ * misses to the side its body is now on. The Y component is dropped for `rollMiss`'s reason: a body leaning on a
+ * slope would otherwise throw the ball over the target instead of past it, which is a different miss and the only
+ * one this is not allowed to produce. A body with no usable right (which cannot happen for a live rig, and does
+ * for a degenerate one) gets the point unchanged rather than a NaN.
+ */
+export function missedPoint(root: BasePart, aimPoint: Vector3, miss: Miss): Vector3 {
+	const right = new Vector3(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z);
+	if (right.Magnitude < AIM_FLAT_EPSILON) return aimPoint;
+
+	return aimPoint.add(right.Unit.mul(miss.side * miss.studs));
+}
+
+/**
+ * Rolls this throw's error: nothing at all when it is aimed true, or a few studs to one side of the target.
+ *
+ * **A rig is fallible on purpose, and the error is in the *aim* rather than in the charge.** A miss that lowered
+ * the charge would make the ball fall short, which reads as a *weak* rig rather than as an inaccurate one — and a
+ * weak rig is a worse character than a fallible one. The lateral error keeps every throw exactly as strong as the
+ * one before it: the ball simply leaves for a point a few studs off the body. See
+ * `NPC_CONFIG.THROW_MISS_STUDS_MAX` for why the unit is studs and not degrees, and
+ * `NPC_CONFIG.THROW_MISS_CHANCE` for why this is a rate rather than a spread.
+ *
+ * **A rate and not a spread, and the difference is the whole of the design.** A spread applied to every throw
+ * makes every ball slightly wrong, which reads as a rig that cannot aim and which teaches a player to distrust
+ * the throw altogether. A rate leaves half the throws exactly as honest as they ever were, so the rig reads as a
+ * capable opponent that occasionally gets one wrong — which is what the user asked for ("to simulate real player
+ * misclicks") and what makes the *windup* worth watching. Move the chance, not the magnitude, if the rigs still
+ * feel too accurate.
  *
  * **Left and right are the rig's own.** The offset is along the flattened `RightVector`, so a rig facing
  * north that misses to its right sends the ball east. World-relative sides would have a rig facing east
  * missing "right" by throwing north, which is nobody's idea of a misclick.
  *
- * **One roll per throw, and the structure of the tick is what makes that true rather than a promise.** It
- * is called from the throw site and nowhere else, below every early return in the tick — a rig with no
- * ball, no body, no target or a target out of range never reaches it, and a rig still turning returns
- * before it — so the roll happens on exactly the tick that throws. The throw then empties the hand, so the
- * *next* tick returns at its first check and cannot roll for the same throw again. This behaviour runs ten
- * times a second; a roll per tick would be a ball that changed its mind on the way and a rig that read as
- * drunk rather than as human.
- *
  * **It does not print, and it does not know whether the throw lands.** `throwBall` answers whether a ball
  * actually left, and it refuses some attempts — a frozen body keeps its ball — so a line from in here
- * would be a line per tick for the whole of a freeze, describing throws that never happened. The caller
- * logs, once, and only for a throw that went. See the throw site.
+ * would be a line per throw attempt for the whole of a freeze, describing throws that never happened. The
+ * caller logs, once, and only for a throw that went. See the throw site.
  *
  * **The common case returns nothing**, so a rig that is not missing this time is throwing exactly what it
  * threw before any of this existed.
  */
-function rollMiss(root: BasePart, aimPoint: Vector3): Miss | undefined {
+function rollMiss(root: BasePart): Miss | undefined {
 	if (math.random() > NPC_CONFIG.THROW_MISS_CHANCE) return undefined;
 
-	// The body's own right, flattened. A rig leaning on a slope has a `RightVector` with a Y component,
-	// and keeping it would make the ball fly over the target rather than past it — which is a different
-	// miss from the one asked for, and the only one this is not allowed to produce.
+	// The body's own right, flattened, and only to *check* it is usable: the point itself is what `missedPoint`
+	// builds, because it has to be built again on every turn of the hold and at the release. A rig with no usable
+	// right cannot be missed sideways, and it throws true rather than throwing nowhere.
 	const right = new Vector3(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z);
 	if (right.Magnitude < AIM_FLAT_EPSILON) return undefined;
 
@@ -324,7 +360,7 @@ function rollMiss(root: BasePart, aimPoint: Vector3): Miss | undefined {
 	// error a person makes, rather than a habitual bias toward one shoulder.
 	const side = math.random() < 0.5 ? -1 : 1;
 
-	return { studs, side, target: aimPoint.add(right.Unit.mul(side * studs)) };
+	return { studs, side };
 }
 
 /**
@@ -379,8 +415,17 @@ export interface WindupTracker {
 	 */
 	get: (model: Model) => Windup | undefined;
 
-	/** Start a hold of `charge`, solved from `distance`, in the shape `walk`. Publishes both. */
-	beginWindup: (model: Model, charge: number, distance: number, walk: ThrowWalk) => void;
+	/**
+	 * Start a hold aimed at `aimPoint`, from the hand of `model` — **the charge, the error and the shape are all
+	 * worked out in here**, and the walk is the caller's answer because only the caller drew it.
+	 *
+	 * **`aimPoint` rather than a charge, and that is what makes one call site impossible to forget.** The roll
+	 * lives behind this signature, so a behaviour that starts a hold gets the error whether or not its author
+	 * remembered one existed — which is how the practice rigs inherit it instead of being a second place the rule
+	 * has to be added. `root` is the body the error is measured sideways from; passing it rather than looking it
+	 * up keeps this a pure function of what the caller already resolved.
+	 */
+	beginWindup: (model: Model, root: BasePart, aimPoint: Vector3, walk: ThrowWalk) => void;
 
 	/** The hold ended by *throwing*: the row and the published charge go, and nothing is printed. */
 	endWindup: (model: Model) => void;
@@ -467,9 +512,35 @@ export function createWindupTracker(): WindupTracker {
 	 * walk's whole window is added to the margin for every hold rather than only for that shape: a timer that can
 	 * only ever *cancel* costs nothing when it is late, and the alternative is a second branch here deciding how
 	 * long a hold may be, which is the thing this file has spent its comments refusing to have.
+	 *
+	 * **It also rolls the throw's error, which is the one thing it does that is not about the hold.** The miss is
+	 * drawn here rather than at the release so that the *charge is solved for the point the ball will actually
+	 * leave for*, and so that both rig behaviours get it from one place — see `rollMiss`, which argues the
+	 * decision-versus-release question and the rate-versus-spread one, and
+	 * `NPC_CONFIG.THROW_MISS_CHANCE`. What that costs this function is two extra arguments (the body the error is
+	 * measured from, and the point it is measured against) and a measurement of the throw it used to be handed;
+	 * what it buys is that a hold on a wide throw lasts exactly as long as the wide throw it is holding, which is
+	 * the same property the `charge` argument already existed to keep.
 	 */
-	const beginWindup = (model: Model, charge: number, distance: number, walk: ThrowWalk): void => {
+	const beginWindup = (model: Model, root: BasePart, aimPoint: Vector3, walk: ThrowWalk): void => {
 		const now = os.clock();
+
+		// **One roll, on the turn that decides, and nothing downstream rolls again.** `rollMiss` answers either
+		// nothing — the common case, and the rig then throws exactly what it threw before any of this existed — or
+		// a few studs to one side of the target, which `missedPoint` turns into the point the throw is really for.
+		// The offset is what goes on the row, not the point: the release and every turn of the hold re-apply it to
+		// wherever the target is *then*, so a wide throw still tracks a moving body. See {@link Windup.miss}.
+		const miss = rollMiss(root);
+		const point = miss === undefined ? aimPoint : missedPoint(root, aimPoint, miss);
+
+		// The line from the hand to that point, measured the way the release will measure its own — the same
+		// flattening, the same rise, for the reason {@link ThrowLine} gives. This is the *only* place the decision
+		// turn measures a throw now; the release has its own `aimOf` because its hand and its target have moved.
+		const muzzle = getThrowMuzzle(model);
+		const flat = new Vector3(point.X - muzzle.X, 0, point.Z - muzzle.Z);
+		const distance = flat.Magnitude;
+		const charge = chargeForRange(distance, point.Y - muzzle.Y);
+
 		const duration = charge * BALL_CONFIG.CHARGE_SECONDS;
 
 		nextWindupToken += 1;
@@ -477,8 +548,9 @@ export function createWindupTracker(): WindupTracker {
 
 		// The charge *and* the distance it came from, because the two are one throw's and the log line needs both
 		// of them from the same turn. See {@link Windup.distance}. `walk` rides along for the release, which runs
-		// after this row is gone — see {@link Windup.walk}.
-		windups.set(model, { until: now + duration, charge, distance, walk, token, lastTurnAt: now });
+		// after this row is gone — see {@link Windup.walk}. `miss` does too, and it is the reason a wide throw can
+		// be re-aimed at the release without being re-rolled: see {@link Windup.miss}.
+		windups.set(model, { until: now + duration, charge, distance, walk, token, lastTurnAt: now, miss });
 
 		// **The whole of what a client needs, and nothing else is sent.** Every client already has this rig's body,
 		// so this one number is the effect's entire cause; a remote would be a second way for the same fact to
@@ -535,6 +607,26 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 	const idle = new Set<Model>();
 
 	/**
+	 * **When each rig is allowed to decide**, in `os.clock` seconds — the hesitation clock behind
+	 * `NPC_CONFIG.THROW_DECISION_SECONDS`.
+	 *
+	 * **A deadline rather than a "hesitating" flag, and the difference is what a flickering window does to it.**
+	 * A flag would have to be set on the turn the window opened and cleared on the turn it closed, so a target
+	 * that dropped out of range and came back a tenth of a second later would start the wait again — and a rig
+	 * whose target is bobbing on the edge of `THROW_RANGE_STUDS` would then never finish hesitating. An absolute
+	 * time is armed once and cannot be pushed back by anything the world does; the only things that remove it are
+	 * the ones that genuinely end the window — an empty hand, and the tags coming off.
+	 *
+	 * **Not cleared on death, like every other per-rig table in this directory.** A dead rig is replaced by a
+	 * *new model*, which has no row here, so the stale entry is the same kind of litter as the `idle` set's and
+	 * the aims map's — read by nobody and dropped with the map when the behaviour's closure goes. `onStopped`
+	 * clears it anyway, for the reason it clears `idle`: the tags come off at a round boundary and the same rig
+	 * wears them again in the next round, so a deadline spent in the last round would otherwise let the first
+	 * throw of the new one skip the hesitation.
+	 */
+	const readyAt = new Map<Model, number>();
+
+	/**
 	 * This rig's windups, and the operations the tick below uses on them — **the machinery itself rather than a
 	 * copy of it.** See {@link createWindupTracker}, which the practice variant next door builds its own of: the
 	 * hold is one mechanic, and a second hand-written copy of "arm a deadline, publish a flag, clear it if the
@@ -546,19 +638,21 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 	 * The two operations **bound to the local names the tick's own comments use**, so the calls below read as
 	 * they always did: `windups` is the state, and these two are what happens to it.
 	 */
-	const beginWindup = (model: Model, charge: number, distance: number, walk: ThrowWalk): void =>
-		windups.beginWindup(model, charge, distance, walk);
+	const beginWindup = (model: Model, root: BasePart, aimPoint: Vector3, walk: ThrowWalk): void =>
+		windups.beginWindup(model, root, aimPoint, walk);
 
 	const cancelWindup = (model: Model, reason: string): void => windups.cancelWindup(model, reason);
 
 	/**
-	 * The line from the rig's hand to the point it is aiming at — {@link ThrowLine}'s arithmetic, called by the
-	 * turn that *decides* to throw and by the turn that *releases* it.
+	 * The line from the rig's hand to a point — {@link ThrowLine}'s arithmetic, **and now only the release's
+	 * version of it.**
 	 *
-	 * **Two callers and one function, because a windup measures the same throw twice.** The start needs the
-	 * distance and the rise to solve the charge; the release needs the heading to aim with, from a hand that may
-	 * have moved and a target that certainly has. Written twice, the two would be two chances for a charge and a
-	 * heading to describe different throws — the same reason {@link ThrowLine} exists at all.
+	 * **The decision's half moved into `createWindupTracker.beginWindup`, which is where the error is rolled and
+	 * where the charge is solved from it.** It has to be: the charge is solved for the point the ball will
+	 * actually leave for, so the roll and the solve cannot sit on opposite sides of a function boundary — and the
+	 * tracker is the one place both rig behaviours pass through. What is left here is the release's own
+	 * measurement, which is a *different* throw by design: the hand has moved, the target certainly has, and the
+	 * two shapes that walk re-solve from figures taken now. See {@link ThrowLine} for the frame both use.
 	 */
 	const aimOf = (model: Model, root: BasePart, aimPoint: Vector3): ThrowLine => {
 		const muzzle = getThrowMuzzle(model);
@@ -722,6 +816,21 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				cancelWindup(model, "the ball left the hand");
 				if (!holdingFacing) clearAim(model);
 
+				// **And the hesitation goes with the ball, which is what makes a new ball a new decision.** The
+				// deadline below is keyed from the moment a throw became *available*, and the moment this rig has
+				// another ball in its hand that moment is a different one — a pickup, or a catch. Without this
+				// line the whole point of the clock would be lost on exactly the case it was asked for: a rig's
+				// spent deadline would still be sitting in the table, so a caught ball would be thrown on the
+				// first turn after the catch with no hesitation at all, which is the "catch and fire inside the
+				// catch window" behaviour the dwell exists to stop. See `NPC_CONFIG.THROW_DECISION_SECONDS`.
+				//
+				// **This is the only place it is cleared while the rig is being played**, and the tags coming off
+				// is the other one (`onStopped`). Nothing else has to know about the table: this branch is reached
+				// on the first turn of every empty hand, so a throw does not clear it here — the throw's own turn
+				// returns before this line — but the turn after one arrives with the hand empty and comes through
+				// it.
+				readyAt.delete(model);
+
 				return;
 			}
 
@@ -783,9 +892,32 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// angle below is measured from the rig's *current* facing on each of those turns. A rig that
 			// stopped tracking during its own windup would throw at where the player was when it decided, which
 			// is the un-dodgeable rig this whole change is against.
-			aimAt(model, rigBody.root, sighting.aimPoint);
-
+			//
+			// **And once a wide one has been rolled, this is where the body is told about it.** The point watched
+			// here is the one the ball will leave for, error included — so a rig mid-windup on a wide throw is
+			// *visibly* aiming a few studs to one side, and the telegraph points where the ball goes rather than at
+			// the player. That is the house's own rule about a preview being honest applied to a rig: a hold that
+			// said "this is coming at you" and then sent the ball elsewhere would be an invitation to a dodge that
+			// was never available. The error is re-applied to the target's *current* point each turn, so the turn
+			// still tracks a moving body — see `missedPoint` — and the release applies it the same way, which is
+			// what keeps the facing and the throw describing one point.
+			//
+			// **What that costs, named rather than discovered: a wide-windup rig's retreat is off-line too.** The
+			// seek's backpedal is the facing reversed — the legs one way, the eyes the other — so a rig winding up
+			// on a ten-stud miss at twenty studs of range walks away along a line about twenty-six degrees off
+			// straight-back. It does not break anything (`SeekBehavior.pickupWalk` reads the facing, and the facing
+			// is still a real direction), and it arguably reads better than the alternative: a body whose retreat
+			// is perfectly square while its throw is crooked is a body with two different ideas. It is a *cost*
+			// because a watcher who has learned a rig's backpedal from its accurate throws will see the wide ones
+			// drift, which is one more thing the error is visible in.
 			const windup = windups.get(model);
+
+			const turnTo =
+				windup === undefined || windup.miss === undefined
+					? sighting.aimPoint
+					: missedPoint(rigBody.root, sighting.aimPoint, windup.miss);
+
+			aimAt(model, rigBody.root, turnTo);
 
 			if (windup !== undefined) {
 				// **The freeze, seen as an absence rather than as a state.** A frozen rig is not ticked at all
@@ -802,9 +934,24 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 
 				windup.lastTurnAt = now;
 
-				// Not yet facing it: keep turning, and do not release. The angle was measured this tick from
-				// the rig's current facing, so this is the *turn* being watched and not a fixed pose.
-				if (math.abs(sighting.angle) > math.rad(NPC_CONFIG.THROW_ANGLE_DEGREES)) {
+				// **The gate is measured against the point this throw is for, which after a wide roll is the error
+				// point and not the target.** This used to read `sighting.angle` — the angle from the body's nose to
+				// the enemy — and that was the same measurement while the body was turned onto the enemy. It is not
+				// any more: the facing follows `turnTo`, so a rig winding up on a ten-stud miss at ten studs of range
+				// sits about forty-five degrees off the *target*, and the gate would cancel its own wide throw with a
+				// line about the target having left the angle — a report about something that never happened, and
+				// for the rig the same hesitation round again. What the gate is actually asking is "is this body
+				// still pointed at what it is throwing at", so that is what it now measures. Both vectors are
+				// flattened, exactly as `detectEnemy`'s own angle is.
+				const facing = new Vector3(rigBody.root.CFrame.LookVector.X, 0, rigBody.root.CFrame.LookVector.Z);
+				const toAim = new Vector3(turnTo.X - rigBody.root.Position.X, 0, turnTo.Z - rigBody.root.Position.Z);
+
+				const offBy =
+					facing.Magnitude < AIM_FLAT_EPSILON || toAim.Magnitude < AIM_FLAT_EPSILON
+						? 0
+						: facing.Angle(toAim);
+
+				if (math.abs(offBy) > math.rad(NPC_CONFIG.THROW_ANGLE_DEGREES)) {
 					cancelWindup(model, "the target left the angle");
 
 					return;
@@ -833,6 +980,36 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				// with, and this is the release learning something a clock cannot know.
 				if (windup.walk === "moveThenPlant" && model.GetAttribute(NPC_ANIM_MOVING_ATTRIBUTE) === true) return;
 			} else {
+				// **The hesitation, and it comes before the turn gate rather than after it.** Everything above
+				// this line has established that a throw is *available*: a ball in the hand, a body to throw it
+				// with, a target in range. That is the window, and this is the clock it opens — a rig does not act
+				// on the first turn a throw exists. It waits `THROW_DECISION_SECONDS` and then decides, so a rig
+				// that has just picked a ball up or caught one is seen to consider the throw instead of
+				// converting it inside the same tenth of a second. See `NPC_CONFIG.THROW_DECISION_SECONDS` for why
+				// the wait is here and not between throws, and for why a third of a second.
+				//
+				// **Armed once per window, and that is the whole of what makes it a decision rather than a
+				// debounce.** The first turn that reaches here sets the deadline and returns; every later turn
+				// reads it. A target that drops out of range for a turn and comes back does *not* re-arm it —
+				// it went through the branch above, which neither clears this table nor adds to it — so a
+				// flickering window cannot keep a rig from ever becoming ready, which is what a re-armed clock
+				// would do. It is cleared on an empty hand, so the next ball starts a fresh hesitation: see the
+				// `readyAt.delete` in the empty-hand branch above.
+				//
+				// **The angle is not part of the window**, which is why this is above the turn gate. The rig is
+				// turning during the wait (the `aimAt` call above runs every turn), and the two delays overlap
+				// rather than adding: a rig that has swung onto its target has already spent its hesitation, and a
+				// rig that is still turning when the clock runs out throws the moment it is on target — which is
+				// the old behaviour for a rig with nothing to hesitate about.
+				const ready = readyAt.get(model);
+				if (ready === undefined) {
+					readyAt.set(model, now + NPC_CONFIG.THROW_DECISION_SECONDS);
+
+					return;
+				}
+
+				if (now < ready) return;
+
 				// Not yet facing it: keep turning, and do not throw. The angle was measured this tick from
 				// the rig's current facing, so this is the *turn* being watched and not a fixed pose.
 				if (math.abs(sighting.angle) > math.rad(NPC_CONFIG.THROW_ANGLE_DEGREES)) return;
@@ -856,7 +1033,6 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				// is left is the shape that stops where it stands. Written as cumulative thresholds rather than as
 				// two independent draws so the three shares are absolute and cannot overlap — and so asking for
 				// more than all of them simply stops drawing the last shape rather than producing a negative one.
-				const decision = aimOf(model, rigBody.root, sighting.aimPoint);
 				const roll = math.random();
 				const walk: ThrowWalk =
 					roll < NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE
@@ -865,7 +1041,7 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 							? "moveThenPlant"
 							: "plantNow";
 
-				beginWindup(model, chargeForRange(decision.distance, decision.rise), decision.distance, walk);
+				beginWindup(model, rigBody.root, sighting.aimPoint, walk);
 
 				return;
 			}
@@ -891,18 +1067,29 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// rather than from an attribute that is now gone.
 			const walk = windup.walk;
 
+			// **The error this throw was rolled with, which is now the only thing the release has to look up.**
+			// It was drawn on the turn the rig *decided* — see `createWindupTracker.beginWindup` — and it rides on
+			// the row for exactly the two reasons the row exists: it has to survive `endWindup`, and it has to be
+			// one throw's. Read here rather than re-rolled, because a second roll at the release would be a throw
+			// whose charge and whose aim described two different mistakes.
+			const miss = windup.miss;
+
 			holdAimThroughThrow(model);
 			windups.endWindup(model);
 
-			// **And the point handed over is the only thing the miss touches.** `rollMiss` runs once per throw —
-			// here, on the turn that actually releases it, which is the property its own doc rests on — and
-			// answers either nothing, aim at the body, or a point a few studs to the rig's left or right. The rig
-			// has finished turning onto the true target (see the `aimAt` call above, which ran whether or not this
-			// throw was going to be a wide one, and which ran on every turn of the hold), so the body is aimed at
-			// the player and only the ball goes somewhere else. See that function for the rule and `NPC_CONFIG`
-			// for the numbers.
-			const miss = rollMiss(rigBody.root, sighting.aimPoint);
-			const aimPoint = miss?.target ?? sighting.aimPoint;
+			// **And the point handed over is the only thing the miss touches.** `missedPoint` reapplies the offset
+			// to the target's *current* position, which is the difference between a wide throw and a stale one: the
+			// error is a fixed number of studs to one side, so the ball still leads a moving target — it is simply
+			// a few studs off the line it would otherwise have taken. Applying the decision turn's absolute point
+			// instead would send every wide throw at where the body *was*, which is a systematic short-or-long bias
+			// and the one error a watcher can learn. The rig's own right is read off the body as it stands, so a rig
+			// that has turned since deciding still misses to the side its body is on.
+			//
+			// **The facing above already used this same point** (see the `aimAt` call, which runs whether or not the
+			// throw is a wide one), so the body is aimed at the error and the ball leaves for it — one point, drawn
+			// once, used by the turn and by the throw. See `rollMiss` for why the miss is in the aim rather than in
+			// the charge, and `NPC_CONFIG` for the numbers.
+			const aimPoint = miss === undefined ? sighting.aimPoint : missedPoint(rigBody.root, sighting.aimPoint, miss);
 			const release = aimOf(model, rigBody.root, aimPoint);
 
 			// **A rig throws the ball the player throws — the same charge, the same arc, the same envelope. The
@@ -1053,11 +1240,15 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 		 * no reason is printed for an event that has a better sentence somewhere else.
 		 *
 		 * `idle` is cleared too, so that the next round's first "holding a ball and not throwing" is reported
-		 * again rather than being swallowed by a latch that was set before the last intermission.
+		 * again rather than being swallowed by a latch that was set before the last intermission. **`readyAt`
+		 * goes for the same reason, one round further on:** a deadline spent in the last round is still in the
+		 * table, so the rig's first throw of the new round would skip the hesitation it owes — and the round's
+		 * first throw is the one a player is most likely to be standing in front of.
 		 */
 		onStopped(model) {
 			windups.endWindup(model);
 			idle.delete(model);
+			readyAt.delete(model);
 			clearAim(model);
 		},
 	};

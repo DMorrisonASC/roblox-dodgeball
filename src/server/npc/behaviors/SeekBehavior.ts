@@ -132,6 +132,22 @@ interface Seek {
 	ball?: BasePart;
 
 	/**
+	 * **The live mystery box this rig has set off for**, and `undefined` when it is not walking to one.
+	 *
+	 * A third "somewhere this body is walking to", beside {@link ball} and `pickupWalk`, and it is here
+	 * because a walk's owner has to be able to answer three questions about it: which box is mine (so a
+	 * *fresh* reservation can be told from the same one renewed on the next turn, which is what the one log
+	 * line is edged on), has it stopped being a target (so the body is stopped and the reservation given up,
+	 * rather than the rig marching on to a point where a box used to be), and did my hand fill while I was on
+	 * the way (so the box is dropped and the ball is kept — see `release`'s `target` argument).
+	 *
+	 * **It is not the claim.** The claim is `npc/ballClaims.ts`'s row, and it is what *other* rigs read; this
+	 * is what *this* rig is walking to. The two are renewed together on every turn of the walk, and the
+	 * claim is the one that keeps other rigs away.
+	 */
+	box?: BasePart;
+
+	/**
 	 * How this walk curves, seeded when the walk begins — **and `undefined` is "no walk", which is the same fact
 	 * {@link ball} carries.**
 	 *
@@ -502,9 +518,21 @@ export function createSeekBehavior(
 	 * this before the ball selection and walks to the box instead of to whatever ball the rig was chasing.
 	 * The box's own gates are the same two a ball's are, asked in the same place: it must be inside the
 	 * rig's region (the same `MoveTo`-cannot-go-round reasoning as a ball), and the rig must have an empty
-	 * `PENDING_ABILITY_ATTRIBUTE` — one slot, and a second box has nothing to do. **There is deliberately no
-	 * claim on a box**: it is collected by `Touched`, and whoever reaches it first takes it, so a reservation
-	 * would be a lock on a thing that despawns the moment it is used.
+	 * `PENDING_ABILITY_ATTRIBUTE` — one slot, and a second box has nothing to do.
+	 *
+	 * **A box another rig has set off for is passed over, which reverses what this said and is the whole of
+	 * the change.** The note here used to argue the opposite: "there is deliberately no claim on a box",
+	 * because a box is collected by `Touched` and whoever reaches it first takes it. That reasoning is still
+	 * true of the *collection* and was never the problem — the problem is the **walk**, and a box is the
+	 * worst case for it rather than the best: `SeekBehavior` ranks a live box above every ball, the nearest
+	 * box is the same box for every rig standing near it, and a practice floor has one. So all of them set
+	 * off, one arrives, and the rest have spent the walk on nothing — the user's "its wierd to see multiple
+	 * of them running to one box". A reservation is a fact about the route, which is exactly what a claim
+	 * is, and `npc/ballClaims.ts` was already keyed by any `BasePart`, so this is one filter and one call.
+	 *
+	 * **Read-only here, and taken in the `tick`** — the same split the ball chooser uses, and for the same
+	 * reason: a search that claimed as it went would leave a rig holding reservations on every box it looked
+	 * at before settling.
 	 */
 	const nearestBox = (rig: Model, from: Vector3): BasePart | undefined => {
 		// **The slot gate first, because it is the cheap one and it is the whole of "may this rig take a
@@ -523,6 +551,13 @@ export function createSeekBehavior(
 
 		for (const box of boxes) {
 			if (!insideZone(parts, box.Position)) continue;
+
+			// **Somebody else is on their way to it.** Read rather than taken, and the rig's own claim is not
+			// somebody else's — that is what makes the second turn of a walk renew rather than refuse. It is
+			// also why this is a filter and not a `continue` on any claim at all: a rig that has set off for a
+			// box must keep choosing it, or it would abandon its own reservation on the next turn.
+			const holder = claimedBy(box);
+			if (holder !== undefined && holder !== rig) continue;
 
 			const distance = box.Position.sub(from).Magnitude;
 			if (distance > bestDistance) continue;
@@ -863,6 +898,7 @@ export function createSeekBehavior(
 		endSprint(model, seek);
 
 		seek.ball = undefined;
+		seek.box = undefined;
 		seek.curve = undefined;
 		seek.best = math.huge;
 		seek.stalled = 0;
@@ -896,7 +932,14 @@ export function createSeekBehavior(
 		// is "there is somewhere this body is walking to" — it has two sources since `pickupWalk` arrived, and a
 		// stop issued for one of them while the other was still set would leave a rig walking to a point nobody
 		// meant.
-		if (seek.ball !== undefined || seek.pickupWalk !== undefined) humanoid.MoveTo(root.Position);
+		//
+		// **And a third since a box became a fetch target, which is the case that needs this most.** A box walk
+		// sets neither `ball` nor `pickupWalk`, so a rig that lost its box — somebody else collected it on the way —
+		// would be left walking at an empty point with this test answering "no walk in progress". The box is a
+		// walk like any other and belongs in the same sentence.
+		if (seek.ball !== undefined || seek.pickupWalk !== undefined || seek.box !== undefined) {
+			humanoid.MoveTo(root.Position);
+		}
 
 		seek.pickupWalk = undefined;
 		seek.pickupWalkDirection = undefined;
@@ -1158,6 +1201,18 @@ export function createSeekBehavior(
 			// that a rig with nothing to fetch has nothing to walk at. `pickupWalk` is what the rig does about
 			// that instead, and it is where the "walk on / back off" draw lives.
 			if (balls.getHeldBall(model)) {
+				// **And a box is dropped here, while a ball is not.** A rig can be handed a ball on its way
+				// past a box — `Behavior_Pickup`'s reach does not know what this behaviour was walking to — and
+				// a rig with a full hand has no use for the box, so the reservation has to go back to the floor
+				// rather than sit on a box nobody may take for `CLAIM_SECONDS`. **The ball's claim is
+				// deliberately not released with it**: arrival keeps its ball claim on purpose ("the ball is not
+				// free — this rig is about to take it"), so this is the one place the targeted `release` is
+				// used. See its own note.
+				if (seek.box !== undefined) {
+					release(model, seek.box);
+					seek.box = undefined;
+				}
+
 				pickupWalk(model, humanoid, root, seek, now);
 				return;
 			}
@@ -1171,6 +1226,30 @@ export function createSeekBehavior(
 			if (box !== undefined) {
 				if (seek.ball !== undefined) endWalk(model, seek);
 
+				// **The reservation, taken here rather than in the search** — the same split the ball chooser
+				// uses, and the reason is shared with it: a search that claimed as it went would leave a rig
+				// holding reservations on everything it looked at. `claimedBy` is read *before* `claim` because
+				// the answer is what tells a fresh reservation from the five hundredth turn of a walk: after
+				// the claim, the caller is the holder either way, and the log line below would be a drumbeat.
+				const free = claimedBy(box) === undefined;
+				claim(model, box);
+
+				// **And one line on the edge of a reservation, because "why is nobody going for that box" is
+				// otherwise a question the log cannot answer.** It is deliberately *not* printed per turn: the
+				// line names the rig that took the box, and what a reader needs from a run where two rigs
+				// converged is that exactly one of them said this. Everything else this file prints about a
+				// walk is either an edge or behind `VERBOSE_LOGS`; this is the edge.
+				if (free) {
+					const distance = box.Position.sub(root.Position).Magnitude;
+
+					print(
+						`[Rig] ${model.Name}: going for a mystery box — ` +
+							`${string.format("%.0f", distance)} studs`,
+					);
+				}
+
+				seek.box = box;
+
 				// A box is walked to plain: no curve, no sprint, no hop — the five movements are the ball
 				// walk's, and a box is a short, transient walk to a thing that despawns the moment the body
 				// reaches it. `MoveTo` at the box's own position is the whole of it; the humanoid walks the
@@ -1179,6 +1258,15 @@ export function createSeekBehavior(
 
 				return;
 			}
+
+			// **A box that stopped being a target is given up here, before any ball is chosen.** The only thing
+			// that happens between two turns is somebody else reaching it — a player most often, and a rig that
+			// beat this one to it — and `MysteryBoxService` destroys the part when that happens. Without this
+			// line the rig would go on walking to a point a box used to be, arrive, and stand there: the
+			// walked-for-nothing case the reservation exists to prevent, arriving through the reservation's own
+			// hole. `stand` is the stop (its own "a walk in progress" test counts this box), and it is what
+			// releases the reservation — see `endWalk`.
+			if (seek.box !== undefined) stand(model, humanoid, root, seek);
 
 			// What is on the floor, asked once per turn and used for both questions below: is the
 			// ball I set off for still there, and if not, which ball is next.

@@ -1,8 +1,8 @@
 import { pendingAbilityOn } from "shared/ability";
 import { PENDING_ABILITY_ATTRIBUTE } from "shared/constants";
-import { chargeForRange, getThrowMuzzle } from "shared/throw";
 import { BEHAVIOR_ALWAYS_THROWING, NpcBehavior } from "../Behavior";
-import { THROW_TICK_SECONDS, WINDUP_GAP_TURNS, createWindupTracker } from "./ThrowBehavior";
+import { THROW_TICK_SECONDS, WINDUP_GAP_TURNS, createWindupTracker, missedPoint } from "./ThrowBehavior";
+import type { Miss } from "./ThrowBehavior";
 import type { BallService } from "../../services/ball/BallService";
 
 /**
@@ -41,6 +41,70 @@ const THROW_RANGE = 60;
  * that throws as rarely as it did before.
  */
 const DECISION_SECONDS = 5.0;
+
+/**
+ * How small a flattened facing may be before this file treats it as having no direction at all.
+ *
+ * The same figure `ThrowBehavior` uses privately for its own aim and its own miss. Duplicated rather than
+ * exported because it is a comparison tolerance and not a setting: two files agreeing on "close enough to zero
+ * to be zero" is cheaper than one file owning the number for the other.
+ */
+const FLAT_EPSILON = 0.001;
+
+/**
+ * **The point a practice rig is aiming at**: {@link THROW_RANGE} studs ahead of its body, at its own root height.
+ *
+ * **Written out as a point because the shared windup takes one, and the two figures it used to take were this
+ * point's distance and rise.** `beginWindup` measures from the hand to whatever point it is given, so handing it
+ * a point is the same arithmetic the tick used to do itself — deliberately, because the point is also what the
+ * error is rolled against and what the charge is solved to, and a behaviour that could only name a distance could
+ * not be given the miss without a second call site. **The height is the root's rather than the hand's**, which is
+ * where the old rise came from: the ball leaves at head height and the stand-in is at hip height, so this is a
+ * throw angled down exactly as the gated thrower's is.
+ *
+ * **`Vector3.zAxis` for a body with no flat facing**, which cannot happen to a humanoid standing on a floor and
+ * does for a body lying in a corner. The distance is what this point is for — the heading is decided at the
+ * release, from the facing the body has then, by {@link headingFor} — so any horizontal direction gives a legal
+ * throw rather than a charge solved for zero studs.
+ */
+function standInPoint(root: BasePart): Vector3 {
+	const facing = new Vector3(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z);
+	const ahead = facing.Magnitude < FLAT_EPSILON ? Vector3.zAxis : facing.Unit;
+
+	return new Vector3(
+		root.Position.X + ahead.X * THROW_RANGE,
+		root.Position.Y,
+		root.Position.Z + ahead.Z * THROW_RANGE,
+	);
+}
+
+/**
+ * The heading a practice rig's throw leaves along: **its own live facing, turned aside if this throw was rolled
+ * wide.**
+ *
+ * **A turn rather than an offset, and the difference is which units the error is measured in.** The roll draws a
+ * few *studs*, which only becomes a direction once it is placed at a range — the gated thrower has an aim point
+ * to place it against, and this rig has {@link standInPoint}'s stand-in. So the point is built, moved sideways by
+ * `missedPoint` (the gated thrower's own function, so both behaviours are wide by the same studs for the same
+ * draw) and turned back into a heading. Reusing that function rather than writing a rotation here is what keeps
+ * "a miss is five to ten studs to one side" one rule across two rigs.
+ *
+ * **The facing is read here and not carried from the decision** — see the release, which argues why a rig with no
+ * target still has one thing that can change. The error is the part that is carried, on the windup row.
+ *
+ * **A body with no flat facing has none to turn aside**, so it throws along its own look vector and lets the solve
+ * project it, which is exactly what this behaviour did before any of this existed.
+ */
+function headingFor(root: BasePart, miss: Miss | undefined): Vector3 {
+	const facing = new Vector3(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z);
+	if (facing.Magnitude < FLAT_EPSILON) return root.CFrame.LookVector;
+	if (miss === undefined) return facing.Unit;
+
+	const point = missedPoint(root, standInPoint(root), miss);
+	const turned = new Vector3(point.X - root.Position.X, 0, point.Z - root.Position.Z);
+
+	return turned.Magnitude < FLAT_EPSILON ? facing.Unit : turned.Unit;
+}
 
 /**
  * Throwing, for an NPC — **the always-on variant, worn by `Behavior_AlwaysThrowing`.**
@@ -155,7 +219,15 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 				// is aimed by, so releasing along the facing of the decision turn would be a rig throwing where it
 				// used to be looking. The charge, which is measured from the hand and does not move with a turn,
 				// is the half that is carried — see `windup.charge`.
-				const heading = new Vector3(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z);
+				//
+				// **And the error, if one was rolled, is applied to this live facing rather than to a stored
+				// point** — `headingFor` builds the same stand-in point the charge was solved against, moves it
+				// sideways by the studs the roll drew, and turns the result back into a heading. So a wide practice
+				// throw is a few studs off *wherever the body is pointing now*, which is the only reading that
+				// makes a dummy's miss look like a person's: the miss is a mistake in the aim, not a throw at a
+				// remembered place. With no miss it is the plain flattened facing, which is what this line did
+				// before the roll existed at all.
+				const heading = headingFor(root, windup.miss);
 
 				// **The practice rig spends its pending ability on this throw, exactly as the gated thrower
 				// does.** A box on the practice floor is furniture this rig walks through constantly, so the
@@ -186,12 +258,27 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 				// read against each other and against a player's `[Throw]` line. See that file for why the charge
 				// and the distance are the two fields worth printing, and why nothing about the flight is repeated
 				// here.
+				//
+				// **The distance is the one the charge was solved at, and that is no longer always `THROW_RANGE`.** A
+				// throw rolled wide is solved to a point a few studs to one side, so its distance is the hypotenuse
+				// — printing the nominal sixty beside a charge for sixty-one would be exactly the two-numbers-from-
+				// two-throws fault the pair exists to rule out. `windup.distance` is the solved figure, and it is
+				// `THROW_RANGE` to a tenth of a stud on the throws that are aimed true.
+				//
+				// **And the miss is named, in the gated thrower's own words**, so a run of practice throws can be
+				// counted for how often a dummy was deliberately wide without reading its aim off a screenshot.
 				if (thrown) {
+					const wide =
+						windup.miss === undefined
+							? ""
+							: `, ${string.format("%.1f", windup.miss.studs)} studs to the ` +
+								`${windup.miss.side > 0 ? "right" : "left"} (missed on purpose)`;
+
 					print(
 						`[Rig] ${model.Name}: throw — charge ${string.format("%.2f", windup.charge)} at ` +
-							`${string.format("%.1f", THROW_RANGE)} studs, heading ` +
+							`${string.format("%.1f", windup.distance)} studs, heading ` +
 							`(${string.format("%.2f", heading.X)}, ${string.format("%.2f", heading.Y)}, ` +
-							`${string.format("%.2f", heading.Z)})`,
+							`${string.format("%.2f", heading.Z)})${wide}`,
 					);
 				}
 
@@ -233,7 +320,16 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 			// hold lasts exactly as long as the throw it is for takes. See `Windup` in `ThrowBehavior.ts` for why
 			// the pair has to come off one turn, and `createWindupTracker.beginWindup` for what the hold does with
 			// them.
-			const muzzle = getThrowMuzzle(model);
+			//
+			// **The point is built rather than the pair, and that is what gives this rig the miss.** `beginWindup`
+			// rolls the error and solves the charge against the point it is handed, so a behaviour that can only
+			// name a distance and a rise could not be given one — the roll would have to be added here, at the
+			// second call site, which is exactly where it would eventually go missing. So the stand-in target is
+			// written out as the point it always implicitly was: `THROW_RANGE` studs ahead of the body at its own
+			// root height. The distance and rise the solve gets are the same two numbers as before (a hypotenuse
+			// a few tenths of a stud longer on a wide one), which is what keeps this behaviour's ball, pace and
+			// shape unchanged — see `standInPoint`.
+			const standIn = standInPoint(root);
 
 			// **`plantNow` — this rig never throws on the move, and that is a fact about its walk rather than a
 			// choice about its throw.** `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE` is for a rig that has a
@@ -247,9 +343,10 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 			// omission:** this is the rig that most visibly stands still and throws, and it stands because it is
 			// never between a ball and a walk — not because anything here refuses to move it. A dummy that moved
 			// would need a walk of its own, which is a different feature: its job is to be a target that is always
-			// there. Its charge still solves from the fixed stand-in distance, so this shape is byte for byte what
-			// it was before any of the three existed.
-			windups.beginWindup(model, chargeForRange(THROW_RANGE, root.Position.Y - muzzle.Y), THROW_RANGE, "plantNow");
+			// there. Its charge still solves from the fixed stand-in distance, so on a throw aimed true this shape
+			// is byte for byte what it was before any of the three existed — the only throws whose numbers have
+			// moved are the ones deliberately aimed wide, and those moved by the few studs of the error.
+			windups.beginWindup(model, root, standIn, "plantNow");
 		},
 
 		// **A hold dies with the rig holding it**, for the gated thrower's reason: a corpse is not winding up a

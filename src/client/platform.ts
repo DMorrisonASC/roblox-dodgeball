@@ -28,7 +28,7 @@ import { UserInputService } from "@rbxts/services";
  *
  * **What this is not: a capability test for the game, and not a gate on a rule.** Nothing in the game
  * refuses a control on a platform, and every binding, remote and rule behind the buttons is the same one the
- * keyboard drives — the keys are simply not there to press. **Eight callers ask it now, and no two of them are
+ * keyboard drives — the keys are simply not there to press. **Nine callers ask it now, and no two of them are
  * asking the same kind of question.** Two HUDs ask it to decide which of them is the useful thing to draw;
  * `ShiftLock` asks it because a phone has no mouse to lock; `SprintController` asks it because a keyboard asks
  * for the *whole* of its walk speed where a thumbstick asks for part of it; `ThrowController` asks it because a
@@ -43,7 +43,11 @@ import { UserInputService } from "@rbxts/services";
  * the newest, and it asks the question `ThrowController` already asks one layer down**: a phone aims along the
  * camera's axis because it has no cursor, so the body is turned onto that axis while a throw is being charged,
  * while a desktop is turned onto the point the arc lands on. Two answers to one question, and the platform is
- * what picks between them — see that controller for the whole of it. **This paragraph used to
+ * what picks between them — see that controller for the whole of it. **`client/aimAssist.ts` is the ninth and
+ * the narrowest**: it asks only to decide whether to help a thumb at all, so its answer is the gate on a whole
+ * feature rather than on a control surface, and it is asked *first* in its own path — before any ray or tag walk
+ * — so that a desktop client cannot reach the assist's machinery at all. See that file for the argument.
+ * **This paragraph used to
  * say three**, and the count is worth re-reading rather than trusting: `ThrowController` had been asking for a
  * while before anyone counted it, and that is what a number in a comment is worth. `SprintController` remains
  * the caller that gates a **sensor** rather than a surface, and the one whose cost of getting the answer wrong

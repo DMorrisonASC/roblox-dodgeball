@@ -106,11 +106,40 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 			const root = model.FindFirstChild("HumanoidRootPart");
 			if (!humanoid || !root || !root.IsA("BasePart")) return;
 
-			// Kept whole when it dies, for the one thing this behavior still needs a corpse
-			// for: its name and its tags. Not put back if the tag is taken off later, so it
-			// belongs on a rig you tagged on purpose. What it costs a rig you did not: a death
-			// that reads as a body falling over rather than as an explosion.
-			humanoid.BreakJointsOnDeath = false;
+			// **The engine's own ragdoll, left switched on — and this is a reversal, with the old line quoted
+			// rather than deleted.** This stood as `= false` from 2026-09-22, when this file first landed
+			// (commit `c267524`, "NPC spawns after killed"), on the argument that the corpse had to be kept
+			// whole "for the one thing this behavior still needs a corpse for: its name and its tags". It even
+			// named its own cost: *"a death that reads as a body falling over rather than as an explosion."*
+			// That is exactly what the user asked about months later — *"the rigs stopped ragdolling"* — and
+			// the answer is this one property, which is why flipping it back is the whole of the fix.
+			//
+			// **The reason it was set no longer holds, and that is checkable rather than a matter of taste.**
+			// `true` breaks the joints that hold the corpse's limbs to it — the `Motor6D`s — and destroys
+			// nothing else: the `Model` keeps its `Name`, its children, its attributes and its
+			// `CollectionService` tags, so every read `onDied` makes below — `GetTags(model)`,
+			// `GetAttribute(TEAM_ATTRIBUTE)`, `model.Parent`, the `Humanoid.Health` guard, `dropBall(model)` —
+			// answers the same on a ragdolled corpse as on a rigid one. (A ball welded into a dead rig's hand
+			// may come loose on the same break rather than three seconds later; `dropBall` below is the
+			// explicit path and is happy either way.) **Nothing anywhere clones a corpse either**, which is the
+			// trap this line was really guarding against: the template is taken in `prepare` while the rig is
+			// **alive and on its feet** (see this file's own opening argument), so a corpse in pieces is a
+			// thing nothing reads.
+			//
+			// **What comes back with it, named because it is the point and because it has two real costs.**
+			// The death is an explosion of limbs rather than a plank toppling over — what a rig did before
+			// 2026-09-22 and what the user remembers. The costs: the limbs scatter a few studs, so a corpse
+			// occupies a slightly wider patch of floor for `RESPAWN_DELAY_SECONDS`; and a limb is still a
+			// `Character`-group part, so a thrown ball can strike it and stop on it exactly as it could on the
+			// rigid corpse. Neither is scored — `BallComponent.resolveTags` skips any body whose
+			// `Humanoid.Health <= 0` — and neither is new, because `LobbyRigService`'s own doc already
+			// describes rigs left "in pieces" as an ordinary state for a corpse it has to retire.
+			//
+			// **A *connected* ragdoll is a different feature and not this line.** Keeping the body in one limp
+			// piece means swapping each `Motor6D` for sockets on death — a mechanic with its own bookkeeping,
+			// its own cleanup and its own look. The engine's is a setting, it is what the game had, and it is
+			// what "ragdolling" meant here. Stated so the next reader does not go looking for a synthesiser.
+			humanoid.BreakJointsOnDeath = true;
 
 			// A rig that has already been replaced arrives with its home *and* its template
 			// carried over from the rig it replaced — including a template that was taken while

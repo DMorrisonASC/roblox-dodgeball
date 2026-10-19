@@ -137,6 +137,11 @@ export const NPC_CONFIG = {
 	 * on the ground plane — see `detectEnemy` — so a target above or below the rig is judged by which
 	 * way it lies, not by its height.
 	 *
+	 * **Once a throw is committed, the gate is measured against the point it is throwing at** rather than against
+	 * the body — see `ThrowBehavior`, which asks the question of the aim point so that a rig deliberately aimed a
+	 * few studs wide is not read as having lost its target. The decision itself still waits for the *body* to be
+	 * inside this window, which is what a player watching sees.
+	 *
 	 * **Placeholder.** 45° each way is a wide cone — a quarter of the compass either side of the nose
 	 * — chosen so a rig is not fussy about how squarely it is facing; it is the number to tighten if a
 	 * rig's throws read as too casual about aim.
@@ -144,8 +149,45 @@ export const NPC_CONFIG = {
 	THROW_ANGLE_DEGREES: 45,
 
 	/**
+	 * **The rig throw's three difficulty numbers, together, because they are one decision seen three ways.**
+	 *
+	 * `THROW_DECISION_SECONDS` is how long a rig hesitates before committing, `THROW_MISS_CHANCE` is how often
+	 * a committed throw is deliberately wide, and `THROW_MISS_STUDS_MIN`/`_MAX` are how wide. They are grouped
+	 * in this file rather than given a profile table because there is **one** profile: every rig in the game
+	 * uses them, the practice dummies included (the roll lives in the windup tracker both behaviours build, so
+	 * a second set of numbers would need a second table for no second population). Three values want a comment,
+	 * not a framework — see `HANDOFF.md` §0's "modular over monolithic".
+	 */
+
+	/**
+	 * How long a rig waits after it *can* throw before it decides to, in seconds. **Placeholder — 0.35.**
+	 *
+	 * **The answer to "a rig throws the instant it can", and it sits before the windup rather than between
+	 * throws.** A rig's throw used to begin on the very turn the angle gate opened — and, after a catch, on the
+	 * first turn after the hand filled — so a gated catcher could catch (opening a window that makes it
+	 * unhittable for `CATCH_CONFIG.WINDOW_SECONDS`) and start a windup inside the same tenth of a second. The
+	 * dwell is the hesitation between "there is a throw available" and "I am making it", so the rig is *seen*
+	 * to consider the throw before it commits. Placing it after the windup would be a cadence limit on throws
+	 * instead: the rig would still decide instantly and then stand there holding, which is a machine with a
+	 * delay rather than a body making up its mind.
+	 *
+	 * **Armed once and not reset by a flicker.** The clock is keyed from the first turn a rig holds a ball *and*
+	 * has a target in range, and it is cleared only when the hand empties or a throw is made — a target that
+	 * blinks out for a turn and comes back therefore finds the clock already running rather than restarting it.
+	 * That is what makes the dwell a decision rather than a debounce: the thing being waited on is the rig, not
+	 * the world. Clearing it on an empty hand is what makes a *pickup* or a *catch* start a fresh hesitation
+	 * rather than inherit the last one's spent clock.
+	 *
+	 * **A third of a second, against the tick.** Three and a half turns of `THROW_TICK_SECONDS` — long enough to
+	 * be visible as a pause from a seat, short enough that a rig does not read as asleep, and comfortably longer
+	 * than the one turn a frame hiccup could add. It is not a throw rate: how often a rig throws is set by how
+	 * long it takes `Behavior_Seeking` and `Behavior_Pickup` to put another ball in its hand.
+	 */
+	THROW_DECISION_SECONDS: 0.35,
+
+	/**
 	 * How often a rig throws **deliberately wide** — the chance that a throw is aimed a few studs to one
-	 * side of its target instead of at it.
+	 * side of its target instead of at it. **Placeholder — `2 / 4`, i.e. one throw in two.**
 	 *
 	 * **A perfectly accurate rig is not a player, and that is the whole reason this exists.** Every throw
 	 * a rig makes is a solved shot to the target's own position, so at any range where the angle gate
@@ -154,44 +196,64 @@ export const NPC_CONFIG = {
 	 * too accurate and difficult for players — add some randomness to make them intentionally throw a few
 	 * studs to the left or right, to simulate real player misclicks". This is that.
 	 *
-	 * **The miss is a *release* offset, not a posture one.** The rig still turns to face the body it is
-	 * aiming at, and only the ball goes wide — see `ThrowBehavior`'s `aimWithMiss`, which is the one place
-	 * this is applied. That is what makes it read as a misclick rather than as a rig that cannot aim, and
-	 * it is why the turn is untouched by this value.
+	 * **A miss *rate*, and deliberately not a spread — the difference is what the rig reads as.** A spread
+	 * applied to every throw would make every ball slightly off, which reads as a rig that is *imprecise*: no
+	 * throw is honest and the player learns to distrust the whole envelope. A rate leaves the other half of the
+	 * throws exactly as accurate as they have always been, so the rig reads as *fallible* — capable, and
+	 * occasionally wrong. **It is also the only version that keeps the windup worth watching**: a rig that
+	 * visibly commits and then misses is a telegraph with an outcome; a rig whose every throw is a metre out is
+	 * just noise, and its hold tells a player nothing they can act on. Do not turn this constant into a noise
+	 * term — if the rigs still feel too accurate, move this number, not the magnitude below.
 	 *
-	 * **Placeholder — one in three, which lands nearer one in four once the body is accounted for.** The
-	 * roll decides whether the aim is offset *at all*; whether the ball then misses depends on the offset
-	 * against the width of a body (see {@link NPC_CONFIG.THROW_MISS_STUDS_MAX}). At a third and the range
-	 * below, roughly a quarter to a third of throws go wide of a standing player. Raise it to make the
-	 * rigs read as worse shots, lower it to tighten them; 0 is exactly the old behaviour, and it is the
-	 * value to set when comparing two runs.
+	 * **Rolled once per throw, at the decision, and never at the release.** The roll happens in
+	 * `createWindupTracker.beginWindup`, so both rig behaviours inherit it and neither can be forgotten — see
+	 * {@link NPC_CONFIG.THROW_MISS_STUDS_MAX} for the geometry. At the decision rather than at the release for
+	 * two reasons: the hold is solved *against the point the ball will actually leave for*, so the published
+	 * `CHARGING_ATTRIBUTE` describes the throw that happens; and the rig's **facing** can be turned onto that
+	 * same point, so a rig about to miss visibly aims wide instead of pointing at the player while the ball goes
+	 * elsewhere. A roll at the release could do neither — it would change the ball after the body had been
+	 * pointed honestly.
+	 *
+	 * **What it does not do: touch the charge.** Lowering the charge for a miss would make the ball fall short,
+	 * which reads as *weak* rather than as *inaccurate* — a different and worse character. The error is lateral,
+	 * so the throw is as strong as any other and simply in the wrong place.
+	 *
+	 * **0 is exactly the old behaviour**, and it is the value to set when comparing two runs.
 	 */
 	THROW_MISS_CHANCE: 2 / 4,
 
 	/**
-	 * The shortest deliberate miss, in studs. **Placeholder — 0.5.**
+	 * The shortest deliberate miss, in studs. **Placeholder — 5.**
 	 *
-	 * **Not zero, and the floor is doing a job rather than being tidy.** A roll can come out anywhere in
-	 * this range, and a "miss" of zero studs would be a throw that was aimed straight at the body, logged
-	 * as having gone wide — a line that contradicts itself. Half a stud is small enough to read as a
-	 * flinch and large enough that the line about it is true.
+	 * **The floor is what makes the log line true, and it is chosen from a body's width rather than from feel.**
+	 * A player's torso is about two studs across and the ball is `BALL_SIZE` (2) studs in diameter, so a
+	 * *centre* offset past roughly two studs leaves both the body and its ball-radius margin — anything from
+	 * five up is a clean miss at every range a rig throws at, where a "miss" of half a stud would be a throw
+	 * that landed on the body and was logged as wide. That contradiction is what this floor prevents.
+	 *
+	 * **Studs rather than degrees, and the units are the argument.** What a throw has to miss is a body of a
+	 * fixed width, so the error has to be measured in the same units as that width. An *angular* offset would
+	 * be a bigger miss the further away the target is and a smaller one up close — at arm's length a couple of
+	 * degrees is a hit — which is precisely backwards for a mistake: a person's misclick is about as far off in
+	 * studs whatever they are aiming at.
 	 */
 	THROW_MISS_STUDS_MIN: 5,
 
 	/**
-	 * The longest deliberate miss, in studs — **the user's "a few 4 studs to the left or right"**.
+	 * The longest deliberate miss, in studs. **Placeholder — 10.**
 	 *
 	 * **A range rather than a fixed offset, which is the difference between a mistake and a rule.** A
-	 * rig that misses by exactly four studs every time it misses has a *tell*: the wide throws all look
+	 * rig that misses by exactly ten studs every time it misses has a *tell*: the wide throws all look
 	 * identical, and a player learns the shape of them instead of reading them as error. Spread across
-	 * this range, most misses are small and a full-width one is occasional, which is what a person's
+	 * five to ten, most misses are small and a full-width one is occasional, which is what a person's
 	 * misclicks actually look like.
 	 *
-	 * **Four studs is a clean miss of a standing body and a near miss of a moving one**, which is the
+	 * **Ten studs is a clean miss of a standing body and a near miss of a moving one**, which is the
 	 * intended reading: a player's torso is about two studs wide, so an offset past one stud leaves the
-	 * body's own width and anything past two is a miss even against the ball's radius. That is where the
-	 * "roughly a quarter to a third of throws" estimate in {@link NPC_CONFIG.THROW_MISS_CHANCE} comes
-	 * from. **Placeholder.**
+	 * body's own width and anything past two is a miss even against the ball's radius — this is five times
+	 * that, so a drawn miss is never a hit that the log calls wide. At a rig's forty-stud throwing distance it
+	 * is also a *plausible* wide ball rather than an absurd one: about fourteen degrees off the line, which is
+	 * a bad throw rather than a throw at nothing. See {@link NPC_CONFIG.THROW_MISS_CHANCE} for the rate.
 	 */
 	THROW_MISS_STUDS_MAX: 10,
 
@@ -564,8 +626,11 @@ export const NPC_CONFIG = {
 	SEAT_POLL_SECONDS: 0.25,
 
 	/**
-	 * How long a rig's claim on a loose ball survives without being renewed, in seconds.
+	 * How long a rig's claim on a fetch target survives without being renewed, in seconds.
 	 * **Placeholder — 8.**
+	 *
+	 * **A fetch target is a loose ball or a live mystery box**, and the figure is the same for both because
+	 * what it measures is the rig rather than the thing (`npc/ballClaims.ts`).
 	 *
 	 * **What it is sized against is the walk, not the seek.** A claim is renewed on every turn of a walk, so
 	 * this is not "how long a walk may take" — it is how long `npc/ballClaims.ts` keeps believing a rig that
@@ -579,7 +644,11 @@ export const NPC_CONFIG = {
 	 * long and a ball only a dead rig wanted stays parked for that long — with eight rigs and
 	 * `MATCH_BALL_COUNT` balls, that is a body standing still for seconds, which is the thing the reservation
 	 * exists to prevent. The second failure is the worse one, which is why the figure is seconds rather than
-	 * a minute.
+	 * a minute. **A box makes the second failure worse than a ball does**, because a practice floor has one
+	 * box: eight seconds of a parked box is eight seconds of the whole floor ignoring it. It is not a reason
+	 * to shorten the figure, and the reason is the shape of the failure — a rig renews by walking, so a box
+	 * claim only survives this long if its owner is *still walking to it*, and a rig that is walking is a rig
+	 * that arrives.
 	 */
 	CLAIM_SECONDS: 8,
 

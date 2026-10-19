@@ -789,9 +789,10 @@ the *whole* HUD's region depended on whether the dock or a HUD controller ran la
 `getHudScreenGui` now (it is anchored to the bottom edge, where the safe region is what a phone's home
 indicator lives outside of) and the readouts are the GUI's only tenant.
 
-**The device test is `client/platform.ts`'s `isMobile()`** and there are seven callers, no two asking the
+**The device test is `client/platform.ts`'s `isMobile()`** and there are nine callers, no two asking the
 same question: which control surface to draw (two HUDs), the shoulder lock, the sprint's share of the walk
-speed, the throw's axis, the engine's own touch movement, and the HUD's region. It is
+speed, the throw's axis and the body's facing on it, the engine's own touch movement, the HUD's region, and
+whether the aim assist helps at all. It is
 **`TouchEnabled && !KeyboardEnabled`** — so a phone with a keyboard in front of it reads as a desktop,
 which is deliberate and is the one client where the region gate does the wrong thing for a notched screen.
 
@@ -1603,6 +1604,11 @@ open; 33 is the measurement that would settle the report all four came out of.**
     full-charge releases. Whether to keep the guard (the direction from the muzzle to a point at its own
     feet is centimetres of noise) or to clamp the direction instead is open. What is already established
     is that "full charge, target at arm's length" is currently the *worst* case rather than the best.
+    **As of 2026-10-19 that worst case is escaped on a mobile client with a body in the aim assist's cone**:
+    the pull moves the aim point out past the discard, so `reachTo` accepts it and the cap applies — which
+    makes the sentence above true of desktop clients and of a mobile client with nothing eligible, and not
+    of a mobile client being assisted. The guard itself is untouched; see §15 item 30 for the floor it
+    leaves and `client/aimAssist.ts` for the pull.
 32. **A throw that meets another ball is `carried on past it` in the code and deflected by the engine.**
     `BallComponent.handleTouch` decides a loose ball is scenery unless the throw already owes a tag — but
     balls are in the `Ball` group and `Ball` vs `Ball` is left at the engine's default, so a solid ball

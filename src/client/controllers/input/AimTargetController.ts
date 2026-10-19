@@ -2,9 +2,8 @@ import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
-import { TEAM_ATTRIBUTE } from "shared/constants";
 import { aiming, predictedTargets } from "../../aiming";
-import { inRound } from "../../roundZone";
+import { inRound, sideOfBody } from "../../roundZone";
 
 /** Prints a line as a target is lit and as it goes out. Silent while a target stays the same. */
 const DEBUG = true;
@@ -22,62 +21,20 @@ const DEBUG = true;
  */
 const OUTLINE_NAME = "ObjectOutline";
 
-/** What `TEAM_ATTRIBUTE` holds for each side. Two literals between two files, spelled the same way. */
-const SIDE_A = "A";
-const SIDE_B = "B";
-
-/** One side, as a client reads it off an attribute. See {@link sideOfBody}. */
-type SideLabel = typeof SIDE_A | typeof SIDE_B;
-
 /**
- * `label` as a side, or nothing — **the validation {@link sideOfBody} is a branch away from meaning nothing
- * without**.
+ * **`sideOfBody` lived here and has moved to `client/roundZone.ts`**, together with the two label literals and
+ * the validation that made them safe to compare.
  *
- * An attribute is a string anybody can write, so `Team = "Red"` is not a side, it is a string that happens to
- * be a colour. The same reading `npc/rigs.ts`'s `sideOfRig` and `roundZone.onASide` make on their own copies:
- * a value that is not one of the two labels reads as "no side", and every caller here treats that as "leave
- * it alone" rather than as a third side.
+ * **Why it moved, in this file's own words.** The doc above it said *"a copy rather than a shared helper … if a
+ * fourth reader ever appears, the change to make first is to move the labels themselves"*, and the mobile aim
+ * assist (`client/aimAssist.ts`) is that fourth reader: it needs the same side read to decide whether a body is
+ * an opponent. A third copy of `"A"`/`"B"` and the same validation is how two readers come to disagree about a
+ * body that is on a side, so the pair moved to the one client module that already owned them.
+ *
+ * **What did not move is the question this controller asks of it** — see {@link hittable}, which is the
+ * friendly-fire rule seen from the aim side and stays here, because it is about the glow rather than about
+ * sides in general.
  */
-function asSide(label: unknown): SideLabel | undefined {
-	if (label === SIDE_A || label === SIDE_B) return label;
-
-	return undefined;
-}
-
-/**
- * **Which side a body is on, read from wherever that side actually lives** — the client's copy of the rule the
- * server keeps in `npc/detect.ts` (`sideOf`) and `RoundService.teamOf`.
- *
- * **Two branches, because the attribute is written in two different places.** `RoundService.assignTeams` writes
- * `TEAM_ATTRIBUTE` on the **`Player`** — the roster is player-keyed and a character is replaced on every death —
- * while a **rig** carries its own, painted in Studio or written by the pad and the respawn. So a reader that
- * asked the model in both cases would read every player's character as side-less; under the equality test below
- * that is the same answer as "not a teammate", which is how a rule like this one goes quietly wrong.
- * `GetPlayerFromCharacter` is the branch that tells the two apart, and it is nullable by design: `undefined`
- * means "this model is not a player's character", and for this file that means a rig.
- *
- * **A `Model | Player` rather than a `Model`**, because the local player's own side is asked of the `Player`:
- * `Players.LocalPlayer` is the one body in the game the client can read directly, and it is a `Player` rather
- * than a character model — which also makes this answer survive a death, since a player with no character still
- * has a side.
- *
- * **A copy rather than a shared helper, and the reasons are worth naming.** The server's read lives beside
- * `TEAM_A`/`TEAM_B`/`TeamLabel`, which are in `server/services/round/team.ts` — a client cannot import that —
- * and `npc/rigs.ts`'s `sideOfRig` is a server module that walks `CollectionService`, which is far more than a
- * hint about a line colour should drag into the client. A new `shared/` module would have to carry its own copy
- * of the two labels anyway, so extracting this would move four lines and duplicate the same pair in a *third*
- * place — and it would touch `detect.ts` and `rigs.ts`, which this change has no other business in. If a fourth
- * reader ever appears, the change to make first is to move the labels themselves to `shared/`; this file is not
- * the place to half-make it. `client/roundZone.ts` records the same trade for its own two literals.
- */
-function sideOfBody(body: Model | Player): SideLabel | undefined {
-	if (body.IsA("Player")) return asSide(body.GetAttribute(TEAM_ATTRIBUTE));
-
-	const player = Players.GetPlayerFromCharacter(body);
-	const label = player !== undefined ? player.GetAttribute(TEAM_ATTRIBUTE) : body.GetAttribute(TEAM_ATTRIBUTE);
-
-	return asSide(label);
-}
 
 /**
  * Whether two target lists name the same bodies in the same order.

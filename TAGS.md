@@ -421,14 +421,18 @@ belongs in this file because nothing in the build knows the two belong together:
 strings, and the system that runs them is deliberately independent as well.
 
 **And the seeker now reserves the ball it sets off for, which is a change to this tag's behaviour though not
-to its string.** `npc/ballClaims.ts` is a `Map` from ball to rig: a rig that has chosen a ball writes down
-that it has, every other rig sees that ball as taken and chooses the next nearest, and a rig whose turn
-finds *every* ball claimed **stands** instead of joining the pile. Nothing is sent between rigs — the claim
-*is* the agreement — and a claim is not a lock on the ball: whoever is inside `PICKUP_RADIUS` when a pickup
-runs takes it, so a snatch is possible and repairs itself on the loser's next turn. A claim lasts exactly as
-long as the walk: renewed on every turn of it, released on pickup, on give-up, on the target ceasing to be
-loose, and on death — plus `NPC_CONFIG.CLAIM_SECONDS` of silence as the net for the one route no hook
-covers, a `Behavior_Seeking` tag that is simply removed at a round boundary.
+to its string.** `npc/ballClaims.ts` is a `Map` from fetch target to rig — a loose ball **or a live mystery
+box**, which shares the reservation because it is the same fact about a route and the map was already keyed
+by a `BasePart`: a rig that has chosen one writes down that it has, every other rig sees it as taken and
+chooses the next nearest, and a rig whose turn finds *every* ball claimed **stands** instead of joining the
+pile. Nothing is sent between rigs — the claim *is* the agreement — and a claim is not a lock: whoever is
+inside `PICKUP_RADIUS` when a pickup runs takes the ball, and whoever's `Touched` lands first takes the box, so
+a snatch is possible and repairs itself on the loser's next turn. A claim lasts exactly as long as the walk:
+renewed on every turn of it, released on pickup, on give-up, on the target ceasing to be loose, on the hand
+filling while the rig was walking to a box, and on death — plus `NPC_CONFIG.CLAIM_SECONDS` of silence as the
+net for the one route no hook covers, a `Behavior_Seeking` tag that is simply removed at a round boundary. **A
+box that is collected stops existing** (`MysteryBoxService` destroys the part), so its row is stale the first
+time anybody looks and the floor is immediately free.
 
 **And two tags can be a mechanic that never runs — which now turns on *which catcher* a rig wears, where
 it used to be the only catching tag there was.** An open catch window refuses a dodge outright

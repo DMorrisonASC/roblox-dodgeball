@@ -757,7 +757,7 @@ export const BALL_CONFIG = {
 	 * further; at 1 no energy is lost at all and one throw crosses the arena, and low
 	 * enough and the ball dies in the player it hit and there is no chain to speak of.
 	 */
-	BOUNCE_FACTOR: 0.9,
+	BOUNCE_FACTOR: 0.7,
 
 
 	// -------------------------------------------------------------------- drop

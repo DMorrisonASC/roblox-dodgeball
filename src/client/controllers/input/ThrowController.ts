@@ -21,6 +21,7 @@ import { REMOTES } from "shared/remotes";
 import { abilityOn } from "shared/ability";
 import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
 import { Trajectory } from "shared/Trajectory";
+import { assistedAim } from "../../aimAssist";
 import { aiming, predictedLanding, predictedTargets } from "../../aiming";
 import { shakeCamera, startChargeTremble } from "../../cameraShake";
 import { isMobile } from "../../platform";
@@ -439,7 +440,11 @@ export class ThrowController implements OnStart {
 			this.cancelCharge("the ball left the hand");
 		}
 
-		const charging = Fusion.peek(chargeStartedAt) !== undefined;
+		// **The hold's own instant is read once here and carried**, because the aim assist's latch is keyed on it
+		// and the release has to name the same hold after it has cleared the charge — see `AssistRequest.hold`.
+		// `charging` is derived from it rather than read a second time, so the two cannot disagree.
+		const began = Fusion.peek(chargeStartedAt);
+		const charging = began !== undefined;
 
 		// **The cap's wire, sent on the edge and from here rather than from the six places a charge can end.**
 		//
@@ -511,7 +516,7 @@ export class ThrowController implements OnStart {
 		// This is not an approximation of the arc — it is the same plan the
 		// server will run when the release arrives, from the same heading and
 		// the same charge. See `planChargedThrow`, which both sides call.
-		const plan = planChargedThrow(character, this.chargeRequest(character, charge));
+		const plan = planChargedThrow(character, this.chargeRequest(character, charge, began));
 
 		// **Whether this throw is a Pierce ball, which changes what the arc is allowed to stop at.**
 		//
@@ -620,16 +625,42 @@ export class ThrowController implements OnStart {
 	 * frame to draw with, and the release builds one to send, and if those two constructions were written
 	 * out separately a change to one of the three fields would reach the preview and not the wire — which is
 	 * the one class of bug this whole arrangement exists to make impossible.
+	 *
+	 * **The aim point is the assist's answer, and there is nowhere else to get one.** `aimPoint` casts and
+	 * returns the raw point; `assistedAim` pulls it towards a body on a mobile client and hands it back
+	 * unchanged on every other client. What comes out of that call is the *only* aim anybody downstream sees —
+	 * this object is what `planChargedThrow` is handed to draw the arc and what `releaseThrow` sends — so the
+	 * sight and the wire cannot be given two points that merely agree. See `client/aimAssist.ts`, whose file
+	 * doc is about that property, and note that a desktop client's point is untouched by construction rather
+	 * than by a setting.
 	 */
-	private chargeRequest(character: Model, charge: number): ChargeRequest {
+	private chargeRequest(character: Model, charge: number, hold: number | undefined): ChargeRequest {
+		// **The heading is read once and shared with the assist**, so the cone it measures bodies against is
+		// the same vector the throw is sent along — a second reading of the camera a line later is a second
+		// direction for one throw.
+		const heading = this.getThrowDirection();
+
+		// **And the exclusion list once, for the same reason**: `aimPoint` skips the thrower, the guide and
+		// every loose ball, and so does the assist's sight test, so building it twice a frame would be a second
+		// `Workspace.GetChildren` walk for a list with two readers. See `aimExclusions`.
+		const ignore = this.aimExclusions(character);
+
 		return {
-			heading: this.getThrowDirection(),
+			heading,
 			charge: charge,
 			curve: this.curve,
 			// **The cursor's point, and it is built here for the reason this whole method exists.** The preview
 			// and the wire have to be handed the *same* point — an aim read twice could be two points a frame
 			// apart, and the arc would end somewhere the ball does not. See `aimPoint` for the cast.
-			aim: this.aimPoint(character),
+			aim: assistedAim({
+				character,
+				raw: this.aimPoint(ignore),
+				heading,
+				charge,
+				curve: this.curve,
+				hold,
+				ignore,
+			}),
 		};
 	}
 
@@ -858,6 +889,14 @@ export class ThrowController implements OnStart {
 	private releaseThrow(character: Model): void {
 		const charge = this.currentCharge();
 		const drawn = this.lastCharge;
+
+		// **Read before the clear on the next line, and this is the one place that order matters.** The aim
+		// assist's latch is keyed on the instant the hold began, and it has to be handed to the request built
+		// below — which happens after the charge is gone. Read after the clear, this release would look like a
+		// fresh hold and re-pick its target, which is exactly the drawn-versus-thrown disagreement the latch
+		// exists to close. See `AssistRequest.hold`.
+		const began = Fusion.peek(chargeStartedAt);
+
 		chargeStartedAt.set(undefined);
 
 		// **The level is published before anything else, and it is the animation's own copy of the number.**
@@ -898,7 +937,7 @@ export class ThrowController implements OnStart {
 		// drawn from `chargeRequest` on every frame of the hold, so sending anything else would be a throw built
 		// from different inputs than the preview — which is the one fault this arrangement exists to make
 		// impossible. See that method.
-		const request = this.chargeRequest(character, charge);
+		const request = this.chargeRequest(character, charge, began);
 		const heading = request.heading;
 
 		this.throwRemote?.FireServer(heading, request.charge, request.curve, getThrowMuzzle(character), request.aim);
@@ -1240,7 +1279,7 @@ export class ThrowController implements OnStart {
 	}
 
 	/**
-	 * **Where the cursor is, in the world — the point a throw is now aimed at.**
+	 * **Where the cursor is, in the world — the *raw* point a throw is aimed at, before the assist moves it.**
 	 *
 	 * **This is the other half of `getThrowDirection`, and the half that was missing.** The heading is a
 	 * bearing; this is a place. Without it the throw had no distance in it at all, so the crosshair and the
@@ -1257,12 +1296,21 @@ export class ThrowController implements OnStart {
 	 * ball are excluded for the reasons that list already carries: the guide sits *along* the arc and would be
 	 * hit by every cast, and a held or rolling ball is not a place anybody is aiming. The difference is that
 	 * this is a single ray rather than a swept sphere, because the question is "what is under the cursor" and
-	 * not "what will the ball touch" — the arc still answers that, one radius wide.
+	 * not "what will the ball touch" — the arc still answers that, one radius wide. **The list arrives as a
+	 * parameter rather than being built here**, because the aim assist's sight test needs the same one on the
+	 * same frame; see `aimExclusions`, which is now the only place it is written.
 	 *
 	 * **`undefined` is a real answer** — the sky, or no camera yet — and it means the throw falls back to the
 	 * held charge and the camera's bearing, which is exactly the throw the game had before this existed.
+	 *
+	 * **What this returns is not necessarily the point the throw uses, and the name says so.** `chargeRequest`
+	 * hands this to `client/aimAssist.ts`, which pulls it towards a predicted lead on a mobile client and hands
+	 * it back untouched on every other client; it is *that* value the plan and the wire see. Nothing else in
+	 * this file reads the raw point, which is what keeps there being one aim point rather than two — and it is
+	 * why this method is not the place the assist was written, because a caller that read it directly would be
+	 * reading the pre-pull value.
 	 */
-	private aimPoint(character: Model): Vector3 | undefined {
+	private aimPoint(ignore: ReadonlyArray<Instance>): Vector3 | undefined {
 		const camera = Workspace.CurrentCamera;
 		if (!camera) return undefined;
 
@@ -1278,10 +1326,29 @@ export class ThrowController implements OnStart {
 		}
 
 		const params = new RaycastParams();
-		params.ExcludeInstances = [character, this.guide.instance, ...this.looseBalls()];
+		params.ExcludeInstances = [...ignore];
 
 		const hit = Workspace.Raycast(origin, direction.mul(AIM_RANGE_STUDS), params);
 
 		return hit?.Position;
+	}
+
+	/**
+	 * **Everything an aim raycast has to ignore, in one list: the thrower's own body, the drawn guide and every
+	 * loose ball.**
+	 *
+	 * **One method rather than the same array written at each cast, and the second reader is why.** These were a
+	 * literal inside {@link aimPoint} and nowhere else; the mobile aim assist casts too — from the muzzle to a
+	 * candidate body — and its ray runs along the same line the guide is drawn on, so a sight test with a
+	 * different list would read the player's own preview as cover and refuse every body it was drawn towards.
+	 * Two lists that have to be equal are one list with two names, which is the shape `PANEL_Z_INDEX` records for
+	 * the panels and this is the same argument one cast further along.
+	 *
+	 * **The reasons each entry is here are `aimPoint`'s**, and they are unchanged: the guide sits *along* the arc
+	 * and would be hit by every cast, a held or rolling ball is not a place anybody is aiming, and the thrower's
+	 * own body is behind the muzzle's own line.
+	 */
+	private aimExclusions(character: Model): Array<Instance> {
+		return [character, this.guide.instance, ...this.looseBalls()];
 	}
 }

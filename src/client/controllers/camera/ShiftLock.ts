@@ -9,11 +9,13 @@ import {
 	UserInputService,
 	Workspace,
 } from "@rbxts/services";
+import { AIM_CONFIG } from "shared/config/aim.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SHIFT_LOCK_CONFIG } from "shared/config/shiftLock.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
+import { latchedTarget } from "../../aimAssist";
 import { isMobile } from "../../platform";
 import { getScreenSpaceGui } from "../../ui/screenGui";
 import { inTaggedZone, isParticipant } from "../../roundZone";
@@ -147,6 +149,17 @@ function cameraSettings(): UserGameSettings | undefined {
  * fork the `PlayerModule` — which is the other way to build this, and a permanent copy of Roblox's camera
  * code to keep in step with.
  *
+ * **One exception, added 2026-10-19: `AimAssistFollow`, and it is a rotation applied *after* the camera scripts
+ * rather than a fork of them.** While a mobile player charges a throw at a body the aim assist has latched
+ * (`client/aimAssist.ts`), a render step at `Camera.Value + 1` turns the view a bounded number of degrees toward
+ * that body's root — see {@link followTarget}. Everything above still holds: the scripts place the camera, this
+ * file feeds them the same settings it always did, and the follow reads their position and only replaces the
+ * orientation for as long as one specific hold is running. **What made the argument above right is still right**
+ * — an unqualified `CFrame` write every frame would be a fight — and what makes this one safe is that it is
+ * bounded (`AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND`), directed (the root of one latched model) and conditional (a
+ * mobile client, mid-hold, with a latch). It exists because on a phone **the camera is the aim**: leaving the
+ * view free while the arc bends toward a lead would show the player a throw their own aim is not making.
+ *
  * **`RotationType` is written to `MovementRelative` and never to `CameraRelative`, and that is a reversal.**
  * The old line asked for `CameraRelative` while locked, on the argument that a locked view should turn the
  * body with it. That made the character's facing a *consequence of the camera* rather than a fact of its
@@ -197,10 +210,15 @@ function cameraSettings(): UserGameSettings | undefined {
  * intermission, and every way a round can end — and a client that is going away has nothing to put
  * back, because the settings it wrote are the user's and there is no later.
  *
- * **What this is not:** it is not movement, and it is not aim. It binds no key at all any more — the
- * one it used to bind was the player's own way out of the lock, and that is gone; the class doc says
- * why — and the whole of the effect is that the character turns with the view and that the body is not
- * in the way of it.
+ * **What this is not:** it is not movement. **And it is not the aim — with one bounded exception, added
+ * 2026-10-19**: while a mobile client holds a throw at a latched body, the view is turned onto that body's root
+ * (see {@link followTarget}), because on a phone the camera *is* the aim and a free view beside an assisted arc
+ * shows the player a throw their aim is not making. Everything else about the aim is still `ThrowController`'s:
+ * the ray, the cone, the pull and the cap are all read from the camera and none of them is decided here — this
+ * file moves the input, and the aim point continues to be a raycast along it rather than a value written beside
+ * it. It binds no key at all any more — the one it used to bind was the player's own way out of the lock, and
+ * that is gone; the class doc says why — and otherwise the whole of the effect is that the character turns with
+ * the view and that the body is not in the way of it.
  */
 @Controller()
 export class ShiftLock implements OnStart {
@@ -280,6 +298,15 @@ export class ShiftLock implements OnStart {
 	 * {@link reportZoneParts} for the log that made a one-time count untenable.
 	 */
 	private reportedZoneParts?: number;
+
+	/**
+	 * Whether {@link followTarget} turned the view on the previous frame — **the edge the follow's log prints on.**
+	 *
+	 * A field rather than a per-frame line, for the reason `AimTargetController.lastAiming` is one: this runs once
+	 * a frame for the length of every assisted hold, and a line a frame buries the one line that says the camera
+	 * is following at all. The edge is per *hold*, because a hold is what a latch lives for.
+	 */
+	private following = false;
 
 	/** The camera's view direction last frame, for the rotational delta {@link reportCamera} measures. */
 	private lastLook?: Vector3;
@@ -434,6 +461,10 @@ export class ShiftLock implements OnStart {
 		// body faced anywhere but the camera — and "wrong" here means swinging the whole frame around the
 		// character, which is the thing this exists to stop.
 		this.watchOffset();
+
+		// **And the assist's follow, bound once with the lock's own step** — it is a client-lifetime binding too,
+		// gated inside rather than re-bound when a hold starts. See `watchFollow`.
+		this.watchFollow();
 
 		task.spawn(() => this.watchZones());
 
@@ -923,9 +954,12 @@ export class ShiftLock implements OnStart {
 	 * piece of state to keep in step with {@link isLocked}.
 	 *
 	 * **This is not the camera fork the class doc argues against, and the distinction is the point.**
-	 * Nothing here writes `Camera.CFrame` or takes the camera over: Roblox's own scripts still decide
+	 * Nothing *in this method* writes `Camera.CFrame` or takes the camera over: Roblox's own scripts still decide
 	 * where the camera is, and this only feeds them a correct input instead of a static one. What is being
-	 * replaced is a value that was only ever right in the pose where the body and the camera agree.
+	 * replaced is a value that was only ever right in the pose where the body and the camera agree. **The file's
+	 * one `CFrame` write is the assist's follow** — {@link watchFollow}, added 2026-10-19 and documented as the
+	 * class doc's single exception; it is not this, it runs after the scripts rather than instead of them, and it
+	 * is conditional on a mobile client holding a throw at a latched body.
 	 */
 	private watchOffset(): void {
 		// **The two mount-time diagnostic lines, printed before the binding is made** — see
@@ -944,6 +978,124 @@ export class ShiftLock implements OnStart {
 			// property of the camera rather than of this write. See {@link reportCamera}.
 			if (CAMERA_DIAGNOSTICS) this.reportCamera(delta);
 		});
+	}
+
+	/**
+	 * **Binds the assist's follow, once, for the client's life** — a second render step beside {@link watchOffset},
+	 * gated inside rather than re-bound when a hold starts.
+	 *
+	 * **After the camera scripts, and that is the whole of the choice.** They place the camera at
+	 * `RenderPriority.Camera`; a write before them would be overwritten, and a write at the same priority would be
+	 * an order the engine picks at random. `Camera.Value + 1` is the first step that can change their answer and
+	 * keep it.
+	 *
+	 * **What that costs the aim is at most one frame, and the figure is the rate limit's own.** The aim is read
+	 * from `RenderStepped` (`ThrowController.updateGuide`), and the engine's exact order between that signal and
+	 * the priority-ordered render steps is **not** stated in the typings — so the honest claim is "the aim sees
+	 * this rotation within a frame", which at 60 fps and `AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND` is 2° of a turn
+	 * that is already converging. It is named rather than fixed by reordering a controller that has nothing to do
+	 * with the camera. **`Humanoid.CameraOffset` trails on the same order** — {@link watchOffset} computes it two
+	 * steps earlier, from the camera rotation this step last left behind — which is the lag that doc already
+	 * accepts for a mouse movement.
+	 *
+	 * **Nothing happens on a desktop, outside a hold, or with nothing latched**, and the query answers the last
+	 * two: `latchedTarget()` returns nothing unless the latch belongs to the *live* hold, so a release, a
+	 * cancelled charge, a drop or a death all end the follow on the frame they happen — **with no "stop" write
+	 * anywhere**, because not writing is stopping.
+	 *
+	 * **Not gated on the lock being on, deliberately.** The lock's inputs are the round and the zone, and both are
+	 * where a latched body can exist, so the two gates agree in practice — but the follow needs only its own
+	 * preconditions, and gating on `isLocked()` would make this a second copy of the lock's rule. `isMobile()` *is*
+	 * a gate, because the assist exists nowhere else.
+	 */
+	private watchFollow(): void {
+		RunService.BindToRenderStep("AimAssistFollow", Enum.RenderPriority.Camera.Value + 1, (delta) =>
+			this.followTarget(delta),
+		);
+	}
+
+	/**
+	 * One frame of the follow: turn the view toward the latched body's **root**, by at most the rate limit.
+	 *
+	 * **The root and not the lead, and the loop is why.** The aim point is a raycast along *this camera's*
+	 * `LookVector`, so a camera turning toward the *lead* would be chasing a point decided by the flight time,
+	 * which is decided by the aim point, which is decided by the camera — a fixed point across three subsystems,
+	 * and the shape of an oscillation. The root depends on none of it: the camera converges on the body, the ray
+	 * lands on the body, the arc leads *past* it. **Everybody is measuring something nobody is moving.**
+	 *
+	 * **A rate, not an ease, and there is no engage snap.** The angle to the root is measured and at most
+	 * `AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND × delta` of it is taken, so a large error leads to a constant-speed
+	 * turn and a small one is barely touched — the approach settles rather than arriving. A snap would be the
+	 * camera taking the player's aim off them in one frame; an ease on top of the rate would be a second speed to
+	 * tune against the first.
+	 *
+	 * **The deadzone exists because a walking root is not still** — see the constant. It is measured as the same
+	 * angle the rate limits, so the camera stops within `AIM_ASSIST_FOLLOW_DEADZONE_DEGREES` of the body, which at
+	 * a body's range is well inside a torso: the crosshair stays on it and the jitter under it stops moving the
+	 * view.
+	 *
+	 * **The player's own drag is blended rather than blocked, and that is a consequence rather than a setting.**
+	 * Roblox's camera scripts still run first with the touch delta they were given, so a drag moves the view; this
+	 * then takes back up to the rate limit's worth of it. Below the rate the drag wins, above it the follow does,
+	 * and the crossover is why the number is a *rate*: the player's input is never discarded outright and there is
+	 * no second blend factor to tune against the first. **What that costs, stated**: a player who deliberately
+	 * swings the view away mid-hold is slowly pulled back, which is the assist working rather than a fault — and
+	 * the way to stop it is to release, which ends the hold and the follow together.
+	 *
+	 * **`Camera.CFrame` is written, and the class doc's one exception is this line.** Only the *orientation*
+	 * changes: the position is read from what the camera scripts produced, which is what keeps
+	 * `Humanoid.CameraOffset` and the rest of the shoulder intact. `CFrame.lookAt` keeps the up vector upright; a
+	 * body almost straight above or below is refused, because `lookAt` has no stable up vector there and no aim is
+	 * made that way.
+	 */
+	private followTarget(delta: number): void {
+		if (!isMobile()) return;
+
+		const target = latchedTarget();
+
+		// **The log's off edge, and the only place the follow reports stopping.** Reached on the frame after a
+		// release, a dropped latch or a cancelled charge — the same frame the player gets their camera back. See
+		// `latchedTarget` for why the query is what notices.
+		if (target === undefined) {
+			if (this.following) {
+				this.following = false;
+				if (DEBUG) print(`[ShiftLock] follow — off`);
+			}
+
+			return;
+		}
+
+		if (target === this.player.Character) return;
+
+		// **Engaged as soon as there is a body to turn onto**, before any geometry: a frame that is already inside
+		// the deadzone is still a frame this is following on, and the log should say so.
+		if (!this.following) {
+			this.following = true;
+			if (DEBUG) print(`[ShiftLock] follow — on ${target.Name}`);
+		}
+
+		const camera = Workspace.CurrentCamera;
+		if (!camera) return;
+
+		const root = target.FindFirstChild("HumanoidRootPart");
+		if (root === undefined || !root.IsA("BasePart")) return;
+
+		const offset = root.Position.sub(camera.CFrame.Position);
+		if (offset.Magnitude <= 0.001) return;
+
+		const want = offset.Unit;
+		if (math.abs(want.Y) >= 0.99) return;
+
+		const look = camera.CFrame.LookVector;
+		const degrees = math.deg(math.acos(math.clamp(look.Dot(want), -1, 1)));
+		if (degrees <= AIM_CONFIG.AIM_ASSIST_FOLLOW_DEADZONE_DEGREES) return;
+
+		const step = math.min(degrees, AIM_CONFIG.AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND * delta);
+		const axis = look.Cross(want);
+		if (axis.Magnitude <= 0.001) return;
+
+		const turned = CFrame.fromAxisAngle(axis.Unit, math.rad(step)).VectorToWorldSpace(look);
+		camera.CFrame = CFrame.lookAt(camera.CFrame.Position, camera.CFrame.Position.add(turned));
 	}
 
 	/**
@@ -1053,14 +1205,23 @@ export class ShiftLock implements OnStart {
 		const camera = Workspace.CurrentCamera;
 
 		print(
-			`[Camera] write — priority ${Enum.RenderPriority.Camera.Value + 1} — ` +
+			`[Camera] write — priority ${Enum.RenderPriority.Camera.Value - 2} — ` +
 				`type ${camera !== undefined ? tostring(camera.CameraType) : "no camera"}`,
 		);
 
 		// **`false` for the zoom, and the qualifier is not hedging.** `CameraZoomController` writes
 		// `FieldOfView` and nothing else — a different property on a different object — so it cannot fight
-		// this file for the `CFrame`. Neither of them writes one at all; what this file writes is
-		// `Humanoid.CameraOffset`, which the camera scripts then read.
-		print(`[Camera] sources — shiftLock true, zoom false — neither writes CFrame (offset and field of view)`);
+		// this file for the `CFrame`. **What this file writes per frame is `Humanoid.CameraOffset`**, which the
+		// camera scripts then read.
+		//
+		// **And the file has exactly one `CFrame` write, which this line used to deny.** It is the aim assist's
+		// follow, at `Camera.Value + 1` — *after* the camera scripts rather than in place of them, and only
+		// while a mobile client holds a throw at a latched body. A reader chasing "something else places this
+		// camera" has to know it exists, and has to know it is conditional: on a desktop, or with no latch,
+		// nothing here writes a `CFrame` at all. See `watchFollow`.
+		print(
+			`[Camera] sources — shiftLock true, zoom false — offset every frame, and a CFrame only while the ` +
+				`aim assist follows`,
+		);
 	}
 }

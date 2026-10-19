@@ -55,6 +55,15 @@ const MIN_AIM_DISTANCE = 0.5;
  *   flattened onto the ground — which is exactly what the custom shift lock already points at, so a phone
  *   player turns their view and the body follows it, with nothing to touch.
  *
+ *   **And as of 2026-10-19 the camera itself turns onto the latched body** while a throw is charged at one
+ *   (`client/aimAssist.ts`'s latch, `ShiftLock.followTarget`), so the body — which follows the camera — ends up
+ *   facing the *body* rather than merely whatever bearing the player had. **What remains of the old divergence
+ *   is the lead angle**: the arc is pulled ahead of the target by the assist, and the body faces the target
+ *   rather than the lead. That is the identical relationship the desktop path has had since `predictedLanding`
+ *   was published — the body faces the aim, the ball leads — so it is accepted rather than corrected here.
+ *   **Nothing in this file changed for it**: the facing still reads the camera's forward, and the camera is what
+ *   moved.
+ *
  * The point is deliberately read **after** the arc is solved rather than from the raw crosshair: aiming at
  * the sky has a landing point far away and a direction that is still the direction the player is looking,
  * while aiming at a nearby wall has a landing point where the ball stops — and that is the direction the

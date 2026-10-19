@@ -73,10 +73,13 @@ export const RIG_NAMES: ReadonlyArray<string> = [
  * `NPC_CONFIG.RIG_POOL_FOLDER`, as a string.
  *
  * **An attribute rather than a side-table, and the deciding factor is the respawn.** `RespawnBehavior`
- * rebuilds a rig by cloning a *snapshot of the corpse*, so anything written on the rig travels to the
- * replacement for free (`Clone` copies `Name` and attributes) — while a `Map<Model, Model>` keyed on the rig
- * would need `RespawnBehavior` to know about the pool, which it otherwise has no business knowing. The same
- * property is what makes a *release* automatic: a destroyed rig is not found by the walk in
+ * rebuilds a rig from a **template cloned while that rig was alive and on its feet** — not from the corpse,
+ * which is never cloned at all (and is in pieces by the time the rebuild happens, since
+ * `BreakJointsOnDeath` is the engine default again) — so anything written on the rig travels to the
+ * replacement for free: `Clone` copies `Name` and the attributes of the body it was taken from, and the
+ * corpse contributes its tags and its `Team` by being *read*, not by being copied. A `Map<Model, Model>`
+ * keyed on the rig would need `RespawnBehavior` to know about the pool, which it otherwise has no business
+ * knowing. The same property is what makes a *release* automatic: a destroyed rig is not found by the walk in
  * {@link readRigPool}, so it cannot be holding anything.
  *
  * **A name rather than a reference, because an attribute cannot hold an `Instance`.** The typings disagree

@@ -27,7 +27,7 @@ import { chargeStartedAt } from "./throwing";
  * restore below writes a captured value.
  *
  * **And `ShiftLock` does not write it rarely, which changes what "captured" has to mean.** Its
- * `watchOffset` binds a render step at `Enum.RenderPriority.Camera.Value + 1` and calls `applyOffset()`
+ * `watchOffset` binds a render step at `Enum.RenderPriority.Camera.Value - 2` and calls `applyOffset()`
  * **every frame while locked** — that is what keeps the shoulder camera-relative as the body turns, and it
  * is not a state change, it is the steady state of a locked player. Two consequences follow, and the second
  * is why this file does not simply capture once:

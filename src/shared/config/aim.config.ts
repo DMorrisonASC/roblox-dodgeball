@@ -1,22 +1,25 @@
 /**
  * The aim's own numbers: what colour a lit target is drawn in, what it used to be drawn as, how sensitive
- * the mouse is for this game, and how hard a charging body is turned onto the aim.
+ * the mouse is for this game, how hard a charging body is turned onto the aim, and how hard a mobile client's
+ * aim is pulled towards the body it is nearest.
  *
- * Read by `AimTargetController` (the glow), `main.client.ts` (the sensitivity, once at boot) and
- * `AimFacingController` (the responsiveness) — three readers, one file, because none of the values is a
- * *client's* business to decide: the colour is the game's look, the sensitivity is the game's feel, and the
- * turn rate is the game's responsiveness. A second client that ever wanted them would want the same values.
- * **The first sentence of this doc used to name `AimTargetController` alone**, and the count is worth
- * re-reading rather than trusting — the same lesson `platform.ts` records about its own caller count.
+ * Read by `AimTargetController` (the glow), `main.client.ts` (the sensitivity, once at boot),
+ * `AimFacingController` (the responsiveness) and `client/aimAssist.ts` (the assist's strength and cone, and
+ * the two search numbers it brought back) — four readers, one file, because none of the values is a *client's*
+ * business to decide: the colour is the game's look, the sensitivity is the game's feel, the turn rate is the
+ * game's responsiveness, and the pull is how hard the game helps a thumb. A second client that ever wanted
+ * them would want the same values. **The first sentence of this doc used to name `AimTargetController` alone**,
+ * and the count is worth re-reading rather than trusting — the same lesson `platform.ts` records about its own
+ * caller count.
  *
- * **Three entries here are no longer read, and that is worth spelling out.**
- * {@link AIM_CONFIG.TARGET_MAX_DISTANCE} and {@link AIM_CONFIG.TARGET_UPDATE_HZ} configured a ray the
- * glow cast for itself. The glow no longer casts anything: it reads the arc the throw guide already
- * draws, so it has no reach of its own and nothing to throttle.
- * {@link AIM_CONFIG.TARGET_FILL_TRANSPARENCY} configured a fill painted over the whole body, and is
- * gone for a different reason again — the landing marker is read against that body. All three are
- * kept and marked rather than deleted, because the numbers are the ones to start from if either design
- * comes back, and because the shape of what was there is worth being able to see.
+ * **Two entries are read again and one is still not, and the difference is worth spelling out.**
+ * {@link AIM_CONFIG.TARGET_MAX_DISTANCE} and {@link AIM_CONFIG.TARGET_UPDATE_HZ} configured a ray the glow
+ * cast for itself. The glow stopped casting and they were kept as "the number to start from if the design
+ * comes back" — and `client/aimAssist.ts` is that design, in the shape of a target *search*: one ceiling on
+ * how far a body may be to be worth assisting towards, and one rate to rescan the bodies at. Both numbers
+ * mean what they always meant, which is why they are read rather than joined by a third and a fourth.
+ * {@link AIM_CONFIG.TARGET_FILL_TRANSPARENCY} is still unread — the glow paints no fill, and the landing
+ * marker is read against the body's own surface — and is kept for the same reason the pair above was.
  */
 export const AIM_CONFIG = {
 	/**
@@ -57,27 +60,99 @@ export const AIM_CONFIG = {
 	TARGET_FILL_TRANSPARENCY: 0.35,
 
 	/**
-	 * **Placeholder, and no longer read.** How far the crosshair ray reached, in studs.
+	 * **Placeholder, and read again — by the mobile aim assist.** How far a body may be from the throwing hand
+	 * and still be a target of the assist's search, in studs.
 	 *
-	 * The glow casts no ray — it reads the arc `ThrowController` has already drawn, whose reach is
-	 * the trajectory's own time limit rather than a distance. So there is nothing left for this to
-	 * bound. It was always a *ceiling* rather than a preference: long enough that the arena is
-	 * covered end to end, short enough that a rig on the far side of the map is not a target through
-	 * a wall of geometry. Kept as the number to start from if the glow ever casts again.
+	 * **The same meaning it always had, and it is a *ceiling* rather than a preference** — the note this
+	 * carried when the glow owned it said so and it is still true: long enough that the arena is covered end to
+	 * end, short enough that a rig on the far side of the map is not a target through a wall of geometry. The
+	 * glow stopped casting and this went unread for a while; `client/aimAssist.ts` reads it as the outer bound
+	 * of its candidate scan, where "through a wall" is answered by a raycast rather than by this number. See
+	 * `consider` there for the two halves.
 	 */
 	TARGET_MAX_DISTANCE: 500,
 
 	/**
-	 * **Placeholder, and no longer read.** How many times a second the crosshair ray was cast.
+	 * **Placeholder, and read again — by the mobile aim assist.** How many times a second the assist rescans the
+	 * world for the bodies it may pull towards.
 	 *
-	 * The ray is gone and its replacement is free: the arc is rebuilt every frame whether or not
-	 * anything reads it, so the glow is now exactly as fresh as the guide that drew it, and there is
-	 * no cost to throttle. The reasoning this carried is worth keeping anyway, because it is the
-	 * reason the glow was ever allowed to be stale: a raycast a frame is not worth a cosmetic, and
-	 * 15 Hz put the glow up to 66 ms behind the crosshair, which is less than the eye reads as a
-	 * delay on something this soft.
+	 * **A rate rather than a per-frame walk, and that is the whole of why it is a number.** Finding the bodies
+	 * is a `CollectionService` walk over every `NPC`-tagged model, and doing that on the aim's own per-frame
+	 * clock would be sixty walks a second for a search whose answer changes when a rig moves into the cone, not
+	 * when a frame passes. At this rate membership can be up to 66 ms stale, which is less than the eye reads as
+	 * a delay on a pull and is stated in `client/aimAssist.ts` rather than left to be discovered — positions and
+	 * velocities are read live every frame, so only "who is a candidate" is throttled.
+	 *
+	 * **The reasoning this carried when the glow owned it is worth keeping anyway**, because it is the same
+	 * argument one reader later: a raycast a frame was not worth a cosmetic, and 15 Hz put the glow up to 66 ms
+	 * behind the crosshair, which is less than the eye reads as a delay on something this soft.
 	 */
 	TARGET_UPDATE_HZ: 15,
+
+	/**
+	 * **Placeholder — `0.35`.** How far a mobile client's aim point is pulled from the point the aim cast
+	 * produced towards the lead of the body it is nearest, as a fraction of the way there. Read by
+	 * `client/aimAssist.ts` alone, and the gate around it is `isMobile()` — a desktop client never reaches the
+	 * assist at all, so there is no second setting to disable it there.
+	 *
+	 * **A lerp and not a snap, and the reason is that the aim is the *preview's* input as well as the throw's.**
+	 * The drawn arc is built from the same point, so `0` is "the game as it was" and `1` is "always land on the
+	 * predicted body", and everything between is a weapon that helps a thumb without taking the throw away
+	 * from the player. A snap at `1` would also make the marker jump whenever a second body took the nearest
+	 * slot, which reads as the game fighting the player rather than helping them.
+	 *
+	 * **There is deliberately no separate lead factor.** The lead itself is a full prediction
+	 * (`root + velocity × flight`) and this one number says how much of it is taken, so a second scale would
+	 * be two ways to express one product — and two knobs that multiply are a tuning session with no way to
+	 * tell which one did it. Move this toward `1` for a harder assist; `0` is the off switch.
+	 */
+	AIM_ASSIST_STRENGTH: 0.35,
+
+	/**
+	 * **Placeholder — `10`.** The **half-angle** of the cone a body has to be inside to be pulled towards,
+	 * measured **horizontally** off the throw's own heading, in degrees. Read by `client/aimAssist.ts` alone.
+	 *
+	 * **Horizontal, because the vertical is the charge's business.** A player aiming at a body's feet is looking
+	 * steeply down, and a three-dimensional cone would call that body far outside itself — the assist would
+	 * refuse the commonest aim at a target rather than help it. The throw's own solve makes the same reading
+	 * when it projects the heading, which is why the cone is centred on it rather than on the camera's pitch.
+	 *
+	 * **Ten rather than "whatever feels close", because the pull is a lerp and the cone decides what is
+	 * *near*.** A wide cone reaches for bodies the player is not looking at; a narrow one only fires when the
+	 * thumb is already almost right, which is the case the assist exists for. It also bounds the search before
+	 * the nearest-to-the-aim-point rule does, and a body outside it is never assisted however close it is.
+	 */
+	AIM_ASSIST_CONE_HALF_DEGREES: 10,
+
+	/**
+	 * **Placeholder — `90`.** How fast the camera is allowed to turn onto the latched target's root while a
+	 * mobile client charges at it, in degrees per second. Read by `ShiftLock.followTarget` alone.
+	 *
+	 * **A rate rather than a duration or an ease, and the shape is the decision.** The camera converges on the
+	 * body by taking at most this much of the remaining angle each frame, so a large error is corrected at a
+	 * constant speed and a small one is barely touched — which is what makes the approach settle rather than
+	 * arrive. An ease would be a second smoothing on top of the rate and would give the turn two speeds to be
+	 * tuned against each other; a snap would be the camera taking the player's aim off them in one frame.
+	 *
+	 * **90 is chosen against the cone, not against feel.** A body is only ever assisted from inside
+	 * `AIM_ASSIST_CONE_HALF_DEGREES`, so the turn this has to make is small — thirty degrees in a third of a
+	 * second, which reads as the view being helped rather than taken. It is also slow enough that a player
+	 * dragging the screen can still win the argument with it for a moment, which is the blend rather than a
+	 * setting; see `ShiftLock.followTarget` for why there is no separate blend control.
+	 */
+	AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND: 90,
+
+	/**
+	 * **Placeholder — `1`.** The angular error below which the camera stops turning onto the latched body, in
+	 * degrees. Read by `ShiftLock.followTarget` alone.
+	 *
+	 * **A deadzone rather than an epsilon, because a walking body's root is not still.** `HumanoidRootPart`
+	 * moves by centimetres as a body walks, and at twenty studs that is a fraction of a degree — a camera with
+	 * no deadzone would chase it every frame and read as a permanent tremor. One degree is about a third of a
+	 * stud at that range, which is well inside a torso, so the crosshair stays on the body while the jitter
+	 * below it stops moving the view.
+	 */
+	AIM_ASSIST_FOLLOW_DEADZONE_DEGREES: 1,
 
 	/**
 	 * **Placeholder — `0.52`.** The mouse sensitivity this game runs at, written once at client start to

@@ -1,4 +1,4 @@
-import { ReplicatedStorage, Workspace } from "@rbxts/services";
+import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 
@@ -42,6 +42,61 @@ export function inRound(): boolean {
 const SIDE_A = "A";
 const SIDE_B = "B";
 
+/** One side, as a client reads it off an attribute. See {@link sideOf}. */
+export type SideLabel = typeof SIDE_A | typeof SIDE_B;
+
+/**
+ * **`holder`'s own `TEAM_ATTRIBUTE` as a side, or nothing — the validated read, in one place.**
+ *
+ * **An attribute is a string anybody can write**, so `Team = "Red"` is not a side, it is a string that happens
+ * to be a colour. The same reading `npc/rigs.ts`'s `sideOfRig` makes on the server, and the same one this file
+ * already made inside {@link onASide}: a value that is not one of the two labels reads as "no side" rather than
+ * being passed on as a side.
+ *
+ * **`Instance` rather than `Player`, because the attribute lives on two kinds of thing.** `RoundService.assignTeams`
+ * writes it on the **`Player`** — the roster is player-keyed and a character is replaced on every death — while a
+ * **rig** carries its own, painted in Studio or written by its pad walk and its respawn. This asks the instance it
+ * is handed and nothing else, so it means "the label on this thing"; the two-branch question a *character model*
+ * needs is {@link sideOfBody}.
+ *
+ * **Why this moved here rather than staying a copy in `AimTargetController`, which is where it was written
+ * first.** That file's own doc named the moment this would be worth doing — *"if a fourth reader ever appears,
+ * the change to make first is to move the labels themselves"* — and the mobile aim assist is that fourth
+ * reader. Two copies of the label pair and the validation were already one more than the rule wanted; a third
+ * is how two readers come to disagree about a body that is on a side.
+ */
+export function sideOf(holder: Instance): SideLabel | undefined {
+	const label = holder.GetAttribute(TEAM_ATTRIBUTE);
+
+	return label === SIDE_A || label === SIDE_B ? label : undefined;
+}
+
+/**
+ * **Which side a *body* is on, read from wherever that side actually lives** — the client's copy of the rule
+ * the server keeps in `npc/detect.ts` (`sideOf`) and `RoundService.teamOf`.
+ *
+ * **Two branches, because the attribute is written in two different places.** For a player's **character**
+ * model the side is on the `Player`, so a reader that asked the model would read every player's character as
+ * side-less — which, under an "is this my side" equality test, is the same answer as "not a teammate", the
+ * exact way a rule like this one goes quietly wrong. `GetPlayerFromCharacter` is the branch that tells the two
+ * apart, and its `undefined` is meaningful: it means "this model is not a player's character", i.e. a rig, and
+ * then the model's own attribute is the answer.
+ *
+ * **A `Model | Player` rather than a `Model`**, because the local player's own side is asked of the `Player`:
+ * that is the one body the client can read directly without a character, so a player with no body still has a
+ * side and the answer survives a death.
+ *
+ * **Moved here from `AimTargetController` unchanged**, on that file's own instruction and for the reason
+ * {@link sideOf} gives. Its two readers are `AimTargetController.hittable` and `client/aimAssist.ts`.
+ */
+export function sideOfBody(body: Model | Player): SideLabel | undefined {
+	if (body.IsA("Player")) return sideOf(body);
+
+	const player = Players.GetPlayerFromCharacter(body);
+
+	return sideOf(player ?? body);
+}
+
 /**
  * **Whether this player is on a side — the fact the round-edged client features gate on.**
  *
@@ -55,14 +110,12 @@ const SIDE_B = "B";
  * round's edges must not act for them. The two predicates are composed where both are wanted — see
  * {@link isParticipant} — and used alone where only one is, which is why both are exported.
  *
- * **The label is validated rather than merely read.** The freeze countdown used `typeIs(label, "string")`
- * and that is the looser test: an attribute anything can write is not a side until it reads as one, which
- * is the same reading `npc/rigs.ts`'s `sideOfRig` makes on the server, and the same one this makes here.
+ * **The label is validated rather than merely read**, which is now {@link sideOf}'s job rather than a test
+ * written out here: the freeze countdown used `typeIs(label, "string")` and that is the looser test, and a
+ * value that is not one of the two labels is not a side.
  */
 export function onASide(player: Player): boolean {
-	const label = player.GetAttribute(TEAM_ATTRIBUTE);
-
-	return label === SIDE_A || label === SIDE_B;
+	return sideOf(player) !== undefined;
 }
 
 /**
