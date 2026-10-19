@@ -536,7 +536,7 @@ export const BALL_CONFIG = {
 	 * for the reasons written up there. A charged throw has no solve to floor: its speed is this number and
 	 * the climb to the cap, and nothing else in the game can raise it.
 	 */
-	CHARGE_MIN_SPEED: 45,
+	CHARGE_MIN_SPEED: 50,
 
 	/**
 	 * **A multiplier on the derived launch correction. It should stay at 1.**
@@ -635,7 +635,7 @@ export const BALL_CONFIG = {
 	 * **Zeroed, and it should stay zeroed.** A non-zero nudge is a fault in the plan being papered over.
 	 * Tune with it, write down what it took, fix the cause, and put it back to zero.
 	 */
-	THROW_LAUNCH_NUDGE: { forward: 0, left: 0.5, up: 0 },
+	THROW_LAUNCH_NUDGE: { forward: 0, left: 0, up: 0 },
 
 	/**
 	 * Launch angle of the curveball, in degrees.
@@ -711,7 +711,7 @@ export const BALL_CONFIG = {
 	 * relative to the throw, so it stays correct whichever way you are facing — see
 	 * `leftAxis` in `shared/Trajectory.ts`.
 	 */
-	CURVE_STRENGTH: 200,
+	CURVE_STRENGTH: 50,
 
 	/**
 	 * Whether a curveball's launch cancels its own drift, so it lands on the mark.

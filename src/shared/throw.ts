@@ -312,18 +312,27 @@ export function planAimedThrow(
  * What the player's input produces: **where they are pointing, how long they held, and whether the ball
  * bends.**
  *
- * **The absence of a target is the design and not a simplification.** The model this replaces asked the
- * player *where the ball should land* and solved a throw that got there. That has two failures built into
- * it rather than bolted on: a moving target has to be clicked where the body *will* be, which is guesswork,
- * and a click that goes past a target lands in the sky — a legitimate thing to aim at, and a solve that
- * dutifully reaches it — so the throw goes as far as the ball allows. Both of those come from range being a
- * *place* the player nominates and cannot see. Here range is a length of time they hold, the maximum is one
- * number they can learn, and the landing marker says where it lands.
+ * **A target is back, and it is not the target the aimed solve took.** That model asked the player *where
+ * the ball should land* and solved a throw that got there, with no ceiling on the answer — a click past a
+ * body landed in the sky and the solve dutifully reached it. What {@link aim} does instead is **cap** the
+ * hold: the hold still picks the speed, the speed still fixes the flight time and the angle, and the aim
+ * point only says *this far and no further*. So a player who holds to full and points at something ten
+ * studs away throws a ten-stud throw, and one who points at something beyond the hold's reach throws short
+ * **along the line they aimed** rather than somewhere else entirely. See {@link reachTo}.
  *
- * **Three fields, and each is exactly one input.** `heading` is the aim ray, still carrying the camera's
- * pitch, because both sides flatten it in `velocityAtAngle` and the same number therefore means the same
- * compass direction on both. `charge` is the hold as a fraction. `curve` is the lateral shape, which is the
- * one arc that survives the change because it is not on the charge's axis — see {@link planChargedThrow}.
+ * **What it fixes, in the words it was reported with:** *"the aim and the trajectory are not aiming at the
+ * same place"*. They could not have been. `heading` carried the camera's ray and `planChargedThrow` threw
+ * the ray's pitch away, so the crosshair supplied a compass bearing and nothing else; the range was
+ * `chargeSpeed(hold) × ballisticFlight`, the same 27 to 54 studs whatever the cursor was on. A player
+ * pointing at a body twenty studs away watched every throw sail past it, and one pointing at eighty watched
+ * every throw land short, with an arc that was honest about both and aimed at neither.
+ *
+ * **Four fields, and each is exactly one input.** `heading` is the aim ray, still carrying the camera's
+ * pitch, because both sides flatten it and the same number therefore means the same compass direction on
+ * both; it stops being the answer the moment an `aim` point is supplied, which is why both live here.
+ * `charge` is the hold as a fraction. `curve` is the lateral shape, which is the one arc that survives
+ * because it is not on the charge's axis — see {@link planChargedThrow}. `aim` is optional, and its absence
+ * is a real case rather than a fallback: a rig has no cursor, and a player pointing at the sky hits nothing.
  */
 export interface ChargeRequest {
 	readonly heading: Vector3;
@@ -335,10 +344,24 @@ export interface ChargeRequest {
 	 * that same value; the server has no clock for this and never re-derives one. So this is not two
 	 * measurements of one hold that have to be kept close — it is one value used twice, which is why the
 	 * preview cannot drift from the throw as the charge grows.
+	 *
+	 * **It is a ceiling as well as a measurement**: {@link aim} may lower the charge a throw actually uses,
+	 * never raise it. So the hold is "how far I can reach" and the aim is "how far I want to", and the throw
+	 * is the lesser of the two.
 	 */
 	readonly charge: number;
 	/** Whether the ball bends to the thrower's left. See {@link BALL_CONFIG.CURVE_STRENGTH}. */
 	readonly curve: boolean;
+	/**
+	 * **The point the player's cursor is on**, in world space, or nothing when it is on nothing.
+	 *
+	 * **Client-supplied, and deliberately harmless.** A hostile point cannot buy reach: the charge it is
+	 * turned into is clamped to the hold the player already sent, so the worst an untrue aim point can do is
+	 * aim a throw the player was entitled to make. What it *must* not be able to do is put a non-finite
+	 * number into the solve — `math.clamp` waves `NaN` straight through — so {@link reachTo} refuses an
+	 * unreadable point rather than trusting the type check at the wire.
+	 */
+	readonly aim?: Vector3;
 }
 
 /**
@@ -476,29 +499,42 @@ function chargeSpeed(charge: number): number {
  * declined is one a player would have made and watched land short. **Falling short is the shared
  * behaviour**; it is not a rig being worse at anything.
  *
- * **Who calls it: the rig, and only the rig.** `ThrowBehavior` has a point from `detectEnemy` and turns it
- * into `chargeForRange(distance, aimPoint.Y − muzzle.Y)`; `AlwaysThrowBehavior` does the same from the
- * stand-in distance it throws along, measured against its own hip height. Both read the muzzle with
- * `getThrowMuzzle`, the same call the solve itself will make a moment later. A player's path never calls this,
- * because a player never has a distance to start from — see {@link ChargeRequest}, whose `charge` is a
- * measurement. Both of this function's callers are the same mechanic as a player's throw, entered from the
- * other end.
+ * **Who calls it: the rig, and now the player's aim point too.** `ThrowBehavior` has a point from
+ * `detectEnemy` and turns it into `chargeForRange(distance, aimPoint.Y − muzzle.Y)`; `AlwaysThrowBehavior` does
+ * the same from the stand-in distance it throws along, measured against its own hip height. Both read the
+ * muzzle with `getThrowMuzzle`, the same call the solve itself will make a moment later. **And `reachTo` asks
+ * it for a player**, from the point under the cursor — the same question (which hold covers this distance)
+ * arrived at from the other end, which is why the answer is shared rather than written twice. A player's
+ * `charge` is still a measurement rather than a distance; this is only used to *cap* it.
  *
  * **Placeholder-free on purpose.** There is no number here of its own to tune: every figure is
  * {@link BALL_CONFIG}'s, so retuning the throw retunes both bodies at once, which is the whole point of the
  * rig asking this question instead of carrying a table of its own.
  */
-export function chargeForRange(range: number, rise = 0): number {
-	// The vertical launch a charged throw always has. It is a property of the config rather than of this
-	// throw — the same `v_y` `peakAngle` clamps against and the same flight `ballisticFlight` reports.
+/**
+ * **The two numbers a charged throw's flight is built from**: its vertical launch, and how long it takes to
+ * reach a point `rise` above the muzzle.
+ *
+ * **Both are properties of the config rather than of the throw**, and that is why one function holds them.
+ * The vertical launch is `sqrt(2·g·h)` for the configured peak — the same figure `peakAngle` clamps against
+ * and every charge shares — so the flight time is `2·v_y/g` on level ground at *every* speed. A charge that
+ * went further was not in the air longer; it went faster. That identity is what lets `chargeForRange` invert
+ * this for a distance, and it is what the curve's lateral cancellation has to be timed to, which is the
+ * reason this is a function rather than four lines inside `chargeForRange`.
+ *
+ * **The later root of `v_y·t − ½·g·t² = rise`**, because the ball passes the target's height on the way up
+ * first and the point that matters is the one it meets coming down. Floored at zero so a target above the
+ * fixed apex answers with the apex's own time rather than a `nan`.
+ */
+function chargedFlight(rise: number): { readonly vertical: number; readonly flight: number } {
 	const vertical = math.sqrt(2 * BALL_CONFIG.BALL_GRAVITY * BALL_CONFIG.CHARGE_PEAK_HEIGHT);
-
-	// The *later* root of `v_y·t − ½·g·t² = rise`, which is the time the ball comes back down to the target's
-	// height: it passes that height on the way up first, and the aimed point is the one it meets on the way
-	// down. Floored at zero, so a target above the fixed apex answers with the apex's own time rather than a
-	// `nan` — see the doc, where that case is stated rather than hidden.
 	const reach = vertical * vertical - 2 * BALL_CONFIG.BALL_GRAVITY * rise;
-	const flight = (vertical + math.sqrt(math.max(0, reach))) / BALL_CONFIG.BALL_GRAVITY;
+
+	return { vertical, flight: (vertical + math.sqrt(math.max(0, reach))) / BALL_CONFIG.BALL_GRAVITY };
+}
+
+export function chargeForRange(range: number, rise = 0): number {
+	const { vertical, flight } = chargedFlight(rise);
 
 	// The horizontal speed that covers the range in that flight, recombined with the vertical to give the
 	// launch speed the charge must produce.
@@ -508,6 +544,66 @@ export function chargeForRange(range: number, rise = 0): number {
 	const floor = BALL_CONFIG.CHARGE_MIN_SPEED;
 
 	return math.clamp((speed - floor) / (BALL_CONFIG.THROW_MAX_SPEED - floor), 0, 1);
+}
+
+/**
+ * **The closest point an aim point is worth solving for, in studs.** Below this the cursor is on the
+ * thrower's own feet — or the ray is nearly vertical — and the answer stops being a throw at all: the range
+ * is one stud, `chargeForRange` asks for a charge below zero, and the direction is decided by centimetres.
+ * The caller falls back to the held charge and the raw heading, which is the throw the player had before
+ * they pointed at anything.
+ */
+const MIN_AIM_RANGE = 2;
+
+/**
+ * **What pointing at a point does to a throw: the hold it uses, and the direction it goes in.**
+ *
+ * **This is the fix for "the aim and the trajectory are not aiming at the same place", and it is a cap
+ * rather than a solve.** `chargeForRange` already answers *which hold covers this distance* — that is the
+ * question a rig has asked since the charged throw arrived — and a point under the cursor is the same
+ * question from the other side. So a player pointing at a body twenty studs away throws with the hold that
+ * reaches twenty studs, whatever they were holding, and the arc ends on the body. Hold longer than that and
+ * nothing changes: the hold is a ceiling, and this function returns the lesser of the two.
+ *
+ * **What it deliberately does not do is invent reach.** The speed still comes from
+ * `chargeSpeed(charge)`, so a point beyond the hold's reach gets the held charge and lands **short along
+ * the line the player aimed** — which the arc draws, and which is the honest answer. That is also why a
+ * client-supplied point is not an exploit: every length it can ask for is clamped by the hold the client
+ * also sent, so the worst an untrue point can do is aim a throw that player was already entitled to make.
+ *
+ * **The heading comes from here rather than from the camera's ray, and that is the second half of the same
+ * bug.** A cursor's ray starts at the camera — a body-length behind and above the hand — so its compass
+ * direction is not the direction from the *muzzle* to the point it is on. Aiming a near target with a
+ * third-person camera and a flat throw driven by the camera's bearing starts the ball on a line that misses
+ * it by the parallax. Measured from the muzzle, the two are the same line by construction.
+ *
+ * **`undefined` for every point not worth solving for**: one closer than {@link MIN_AIM_RANGE}, and one
+ * whose numbers are not real. `!(range >= 0)` is the `NaN` test rather than a style choice — `NaN` compares
+ * false against every bound, so `range < 0` would wave a poisoned `Vector3` through and the clamp inside
+ * `chargeForRange` would pass it on into a velocity and take the ball out of the world. `BallService`
+ * type-checks the wire, and this is the check that matters, because a `Vector3` can hold `NaN`.
+ */
+function reachTo(
+	muzzle: Vector3,
+	aim: Vector3,
+	held: number,
+): { charge: number; heading: Vector3; flight: number } | undefined {
+	const delta = aim.sub(muzzle);
+	const flat = new Vector3(delta.X, 0, delta.Z);
+	const range = flat.Magnitude;
+
+	if (!(range >= MIN_AIM_RANGE)) return undefined;
+
+	// The rise is the target's height less the muzzle's, which is the same quantity a rig passes and the
+	// same one the flight below is measured against.
+	const { flight } = chargedFlight(delta.Y);
+
+	// **The flight time comes back with the answer, and a curveball is what needs it.** The lateral pull has
+	// to be cancelled over the time the ball is actually in the air to *this* point, and the plan's own
+	// `ballisticFlight` is the time to come back down to the *muzzle's* height — the same number only when the
+	// target is level with the hand. Aiming at a body's feet, or at the floor, is several studs below it, so
+	// that figure is short and a bend calibrated to it lands wide of the cursor. See `planChargedThrow`.
+	return { charge: math.min(held, chargeForRange(range, delta.Y)), heading: flat.Unit, flight };
 }
 
 /**
@@ -569,11 +665,13 @@ function ballisticFlight(speed: number, angle: number): number {
  * dropping onto the mark, which is the shape the change was asked for and does mean a hit reads differently as
  * well as a throw.
  *
- * **With no target there is nothing to land on and nothing to be wrong about.** No `centreAimPoint`, no
- * `flatLaunchSpeed`, no arc to choose: the launch is a velocity the charge names outright, and the preview
- * integrates the identical vector under the identical pull. The one thing that used to be *solved* is now
- * *measured*: the guide places the landing marker where the ball's edge actually touches, and the player
- * judges the shot by that.
+ * **The launch is still a velocity the charge names outright, and an aim point only shortens the hold.** No
+ * `centreAimPoint`, no `flatLaunchSpeed`, no arc to choose: the speed comes from the charge, the angle from
+ * that speed, and the preview integrates the identical vector under the identical pull. What
+ * {@link ChargeRequest.aim} adds is *how much* charge to use — the lesser of the hold and the hold that
+ * covers the distance — so the answer to "where does it land" is still one number this side computed, not a
+ * solve that can be asked for the sky. The guide places the landing marker where the ball's edge actually
+ * touches, and the player judges the shot by that.
  *
  * **The curve survives, and it survives because it is not on this axis.** `overhead` and `straight` named two
  * ways of *reaching a point*, which is the thing the hold replaced, so neither is part of a player's throw
@@ -600,7 +698,18 @@ export function planChargedThrow(
 	// total for every other caller: a hold taken all the way to the end of `CHARGE_SECONDS` can produce
 	// `1.0000000001` in floating point, and that must draw the same preview as `1` rather than put a `NaN`
 	// into a velocity and take the arc off the screen.
-	const charge = math.clamp(request.charge, 0, 1);
+	const held = math.clamp(request.charge, 0, 1);
+
+	// **The aim point, when the caller has one, and it caps the hold before anything else reads it.** One
+	// call answers both halves of the mismatch: the charge becomes `min(held, the hold that covers this
+	// distance)` — so the arc ends where the player pointed — and the heading becomes the direction *from the
+	// muzzle*, which is the line the ball actually leaves along. See `reachTo`.
+	//
+	// **A point the hold cannot reach changes nothing**, which is the property that keeps this from becoming a
+	// reach exploit and from making a tap into a full-power throw: `min` returns the hold, and the throw falls
+	// short along the line the player aimed, which the preview draws.
+	const aimed = request.aim !== undefined ? reachTo(muzzle, request.aim, held) : undefined;
+	const charge = aimed !== undefined ? aimed.charge : held;
 
 	// **The speed first, because the angle is derived from it.** The order is the model: the hold picks one
 	// number, and the shape of the arc is a function of that number rather than a parallel input. See
@@ -613,7 +722,11 @@ export function planChargedThrow(
 	// part a heading can use is the compass direction, so it is projected once, here, rather than by each
 	// caller. Looking straight down has no heading at all, and the fallback is due north — the same fallback
 	// `horizontalDirection` makes, so a degenerate aim behaves identically in both files.
-	const along = new Vector3(request.heading.X, 0, request.heading.Z);
+	//
+	// **With an aim point the camera's bearing is not used at all**, because `reachTo` has already answered
+	// with the line from the hand to the point — see its doc for the parallax that makes those two lines
+	// different.
+	const along = aimed !== undefined ? aimed.heading : new Vector3(request.heading.X, 0, request.heading.Z);
 	const heading = along.Magnitude > 0.001 ? along.Unit : new Vector3(0, 0, -1);
 
 	// A point one stud along the heading, because a horizontal direction is the only thing
@@ -622,7 +735,17 @@ export function planChargedThrow(
 	const nominal = muzzle.add(heading);
 
 	const flat = velocityAtAngle(muzzle, nominal, speed, angle);
-	const flight = ballisticFlight(speed, angle);
+
+	// **The flight the plan is timed to, and an aim point changes which figure that is.** With no aim the only
+	// honest answer is the ballistic one — how long the ball stays up if it comes back to the height it left
+	// from — because there is no target to arrive at. With one, `reachTo` has already computed the time to
+	// *that point*, and everything downstream that depends on the flight has to use it: a curve's lateral
+	// cancellation is `v_lat = −½·a·T`, so a `T` short by the height difference leaves the ball wide of the
+	// cursor by `½·a·t·(t − T)` — about six studs at the shipped `CURVE_STRENGTH` when aiming at a body's feet,
+	// which is the "it does not update itself for curveballs" this line fixes. The pull's own removal is timed
+	// from the same figure (`BallService.applyAcceleration`), so a bend stops when the ball arrives rather
+	// than when it would have come back up to the hand's height.
+	const flight = aimed !== undefined ? aimed.flight : ballisticFlight(speed, angle);
 
 	if (!request.curve) {
 		return {

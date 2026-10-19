@@ -30,6 +30,17 @@ const ACTION_NAME = "ThrowDodgeball";
 const CURVE_ACTION_NAME = "BendThrow";
 
 /**
+ * How far the aim ray is cast to find the point the cursor is on, in studs.
+ *
+ * **A range on the ray rather than an unbounded cast, and the number is the longest throw's problem rather
+ * than the arena's.** Nothing beyond a few hundred studs can be reached by any hold, so a point that far out
+ * only ever means "the cursor is on the sky" — and asking for it costs one spatial query per charging frame.
+ * The value is generous enough that the arena's own diagonals are inside it, which is the only thing that
+ * has to be true: the distance does not decide anything, `reachTo` does.
+ */
+const AIM_RANGE_STUDS = 600;
+
+/**
  * **The charge-level remote, removed once and now back for a different reason.**
  *
  * `syncCharging` sent the server one boolean — "this client is holding the throw button" — from the frame
@@ -500,7 +511,7 @@ export class ThrowController implements OnStart {
 		// This is not an approximation of the arc — it is the same plan the
 		// server will run when the release arrives, from the same heading and
 		// the same charge. See `planChargedThrow`, which both sides call.
-		const plan = planChargedThrow(character, this.chargeRequest(charge));
+		const plan = planChargedThrow(character, this.chargeRequest(character, charge));
 
 		// **Whether this throw is a Pierce ball, which changes what the arc is allowed to stop at.**
 		//
@@ -610,8 +621,16 @@ export class ThrowController implements OnStart {
 	 * out separately a change to one of the three fields would reach the preview and not the wire — which is
 	 * the one class of bug this whole arrangement exists to make impossible.
 	 */
-	private chargeRequest(charge: number): ChargeRequest {
-		return { heading: this.getThrowDirection(), charge: charge, curve: this.curve };
+	private chargeRequest(character: Model, charge: number): ChargeRequest {
+		return {
+			heading: this.getThrowDirection(),
+			charge: charge,
+			curve: this.curve,
+			// **The cursor's point, and it is built here for the reason this whole method exists.** The preview
+			// and the wire have to be handed the *same* point — an aim read twice could be two points a frame
+			// apart, and the arc would end somewhere the ball does not. See `aimPoint` for the cast.
+			aim: this.aimPoint(character),
+		};
 	}
 
 	/**
@@ -874,9 +893,15 @@ export class ThrowController implements OnStart {
 		// carried rather than a second reading of the same mouse a frame later. The rigs' `[Rig] … throw` lines
 		// print their heading in this same shape, which is what lets a reader put the two side by side: same
 		// charge at the same distance is the same throw, and this is the player's half of that comparison.
-		const heading = this.getThrowDirection();
+		//
+		// **And it is the request rather than the raw direction, since the aim point arrived.** The arc is
+		// drawn from `chargeRequest` on every frame of the hold, so sending anything else would be a throw built
+		// from different inputs than the preview — which is the one fault this arrangement exists to make
+		// impossible. See that method.
+		const request = this.chargeRequest(character, charge);
+		const heading = request.heading;
 
-		this.throwRemote?.FireServer(heading, charge, this.curve, getThrowMuzzle(character));
+		this.throwRemote?.FireServer(heading, request.charge, request.curve, getThrowMuzzle(character), request.aim);
 
 		if (DEBUG) {
 			print(
@@ -1212,5 +1237,51 @@ export class ThrowController implements OnStart {
 		const mouse = UserInputService.GetMouseLocation();
 
 		return camera.ViewportPointToRay(mouse.X, mouse.Y).Direction;
+	}
+
+	/**
+	 * **Where the cursor is, in the world — the point a throw is now aimed at.**
+	 *
+	 * **This is the other half of `getThrowDirection`, and the half that was missing.** The heading is a
+	 * bearing; this is a place. Without it the throw had no distance in it at all, so the crosshair and the
+	 * arc could only ever agree on direction — which is what was reported as *"the aim and the trajectory are
+	 * not aiming at the same place"*. `planChargedThrow` turns this point into a *cap* on the hold, so the
+	 * arc ends on it whenever the hold is enough to reach it.
+	 *
+	 * **The same two inputs the heading comes from, in the same order**, and that is not a coincidence worth
+	 * stating twice: a desktop casts through the cursor, and a phone casts along the camera's own axis because
+	 * it has no cursor to cast through — see `getThrowDirection` for the whole of that argument, which applies
+	 * here unchanged.
+	 *
+	 * **The ignore list is the arc's, deliberately.** The thrower's own body, the guide's parts and every loose
+	 * ball are excluded for the reasons that list already carries: the guide sits *along* the arc and would be
+	 * hit by every cast, and a held or rolling ball is not a place anybody is aiming. The difference is that
+	 * this is a single ray rather than a swept sphere, because the question is "what is under the cursor" and
+	 * not "what will the ball touch" — the arc still answers that, one radius wide.
+	 *
+	 * **`undefined` is a real answer** — the sky, or no camera yet — and it means the throw falls back to the
+	 * held charge and the camera's bearing, which is exactly the throw the game had before this existed.
+	 */
+	private aimPoint(character: Model): Vector3 | undefined {
+		const camera = Workspace.CurrentCamera;
+		if (!camera) return undefined;
+
+		let origin = camera.CFrame.Position;
+		let direction = camera.CFrame.LookVector;
+
+		if (!isMobile()) {
+			const mouse = UserInputService.GetMouseLocation();
+			const ray = camera.ViewportPointToRay(mouse.X, mouse.Y);
+
+			origin = ray.Origin;
+			direction = ray.Direction;
+		}
+
+		const params = new RaycastParams();
+		params.ExcludeInstances = [character, this.guide.instance, ...this.looseBalls()];
+
+		const hit = Workspace.Raycast(origin, direction.mul(AIM_RANGE_STUDS), params);
+
+		return hit?.Position;
 	}
 }

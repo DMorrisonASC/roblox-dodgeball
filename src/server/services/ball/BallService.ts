@@ -436,7 +436,7 @@ export class BallService implements OnStart {
 
 	onStart() {
 		this.throwRemote = this.createThrowRemote();
-		this.throwRemote.OnServerEvent.Connect((player, heading, charge, curve, claim) => {
+		this.throwRemote.OnServerEvent.Connect((player, heading, charge, curve, claim, aim) => {
 			// **The heading: a vector, and otherwise any vector at all.** This is the one argument that
 			// cannot be *wrong*, because a player may aim wherever they like and the solve answers a heading by
 			// flattening it and taking its compass direction — a lexicographic "valid range" here would be a
@@ -471,7 +471,24 @@ export class BallService implements OnStart {
 
 			this.throwForPlayer(
 				player,
-				{ kind: "charged", heading, charge, curve: bending },
+				{
+					kind: "charged",
+					heading,
+					charge,
+					curve: bending,
+					// **The point the player's cursor was on, and the one argument here that needs no range
+					// check.** It is turned into a *cap* on the charge the client also sent — see
+					// `planChargedThrow` and `reachTo` — so every length it can ask for is bounded by a hold
+					// this player was already entitled to. An untrue point therefore aims a throw they could
+					// have made rather than granting reach they could not.
+					//
+					// **The type check is for the solve's sake rather than the game's.** A `Vector3` holding
+					// `NaN` survives every comparison and would put `NaN` into a velocity, taking the ball out
+					// of the world; `reachTo` is what actually refuses those, and this is the cheap gate in
+					// front of it. Anything that is not a vector is the same case as a player pointing at the
+					// sky, which is a state the throw already answers.
+					aim: typeIs(aim, "Vector3") ? aim : undefined,
+				},
 				typeIs(claim, "Vector3") ? claim : undefined,
 			);
 		});
