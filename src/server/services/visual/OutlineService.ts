@@ -4,6 +4,7 @@ import { ARENA_CONFIG } from "shared/config/arena.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import {
+	IN_ROUND_ATTRIBUTE,
 	ROUND_MODE_ATTRIBUTE,
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
@@ -318,9 +319,9 @@ export class OutlineService implements OnStart {
 	 * hangs off and characters are replaced on every death. Subscribing on `PlayerAdded`
 	 * alone would leave the first character outlined and every respawn bare.
 	 *
-	 * It also arranges for the outline to be *coloured*: {@link dress} does both halves, and the
-	 * `TEAM_ATTRIBUTE` subscription below covers the one case a new body cannot — a side changing
-	 * while the player keeps the body they already have.
+	 * It also arranges for the outline to be *coloured*: {@link dress} does both halves, and the two attribute
+	 * subscriptions below cover the cases a new body cannot — a side changing while the player keeps the body they
+	 * already have, and a player leaving the round without changing side.
 	 */
 	private watch(player: Player): void {
 		player.CharacterAdded.Connect((character) => dress(player, character));
@@ -334,13 +335,25 @@ export class OutlineService implements OnStart {
 		// The character may be `undefined` when this fires — an attribute can change while a player
 		// is dead — in which case there is nothing wearing an outline to repaint, and the
 		// `CharacterAdded` above will dress whatever comes next with the colour this read.
-		player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => {
-			const character = player.Character;
-			if (character) paint(character, player);
-		});
+		player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => this.repaint(player));
+
+		// **And membership, because a side is not the same fact and this is the report it cost.** `surrender`
+		// deliberately leaves a player in `teams` — the side's head count has to survive somebody walking out —
+		// so `TEAM_ATTRIBUTE` stays on them while they stand in the lobby, and a colour read from it there was a
+		// claim about a round they had left. It changed only when they picked a new side, which is the second
+		// half of the same symptom. `IN_ROUND_ATTRIBUTE` is the fact that does not survive the exit, so the same
+		// repaint is attached to it and {@link outlineColourFor} reads it.
+		player.GetAttributeChangedSignal(IN_ROUND_ATTRIBUTE).Connect(() => this.repaint(player));
 
 		const character = player.Character;
 		if (character) dress(player, character);
+	}
+
+	/** Repaints whatever body `player` is wearing now — the two attribute edges above, in one place. */
+	private repaint(player: Player): void {
+		const character = player.Character;
+
+		if (character) paint(character, player);
 	}
 }
 
@@ -533,9 +546,23 @@ function paintRig(rig: Model, playing: boolean): void {
  * body that is playing from one that is not. **The rig's rule is not quite this one, and the difference is
  * worth knowing**: a rig wears its colour only once the round's opening hold is over, so it is a *rig* the
  * phase does not dress on the whistle — see {@link paintRig} and {@link followPhase}.
+ *
+ * **The third case that falls to the default colour is a player standing in a round they are not in**, and it was
+ * reported as "I still had the team colour when I returned to the lobby". The phase says a round is on; it does
+ * not say this player is in it. `IN_ROUND_ATTRIBUTE` does. That is why the test is in the body rather than folded
+ * into {@link isPlaying}: for a *rig* the phase plus its seat is the whole answer, and for a *player* it is the
+ * phase plus membership plus the side.
  */
 function outlineColourFor(player: Player): Color3 {
 	if (!isPlaying()) return OUTLINE_CONFIG.COLOR;
+
+	// **And "in this round", which the phase alone cannot answer for one player.** The bodies this refuses are
+	// the ones that left a live round: a surrender (`MatchService.release` plus `eliminate`) and an elimination.
+	// Both keep their side on the `Player` on purpose — see `IN_ROUND_ATTRIBUTE` — so the check below was
+	// reading a side that belonged to a round they are no longer in, and the body wore its team's colour while
+	// standing in the lobby. This is the same correction the team ring and the surrender prompt each needed, and
+	// it is the same attribute for all three.
+	if (player.GetAttribute(IN_ROUND_ATTRIBUTE) !== true) return OUTLINE_CONFIG.COLOR;
 
 	const label = player.GetAttribute(TEAM_ATTRIBUTE);
 	if (!typeIs(label, "string")) return OUTLINE_CONFIG.COLOR;

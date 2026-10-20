@@ -12,6 +12,7 @@ import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import { findFolder } from "shared/find";
 import { events, HitDirection } from "shared/networking";
 import {
+    IN_ROUND_ATTRIBUTE,
     LAST_HIT_BY_ATTRIBUTE,
     PRACTICE_ZONE_ATTRIBUTE,
     ROUND_MODE_ATTRIBUTE,
@@ -429,8 +430,35 @@ export class RoundService implements OnStart {
         private readonly badges: BadgeService,
     ) {}
 
+    /**
+     * **Who asked to leave the round they are in, for the length of that round.**
+     *
+     * Three readers, and the third is the reason the set survives the request. `surrender` writes it;
+     * `setTeam` deletes from it, because that method is reached only by a body being put back into a round
+     * (`admitWithCover` for a returning player, and a Dodge-and-Seek conversion) and both of those are a
+     * player back in the fight; and `finishRound` hands it to `EconomyService.onRoundEnded` and then empties
+     * it, which is what makes the penalty a fact about *one round* rather than about a player.
+     *
+     * **Cleared at the end of a round rather than at the start of the next, which is a correction to the
+     * obvious shape.** Emptying it where the next round is assembled would leave the set holding last round's
+     * names for the whole intermission — and an intermission that never ends, because the server fell below
+     * `MATCH_MIN_PLAYERS`, would never clear it at all. Clearing it on the same line as the payout that reads
+     * it makes the two impossible to separate: the penalty is spent exactly where it is charged.
+     *
+     * **A set of `Player`s rather than a flag on the player**, because the membership is the round's and a
+     * player can be in exactly one round; an attribute would outlive the round it describes and would be
+     * another thing to remember to clear.
+     */
+    private readonly surrendered = new Set<Player>();
+
     onStart() {
         Players.PlayerAdded.Connect((player) => this.handlePlayerJoined(player));
+
+        // **The one door a surrender request comes through**, and it is registered here because this is
+        // where every other subscription this service owns is made. The handler is deliberately a method on
+        // this class rather than a closure: the rules it asks — is a round being played, is this player still
+        // in it — are the round's own state, and a closure holding them would be a second copy of `state`.
+        events.Server.OnEvent("surrender", (player) => this.surrender(player));
         Players.PlayerRemoving.Connect((player) => {
             this.activePlayers.delete(player);
             this.teams.delete(player);
@@ -786,6 +814,13 @@ export class RoundService implements OnStart {
         // side to lose, which is the whole point.
         for (const player of Players.GetPlayers()) {
             player.SetAttribute(TEAM_ATTRIBUTE, undefined);
+
+            // **And membership goes with the side, on the same line and for the same reason.** The two are
+            // not the same fact — see `IN_ROUND_ATTRIBUTE` — but they are published from the same edge and
+            // both describe the round that is starting, so leaving one to be cleared where a player is
+            // *removed* would leave it true for somebody who was never added. The adds below and in
+            // `admitWithCover` are the only writers of the value.
+            player.SetAttribute(IN_ROUND_ATTRIBUTE, undefined);
         }
 
         // **And the attacker's name goes with the side, for the same reason and at the same moment.** A new round
@@ -907,7 +942,10 @@ export class RoundService implements OnStart {
         this.admittedRevision = revision;
 
         for (const [player, side] of this.matches.roster()) {
-            if (this.teams.has(player)) continue;
+            // **Not `this.teams.has(player)`, and that difference is the rejoin.** A surrendered player keeps
+            // their side for the round's head count, so the plain table test treated them as already admitted
+            // and skipped them for the rest of the round — see `admittedThisRound`.
+            if (this.admittedThisRound(player)) continue;
             if (this.admitting.has(player)) continue;
             if (this.isPracticePlayer(player)) continue;
 
@@ -956,11 +994,19 @@ export class RoundService implements OnStart {
 
         if (player.Parent === undefined) return;
         if (this.finished) return;
-        if (this.teams.has(player)) return;
+
+        // **A side is not admission, and the difference is the surrender.** Read again here rather than only in
+        // the caller, because a cover is long enough for the answer to change — see `admittedThisRound`.
+        if (this.admittedThisRound(player)) return;
 
         this.abilities.resetForRound(player);
         this.setTeam(player, side);
         this.activePlayers.add(player);
+
+        // **And membership, which `setTeam` does not carry.** A mid-round joiner and a player returning
+        // after a surrender are both admitted here, and `setTeam` only writes the side — which, on the
+        // surrender path, is the value they were already wearing. See `IN_ROUND_ATTRIBUTE`.
+        player.SetAttribute(IN_ROUND_ATTRIBUTE, true);
 
         const character = player.Character;
 
@@ -978,6 +1024,26 @@ export class RoundService implements OnStart {
             `[Round] ${player.Name}: joined mid-round — side ${side}, ` +
                 `${character ? "on the arena spawn" : "their body lands on that side's spawn when it arrives"}`,
         );
+    }
+
+    /**
+     * **Whether this round already has `player` on a side — the question both admission paths ask first.**
+     *
+     * **`teams.has` alone was the guard, and it made a rejoin after a surrender impossible.** `surrender`
+     * deliberately keeps the player's roster entry so the side's head count survives somebody walking out
+     * (see it), and that same entry made "on a side" read as "already playing" — so a player who surrendered
+     * and then walked back onto a pad held a seat the round then ignored: `[Match] <name>: in` in the log with
+     * no `[Round] <name>: joined mid-round` behind it, and no rig left to fill the seat either. `surrendered`
+     * is what tells the two cases apart, and it is exactly the record of *left this round voluntarily*;
+     * `setTeam` clears it on re-admission, so a second surrender is a second entry rather than a stale one.
+     *
+     * **An eliminated player is still refused, which is why this is not simply `activePlayers.has`.** A body
+     * knocked out of a round keeps its side, is out of `activePlayers` and is still on the roster — and
+     * walking back onto a pad mid-round must not put it back into a round it is out of. Only a voluntary
+     * departure is forgiven, and only until the round ends.
+     */
+    private admittedThisRound(player: Player): boolean {
+        return this.teams.has(player) && !this.surrendered.has(player);
     }
 
     /**
@@ -1139,7 +1205,16 @@ export class RoundService implements OnStart {
         // other one; the badges keep their own participant-keyed count, because a rig lands hits and has no
         // row in this map. So this call is the reason the map is still written, and that is stated here
         // rather than left to be discovered by whoever next asks what reads it.
-        this.economy.onRoundEnded(outcome, this.teams, this.roundHits);
+        this.economy.onRoundEnded(outcome, this.teams, this.roundHits, this.surrendered);
+
+        // **And the penalty dies with the round that earned it, on the line after the payout that read it.**
+        // The surrendered set is a fact about *this* round and nothing else: next round is a clean slate,
+        // which is the promise the prompt on the player's screen makes. It is cleared here rather than at the
+        // next round's assembly because an intermission that never ends — a server below `MATCH_MIN_PLAYERS`,
+        // a side empty — would never reach that point, and the set would outlive the round it describes.
+        // Nothing between rounds adds to it, so clearing at the end is the same set as clearing at the start,
+        // with no window in which it means the wrong round.
+        this.surrendered.clear();
 
         // **And the lifetime figures are written now, because this is the instant they stop moving.** A
         // hit and an out are only counted while the phase is `Playing`, so a round end is the boundary a
@@ -1787,6 +1862,61 @@ export class RoundService implements OnStart {
     }
 
     /**
+     * **A player asking to leave the round they are in — the wipe, then the seat, then the body.**
+     *
+     * **Two guards, and both are the round answering for itself rather than trusting the request.** A
+     * surrender between rounds is meaningless (there is no round to leave, and the lobby is where they
+     * already are), and one from a player already out — an eliminated body that somehow still has the prompt
+     * on screen — must not record a second out or free a seat twice. Both are the same two conditions
+     * `handleDeath` opens with, in the same order, because this is the same question asked from the other
+     * side: is this player still in the round.
+     *
+     * **The cover comes first, for this player alone, and the wait is the boundary's own.** A teleport with
+     * no cover is a body that pops across the map, which is the thing `transitionAround` exists to prevent at
+     * both round boundaries; `bumpTransition` is the same per-player cue those boundaries use, and
+     * `TRANSITION_COVER_SECONDS` the same figure, so a surrender looks exactly like the move it is. Nothing
+     * here touches anybody else's attribute, so no other player's screen changes.
+     *
+     * **The move is on a spawned thread, because this handler must not hold the loop.** The wait is up to
+     * `TRANSITION_COVER_SECONDS` long, and `events.Server.OnEvent` runs this alongside the round's own
+     * `gameLoop`; a `task.wait` on this stack would be a stall in whoever called it. Spawned, the cover is
+     * one player's pause rather than the round's.
+     *
+     * **`release` before `eliminate`, and the order is load-bearing twice.** `release` is what frees the
+     * roster seat, and the seat poll fills a short side with an arena rig within a quarter of a second —
+     * so the rig is on its way before the player's body has even been handed back. `eliminate` then deletes
+     * them from `activePlayers`, and the `CharacterAdded` handler reads that deletion to put their **new**
+     * body in the lobby rather than back on their side's spawn.
+     *
+     * **What is deliberately not done: removing them from `teams`.** `rosterOutcome` counts `teams`, so
+     * keeping the entry means a surrendering player is still one of their side's bodies as far as the
+     * *outcome* is concerned — which is the same reading an eliminated player gets, and the reason a side does
+     * not lose a round because somebody walked out of it. The rig is there so the field has a body on it, not
+     * so the arithmetic survives.
+     *
+     * **That kept entry is why the two admission guards ask `admittedThisRound` rather than `teams`.** Keeping
+     * it while this set says "left voluntarily" is the pair that lets the round both remember the seat for the
+     * outcome *and* admit them again when they choose a side — without it the rejoin was silently dropped.
+     */
+    private surrender(player: Player): void {
+        if (this.state !== RoundState.Playing) return;
+        if (!this.activePlayers.has(player)) return;
+
+        this.surrendered.add(player);
+
+        this.bumpTransition(player);
+
+        task.spawn(() => {
+            task.wait(TRANSITION_COVER_SECONDS);
+
+            this.matches.release(player);
+            this.eliminate(player);
+
+            print(`[Round] ${player.Name} returned to the lobby — a rig takes their place, rewards halved`);
+        });
+    }
+
+    /**
      * Out of the round — the round's own record of it, and nothing else.
      *
      * **The record is written here because this is what "eliminated" means to the round.** Both of
@@ -1808,6 +1938,13 @@ export class RoundService implements OnStart {
      */
     private eliminate(player: Player): void {
         this.activePlayers.delete(player);
+
+        // **The client's copy of the same fact, cleared at the one place a live round loses a body.**
+        // `TEAM_ATTRIBUTE` deliberately stays — `teams` keeps the entry so `rosterOutcome` still counts a
+        // surrendering player as one of their side's bodies — so a client that read only the side would go
+        // on offering "Return to Lobby" to somebody already standing in the lobby. Both of this round's
+        // ways out (a hit, and a surrender) arrive here.
+        player.SetAttribute(IN_ROUND_ATTRIBUTE, undefined);
 
         this.stats.recordOut(player);
         this.roundOuts.set(player, (this.roundOuts.get(player) ?? 0) + 1);
@@ -1879,6 +2016,14 @@ export class RoundService implements OnStart {
     private setTeam(player: Player, team: TeamLabel): void {
         this.teams.set(player, team);
         player.SetAttribute(TEAM_ATTRIBUTE, team);
+
+        // **And a body with a side again is no longer a surrendered one.** This method is reached only when a
+        // player is *put back into a round* — `admitWithCover` for somebody who walked onto a pad mid-round,
+        // and the Dodge-and-Seek conversion for a dead body that changes sides instead of dying. Both are the
+        // rejoin the economy promises full rewards for, so the penalty is dropped here rather than in the
+        // handler that noticed the request: this is the one place a re-entry is a fact, and a second place
+        // clearing it would be a second definition of "rejoined".
+        this.surrendered.delete(player);
 
         // **And the crown follows a side change, because the players this one is compared against are
         // different ones now.** This is the Dodge-and-Seek conversion's path: a body that changes sides
@@ -3477,6 +3622,12 @@ export class RoundService implements OnStart {
                 if (!this.teams.has(player)) continue;
 
                 this.activePlayers.add(player);
+
+                // **And the same fact, said to the client.** `activePlayers` is server-side and never
+                // replicated, so a client cannot derive "this round is mine" from the side alone — a
+                // surrendering or eliminated player keeps their side until the next whistle. This is
+                // written exactly where the roster decision is acted on, which is what keeps it true.
+                player.SetAttribute(IN_ROUND_ATTRIBUTE, true);
             }
 
             // **And one crown recomputation for the whole server, rather than one per player in the loop

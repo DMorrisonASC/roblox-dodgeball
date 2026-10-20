@@ -197,6 +197,16 @@ export function inTaggedZone(character: Model | undefined): boolean {
  * player the client cannot tell apart from one standing in the lobby. That is the same trade
  * `panels.ts`'s `sessionHudVisible` made for the readouts, and the fact behind it — `activePlayers`, inside
  * `RoundService` — has never been replicated to a client and is not going to be.
+ *
+ * **That last clause aged out on 2026-10-20, and the reason it was true is worth keeping.** `RoundService` now
+ * publishes `IN_ROUND_ATTRIBUTE`: membership of `activePlayers`, written where a player is admitted to a round
+ * and cleared in `eliminate`, which is the one method a live round loses a body through. So a client *can* tell
+ * somebody who is out of a round — surrendered, eliminated — from a spectator who was never in it.
+ *
+ * **It is deliberately not folded into this function.** The camera and the dodge ask "is the game being played
+ * around me", which the phase answers; the team ring and the surrender prompt ask "am I still in it", which is
+ * the new attribute. Two questions, two predicates, and neither answers the other's — the ring's rule is written
+ * once, in `TeamRingController.ringFor`.
  */
 export function inRoundOrZone(character: Model | undefined): boolean {
 	return inRound() || inTaggedZone(character);

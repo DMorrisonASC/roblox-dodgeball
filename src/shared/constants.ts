@@ -301,6 +301,34 @@ export const THROWER_TOKEN = "ThrowerToken";
 export const TEAM_ATTRIBUTE = "Team";
 
 /**
+ * Attribute on a **`Player`** saying the round in progress still has them **in** it, as `true`.
+ *
+ * **The same question `TEAM_ATTRIBUTE` is asked for, and it is a different question.** A side is
+ * what a body *wears*; being in the round is `RoundService`'s `activePlayers`, and the two part
+ * company twice, both times on purpose:
+ *
+ * 1. **A surrender.** `MatchService.release` frees the roster seat and `RoundService.eliminate`
+ *    takes them out of the round, while `teams` deliberately keeps the entry so `rosterOutcome`
+ *    still counts them as one of their side's bodies. The side therefore stays on the `Player`
+ *    until the next whistle clears it, and a reader that treats "has a side" as "is playing" goes
+ *    on offering them the round they have just left.
+ * 2. **An elimination.** Out of the round, standing in the lobby, still wearing the side — the
+ *    same reading, with no request behind it.
+ *
+ * **Published rather than derived on the client, because there is nothing to derive it from.**
+ * `activePlayers` is server-side and never replicated, and a client-side guess ("my body spawned
+ * in the lobby, so I am out") is wrong for a respawn mode, where a dead player is still in the
+ * round and comes back to it. So the server says it, at exactly the four places membership
+ * changes: cleared for everybody where `assignTeams` clears the side, written where a player is
+ * added to `activePlayers` (the round-start loop and `admitWithCover`), and cleared in
+ * `eliminate` — the one method that takes somebody out of a live round.
+ *
+ * **Absent, not `false`, when they are out**, which is `TEAM_ATTRIBUTE`'s convention and the same
+ * reason: an attribute's absence is the client's one test.
+ */
+export const IN_ROUND_ATTRIBUTE = "InRound";
+
+/**
  * Attribute on a **ball** naming the side of the body it has tagged, or `""` when it has tagged nobody.
  *
  * **Written by `BallComponent` at the moment of the tag and cleared wherever the tag list is**: a re-arm (a

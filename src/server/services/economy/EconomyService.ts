@@ -189,6 +189,7 @@ export class EconomyService implements OnStart {
 		outcome: RoundOutcome,
 		teams: ReadonlyMap<Player, TeamLabel>,
 		roundHits: ReadonlyMap<Player, number>,
+		surrendered: ReadonlySet<Player>,
 	): void {
 		// **The round end is a save boundary, and the coins a round pays are the reason.** Every figure this
 		// record holds moves here and on a purchase; before this the store heard about either only when the
@@ -212,6 +213,22 @@ export class EconomyService implements OnStart {
 			// a dominant player cannot convert one good round into a wallet ahead of everyone else.
 			coins += math.min(roundHits.get(player) ?? 0, ECONOMY_CONFIG.PERFORMANCE_COIN_CAP);
 			coins = math.min(coins, ECONOMY_CONFIG.MATCH_COIN_CAP);
+
+			// **A player who walked out of the round is paid half, and the promise is the other half of this.**
+			// Leaving mid-round is allowed, so it has to cost something or a side can be emptied on purpose the
+			// moment a round turns; but a player who walks back onto their pad and finishes the same match is
+			// back in the fight, and `RoundService.setTeam` drops them from the surrendered set the moment that
+			// happens. So this line is read at the *end* of the round and the answer is therefore the true one:
+			// still surrendered means they stayed in the lobby for the rest, and half is what that earns.
+			//
+			// **`math.floor`, so the halving can never round *up* into a reward for leaving.** A three-coin
+			// payout becomes one rather than two; the alternative is a player on a round with almost nothing in
+			// it losing no coins at all for walking out, which is the case the penalty exists for.
+			//
+			// **Nothing else moves.** The round still counts as played (`record.matches`), a win is still a win
+			// if their side won without them, and the badges are untouched — `BadgeService` reads its own
+			// subjects, and a surrendered player is still a body in the server when the round finishes.
+			if (surrendered.has(player)) coins = math.floor(coins / 2);
 
 			record.coins += coins;
 			record.matches += 1;

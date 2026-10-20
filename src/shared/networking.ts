@@ -67,6 +67,26 @@ export const events = Net.Definitions.Create({
 	dodge: Net.Definitions.ClientToServerEvent<[direction: Vector3, reference: Vector3]>(),
 
 	/**
+	 * Client → server: this player is asking to leave the round and go back to the lobby.
+	 *
+	 * **A request, not a state, on `duck`'s terms and for a stronger reason.** What the client knows is that a
+	 * key was pressed twice; everything that follows — whether a round is on, whether they are still in it,
+	 * what becomes of their seat, what a rig does about it and what their reward turns into — is decided on
+	 * the server out of state the client has no honest copy of. A client that sent "I have left" would be
+	 * describing an outcome it is not allowed to grant itself, and the seat it frees is exactly the thing
+	 * `MatchService.release` exists to move under the server's own hand.
+	 *
+	 * **No payload**, because the key is the only fact the client has that the server does not and the server
+	 * already knows who sent it — the same argument the duck's declaration makes about a duck having no
+	 * direction, no duration and no target.
+	 *
+	 * **It is only ever sent on the far side of a confirmation**, which is why a stray `L` cannot end a round
+	 * for anybody: the client arms a prompt first, any other key cancels it, and what crosses this wire is
+	 * always a player who pressed the key twice.
+	 */
+	surrender: Net.Definitions.ClientToServerEvent<[]>(),
+
+	/**
 	 * Client → server: this character wants to duck.
 	 *
 	 * Carries nothing, on `catch`'s terms and for its reason — a key press is the only fact the client

@@ -74,9 +74,25 @@ export const RING_CONFIG = {
 	 * own colour would read as a second, softer copy of the ring rather than as the light coming off it. This one
 	 * is very slightly cold, which is the direction the reference's glow leans.
 	 *
-	 * **This is the only colour in this file.** Everything else is tinted with `teamColourOf`.
+	 * **The only colours in this file are this one and {@link RING_CONFIG.PRACTICE_COLOR}**, and neither is a
+	 * team colour. Everything else is tinted with `teamColourOf`.
 	 */
 	HALO_COLOR: Color3.fromRGB(236, 244, 255),
+
+	/**
+	 * The ring's colour for a body standing in the practice area. **Placeholder — a neutral grey.**
+	 *
+	 * **Grey rather than a side's colour, because there is no side there.** A practice-area player is not in the
+	 * round — the roster does not admit somebody in a zone, so they carry no `TEAM_ATTRIBUTE` at all — and a ring
+	 * in either side's colour would be a claim about a team that does not apply to them. It is also not the halo's
+	 * near-white: that colour reads as light, and this one has to read as *no side*, which is what a mid grey does
+	 * and a bright one does not.
+	 *
+	 * **It is deliberately desaturated and a little darker than the floor's markings look at a glance**, so that a
+	 * grey ring and a team ring are told apart by colour alone — a ring is read at a glance from across the arena,
+	 * and "which grey is that" is not a question anybody should have to ask.
+	 */
+	PRACTICE_COLOR: Color3.fromRGB(150, 152, 158),
 
 	/**
 	 * The ring's outer radius, in studs — half its width. **Placeholder — 3, a six-stud ring.**

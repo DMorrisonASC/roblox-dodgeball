@@ -1,8 +1,11 @@
 import { Controller, OnStart } from "@flamework/core";
-import { AssetService, Players, ReplicatedStorage, RunService, Workspace } from "@rbxts/services";
+import { AssetService, CollectionService, Players, ReplicatedStorage, RunService, Workspace } from "@rbxts/services";
 import { RING_CONFIG } from "shared/config/ring.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import {
+	IN_ROUND_ATTRIBUTE,
+	NPC_TAG,
+	PRACTICE_ZONE_ATTRIBUTE,
 	ROUND_MODE_ATTRIBUTE,
 	ROUND_STATE_ATTRIBUTE,
 	ROUND_STATUS_FOLDER,
@@ -10,6 +13,7 @@ import {
 } from "shared/constants";
 import { teamColourOf } from "shared/gameMode";
 import { paintHalo, paintRing } from "shared/ringPattern";
+import { sideOfBody } from "../../roundZone";
 
 /** Prints a line per ring made and per ring taken away, which is how one-per-player is confirmed. */
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
@@ -43,6 +47,21 @@ interface RingLayers {
 	readonly team: Array<BasePart>;
 	readonly tinted: Array<Texture>;
 }
+
+/**
+ * What a body's ring should be: the label to log it under and the colour to draw it in.
+ *
+ * **The label is not always a side**, which is why this is a plain string rather than `SideLabel`: a body in the
+ * practice area wears the neutral ring, and the log line that reports a ring's colour has to be able to say so
+ * without pretending "practice" is a team.
+ */
+interface RingSpec {
+	readonly label: string;
+	readonly colour: Color3;
+}
+
+/** The label a practice-area ring is logged under. See {@link RingSpec}. */
+const PRACTICE_LABEL = "practice";
 
 /**
  * This client's two pictures, and what each layer inked.
@@ -137,20 +156,48 @@ const PICTURE_NAME = "Picture";
  * floor on an `R15` body: an `R6` body carries `HipHeight` of `0` and stands with its root three studs up, so
  * the formula answered "the root" and the ring went through the character's legs. Legs are a property of the
  * avatar, and the only thing that knows where they end is the body — see {@link groundUnder}.
+ *
+ * **It is drawn under every body in the round, including the rigs**, and the three states it can be in are the
+ * whole of the colour rule — see {@link ringFor}:
+ *
+ * - **A side's colour** for a player in the round, and for a rig the round is playing. The same `TEAM_COLORS` the
+ *   outline paints from, so a body's circle and its silhouette cannot disagree.
+ * - **Neutral grey** for a body standing in the practice area, which is the one place a circle is drawn with no
+ *   round on. It is a floor marking there rather than a claim about a side, and there is no side to claim.
+ * - **Nothing at all in the lobby** — not while a body is waiting for one, not after a surrender, not after an
+ *   elimination. A ring in the lobby is a marking drawn on a floor nobody is playing on.
+ *
+ * **A ring is keyed by body rather than by player because a rig is a body with no player**, and both kinds go
+ * through one build, one placement loop and one cleanup. See {@link rings} for what that cost.
  */
 @Controller()
 export class TeamRingController implements OnStart {
 	/**
-	 * The ring under each player, by player rather than by body.
+	 * The ring under each body, by **body** — a player's character, or a rig's model.
 	 *
-	 * **By player, because a body is replaced on every death and the ring is not the body's.** Keyed by
-	 * character, a respawn would leave the old entry pointing at destroyed plates; keyed by player, the new
-	 * ring replaces the old one and the count in the log is the count of players.
+	 * **The key was the `Player`, and rigs are the reason it is not any more.** A ring belongs to a body: it is
+	 * placed from that body's root and measured off that body's box, and a rig *is* a body with no player behind
+	 * it — so keyed by player there was no key a rig could have, and keyed by body both kinds of body are one
+	 * case rather than two.
+	 *
+	 * **The objection to keying by body was real and is answered rather than ignored.** A body is replaced on
+	 * every death, so a character key would leave entries pointing at destroyed plates — but `CharacterRemoving`
+	 * hands over the body that is being taken away, which is exactly the entry to drop, and it is subscribed per
+	 * player in {@link watch}. What was free while the ring hung off the body is one explicit line.
 	 *
 	 * **A ring is a stack of plates rather than one part**, so what is held here is the stack and the two lists
 	 * that go with it — see {@link RingLayers}.
 	 */
-	private readonly rings = new Map<Player, RingLayers>();
+	private readonly rings = new Map<Model, RingLayers>();
+
+	/**
+	 * The rigs already subscribed to, so a rig that comes back with the same tag is not subscribed twice.
+	 *
+	 * **A rig is pooled**: the same model leaves the world and returns, and `GetInstanceAddedSignal` fires again
+	 * each time. Without this the connections would grow by one per return per round, and every one of them
+	 * would call {@link make} for a model that is already handled.
+	 */
+	private readonly watchedRigs = new Set<Model>();
 
 	/**
 	 * The two pictures, drawn once for this client and then shared by every ring it draws.
@@ -186,12 +233,23 @@ export class TeamRingController implements OnStart {
 
 	public onStart(): void {
 		Players.PlayerAdded.Connect((player) => this.watch(player));
-		Players.PlayerRemoving.Connect((player) => this.drop(player, "they left"));
+		Players.PlayerRemoving.Connect((player) => {
+			// **The body, not the player** — the map is keyed by body now, so this has to hand it one. A player
+			// removing usually takes their character with them a moment later, which `CharacterRemoving` would
+			// catch anyway; this is the case where it does not.
+			const character = player.Character;
+
+			if (character !== undefined) this.drop(character, "they left");
+		});
 
 		// The scan-and-subscribe pair this codebase uses everywhere, for the reason they all give: a player
 		// already in the game never fires the added signal, and one who arrives afterwards is never in the
 		// initial list.
 		for (const player of Players.GetPlayers()) this.watch(player);
+
+		// **And the rigs, which are neither players nor children of one.** Same pair of calls, different
+		// collection — see {@link watchRigs} for why a tag scan is what finds them.
+		this.watchRigs();
 
 		// Spawned rather than done inline: mounting waits for the round's folder, which the *server* makes, and
 		// a controller's `onStart` is the wrong place to hold up the rest of the client's boot.
@@ -206,9 +264,10 @@ export class TeamRingController implements OnStart {
 	/**
 	 * Starts following the round, so that a phase changing makes the rings appear or go.
 	 *
-	 * **The phase and the mode are both watched, and the clock is not.** A phase decides whether there should
-	 * be a ring at all; a mode change is watched because it is the moment the server assigns teams, which is the
-	 * moment the labels a ring is coloured by are written. It is **not** watched for the colour itself any more —
+	 * **The phase and the mode are both watched, and the clock is not.** The phase decides whether the *round's*
+	 * rings should exist at all — a practice-area ring outlives it, see {@link ringFor}; a mode change is watched
+	 * because it is the moment the server assigns teams, which is the moment the labels a ring is coloured by are
+	 * written. It is **not** watched for the colour itself any more —
 	 * `TEAM_COLORS` is one pair for every mode, so a mode change cannot change a ring's colour — and the
 	 * connection is kept for the label edge alone. `ROUND_TIME_ATTRIBUTE` changes once a second and would be a
 	 * repaint per second that arrives at the colour it already had.
@@ -256,7 +315,12 @@ export class TeamRingController implements OnStart {
 	 */
 	private onPhaseChanged(): void {
 		if (!this.isPlaying()) {
+			// **Everything goes, and then the grey ones come straight back.** A ring describes a body in a round,
+			// so the round stopping is the moment every team-coloured one is wrong; a body in the practice area is
+			// still standing where it was standing, so its circle is the one thing that does not depend on the
+			// phase — see `ringFor`.
 			this.dropAll("the phase ended");
+			this.refresh();
 
 			return;
 		}
@@ -271,41 +335,97 @@ export class TeamRingController implements OnStart {
 	}
 
 	/**
-	 * Makes the rings on screen match the phase: everybody has one while a round is on, nobody has one
-	 * otherwise.
+	 * Makes the rings on screen match what each body should be wearing: a side's colour for a body in the round,
+	 * grey for one in the practice area, nothing for one in the lobby.
 	 *
-	 * **Idempotent by construction, and that is what lets it be called from anywhere.** {@link make} repaints a
-	 * ring that is already there rather than replacing it, so a mode change costs a colour write per player and a
-	 * phase that is still `Playing` costs nothing at all.
+	 * **Idempotent in both directions, and that is what lets it be called from anywhere.** {@link make} repaints
+	 * a ring that is already there, drops one whose answer has gone, and builds one that has just been earned —
+	 * so a mode change costs a colour write per body and a boundary that changes nothing costs nothing at all.
 	 *
-	 * **Called only after the phase's own delay has passed** — see {@link onPhaseChanged}, which is the only
-	 * caller on the phase edge — but it re-checks the phase rather than trusting that: a round that ended inside
-	 * the delay lands here as a drop, which is the answer it should have arrived at anyway.
+	 * **It no longer refuses to run outside a round**, which was the phase check that took every ring down at the
+	 * whistle. A practice-area ring outlives the round it is not part of, so the phase is asked per body inside
+	 * {@link ringFor} rather than once here.
 	 */
 	private refresh(): void {
-		if (!this.isPlaying()) {
-			this.dropAll("the phase ended");
-
-			return;
+		for (const player of Players.GetPlayers()) {
+			const character = player.Character;
+			if (character !== undefined) this.make(character);
 		}
 
-		for (const player of Players.GetPlayers()) this.make(player);
+		for (const instance of CollectionService.GetTagged(NPC_TAG)) {
+			if (instance.IsA("Model")) this.make(instance);
+		}
 	}
 
-	/** Arranges a ring for `player`: one now if they are in a round, and one on every body after that. */
+	/** Arranges a ring for every body `player` has: one now, and one on each body after that. */
 	private watch(player: Player): void {
 		// Per **character** rather than per player, because a character is what the ring hangs off and
 		// characters are replaced on every death: subscribed on `PlayerAdded` alone, the first body would wear
 		// a ring and every respawn after it would be bare.
-		player.CharacterAdded.Connect(() => this.make(player));
+		player.CharacterAdded.Connect((character) => this.make(character));
 
 		// **And the other half, which parenting used to do for free.** A ring is no longer a child of the body
 		// it belongs to, so a body being replaced does not take its ring with it — this is what does, before the
-		// `CharacterAdded` above makes the new one. A body that merely *dies* keeps its ring, which is right:
-		// the ring is on the floor, and where somebody fell is worth seeing until they come back.
-		player.CharacterRemoving.Connect(() => this.drop(player, "the body was replaced"));
+		// `CharacterAdded` above makes the new one. The signal hands over the body being taken away, which is now
+		// exactly the entry to drop. A body that merely *dies* keeps its ring, which is right: the ring is on the
+		// floor, and where somebody fell is worth seeing until they come back.
+		player.CharacterRemoving.Connect((character) => this.drop(character, "the body was replaced"));
 
-		if (player.Character) this.make(player);
+		// **The two attributes that decide this body's colour, watched rather than polled.** `IN_ROUND_ATTRIBUTE`
+		// moves on an admission, an elimination and a surrender; `PRACTICE_ZONE_ATTRIBUTE` on walking into a zone
+		// and back out of it. Both live on the player while the ring lives on the body, so each asks for the body
+		// rather than reading a model attribute that is not there.
+		player.GetAttributeChangedSignal(IN_ROUND_ATTRIBUTE).Connect(() => this.makeBodyOf(player));
+		player.GetAttributeChangedSignal(PRACTICE_ZONE_ATTRIBUTE).Connect(() => this.makeBodyOf(player));
+
+		if (player.Character) this.make(player.Character);
+	}
+
+	/** Re-reads the answer for whatever body `player` is wearing right now. */
+	private makeBodyOf(player: Player): void {
+		const character = player.Character;
+
+		if (character !== undefined) this.make(character);
+	}
+
+	/**
+	 * The rigs: every `NPC_TAG` model, now and whenever another appears.
+	 *
+	 * **The same scan-and-subscribe pair the rest of the client uses for rigs** — `RigAnimationController`,
+	 * `StatsBillboardController` and `chargeEffect` all walk `GetTagged` once and then listen. A rig is created
+	 * after this client boots and pooled after that, so neither a list taken once nor the signal alone would
+	 * find them all.
+	 */
+	private watchRigs(): void {
+		for (const instance of CollectionService.GetTagged(NPC_TAG)) this.watchRig(instance);
+
+		CollectionService.GetInstanceAddedSignal(NPC_TAG).Connect((instance) => this.watchRig(instance));
+
+		CollectionService.GetInstanceRemovedSignal(NPC_TAG).Connect((instance) => {
+			// The signal is an `Instance` and only a model can be a body — the tag's other holders are parts.
+			if (instance.IsA("Model")) this.drop(instance, "the tag came off");
+		});
+	}
+
+	/** One rig: its side repaints it, and the model going takes the ring with it. */
+	private watchRig(instance: Instance): void {
+		if (!instance.IsA("Model")) return;
+		if (this.watchedRigs.has(instance)) return;
+
+		this.watchedRigs.add(instance);
+
+		// **A rig's side is its own attribute**, written when it reaches its pad, promoted at a round start and
+		// cleared when the fill stands it down — so this is both the edge that colours its ring and the edge that
+		// takes the ring away.
+		instance.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => this.make(instance));
+
+		// **And the model being destroyed is the third cleanup**, for a rig that leaves without its tag coming off.
+		instance.Destroying.Connect(() => {
+			this.watchedRigs.delete(instance);
+			this.drop(instance, "the model was destroyed");
+		});
+
+		this.make(instance);
 	}
 
 	/**
@@ -326,13 +446,18 @@ export class TeamRingController implements OnStart {
 	}
 
 	/**
-	 * Puts a ring under `player`, or repaints the one they already have.
+	 * Puts a ring under `body` — a player's character or a rig's model — or repaints the one it already has.
 	 *
-	 * **The whole of the lifetime rule is in the first two lines**: no ring unless a round is on, and none for
-	 * a body with no side — a mid-round joiner, a rig on nobody's team, a player whose label this build does
-	 * not recognise. `teamColourOf` answering `undefined` is the same answer the outline falls back to the default
-	 * colour on, and here it is "no ring", because a ring is a claim about which side somebody is on and there
-	 * is no honest colour to draw that claim in.
+	 * **The whole of the lifetime rule is in the first three lines**: nothing when a body should not wear a ring,
+	 * and the answer to that is {@link ringFor}'s — the side's colour in a round, grey in the practice area, and
+	 * no ring in the lobby. `teamColourOf` answering `undefined` is the same answer the outline falls back to the
+	 * default colour on, and here it is "no ring", because a ring is a claim about which side somebody is on and
+	 * there is no honest colour to draw that claim in.
+	 *
+	 * **A body whose answer has gone is dropped here rather than by a second cleanup path.** This is called from
+	 * every edge that can change the answer — the phase, a side being written, a body being admitted to or taken
+	 * out of a round, a body walking into a zone — so making it also remove is what keeps "the ring matches the
+	 * answer" a single statement instead of one that has to be kept true from four places.
 	 *
 	 * **Idempotent by repaint, not by replacement**, which is the rule this file exists to keep: a ring already
 	 * under this body is left where it is and given the colour the answer has now — which is what happens when
@@ -340,17 +465,18 @@ export class TeamRingController implements OnStart {
 	 * decides that was asking about the ring's *parent* until this was fixed, and the parent is the folder — see
 	 * the note on the line itself for what that cost.
 	 */
-	private make(player: Player): void {
+	private make(body: Model): void {
 		if (!RING_CONFIG.ENABLED) return;
-		if (!this.isPlaying()) return;
 
-		const side = this.sideOf(player);
-		if (side === undefined) return;
+		const ring = this.ringFor(body);
 
-		const character = player.Character;
-		if (!character) return;
+		if (ring === undefined) {
+			this.drop(body, "it should not wear one");
 
-		const root = rootOf(character);
+			return;
+		}
+
+		const root = rootOf(body);
 		if (root === undefined) return;
 
 		// **"Already has a ring" means a ring that is still in the world, not one still parented to the body.**
@@ -359,12 +485,12 @@ export class TeamRingController implements OnStart {
 		// one in the folder for good*. Those strays are invisible to `dropAll`, which can only destroy what the
 		// map holds, so they sat where their body last stood, in the colour of a round that had ended. A
 		// `Parent` of nothing is what a destroyed instance looks like here.
-		const existing = this.rings.get(player);
+		const existing = this.rings.get(body);
 		if (existing !== undefined && existing.plates.size() > 0) {
 			// **A repaint goes through `applyColour`, which writes the plates and the pictures together.** Doing
 			// half of it here is how a ring ends up in two colours, which is the state the texture-era version
 			// kept finding itself in.
-			this.applyColour(existing, side.colour);
+			this.applyColour(existing, ring.colour);
 
 			return;
 		}
@@ -372,14 +498,14 @@ export class TeamRingController implements OnStart {
 		// **Built, then stacked, then parented.** `build` touches no world position and no parent, so there is no
 		// moment at which a plate exists at the origin or under the wrong body — and `place` is the same call the
 		// per-frame loop makes, so a ring's first frame and its thousandth go through one piece of arithmetic.
-		const layers = this.build(side.colour);
-		const ground = groundUnder(character) ?? root.Position.Y - RING_CONFIG.FALLBACK_DROP;
+		const layers = this.build(ring.colour);
+		const ground = groundUnder(body) ?? root.Position.Y - RING_CONFIG.FALLBACK_DROP;
 
 		this.place(layers, root.Position.X, root.Position.Z, ground);
 
 		for (const plate of layers.plates) plate.Parent = this.ringFolder();
 
-		this.rings.set(player, layers);
+		this.rings.set(body, layers);
 
 		// **Once per round, on the first ring of it.** See `logged` for why it is not per ring: the layers are
 		// drawn once for the client and shared, so a line per ring would repeat one answer ten times.
@@ -387,7 +513,7 @@ export class TeamRingController implements OnStart {
 			this.logged = true;
 
 			print(
-				`[Ring] ${player.Name}: ${side.label} ${side.colour.ToHex()} — ${this.describe(layers)} ` +
+				`[Ring] ${body.GetFullName()}: ${ring.label} ${ring.colour.ToHex()} — ${this.describe(layers)} ` +
 					`| ${this.inkSummary()} | ${this.rings.size()} up`,
 			);
 		}
@@ -736,19 +862,19 @@ export class TeamRingController implements OnStart {
 	 * had on the floor and the player jumps over it. That is the choice this file made about where a ring lives
 	 * — on the floor, like a marking — and it is only possible because the two axes are computed differently.
 	 *
-	 * A ring whose body has gone is skipped for the frame or two before its entry is dropped: the body is
-	 * replaced by `CharacterRemoving`, which is where the cleanup lives, and a check here to catch the gap would
-	 * be a second answer to the same question.
+	 * A ring whose body has gone is skipped for the frame or two before its entry is dropped: a player's body is
+	 * replaced by `CharacterRemoving` and a rig's leaves by its tag signal or by being destroyed, and each of
+	 * those is where the cleanup lives — a check here to catch the gap would be a second answer to the same
+	 * question.
 	 */
 	private track(): void {
 		if (this.rings.size() === 0) return;
 
-		for (const [player, layers] of this.rings) {
-			const character = player.Character;
-			const root = rootOf(character);
-			if (character === undefined || root === undefined) continue;
+		for (const [body, layers] of this.rings) {
+			const root = rootOf(body);
+			if (root === undefined) continue;
 
-			const ground = groundUnder(character);
+			const ground = groundUnder(body);
 			const position = root.Position;
 
 			// **In the air, a ring keeps the floor it last had** — which is the bottom plate's height with the
@@ -759,23 +885,24 @@ export class TeamRingController implements OnStart {
 		}
 	}
 
-	/** Takes `player`'s ring away, and drops the entry whatever happens to the plates. */
-	private drop(player: Player, reason: string): void {
-		const layers = this.rings.get(player);
+	/** Takes `body`'s ring away, and drops the entry whatever happens to the plates. */
+	private drop(body: Model, reason: string): void {
+		const layers = this.rings.get(body);
 		if (layers === undefined) return;
 
-		this.rings.delete(player);
+		this.rings.delete(body);
 
 		for (const plate of layers.plates) plate.Destroy();
 
-		if (DEBUG) print(`[Ring] ${player.Name}: ring down — ${reason}, ${this.rings.size()} up`);
+		if (DEBUG) print(`[Ring] ${body.GetFullName()}: ring down — ${reason}, ${this.rings.size()} up`);
 	}
 
 	/**
-	 * Takes every ring away. See {@link refresh} for the one case that calls it.
+	 * Takes every ring away. See {@link onPhaseChanged} for the one case that calls it — a round ending, after
+	 * which {@link refresh} puts back the grey rings of anybody standing in the practice area.
 	 *
 	 * **The folder is swept as well as the map, and that is the belt for the guard fixed in {@link make}.** The
-	 * map can only ever hold one ring per player, so a ring that was built and then forgotten — which is what
+	 * map can only ever hold one ring per body, so a ring that was built and then forgotten — which is what
 	 * happened on every call before that fix, and what any future mistake of the same shape would do — is a ring
 	 * no map knows about and no `drop` will ever reach. The folder is this client's alone, so clearing it
 	 * wholesale is exact rather than approximate, and it means a session that has already collected strays
@@ -812,31 +939,56 @@ export class TeamRingController implements OnStart {
 	}
 
 	/**
-	 * The side `player` is on, as the label to log and the colour to draw — or nothing when there is no honest
-	 * answer.
+	 * **What `body` should be wearing right now** — the side's colour in a round, the neutral ring in the practice
+	 * area, or nothing at all in the lobby.
 	 *
-	 * **Both facts in one place because they come from one reading**, and because the two have to agree: a ring
-	 * is drawn in the colour of a side, and a colour whose label this build cannot name is exactly the case
-	 * that must produce no ring rather than a default-coloured one.
+	 * Three answers, and the order they are asked in is the rule:
 	 *
-	 * **The label is read live rather than remembered**, which is what makes a reassignment repaint correctly:
-	 * the colour comes from the shared `TEAM_COLORS` — the same one the outline paints from, so a player's ring
-	 * and their outline cannot be two different colours. **The mode is not read here at all**, which is the
-	 * change from the version before this: the colour is the same in every mode now. A round starting still
-	 * repaints, through the `ROUND_MODE_ATTRIBUTE` connection in `followRound` — and that is the edge that
-	 * matters, because it is the moment the labels are written.
+	 * 1. **The practice area first, and grey.** It is the one place a circle is drawn with no round on: a player
+	 *    standing in a zone is not in the round — `assignTeams` skips them, so they have no side to be coloured by
+	 *    — and grey is what says "this is a floor marking, not a claim about a side".
+	 * 2. **In the round, in the side's colour.** `IN_ROUND_ATTRIBUTE` rather than `TEAM_ATTRIBUTE`, and that is
+	 *    the correction this needed: a surrendered or eliminated player keeps their side until the next whistle,
+	 *    so the side alone followed them into the lobby with a ring around them. See that attribute for the two
+	 *    cases, and the pill in `client/returnToLobby.ts` for the other reader of the same fact.
+	 * 3. **Otherwise nothing**, which is the lobby.
+	 *
+	 * **A rig asks the phase instead, because that is the server's own definition of a rig in the round.**
+	 * `npc/rigs.ts` calls a rig a participant on `Playing` plus its own `TEAM_ATTRIBUTE`, and the fill machinery
+	 * puts every side-bearing rig on an arena spawn before the cover closes — so a rig wearing a side during a
+	 * live round is on the field, and there is no rig equivalent of a surrender to exclude.
+	 *
+	 * **The side is read live rather than remembered**, which is what makes a reassignment repaint correctly: the
+	 * colour comes from the shared `TEAM_COLORS` — the same one the outline paints from, so a body's ring and its
+	 * outline cannot be two different colours. **The mode is not read here at all**: the colour is the same in
+	 * every mode now, and a round starting still repaints through the `ROUND_MODE_ATTRIBUTE` connection in
+	 * `followRound`, which is the edge where the labels are written.
+	 *
+	 * **`sideOfBody` rather than a read of the model's own attribute**, because a player's side lives on the
+	 * `Player` and a rig's on the model — the two-branch rule the rest of the client keeps in `roundZone`, where a
+	 * label this build cannot name also becomes `undefined` rather than being passed on as a side.
 	 */
-	private sideOf(player: Player): { label: string; colour: Color3 } | undefined {
-		const label = player.GetAttribute(TEAM_ATTRIBUTE);
+	private ringFor(body: Model): RingSpec | undefined {
+		const player = Players.GetPlayerFromCharacter(body);
 
-		// Read off an attribute written by a server that may be a version away, so it is checked rather than
-		// trusted — the same looseness `teamColourOf` and `sideNameOf` allow for.
-		if (!typeIs(label, "string")) return undefined;
+		if (player !== undefined) {
+			// **`=== true` rather than a presence test**, because `PracticeZoneService` writes `false` on the way
+			// out as well as `true` on the way in.
+			if (player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true) {
+				return { label: PRACTICE_LABEL, colour: RING_CONFIG.PRACTICE_COLOR };
+			}
 
-		const colour = teamColourOf(label);
-		if (colour === undefined) return undefined;
+			if (player.GetAttribute(IN_ROUND_ATTRIBUTE) !== true) return undefined;
+		} else if (!this.isPlaying()) {
+			return undefined;
+		}
 
-		return { label, colour };
+		const side = sideOfBody(body);
+		if (side === undefined) return undefined;
+
+		const colour = teamColourOf(side);
+
+		return colour === undefined ? undefined : { label: side, colour };
 	}
 }
 

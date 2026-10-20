@@ -95,6 +95,15 @@ export const inPracticeZone = Fusion.Value(scope, false);
  * side" and "this round is mine" are one statement, and a mid-round joiner loses the dock at the moment
  * they are admitted rather than at the next intermission.
  *
+ * **There is one case where those two statements are not the same, stated rather than left to be inferred.** A
+ * player who surrenders keeps `TEAM_ATTRIBUTE` on purpose — `RoundService.surrender` leaves them in `teams` so
+ * the side's head count survives somebody walking out — so `participating` stays true for them while they stand
+ * in the lobby, and they keep the round's readouts for the rest of it. The fact that tells the two apart now
+ * exists (`IN_ROUND_ATTRIBUTE`, written where a player is admitted and cleared in `eliminate`), and this file
+ * has deliberately not been moved onto it: whether somebody watching the round from the lobby should lose the
+ * readouts is a HUD decision rather than a correction, and it is the same shape as the dead-body case below,
+ * which keeps them on purpose.
+ *
  * **A `Value` rather than a `Computed`, which is the whole reason it is here at all.** The answer is an
  * attribute read, and an attribute read inside a `Computed` is a *sample* rather than a dependency — the
  * lesson `ArenaFreezeCountdownController`, `StatsBillboardController` and `RespawnHudController` each

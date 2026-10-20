@@ -2,6 +2,7 @@ import { Flamework } from "@flamework/core";
 import { UserInputService } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
 import { startChargeEffects } from "./chargeEffect";
+import { startReturnToLobbyPrompt } from "./returnToLobby";
 import { startIasTest } from "./IasTest";
 import { startHitConfirm } from "./hitConfirm";
 import { startHitVfx } from "./hitVfx";
@@ -63,3 +64,9 @@ startCatchPrompt();
 // while a rig's windup is the server's. One module, both drivers, and the same plain-module-because-Flamework-
 // never-loads-it reasoning as the pair above. See `chargeEffect` for the two roads and the effect they share.
 startChargeEffects();
+
+// **And the "Return to Lobby" prompt, which is the same kind of module for the same reason** � it watches two
+// attributes and binds one key, owns no controller lifecycle and injects nothing. See `returnToLobby` for the
+// press-twice rule, for why the cancel is read rather than claimed, and for why it is a file of functions
+// rather than a class (Flamework records an exported class in `flamework.build` whether or not it is decorated).
+startReturnToLobbyPrompt();

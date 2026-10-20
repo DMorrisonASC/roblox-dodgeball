@@ -455,6 +455,50 @@ export class MatchService implements OnStart {
 		if (DEBUG) print(`[Match] roster cleared — ${this.describeCounts()}`);
 	}
 
+	/**
+	 * **Takes one player off the roster — the seat they chose, given back while the match goes on.**
+	 *
+	 * **`clear`'s single-player twin, and deliberately the same three lines.** `clear` empties the map,
+	 * bumps the revision and repaints both signs because a boundary is nobody's decision; this does the
+	 * same for one person because a *surrender* is: the player is still in the server, still watching, and
+	 * no longer on a side. The revision is what makes the rest of the machinery notice — `LobbyRigService`
+	 * polls it for the seat arithmetic and `RoundService.admitMidRoundJoins` polls it for arrivals — so this
+	 * is the whole of "a seat became free" and nothing else has to be told.
+	 *
+	 * **Why releasing is what allows a rejoin, which is the subtle half.** `optIn` refuses a *switch* while a
+	 * round is being played (`existing !== undefined && phase === PLAYING`), and a surrendered player holding
+	 * a roster entry would have exactly that: an existing side they cannot change. Release them and the same
+	 * player arrives with **no side**, which is the one case `optIn` never refuses — "an arrival is not a
+	 * switch" — and `admitMidRoundJoins` puts them back on their side's spawn behind a cover, shielded, like
+	 * any other mid-round joiner. So the rejoin path was already built; what was missing was giving the seat
+	 * up.
+	 *
+	 * **The seat arithmetic is the third reader, and it is what puts a rig on the field.** `seatsHeld` counts
+	 * `playersOn(side)`, which is `countsFor()` over this map — so the moment this returns, the side is one
+	 * short and `LobbyRigService.topUpDuringRound` spawns an arena rig into it on its next quarter-second
+	 * poll. That is why a surrender does not call a rig spawner: the fill already exists, and two mechanisms
+	 * deciding when a side is short is how they come to disagree.
+	 *
+	 * **The `TEAM_ATTRIBUTE` is left alone, which is `clear`'s own precedent.** It repaints nothing: the
+	 * attribute is what a body *wears*, and the next opt-in, the next round's `assignTeams` and the outline
+	 * service all write it again. Writing it here as well would be a second writer to keep in step, for a
+	 * value that is already stale everywhere else between rounds.
+	 *
+	 * **`false` when they were not on the roster**, so a handler that fires for a spectator, a practice-player
+	 * or a double request can say so rather than pretending a seat moved.
+	 */
+	public release(player: Player): boolean {
+		if (!this.opted.has(player)) return false;
+
+		this.opted.delete(player);
+		this.revision++;
+		this.updateSigns();
+
+		if (DEBUG) print(`[Match] ${player.Name}: gave up their seat — ${this.describeCounts()}`);
+
+		return true;
+	}
+
 	// ---- The join parts ----
 
 	/**
