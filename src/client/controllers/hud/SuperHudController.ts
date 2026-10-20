@@ -20,7 +20,7 @@ import { addViewportConstraint } from "../../ui/viewportConstraint";
 import { SuperAbility } from "../input/SuperAbility";
 
 /** Prints once, when the stack is up — the line that says the controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How far up from the bottom of the screen the stack's *bottom edge* sits, in pixels.

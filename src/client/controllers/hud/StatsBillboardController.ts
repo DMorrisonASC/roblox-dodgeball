@@ -8,7 +8,7 @@ import { BADGES_ATTRIBUTE, NPC_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, 
 import { BADGE_COLOURS, Badge, badgeById, decodeBadges } from "shared/badges";
 
 /** Prints once, when the billboards are up — the line that says the controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The phase a billboard is shown in. A word between two files, not a setting. */
 const INTERMISSION = "Intermission";

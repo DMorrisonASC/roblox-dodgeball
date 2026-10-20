@@ -3,7 +3,7 @@ import { NPC_TAG } from "shared/constants";
 import { events } from "shared/networking";
 
 /** Prints one line per effect played, and one for each template that is not there. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * # The hit impact effect: gold for the thrower, red for the body it landed on

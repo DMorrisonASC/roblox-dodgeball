@@ -6,7 +6,7 @@ import { aiming, predictedTargets } from "../../aiming";
 import { inRound, sideOfBody } from "../../roundZone";
 
 /** Prints a line as a target is lit and as it goes out. Silent while a target stays the same. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What the outline is called, and the whole of how one is found.

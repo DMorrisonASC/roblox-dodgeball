@@ -15,7 +15,7 @@ import { NPC_TAG } from "../../npc/Behavior";
 import { sideOfRig } from "../../npc/rigs";
 
 /** Prints a line as an outline is put on. Silent about the ones that were already there. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What the outline is called, and the whole of how one is recognised again.

@@ -5,7 +5,7 @@ import { hudTheme } from "../../ui/hudTheme";
 import { getStickScreenGui } from "../../ui/screenGui";
 
 /** Prints the mount line, the engine-stick probe, and one line per grab and per release. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The mobile joystick: a ring this project draws, over the engine's own stick rather than instead of it.**

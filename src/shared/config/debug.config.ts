@@ -1,4 +1,21 @@
 /**
+ * **Every module's own `DEBUG` const is off as well, and this is where that is written down.**
+ *
+ * Each file that prints diagnostics keeps a `const DEBUG = ...` at the top of it, and on 2026-10-19 they
+ * were all set to `false`: the Output panel — and, in a Studio playtest, the replication of the server's
+ * lines to every client — was costing frame time on top of everything {@link DEBUG_CONFIG} already
+ * describes. **Flipping one file's const back to `true` is how that file's lines come back**, and
+ * `grep -rn "const DEBUG = true" src/` is the list of whatever is still talking, so nothing has to be
+ * remembered. This is the same trade the two flags below make: a diagnostic that is on is a lie about
+ * the frame budget, and the lines worth reading by default are the ones that are *not* behind a flag.
+ *
+ * What stays on is deliberate and small: the round's boundaries and eliminations, match opt-ins, the
+ * lobby rigs' seat arithmetic, the spawner's one line a round, the NPC lifecycle, and dev commands.
+ * What went is everything that prints on the cadence of play — throws, catches, dodges, pickups, coins,
+ * every HUD mount, every VFX template, and the client's per-frame reports.
+ */
+
+/**
  * How much the game prints.
  *
  * A build-time decision rather than a dev flag, because it is made *before* a playtest rather

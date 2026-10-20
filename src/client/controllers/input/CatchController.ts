@@ -9,7 +9,7 @@ import { chargeStartedAt } from "../../throwing";
 const ACTION_NAME = "Catch";
 
 /** Prints each press and whether it went out. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The client half of the catch remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;

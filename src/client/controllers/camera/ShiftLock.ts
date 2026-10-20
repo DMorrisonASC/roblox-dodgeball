@@ -27,7 +27,7 @@ const PLAYING = "Playing";
 const INTERMISSION = "Intermission";
 
 /** Prints the lock's transitions. See `shared/config/debug.config.ts` — they are behind the gate too. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The sight's size, in pixels. **Placeholder — 44.**

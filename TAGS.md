@@ -136,7 +136,7 @@ a place file that no build touches.
 | Tag | Source of truth | Who sets it | Who reads it |
 | --- | --- | --- | --- |
 | `Ball` | `BallComponent` decorator, `tag: "Ball"` | `BallFactory.finish` — nothing else | 7 files, listed below |
-| `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.roundBallCount` (the budget) and `cleanupRoundBalls` (the sweep) |
+| `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.roundBallCount` (the budget). **`cleanupRoundBalls` no longer reads it** — see below |
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
 | `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` / `.insideZoneAt` on the server — the tracker that publishes the attribute; `MysteryBoxService` calls `insideZoneAt` to ask whether a spawn point is on a practice floor; and **`AlwaysSeekingBehavior` reads the tag itself to ask whether a loose ball is inside the zone** — the practice half of the seek split, and the only reader of this tag that is a behaviour. **On the client** the rule is `client/roundZone.ts` (`inTaggedZone`), which the camera (`ShiftLock.checkZone`) and the dodge input (`DodgeController`) both ask — plus `ShiftLock.reportZoneParts`, which reads the tag a second time for its own count. One of the two tags a client reads |
@@ -208,29 +208,33 @@ appears in this file.
   itself. The real number is **eight occurrences of the string** — seven `const`s in seven files plus
   the decorator — and none of the comments says that.
 
-## `RoundBall` — the round's furniture
+## `RoundBall` — the budget's own balls
 
 A **second** tag rather than a reuse of `Ball`, because the two answer different questions: `Ball`
 means "this is a dodgeball — pick it up, throw it, hit people with it", and every ball carries it;
-`RoundBall` means "this one is part of the arena's furniture and goes when the round does", and only
-`BallSpawnerService` applies it.
+`RoundBall` means "the arena's stocking put this one out", and only `BallSpawnerService` applies it.
 
-It has **two readers, with two jobs**, and they are deliberately not the same call:
+**It has one reader now, and the sweep used to be the second.** `cleanupRoundBalls` swept this tag
+on the argument that a ball not spawned by the spawner could not be the round's — which is false,
+because `BallService.giveBall` makes a ball too and that is how an `AlwaysThrowing` rig, a MultiBall
+window and a dev's `InfiniteBalls` are armed. The result was a round's worth of hand-out dodgeballs
+left on the arena floor until their own sixty-second lifetime expired: *"the balls are not cleaned up
+between rounds"*. The sweep takes **every loose ball in the world** now, skipping three kinds —
+a held one (`BallService.isHeld`), one whose parent is not `Workspace`, and one inside a
+`practiceZone` (`PracticeZoneService.insideZoneAt`).
 
-- `roundBallCount` reads it **raw** (`CollectionService.GetTagged`), not through `taggedParts`,
-  because the question is "how many of the match's balls exist right now" and the answer has to be
-  the same set the sweep will look at. It is the number the spawner's budget is spent against —
-  `MATCH_BALL_COUNT` minus this — so a ball destroyed on impact is replaced and the count cannot
-  drift.
-- `cleanupRoundBalls` sweeps it at the end of a round, and **leaves a ball that is in somebody's hand
-  alone** — destroying a ball out of a hand would take it from a player mid-action for a reason that
-  has nothing to do with them. The tag comes off before the destroy, so a ball on its way out is not
-  counted as the round's for the frame in between — and that ordering is what `BallService.isHeld`
-  is asked about, from the other side.
+What is left is the budget:
 
-**A misspelling here is invisible until the arena is full of last round's balls**, which is the
-symptom to look for: the sweep finds nothing, the budget stays spent, and the spawner stops putting
-anything out.
+- `roundBallCount` reads it **raw** (`CollectionService.GetTagged`), and the answer is spent against
+  `MATCH_BALL_COUNT` so that a ball destroyed on impact is replaced and the count cannot drift. It
+  stays on the spawner's own balls deliberately: counting the hand-out ones would have let eight
+  throwing rigs spend the entire budget and empty the floor.
+- `cleanupRoundBalls` still **takes it off before destroying**, so a spawner-made ball stops spending
+  budget at the same instant it leaves the world. The call is a no-op on a hand-out ball.
+
+**A misspelling here is still expensive, and in a different way than it used to be.** Nothing is left
+in the arena either way now, so the visible symptom is a *floor that is never stocked*: the count
+reads nought, the budget is spent, and the spawner stops putting anything out.
 
 ## `MatchSpawner` — painted, not written
 
@@ -403,6 +407,17 @@ is needed for the same reason: `CollectionService` answers about the whole DataM
 an arena template parked in `ServerStorage` wears `NPC` exactly as the rigs standing in the arena do.
 `NpcService.run` skips a rig that is out of the world and `RoundService.roundParticipants` filters
 this tag the same way.
+
+**And that rule is now used on purpose: a rig that gives up its seat is *parked*, not destroyed.** When a
+player's seat needs a rig to stand down (`LobbyRigService.standDown`), the body is parented into
+`ServerStorage.RigParking` with its `Team` and its behaviour tags taken off and **its `NPC` tag left on**.
+That tag is what makes parking a move rather than a loss: `npc/rigPool.ts` counts live rigs by it, so the
+body keeps its name and its model reserved and comes back as itself instead of as a stranger cloned a second
+later; and the world gate above is what keeps it silent while it waits, because a tagged model outside
+`Workspace` is exactly the case that gate was written for. A parked rig is in neither seat count —
+`seatsHeld` reads `Team` and the walk tag, and it has neither — which is the whole of what "hidden" has to
+mean here. `Behavior_Respawn` deliberately stays on it, because a parked body is still a body a round might
+have to rebuild.
 
 `NpcService` was the reader where the rule was missing, and **what it cost is not visible in the
 code, so it is written down here**: a rig out of the world is still simulated, so its behaviors ran,

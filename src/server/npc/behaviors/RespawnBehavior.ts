@@ -13,7 +13,7 @@ import {
 } from "./WalkToJoinPadBehavior";
 import type { BallService } from "../../services/ball/BallService";
 
-const DEBUG = true; // prints each rig that goes down and each that comes back
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Respawning, for an NPC.

@@ -3,7 +3,7 @@ import { findTemplate } from "shared/find";
 import { SPAWN_POOF_CONFIG } from "shared/config/spawnPoof.config";
 
 /** Prints every poof, with the body it was spawned for and where. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The name of the authored effect template, and **the whole of the contract with the place file**.

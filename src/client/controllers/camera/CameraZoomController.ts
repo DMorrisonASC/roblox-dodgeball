@@ -6,7 +6,7 @@ import { CAMERA_ZOOM_CONFIG } from "shared/config/cameraZoom.config";
 import { sprinting } from "../../sprinting";
 
 /** Prints once when the controller is up, and on every change of what the camera is following. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** How close to the target counts as arrived, in degrees. See {@link CameraZoomController.step}. */
 const SETTLED_DEGREES = 0.01;

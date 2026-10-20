@@ -52,7 +52,7 @@ import {
 import type { Showcase, Tile } from "../../ui/panelChrome";
 
 /** Prints the mount line, each tab change and each equip request. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The client half of the equip remote, as the declaration builds it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;

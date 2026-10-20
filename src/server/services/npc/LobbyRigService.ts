@@ -1,5 +1,5 @@
 import { OnStart, Service } from "@flamework/core";
-import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
+import { CollectionService, Players, ReplicatedStorage, ServerStorage, Workspace } from "@rbxts/services";
 import {
 	MATCH_JOIN_A_TAG,
 	MATCH_JOIN_B_TAG,
@@ -16,9 +16,10 @@ import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/trans
 import { findFolder } from "shared/find";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { MATCH_MAX_PER_TEAM } from "../../config/match.config";
-// The poof helper, called at the four moments this file changes a body's existence: `spawnLobbyRig` and
-// `spawnArenaRig` (a rig appears), `retireRig` (a rig disappears) and `moveWalkersToArena` (a rig is snapped
-// into the arena without walking). The leaving player's character is the fifth, in `onPlayerLeft`.
+// The poof helper, called at the six moments this file changes a body's existence: `spawnLobbyRig` and
+// `spawnArenaRig` (a rig appears), `retireRig` (a rig is destroyed), `parkRig` (a rig leaves the field) and
+// `placeParked` (it comes back), and `moveWalkersToArena` (a rig is snapped into the arena without walking).
+// The leaving player's character is the seventh, in `onPlayerLeft`.
 import { playSpawnPoof } from "../../vfx/spawnPoof";
 import {
 	BEHAVIOR_CATCHING,
@@ -162,7 +163,7 @@ const PAD_EDGE_MARGIN = NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS;
  * it is for and nothing takes that away — while a rig that has *arrived* holds the same seat by a
  * different fact (`TEAM_ATTRIBUTE`), and the two are counted by different means so that neither is
  * counted twice. An opted-in player holds the seat their rig gave up; a player who has joined and not yet
- * touched a pad holds the seat a rig was destroyed for, which is what `pending` records.
+ * touched a pad holds the seat a rig stood down for, which is what `pending` records.
  *
  * **Four things move a seat, and each has exactly one trigger.** A player *arrives* — a `PlayerAdded`,
  * and one rig stands down, so the lobby shows one fewer placeholder and one more person. A player
@@ -175,19 +176,26 @@ const PAD_EDGE_MARGIN = NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS;
  * **The one thing that is not a rebalance is a join, and that is deliberate.** A player walking into the
  * lobby has not chosen a side, so the arithmetic has nothing to say about which seat they will take —
  * and the requirement is that arriving *displaces somebody*, visibly, rather than leaving a ninth body in
- * a room built for eight. So `reserveSeat` destroys a rig outright, records which side it was holding, and
- * that record is then counted as a held seat **until the player chooses — or until its term runs out**, at
- * which point the seat goes back to a rig (`holdSeat`). Without the term a pad shows one rig fewer than the
- * match will field for as long as somebody stands undecided, and a round that cannot open keeps it that way
- * for ever. It is the only place in this file that makes a decision the seat count cannot make for it.
+ * a room built for eight. So `reserveSeat` stands a rig down — **parks it**, since 2026-10-19, rather than
+ * destroying it; see `parkRig` — records which side it was holding, and that record is then counted as a
+ * held seat **until the player chooses — or until its term runs out**, at which point the seat goes back to a
+ * rig (`holdSeat`). Without the term a pad shows one rig fewer than the match will field for as long as
+ * somebody stands undecided, and a round that cannot open keeps it that way for ever. It is the only place in
+ * this file that makes a decision the seat count cannot make for it.
  *
- * **Nothing here keeps a list of rigs, and that is the design rather than an omission.** The rigs are
- * derived on every use — the ones holding a side from `npc/rigs.ts`, the ones still walking from the walk
- * tag — so there is no collection to prune when a rig is destroyed and no stale entry to find later.
- * `Destroy()` is the whole of what removing a rig means: the body leaves the world, `NpcService` ends its
- * loop within one period (its own `model.Parent !== undefined` gate does it), and every derivation simply
- * stops returning it. What that costs is a tag walk per query where a stored list would be a lookup; at
- * eight rigs and a handful of queries a minute, it is not a price worth a second source of truth for.
+ * **Nothing here keeps a list of the rigs on the field, and that is the design rather than an omission.**
+ * The rigs are derived on every use — the ones holding a side from `npc/rigs.ts`, the ones still walking from
+ * the walk tag — so there is no collection to prune when a rig leaves the field and no stale entry to find
+ * later. `Destroy()` is the whole of what destroying a rig means: the body goes, `NpcService` ends its loop
+ * within one period (its own `model.Parent !== undefined` gate does it), and every derivation simply stops
+ * returning it. What that costs is a tag walk per query where a stored list would be a lookup; at eight rigs
+ * and a handful of queries a minute, it is not a price worth a second source of truth for.
+ *
+ * **The one list in this file is `parked`, and it is not an index of the rigs** — it is the bodies *between*
+ * seats: out of the world, holding no side, waiting for the next seat that frees. It cannot fall out of step
+ * with the field, because a parked rig is in neither count: `seatsHeld` reads `Team` and the walk tag, and a
+ * parked rig has neither, so the moment one is placed it leaves the list. The list is "bodies nobody is
+ * using" and nothing else, which is the one thing no derivation over the world could answer.
  *
  * **Where a replacement appears is a phase question, and it is the visual constraint.** During an
  * intermission a rig is spawned at a lobby spawn and walks to its pad, exactly as the boot seeding does
@@ -331,6 +339,32 @@ export class LobbyRigService implements OnStart {
 
 	/** The next pad of each side, cycled so a side's rigs spread across its signs. */
 	private readonly padCursor = new Map<TeamLabel, number>();
+
+	/**
+	 * **Rigs taken off the field instead of destroyed, most recently parked last** — the bodies a seat owes
+	 * back.
+	 *
+	 * **Why a body is kept rather than destroyed, in the report's own words.** *"Stop destroying rigs… they
+	 * should just be unlinked and hidden when the rig is making space for a player."* A placeholder that gave
+	 * up its seat used to be destroyed, and the seat was filled again by cloning a fresh one: a burst, its
+	 * name and model back into the pool, and a *different* body — a different name, often a different face —
+	 * appearing a moment later. From a seat, the lobby read as shuffling strangers rather than as bodies
+	 * standing aside.
+	 *
+	 * **What "parked" means, precisely, because three of the four facts are load-bearing.** The rig is
+	 * parented into `ServerStorage.<RIG_PARKING_FOLDER>`, so it is not drawn, not replicated to a client and
+	 * not seen by any of this project's world-blind scans; its `Team` and its behaviours come off, so it
+	 * holds no seat and does nothing; and **its `NPC` tag stays on**, which is the part that makes the rest
+	 * work rather than leak: `npc/rigPool.ts` counts live rigs by that tag, so a parked body keeps its name
+	 * and its model reserved and comes back *as itself*, and `NpcService.run` already idles a tagged model
+	 * that is outside the world and resumes it on the turn it is placed again.
+	 *
+	 * **A stack, because the last body parked is the cheapest to think about and the order does not
+	 * matter.** Every parked rig is interchangeable — same shape, same tags, no side — so which one a seat
+	 * gets back is arbitrary, and taking the most recent keeps the array small against a body that was
+	 * destroyed while parked (which is skipped, see `unparkFor`).
+	 */
+	private readonly parked = new Array<Model>();
 
 	/** Faults already reported, so a refill that keeps failing says so once rather than every time. */
 	private readonly reported = new Set<string>();
@@ -662,9 +696,11 @@ export class LobbyRigService implements OnStart {
 	 * are not in tension: a placeholder fills the seat of somebody who is not using it, and a practice-zone
 	 * player is somebody who is not using it.
 	 *
-	 * **What it costs.** Two tag walks plus a few attribute reads per call, and one roster read. That is
-	 * why it is not on a tick: it runs when the roster moves, when a phase changes and when a player
-	 * leaves — a handful of times a minute — while the tick it *is* on reads one number.
+	 * **What it costs, and where that is spent.** Two tag walks plus a few attribute reads per call, and one
+	 * roster read. It runs when the roster moves, when a phase changes and when a player leaves — and, since
+	 * the mid-round guarantee was asked for, **on every turn of the seat poll while a round is playing** (see
+	 * `topUpDuringRound`). That is four calls a second against a lobby of eight bodies: the worth of the walk
+	 * is what the requirement has to say, and it said "spawn a rig in" rather than "within a few seconds".
 	 */
 	private seatsHeld(side: TeamLabel): number {
 		return this.seatHolders(side).size() + this.playersOn(side) + this.pendingOn(side);
@@ -674,12 +710,22 @@ export class LobbyRigService implements OnStart {
 	 * **A rig that is on a side over its cap moves to the side that is short, rather than being destroyed so
 	 * that a replacement can be made for the other side.**
 	 *
-	 * **The two counts are the whole of the case.** A side holds `MATCH_MAX_PER_TEAM` seats and a rig holds
-	 * one, so five rigs on A and three on B is not a full lobby with a body loose in it — it is a *body on the
-	 * wrong side*, and the arithmetic that noticed is the same one that can put it right. Without this the
-	 * repair is `releaseRigs` on the over-full side and a spawn on the short one: a rig destroyed, a model
-	 * taken out of the pool, and a name spent, to move one body nine feet. With it, nothing is created and
-	 * nothing is destroyed — the rig is told the other side and walks there.
+	 * **The two counts are rig counts, and that is a correction.** A side holds `MATCH_MAX_PER_TEAM` seats and
+	 * a rig holds one, so five rigs on A and three on B is not a full lobby with a body loose in it — it is a
+	 * *body on the wrong side*, and the arithmetic that noticed is the same one that can put it right. Without
+	 * this the repair is a body parked and another brought back, two bursts and a teleport, to move one rig
+	 * nine feet. With it, nothing leaves the sandbox at all — the rig is told the other side and walks to
+	 * that side's pad.
+	 *
+	 * **It counted *seats* when it was written, and that read a player as a misplaced rig.** `seatsHeld`
+	 * includes the players on a side and the reservations held for them, so a player opting into a full side
+	 * made that side five and this moved one of its rigs across to the side the player had just left. The rig
+	 * walks — and a walker counts as a seat from the moment its destination is written, while showing as
+	 * nothing at all until it arrives — so the side it was sent to read three rigs for the whole length of the
+	 * walk, and the instant repair never ran: `releaseRigs` would have parked one rig and `unparkFor` put it
+	 * straight on the other pad, in the same `rebalance`, if this had not already made the arithmetic even by
+	 * the walk. **A player over the cap is `releaseRigs`' case**; this method's case is a rig that is genuinely
+	 * on the wrong side, and only a rig count can tell the two apart.
 	 *
 	 * **Why a rig can be on the wrong side at all, since nothing here writes a side it was not told.** Every
 	 * writer of `TEAM_ATTRIBUTE` on a rig uses the side its walk was given: the arrival branch in
@@ -691,14 +737,21 @@ export class LobbyRigService implements OnStart {
 	 * deliberately cheap enough to be an answer to them rather than a theory about them.
 	 *
 	 * **A move, not a swap, and the difference matters at the boundary.** The rig is stripped of its side and
-	 * given the other side's walk, so it becomes a *walker bound for `short`* — which is exactly what
-	 * {@link seatHolders} counts it as, so the next read of {@link seatsHeld} sees the repair. Sending it with
-	 * its old side still on it would leave it counted on the side it just left until it arrived, and the next
-	 * rebalance — a quarter of a second later — would move it back. That flap is the reason the side comes off
-	 * first rather than at the end.
+	 * **sent walking to `short`'s pad** — the walk attribute is the destination and the walk tag is what makes
+	 * a body follow it. Sending it with its old side still on it would leave it counted on the side it just
+	 * left until it arrived, and the next rebalance — a quarter of a second later — would move it back; that
+	 * flap is why the side comes off first rather than at the end.
+	 *
+	 * **Walked, not placed, and the price is named rather than hidden.** A walker counts as a seat from the
+	 * moment its destination is written, so the *arithmetic* is repaired in this frame — but the body is still
+	 * standing on the wrong pad for the three-to-fifteen seconds the walk takes, and somebody watching sees a
+	 * rig crossing the lobby. The alternative, {@link standOnPad}, is a teleport: a body that is on one sign
+	 * and on the other in the same frame, which is the one thing in this file no player may see happen.
+	 * **A count that is right for the round beats a pad that is right a few seconds sooner**, so the walk
+	 * wins, and the `[Rig] ... sent to ... instead` line is what says a crossing is in progress.
 	 *
 	 * **Intermission only**, and the caller is what decides that. During a round a rig's side is the round's
-	 * business: the bodies are already on the field, the round has counted them, and walking one out of the
+	 * business: the bodies are already on the field, the round has counted them, and lifting one out of the
 	 * arena to the other side's lobby pad would be a participant leaving mid-round. A side that is over its
 	 * cap *during* a round is `releaseRigs`' case, which is a player having taken a seat — the one thing this
 	 * cannot repair by moving somebody.
@@ -709,16 +762,22 @@ export class LobbyRigService implements OnStart {
 		// (true)`: the largest surplus two sides can produce is one side's whole cap, and a loop that cannot
 		// outrun its own arithmetic is worth more than a comment saying it terminates.
 		for (let moved = 0; moved < MATCH_MAX_PER_TEAM; moved++) {
-			const heldA = this.seatsHeld(TEAM_A);
-			const heldB = this.seatsHeld(TEAM_B);
+			// **Rigs, not seats — see this method's doc for the report that made the difference.** A player
+			// opting into a full side pushes `seatsHeld` to five, and that is `releaseRigs`' case: park one rig
+			// and let the fill put it on the other pad in the same pass. Only a *rig* count can say whether a
+			// body is on the wrong side.
+			const heldA = this.seatHolders(TEAM_A).size();
+			const heldB = this.seatHolders(TEAM_B).size();
 
 			if (heldA <= MATCH_MAX_PER_TEAM && heldB <= MATCH_MAX_PER_TEAM) return;
 
 			const over = heldA > MATCH_MAX_PER_TEAM ? TEAM_A : TEAM_B;
 			const short = over === TEAM_A ? TEAM_B : TEAM_A;
 
-			// **Nothing to move to.** Both sides over their cap is the case this cannot help with: there is no
-			// seat to walk to, so the surplus is `releaseRigs`' and the round's.
+			// **Nothing to move to.** The *short* side is asked in seats rather than in rigs, because a side
+			// already full of players has no room for a rig however few rigs it holds — and both sides over
+			// their cap is the case this cannot help with at all: there is no seat to put a rig in, so the
+			// surplus is `releaseRigs`' and the round's.
 			if (this.seatsHeld(short) >= MATCH_MAX_PER_TEAM) return;
 
 			// **The side's pads are the precondition, and a missing one is left to the boot line.** A rig
@@ -729,6 +788,12 @@ export class LobbyRigService implements OnStart {
 			const rig = this.surplusHolder(over);
 			if (rig === undefined) return;
 
+			// **Walked, not placed, and that is a reversal with a price attached.** Placing the rig on the
+			// other pad is a body that is on one sign and on the other in the same frame — invisible to the
+			// counts and plainly visible to a player — so the repair issues a walk instead. The cost is stated
+			// in this method's doc: the pad shows one rig short for the length of the crossing. The side comes
+			// off before the walk is written, because `writePadWalk` takes the side it should walk to from the
+			// rig or from the room left on a side, and a rig still wearing its old side walks back to it.
 			rig.SetAttribute(TEAM_ATTRIBUTE, undefined);
 
 			this.writePadWalk(rig, short);
@@ -743,7 +808,7 @@ export class LobbyRigService implements OnStart {
 	 *
 	 * Which one is arbitrary and deliberately so. Every rig {@link seatHolders} reports for the side is a body
 	 * the side is over capacity *because of*, so any of them is the right body to move — and unlike
-	 * {@link releaseRigs}, which also has to pick one, nothing is destroyed by the choice, so there is no
+	 * {@link releaseRigs}, which also has to pick one, nothing leaves the field by the choice, so there is no
 	 * "giving up the wrong seat" to get wrong. It is taken from `rigsOnASide()` rather than from
 	 * `seatHolders` so that a *walker* is never offered: a rig already on its way to a pad is not on a side
 	 * yet, and sending it somewhere else would be a second instruction in the same crossing.
@@ -823,8 +888,8 @@ export class LobbyRigService implements OnStart {
 		// **Then the wrong-side repair, before the counts below are read — so that they read the repaired
 		// lobby rather than the broken one.** A body moved here is counted as a walker bound for the other
 		// side, so the fill and release passes below find nothing to do about a seat that has just been handed
-		// over. Doing it after them instead would be a rig destroyed and a rig spawned in the same call, to
-		// correct one number.
+		// over. Doing it after them instead would be a body parked and another brought back in the same call,
+		// to correct one number.
 		//
 		// **Intermission only**, for the reason `moveSurplusToTheShortSide` gives: during a round a rig's side
 		// is the round's, and the bodies are already on the field.
@@ -845,11 +910,30 @@ export class LobbyRigService implements OnStart {
 		// rather than refusing one (see `rigPool.drawRigIdentity`).
 		const target = MATCH_MAX_PER_TEAM;
 
+		// **The releases run first, and the order is the fix for a side that stayed short while the other
+		// stayed over.** A player switching sides is one event that frees a seat on one side and takes one
+		// from the other; filled first, the freed seat needs a *new* body — a pool draw, a spawn, and in the
+		// lobby a walk across the room — and the rig that is about to be released is not available yet
+		// because nothing has released it. Released first, the rig that gives up its seat is on the stack by
+		// the time the other side asks for one, so the switch is one body moving rather than one spawned and
+		// one thrown away.
+		for (const side of SIDES) {
+			const held = side === TEAM_A ? heldA : heldB;
+
+			this.releaseRigs(side, held - MATCH_MAX_PER_TEAM);
+		}
+
 		for (const side of SIDES) {
 			const held = side === TEAM_A ? heldA : heldB;
 
 			for (let seat = held; seat < target; seat++) {
-				const rig = playing ? this.spawnArenaRig(side) : this.spawnLobbyRig(side);
+				// **A parked body first, and a new one only when there is none.** That order is the whole
+				// point of parking: the body that stood down for a player comes back for the next free seat
+				// rather than being replaced by a fresh clone with a different name and face. `unparkFor`
+				// answers `undefined` when the stack is empty or nothing could be placed, and the pool is the
+				// fallback rather than the default.
+				const rig =
+					this.unparkFor(side) ?? (playing ? this.spawnArenaRig(side) : this.spawnLobbyRig(side));
 
 				// **A refill says so, and this is the line the file was missing.** Whether a seat was
 				// filled is invisible everywhere else: `NpcService` prints a rig being *managed*, which
@@ -876,8 +960,6 @@ export class LobbyRigService implements OnStart {
 					);
 				}
 			}
-
-			this.releaseRigs(side, held - MATCH_MAX_PER_TEAM);
 		}
 	}
 
@@ -998,23 +1080,30 @@ export class LobbyRigService implements OnStart {
 		let index = 0;
 
 		while (index < count && index < holders.size()) {
-			this.retireRig(holders[index], `released — side ${side} is over its cap`);
+			// **Parked rather than destroyed**, on `reserveSeat`'s rule: the seat is the player's, and the body
+			// that gives it up waits in `ServerStorage` to take the next seat that frees. See `parkRig`.
+			this.standDown(holders[index], `released — side ${side} is over its cap`);
 
 			index++;
 		}
 	}
 
 	/**
-	 * **The one place a rig leaves this service: destroys it, and says what went back into the pool.**
+	 * **The one place a rig is destroyed, and it says what went back into the pool.**
 	 *
-	 * **One helper for all three destroy sites, and that is the point rather than tidiness.** `releaseRigs`,
-	 * `retireHopelessCorpses` and `reserveSeat` are three different reasons for a body to go, and the pool
-	 * does not care which one it was: a rig ceases to hold its name and its model because it stopped being
-	 * findable by the walk in `npc/rigPool.ts`, which is a property of being destroyed rather than of being
-	 * destroyed *by a particular caller*. So the release itself needs nothing — and what is left is the
-	 * **report**, which is the half a reader needs and the half that a fourth path would otherwise forget.
-	 * Naming the rig and its source on one line per release is also what makes a lobby that has run short of
-	 * names distinguishable from one that never had them: the draws are in the log beside the releases.
+	 * **It is no longer the only way a rig leaves the field.** A body that gives up its seat is *parked* —
+	 * see {@link parkRig} — and this is what happens to the one kind of body parking cannot take: a corpse,
+	 * which `RespawnBehavior` is about to rebuild, and anything `retireHopelessCorpses` has given up on. So
+	 * the callers are that sweep and {@link standDown}'s down branch, and both are rarer than the ordinary
+	 * stand-down they used to share.
+	 *
+	 * **One helper for both destroy sites, and that is the point rather than tidiness.** The pool does not
+	 * care *why* a body went: a rig ceases to hold its name and its model because it stopped being findable by
+	 * the walk in `npc/rigPool.ts`, which is a property of being destroyed rather than of being destroyed *by
+	 * a particular caller*. So the release itself needs nothing — and what is left is the **report**, which is
+	 * the half a reader needs and the half a third path would otherwise forget. Naming the rig and its source
+	 * on one line per release is also what makes a lobby that has run short of names distinguishable from one
+	 * that never had them: the draws are in the log beside the releases.
 	 *
 	 * **Both facts are read *before* the destroy**, on `reserveSeat`'s rule: an attribute does survive the
 	 * `Destroy` in the same Lua frame, but reading a fact off a body on its way out is an order nobody should
@@ -1048,6 +1137,218 @@ export class LobbyRigService implements OnStart {
 	}
 
 	/**
+	 * **A rig gives up its seat: unlinked, hidden, and kept.**
+	 *
+	 * The replacement for destroying a body whose seat a player needs — see {@link parked} for the report it
+	 * comes from and for the one fact that makes it work rather than leak (the `NPC` tag stays on). Each line,
+	 * and why it is there:
+	 *
+	 * - **The walk tag and the six gameplay behaviours come off.** A parked rig holds no side, and those are
+	 *   the tags that would make it *act* the moment it came back. `BEHAVIOR_RESPAWN` is deliberately kept:
+	 *   it is not a thing a rig does (see `GAMEPLAY_BEHAVIORS`), and a parked body is still a body a round
+	 *   might have to rebuild.
+	 * - **The side is cleared**, so the seat arithmetic stops counting it — `seatsHeld` reads `Team` through
+	 *   `rigsOnASide`, and a seat a player has taken must read as *theirs* from the same frame.
+	 * - **The burst plays before the move**, the order every other body change in this file keeps: a body that
+	 *   disappears has to be seen to have gone. That is the half of "hidden" a player is meant to notice; the
+	 *   half they are not is `ServerStorage`.
+	 * - **The parent is the park folder**, which is what keeps the behaviours, the client's billboard and every
+	 *   tag-driven scan off it. `NpcService.run` idles a tagged model there rather than ending its loop, so
+	 *   there is no re-tagging dance on the way back.
+	 */
+	private parkRig(rig: Model, what: string): void {
+		const name = rig.Name;
+		const source = sourceOf(rig);
+
+		rig.RemoveTag(BEHAVIOR_WALK_TO_JOIN_PAD);
+
+		for (const tag of GAMEPLAY_BEHAVIORS) rig.RemoveTag(tag);
+
+		rig.SetAttribute(TEAM_ATTRIBUTE, undefined);
+
+		playSpawnPoof(rig);
+
+		rig.Parent = this.parkingFolder();
+		this.parked.push(rig);
+
+		const from = source === undefined ? "no source model recorded" : `"${source}" kept for it`;
+		print(`[Rig] ${name}: ${what} — parked (${this.parked.size()} waiting, ${from})`);
+	}
+
+	/**
+	 * **A rig gives up its seat — parked if it is standing, destroyed if it is not.**
+	 *
+	 * The two are not interchangeable, and the reason is `RespawnBehavior`: a corpse is a body something is
+	 * about to rebuild, and the rebuild reads the corpse and puts the replacement where the corpse stands. A
+	 * corpse parked in `ServerStorage` would be rebuilt *there* — a fresh body inside the parking folder,
+	 * invisible, holding a name the parked one already holds. So a down rig keeps the old behaviour: destroyed
+	 * and refilled from the pool, which is the case `retireHopelessCorpses` already reports.
+	 *
+	 * Every seat-taking caller comes through here rather than choosing, so no caller has to ask whether its
+	 * victim happens to be a corpse: the ordinary case — a body standing on a sign — parks.
+	 */
+	private standDown(rig: Model, what: string): void {
+		if (this.isDown(rig)) {
+			this.retireRig(rig, what);
+			return;
+		}
+
+		this.parkRig(rig, what);
+	}
+
+	/**
+	 * **The folder parked rigs wait in**, made on first use.
+	 *
+	 * Looked up rather than held, on the rule every derivation in this file keeps — and because a dev can
+	 * delete it in the Explorer mid-session, and the next park should make another rather than fail.
+	 */
+	private parkingFolder(): Folder {
+		const existing = ServerStorage.FindFirstChild(NPC_CONFIG.RIG_PARKING_FOLDER);
+		if (existing !== undefined && existing.IsA("Folder")) return existing;
+
+		const folder = new Instance("Folder");
+		folder.Name = NPC_CONFIG.RIG_PARKING_FOLDER;
+		folder.Parent = ServerStorage;
+
+		return folder;
+	}
+
+	/**
+	 * **A parked rig takes a seat again, in the form the phase calls for** — or nothing when there is none.
+	 *
+	 * The other half of {@link parkRig}, and the reason a seat can be refilled without touching the pool: a
+	 * parked body already carries its name, its model and its `NPC` tag, so this is a *move* rather than a
+	 * spawn. The stack is walked from the top, and a body that no longer exists is skipped — the one way a
+	 * parked rig can vanish is somebody deleting it in the Explorer, and that should cost one iteration
+	 * rather than an error.
+	 *
+	 * **A body that could not be placed goes straight back on the stack**, and the walk stops there: every
+	 * failure {@link placeParked} can report is a missing spawn folder or pad, which is the same for the next
+	 * body, so trying the rest of the stack would be a loop over rigs that would all fail identically.
+	 */
+	private unparkFor(side: TeamLabel): Model | undefined {
+		while (this.parked.size() > 0) {
+			const rig = this.parked.pop();
+			if (rig === undefined) break;
+			if (rig.Parent === undefined) continue;
+
+			if (this.placeParked(rig, side)) return rig;
+
+			this.parked.push(rig);
+			break;
+		}
+
+		return undefined;
+	}
+
+	/**
+	 * **Puts a parked rig back into the world for `side`, in the phase's own form.**
+	 *
+	 * The mirror of the placement half of both spawners — `spawnLobbyRig` builds a body at a lobby spawn and
+	 * starts it walking, `spawnArenaRig` builds one at a team spawn with its side already on it — written out
+	 * here rather than shared with them because the difference is the whole subject: those two *make* a body
+	 * and this one *re-homes* one. What is shared is every derived fact: the spawn parts, the three-stud
+	 * lift, `writePadWalk`, the freeze hold, the burst and `announcePlaced`.
+	 *
+	 * **The health reset is not cosmetic.** A rig parked at a quarter health would come back one hit from
+	 * dying, which reads as a placeholder that was quietly damaged while it was away. Health belongs to the
+	 * *life*, and a parked rig is between lives.
+	 */
+	private placeParked(rig: Model, side: TeamLabel): boolean {
+		const humanoid = rig.FindFirstChildWhichIsA("Humanoid");
+		if (humanoid === undefined) return false;
+
+		humanoid.Health = humanoid.MaxHealth;
+
+		if (this.phase() === PLAYING) {
+			const parts = this.arenaSpawnParts(side);
+			if (parts.size() === 0) return false;
+
+			rig.Parent = Workspace;
+			rig.PivotTo(parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0)));
+			rig.SetAttribute(TEAM_ATTRIBUTE, side);
+
+			// **The same hold `spawnArenaRig` makes, for the same reason**: a rig placed inside the arena
+			// freeze would pick a ball up and throw it while the players are still held.
+			const holdGameplay = os.clock() < this.arenaArmedAt;
+
+			if (!holdGameplay) {
+				for (const tag of GAMEPLAY_BEHAVIORS) rig.AddTag(tag);
+			}
+
+			playSpawnPoof(rig);
+			this.npcs.announcePlaced(rig);
+
+			print(
+				`[Rig] ${rig.Name}: back on side ${side} (arena spawn)` +
+					(holdGameplay ? " — held for the arena freeze" : ""),
+			);
+
+			return true;
+		}
+
+		// **Straight onto the pad rather than at a lobby spawn with a walk** — see {@link standOnPad} for why a
+		// refill may not walk, and for the report it comes from.
+		if (!this.standOnPad(rig, side)) return false;
+
+		print(`[Rig] ${rig.Name}: back on side ${side}'s pad`);
+
+		return true;
+	}
+
+	/**
+	 * **Puts `rig` on `side`'s pad, standing, with the side already written** — the placement a *restored*
+	 * body uses, and deliberately not the one a wrong-side repair uses any more.
+	 *
+	 * **Wrong-side repairs walk instead**, because a player has to see them do it: {@link
+	 * moveSurplusToTheShortSide} issues a pad walk and accepts a pad that is one short for the length of the
+	 * crossing. What is left here is the case where there is no crossing to see — a parked body being put
+	 * back on the seat it gave up, which is already a body arriving from nowhere, and which has no walk to
+	 * spare inside a `rebalance`.
+	 *
+	 * **Not a spawn-and-walk, and that is the whole of the fix for "3 rigs, then 4".** `spawnLobbyRig` places a
+	 * new body at a lobby spawn and starts it walking, which is right for a body arriving for the first time
+	 * and wrong for a seat being *refilled*: the walk waits three to ten seconds
+	 * (`WalkToJoinPadBehavior`'s own delay) and then crosses the room, and **a walker counts as a held seat
+	 * from the moment its destination is written while showing as nothing at all until it arrives**. So the
+	 * side being refilled reads one rig short for the whole crossing, which is exactly the symptom that
+	 * started this: a player who joined one side and switched to the other saw the side they left stay at
+	 * three. **A seat filled mid-session is filled where the seat is.**
+	 *
+	 * **The arrival point, and the floor under it.** `padArrivalPoint` is where a walk aims — a drawn spot on
+	 * the pad's own footprint, rotated with the pad — so the rig stands where its predecessor would have ended
+	 * up rather than in the middle of the sign. Its Y is the pad's *centre*, though, which is half a sign
+	 * above the floor, so the height comes from the pad's own bottom edge instead: the pads are boxes standing
+	 * on the floor, so their underside is the floor.
+	 *
+	 * **Any walk the rig was on comes off first.** A body moved here is not walking anywhere, and leaving the
+	 * tag on would have it set off for a lobby pad the moment the tag was read.
+	 */
+	private standOnPad(rig: Model, side: TeamLabel): boolean {
+		const pads = this.padsFor(side);
+
+		if (pads.size() === 0) return false;
+
+		const pad = this.nextPad(side, pads);
+		const arrival = this.padArrivalPoint(pad);
+		const floor = pad.Position.Y - pad.Size.Y / 2;
+
+		rig.RemoveTag(BEHAVIOR_WALK_TO_JOIN_PAD);
+
+		rig.Parent = Workspace;
+		rig.PivotTo(new CFrame(new Vector3(arrival.X, floor + 1, arrival.Z)));
+
+		// **Arrived rather than walking**, which is the same attribute `WalkToJoinPadBehavior` writes on
+		// arrival and the same one the round's teleport reads — so the rig is a participant from this frame.
+		rig.SetAttribute(TEAM_ATTRIBUTE, side);
+
+		playSpawnPoof(rig);
+		this.npcs.announcePlaced(rig);
+
+		return true;
+	}
+
+	/**
 	 * A player has arrived. **One rig stands down, and the seat it held is theirs until they choose.**
 	 *
 	 * **Nothing happens during a round**, and the reason is narrower than it used to be. A player arriving
@@ -1066,7 +1367,7 @@ export class LobbyRigService implements OnStart {
 	}
 
 	/**
-	 * **Destroys one rig to make room for a player who has just arrived, and records the seat.**
+	 * **Stands one rig down for a player who has just arrived, and records the seat.**
 	 *
 	 * This is the one rule the seat arithmetic cannot derive, and it cannot be derived because the player
 	 * has not chosen a side: "four seats a side" says nothing about which seat a new person will want. So
@@ -1105,7 +1406,10 @@ export class LobbyRigService implements OnStart {
 		// read is the reason the sentence is written down twice, here and on `retireRig`.
 		const side = sideOfRig(victim) ?? this.walkingSide(victim);
 
-		this.retireRig(victim, `${player.Name} arrived — stood down (${side ?? "no side known"})`);
+		// **`standDown` rather than `retireRig`, and that is the report this exists for.** A body standing on
+		// a sign is *parked* — hidden, still holding its name and model — rather than destroyed and replaced
+		// by a stranger a moment later. See `parkRig`.
+		this.standDown(victim, `${player.Name} arrived — stood down (${side ?? "no side known"})`);
 
 		if (side !== undefined) this.holdSeat(player, side);
 	}
@@ -1258,7 +1562,8 @@ export class LobbyRigService implements OnStart {
 
 		if (seat === undefined) return;
 
-		const rig = this.phase() === PLAYING ? this.spawnArenaRig(seat) : this.spawnLobbyRig(seat);
+		const rig =
+			this.unparkFor(seat) ?? (this.phase() === PLAYING ? this.spawnArenaRig(seat) : this.spawnLobbyRig(seat));
 
 		// **Named, because the rig count is not a thing anybody watching can see.** This path is both the
 		// mid-round replacement and the lobby one, and in a round a body appearing where another left is
@@ -1741,6 +2046,15 @@ export class LobbyRigService implements OnStart {
 		if (promoted > 0) {
 			print(`[Rig] round start — ${promoted} rig(s) still walking were put on a side and into the round`);
 		}
+
+		// **And the round is made full in the same breath, rather than a cover later.** `refillAtRoundStart`
+		// waits `TRANSITION_COVER_SECONDS` so a new body appears behind the cover — which is the right rule
+		// for a *replacement*, and the wrong one for a side that is about to open a body short: 0.86 s of a
+		// live round at 3 against 4 is exactly what was reported. **The requirement wins over the timing**
+		// (*"anytime the round is missing the max players, spawn a rig in"*), and the cost is named: a rig
+		// that had to be made here is seen arriving rather than hidden by the cover. The delayed fill then
+		// finds nothing to do, which is the sign this worked.
+		this.rebalance();
 	}
 
 	/**
@@ -1964,6 +2278,11 @@ export class LobbyRigService implements OnStart {
 			if (this.retireHopelessCorpses() > 0) this.rebalance();
 
 			this.syncSeats();
+
+			// **And the third thing this loop does: it notices a side that has gone short and did not say
+			// so.** See {@link topUpDuringRound} for the case — a rig that left its seat mid-round without
+			// leaving a corpse — and for why it is a slow check rather than a condition on every turn.
+			this.topUpDuringRound();
 		}
 	}
 
@@ -2038,6 +2357,65 @@ export class LobbyRigService implements OnStart {
 			this.seated.set(player, side);
 			this.pending.delete(player);
 		}
+
+		this.rebalance();
+	}
+
+	/**
+	 * **Notices a side that is short while the round is being played, and fills it — the fallback for a seat
+	 * that went quiet.**
+	 *
+	 * **What this is for, in the report's own words: "I will see 3 vs 4 every so often."** Every other
+	 * trigger in this file is an *event* — a join, a leave, a roster revision, a phase boundary, a corpse
+	 * swept — and a round is otherwise silent. So a seat can go short mid-round with nothing to notice it:
+	 *
+	 * - **a rig destroyed outright**, by a dev, by a flung body, or by the engine at
+	 *   `FallenPartsDestroyHeight` — no corpse, so {@link retireHopelessCorpses} finds nothing to retire and
+	 *   {@link syncSeats} sees an unmoved roster;
+	 * - **a walker that never arrived.** A rig bound for a side counts as holding its seat (see
+	 *   {@link seatHolders}), which is what makes the round-start fill correct about a rig still crossing the
+	 *   arena — and what makes its disappearance invisible, since the seat it was holding is simply gone and
+	 *   no count was asked for after the whistle;
+	 * - **a rig `RespawnBehavior` declined to rebuild**, which is a rig whose parent went away while it was
+	 *   dead: the corpse is already gone, so the death sweep has nothing left to look at.
+	 *
+	 * The cost of any of them is a side playing the rest of the round a body short, which is the one thing
+	 * this file exists to prevent — and the reason the fallback is here rather than in `RoundService`.
+	 *
+	 * **Why not `RoundService`, which is where the round would look for it.** It has no way to make a rig:
+	 * an arena rig is a drawn identity from `rigPool`, a `RIG_TEMPLATE_ATTRIBUTE` and a name, a spawn point
+	 * out of the arena's own folders, a written side, and behaviour tags applied only after the opening
+	 * freeze lifts — every one of which is {@link spawnArenaRig}'s. A second maker in `RoundService` would be
+	 * a second place to get those right, and it could not call this service back either: this service reads
+	 * the roster, so the roster cannot read it, which is the same constructor cycle `SEAT_POLL_SECONDS`
+	 * argues about. The fill already knows how to be phase-aware — {@link rebalanceBody} spawns into the
+	 * arena whenever the phase says `Playing` — so what was missing was a *trigger*, and this is it.
+	 *
+	 * **Why the count is on every poll now, and what it costs.** It was written with a
+	 * `ROUND_FILL_RETRY_SECONDS` window, on the argument that {@link seatsHeld} is two tag walks and its own
+	 * doc says it is not a tick cost. **The requirement is a guarantee, not a repair schedule** — *"anytime the
+	 * round is missing the max players, spawn a rig in"* — so the window is gone: two walks and a roster read
+	 * four times a second, against a lobby of eight bodies, which is nothing beside a round's ball physics.
+	 * A seat that cannot be filled still cannot be filled, and `rebalanceBody` reports that once
+	 * (`reportOnce`) rather than four times a second.
+	 *
+	 * **Why a rebalance mid-round is safe.** It cannot move a rig across sides — `moveSurplusToTheShortSide`
+	 * is intermission-only, and the reason is written there: during a round a rig's side is the round's. What
+	 * it does instead is `unparkFor` (a parked body takes the seat back, same name, same face) or
+	 * `spawnArenaRig`, which writes the side onto the rig at birth — so the body that appears is in the round
+	 * from its first frame. A rig appearing in the open is the price, and it is the same price `onPlayerLeft`
+	 * already pays; a side playing a body short is what the requirement is about.
+	 */
+	private topUpDuringRound(): void {
+		if (this.phase() !== PLAYING) return;
+
+		let short = false;
+
+		for (const side of SIDES) {
+			if (this.seatsHeld(side) < MATCH_MAX_PER_TEAM) short = true;
+		}
+
+		if (!short) return;
 
 		this.rebalance();
 	}

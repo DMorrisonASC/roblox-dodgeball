@@ -3307,9 +3307,12 @@ export class RoundService implements OnStart {
             // of every round was also the one sweep that cleared whatever the round had left lying in
             // it, and that call is gone — so this is the account of where each of those things goes
             // instead. Loose balls: `BallSpawnerService.cleanupRoundBalls`, on the same Playing →
-            // Intermission edge this loop is standing on, which destroys every ball wearing the round's
-            // tag and deliberately leaves a held one alone. Held balls: the two cleanups above, one at
-            // each boundary. Corpses: `RespawnService`, which replaces one on the spot for a death in the
+            // Intermission edge this loop is standing on, which destroys **every loose ball in the
+            // world** — not only the ones the spawner made, because `BallService.giveBall` makes balls
+            // too and those are how rigs, MultiBall and `InfiniteBalls` are armed — and deliberately
+            // leaves a held one, and one lying inside a practice zone, alone. Held balls: the two
+            // cleanups above, one at each boundary. Corpses: `RespawnService`, which replaces one on
+            // the spot for a death in the
             // lobby or an elimination and after the delay inside a round — and the body it loads is routed
             // by `handlePlayerJoined`, so an eliminated player comes back in the lobby through the same
             // branch a joiner takes. Ability debris: its own lifetime, plus

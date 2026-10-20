@@ -5,7 +5,7 @@ import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 
 /** Prints the mount line, every cue, and one line per fade boundary. The lines the Studio acceptance run reads. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The two phases this controller cares about, spelled out.

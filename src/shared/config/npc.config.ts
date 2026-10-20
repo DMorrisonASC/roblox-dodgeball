@@ -105,7 +105,7 @@ export const NPC_CONFIG = {
 	 *
 	 * **Placeholder.**
 	 */
-	CATCH_DECISION_SECONDS: 1,
+	CATCH_DECISION_SECONDS: 2,
 
 	/**
 	 * How far a rig notices a ball, in studs — the radius behind "is a ball in my detection radius".
@@ -237,7 +237,7 @@ export const NPC_CONFIG = {
 	 *
 	 * **0 is exactly the old behaviour**, and it is the value to set when comparing two runs.
 	 */
-	THROW_MISS_CHANCE: 2 / 4,
+	THROW_MISS_CHANCE: 0.9,
 
 	/**
 	 * The shortest deliberate miss, in studs. **Placeholder — 5.**
@@ -254,7 +254,7 @@ export const NPC_CONFIG = {
 	 * degrees is a hit — which is precisely backwards for a mistake: a person's misclick is about as far off in
 	 * studs whatever they are aiming at.
 	 */
-	THROW_MISS_STUDS_MIN: 5,
+	THROW_MISS_STUDS_MIN: 7,
 
 	/**
 	 * The longest deliberate miss, in studs. **Placeholder — 10.**
@@ -411,6 +411,26 @@ export const NPC_CONFIG = {
 	 * until somebody makes it, and until then the boot warning names the folder and no rigs are spawned.
 	 */
 	RIG_POOL_FOLDER: "NPCs",
+
+	/**
+	 * **Where a rig waits when it gives up its seat instead of being destroyed.** Made under `ServerStorage`
+	 * on first use. **Placeholder as a name, not as a number.**
+	 *
+	 * **A parked rig is a body this game still owns and intends to use again.** A player arriving stands one
+	 * placeholder down; a player opting into a full side stands one down; and the seat comes back the moment
+	 * they leave or the round clears the roster. Destroying the body at the first half and cloning a fresh one
+	 * at the second is what made the lobby look like it was shuffling strangers around — a burst, a different
+	 * name, often a different face — so the body is kept instead: out of `Workspace` (not drawn, not
+	 * simulated, not seen by any world-blind scan), with no `Team` and no behaviours, and still wearing `NPC`
+	 * so that `npc/rigPool.ts` keeps its name and its model reserved for it.
+	 *
+	 * **Under `ServerStorage` rather than a hidden corner of `Workspace`**, because "hidden" has to mean not
+	 * replicated as well as not drawn — and because the pool folder beside it is a place *templates* live,
+	 * while this one holds bodies that are alive and coming back. `NpcService.run` idles a tagged model
+	 * outside the world and resumes it the turn it is placed again, which is the mechanism the whole idea
+	 * rests on.
+	 */
+	RIG_PARKING_FOLDER: "RigParking",
 
 	/**
 	 * **`PLACEHOLDER_RIG_TEMPLATE` was here, and nothing reads it any more.** Kept as a record rather than
@@ -658,12 +678,14 @@ export const NPC_CONFIG = {
 	 * intermission that wraps for ever, where nothing releases the seat and `rebalance` cannot repair it
 	 * because the record reads as a held seat. That is the state a rig short *stays* short.
 	 *
-	 * **`15` is sized against the walk, not against a mood.** A lobby spawn to a join pad is about sixty
-	 * studs and takes four or five seconds at walking speed; a player who also reads the HUD, or who joins
-	 * mid-load and sees the game a few seconds late, needs a few more. Past fifteen seconds of standing
-	 * still the honest reading is "not playing" — and the cost of being wrong is one rig spawning and, if
-	 * they *do* choose afterwards, one rig standing down, which is the same pair of events the lobby
-	 * performs every time a player arrives.
+	 * **`5` is a compromise between a walk and a wander.** A lobby spawn to a join pad is about sixty studs
+	 * and takes four or five seconds at walking speed, so five is roughly "they are on their way — give them
+	 * the walk", the shortest term that does not pull the seat from under a player doing exactly what the pad
+	 * asked. It was fifteen, which also covered the player who reads the HUD or joins mid-load; what that
+	 * longer term cost is the case that actually hurts, a player who arrives and then wanders off, during
+	 * which the pad shows one rig fewer than the match will field and `rebalance` cannot repair it because
+	 * the record reads as a held seat. **The player the shorter term drops is covered two paragraphs down
+	 * rather than by a longer clock** — a late opt-in is not refused, it stands a rig down.
 	 *
 	 * **Nothing is refused when the loan ends.** The pads stay live and a late opt-in still places the
 	 * player; the seat simply changes hands back to a rig in the meantime.
@@ -671,7 +693,7 @@ export const NPC_CONFIG = {
 	SEAT_RESERVATION_SECONDS: 5,
 
 	/**
-	 * How long a rig's claim on a fetch target survives without being renewed, in seconds.
+	 * **How long a rig's claim on a fetch target survives without being renewed, in seconds.**
 	 * **Placeholder — 8.**
 	 *
 	 * **A fetch target is a loose ball or a live mystery box**, and the figure is the same for both because

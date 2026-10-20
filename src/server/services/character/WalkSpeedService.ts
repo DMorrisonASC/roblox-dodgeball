@@ -28,7 +28,7 @@ const BASE_KEY = "Base";
  * and the numbers in brackets say whether a base was there to be summed or whether the entry was
  * empty.
  */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The name sprint's contribution is stored under.

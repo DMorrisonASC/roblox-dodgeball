@@ -16,7 +16,7 @@ import { SuperService } from "../super/SuperService";
 import { insideZoneAt } from "../zone/PracticeZoneService";
 
 /** Prints every box raised, every collection and every sweep. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.

@@ -5,6 +5,7 @@ import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { MATCH_SPAWNER_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { MATCH_BALL_COUNT } from "../../config/match.config";
+import { insideZoneAt } from "../zone/PracticeZoneService";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallFactory } from "./BallFactory";
 import { BallService } from "./BallService";
@@ -13,18 +14,29 @@ import { BallService } from "./BallService";
 const DEBUG = true;
 
 /**
- * The tag that marks a ball as one the round owns.
+ * **The tag that marks a ball as one of the match's own** — the spawner's, counted against the budget.
  *
  * A **second** tag rather than a reuse of `"Ball"`, because they answer two different questions.
  * `"Ball"` means "this is a dodgeball" — pick it up, throw it, hit people with it — and every ball
- * in the game carries it. This one means "this ball is part of the arena's furniture and goes when
- * the round does", and only the spawner applies it. Keeping them apart is what lets the cleanup be
- * one loop over one tag without having to work out which balls were whose.
+ * in the game carries it. This one means "the arena's stocking put this one out", and only
+ * {@link BallSpawnerService.spawn} applies it.
+ *
+ * **It used to be the sweep's list as well, and that was wrong in a way nobody could see.** The
+ * sweep read this tag and nothing else, on the argument that a ball *not* spawned here could not be
+ * the round's. That is false: `BallService.giveBall` makes a ball too, and it is how an
+ * `AlwaysThrowing` rig, a MultiBall window and a dev's `InfiniteBalls` are armed — and none of those
+ * balls ever carried this tag, so a round's worth of hand-out dodgeballs stayed in the arena until
+ * their own sixty-second lifetime ran out. The report was "the balls are not cleaned up between
+ * rounds", and the litter was most of a round old by the time anybody saw it. The sweep takes every
+ * loose ball in the world now and this tag means the budget alone; see
+ * {@link BallSpawnerService.cleanupRoundBalls}.
  */
 const ROUND_BALL_TAG = "RoundBall";
 
 /**
- * The tag every ball carries, which is how the count finds the balls at all.
+ * The tag every ball carries, which is how the loose-ball count and the round's own sweep find the
+ * balls at all — the one name that covers a spawner's ball and a hand-out alike, which is why
+ * {@link BallSpawnerService.cleanupRoundBalls} asks for it rather than for `ROUND_BALL_TAG`.
  *
  * **Must match the `tag` in `BallComponent`'s decorator**, which is the source of truth: the
  * decorator is what turns a ball into a component, and Flamework reads that literal at build time,
@@ -52,8 +64,12 @@ const INTERMISSION = "Intermission";
  * place that made balls would be a second place to get the tag, the physical properties and the
  * attribute order right.
  *
- * Every ball it spawns carries {@link ROUND_BALL_TAG}, which is what the cleanup sweeps — and any
- * ball *not* spawned here never gets it, so a thrown ball is never swept up by a round ending.
+ * **It is also the one sweep between rounds, and that job is bigger than its own balls.** Everything
+ * this service spawns carries {@link ROUND_BALL_TAG}, but not every ball in a round is the
+ * spawner's — a hand-out makes a fresh one, and it is how an `AlwaysThrowing` rig, a MultiBall window
+ * and a dev's `InfiniteBalls` get a ball. Those are the arena's litter all the same once the whistle
+ * goes, so {@link cleanupRoundBalls} takes every loose ball in the world rather than only the ones
+ * wearing its tag.
  */
 @Service()
 export class BallSpawnerService implements OnStart {
@@ -249,8 +265,12 @@ export class BallSpawnerService implements OnStart {
 	 * **A held ball counts**, deliberately — it is still the match's ball and still one of the budget, and
 	 * a count that ignored it would put a replacement on the floor for a ball somebody is carrying.
 	 *
-	 * The raw tag rather than `taggedParts`, because this is the same set {@link cleanupRoundBalls} sweeps
-	 * and the two must agree about what the match owns.
+	 * **The raw tag rather than `taggedParts`, and it is now the budget's set alone.** It used to be
+	 * shared with {@link cleanupRoundBalls}, on the argument that the two had to agree about what the
+	 * match owns. They no longer do and must not: the sweep takes every loose ball because a hand-out
+	 * ball is the round's litter too, while this count stays on the spawner's own balls so that a rig
+	 * throwing one does not spend the budget the arena's floor is stocked from. Counting those would
+	 * have emptied the floor the moment eight rigs were throwing.
 	 */
 	private roundBallCount(): number {
 		let count = 0;
@@ -314,30 +334,55 @@ export class BallSpawnerService implements OnStart {
 	}
 
 	/**
-	 * Takes back every ball the round owned, when the round ends.
+	 * **Takes back every loose ball in the world when the round ends — not only the ones this service
+	 * put out.**
 	 *
-	 * **A ball still in somebody's hand is left alone**, and that is the one judgement here. A ball
-	 * that leaves the arena's floor and ends up held is no longer litter, and destroying it out of
-	 * a hand would take a ball from a player mid-action for a reason that has nothing to do with
-	 * them. It keeps the ordinary lifetime instead, so it goes when it is next dropped or thrown —
-	 * the same clock every other ball is on.
+	 * **The bug this replaced, because the shape of it is the lesson.** This swept
+	 * {@link ROUND_BALL_TAG} and nothing else, which is correct only if the spawner is the only thing
+	 * that makes a ball. It is not: `BallService.giveBall` builds one, and that is how an
+	 * `AlwaysThrowing` rig, a MultiBall window and a dev's `InfiniteBalls` are armed — so a round's
+	 * worth of hand-out dodgeballs was invisible to the sweep and stayed on the arena floor until its
+	 * own sixty-second lifetime expired. The arena is permanent now, so nothing else takes them: the
+	 * report was "the balls are not cleaned up between rounds". The fix is to ask the question the
+	 * sweep is actually about — *is this ball lying in the world* — rather than the question the tag
+	 * happens to answer.
 	 *
-	 * The tag comes off before the destroy, which matters for the one frame in between: a ball on
-	 * its way out should not still be counted as the round's.
+	 * **Three things are skipped, and each is a different reason a loose ball is not litter.**
+	 *
+	 * - **A ball still in somebody's hand** (`isHeld`) — taken from a player mid-action for a reason
+	 *   that has nothing to do with them. It keeps the ordinary lifetime, so it goes when it is next
+	 *   released, and `RoundService.clearHeldBalls` empties the hands that are on their way into the
+	 *   next round anyway.
+	 * - **A ball that is not parented to `Workspace`** — welded into a hand is the ordinary case, and
+	 *   a parent that is not the world is a ball somebody else is still holding on to. This is the
+	 *   belt to `isHeld`'s braces and costs one comparison.
+	 * - **A ball inside a practice zone** — the one place in this game that is deliberately outside
+	 *   the round, and the same skip `RoundService`'s two cleanups make for a player standing in one.
+	 *   A practice player's MultiBall ball is thrown on a practice floor rather than in the arena, and
+	 *   a round ending on the other side of the map is not its business. Asked through
+	 *   `PracticeZoneService.insideZoneAt`, which is the zone module's own answer to "is this point on
+	 *   a practice floor" rather than a second copy of the geometry.
+	 *
+	 * **The tag still comes off before the destroy**, for the one frame in between and because a ball
+	 * leaving the world should stop being counted by `roundBallCount` at the same instant: a
+	 * spawner-made ball on its way out must not still be spending budget. It is a no-op for the
+	 * hand-out balls, which never carried it.
 	 */
 	private cleanupRoundBalls(): void {
 		let cleared = 0;
 
-		for (const instance of CollectionService.GetTagged(ROUND_BALL_TAG)) {
+		for (const instance of CollectionService.GetTagged(BALL_TAG)) {
 			if (!instance.IsA("BasePart")) continue;
+			if (instance.Parent !== Workspace) continue;
 			if (this.balls.isHeld(instance)) continue;
+			if (insideZoneAt(instance.Position)) continue;
 
 			instance.RemoveTag(ROUND_BALL_TAG);
 			instance.Destroy();
 			cleared++;
 		}
 
-		if (DEBUG) print(`[Spawner] round over — cleared ${cleared} round balls`);
+		if (DEBUG) print(`[Spawner] round over — cleared ${cleared} ball(s)`);
 	}
 
 	/** The phase the round is in, as `RoundService` last published it. */

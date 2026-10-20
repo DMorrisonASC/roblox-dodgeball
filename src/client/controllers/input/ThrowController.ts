@@ -73,7 +73,7 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
  * it will not flood the output, and sits behind `DEBUG_CONFIG.VERBOSE_LOGS` as well. Flip this to `true`
  * when chasing a charging or a landing problem.
  */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The charge has no smoothing constant, and the one that used to sit here is worth understanding before

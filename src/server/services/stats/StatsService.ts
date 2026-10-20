@@ -18,7 +18,7 @@ import {
 } from "shared/constants";
 
 /** Prints each load, each write, and each counted figure. Silent about the ordinary refusals. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The phase name that counts as competitive play. A word between two files, not a setting. */
 const PLAYING = "Playing";

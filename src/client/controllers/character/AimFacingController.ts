@@ -10,7 +10,7 @@ import { aiming, predictedLanding } from "../../aiming";
 import { isMobile } from "../../platform";
 
 /** Prints that this controller mounted, and (behind the log gate) each time a body starts or stops turning. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How close to the body the aim point has to be before its direction stops being worth using, in studs.

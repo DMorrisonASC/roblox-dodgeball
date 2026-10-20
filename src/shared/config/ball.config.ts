@@ -323,7 +323,7 @@ export const BALL_CONFIG = {
 	 * clear. So this is the floor of the **aimed** throw, which is now made by nobody — see `planAimedThrow` —
 	 * and every throw the game actually makes is a charged one that never reads it.
 	 */
-	THROW_SPEED: 50,
+	THROW_SPEED: 100,
 
 	/**
 	 * The gravity the ball falls under, in studs per second squared — **not the world's**.
@@ -348,7 +348,7 @@ export const BALL_CONFIG = {
 	 * **Flight time is the knob, not speed.** Lowering this lengthens the ball's hang, which is what makes a
 	 * throw watchable and catchable; the speed that then covers the distance is `THROW_MAX_SPEED`'s business.
 	 */
-	BALL_GRAVITY: 20,
+	BALL_GRAVITY: 50,
 
 	/**
 	 * How much faster than the bare minimum the arcing throw is launched, as a
@@ -451,7 +451,7 @@ export const BALL_CONFIG = {
 	 * further than any arena here is across. There is no lob any more. What is left is a throw a player asks for
 	 * deliberately, and the furthest deliberate one reaches 150 studs.
 	 */
-	THROW_MAX_SPEED: 90,
+	THROW_MAX_SPEED: 200,
 
 	// ------------------------------------------------ the charged player throw
 
@@ -523,7 +523,7 @@ export const BALL_CONFIG = {
 	 * **The clamp is far away.** `peakAngle` falls back to 45° only when `sqrt(2·g·h)` exceeds the launch speed,
 	 * which at the current floor of `45` would need this above fifty studs. See that function for the fallback.
 	 */
-	CHARGE_PEAK_HEIGHT: 0.9,
+	CHARGE_PEAK_HEIGHT: 0.5,
 
 	/**
 	 * The launch speed at zero charge, in studs per second. **Placeholder.**
@@ -536,7 +536,7 @@ export const BALL_CONFIG = {
 	 * for the reasons written up there. A charged throw has no solve to floor: its speed is this number and
 	 * the climb to the cap, and nothing else in the game can raise it.
 	 */
-	CHARGE_MIN_SPEED: 50,
+	CHARGE_MIN_SPEED: 80,
 
 	/**
 	 * **A multiplier on the derived launch correction. It should stay at 1.**
@@ -711,7 +711,7 @@ export const BALL_CONFIG = {
 	 * relative to the throw, so it stays correct whichever way you are facing — see
 	 * `leftAxis` in `shared/Trajectory.ts`.
 	 */
-	CURVE_STRENGTH: 50,
+	CURVE_STRENGTH: 80,
 
 	/**
 	 * Whether a curveball's launch cancels its own drift, so it lands on the mark.

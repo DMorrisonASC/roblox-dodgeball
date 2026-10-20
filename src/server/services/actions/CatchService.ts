@@ -15,7 +15,7 @@ import { WalkSpeedService } from "../character/WalkSpeedService";
 import { DodgeService } from "./DodgeService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How long a catch keeps the pair busy: the window, plus the lockout a dodge is refused for after

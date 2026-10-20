@@ -9,7 +9,7 @@ import { isMobile } from "../platform";
  * module can tell a reader: which region each GUI ended up in and what decided it. The one session it earns its
  * keep in is the one where a HUD element is drawn under the topbar.
  */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **Two questions decide which `ScreenGui` a thing mounts into, and they are asked in this order. The first is

@@ -65,7 +65,7 @@ import { chargeStartedAt } from "./throwing";
  */
 
 /** Prints when a hold latches a target and when a latch drops. Never a line per frame. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What the caller has, handed over once so this file cannot read the same facts a frame apart.

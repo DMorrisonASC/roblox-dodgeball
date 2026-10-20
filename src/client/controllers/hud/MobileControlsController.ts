@@ -11,7 +11,7 @@ import { DodgeController } from "../input/DodgeController";
 import { ThrowController } from "../input/ThrowController";
 
 /** Prints the mount line, every press and every release, and the stick's own resolution. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The hand-move mode: drag anywhere on the cluster and the whole box follows your finger.** **Placeholder —

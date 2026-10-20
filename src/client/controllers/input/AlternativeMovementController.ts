@@ -2,7 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import { Players, ReplicatedStorage, RunService, UserInputService } from "@rbxts/services";
 
 /** Prints the mount line. The line that says this controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The context and the action inside it. Named here because the Explore tree is how this is checked. */
 const CONTEXT_NAME = "AlternativeMovement";

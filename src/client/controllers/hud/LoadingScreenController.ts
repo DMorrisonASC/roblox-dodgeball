@@ -8,7 +8,7 @@ import { getSplashScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints the mount line and the dismissal line — the two that say this controller did anything. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** What the game is called, in the one place the client writes it. */
 const TITLE = "DODGEBALL Hero";

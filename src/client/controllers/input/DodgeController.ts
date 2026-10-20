@@ -6,7 +6,7 @@ import { events } from "shared/networking";
 import { inRoundOrZone } from "../../roundZone";
 
 /** Prints each completed combination, every refusal, and whether the request went out. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Every input that can dodge, and the direction each one points.

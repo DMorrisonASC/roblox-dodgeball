@@ -34,7 +34,7 @@ import { CHARACTER_CONFIG } from "shared/config/character.config";
  */
 
 /** Prints one line per spawned body, saying what was removed and what was applied. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Arms spawn protection for everybody, now and for the rest of the session.

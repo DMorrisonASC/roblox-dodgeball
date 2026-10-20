@@ -5,7 +5,7 @@ import { DUCKING_ATTRIBUTE } from "shared/constants";
 import { events } from "shared/networking";
 
 /** Prints the press and whether the request went out. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The action name the duck is bound under.

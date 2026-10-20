@@ -5,7 +5,7 @@ import { CatchService } from "./CatchService";
 import { DodgeService } from "./DodgeService";
 
 /** Prints every manual action that arrived, and why one of them did nothing. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The key that is not aiming: dropping the ball in hand.

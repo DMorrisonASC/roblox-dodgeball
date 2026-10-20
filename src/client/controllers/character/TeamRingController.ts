@@ -12,7 +12,7 @@ import { teamColourOf } from "shared/gameMode";
 import { paintHalo, paintRing } from "shared/ringPattern";
 
 /** Prints a line per ring made and per ring taken away, which is how one-per-player is confirmed. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.

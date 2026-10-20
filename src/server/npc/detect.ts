@@ -165,10 +165,11 @@ function sideOf(model: Model): TeamLabel | undefined {
  * comparison would be `undefined !== undefined` and the honest answer is that there is no enemy.
  *
  * **The candidate set is the codebase's own two lists**, exactly as `BallService.pierceBodies`
- * enumerates bodies: every player's character, and every `NPC`-tagged model. It is deliberately not
- * "everything in `Workspace` with a humanoid", because that would pick up a rig parked in a
- * `ServerStorage` template — the same out-of-world trap `TAGS.md` records for three other readers —
- * and because the two lists are what "a body that could be on a side" actually is.
+ * enumerates bodies: every player's character, and every `NPC`-tagged model **in the world**. The world
+ * half is not tidiness — `CollectionService` answers about the whole DataModel, so a template parked in
+ * `ServerStorage` wears `NPC` exactly as an arena rig does, and the tag alone made a body that is standing
+ * nowhere into an enemy of every rig on a side. `npc/rigs.ts` and `RoundService.roundParticipants` apply
+ * the same two tests for the same reason.
  *
  * **A dead body is not an enemy, and that is a separate rule from the side comparison above.** A rig
  * that is killed is kept whole for `NPC_CONFIG.RESPAWN_DELAY_SECONDS` — `RespawnBehavior` sets
@@ -286,7 +287,16 @@ function detectEnemyBody(rig: Model): EnemySighting | undefined {
 	}
 
 	for (const instance of CollectionService.GetTagged(NPC_TAG)) {
-		if (instance.IsA("Model")) consider(instance);
+		// **In the world, or not a candidate at all.** `CollectionService` answers about the whole DataModel,
+		// so `ServerStorage.PlaceholderRig` — a template wearing the tag — was the nearest enemy of every rig
+		// on a side: with no `Team` attribute on it, `sideOf` reads `undefined`, which is "not on my side" for
+		// a rig that holds one, and `resolveDodgeable` resolves a root out of the world perfectly happily. So
+		// a rig could turn onto a body standing nowhere and aim at the coordinates the template was saved at.
+		// The two tests are `npc/rigs.ts`'s and `roundParticipants`'s, applied for the same reason.
+		if (!instance.IsA("Model")) continue;
+		if (!instance.IsDescendantOf(Workspace)) continue;
+
+		consider(instance);
 	}
 
 	return found;

@@ -1,7 +1,7 @@
 import { Debris, ReplicatedStorage, Workspace } from "@rbxts/services";
 
 /** Prints one line per release, and one per template that is not there. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The template's name in `ReplicatedStorage`, and **the whole of the contract with it.**

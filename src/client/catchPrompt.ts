@@ -3,7 +3,7 @@ import { BALL_NAME, BALL_TAGGED_TEAM_ATTRIBUTE, TEAM_ATTRIBUTE } from "shared/co
 import { styleSplashText } from "./ui/actionSplash";
 
 /** Prints that the prompt is up, and every ball it decides about. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** What the prompt is called, on the ball's `BillboardGui` and as the name a stray one is found by. */
 const PROMPT_NAME = "CatchPrompt";

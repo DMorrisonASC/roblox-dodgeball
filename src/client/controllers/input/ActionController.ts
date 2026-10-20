@@ -6,7 +6,7 @@ import { events } from "shared/networking";
 const DROP_ACTION = "DropBall";
 
 /** Prints the bind once, and each press. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The client half of the remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;

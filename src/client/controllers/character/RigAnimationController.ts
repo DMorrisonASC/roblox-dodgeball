@@ -11,7 +11,7 @@ import {
 import { BodyConditions, BodyRender, applyBodyRender, destroyBodyRender, startBodyRender } from "../../bodyAnimation";
 
 /** Prints each rig as it starts being dressed, and any rig that cannot be. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How long a rig is given to produce its `Humanoid` and its `Animator`, in seconds, and how long each

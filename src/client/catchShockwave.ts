@@ -3,7 +3,7 @@ import { CatchCause } from "shared/constants";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 
 /** Prints one line per effect played, and one per template that is not there. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The two template names in `ReplicatedStorage`, and **the whole of the contract with them.**

@@ -1,5 +1,5 @@
 /** Prints every ball this file actually destroys. **This line is why the bug below was invisible.** */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The clock each ball is currently on, as a token. A row exists only while a timer is pending for that

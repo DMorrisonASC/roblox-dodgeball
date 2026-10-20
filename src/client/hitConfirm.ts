@@ -6,7 +6,7 @@ import { createActionSplash } from "./ui/actionSplash";
 import { getHudScreenGui } from "./ui/screenGui";
 
 /** Prints once at boot, and one line per confirmation. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * # The action splash — "HIT!" and "CAUGHT IT!", Wii Sports style

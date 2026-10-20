@@ -13,7 +13,7 @@ import { FreezeService } from "./FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
 
 /** Prints every duck, every refusal and every exemption. Off never — a duck is a handful of lines a round. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The duck's two numbers, **read from the config that both machines share.**

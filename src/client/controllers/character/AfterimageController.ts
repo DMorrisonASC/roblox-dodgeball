@@ -4,7 +4,7 @@ import { SERVER_FOLDER_NAME, startAfterimage, stopAfterimage } from "shared/afte
 import { AFTERIMAGE_SOURCE_ATTRIBUTE, AFTERIMAGE_WINDOW_ATTRIBUTE } from "shared/constants";
 
 /** Prints the local emit starting and stopping, and one line about the hide pass. Nothing per ghost. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * This client's own afterimage trail, and the pass that keeps the server's copy of it out of the way.

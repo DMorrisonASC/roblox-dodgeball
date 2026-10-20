@@ -11,7 +11,7 @@ import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, with the phase the dock is reading — the line that says it mounted and what it saw. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The dock's ZIndex.

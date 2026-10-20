@@ -20,7 +20,7 @@ import { insideZone } from "../zone/PracticeZoneService";
 import { BadgeService } from "../badges/BadgeService";
 
 /** Prints what every dodge request did, and why it did nothing. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Shortest direction vector that is accepted.

@@ -11,7 +11,7 @@ import { raiseZIndex } from "../../ui/panelChrome";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints the mount line and each mode change. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The ZIndex of the whole bar, and every descendant of it.

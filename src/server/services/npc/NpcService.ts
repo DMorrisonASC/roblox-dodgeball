@@ -36,7 +36,7 @@ import { MysteryBoxService } from "../mystery/MysteryBoxService";
 import { SuperService } from "../super/SuperService";
 
 /** Prints each model as it is picked up. A print per tick would flood the output. */
-const DEBUG = true;
+const DEBUG = false;
 
 /** How often the loop turns when no behavior is registered: idle, rather than spin. */
 const IDLE_PERIOD = 0.5;

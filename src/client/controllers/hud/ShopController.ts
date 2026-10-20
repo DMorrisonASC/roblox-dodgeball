@@ -37,7 +37,7 @@ import {
 import type { Tile } from "../../ui/panelChrome";
 
 /** Prints the mount line, every tab change, every chest request, and every answer. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** How many tiles sit across a shelf. Three, because the widest shelf here holds seven. */
 const COLUMNS = 3;

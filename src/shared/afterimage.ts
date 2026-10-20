@@ -68,7 +68,7 @@ import { ACTION_CONFIG } from "shared/config/action.config";
 import { AFTERIMAGE_SOURCE_ATTRIBUTE, AFTERIMAGE_WINDOW_ATTRIBUTE } from "shared/constants";
 
 /** Prints one line per trail, saying what a ghost of this body cost. Nothing else. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Which side this copy of the module is on.

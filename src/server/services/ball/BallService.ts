@@ -42,7 +42,7 @@ import { BadgeService } from "../badges/BadgeService";
 import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
 
-const DEBUG = true; // prints the mode, speed and angle of each throw
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The throw and catch clips are no longer played here, and this note is what stands in for the three
@@ -2207,7 +2207,14 @@ export class BallService implements OnStart {
 		}
 
 		for (const rig of CollectionService.GetTagged(NPC_TAG)) {
-			if (rig.IsA("Model")) consider(rig);
+			// **In the world, with `detect.ts`'s two tests**, because `pierceBodies` and `detectEnemy` are the
+			// same enumeration and the doc above says so. The tag reaches into `ServerStorage`, so without this
+			// a template gets a `NoCollisionConstraint` per part against a ball that can never touch it — work
+			// on every piercing throw, for a body that is not on the field.
+			if (!rig.IsA("Model")) continue;
+			if (!rig.IsDescendantOf(Workspace)) continue;
+
+			consider(rig);
 		}
 
 		return bodies;

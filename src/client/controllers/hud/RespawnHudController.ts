@@ -9,7 +9,7 @@ import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, when the countdown is up — the line that says the controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The element's width, and **the bound the attacker's line is truncated to.**

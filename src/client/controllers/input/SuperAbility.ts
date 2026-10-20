@@ -8,7 +8,7 @@ import { events } from "shared/networking";
 import { playSelectTone } from "../../ui/elevation";
 
 /** Prints the binds once, every press that went out, and nothing else. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The key that uses whatever power a mystery box gave you. **`3`, and nothing else in the game binds it.**

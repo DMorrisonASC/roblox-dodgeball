@@ -9,7 +9,7 @@ import { getHudColumn } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, when the HUD is up — the line that says the controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /*
  * **The band does not position itself any more, and the number that used to say where it went is gone with the

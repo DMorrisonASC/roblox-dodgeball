@@ -6,7 +6,7 @@ import { COINS_ATTRIBUTE } from "shared/constants";
 import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints once, when the readout is up — the line that says the controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The coin readout: one line under the shop button, showing the wallet the server owns.

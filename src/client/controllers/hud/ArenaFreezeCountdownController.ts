@@ -14,7 +14,7 @@ import { hudTheme } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints on mount — the line that says the controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Where the countdown sits in the `ZIndex` order: **above every HUD label, below every panel.**

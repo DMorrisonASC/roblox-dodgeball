@@ -11,7 +11,7 @@ import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints on mount, and one line per hit that lands in the feed. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * # Every size this element draws at, in one place

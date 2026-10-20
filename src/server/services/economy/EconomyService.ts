@@ -42,7 +42,7 @@ import { BIND_TO_CLOSE_SECONDS, WRITE_DEADLINE_SECONDS, runWithin } from "../../
 import { DRAW, RoundOutcome, TeamLabel } from "../round/team";
 
 /** Prints one line per grant, chest, milestone and round-end payout. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What a write attempt did. **Three answers rather than a boolean, because the caller reacts to each

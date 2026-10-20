@@ -6,7 +6,7 @@ import { events } from "shared/networking";
 import { sprinting } from "../../sprinting";
 
 /** Prints the bind once, every edge of the action, and every call that reports a change to the server. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The keys that sprint — either of them.

@@ -9,7 +9,7 @@ import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints once, when the legend is up — the line that says the controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** How far the legend sits from the right screen edge, and how far apart its rows are. */
 const SCREEN_EDGE_GAP = 12;

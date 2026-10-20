@@ -8,7 +8,7 @@ import { sprinting } from "../../sprinting";
 import { chargeStartedAt, releasedCharge } from "../../throwing";
 
 /** Prints the write once per body, and each body that was left alone and why. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The name of the script that animates every character, and the one this controller edits. */
 const ANIMATE_NAME = "Animate";

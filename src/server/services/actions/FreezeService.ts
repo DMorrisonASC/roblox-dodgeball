@@ -6,7 +6,7 @@ import { WalkSpeedService } from "../character/WalkSpeedService";
 import { overrideOutlineColour } from "../visual/OutlineService";
 
 /** Prints every freeze and every release, with what the body was doing before. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The named contribution a freeze makes to a body's walk speed.

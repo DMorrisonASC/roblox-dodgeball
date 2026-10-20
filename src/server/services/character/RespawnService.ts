@@ -4,7 +4,7 @@ import { RESPAWN_AT_ATTRIBUTE } from "shared/constants";
 import { playSpawnPoof } from "../../vfx/spawnPoof";
 
 /** Prints one line per load, per schedule and per cancelled wait, naming the reason. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Every character this game gives anybody, and the only place `Player.LoadCharacterAsync` is called.

@@ -6,7 +6,7 @@ import { ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
 import { getTransitionScreenGui } from "../../ui/screenGui";
 
 /** Prints when a wipe starts and when it comes off, which is how a wipe is told from a round without one. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The grid's container, named so a leftover can be found by name in the Explorer. */
 const CONTAINER_NAME = "RoundTransitionGrid";

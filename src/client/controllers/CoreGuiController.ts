@@ -1,7 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 
 /** Prints once, when the chrome has been dealt with — the line that says the controller ran at all. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How long to keep looking for the player list's configuration object, in seconds.

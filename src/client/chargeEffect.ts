@@ -6,7 +6,7 @@ import { chargeStartedAt } from "./throwing";
 import { playWindBurst } from "./windBurst";
 
 /** Prints one line per effect edge, and one per template that is not there. */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The template's name in `ReplicatedStorage`, and **the whole of the contract with it.**

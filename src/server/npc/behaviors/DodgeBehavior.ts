@@ -18,7 +18,7 @@ import type { BallService } from "../../services/ball/BallService";
  * aimed at this rig** — see the roll in `tick` for why it is once and not once per turn, which is what
  * this doc used to assume. See `note` for the line itself.
  */
-const DEBUG = true;
+const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The attribute that makes a ball dangerous, spelled the way its owner spells it.

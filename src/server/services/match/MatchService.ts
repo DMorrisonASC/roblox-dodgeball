@@ -39,6 +39,25 @@ const SIGN_NAME = "MatchJoinCounts";
 const SIGN_LABEL_NAME = "Counts";
 
 /**
+ * **What each side is called on its sign: the colour the side is drawn in, not the letter it is stored
+ * as.** A player walking up to a pad is choosing between two halves of a map that is red on one side and
+ * blue on the other, so `Join Red` names the thing they can see; `Join A` names the value
+ * `TEAM_ATTRIBUTE` happens to hold, which is a fact about the code rather than about the lobby.
+ *
+ * **The words live here rather than in `gameMode.ts`, and the split is deliberate.** That module's
+ * `MODE_SIDE_NAMES` is what a *mode* calls its sides — `Seekers` and `Dodgers` — and it is read where a
+ * sentence is being written about a round that has a mode. A join pad exists before any mode is chosen
+ * and is the same two pads in every mode, so its words come from the palette rather than from a mode's
+ * vocabulary: `TEAM_COLORS` in `shared/gameMode.ts` is the table that says A is red and B is blue, and
+ * those two facts are one fact. **A colour changed there is a word changed here**, which is why this
+ * comment names it instead of repeating the argument.
+ */
+const SIGN_SIDE_WORD: Record<TeamLabel, string> = {
+	A: "Red",
+	B: "Blue",
+};
+
+/**
  * The tag put on a character that has just used a join part, for the debounce.
  *
  * **A tag rather than a table or a timer**, which is this codebase's own answer to "this thing is in
@@ -532,9 +551,9 @@ export class MatchService implements OnStart {
 	 *
 	 * **Each sign carries only its own side's number, since the split into two parts.** With one part the
 	 * label had to name both sides — `A: 2/4  B: 1/4` — because there was nothing else on the board to say
-	 * which team the second number was about. On two parts the board *is* the side, so `A: 2/4` on the `A`
-	 * sign answers the only question the player standing in front of it has, and it does it in half the
-	 * width.
+	 * which team the second number was about. On two parts the board *is* the side, so `Join Red 2/4` on
+	 * the `A` sign answers the only question the player standing in front of it has, and it does it in half
+	 * the width. **The side is named by its colour rather than its letter** — see {@link SIGN_SIDE_WORD}.
 	 *
 	 * `Adornee` **and** `Parent`, both, matching that board: the parent is what keeps the sign alive with
 	 * the part and what it moves with, and the adornee is what it is drawn against — the same pair the
@@ -688,9 +707,21 @@ export class MatchService implements OnStart {
 		for (const sign of this.signs) sign.label.Text = this.sideText(sign.team);
 	}
 
-	/** `A: 2/4` — one sign's whole content. The side is named because the sign is a lone board. */
+	/**
+	 * `Join Red 2/4` — one sign's whole content. The side is named because the sign is a lone board.
+	 *
+	 * **One line, and the width is what keeps it one.** The billboard is `MATCH_SIGN_SIZE` wide at
+	 * `MATCH_SIGN_TEXT_SIZE` and nothing here is allowed to change either — that size is the look, and the
+	 * look is what the distance scaling is applied to. So the heading and the count share the line the
+	 * count already had: `Join Red 2/4` is what fits where `A: 2/4` did, and the longer form a second line
+	 * would need — `Join Red` over `2 spots available` — does not, at this size.
+	 *
+	 * **The word rather than the letter, because the letter only means something to the code.** See
+	 * {@link SIGN_SIDE_WORD}: the player is choosing the red half or the blue half of the map, and `A` is
+	 * the value `TEAM_ATTRIBUTE` stores.
+	 */
 	private sideText(team: TeamLabel): string {
-		return `${team}: ${sideCount(team, this.countsFor())}/${MATCH_MAX_PER_TEAM}`;
+		return `Join ${SIGN_SIDE_WORD[team]} ${sideCount(team, this.countsFor())}/${MATCH_MAX_PER_TEAM}`;
 	}
 
 	/** `A: 2/4  B: 1/4` — both sides at once, which is the shape every log line wants. */
