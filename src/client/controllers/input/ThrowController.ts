@@ -25,6 +25,7 @@ import { assistedAim } from "../../aimAssist";
 import { aiming, predictedLanding, predictedTargets } from "../../aiming";
 import { shakeCamera, startChargeTremble } from "../../cameraShake";
 import { isMobile } from "../../platform";
+import { inRound, sideOfBody } from "../../roundZone";
 import { chargeStartedAt, releasedCharge } from "../../throwing";
 
 const ACTION_NAME = "ThrowDodgeball";
@@ -525,6 +526,19 @@ export class ThrowController implements OnStart {
 		// this is the same fact the server will act on rather than a copy of it that could disagree.
 		const pierce = abilityOn(ball) === "Pierce";
 
+		// **The side this throw is on, read once for the whole arc.** A teammate has to be a body the drawn path
+		// flies *through*, because the server has already made the ball do exactly that — see `BallService`'s
+		// `teammateBodies` and the loop that sets the ignores up before the ball exists. The preview and the
+		// wire have to agree about this or the guide is promising a path the ball will not take, which is the
+		// one thing this file's whole design is about.
+		//
+		// **Gated on the phase for `AimTargetController.hittable`'s reason.** `TEAM_ATTRIBUTE` is written at each
+		// whistle and *left standing* through an intermission, so a side read outside a round compares against a
+		// label that has stopped meaning anything — `isFriendlyFire` gates on the phase for exactly this, and an
+		// ungated read here would draw a lobby throw as passing through a former teammate. Outside a round
+		// `mine` is nothing and no body is a teammate, which is the answer the server gives too.
+		const mine = inRound() ? sideOfBody(this.player) : undefined;
+
 		// The guide itself is ignored as well as the thrower. Its own parts sit
 		// right along this arc, and an arc that can hit the line drawn to
 		// represent it will chase itself around the world.
@@ -549,10 +563,26 @@ export class ThrowController implements OnStart {
 			// `applyAcceleration` turns into a `VectorForce`. It is zero for a throw with no bend, which is
 			// how one code path covers both shapes.
 			acceleration: plan.acceleration,
-			// **And the one line that makes the preview honest for Pierce.** Omitted for every other throw,
-			// which is what keeps an ordinary ball's arc exactly what it was — see {@link passesThroughBodies}
-			// for what the predicate answers, and why it is the server's rule rather than a second one.
-			passable: pierce ? passesThroughBodies : undefined,
+			// **The one line that makes the preview honest, for both pass-through rules.**
+			//
+			// A Pierce throw flies through every body — that is the ability — and **every other throw flies
+			// through its thrower's teammates**, because the server now sets a collision ignore for them before
+			// the ball is parented (see `BallService.teammateBodies`). The arc therefore needs a predicate on
+			// *every* throw, not only on a Pierce one: an arc that stopped at a teammate while the ball sailed
+			// through them would be the guide lying about the path, and the guide is the only thing telling a
+			// player where the ball goes. {@link passesThroughBodies} is the Pierce half; the sibling below is
+			// the teammate half, and both answer from the same `bodyOf` test the glow uses so a part the arc
+			// refuses to stop on is always a part this file can name.
+			//
+			// **An enemy is still a stop**, which is what keeps the arc a promise: the predicate is asked about
+			// each part the sweep meets, and a body on the other side answers `false`.
+			passable: (part: BasePart) => {
+				if (pierce) return passesThroughBodies(part);
+
+				const body = bodyOf(part);
+
+				return body !== undefined && mine !== undefined && sideOfBody(body) === mine;
+			},
 		});
 
 		// The marker report is the noisiest thing in the game, and it is rate limited and behind

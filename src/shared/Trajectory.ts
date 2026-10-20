@@ -463,7 +463,12 @@ export interface TrajectoryOptions {
 	/**
 	 * Parts the arc flies *through* rather than stopping at.
 	 *
-	 * **The mechanism behind Pierce, and the reason this is a predicate rather than a list.** The arc is
+	 * **The mechanism behind Pierce, and behind the teammate rule that came after it** — a throw is not
+	 * stopped by its thrower's own side either, and the caller that knows whose side the throw is on is the
+	 * caller that builds this predicate. Two rules, one hook: what they agree about is that the drawn path
+	 * must be the ball's path, which is the only reason this option exists.
+	 *
+	 * **And the reason this is a predicate rather than a list.** The arc is
 	 * drawn before the ball exists — while the player is still aiming — so the caller has to be able to
 	 * answer "would this throw go through that?" about anything the sweep finds, including things it has
 	 * not found yet. A list of instances would have to be rebuilt every frame and would still be a

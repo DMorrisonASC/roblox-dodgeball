@@ -372,6 +372,39 @@ export class LobbyRigService implements OnStart {
 	/** The phase last seen, so a boundary can be told from a repeat. */
 	private previousState = "";
 
+	/**
+	 * **Whether the lobby's own bodies may be made yet — the gate the first fill waits behind.**
+	 *
+	 * `false` from boot until {@link startLobbyFillCountdown} ends, and the only reader is the gate at the top
+	 * of {@link rebalanceBody}. **One read is enough because every route that makes a rig ends in that
+	 * method** — the seat poll, a round boundary, the corpse sweep, and `reserveSeat`'s stand-down — with one
+	 * exception that cannot fire behind the gate: `onPlayerLeft` spawns directly, and a departure can only
+	 * free a seat that a *record* names, which requires a rig to have been stood down, which requires a rig.
+	 * `releaseSeatIfUnused` is the same argument from the other side: its record is written by the same
+	 * stand-down.
+	 *
+	 * **Not a deadline and not a countdown**, deliberately, because the clock does not start at boot: it
+	 * starts when somebody joins. See `NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS` for what the wait is for, and
+	 * {@link holdLobbyUntilSomebodyArrives} for the two ways it starts.
+	 */
+	private lobbyFillArmed = false;
+
+	/**
+	 * **Whether the one-shot countdown has been started, so a second player cannot start a second one.**
+	 *
+	 * Kept beside {@link lobbyFillArmed} rather than folded into it, because they answer different questions:
+	 * this one is "has the clock been set going", which is about the server's lifetime, and that one is "may
+	 * bodies be made", which is about the clock having run out. One field standing for both would be a field
+	 * whose `true` meant two things, and the first reader to ask the wrong one would get a yes.
+	 *
+	 * It is the only guard on {@link startLobbyFillCountdown}, so both routes in — a player already here at
+	 * boot, and a player who arrives afterwards — go through the same check. The `PlayerAdded` connection is
+	 * also disconnected on its first fire, which is belt and braces rather than the mechanism: a connection
+	 * that was dropped for any reason would otherwise arm a second countdown, and a second countdown would
+	 * seed a lobby that is already standing.
+	 */
+	private lobbyFillCountdownStarted = false;
+
 	/** The round's status folder, held once it has been found. See `watchPhase`. */
 	private statusFolder?: Folder;
 
@@ -522,22 +555,23 @@ export class LobbyRigService implements OnStart {
 		// not a second way to make a lobby rig, it is the first few of them. See `spawnLobbyRig` for where the
 		// part comes from, why the placement is lifted, and why the walk it hands over is four attributes rather
 		// than one.
-		let made = 0;
+		// **What the seeding rule *is* is unchanged — what changed is when it happens, and it is now one call.**
+		// One rig per seat a match allows, alternating sides, built by the same `spawnLobbyRig` a replacement is,
+		// and then one stood down per person already in the server. All of that is {@link seedLobby}, which this
+		// hands to a clock instead of running inline; the paragraph above is the reason that distinction matters
+		// (a seat has to be *recorded*, not just counted) and it is still true of the call.
+		//
+		// **Everything above this line is the server being ready, and none of it needs a body in the world.**
+		// That is the split: the pool line, the four missing-place warnings, the short-pool note and the
+		// place-file diagnostics all print at boot, because they are answers about the place file and a reader
+		// wants them whether or not a player ever joins. The bodies are what wait — see
+		// {@link holdLobbyUntilSomebodyArrives}, and `NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS` for the number.
+		this.holdLobbyUntilSomebodyArrives(count);
 
-		for (let index = 0; index < count; index++) {
-			if (this.spawnLobbyRig(index % 2 === 0 ? TEAM_A : TEAM_B) !== undefined) made++;
-		}
-
-		// **One rig stands down per person already in the server, exactly as if they had just walked in.** The
-		// observable is the rule the class doc states: eight seats, one player, seven placeholders — and two
-		// players on a screen is six, wherever they are standing.
-		for (const player of Players.GetPlayers()) {
-			this.reserveSeat(player);
-		}
-
-		// **The one line that says it worked**, in the shape `[Match] up`, `[Zone] up` and `[Spawner] up`
-		// already use. The counts are the diagnostic: a folder holding fewer parts than rigs is visible
-		// here as a number smaller than the rig count, which is the case where two rigs share a spawn.
+		// **The counts below are what the fetch-box warnings are read from, and the line that used to carry
+		// them is `seedLobby`'s now** — the `[Rig] up` line, in the shape `[Match] up`, `[Zone] up` and
+		// `[Spawner] up` already use. Its counts are the diagnostic: a folder holding fewer parts than rigs is
+		// visible there as a number smaller than the rig count, which is the case where two rigs share a spawn.
 		//
 		// **The fetch boxes are reported here and are never fatal**, which is the difference between them
 		// and every other thing above: a place file is not something this service can repair, and the rigs
@@ -562,15 +596,15 @@ export class LobbyRigService implements OnStart {
 		}
 
 		// **The count that was actually *made*, not the count that was wanted.** They differ only when a spawn
-		// was refused outright — no rig-shaped model in the folder, no lobby spawn — and this line is the one a
+		// was refused outright — no rig-shaped model in the folder, no lobby spawn — and that line is the one a
 		// reader checks against the pool line, so it has to be the real number. The stand-down that follows a
-		// player already in the server is its own line, one per person, so `8 made` here plus one `stood down`
-		// below reads as the seven placeholders the class doc describes rather than as an eight-body lobby.
-		print(
-			`[Rig] up — ${made} placeholder rig(s) (${count} seat(s)), ` +
-				`${spawns.size()} lobby spawn(s), pads ${padsA.size()} + ${padsB.size()}, ` +
-				`fetch boxes ${zones.a} + ${zones.b}`,
-		);
+		// player already in the server is its own line, one per person, so `8 made` there plus one `stood down`
+		// reads as the seven placeholders the class doc describes rather than as an eight-body lobby.
+		//
+		// **It is printed by `seedLobby` and not here**, because it counts bodies that no longer exist at boot:
+		// a line here would say `0 placeholder rig(s)` for a lobby that is about to be full, which is the one
+		// reading a person would take as a fault. What this block is left with is the fetch-box half — a
+		// place-file question, answered at boot, whether or not a player ever joins.
 
 		// **The seat wiring, and it is behind the guard above on purpose.** With no rigs there are no seats
 		// to keep and nothing a trigger could do about it; the boot line is what says why the lobby is empty.
@@ -595,6 +629,184 @@ export class LobbyRigService implements OnStart {
 		// it can yield, and `onStart` is the wrong place to hold the rest of the boot up.
 		task.spawn(() => this.watchPhase());
 		task.spawn(() => this.watchSeats());
+	}
+
+	// ---- The first fill, and the hold in front of it ----
+
+	/**
+	 * **Holds the lobby's own bodies back until there is somebody in the server to see them arrive.**
+	 *
+	 * **What this is for, in one sentence:** eight rigs are eight complete bodies — a `Head`, a `Torso`,
+	 * limbs, a `Humanoid`, an `Animator` and a trail each — and a client that receives them in the same frame
+	 * as the map, its own character and the whole HUD spends its first second building instances it is not
+	 * looking at yet. Nothing about the *server* is waiting: `NpcService.spawn` is synchronous and this
+	 * service has always been able to fill the lobby on the boot frame. What is being spread out is the
+	 * client's join. See `NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS` for the number and for why a fixed one is
+	 * honest here, and {@link seedLobby} for what runs when the hold ends.
+	 *
+	 * **Two routes in, and they are the same route after the first line.** A player already in `Players` is
+	 * the ordinary Studio case and the ordinary "somebody was here before the scripts finished" case, and
+	 * `PlayerAdded` will never fire for them — which is why the check is `GetPlayers()` first and the event
+	 * second, rather than an event with a `GetPlayers()` fallback. Both end in
+	 * {@link startLobbyFillCountdown}, which is where the one-shot lives, so a server that somehow took both
+	 * routes still has one clock.
+	 *
+	 * **A server nobody ever joins gets an empty lobby and no clock**, which is criterion rather than an
+	 * oversight: the whole point of the wait is a player, and there is no player to wait for. The connection
+	 * below stays live for the server's lifetime and the first join closes it — see
+	 * {@link lobbyFillCountdownStarted} for why the disconnect is belt and braces around the flag rather than
+	 * the guarantee itself.
+	 *
+	 * **The count is carried rather than recomputed**, because it is `MATCH_MAX_PER_TEAM * 2` derived once in
+	 * `onStart` beside the pool line that prints it, and a second derivation would be a second number that
+	 * agrees today and stops agreeing the day the cap moves.
+	 */
+	private holdLobbyUntilSomebodyArrives(count: number): void {
+		const present = Players.GetPlayers();
+
+		if (present.size() > 0) {
+			// **Skipped straight to the clock, not to the fill.** A player already here still waits the delay:
+			// the reason for the wait is the client that is about to join, and in a Studio playtest that client
+			// is this one — so "nobody joined, so there is nothing to protect" would be exactly wrong here.
+			this.startLobbyFillCountdown(present[0].Name, count);
+			return;
+		}
+
+		print(
+			`[Rig] lobby held — nothing is spawned until somebody joins, and then ` +
+				`${string.format("%.0f", NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS)}s later`,
+		);
+
+		const connection = Players.PlayerAdded.Connect((player) => {
+			connection.Disconnect();
+			this.startLobbyFillCountdown(player.Name, count);
+		});
+	}
+
+	/**
+	 * **The clock: one wait, one fill, once per server.**
+	 *
+	 * **One-shot in two places, and both are needed.** The flag refuses a second countdown however the first
+	 * one was started, and the caller's `Disconnect` stops the `PlayerAdded` route from firing again. The flag
+	 * is the mechanism and the disconnect is the courtesy: without the flag, a connection dropped for any
+	 * reason — a `PlayerRemoving` race, a future `:Disconnect` from somewhere else — would arm a second
+	 * countdown and a second countdown would seed a lobby that is already standing, which is eight more rigs
+	 * for eight held seats. That failure would be visible only as a lobby of sixteen, so it is refused here
+	 * rather than argued about.
+	 *
+	 * **`delay > 0` is the off switch, not a second guard.** `task.wait(0)` yields one frame rather than
+	 * none, so a config of nought that still went through the yield would be "delayed by a frame", which is
+	 * a number nobody can see and nobody asked for. With the check, nought means the fill happens on the frame
+	 * the flag is set.
+	 *
+	 * **The spawning is `task.spawn`ed rather than the wait being put in `onStart`**, for the reason the two
+	 * watchers above are: `onStart` is the boot, and a boot that yields is a boot that holds up every service
+	 * after it. Nothing below needs the boot to be finished — the pool, the pads and the tags are all read at
+	 * fill time — so the only thing a yield here would buy is a slower boot.
+	 *
+	 * **What happens if the first player leaves during the wait: the fill runs anyway.** The clock is about
+	 * the server's lifetime rather than about that player, and there is no cheaper answer — a player who
+	 * leaves and rejoins inside the window would otherwise restart it, and a window that restarts is a window
+	 * that never ends. The cost is a lobby of rigs standing in an empty server, which is what the server would
+	 * have had from its first frame before this change, and the next joiner finds a full lobby rather than an
+	 * empty one and stands a single rig down for themselves.
+	 */
+	private startLobbyFillCountdown(first: string, count: number): void {
+		if (this.lobbyFillCountdownStarted) return;
+
+		this.lobbyFillCountdownStarted = true;
+
+		const delay = NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS;
+
+		print(`[Rig] lobby fill in ${string.format("%.0f", delay)}s — ${first} is the first player here`);
+
+		task.spawn(() => {
+			if (delay > 0) task.wait(delay);
+
+			this.lobbyFillArmed = true;
+
+			// **A round that opened inside the wait outranks it.** The intermission is
+			// `ARENA_CONFIG.INTERMISSION_SECONDS` long and a player can join near the end of it, so the first
+			// whistle is reachable before this clock runs out — and seeding lobby rigs then would put eight
+			// bodies walking to pads in the middle of a round, on top of the arena rigs the round already
+			// made. The seats are not lost: `rebalance` fills the arena while the round is on, and the lobby
+			// is filled from empty by the same poll when the whistle goes for the intermission.
+			if (this.phase() === PLAYING) {
+				print("[Rig] lobby fill skipped — the round opened first, so the seats are filled in the arena");
+
+				this.rebalance();
+
+				return;
+			}
+
+			this.seedLobby(count);
+		});
+	}
+
+	/**
+	 * **Puts the lobby's bodies in the world: one rig per seat, alternating sides, then one stood down per
+	 * player already here.**
+	 *
+	 * This is the block that used to run inline at the end of `onStart`, moved rather than copied — the
+	 * seeding rule, the order and the log line are unchanged. The only thing that changed is *when* it runs;
+	 * see {@link holdLobbyUntilSomebodyArrives}.
+	 *
+	 * **`reserveSeat` after the loop, and not a smaller seed count**, which is the part that belongs with this
+	 * method rather than with its caller: both routes end at seven rigs for one player, and only one of them
+	 * leaves a record behind. `reserveSeat` writes down *which side's seat* that person displaced, and that
+	 * record is what puts a rig in their seat when a round starts while they stay in the lobby, and what puts
+	 * one back when they leave. A seed of `count - players` would produce the same bodies and forget the seat.
+	 *
+	 * **It is also why a player who joined *during* the wait ends up with the right lobby.** `PlayerAdded`
+	 * called `reserveSeat` at the moment they arrived, found no rig to stand down, and — by design, see that
+	 * method — recorded no seat. This loop is the call that stands one down, on the rig that now exists, and
+	 * the guard inside `reserveSeat` is what makes running it for somebody who was already settled a no-op
+	 * rather than a second rig destroyed for one player.
+	 *
+	 * **The counts are read here rather than carried from boot**, because seconds have passed and a place
+	 * file can be edited inside a Studio session: a spawn part, a pad or a fetch box added since boot is then
+	 * in the line describing where the rigs went, rather than in a sentence about a world that no longer
+	 * exists. That is also why the line is here and not in `onStart` — see the note left where it used to be.
+	 */
+	private seedLobby(count: number): void {
+		const spawns = this.lobbySpawns();
+		const padsA = taggedPartsInWorkspace(MATCH_JOIN_A_TAG);
+		const padsB = taggedPartsInWorkspace(MATCH_JOIN_B_TAG);
+
+		let made = 0;
+
+		for (let index = 0; index < count; index++) {
+			if (this.spawnLobbyRig(index % 2 === 0 ? TEAM_A : TEAM_B) !== undefined) made++;
+		}
+
+		// **One rig stands down per person already in the server, exactly as if they had just walked in.** The
+		// observable is the rule the class doc states: eight seats, one player, seven placeholders — and two
+		// players on a screen is six, wherever they are standing.
+		for (const player of Players.GetPlayers()) {
+			this.reserveSeat(player);
+		}
+
+		const zones = zoneCounts();
+
+		// **The count that was actually *made*, not the count that was wanted.** They differ only when a spawn
+		// was refused outright — no rig-shaped model in the folder, no lobby spawn — and this line is the one a
+		// reader checks against the pool line, so it has to be the real number. The stand-down above is its own
+		// line, one per person, so `8 made` here plus one `stood down` reads as the seven placeholders the
+		// class doc describes rather than as an eight-body lobby.
+		print(
+			`[Rig] up — ${made} placeholder rig(s) (${count} seat(s)), ` +
+				`${spawns.size()} lobby spawn(s), pads ${padsA.size()} + ${padsB.size()}, ` +
+				`fetch boxes ${zones.a} + ${zones.b}`,
+		);
+
+		// **And one repair pass, because the poll's own first turn has already been spent behind the gate.**
+		// `watchSeats` consumes the roster revision on its first turn — `revision` starts at `-1`, so that turn
+		// always looks like a change — and that is the turn whose `rebalance` used to repair a seed that came up
+		// short (a refused spawn, a side that lost one). Behind the gate that call returns before it fills, so
+		// without this line a short lobby would wait for the next join, leave or whistle to be noticed. With
+		// it, the repair happens on the same frame as the seed; on a full lobby it is the arithmetic below
+		// finding nothing to do.
+		this.rebalance();
 	}
 
 	// ---- The seat arithmetic ----
@@ -875,6 +1087,25 @@ export class LobbyRigService implements OnStart {
 	 */
 	private rebalanceBody(): void {
 		const playing = this.phase() === PLAYING;
+
+		// **The one gate on the first fill, and it is here because this is where every fill ends.** The lobby's
+		// eight bodies are held back until there is somebody in the server to see them arrive and a moment has
+		// passed — see {@link holdLobbyUntilSomebodyArrives} and `NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS` for
+		// what that buys and why it is pacing rather than readiness.
+		//
+		// **Why the gate is on this method rather than on the boot's own seed loop**, which is where the delay
+		// reads like it belongs: the boot is not the only thing that fills the lobby. `watchSeats` consumes the
+		// roster revision on its first turn (`revision` starts at `-1`), calls {@link syncSeats}, and that calls
+		// this — so a delay written into `onStart` alone would be undone a quarter of a second later, by the
+		// poll, and the report would be "the delay does nothing". A gate here cannot be routed around, because
+		// every path that makes a body comes through it.
+		//
+		// **`playing` is an escape rather than an oversight.** A round that opens inside the grace outranks it:
+		// a match is played on rigs, so seats that are short during a round are filled in the arena, and a gate
+		// that refused that would be an empty round rather than a quiet lobby. The `Playing` half of this is
+		// therefore never held, and the case where a round opens *before* the first fill is finished by
+		// {@link startLobbyFillCountdown}, which seeds nothing while a round is on.
+		if (!this.lobbyFillArmed && !playing) return;
 
 		// **First, because a corpse nothing will rebuild is not a held seat — and both counts below are read
 		// after it.** A body that is down counts toward its side's seats here (see `isDown`), on the grounds

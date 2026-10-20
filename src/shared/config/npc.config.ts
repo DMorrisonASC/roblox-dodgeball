@@ -643,6 +643,35 @@ export const NPC_CONFIG = {
 	WALK_TO_PAD_LOOK_DWELL_SECONDS: 1,
 
 	/**
+	 * **How long the lobby waits, after the first player is in the server, before it puts its rigs out.**
+	 * **Placeholder — 5.**
+	 *
+	 * **This is client replication breathing room, and it is deliberately not a readiness check.** The server
+	 * can make all eight rigs on the frame it boots — `NpcService.spawn` is synchronous and `LobbyRigService`
+	 * has always done exactly that — so nothing here is waiting for the *server* to be ready. What it buys is
+	 * the joining client's first second: eight rigs are eight complete bodies (`Head`, `Torso`, limbs, a
+	 * `Humanoid`, an `Animator`, a trail), and a client that receives them in the same frame as the map, its
+	 * own character and the whole HUD spends that second building instances it is not looking at yet. The
+	 * price is a lobby that is empty for the length of the player's own loading screen.
+	 *
+	 * **A fixed number is honest here because the fill is idempotent and self-repairing.** Nothing is
+	 * *correct* only after five seconds: `LobbyRigService.rebalance` fills anything the seed missed on its
+	 * next turn, a rig spawned a frame late is indistinguishable from one spawned on time, and a player who
+	 * joins during the wait gets the same lobby as one who joins after it. So this is pacing rather than
+	 * correctness, and a slow device gets a lobby that arrives later rather than a lobby that is wrong.
+	 *
+	 * **Five rather than two or ten.** It sits inside `ARENA_CONFIG.INTERMISSION_SECONDS` (16), so the first
+	 * round is never held up by it. Below about three the rigs land inside the client's own join spike, which
+	 * is the case this exists for; past ten the lobby is visibly empty to somebody who has already loaded and
+	 * is walking around it.
+	 *
+	 * **Nought is an off switch, not a minimum.** At nought the fill happens on the frame the wait would have
+	 * started rather than one `task.wait(0)` later — see `LobbyRigService.startLobbyFillCountdown`, which
+	 * skips the yield entirely at that value.
+	 */
+	INITIAL_SPAWN_DELAY_SECONDS: 5,
+
+	/**
 	 * How often the lobby's seat bookkeeping checks whether the roster has moved, in seconds.
 	 * **Placeholder — 0.25.**
 	 *

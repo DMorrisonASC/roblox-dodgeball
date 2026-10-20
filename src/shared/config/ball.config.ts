@@ -845,6 +845,85 @@ export const BALL_CONFIG = {
 	 */
 	BALL_COLOR: Color3.fromRGB(196, 40, 28),
 
+	/**
+	 * **The materials a ball may be made of — one drawn per ball, and every entry has to be a *bumpy*
+	 * one. Currently a single entry: `DiamondPlate`.** **Placeholder.**
+	 *
+	 * **The first version of this list was wrong, and the fault is worth keeping because it was a fault of
+	 * the list rather than of the code.** It offered `Plastic`, `Rubber`, `SmoothPlastic` and `Marble`, on
+	 * the argument that a material with a surface gives a ball texture — but three of the four *are* smooth:
+	 * `Rubber` and `SmoothPlastic` are the two flattest materials the engine has, and `Marble` is glossy.
+	 * What a person sees is whichever one that ball drew, so a list that *can* draw a smooth ball will, one
+	 * ball in four, and the report is the obvious one: **"you gave me the same smooth texture"**.
+	 *
+	 * **So the rule for an entry is "bumpy at two studs", and the answer settled on one material: the tread
+	 * plate.** These are texture maps rather than geometry — the ball's silhouette does not change — so the
+	 * bump has to survive being magnified on a sphere this small, and of the engine's bumpy materials
+	 * `DiamondPlate` is the one whose relief is *regular*: raised diamonds at a stud-scale pitch read as a
+	 * moulded ball. The ones passed over do not manage that at two studs — `Cobblestone`'s and `Pebble`'s
+	 * stones are golf-ball sized, and `Sand` and `Fabric` are grain rather than shape. **The cost, said
+	 * plainly: `DiamondPlate` is a metal**, so the ball is shinier than it was and its colour reads darker
+	 * than {@link BALL_CONFIG.BALL_COLOR} because the map is lit rather than painted. If that is wrong, the
+	 * entry is one line and the alternatives are named in this paragraph.
+	 *
+	 * **Real dimples are a `MaterialVariant`, and that is a place-file job rather than a code one.** A
+	 * variant is a normal map plus a `StudsPerTile` scale, authored in Studio's Material Manager and
+	 * parented to `MaterialService`; the engine's built-in materials cannot be given relief from a script.
+	 * See {@link BALL_CONFIG.BALL_MATERIAL_VARIANT}, which is the switch that uses one when it exists —
+	 * until then this list is what makes the balls read as dodgeballs rather than as coloured spheres.
+	 *
+	 * **One entry rather than a list of four, and the list is kept rather than collapsed into a single
+	 * value.** Per-ball variety was the earlier design — see the first paragraph — and it was withdrawn in
+	 * favour of one surface everywhere, because four bumpy materials still made two balls of the same red
+	 * look like different objects, which is a fact about the spawn rather than about the ball. The list
+	 * stays because the draw is the seam that makes either decision one line: add an entry and the arena is
+	 * a collection again. The draw is **per ball and not per throw**, so a ball keeps the face it was made
+	 * with for its whole life — across the catches and re-throws that reuse it — which is what makes it
+	 * something a player can recognise again later in a round.
+	 *
+	 * **None of this touches how a ball behaves, and that is why this list can be edited freely.**
+	 * `BallFactory.create` gives every ball `CustomPhysicalProperties`, which *overrides* the density,
+	 * friction and elasticity the material would otherwise supply — so the material here is appearance and
+	 * nothing else. Bounce, roll, the throw solver and the client's aim guide are all indifferent to what is
+	 * in this list. **That is not true of a part made by hand in Studio** with a material and no custom
+	 * properties, which is worth knowing before anybody deletes those properties here "because the material
+	 * already says so".
+	 *
+	 * **Order does not matter, and the list may be emptied.** An empty list falls back to `DiamondPlate`
+	 * rather than erroring; see `SphereService.drawnSurface`, which is why a config emptied mid-edit gives
+	 * plain bumpy balls rather than a broken spawn path.
+	 *
+	 * **And the freeze flash still works per ball.** `FreezeService.flashActivation` records the material a
+	 * ball *was wearing* and puts that back when its `Neon` flash ends, so a tread-plate ball returns to
+	 * `DiamondPlate` — see it for why the flash is the only thing in the game allowed to repaint a ball.
+	 */
+	BALL_MATERIALS: [Enum.Material.DiamondPlate] as ReadonlyArray<Enum.Material>,
+
+	/**
+	 * **The name of a `MaterialVariant` under `MaterialService` to wear instead — the only route to real
+	 * dimples.** **Placeholder — empty, which means "use {@link BALL_CONFIG.BALL_MATERIALS}".**
+	 *
+	 * **Why this exists when the list above already looks bumpy.** A built-in material's relief is a texture
+	 * map the engine owns, at a scale the engine chooses: it can make a ball look grainy, but it cannot make
+	 * it look like a *moulded* dodgeball, because the pips on a dodgeball are a shape at a known size and no
+	 * built-in map is drawn to that size. A `MaterialVariant` is exactly that control — a normal map plus
+	 * `StudsPerTile` — and it is authored in Studio's Material Manager, which means it cannot be created
+	 * here. So the code can only take one if the place file already has one, and this is that switch.
+	 *
+	 * **How to fill it in.** Material Manager → new variant on base material `Plastic` → normal map with the
+	 * pip pattern → `StudsPerTile` tuned so one pip is roughly half a stud (`BALL_SIZE` is 2, so about four
+	 * pips across the ball) → name it, parent it to `MaterialService`, and put that name here. **The base
+	 * material matters**: `BasePart.MaterialVariant` only applies when the part's `Material` is the variant's
+	 * own `BaseMaterial`, which is why `SphereService` reads the base material off the variant instead of
+	 * keeping a second setting in step with it.
+	 *
+	 * **Empty is the supported state, not a broken one.** The draw from the list above is what a ball gets
+	 * when this is empty or when the named variant is not in the place — a name typed here that matches
+	 * nothing falls back rather than producing untextured balls, and there is one warning at the first ball
+	 * to say which. See `SphereService.drawnSurface`.
+	 */
+	BALL_MATERIAL_VARIANT: "",
+
 	// ------------------------------------------------------------------ trail
 
 	/**

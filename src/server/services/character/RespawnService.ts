@@ -99,7 +99,7 @@ export class RespawnService implements OnStart {
 		//
 		// **After the yield, deliberately**, which is the only thing on this side of it: `LoadCharacterAsync`
 		// resumes once the character exists, so the read below is a statement about the body rather than about
-		// the request, and `playSpawnPoof` needs a `HumanoidRootPart` to weld to.
+		// the request, and `playSpawnPoof` needs a torso (or, failing that, a root) to anchor the burst to.
 		const character = player.Character;
 		if (character !== undefined) playSpawnPoof(character);
 

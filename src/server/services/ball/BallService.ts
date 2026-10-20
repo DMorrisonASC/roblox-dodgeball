@@ -8,6 +8,7 @@ import {
 	CatchCause,
 	DUCKING_ATTRIBUTE,
 	PICKUP_LOCKED_UNTIL,
+	TEAM_ATTRIBUTE,
 	THROWER_TOKEN,
 	THROW_ANIMATION_ATTRIBUTE,
 } from "shared/constants";
@@ -36,6 +37,7 @@ import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
 import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
+import { TEAM_A, TEAM_B, TeamLabel } from "../round/team";
 import { EconomyService } from "../economy/EconomyService";
 import { FreezeService } from "../actions/FreezeService";
 import { BadgeService } from "../badges/BadgeService";
@@ -1701,11 +1703,24 @@ export class BallService implements OnStart {
 		// whether a `NoCollisionConstraint` sets both is not something this repository can read out of
 		// the typings. So it is checked in the log rather than assumed here: two enemies in a line should
 		// print two `was tagged by` lines.
-		if (abilityOn(ball) === "Pierce") {
-			const bodies = this.pierceBodies(model);
+		// **Which bodies this ball may not be stopped by — two policies, one loop.**
+		//
+		// A Pierce ball goes through *every* body (see {@link pierceBodies} for that argument and the cover it
+		// costs); every other ball goes through the thrower's **teammates**, and only through them. The second
+		// policy is the same complaint the first one answers, arriving at a smaller scale: a teammate who
+		// wandered into the line used to stop the ball dead, and being cancelled by somebody on your own side
+		// is not a rule a player can predict or enjoy. **An enemy still stops both**, which is what keeps this
+		// from being "balls pass through people".
+		//
+		// **The mechanism is the one already here, so the loop is shared rather than written twice** — a
+		// `NoCollisionConstraint` per part, in place before the first contact. The paragraph above says why it
+		// cannot be done in the tag branch instead.
+		const pierce = abilityOn(ball) === "Pierce";
+		const bodies = pierce ? this.pierceBodies(model) : this.teammateBodies(model);
 
-			for (const body of bodies) CollisionIgnore.between(ball, body);
+		for (const body of bodies) CollisionIgnore.between(ball, body);
 
+		if (pierce) {
 			// **And the trail, from the same test and at the same moment.** The two halves of a Pierce throw
 			// are the same fact read once: the collision ignores are what the *contact* solver is told, and
 			// this is what the *player* is told, so a branch that set one up and not the other would be a
@@ -2157,7 +2172,12 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * Every body a Pierce ball thrown by `model` should pass through.
+	 * **Every body `model` could hit, the thrower excluded — the candidate set for both throw policies.**
+	 *
+	 * It is still called `pierceBodies` because Pierce is what it was written for, and the name is kept rather
+	 * than churned through the three files that mention it: the enumeration is exactly the list
+	 * {@link teammateBodies} filters, and a rename would change nothing either caller decides. **What differs
+	 * between the two is the *policy*, not the set** — see the loop in `throwBallBody`, which picks one.
 	 *
 	 * **Every body in the world, and the thrower is the only exception** — who is ignored by the line
 	 * above, so he is skipped here rather than constrained twice.
@@ -2218,6 +2238,80 @@ export class BallService implements OnStart {
 		}
 
 		return bodies;
+	}
+
+	/**
+	 * **The bodies on `model`'s own side — what an ordinary throw is not allowed to be stopped by.**
+	 *
+	 * **A teammate is not a wall, and the ball is what says so.** The friendly-fire veto in `BallComponent`
+	 * already means a teammate takes no damage from a same-side throw, but it runs on `Touched` — *after* the
+	 * engine has resolved the contact — so before this method existed a teammate still deflected the ball,
+	 * which read as "my own side blocked my shot" rather than as "I did not hurt them". A veto that arrives
+	 * after the bounce is not a save, it is a miss with a footnote.
+	 *
+	 * **The set is `pierceBodies` filtered by side**, rather than a second enumeration: the two answer about
+	 * the same bodies and a second walk is a second place to keep the `NPC` tag, the `Workspace` test and the
+	 * thrower exclusion right. What that costs is stated where it belongs, in `pierceBodies`' own doc.
+	 *
+	 * **A team change mid-flight does not re-open the ball**, deliberately. The constraints are created once,
+	 * at the throw, against the bodies that were teammates then; a body that swaps sides while the ball is in
+	 * the air stays intangible to it for the rest of that flight. The alternative — asking sides again on every
+	 * contact — would make the same throw hit or miss depending on the instant it arrives, which is a worse
+	 * rule than "the throw was decided when it left the hand". The next throw is set up from scratch, so
+	 * nothing survives into it: `CollisionIgnore.clear` sweeps the whole set when the ball arrives in a hand.
+	 *
+	 * **A teammate who walks into the ball after it was thrown is passed through too**, and that follows from
+	 * the ignore being on the *body* rather than on the path: the sweep at throw time is what decides which
+	 * bodies the ball may not touch, and it decides it once.
+	 *
+	 * **Outside a round this is empty.** `sideOfBody` answers nothing for a body wearing no side, and there is
+	 * nothing to be friendly with — which is the same answer `RoundService.isFriendlyFire` gives for a lobby
+	 * throw, arrived at from the same label rather than from a second rule.
+	 */
+	private teammateBodies(model: Model): Array<Model> {
+		const mine = this.sideOfBody(model);
+		if (mine === undefined) return [];
+
+		const bodies = new Array<Model>();
+
+		for (const body of this.pierceBodies(model)) {
+			if (this.sideOfBody(body) === mine) bodies.push(body);
+		}
+
+		return bodies;
+	}
+
+	/**
+	 * **Which side a body is on, read from wherever that side actually lives — the server's copy of the
+	 * two-branch rule `client/roundZone.sideOfBody` documents.**
+	 *
+	 * `TEAM_ATTRIBUTE` is written on the **`Player`** by `RoundService.assignTeams`, because the roster is
+	 * player-keyed and a character is replaced on every death, while a **rig** carries its own — painted in
+	 * Studio or written by its pad walk and its respawn. A reader that only asked the model would therefore
+	 * read *every player's character* as side-less, and under an equality test "no side" is indistinguishable
+	 * from "not my side", which is the exact way this rule goes quietly wrong. `GetPlayerFromCharacter` is the
+	 * branch that tells the two apart; its `undefined` means "a rig", and then the model's own attribute is
+	 * the answer.
+	 *
+	 * **The label is validated rather than merely read.** An attribute is a string anybody can write, so
+	 * `Team = "Red"` is not a side, it is a string that happens to be a colour — the same reading
+	 * `npc/rigs.ts`'s `sideOfRig` and `roundZone.sideOf` make. A value that is not one of the two labels is
+	 * no side, which under this file's equality test means "not a teammate" rather than "everybody's
+	 * teammate".
+	 *
+	 * **`RoundService.isFriendlyFire` cannot be asked here**, and that is why this exists rather than a call
+	 * to it: the round already depends on this service, so the dependency the other way would be a constructor
+	 * cycle. `isFriendlyFire` therefore remains the single statement of the *damage* rule — `BallComponent`
+	 * calls it on every contact, and this file does not restate it — while this is the *path* rule's reading of
+	 * the same published label. That split is the reason `pierceBodies` stopped reading sides at all when
+	 * Pierce became "every body"; it is only back because a ball that a teammate can deflect needs the answer
+	 * before the contact rather than after it.
+	 */
+	private sideOfBody(body: Model): TeamLabel | undefined {
+		const player = Players.GetPlayerFromCharacter(body);
+		const label = (player ?? body).GetAttribute(TEAM_ATTRIBUTE);
+
+		return label === TEAM_A || label === TEAM_B ? label : undefined;
 	}
 
 	/**

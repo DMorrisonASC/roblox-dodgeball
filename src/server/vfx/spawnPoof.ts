@@ -54,15 +54,52 @@ const EMIT_COUNT = 50;
 const BURST_WINDOW_SECONDS = 0.25;
 
 /**
- * How far below the body's root the burst is placed, in studs. **Placeholder — -2.5.**
+ * **Where on a body the burst is centred: the chest, and the fallbacks in the order a body should be asked.**
  *
- * **Negative is a world-space offset, which is the only reading that means anything here.** A character's root
- * sits at hip height, so an effect centred on it starts *inside* the torso: the first particles appear at the
- * waist and the burst reads as something happening to the body's middle rather than to the space it left. Two
- * and a half studs down is below the chest for an R15 humanoid and just above the ground, so the poof sits at
- * the feet for a body standing and hangs in the air where the feet were for one that has just jumped.
+ * **This replaced a fixed offset below the root, because that offset put the effect in the floor.** The old
+ * placement was `root.CFrame` minus two and a half studs — which its own doc called "below the chest for an R15
+ * humanoid and just above the ground", and which is exactly right for the *reason* it was written (a burst
+ * centred on a root starts inside the torso) and exactly wrong for what it produced: a five-by-five particle
+ * burst whose lower half is inside the terrain. What a player sees is a hemisphere, or a puff cut off along a
+ * straight line where the floor is, and the report was that the effect "gets cut off at the bottom". A height
+ * tuned against a *root* cannot be right for an R6 rig, an R15 character and a custom model at once, because
+ * the distance from root to floor differs between them; the torso does not have that problem, because the torso
+ * is a part rather than an arithmetic assumption.
+ *
+ * **`UpperTorso` then `LowerTorso` then `Torso`, and the order is the rig type.** An R15 body has the first two
+ * and no `Torso` at all; an R6 body — which includes most of this project's rig pool — has only `Torso`. Upper
+ * before lower when both exist, because the chest is where a person reads a burst as coming from: `LowerTorso`
+ * is the belly, and it is also the part nearest the floor that this could still pick by mistake if the order
+ * were reversed.
+ *
+ * **`HumanoidRootPart` and then `PrimaryPart` are the fallbacks, and both are real rather than defensive.** A
+ * rig whose joints are broken, a custom model with a `Humanoid` and no R6/R15 torso names, and a toolbox model
+ * scaled into something that is not a person at all all reach this function: the root is where the body *is*, so
+ * a burst at the waist of an unrecognisable body is the honest failure, and it is what every body in the game
+ * got before this change. `PrimaryPart` covers the shape `NpcService.spawn` writes (it sets the root as the
+ * primary part) and a model authored with one and nothing else.
+ *
+ * **Nothing throws and nothing is assumed about names.** `FindFirstChild` rather than a path, one `IsA` per
+ * candidate, and `undefined` when the model has none of them — a body with no parts at all is a body this
+ * function does not place an effect on, which the caller turns into no poof rather than an error in the middle of
+ * a round boundary.
+ *
+ * **The torso's own `CFrame` rather than a world-space offset from it.** Rotation is carried over, which is what
+ * the old root-based placement did as well: a `HumanoidRootPart` is held upright by its humanoid, so both are
+ * upright for any living body, and the one case they differ on — a ragdolled corpse — is a case where an effect
+ * that tilts with the body is the truthful one.
  */
-const POOF_Y_OFFSET = -2.5;
+function anchorOf(model: Model): BasePart | undefined {
+	for (const name of ["UpperTorso", "LowerTorso", "Torso"]) {
+		const part = model.FindFirstChild(name);
+		if (part !== undefined && part.IsA("BasePart")) return part;
+	}
+
+	const root = model.FindFirstChild("HumanoidRootPart");
+	if (root !== undefined && root.IsA("BasePart")) return root;
+
+	return model.PrimaryPart;
+}
 
 /**
  * How long a clone is left in the world before `Debris` takes it, in seconds. **Placeholder — 2.**
@@ -125,16 +162,18 @@ let templateWarned = false;
 export function playSpawnPoof(model: Model): void {
 	if (!SPAWN_POOF_CONFIG.ENABLED) return;
 
-	// **A body that has already left the world gets no effect**, and this guard is before the root lookup
-	// because a destroyed model has no parts to find: asking one for its `HumanoidRootPart` is a diagnostic
-	// error in the middle of a round boundary rather than a missing burst.
+	// **A body that has already left the world gets no effect**, and this is first because a destroyed model has
+	// no parts to find: the anchor lookup below would answer `undefined` in that case too, but not for a model
+	// that is merely parked — a rig waiting in the parking folder still has a torso, and a burst at that
+	// position would be an effect in `ServerStorage` rather than in the lobby it was taken from.
 	if (model.Parent === undefined) return;
 
-	// The root is where the effect is placed, so a body without one has nowhere to stand it. Every body this
-	// game makes has one — `NpcService` will not run a rig without it and a character's is part of the rig — and
-	// the guard is for the frame between a character being loaded and its parts arriving.
-	const root = model.FindFirstChild("HumanoidRootPart");
-	if (root === undefined || !root.IsA("BasePart")) return;
+	// **A body with nothing to stand the effect on gets no effect**, and this guard is before the template
+	// lookup so that a body whose parts have not arrived yet costs one walk and no clone. `anchorOf` answers with
+	// the chest when there is one and the root or primary part when there is not — see its doc for the order and
+	// for why the chest replaced a fixed offset from the root.
+	const anchor = anchorOf(model);
+	if (anchor === undefined) return;
 
 	const template = findTemplate(ReplicatedStorage, TEMPLATE_NAME);
 
@@ -218,11 +257,13 @@ export function playSpawnPoof(model: Model): void {
 		part.CanTouch = false;
 		part.CanQuery = false;
 
-		// **At the body's feet rather than its root**, because a root sits at hip height and a burst centred on
-		// it starts inside the torso — see {@link POOF_Y_OFFSET}. A world-space offset rather than a local one:
-		// "two and a half studs down" means the same thing however the body happens to be turned, and a body
-		// mid-jump gets a burst in the air below it, which is where it was.
-		part.CFrame = root.CFrame.add(new Vector3(0, POOF_Y_OFFSET, 0));
+		// **At the chest, which is where the burst belongs and where it stops being cut in half by the floor.**
+		// The anchor is the body's own torso when it has one — see {@link anchorOf} for the order and for the
+		// offset-from-the-root placement this replaced — so the effect is centred on the part a person reads as
+		// "the body", at whatever height that part happens to be for the rig type in front of us. A world-space
+		// offset was the old answer and it could not be right for an R6 rig, an R15 character and a custom model
+		// at once, because the distance from a root to the floor differs between them.
+		part.CFrame = anchor.CFrame;
 	}
 
 	// **Parented to `Workspace` rather than to the body**, which is what lets the burst outlive the body: a rig
@@ -283,7 +324,7 @@ export function playSpawnPoof(model: Model): void {
 	// *can* be reported, and one line per spawn turns the next screenshot into a diagnosis rather than a guess.
 	if (DEBUG) {
 		print(
-			`[VFX] ${TEMPLATE_NAME} at ${model.Name} — ${root.Position} ` +
+			`[VFX] ${TEMPLATE_NAME} at ${model.Name} — ${anchor.Position} ` +
 				`(${parts.size()} part(s), ${emitters} emitter(s), ` +
 				`texture ${texture ?? "none"}, ${string.format("%.2f", EFFECT_LIFETIME)}s)`,
 		);
