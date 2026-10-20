@@ -1,7 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, Workspace } from "@rbxts/services";
 import { RESPAWN_AT_ATTRIBUTE } from "shared/constants";
-import { playSpawnPoof } from "../../vfx/spawnPoof";
 
 /** Prints one line per load, per schedule and per cancelled wait, naming the reason. */
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
@@ -91,18 +90,25 @@ export class RespawnService implements OnStart {
 		// to a caller.
 		player.LoadCharacterAsync();
 
-		// **The body that just appeared, and the only place a player's character is announced.** With
-		// `CharacterAutoLoads` off, every character in the game is made through this method — a join, a lobby
-		// respawn, an elimination, a scheduled round respawn — so this one call is every "a player arrived
-		// somewhere" there is, and no other site has to guess when a character exists. In particular
-		// `PlayerAdded` cannot be that site: it fires before the body does.
+		// **The body that just appeared — and the poof for it deliberately does not live here.**
 		//
-		// **After the yield, deliberately**, which is the only thing on this side of it: `LoadCharacterAsync`
-		// resumes once the character exists, so the read below is a statement about the body rather than about
-		// the request, and `playSpawnPoof` needs a torso (or, failing that, a root) to anchor the burst to.
-		const character = player.Character;
-		if (character !== undefined) playSpawnPoof(character);
-
+		// With `CharacterAutoLoads` off, every character in the game is made through this method — a join, a
+		// lobby respawn, an elimination, a scheduled round respawn — so this is the whole of "a player has a
+		// body", and no other site has to guess when a character exists. In particular `PlayerAdded` cannot be
+		// that site: it fires before the body does.
+		//
+		// **What used to be here was `playSpawnPoof(player.Character)` on the line below, and it was moved
+		// rather than deleted.** `LoadCharacterAsync` resumes on the frame the body exists, which is *before*
+		// the handler `RoundService` connected to `CharacterAdded` has moved it into the lobby — so the burst
+		// was placed at the engine's own spawn point. Nothing in `src/` sets `Player.RespawnLocation`, that
+		// point is not the lobby, and the effect a joining player's arrival should have played was being played
+		// somewhere nobody was looking while the body appeared on a join pad. See
+		// `RoundService.handlePlayerJoined`, which now plays it immediately after the `PivotTo` that decides
+		// where the body actually is; rigs never had the fault because `NpcService.spawn` parents a clone where
+		// it belongs and poofs it with no move in between.
+		//
+		// **The yield is kept, and it is now the only thing on this side of it:** it is what makes the `loaded`
+		// line below a statement about a body rather than about a request.
 		if (DEBUG) print(`[Respawn] ${player.Name}: loaded — ${reason}`);
 	}
 

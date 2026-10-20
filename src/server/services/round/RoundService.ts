@@ -1581,7 +1581,15 @@ export class RoundService implements OnStart {
             // the placement is the whole of what "undisturbed" asks of this path; the `Died` connection
             // above still stands, because a practice-zone player who dies still needs a body back, and
             // `handleDeath` loads one without moving it anywhere.
-            if (this.isPracticePlayer(player)) return;
+            //
+            // **The poof goes before the return and not after the skip**, because this is the one path where
+            // the body is *not* moved: the engine's spawn is where it appears and where it stays, so the burst
+            // marks the right place exactly as it does at the lobby spawn below.
+            if (this.isPracticePlayer(player)) {
+                playSpawnPoof(character);
+
+                return;
+            }
 
             const root = character.WaitForChild("HumanoidRootPart") as BasePart;
 
@@ -1602,6 +1610,22 @@ export class RoundService implements OnStart {
                 const lobby = this.lobbySpawn();
                 if (lobby !== undefined) character.PivotTo(lobby);
             }
+
+            // **The poof for a player's body, and it is here rather than where the body is loaded, which is
+            // the correction a report cost a session.** `RespawnService.loadNow` used to play it the moment
+            // `LoadCharacterAsync` resumed — and that is the frame *before* this handler moves the body, so the
+            // burst was placed at whatever point the engine had chosen: nothing in `src/` sets
+            // `Player.RespawnLocation`, so that point is the place's own spawn rather than the lobby, and a
+            // joining player's poof played somewhere nobody was standing while the body appeared here. Rig
+            // bodies never had the fault because `NpcService.spawn` parents a clone where it belongs and then
+            // poofs it, with no move in between.
+            //
+            // **After the pivot, deliberately**, for the reason the whole effect exists: it marks *where the
+            // body appeared*, and the appearance a player sees is this position, not the one the loader picked.
+            // Every player's body comes through this handler — it is connected for anyone already in the server
+            // as well as for a join — so this one call covers a join, a lobby respawn, an elimination and the
+            // round's own delayed load, which is the whole of the `CharacterAdded` path.
+            playSpawnPoof(character);
         });
 
         // **A player arriving during a round is not in it, and that is now the whole of what the round

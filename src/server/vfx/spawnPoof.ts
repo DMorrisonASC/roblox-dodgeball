@@ -124,6 +124,37 @@ const EFFECT_LIFETIME = 2;
 let templateWarned = false;
 
 /**
+ * **The reasons a body was refused, already reported — so a skip says so once rather than twice a round.**
+ *
+ * **This exists because the two refusals below used to `return` silently, and that silence is the exact fault
+ * this whole file is written against.** "The poof did not play for a joining player" is three different faults
+ * with one symptom: the effect was never asked for, the effect was asked for on a body that has nothing to
+ * anchor to, or the effect played and nobody was looking at it. The first two now name themselves here; the
+ * third is what `DEBUG_SHOW_PART` and the first-burst line below are for. A per-body warning would be a
+ * boundary's worth of duplicate lines, so each reason is said once and the count is not kept — the reader has
+ * the reason and the body that produced it, which is what a fix needs.
+ */
+const reportedRefusals = new Set<string>();
+
+/**
+ * Whether the first successful burst has been reported.
+ *
+ * **One line per server, and it is deliberately not behind `DEBUG`.** The line names the body, the **part** the
+ * burst was anchored to and the position it landed at, which is what separates "no poof" from "a poof two
+ * hundred studs from where anybody was standing" — and it costs one `print` in the life of the server, so there
+ * is no reason to make somebody edit a constant to find out whether the effect works at all.
+ */
+let firstBurstReported = false;
+
+/** Says `message` once for `key`, so a fault repeated per body is one line. */
+function reportRefusalOnce(key: string, message: string): void {
+	if (reportedRefusals.has(key)) return;
+
+	reportedRefusals.add(key);
+	warn(message);
+}
+
+/**
  * **The one poof: a burst left standing where a body was, played wherever a body appears, disappears or is moved
  * without walking.**
  *
@@ -159,21 +190,64 @@ let templateWarned = false;
  * — a rig standing down, a character leaving — leaves a burst that is already in the world and already
  * scheduled to clean itself up.
  */
-export function playSpawnPoof(model: Model): void {
+export function playSpawnPoof(model: Model | undefined, fallbackAt?: CFrame): void {
 	if (!SPAWN_POOF_CONFIG.ENABLED) return;
 
-	// **A body that has already left the world gets no effect**, and this is first because a destroyed model has
-	// no parts to find: the anchor lookup below would answer `undefined` in that case too, but not for a model
-	// that is merely parked — a rig waiting in the parking folder still has a torso, and a burst at that
-	// position would be an effect in `ServerStorage` rather than in the lobby it was taken from.
-	if (model.Parent === undefined) return;
+	// **The anchor, and the one caller that has to survive a body already being taken away.**
+	//
+	// `LobbyRigService.onPlayerLeft` poofs a leaving player, and `PlayerRemoving` is the one signal where the
+	// engine is already dismantling the body: the model can arrive here already out of the world, or in the
+	// world with its parts gone. Either way there is no torso to read, and the old version of this function
+	// returned in silence — which is why a join poofed and a departure did not, for a caller that is provably
+	// reached. A caller that watched the body while it existed can hand its **last position** in as
+	// `fallbackAt`; every other caller passes nothing and keeps the refusal warnings below, which is the right
+	// answer for a body that was never anywhere.
+	//
+	// **`fallbackAt` is a position and not a part**, deliberately: by the time it is needed the part is what is
+	// missing, and a `CFrame` cannot be destroyed out from under the caller between the read and the call.
+	//
+	// **`model` itself may be nothing, for the same reason**, and that is the departure case in full: by
+	// `PlayerRemoving` a player can have no character at all. A caller in that position has only a position to
+	// offer, so the body is optional here and the label below is what the log lines name instead.
+	const label = model === undefined ? "a body that has already gone" : model.Name;
 
-	// **A body with nothing to stand the effect on gets no effect**, and this guard is before the template
-	// lookup so that a body whose parts have not arrived yet costs one walk and no clone. `anchorOf` answers with
-	// the chest when there is one and the root or primary part when there is not — see its doc for the order and
-	// for why the chest replaced a fixed offset from the root.
-	const anchor = anchorOf(model);
-	if (anchor === undefined) return;
+	let anchor: BasePart | undefined;
+	let at: CFrame | undefined;
+
+	if (model === undefined || model.Parent === undefined) {
+		if (fallbackAt === undefined) {
+			reportRefusalOnce(
+				"outside the world",
+				`[VFX] ${TEMPLATE_NAME} skipped for ${label} — there is no body in the world to stand it on, ` +
+					`and the caller passed no last-known position. Said once; see the caller.`,
+			);
+
+			return;
+		}
+
+		at = fallbackAt;
+	} else {
+		// **A body with nothing to stand the effect on gets no effect**, and this guard is before the template
+		// lookup so that a body whose parts have not arrived yet costs one walk and no clone. `anchorOf` answers
+		// with the chest when there is one and the root or primary part when there is not — see its doc for the
+		// order and for why the chest replaced a fixed offset from the root.
+		anchor = anchorOf(model);
+
+		if (anchor !== undefined) {
+			at = anchor.CFrame;
+		} else if (fallbackAt !== undefined) {
+			at = fallbackAt;
+		} else {
+			reportRefusalOnce(
+				"nothing to anchor to",
+				`[VFX] ${TEMPLATE_NAME} skipped for ${label} — it has no upper torso, torso, ` +
+					`HumanoidRootPart or PrimaryPart, so the burst has nowhere to sit. Said once; a player's ` +
+					`body whose parts have not arrived yet reaches this line.`,
+			);
+
+			return;
+		}
+	}
 
 	const template = findTemplate(ReplicatedStorage, TEMPLATE_NAME);
 
@@ -263,7 +337,7 @@ export function playSpawnPoof(model: Model): void {
 		// "the body", at whatever height that part happens to be for the rig type in front of us. A world-space
 		// offset was the old answer and it could not be right for an R6 rig, an R15 character and a custom model
 		// at once, because the distance from a root to the floor differs between them.
-		part.CFrame = anchor.CFrame;
+		part.CFrame = at;
 	}
 
 	// **Parented to `Workspace` rather than to the body**, which is what lets the burst outlive the body: a rig
@@ -315,6 +389,21 @@ export function playSpawnPoof(model: Model): void {
 		if (DEBUG) print(`[VFX] emitter ${descendant.Name}: ${describeEmitter(descendant)}`);
 	}
 
+	// **The line that says the effect exists at all — once per server, and deliberately not behind `DEBUG`.**
+	// It names the body, the part the burst was anchored to, and where that part was: three facts that separate
+	// "nothing played" from "something played somewhere nobody was standing", which are the same sentence from a
+	// seat. It costs one print in the life of the server, so nobody has to edit a constant to find out whether
+	// the effect works.
+	if (!firstBurstReported) {
+		firstBurstReported = true;
+
+		print(
+			`[VFX] ${TEMPLATE_NAME} first burst — ${label} on ` +
+				`${anchor === undefined ? "the position the caller passed" : anchor.Name} at ${at.Position} ` +
+				`(${parts.size()} part(s), ${emitters} emitter(s), texture ${texture ?? "none"})`,
+		);
+	}
+
 	Debris.AddItem(effect, EFFECT_LIFETIME);
 
 	// **The line that separates "never spawned" from "spawned and was invisible", and the second is the state
@@ -324,7 +413,7 @@ export function playSpawnPoof(model: Model): void {
 	// *can* be reported, and one line per spawn turns the next screenshot into a diagnosis rather than a guess.
 	if (DEBUG) {
 		print(
-			`[VFX] ${TEMPLATE_NAME} at ${model.Name} — ${anchor.Position} ` +
+			`[VFX] ${TEMPLATE_NAME} at ${label} — ${at.Position} ` +
 				`(${parts.size()} part(s), ${emitters} emitter(s), ` +
 				`texture ${texture ?? "none"}, ${string.format("%.2f", EFFECT_LIFETIME)}s)`,
 		);

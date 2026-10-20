@@ -369,6 +369,29 @@ export class LobbyRigService implements OnStart {
 	/** Faults already reported, so a refill that keeps failing says so once rather than every time. */
 	private readonly reported = new Set<string>();
 
+	/**
+	 * **Where each player's body was the last time the seat poll looked, so a departure can be marked even when
+	 * the body is already gone.**
+	 *
+	 * **The problem this exists for, stated as the report it came from:** "I see the poof when a player joins,
+	 * not when they leave." A join is easy — the body is standing there and the effect reads its chest. A
+	 * departure is the one signal where the engine is already dismantling the body: `PlayerRemoving` fires with
+	 * the character either unparented or stripped, `playSpawnPoof` finds no torso to anchor to, and the burst is
+	 * skipped. The call site was provably reached, so the missing piece was a *position*, and a position is the
+	 * one thing that has to be captured before it disappears.
+	 *
+	 * **Recorded by the seat poll rather than by a subscription or a per-frame read.** `watchSeats` is the only
+	 * loop this file runs on a clock — a quarter of a second — and it already walks the same players for the
+	 * corpse sweep, so one part lookup and one `CFrame` write per player per turn buys the fallback for nothing
+	 * measurable. `CharacterAdded` would fire once per body and go stale the moment the player walked; a
+	 * `RunService` loop would be a second clock in a service that already has one.
+	 *
+	 * **A player who has never had a body has no entry and nothing to mark**, which is the correct answer rather
+	 * than a gap: there was never a body in the lobby to leave one. The entry is dropped on departure, so the
+	 * map is bounded by the players in the server rather than by the players who have ever been in it.
+	 */
+	private readonly lastSeen = new Map<Player, CFrame>();
+
 	/** The phase last seen, so a boundary can be told from a repeat. */
 	private previousState = "";
 
@@ -1784,8 +1807,21 @@ export class LobbyRigService implements OnStart {
 		// spawn's (for the rig that takes their seat), and neither of those plays on the player. See
 		// `playSpawnPoof`'s doc for why the helper is called from the sites where the body changes rather than
 		// from the events that describe the change.
+		//
+		// **The last-known position is handed over, because this is the one caller where the body may already be
+		// gone.** The paragraph above used to promise that "the character is still in the world here", and that
+		// promise is what a report falsified: the join poofed and the departure did not, on a call site that is
+		// first in this method and provably reached — so the body arriving here unparented or stripped was being
+		// quietly refused by `playSpawnPoof`'s anchor lookup. `lastSeen` is what the seat poll keeps for exactly
+		// this turn; if the character is still readable it is used and the fallback is unused, and if it is not,
+		// the burst lands where the player last stood rather than nowhere.
+		//
+		// **The record is dropped here and nowhere else**, which is the only place it can go stale: the map is
+		// keyed by the player, and this is the departure.
 		const character = player.Character;
-		if (character !== undefined) playSpawnPoof(character);
+		playSpawnPoof(character, this.lastSeen.get(player));
+
+		this.lastSeen.delete(player);
 
 		const seat = this.seated.get(player) ?? this.pending.get(player);
 
@@ -2514,6 +2550,18 @@ export class LobbyRigService implements OnStart {
 			// so.** See {@link topUpDuringRound} for the case — a rig that left its seat mid-round without
 			// leaving a corpse — and for why it is a slow check rather than a condition on every turn.
 			this.topUpDuringRound();
+
+			// **And the fourth: where everybody's body was, for the departure that arrives without one.** See
+			// {@link lastSeen} for the report this answers and for why the poll is the right clock to keep it
+			// on. One part lookup per player per turn, beside the humanoid read the corpse sweep above already
+			// pays for each rig.
+			for (const player of Players.GetPlayers()) {
+				const character = player.Character;
+				if (character === undefined) continue;
+
+				const root = character.FindFirstChild("HumanoidRootPart");
+				if (root !== undefined && root.IsA("BasePart")) this.lastSeen.set(player, root.CFrame);
+			}
 		}
 	}
 
