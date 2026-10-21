@@ -12,7 +12,7 @@ import { IMAGES_CONFIG } from "shared/config/images.config";
 import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
 import { participating, shopOpen } from "../../panels";
-import { hudTheme } from "../../ui/hudTheme";
+import { lightPanelTheme } from "../../ui/lightPanelTheme";
 import type { HudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import {
@@ -213,7 +213,10 @@ export class ShopController implements OnStart {
 		if (this.mounted) return;
 		this.mounted = true;
 
-		const theme = hudTheme();
+		// **A hardcoded light palette, not a mapping of one.** The pop-up is read like a page of print — prices,
+		// ownership, what is equipped — so it gets white paper and black ink written down in `lightPanelTheme` rather
+		// than resolved through `hudTheme()`'s table, which can be moved by the big-ui configuration and once was.
+		const theme = lightPanelTheme();
 
 		print("[Shop] panel up — Cosmetics (catalogue) · Power & Items (the chest, over the whole pool)");
 

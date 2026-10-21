@@ -3,7 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { ContentProvider, Players, ReplicatedStorage } from "@rbxts/services";
 import { ROUND_STATUS_FOLDER } from "shared/constants";
-import { hudTheme } from "../../ui/hudTheme";
+import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { getSplashScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -175,7 +175,10 @@ export class LoadingScreenController implements OnStart {
 	}
 
 	private mount(): void {
-		const theme = hudTheme();
+		// **Answered from the game palette**, so the overlay behind the splash image is the same solid plum as
+		// every panel in the game — see `premiumHudTheme`. This screen is the first thing a player sees, which is
+		// the one place a second palette would be most obvious.
+		const theme = premiumHudTheme();
 		const player = Players.LocalPlayer;
 		const scope = Fusion.scoped();
 
@@ -324,6 +327,9 @@ export class LoadingScreenController implements OnStart {
 		title.LayoutOrder = 1;
 		title.ZIndex = LOADING_Z_INDEX;
 		title.TextColor3 = theme.colors.textPrimary;
+		// **The three lines take the direction's text alpha**, which is safe because the overlay behind them is
+		// solid plum. See `PREMIUM.textTransparency`.
+		title.TextTransparency = PREMIUM.textTransparency;
 		// Sized to its own text, for the reason `ControlsLegendController` gives: big-ui's default is
 		// a label the full width of its parent, and a parent sized to the label and a label sized to
 		// the parent is a circle that Roblox resolves by guessing.
@@ -338,6 +344,7 @@ export class LoadingScreenController implements OnStart {
 		statusLabel.LayoutOrder = 2;
 		statusLabel.ZIndex = LOADING_Z_INDEX;
 		statusLabel.TextColor3 = theme.colors.textSecondary;
+		statusLabel.TextTransparency = PREMIUM.textTransparency;
 		statusLabel.Size = UDim2.fromOffset(0, 0);
 		statusLabel.AutomaticSize = Enum.AutomaticSize.XY;
 		statusLabel.Selectable = false;
@@ -347,6 +354,7 @@ export class LoadingScreenController implements OnStart {
 		spinnerLabel.LayoutOrder = 3;
 		spinnerLabel.ZIndex = LOADING_Z_INDEX;
 		spinnerLabel.TextColor3 = theme.colors.accent;
+		spinnerLabel.TextTransparency = PREMIUM.textTransparency;
 		spinnerLabel.Size = UDim2.fromOffset(0, 0);
 		spinnerLabel.AutomaticSize = Enum.AutomaticSize.XY;
 		spinnerLabel.Selectable = false;

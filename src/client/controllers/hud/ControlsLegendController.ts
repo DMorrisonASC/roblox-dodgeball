@@ -4,7 +4,9 @@ import Fusion from "@rbxts/fusion-3.0";
 import { RunService, UserInputService } from "@rbxts/services";
 import { isMobile } from "../../platform";
 import { makePressResponse } from "../../ui/elevation";
-import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { HudTheme } from "../../ui/hudTheme";
+import { applyGlow } from "../../ui/glow";
+import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { killCamActive } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
@@ -244,8 +246,10 @@ export class ControlsLegendController implements OnStart {
 		const scope = Fusion.scoped();
 
 		// The HUD's colours, read now rather than at module load: `configureTheme` has run by the
-		// time anything mounts, and a value captured earlier would be Material's default.
-		const theme = hudTheme();
+		// time anything mounts, and a value captured earlier would be Material's default. **Answered from the
+		// game palette**, so this card's rows are plum and its key chips gold without a line below changing —
+		// see `premiumHudTheme`. The typography and the spacing still come from `hudTheme`, which is big-ui's.
+		const theme = premiumHudTheme();
 
 		// **The column, and it is a plain transparent frame rather than a card — that is the change.**
 		// The legend used to be one `Card` with the rows stacked invisibly inside it, so the whole legend
@@ -388,7 +392,12 @@ export class ControlsLegendController implements OnStart {
 			BorderSizePixel: 0,
 		});
 
-		Fusion.New(scope, "UICorner")({ Parent: frame, CornerRadius: new UDim(0, 6) });
+		Fusion.New(scope, "UICorner")({ Parent: frame, CornerRadius: new UDim(0, PREMIUM.corner) });
+
+		// **One neon edge per row**, from `ui/glow.ts`: a core hairline plus the bloom behind it. On eight stacked rows
+		// that reads as a column of lit plates, and it is also what separates two rows without a gap wide enough to
+		// cost the column height.
+		applyGlow(frame);
 
 		// **Padding in pixels, from the theme's spacing scale, and here it has to be pixels.** §9 asks for
 		// scale padding — and everywhere a surface has a definite width it gets it, which is why the
@@ -535,7 +544,11 @@ export class ControlsLegendController implements OnStart {
 		label.Size = UDim2.fromOffset(0, 0);
 		label.AutomaticSize = Enum.AutomaticSize.XY;
 		label.TextColor3 = color;
-		label.TextTransparency = 0;
+		// **White at the theme's `0.15`, which is the direction's text rule rather than a per-label decision.** The
+		// surface under this label is solid plum now, so the text can afford to be a hair softer than white; see
+		// `PREMIUM.textTransparency` for the contrast intent. The key chip keeps its own ink — plum on gold — and
+		// takes the same alpha, so the two halves of a row are one treatment.
+		label.TextTransparency = PREMIUM.textTransparency;
 
 		return label;
 	}

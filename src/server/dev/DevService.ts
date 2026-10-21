@@ -55,7 +55,7 @@ const FLAG_ALIASES: Record<string, string> = {
  * logging the raw text is the only way to tell those apart. Turn it off once the
  * commands are trusted.
  */
-const DEBUG = true;
+const DEBUG = false;
 
 /**
  * The solo-dev testing harness.

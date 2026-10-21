@@ -4,6 +4,8 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { COINS_ATTRIBUTE } from "shared/constants";
 import { killCamActive } from "../../panels";
+import { applyGlow } from "../../ui/glow";
+import { PREMIUM } from "../../ui/premiumTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints once, when the readout is up — the line that says the controller ran at all. */
@@ -42,13 +44,26 @@ export class CurrencyHudController implements OnStart {
 			Name: "CoinReadout",
 			Position: new UDim2(0, 12, 0, 64),
 			Size: new UDim2(0, 160, 0, 22),
-			BackgroundTransparency: 1,
+			// **A solid plate now, not a bare label over the arena.** The readout was invisible furniture — a
+			// number floating in the top-left — which was right while the HUD was a light one drawn over a mostly
+			// light arena and wrong on a solid-plum direction: white at `0.15` alpha over sand is unreadable, and
+			// the palette's rule is that *text* is the soft thing, never the surface behind it. Same fill, gold
+			// hairline and corner as every other panel; the geometry is untouched.
+			BackgroundColor3: PREMIUM.panel,
+			BackgroundTransparency: PREMIUM.transparency,
+			BorderSizePixel: 0,
 
 			// **Hidden for the kill cam, like the rest of the HUD.** The wallet is not in question while the
 			// camera is over somebody else — and because this is a `Visible` write rather than a teardown, the
 			// number is still being tracked underneath and is current on the frame it returns.
 			Visible: Fusion.Computed(scope, (use) => !use(killCamActive)),
 		});
+
+		Fusion.New(scope, "UICorner")({ Parent: wrapper, CornerRadius: new UDim(0, PREMIUM.corner) });
+		// **The readout's neon edge**, core plus bloom — see `ui/glow.ts`. A 160×22 plate is small enough that its
+		// bloom is most of what a player sees of it, which is the point: the wallet is not furniture any more, it is a
+		// small lit readout in the corner.
+		applyGlow(wrapper);
 
 		const label = Text(scope, {
 			text: "",
@@ -59,6 +74,11 @@ export class CurrencyHudController implements OnStart {
 		label.Name = "CoinReadoutText";
 		label.Position = UDim2.fromOffset(0, 0);
 		label.Size = UDim2.fromScale(1, 1);
+		// **The theme's white at the theme's text alpha.** big-ui's `Text.color` is its own palette vocabulary, so
+		// the ink is written onto the instance; the alpha is the direction's rule for every label, and the plate
+		// behind this one is what makes it legible at `0.15`. See `PREMIUM.textTransparency`.
+		label.TextColor3 = PREMIUM.text;
+		label.TextTransparency = PREMIUM.textTransparency;
 
 		// The number is written imperatively rather than through a `Value`, because it changes on an
 		// attribute write and nothing more — a per-frame value for a number that moves once a round would

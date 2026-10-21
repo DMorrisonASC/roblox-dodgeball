@@ -367,6 +367,35 @@ export function addHeaderBand(
 	});
 	close.Parent = left;
 
+	/**
+	 * **The close button, repainted from the theme it was handed.**
+	 *
+	 * `Button` resolves `color: "error"` against **big-ui's own palette**, which this project no longer draws with —
+	 * so without this the one button in the header would be the only light-mode object left in a dark panel. Its
+	 * structure is what can be relied on: the button is the surface, its label is the button's own `Text` or a child
+	 * `TextLabel`, and its hairline is a `UIStroke` child. Same three writes as `DockController` makes for its two
+	 * buttons, and the same reason.
+	 *
+	 * **The fill is the palette's red** (`error`), not the cyan accent: closing a panel is the one destructive thing
+	 * in the shop, and the red is what this palette keeps for that. On a near-black sheet it reads as a warning
+	 * rather than as a brand colour.
+	 */
+	close.BackgroundColor3 = theme.colors.error;
+	close.BackgroundTransparency = 0;
+	// **`onAccent` rather than `textPrimary`** — this button's face is the theme's red, so its label wants the ink
+	// that is meant for a filled surface. On the light palette that is white, which is the red-button-with-white-X
+	// the panel has always had; `textPrimary` here would have been near-black on red, which is a label that reads as
+	// a smudge rather than as a control.
+	close.TextColor3 = theme.colors.onAccent;
+	close.TextTransparency = 0;
+
+	for (const descendant of close.GetDescendants()) {
+		if (!descendant.IsA("TextLabel")) continue;
+
+		descendant.TextColor3 = theme.colors.onAccent;
+		descendant.TextTransparency = 0;
+	}
+
 	const titleLabel = Text(scope, { text: title, variant: "h4", wrap: false });
 	titleLabel.Name = TITLE_NAME;
 	titleLabel.TextColor3 = theme.colors.textPrimary;
@@ -828,6 +857,10 @@ export function addTile(
 	// pieces inside a square outline reads as a stack of cards rather than as one object.
 
 	const nameLabel = Text(scope, { text: name, variant: "subtitle2", wrap: false });
+	// **One ink for both states, which the light palette allows and the dark one did not.** The bar is the theme's
+	// near-black and the marker is a mid blue, so `onAccent` — white — reads on both. The version of this line that
+	// tracked the bar's fill was written for the neon panel, where the marker is bright cyan and no single ink works;
+	// with the panels back on the light sheet there is nothing to track.
 	nameLabel.TextColor3 = theme.colors.onAccent;
 	nameLabel.Size = new UDim2(1, -8, 1, 0);
 	nameLabel.Position = UDim2.fromOffset(4, 0);

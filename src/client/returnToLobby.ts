@@ -1,6 +1,8 @@
 import { ContextActionService, Players, ReplicatedStorage, UserInputService } from "@rbxts/services";
 import { IN_ROUND_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { events } from "shared/networking";
+import { applyGlow } from "./ui/glow";
+import { PREMIUM } from "./ui/premiumTheme";
 import { getHudScreenGui } from "./ui/screenGui";
 
 /** Prints the mount line and one line per state change. */
@@ -21,11 +23,13 @@ const KEY = Enum.KeyCode.L;
 /** The round phase in which leaving is a thing to do. Anything else hides the prompt entirely. */
 const PLAYING = "Playing";
 
-/** The pill's colours, taken from the HUD's own dark-panel-and-light-label pair. */
-const BACKGROUND = new Color3(0.11, 0.12, 0.15);
-const BORDER = new Color3(0.33, 0.35, 0.42);
-const LABEL = new Color3(0.93, 0.94, 0.97);
-const ARMED_BACKGROUND = new Color3(0.35, 0.11, 0.13);
+/**
+ * **The pill's paint is the game HUD's palette**, read from `ui/premiumTheme.ts` at each use rather than copied into
+ * four constants here. It used to be four `Color3` literals — a near-black panel, a grey border, an off-white label
+ * and a dark red for the armed state — which was right while this pill was the only dark furniture in the HUD. Now
+ * that every in-game surface shares one direction, the four jobs are the palette's own: the panel, the gold
+ * hairline, the near-white, and the crimson accent for "this will end your round".
+ */
 
 /** How far from the bottom-left corner the pill sits, in pixels. */
 const EDGE_X = 16;
@@ -143,8 +147,8 @@ function mount(): void {
 	pill.Name = "ReturnToLobby";
 	pill.AnchorPoint = new Vector2(0, 1);
 	pill.AutomaticSize = Enum.AutomaticSize.XY;
-	pill.BackgroundColor3 = BACKGROUND;
-	pill.BackgroundTransparency = 0.1;
+	pill.BackgroundColor3 = PREMIUM.panel;
+	pill.BackgroundTransparency = PREMIUM.transparency;
 	pill.BorderSizePixel = 0;
 	pill.Visible = false;
 	pill.Parent = gui;
@@ -156,15 +160,16 @@ function mount(): void {
 	pill.Position = UDim2.fromOffset(EDGE_X, gui.AbsoluteSize.Y - EDGE_Y);
 
 	// **The rounded outline, made the way the rest of this HUD makes one** — a `UICorner` plus a `UIStroke`,
-	// rather than a `Frame`'s own border, which cannot be rounded.
+	// rather than a `Frame`'s own border, which cannot be rounded. **The two numbers come from the theme now**, so
+	// this pill and the panel a kill cam puts up are outlined by the same gold at the same weight and the same
+	// corner as every other in-game surface.
 	const corner = new Instance("UICorner");
-	corner.CornerRadius = new UDim(0, 8);
+	corner.CornerRadius = new UDim(0, PREMIUM.corner);
 	corner.Parent = pill;
 
-	const stroke = new Instance("UIStroke");
-	stroke.Color = BORDER;
-	stroke.Thickness = 1;
-	stroke.Parent = pill;
+	// **The neon edge**, from `ui/glow.ts`: the pill's hairline is the core and the bloom sits behind it. The armed
+	// state recolours the *fill* only, so the light around the pill stays the theme's cyan whatever it is saying.
+	applyGlow(pill);
 
 	const padding = new Instance("UIPadding");
 	padding.PaddingLeft = new UDim(0, 12);
@@ -186,23 +191,31 @@ function mount(): void {
 	words.BackgroundTransparency = 1;
 	words.Font = Enum.Font.GothamMedium;
 	words.Text = "Return to Lobby";
-	words.TextColor3 = LABEL;
+	words.TextColor3 = PREMIUM.text;
+	// **The direction's text alpha**, which is safe now that the pill's plum is solid — see `PREMIUM.textTransparency`.
+	words.TextTransparency = PREMIUM.textTransparency;
 	words.TextSize = 14;
 	words.LayoutOrder = 1;
 	words.Parent = pill;
 
 	// **The key box, and it stays put when the words change.** Its whole job is to say which key got you here,
 	// so replacing it when the prompt arms would hide the answer at the moment the player needs it.
+	//
+	// **A solid cyan face with near-black ink**, which is this palette's one "physical" surface: every panel around it
+	// is near-black glass with a cyan bloom, so this box inverts the pair and the letter reads as a *keycap* rather
+	// than as one more label — and it is the only opaque thing in the pill, which is what makes the eye find the key
+	// before it finds the sentence.
 	const box = new Instance("Frame");
 	box.Name = "Key";
 	box.AutomaticSize = Enum.AutomaticSize.XY;
-	box.BackgroundColor3 = new Color3(0.22, 0.24, 0.3);
+	box.BackgroundColor3 = PREMIUM.gold;
+	box.BackgroundTransparency = 0;
 	box.BorderSizePixel = 0;
 	box.LayoutOrder = 2;
 	box.Parent = pill;
 
 	const boxCorner = new Instance("UICorner");
-	boxCorner.CornerRadius = new UDim(0, 5);
+	boxCorner.CornerRadius = new UDim(0, PREMIUM.corner);
 	boxCorner.Parent = box;
 
 	const boxPadding = new Instance("UIPadding");
@@ -212,12 +225,21 @@ function mount(): void {
 	boxPadding.PaddingBottom = new UDim(0, 2);
 	boxPadding.Parent = box;
 
+	// **Both axes, and the `Y` is the fix rather than a tidy-up.** This label used to auto-size in `X` alone, which
+	// leaves its height at the `TextLabel` default of **zero** — so the box measured `0 + padding` and stood about
+	// four pixels tall while the thirteen-pixel glyph was drawn straight through it. That is the "the L is not
+	// contained in its box" report, and it is why the caption is sized `XY`: the box then hugs the letter's own line
+	// height, which is the only number that knows how tall the letter is.
 	const key = new Instance("TextLabel");
-	key.AutomaticSize = Enum.AutomaticSize.X;
+	key.AutomaticSize = Enum.AutomaticSize.XY;
 	key.BackgroundTransparency = 1;
 	key.Font = Enum.Font.GothamBold;
 	key.Text = "L";
-	key.TextColor3 = LABEL;
+	key.TextColor3 = PREMIUM.onGold;
+	// **The same alpha as the sentence beside it**, which is now zero on this palette: the keycap's ink is fully
+	// opaque and so is the card's. The two are one treatment in the sense that matters — a label on this HUD is
+	// drawn at `PREMIUM.textTransparency`, whatever that number is — rather than two numbers maintained by hand.
+	key.TextTransparency = PREMIUM.textTransparency;
 	key.TextSize = 13;
 	key.Parent = box;
 
@@ -268,7 +290,11 @@ function press(): void {
 	armed = true;
 
 	if (label !== undefined) label.Text = "Are you sure?";
-	if (frame !== undefined) frame.BackgroundColor3 = ARMED_BACKGROUND;
+	// **The armed state is the palette's crimson**, which is the side colour this theme already spends on "red" —
+	// so a prompt that is about to end a round is painted in the loudest colour the HUD owns rather than in a
+	// second dark red invented for it. The gold hairline, the corner and the white words are untouched: the pill
+	// changes what it *says* by changing its surface, not by becoming a different shape.
+	if (frame !== undefined) frame.BackgroundColor3 = PREMIUM.sideA;
 
 	if (DEBUG) print("[Surrender] armed — any other key cancels");
 }
@@ -278,5 +304,5 @@ function disarm(): void {
 	armed = false;
 
 	if (label !== undefined) label.Text = "Return to Lobby";
-	if (frame !== undefined) frame.BackgroundColor3 = BACKGROUND;
+	if (frame !== undefined) frame.BackgroundColor3 = PREMIUM.panel;
 }

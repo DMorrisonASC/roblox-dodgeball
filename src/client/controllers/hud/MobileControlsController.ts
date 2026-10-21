@@ -3,7 +3,9 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { isMobile } from "../../platform";
-import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { applyGlow } from "../../ui/glow";
+import { hudTheme } from "../../ui/hudTheme";
+import { PREMIUM } from "../../ui/premiumTheme";
 import { getScreenSpaceGui } from "../../ui/screenGui";
 import { ActionController } from "../input/ActionController";
 import { CatchController } from "../input/CatchController";
@@ -551,23 +553,24 @@ const LABEL_GAP = 4;
 /**
  * The two states of a button, and **the only thing on this HUD that changes**.
  *
- * **Idle: the theme's dark, at `0.6`.** `trough` is the theme's near-black — the same colour a tile's name bar
- * and a progress well are made of — so an idle button is the one dark object in a corner of a light HUD, which
- * is what makes it read as a control rather than as a card. At `0.6` the game is visible through it, which is
- * the point: a control over the world should not black it out.
+ * **Idle: the theme's plum at the theme's `0.15`.** That is the fill every panel on this HUD wears — see
+ * `ui/premiumTheme.ts` — which is what makes the cluster read as part of the interface rather than as six dark
+ * discs dropped onto the arena. It is dark enough that the near-white word under each circle stays legible over
+ * grass, sky or sand, and thin enough that the game is still visibly behind it: a control over the world should not
+ * black the world out.
  *
- * **Down: the theme's accent, at `0`.** `accent` is the theme's own name for "the thing to press" (its doc
- * lists keys first) and it is the colour the legend's key chips and the tabs' selection already use, so a held
- * button is the same statement in the same vocabulary. Fully opaque, because this is the state that has to be
- * unmistakable at a glance — and because the two states need to differ in more than one property to read as two
- * states rather than as one colour that moved.
+ * **Down: the theme's crimson, at `0`.** The palette's red is this direction's "this is happening" colour — it is
+ * what the Return to Lobby pill turns when it arms, and what side A's score wears — so a held button is the same
+ * statement in the same vocabulary rather than a colour invented for a press. Fully opaque, because this is the
+ * state that has to be unmistakable at a glance.
  *
- * **What this is not: a light/dark pair of the same colour.** The alternative was `panel` for the down state —
- * the paper colour, which is "light" in the most literal sense — and it was refused because a near-white circle
- * on a light, bright arena is the *quieter* of the two: the idle state would shout and the pressed state would
- * whisper. The accent is the more contrasty of the pair against both the trough and the world.
+ * **And the pair differs in hue, which is the change this pass makes.** It used to be one idea at two opacities —
+ * `trough` at `0.6` and `accent` at `0` — which worked because the light palette's accent is a strong blue against
+ * a near-black. On this palette a plum "pressed harder" is the same plum, so the held state takes a *different*
+ * colour from the five; a state that moves one property reads as a colour that shifted rather than as a button
+ * that was pressed.
  */
-const IDLE_TRANSPARENCY = 0.6;
+const IDLE_TRANSPARENCY = PREMIUM.transparency;
 const HELD_TRANSPARENCY = 0;
 
 /**
@@ -909,9 +912,13 @@ export class MobileControlsController implements OnStart {
 
 		const scope = Fusion.scoped();
 
-		// The HUD's colours, read now rather than at module load: `configureTheme` has run by the time anything
-		// mounts, and a value captured earlier would be Material's default. **Every colour on this HUD comes from
-		// here** — there is not one `Color3.fromRGB` in this file, which is the rule `hudTheme` exists to keep.
+		// **`hudTheme()` is read here for one number now — the caption line height the label band is measured
+		// with** — and that is why it is still a call rather than a constant: big-ui's tables are mutated by
+		// `configureTheme`, so a module-level read could capture the defaults depending on load order.
+		//
+		// **The colours on this HUD come from the game palette instead**, `ui/premiumTheme.ts`, read at each use.
+		// The division is the one this pass drew across the whole HUD: `hudTheme` maps big-ui's light palette and is
+		// shared with the Store and the Inventory, both of which this direction deliberately leaves alone.
 		const theme = hudTheme();
 
 		// **The six controls, and this is only what each one says and does.** Where they sit is {@link pack}'s
@@ -989,7 +996,7 @@ export class MobileControlsController implements OnStart {
 		// than for what it reports. It is still the second reader of the multiplier above, which is what keeps a pad
 		// that is left visible at the same rate as the buttons beside it. See {@link restyleEngineJump} for the hunt,
 		// the restyle and the reason the jump stopped being ours to draw.
-		this.restyleEngineJump(scope, theme, scale);
+		this.restyleEngineJump(scope, scale);
 
 		/**
 		 * **The hand-move state, which is dead unless {@link ARRANGE} is on — one nudge and the drag's memory.**
@@ -1199,7 +1206,7 @@ export class MobileControlsController implements OnStart {
 		}
 
 		for (let index = 0; index < controls.size(); index++) {
-			this.buildButton(scope, theme, controls[index], cells, index, arrange).Parent = box;
+			this.buildButton(scope, controls[index], cells, index, arrange).Parent = box;
 		}
 
 		// **The hand-move mode announces itself**, because a cluster that does not answer a tap is otherwise
@@ -1326,7 +1333,6 @@ export class MobileControlsController implements OnStart {
 	 */
 	private buildButton(
 		scope: Fusion.Scope<unknown>,
-		theme: HudTheme,
 		control: TouchControl,
 		slots: Fusion.UsedAs<Array<{ x: number; bottom: number; size: number }>>,
 		index: number,
@@ -1367,8 +1373,9 @@ export class MobileControlsController implements OnStart {
 				return UDim2.fromOffset(here.x, here.bottom);
 			}),
 			// **The idle state, and the two properties are the whole of the difference between the states.** See
-			// {@link IDLE_TRANSPARENCY} for the colour and the opacity and for what the alternative was.
-			BackgroundColor3: theme.colors.trough,
+			// {@link IDLE_TRANSPARENCY} for the colour and the opacity and for why the held state is a different
+			// hue rather than a shorter shadow of the same one.
+			BackgroundColor3: PREMIUM.panel,
 			BackgroundTransparency: IDLE_TRANSPARENCY,
 			BorderSizePixel: 0,
 			AutoButtonColor: false,
@@ -1377,8 +1384,19 @@ export class MobileControlsController implements OnStart {
 		});
 
 		// `UDim(1, 0)` — all of it — which is a circle at any size. See the class doc for why the shape is drawn
-		// rather than loaded.
+		// rather than loaded. **The theme's four-pixel corner does not apply here and that is deliberate**: a
+		// control under a thumb is a target, and a disc is the shape a thumb reads as one. Every *panel* in this
+		// direction is a four-pixel rectangle; the six buttons are the one place the language is round.
 		Fusion.New(scope, "UICorner")({ Parent: button, CornerRadius: new UDim(1, 0) });
+
+		// **The theme's neon edge, and the primaries are simply brighter.** The weight half of the old pair is gone —
+		// a bloom is a fixed halo, so "twice as thick" no longer distinguishes anything — and the *light* does the job
+		// instead: the two primary actions get the full bloom (a `UIShadow`, see `ui/glow.ts`) while the four utilities
+		// get a dimmed one, written by tinting the bloom's ink rather than by skipping it, so every button reads as lit
+		// and the primaries read as *more* lit. The weight is read from `BUTTON_WEIGHT`, this file's one answer to
+		// "which of these is primary", rather than from a second list.
+		const primary = (BUTTON_WEIGHT[index] ?? 1) > 1;
+		applyGlow(button, primary ? PREMIUM.glow : PREMIUM.sideB);
 
 		// **And a ratio constraint, which is the belt rather than the mechanism.** `pack` already hands every button
 		// a square diameter, so on every screen this cluster is measured for there is nothing for this to do. It
@@ -1409,7 +1427,7 @@ export class MobileControlsController implements OnStart {
 		let held = false;
 
 		const paint = (down: boolean): void => {
-			button.BackgroundColor3 = down ? theme.colors.accent : theme.colors.trough;
+			button.BackgroundColor3 = down ? PREMIUM.sideA : PREMIUM.panel;
 			button.BackgroundTransparency = down ? HELD_TRANSPARENCY : IDLE_TRANSPARENCY;
 		};
 
@@ -1491,7 +1509,7 @@ export class MobileControlsController implements OnStart {
 		// arrangement the engine's jump button has, and the reason there is no cell frame at all. `AnchorPoint
 		// (0.5, 0)` with `Position (0.5, 1)` puts its top-centre on the circle's bottom edge, so the word is
 		// centred under the disc at whatever size the packing gave it, plus {@link LABEL_GAP} of air.
-		const label = this.buildLabel(scope, theme, control.label);
+		const label = this.buildLabel(scope, control.label);
 		label.AnchorPoint = new Vector2(0.5, 0);
 		label.Position = new UDim2(0.5, 0, 1, LABEL_GAP);
 		label.Parent = button;
@@ -1641,11 +1659,7 @@ export class MobileControlsController implements OnStart {
 	 * was measured from**, which is why the corner the box is anchored to now is two scale-1 offsets and nothing
 	 * derived.
 	 */
-	private restyleEngineJump(
-		scope: Fusion.Scope<unknown>,
-		theme: HudTheme,
-		scale: Fusion.UsedAs<number>,
-	): void {
+	private restyleEngineJump(scope: Fusion.Scope<unknown>, scale: Fusion.UsedAs<number>): void {
 		const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
 
 		/** The button already dressed, so a rebuilt frame inside the same GUI is not dressed twice. */
@@ -1726,7 +1740,7 @@ export class MobileControlsController implements OnStart {
 					ScaleType: Enum.ScaleType.Fit,
 				});
 
-				const label = this.buildLabel(scope, theme, JUMP_LABEL);
+				const label = this.buildLabel(scope, JUMP_LABEL);
 				label.Name = "HudLabel";
 				label.AnchorPoint = new Vector2(0.5, 0);
 				label.Position = new UDim2(0.5, 0, 1, LABEL_GAP);
@@ -1756,7 +1770,7 @@ export class MobileControlsController implements OnStart {
 			}
 
 			paintParts(button);
-			this.paintJump(button, theme, false);
+			this.paintJump(button, false);
 		};
 
 		const sweep = (): void => {
@@ -1867,13 +1881,13 @@ export class MobileControlsController implements OnStart {
 			scope.push(
 				button.InputBegan.Connect(() => {
 					paintParts(button);
-					this.paintJump(button, theme, true);
+					this.paintJump(button, true);
 				}),
 			);
 			scope.push(
 				button.InputEnded.Connect(() => {
 					paintParts(button);
-					this.paintJump(button, theme, false);
+					this.paintJump(button, false);
 				}),
 			);
 
@@ -1953,16 +1967,17 @@ export class MobileControlsController implements OnStart {
 	 *
 	 * **Two property writes and no tween**, for the reason `buildCell` gives about the cluster's own buttons: a
 	 * button is held or it is not, and a fade would leave the colour somewhere between the two at exactly the
-	 * moment a player wants to know which one they are in. `accent` is the theme's own word for "the thing to
-	 * press" and `trough` is its near-black, so the jump button is the same statement in the same vocabulary as
-	 * the five beside it — see `IDLE_TRANSPARENCY`, which is the 0.6 this shares.
+	 * moment a player wants to know which one they are in. **The pair is the cluster's own** — `PREMIUM.panel` idle
+	 * and `PREMIUM.sideA` held — so the engine's button, on the clients that show it, is painted by the same two
+	 * values as the six beside it rather than by a second copy of the idea. See `IDLE_TRANSPARENCY`, which is the
+	 * same fill and the same alpha the cluster uses.
 	 *
 	 * **Kept as a method rather than inlined**, because it has three callers — the discovery, the press and the
 	 * release — and one definition is what makes "the pressed state is the cluster's pressed state" a fact
 	 * rather than three copies of a hope.
 	 */
-	private paintJump(button: GuiButton, theme: HudTheme, held: boolean): void {
-		button.BackgroundColor3 = held ? theme.colors.accent : theme.colors.trough;
+	private paintJump(button: GuiButton, held: boolean): void {
+		button.BackgroundColor3 = held ? PREMIUM.sideA : PREMIUM.panel;
 		button.BackgroundTransparency = held ? HELD_TRANSPARENCY : IDLE_TRANSPARENCY;
 	}
 
@@ -1979,12 +1994,15 @@ export class MobileControlsController implements OnStart {
 	 * Wrapping off with a zero size, which is the legend's rule for the same reason: a label sized to its text
 	 * inside a parent sized to the label is a circle, and Roblox resolves it by guessing.
 	 */
-	private buildLabel(scope: Fusion.Scope<unknown>, theme: HudTheme, word: string): TextLabel {
+	private buildLabel(scope: Fusion.Scope<unknown>, word: string): TextLabel {
 		const label = Text(scope, { text: word, variant: "caption", wrap: false });
 
 		label.Size = UDim2.fromOffset(0, 0);
 		label.AutomaticSize = Enum.AutomaticSize.XY;
-		label.TextColor3 = theme.colors.textPrimary;
+		// **The theme's near-white rather than the light palette's ink.** The word sits under a plum disc now, so
+		// the dark ink it used to take would be a label drawn *on* the background rather than on the button — this
+		// is the one colour on the cluster that changed for legibility rather than for style.
+		label.TextColor3 = PREMIUM.text;
 		label.TextTransparency = 0;
 
 		return label;

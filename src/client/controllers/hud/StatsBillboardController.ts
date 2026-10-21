@@ -2,7 +2,9 @@ import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { HudTheme, UI_FONT, hudTheme } from "../../ui/hudTheme";
+import { HudTheme, UI_FONT } from "../../ui/hudTheme";
+import { applyTextGlow } from "../../ui/glow";
+import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { STATS_CONFIG } from "shared/config/stats.config";
 import { BADGES_ATTRIBUTE, NPC_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, STAT_HITS, STAT_OUTS } from "shared/constants";
 import { BADGE_COLOURS, Badge, badgeById, decodeBadges } from "shared/badges";
@@ -135,8 +137,9 @@ export class StatsBillboardController implements OnStart {
 		// Read now rather than at module load, for the reason `hudTheme` gives: `configureTheme` has run
 		// by the time anything mounts, and a value captured earlier would be Material's default. Read
 		// here rather than in `attach`, even though that is where it is painted, because the theme is
-		// fixed for the session — there is nothing about a respawn that would change it.
-		const theme = hudTheme();
+		// fixed for the session — there is nothing about a respawn that would change it. **Answered from the
+		// game palette**, so the pill behind a player's head is plum and its text is the palette's white.
+		const theme = premiumHudTheme();
 
 		// The phase, as a `Value` rather than read where it is needed: a `Computed` has to be able to
 		// *watch* this, and `GetAttribute` inside one is a reading taken once rather than a dependency.
@@ -259,7 +262,16 @@ export class StatsBillboardController implements OnStart {
 		// colour from `hudTheme` belongs. Leaving the prop off would give the same colour, because
 		// big-ui's default is `Palette.text.primary`; the assignment is here so the choice is visible
 		// and so moving to another theme colour is one word rather than a discovery.
-		label.TextColor3 = theme.colors.onAccent;
+		// **White rather than `onAccent`, which is the one place this palette inverts a name.** `onAccent` is the
+		// ink for a filled *accent* surface — gold here — and the pill behind a head is not gold: it is the
+		// palette's plum, so the correct ink is the palette's white. The alpha is the direction's text rule, and it
+		// is safe because the pill behind the label is solid.
+		label.TextColor3 = PREMIUM.text;
+		label.TextTransparency = PREMIUM.textTransparency;
+		// **The halo, and it is the whole of this element's neon treatment.** There is no frame here to bloom — a
+		// `BillboardGui` is a canvas, not a surface, and this label is a line of text floating over a head — so the
+		// letters are lit and the "panel" is the absence of one.
+		applyTextGlow(label);
 		label.Parent = billboard;
 
 		// **And the badges, which take the slot whenever they have something to say.** The record is not a

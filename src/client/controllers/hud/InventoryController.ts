@@ -22,7 +22,7 @@ import {
 import { events } from "shared/networking";
 import { inventoryOpen, participating } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
-import { hudTheme } from "../../ui/hudTheme";
+import { lightPanelTheme } from "../../ui/lightPanelTheme";
 import type { HudTheme } from "../../ui/hudTheme";
 import {
 	addCentredMessage,
@@ -352,7 +352,9 @@ export class InventoryController implements OnStart {
 		if (this.mounted) return;
 		this.mounted = true;
 
-		const theme = hudTheme();
+		// **A hardcoded light palette, for the reason `ShopController.mount` gives at its own call**: the pop-up is
+		// read like print, so it gets white paper and black ink from `lightPanelTheme` rather than a resolved mapping.
+		const theme = lightPanelTheme();
 
 		this.slots = catalogueSlots();
 		for (const slot of this.slots) this.equipped.set(slot, Fusion.Value(this.scope, ""));

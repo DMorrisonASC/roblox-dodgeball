@@ -4,9 +4,9 @@ import { Text } from "@rbxts/big-ui";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { teamColourOf } from "shared/gameMode";
+import { applyGlow, applyTextGlow } from "../../ui/glow";
+import { PREMIUM } from "../../ui/premiumTheme";
 import { getHudColumn } from "../../ui/screenGui";
-import { hudTheme } from "../../ui/hudTheme";
-import type { HudTheme } from "../../ui/hudTheme";
 import { raiseZIndex } from "../../ui/panelChrome";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -113,7 +113,6 @@ export class ScoreHudController implements OnStart {
 		if (this.mounted) return;
 		this.mounted = true;
 
-		const theme = hudTheme();
 		const folder = ReplicatedStorage.WaitForChild(ROUND_STATUS_FOLDER) as Folder;
 
 		// Two numbers, each a `Value` fed from its own changed-signal. **A `Value` rather than a `GetAttribute`
@@ -134,7 +133,7 @@ export class ScoreHudController implements OnStart {
 			folder.GetAttributeChangedSignal(ROUND_SCORE_B_ATTRIBUTE).Connect(() => scoreB.set(scoreOf(folder, ROUND_SCORE_B_ATTRIBUTE))),
 		);
 
-		const bar = this.buildBar(theme, scoreA, scoreB);
+		const bar = this.buildBar(scoreA, scoreB);
 
 		if (DEBUG) {
 			print(`[HUD] score bar up — ${ROUND_SCORE_A_ATTRIBUTE}/${ROUND_SCORE_B_ATTRIBUTE} on RoundStatus, every phase`);
@@ -155,7 +154,7 @@ export class ScoreHudController implements OnStart {
 	 * `AutomaticSize` would happily grow the bar past the screen edge: the constraint floors it at a readable
 	 * size and caps it, so it neither collapses to nothing nor runs off the glass.
 	 */
-	private buildBar(theme: HudTheme, scoreA: Fusion.Value<number>, scoreB: Fusion.Value<number>): Frame {
+	private buildBar(scoreA: Fusion.Value<number>, scoreB: Fusion.Value<number>): Frame {
 		const bar = Fusion.New(this.scope, "Frame")({
 			Name: "ScoreBar",
 			// No size of its own: the list layout and `AutomaticSize` make it exactly as big as its contents.
@@ -171,18 +170,22 @@ export class ScoreHudController implements OnStart {
 			AnchorPoint: Vector2.zero,
 			// The column's contract: `1` is the scores, `2` is the clock. See `getHudColumn`.
 			LayoutOrder: 1,
-			BackgroundColor3: theme.colors.panel,
-			BackgroundTransparency: 0,
+			// **The theme's plum at the theme's transparency**, which is the whole of what this pass changes about
+			// the plate. It was the light palette's paper at full opacity — a cream slab, which is a fine thing to
+			// put over a light HUD and the loudest object on a bright arena. Plum at `0.15` is a surface with the
+			// game still visible through it, and it is the same fill the clock, the Enemy View and the pill wear.
+			BackgroundColor3: PREMIUM.panel,
+			BackgroundTransparency: PREMIUM.transparency,
 			BorderSizePixel: 0,
 		});
 
-		Fusion.New(this.scope, "UICorner")({ Parent: bar, CornerRadius: new UDim(0, 10) });
-		Fusion.New(this.scope, "UIStroke")({
-			Parent: bar,
-			Color: theme.colors.textDisabled,
-			Thickness: 2,
-			ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
-		});
+		// **A four-pixel corner rather than the plate's old ten**, from the theme: sporty rather than soft, and the
+		// same corner every other surface in this direction wears.
+		Fusion.New(this.scope, "UICorner")({ Parent: bar, CornerRadius: new UDim(0, PREMIUM.corner) });
+		// **The plate's neon edge**, core plus bloom — see `ui/glow.ts`. The bar is the first thing a player's eye
+		// lands on in a round, so it is the one panel where the bloom is doing real work: it separates the readout
+		// from a dark arena without a heavy fill.
+		applyGlow(bar);
 		// **The padding is on the row rather than on the plate.** The plate is the *surface* and the row is the
 		// *content*, so the gutter belongs to the thing that holds contents; the plate keeps its corner radius
 		// and its stroke to itself and lays nothing out beyond placing the one child it has. **The corner
@@ -223,11 +226,16 @@ export class ScoreHudController implements OnStart {
 			PaddingRight: new UDim(0, 4),
 		});
 
-		this.addCircle(row, 1, theme, "A");
-		this.addScore(row, 2, theme, scoreA);
-		this.addSeparator(row, 3, theme);
-		this.addScore(row, 4, theme, scoreB);
-		this.addCircle(row, 5, theme, "B");
+		// **The numbers take the theme's two side colours, and the discs keep the world's.** That split is the one
+		// judgement in this bar: `teamColourOf` is the colour that paints a body's ring and outline in the arena, so
+		// a disc in it is how a player knows which score is whose — repainting the discs crimson and teal would cut
+		// that link for the sake of a neater palette. The digits sit directly beside their disc, so tinting *them*
+		// from the same five colours reads as one side at a glance without costing the identification.
+		this.addCircle(row, 1, "A");
+		this.addScore(row, 2, PREMIUM.sideA, scoreA);
+		this.addSeparator(row, 3);
+		this.addScore(row, 4, PREMIUM.sideB, scoreB);
+		this.addCircle(row, 5, "B");
 
 		// **After the parts, because it walks what exists.** Every descendant carries the bar's ZIndex, which
 		// is the only way an opaque plate can hold children that are drawn on top of it.
@@ -273,22 +281,23 @@ export class ScoreHudController implements OnStart {
 	 * two world readers still have the live version of that case — their labels come off an attribute — and
 	 * they keep the same fallback for it.
 	 */
-	private addCircle(parent: Frame, order: number, theme: HudTheme, label: "A" | "B"): void {
+	private addCircle(parent: Frame, order: number, label: "A" | "B"): void {
 		const circle = Fusion.New(this.scope, "Frame")({
 			Name: `Side${label}`,
 			Parent: parent,
 			Size: UDim2.fromOffset(CIRCLE_SIZE, CIRCLE_SIZE),
 			LayoutOrder: order,
-			BackgroundColor3: teamColourOf(label) ?? theme.colors.border,
+			BackgroundColor3: teamColourOf(label) ?? PREMIUM.stroke,
 			BackgroundTransparency: 0,
 			BorderSizePixel: 0,
 		});
 		Fusion.New(this.scope, "UICorner")({ Parent: circle, CornerRadius: new UDim(1, 0) });
 		// A ring in the plate's own colour, so the disc reads as a disc rather than as a hole in the plate. It is
-		// the same trick the tiles use to separate a card from the surface behind it.
+		// the same trick the tiles use to separate a card from the surface behind it — and it has to follow the
+		// plate, which is why it is the theme's plum now rather than the palette's paper.
 		Fusion.New(this.scope, "UIStroke")({
 			Parent: circle,
-			Color: theme.colors.panel,
+			Color: PREMIUM.panel,
 			Thickness: 2,
 			ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
 		});
@@ -300,14 +309,25 @@ export class ScoreHudController implements OnStart {
 	 * The box's width is the whole reason the row is symmetric — see {@link SCORE_WIDTH} for the number and how
 	 * it was arrived at — and the argument for each of the three overrides below is written where they are set.
 	 */
-	private addScore(parent: Frame, order: number, theme: HudTheme, score: Fusion.Value<number>): void {
+	private addScore(parent: Frame, order: number, colour: Color3, score: Fusion.Value<number>): void {
 		const label = Text(this.scope, {
 			text: Fusion.Computed(this.scope, (use) => tostring(use(score))),
 			variant: "h4",
 			wrap: false,
 		});
 		label.Name = "Score";
-		label.TextColor3 = theme.colors.textPrimary;
+		// **The side's colour, handed in rather than read here**, because this method draws one of two numbers and
+		// knows nothing about sides — the caller is the only place that knows which one it is drawing. The value is
+		// the theme's crimson or teal; see the call site for why the *numbers* take those and the discs do not.
+		//
+		// **And it takes the theme's text alpha like every other label**, which is the direction's rule rather than
+		// a choice: a two-digit score at `0.15` over solid plum is still the loudest thing in the bar, and the fade
+		// is what stops two saturated numbers reading as a warning. See `PREMIUM.textTransparency`.
+		label.TextColor3 = colour;
+		label.TextTransparency = PREMIUM.textTransparency;
+		// **And the halo**, so the two numbers read as lit rather than as painted. Its colour is the side's, not the
+		// theme's cyan: a red number glowing cyan would be two lights doing one job.
+		applyTextGlow(label, colour);
 		// **A fixed width and an automatic height, and the two axes are answered differently on purpose.**
 		//
 		// **The width is fixed so that a one-digit score and a two-digit score occupy the same space.** Auto-size
@@ -354,12 +374,15 @@ export class ScoreHudController implements OnStart {
 	 * A single dash or a `/` would be a character at the mercy of the font's advance width; a two-pixel frame
 	 * in the theme's hairline colour is exactly the divider the panels use and reads the same way at any size.
 	 */
-	private addSeparator(parent: Frame, order: number, theme: HudTheme): void {
+	private addSeparator(parent: Frame, order: number): void {
 		const rule = Fusion.New(this.scope, "Frame")({
 			Name: "Separator",
 			Parent: parent,
 			Size: UDim2.fromOffset(2, CIRCLE_SIZE),
-			BackgroundColor3: theme.colors.textSecondary,
+			// **The theme's gold, because it is the only line this direction owns.** The old value was the light
+			// palette's secondary text — near-black — which on a plum plate is not a rule but a notch. Gold reads as
+			// punctuation between two numbers without competing with either of the two side colours beside it.
+			BackgroundColor3: PREMIUM.gold,
 			BackgroundTransparency: 0,
 			BorderSizePixel: 0,
 			LayoutOrder: order,

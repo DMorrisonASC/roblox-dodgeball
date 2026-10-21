@@ -7,7 +7,9 @@ import { events, HitDirection } from "shared/networking";
 import { killCamActive, PLAYING, roundPhase } from "../../panels";
 import { raiseZIndex } from "../../ui/panelChrome";
 import { getHudScreenGui } from "../../ui/screenGui";
-import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { HudTheme } from "../../ui/hudTheme";
+import { applyGlow } from "../../ui/glow";
+import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
 /** Prints on mount, and one line per hit that lands in the feed. */
@@ -363,7 +365,9 @@ export class HitLogController implements OnStart {
 
 	private mount(): void {
 		const scope = Fusion.scoped();
-		const theme = hudTheme();
+		// **Answered from the game palette**, so every card's fill and every label below follows it — see
+		// `premiumHudTheme`. The typography and the spacing are still `hudTheme`'s, because they are big-ui's.
+		const theme = premiumHudTheme();
 
 		// **The feed, newest first, as a plain array rather than Fusion state.** Nothing draws from it
 		// reactively: `paint` writes the cards when a hit arrives or when a row ages out, which is a handful
@@ -391,9 +395,11 @@ export class HitLogController implements OnStart {
 		// Written onto the returned label rather than passed as a prop: big-ui's `Text.color` is a palette
 		// *vocabulary* — `"primary"`, `"errorMain"` — resolved against big-ui's own palette, and this ink is
 		// the theme's. The default would also have been drawn at `Transparency.textPrimary` (0.13); a
-		// heading over a bright arena wants all of its ink.
+		// heading over a bright arena wants all of its ink — **and now that the card behind it is solid plum,
+		// "all of its ink" is the theme's `0.15`**, which is the direction's text rule rather than a
+		// per-label call. See `PREMIUM.textTransparency`.
 		heading.TextColor3 = theme.colors.textPrimary;
-		heading.TextTransparency = 0;
+		heading.TextTransparency = PREMIUM.textTransparency;
 
 		const cards: HitCard[] = [];
 
@@ -586,7 +592,7 @@ export class HitLogController implements OnStart {
 		separator.Name = "Separator";
 		separator.LayoutOrder = 2;
 		separator.TextColor3 = theme.colors.textPrimary;
-		separator.TextTransparency = 0;
+		separator.TextTransparency = PREMIUM.textTransparency;
 		separator.Parent = row;
 
 		const victim = Text(scope, { text: "", variant: NAME_VARIANT });
@@ -608,10 +614,12 @@ export class HitLogController implements OnStart {
 
 		// The names' colours are not set here: they change with every pair, and `paint` is the one place
 		// they are written. What is fixed for the card's whole life is the arrow's ink and the fact that the
-		// names are fully opaque — a half-transparent name would mix with the fill and the contrast the
-		// class doc computes would no longer be the contrast on screen.
-		hitter.TextTransparency = 0;
-		victim.TextTransparency = 0;
+		// names take the theme's text alpha — **which is now `0.15` rather than `0`**. The old comment argued
+		// that a half-transparent name would mix with a translucent fill and lose the contrast it computes;
+		// the fill is solid plum now, so nothing is mixing, and the alpha is what every other label in this
+		// direction is drawn at. See `PREMIUM.textTransparency`.
+		hitter.TextTransparency = PREMIUM.textTransparency;
+		victim.TextTransparency = PREMIUM.textTransparency;
 
 		const card = Card(scope, {
 			// The fill, the padding and the hairline, in that order. `background` names the theme's paper
@@ -630,6 +638,10 @@ export class HitLogController implements OnStart {
 		card.Name = `Card${order}`;
 		card.LayoutOrder = order;
 		card.Visible = false;
+
+		// **The neon edge, over big-ui's own hairline.** `applyGlow` takes that stroke over as the core rather than
+		// adding a second one — see `ui/glow.ts` — which is what lets a card this file did not build be lit.
+		applyGlow(card);
 
 		return { card: card, hitter: hitter, victim: victim };
 	}

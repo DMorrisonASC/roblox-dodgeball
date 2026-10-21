@@ -16,7 +16,7 @@ import { TEAM_A, TEAM_B, TeamLabel } from "../round/team";
 import { rigCounts } from "../../npc/rigs";
 
 /** Prints every opt-in, refusal and opt-out. The sign is player-facing; this is the record. */
-const DEBUG = true;
+const DEBUG = false;
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a match is being played. A word between two files. */
 const PLAYING = "Playing";

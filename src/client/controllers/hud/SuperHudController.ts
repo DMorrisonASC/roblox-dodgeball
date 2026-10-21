@@ -14,7 +14,8 @@ import {
 	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
 } from "shared/constants";
 import { sessionHudVisible } from "../../panels";
-import { HudTheme, hudTheme, UI_FONT } from "../../ui/hudTheme";
+import { HudTheme, UI_FONT } from "../../ui/hudTheme";
+import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 import { SuperAbility } from "../input/SuperAbility";
@@ -83,11 +84,13 @@ const ICON_SIZE = 56;
  * rather than about the picture: it says "a press here would do something", which is a fact the picture alone
  * cannot carry, because a MultiBall window draws a picture too and a press spends nothing of it.
  *
- * **At 0.8 the world is visible through it**, which is worth knowing when reading the icon's own comment
- * below: the plate is a tint rather than a backdrop, so the pixels the icon is drawn on are, for practical
- * purposes, whatever is behind the player.
+ * **At `0.8` the world was visible through it, and that is the number this pass changed.** See the paragraph above:
+ * the plate was a tint rather than a backdrop, which was right for a light HUD on a light arena. On the solid-plum
+ * direction every surface is opaque — a plate at `0.8` would be the one panel the game shows through, and the white
+ * count beside it would be drawn on sand. **`PREMIUM.transparency` is `0`, so the slot is a solid plate** and the
+ * ring, the icon and the count all sit on it rather than on the world. The geometry is untouched.
  */
-const SLOT_TRANSPARENCY = 0.8;
+const SLOT_TRANSPARENCY = PREMIUM.transparency;
 
 /**
  * How much the slot grows when a power arrives or is spent, and how long the settle takes.
@@ -390,8 +393,10 @@ export class SuperHudController implements OnStart {
 		const player = Players.LocalPlayer;
 
 		// The HUD's colours, read now rather than at module load: `configureTheme` has run by the time
-		// anything mounts, and a value captured earlier would be Material's default.
-		const theme = hudTheme();
+		// anything mounts, and a value captured earlier would be Material's default. **Answered from the game
+		// palette**, so the slots, the stamina lights and the icon strokes all follow it — see `premiumHudTheme`
+		// for the job-by-job mapping and for the two places it is a choice rather than a translation.
+		const theme = premiumHudTheme();
 
 		// **The icon's id, and the empty string is the empty state.** A `Value<string>` rather than a
 		// `Value<AbilityKind | undefined>`: what the `ImageLabel` wants is an id, the power-to-id mapping
@@ -1182,6 +1187,10 @@ export class SuperHudController implements OnStart {
 
 		label.Name = "UsesLeft";
 		label.TextColor3 = theme.colors.textPrimary;
+		// **The theme's text alpha, which is the direction's rule rather than a per-label call** — and it is safe
+		// here only because {@link SLOT_TRANSPARENCY} is now `0`: this number sits on a solid plate, not on the
+		// arena. See `PREMIUM.textTransparency`.
+		label.TextTransparency = PREMIUM.textTransparency;
 		label.Size = UDim2.fromOffset(0, 0);
 		label.AutomaticSize = Enum.AutomaticSize.XY;
 		// Right edge at the slot's left edge, less the gap; vertically centred on the slot. Relative in both
@@ -1223,9 +1232,11 @@ export class SuperHudController implements OnStart {
 	 * and on a monitor rather than one pixel size that is right on exactly one screen); and the `UIStroke` is
 	 * `Contextual`, which outlines the *letters*. `Border` is the other mode and strokes the label's own
 	 * invisible rectangle, which puts nothing around the word at all — see `styleSplashText`'s note, which is
-	 * where this pair was worked out. **The colours are the theme's**, `onAccent` inside `trough`, which is the
-	 * same white-inside-near-black pair the splash uses, and no `Color3.fromRGB` anywhere: a palette change
-	 * stays one file's business. **Written inline rather than through `styleSplashText`** because this label is
+	 * where this pair was worked out. **The colours used to be the theme's `onAccent` inside `trough`, and that
+	 * pair is gone**: it named white-inside-near-black on the light palette, and both of those jobs now answer
+	 * "plum" on this one — a plum word with a plum outline. The letters are the palette's white and the outline is
+	 * its plum, written from `PREMIUM` below, which is the same pair `RespawnHudController` uses for its numerals.
+	 * **Written inline rather than through `styleSplashText`** because this label is
 	 * a `Fusion.New` props table, and the helper writes properties after construction — the same values in two
 	 * shapes, and the reactive `Visible` below is what keeps this one a props table.
 	 *
@@ -1257,7 +1268,13 @@ export class SuperHudController implements OnStart {
 			BackgroundTransparency: 1,
 			Font: UI_FONT,
 			Text: READY_TEXT,
-			TextColor3: theme.colors.onAccent,
+			// **White letters with a plum outline, and the pair is this pass's change.** The old pair was
+			// `onAccent` inside `trough` — white inside near-black on the light palette — and on this palette both
+			// of those names answer "plum", which would have drawn a plum word with a plum outline around it. The
+			// splash module's job names still describe the *idea* (letters, then the thing behind them); what the
+			// colours are now comes from the game palette directly, exactly as `RespawnHudController` does for its
+			// countdown numerals.
+			TextColor3: PREMIUM.text,
 			TextScaled: true,
 			TextXAlignment: Enum.TextXAlignment.Center,
 			TextYAlignment: Enum.TextYAlignment.Center,
@@ -1270,7 +1287,10 @@ export class SuperHudController implements OnStart {
 		const stroke = new Instance("UIStroke");
 		stroke.Name = "Outline";
 		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual;
-		stroke.Color = theme.colors.trough;
+		// **The outline is the palette's plum**, which is the surface every panel in this direction is made of and
+		// the same outline `RespawnHudController` puts behind its countdown numerals: it is the only colour in the
+		// five dark enough to separate white glyphs from a bright arena floor.
+		stroke.Color = PREMIUM.panel;
 		stroke.Thickness = READY_STROKE_THICKNESS;
 		stroke.Parent = label;
 	}

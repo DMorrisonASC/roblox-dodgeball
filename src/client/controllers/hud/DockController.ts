@@ -12,7 +12,8 @@ import {
 import { inPracticeZone, participating, roundPhase, togglePanel } from "../../panels";
 import { isParticipant } from "../../roundZone";
 import { addElevation, wireInteraction } from "../../ui/elevation";
-import { hudTheme } from "../../ui/hudTheme";
+import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
+import { applyGlow } from "../../ui/glow";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -182,7 +183,10 @@ export class DockController implements OnStart {
 	}
 
 	private addDock(): void {
-		const theme = hudTheme();
+		// **There is no theme read in this method any more**, which is the honest consequence of the dock being a
+		// transparent frame holding two big-ui buttons: the frame draws nothing, so it has no colours to ask for, and
+		// the buttons' paint lives in `addDockButton` where the instances are. It used to read `hudTheme()` here for
+		// the three lines that wanted it; those lines are gone and a local nobody reads is worse than none.
 
 		/**
 		 * **Whether the local player is standing in a practice zone — the tracker's fact, watched.**
@@ -289,12 +293,12 @@ export class DockController implements OnStart {
 	 * on screen during an intermission that want pressing, so they are exactly where the affordance has to
 	 * be visible before the mouse moves. See `ui/elevation.ts` for the level and for the press it wires.
 	 *
-	 * **`hudTheme()` is called here rather than threaded in from `addDock`**, which is a deliberate
-	 * exception to the "a HUD reads its colours exactly once" convention this codebase otherwise keeps.
-	 * That convention is about *capture* — a value read at module load would be Material's default rather
-	 * than the configured theme — and `hudTheme()` reads the live palette on every call, so a second call
-	 * cannot disagree with the first. Threading it would mean a fourth parameter on a method called twice,
-	 * to buy nothing.
+	 * **`premiumHudTheme()` is called here rather than threaded in from `addDock`**, which is the same exception to
+	 * the "a HUD reads its colours exactly once" convention this codebase otherwise keeps — and now the only reader
+	 * in this file. That convention is about *capture* — a value read at module load would be Material's default
+	 * rather than the configured theme — and `hudTheme` (and so the premium bridge) reads the live palette on every
+	 * call, so a second call cannot disagree with the first. Threading it would mean a parameter on a method called
+	 * twice, to buy nothing.
 	 */
 	private addDockButton(
 		dock: Frame,
@@ -324,7 +328,41 @@ export class DockController implements OnStart {
 		// reading as a grey rectangle rather than as depth. With the flag off, the shadow is drawn only
 		// outside the parent's own area: a fringe beneath an outline, which is the right amount of ink for
 		// a surface that is mostly hole, and the second of the two treatments this hierarchy needs.
-		const shadow = addElevation(this.scope, button, hudTheme(), "BUTTON", variant === "contained");
+		const shadow = addElevation(this.scope, button, premiumHudTheme(), "BUTTON", variant === "contained");
+
+		/**
+		 * **The button's paint, written onto big-ui's instance rather than through its props.**
+		 *
+		 * big-ui's `Button` takes `color: "primary" | "secondary"` and resolves it against its own palette — the
+		 * light one — so there is no prop that would make it plum and gold. Its *structure* is what this file can
+		 * rely on: the button is the surface itself, its label is either the button's own `Text` or a child
+		 * `TextLabel`, and its hairline is a `UIStroke` child. So the three parts are painted directly, which is
+		 * the same choice `RoundStatusController` and `HitLogController` make for big-ui's `Card`.
+		 *
+		 * **The two variants are treated differently on purpose**: `Shop` is `contained`, so it takes the gold
+		 * *face* with plum ink — the same inversion as the "L" keycap and the legend's key chips — while
+		 * `Inventory` is `outlined`, so it takes the plum surface, the gold hairline and white text. **The plum
+		 * goes on opaque** (`PREMIUM.transparency`), which is the direction's rule for a surface: a dark plate are
+		 * what makes gold and faded white legible.
+		 */
+		const face = color === "primary" ? PREMIUM.gold : PREMIUM.panel;
+		const ink = color === "primary" ? PREMIUM.onGold : PREMIUM.text;
+
+		button.BackgroundColor3 = face;
+		button.BackgroundTransparency = PREMIUM.transparency;
+		button.TextColor3 = ink;
+		button.TextTransparency = PREMIUM.textTransparency;
+
+		// **The neon edge, which also replaces big-ui's own hairline** — `applyGlow` reuses whatever `UIStroke` the
+		// button already carries as the core rather than adding a second one. See `ui/glow.ts`.
+		applyGlow(button);
+
+		for (const descendant of button.GetDescendants()) {
+			if (!descendant.IsA("TextLabel")) continue;
+
+			descendant.TextColor3 = ink;
+			descendant.TextTransparency = PREMIUM.textTransparency;
+		}
 
 		// **The button is its own visual here**, unlike a shelf tile: big-ui builds the thing that is drawn and
 		// the thing that is clicked as one instance, so there is nothing to point the scale at but the button

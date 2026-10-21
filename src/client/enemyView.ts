@@ -2,6 +2,8 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { STAT_HITS, STAT_OUTS } from "shared/constants";
 import { killCamActive } from "./panels";
+import { applyGlow, applyTextGlow } from "./ui/glow";
+import { PREMIUM } from "./ui/premiumTheme";
 import { getFullScreenGui } from "./ui/screenGui";
 
 /**
@@ -62,12 +64,13 @@ const WIDTH = 260;
 const PADDING = 10;
 const LINE_GAP = 2;
 
-/** The pill's colours, taken from `returnToLobby`'s dark-panel-and-light-label pair so the two read as one family. */
-const BACKGROUND = new Color3(0.08, 0.09, 0.12);
-const BORDER = new Color3(0.33, 0.35, 0.42);
-const HEADER = new Color3(0.55, 0.58, 0.66);
-const LABEL = new Color3(0.93, 0.94, 0.97);
-const STATS = new Color3(0.72, 0.75, 0.82);
+/**
+ * **The panel's paint is the game HUD's own palette, not this file's.** The colours used to be five `Color3`
+ * literals written here — a dark panel, a grey border, a dim header and two shades of near-white — which was right
+ * while this overlay was the only dark furniture on the screen and wrong the moment the whole in-game HUD moved to
+ * the "Premium Sports" direction. See `ui/premiumTheme.ts` for the palette and for why it is a module of its own
+ * rather than more entries in `hudTheme`.
+ */
 
 /**
  * **Above the other tenant of its own GUI, which is all `ZIndex` can say from here.**
@@ -182,8 +185,11 @@ function mount(): void {
 		Position: new UDim2(0.5, 0, 0, TOP_INSET),
 		Size: new UDim2(0, WIDTH, 0, 0),
 		AutomaticSize: Enum.AutomaticSize.Y,
-		BackgroundColor3: BACKGROUND,
-		BackgroundTransparency: 0.1,
+		// **The theme's plum at the theme's transparency**, which is what makes this panel and the score plate above
+		// it one material. It was an almost-opaque near-black at `0.1` — right for a dark HUD, and now the one surface
+		// in the row that would look pasted on.
+		BackgroundColor3: PREMIUM.panel,
+		BackgroundTransparency: PREMIUM.transparency,
 		BorderSizePixel: 0,
 		ZIndex: Z_INDEX,
 
@@ -194,9 +200,14 @@ function mount(): void {
 	});
 
 	// The same two decorations the "Return to Lobby" pill wears, so the cinematic furniture and the way out of a
-	// round read as one family rather than as two HUDs that happened to ship in the same week.
-	Fusion.New(scope, "UICorner")({ Parent: panel, CornerRadius: new UDim(0, 8) });
-	Fusion.New(scope, "UIStroke")({ Parent: panel, Color: BORDER, Thickness: 1 });
+	// round read as one family rather than as two HUDs that happened to ship in the same week. **Both read the
+	// theme now**, which is what makes that sentence true rather than historical: a gold hairline on a four-pixel
+	// corner, in the same two numbers the pill and the score plate use.
+	Fusion.New(scope, "UICorner")({ Parent: panel, CornerRadius: new UDim(0, PREMIUM.corner) });
+	// **The neon edge: a one-pixel core plus a bloom**, which is `ui/glow.ts`'s whole job. The helper is handed the
+	// frame rather than this file making a `UIStroke`, so the two layers that make an edge look *lit* are one call
+	// and every panel in the game is lit the same way.
+	applyGlow(panel);
 	Fusion.New(scope, "UIPadding")({
 		Parent: panel,
 		PaddingTop: new UDim(0, PADDING),
@@ -217,9 +228,15 @@ function mount(): void {
 	// **The header is built last and given `LayoutOrder` 1**, so the list draws it first without the code having to
 	// build things in the order they appear — the same contract the round readout column writes down for its two
 	// children. Both labels that are written to later are held; the header never changes.
-	nameLabel = line(scope, panel, "Name", "", Enum.Font.GothamBold, 20, LABEL, 2);
-	statsLabel = line(scope, panel, "Stats", "", Enum.Font.GothamMedium, 14, STATS, 3);
-	line(scope, panel, "Header", "ENEMY VIEW", Enum.Font.GothamBold, 12, HEADER, 1);
+	//
+	// **The header is the theme's gold and the other two lines are its near-white**, which is the whole of how the
+	// direction reads here: one gold thing says what you are looking at, and everything you actually want to read is
+	// white on plum. The header also takes `GothamBlack` — the heaviest of the two faces the theme allows — because
+	// it is the one line drawn entirely in capitals, and a cap-height row in the same weight as the name under it
+	// reads as a second name rather than as a label.
+	nameLabel = line(scope, panel, "Name", "", Enum.Font.GothamBold, 20, PREMIUM.text, 2);
+	statsLabel = line(scope, panel, "Stats", "", Enum.Font.GothamMedium, 14, PREMIUM.text, 3);
+	line(scope, panel, "Header", "ENEMY VIEW", Enum.Font.GothamBlack, 12, PREMIUM.gold, 1);
 
 	// **Into the full-screen GUI rather than the HUD's**, because this is furniture pinned to the screen's own top
 	// edge: `None` insets on both devices, so `TOP_INSET` means the same distance everywhere. See the two notes at the
@@ -257,12 +274,20 @@ function line(
 		Font: font,
 		Text: text,
 		TextColor3: colour,
+		// **White at the direction's text alpha** — see `PREMIUM.textTransparency` for why the softness is on the
+		// letters and not on the panel. Applied to the gold header too: the rule is about ink, not about colour.
+		TextTransparency: PREMIUM.textTransparency,
 		TextSize: textSize,
 		TextXAlignment: Enum.TextXAlignment.Center,
 		AutomaticSize: Enum.AutomaticSize.XY,
 		LayoutOrder: order,
 		ZIndex: Z_INDEX,
 	});
+
+	// **Every line gets the halo**, which is what makes the caption read as neon rather than as white text that happens
+	// to be on a dark panel. It is applied here rather than at the three call sites for the reason the properties are:
+	// one construction, so a fourth line would be lit without anybody remembering to light it.
+	applyTextGlow(label, colour);
 
 	return label;
 }

@@ -1,7 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 import { GuiService, Players, RunService, UserInputService, Workspace } from "@rbxts/services";
 import { isMobile } from "../../platform";
-import { hudTheme } from "../../ui/hudTheme";
+import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { getStickScreenGui } from "../../ui/screenGui";
 
 /** Prints the mount line, the engine-stick probe, and one line per grab and per release. */
@@ -231,7 +231,11 @@ export class TouchJoystickController implements OnStart {
 		// knew that this does not: with the engine's stick live, a character that walks is not evidence about this
 		// ring** — it is evidence about the pair. That is what the mode line above is for.
 
-		const theme = hudTheme();
+		// **Answered from the game palette**, so the ring, its rim and the thumb are the same plum-and-gold as the
+		// rest of the HUD — see `premiumHudTheme`. **The two "bright" colours below are written from `PREMIUM`
+		// directly rather than through this record**, because `onAccent` on this palette is the ink for a *gold*
+		// surface and the ring's lit state is white: one is a name that inverts and the other is not.
+		const theme = premiumHudTheme();
 
 		/**
 		 * **The movement zone: an invisible `TextButton` over the lower-left of the screen, which is what makes a
@@ -691,9 +695,13 @@ export class TouchJoystickController implements OnStart {
 			if (on === bright) return;
 
 			bright = on;
-			ring.BackgroundColor3 = on ? theme.colors.onAccent : theme.colors.trough;
+			// **White, not `onAccent`.** The lit state used to be written from the theme's `onAccent` — which is
+			// white on the light palette and is the palette's *plum* on this one, so the ring's "the thumb is at the
+			// rim" signal would have been the same colour as the ring itself. The two states are the palette's white
+			// and its plum, which is the pair every other surface in this direction is drawn with.
+			ring.BackgroundColor3 = on ? PREMIUM.text : theme.colors.trough;
 			ring.BackgroundTransparency = on ? RING_MAX_FILL_TRANSPARENCY : RING_FILL_TRANSPARENCY;
-			rim.Color = on ? theme.colors.onAccent : theme.colors.accent;
+			rim.Color = on ? PREMIUM.text : theme.colors.accent;
 			rim.Transparency = on ? RING_MAX_RIM_TRANSPARENCY : RING_RIM_TRANSPARENCY;
 
 			if (DEBUG) print(`[Joystick] the ring went ${on ? "white — the thumb is at the rim" : "dark"}`);

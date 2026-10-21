@@ -5,6 +5,8 @@ import { ReplicatedStorage } from "@rbxts/services";
 import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { GAME_MODE_NAMES, isGameModeId } from "shared/gameMode";
 import { PLAYING } from "../../panels";
+import { applyGlow, applyTextGlow } from "../../ui/glow";
+import { PREMIUM } from "../../ui/premiumTheme";
 import { getHudColumn } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -51,8 +53,14 @@ const HUD_WIDTH = 100;
  * **What this is not: a fade.** Both phase changes in this game happen behind the transition cover —
  * `TRANSITION_CONFIG.WIPE_AT_ROUND_END` sends one at the end of a round as well as the start — so a fade would
  * hide nothing and would leave the board *partly* there for a third of a second. Nothing here eases anything.
+ *
+ * **`0` since the "Premium Sports" pass — fully opaque, and the change is the rule rather than the number.** The
+ * board was `0.3` of the light palette's paper, then `0.15` of plum, and both were films over the arena; the
+ * direction's second look asked for a *broadcast graphic*, which is never something the game shows through. On the
+ * solid plum the gold hairline and the gold clock both hold their contrast, which is the same fact from the other
+ * side. The value is the theme's so every panel moves together. See `ui/premiumTheme.ts`.
  */
-const BOARD_TRANSPARENCY = 0.3;
+const BOARD_TRANSPARENCY = PREMIUM.transparency;
 
 /**
  * The round HUD: the clock and the mode while a round is being played, and the name of the phase otherwise.
@@ -219,16 +227,51 @@ export class RoundStatusController implements OnStart {
 		// off, which is what a second line of text then falls out of. So the card is as tall as its
 		// line, and the wrapper follows it, and no amount of text can be clipped by a box that was
 		// sized before the text existed.
+		// **The line is built before the card so it can be repainted afterwards**, which is the one thing about this
+		// construction that is not big-ui's: `Card` takes instances rather than props, so a `Text` handed to it is an
+		// instance this file still holds — and the colour and the face live on that instance rather than on the card.
+		const clock = Text(scope, {
+			text,
+			variant: "button",
+			align: Enum.TextXAlignment.Center,
+		});
+
 		const card = Card(scope, {
 			padding: 4,
-			children: [
-				Text(scope, {
-					text,
-					variant: "button",
-					align: Enum.TextXAlignment.Center,
-				}),
-			],
+			children: [clock],
 		});
+
+		/**
+		 * **The board's paint, and this is where the HUD stops reading big-ui's theme.** The card arrives as the light
+		 * palette's paper with big-ui's own black hairline; the in-game HUD is the plum-and-gold direction now — see
+		 * `ui/premiumTheme.ts` — and this is the same surface the score plate above it wears, at the same
+		 * transparency.
+		 *
+		 * **The stroke and the corner are *repainted* rather than added**, which is the difference between a theme and
+		 * a layer. `Card` already has a `UIStroke` and a `UICorner` child of its own, and a second of either would be
+		 * one border drawn over another — the layered look this direction explicitly refuses (no glow, no double
+		 * stroke). Repainting big-ui's own instance is what keeps "one border" true without giving up the card's
+		 * padding, which is what sizes the wrapper.
+		 *
+		 * **The clock is the theme's gold**, which is the colour spent on the number a round is played against: gold
+		 * on plum is the highest contrast the palette has, and this is the one label on the HUD that is read rather
+		 * than glanced at.
+		 */
+		card.BackgroundColor3 = PREMIUM.panel;
+
+		// **The bloom, over big-ui's own hairline.** `applyGlow` reuses that stroke as the core rather than adding a
+		// third one — see `ui/glow.ts`, where taking the existing stroke over is the whole reason a big-ui card can be
+		// lit without being rebuilt. The corner below is still big-ui's instance, repainted.
+		applyGlow(card);
+
+		const cardCorner = card.FindFirstChildWhichIsA("UICorner");
+		if (cardCorner !== undefined) cardCorner.CornerRadius = new UDim(0, PREMIUM.corner);
+
+		clock.TextColor3 = PREMIUM.gold;
+		clock.TextTransparency = PREMIUM.textTransparency;
+		// **And the clock is the one label in the game that gets the full neon treatment** — cyan ink with a cyan halo,
+		// which is the sign-like pair this direction exists for. See `ui/glow.ts`'s text helper.
+		applyTextGlow(clock);
 
 		card.Parent = wrapper;
 

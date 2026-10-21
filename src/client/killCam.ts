@@ -192,10 +192,31 @@ function onDied(character: Model): void {
  * camera on this client are all "let the engine have it".
  */
 function begin(at: number): void {
+	// **A second start is a no-op, and that guard exists for {@link awaitToken}.** The retry below can fire on the
+	// same death that an immediate start already handled — the attribute arriving in the same frame the death was
+	// detected, say — and two starts would bind two render steps and capture the camera type twice.
+	if (running) return;
+
 	const player = Players.LocalPlayer;
 
 	const token = player.GetAttribute(LAST_HIT_BY_TOKEN_ATTRIBUTE);
-	if (!typeIs(token, "string")) return;
+	if (!typeIs(token, "string")) {
+		// **The token can be a frame behind the death, and that is the one refusal here worth retrying.**
+		//
+		// `Died` fires on *this* client, from the humanoid it simulates; the token is written on the server, at the
+		// tag, and is replicated. The two are not ordered — so a death can be seen before the attribute that names
+		// its thrower is, and refusing on this frame would be a cam that never starts for a death that was about to
+		// be explainable. That is the shape the "caught a ball, then killed by a second one" report has: the catch
+		// writes to the same player's attributes, so the value on screen at the death is a value from a *different*
+		// throw's write, and whether it is there at all is a replication question rather than a gameplay one.
+		//
+		// **Bounded, and the bound is the cam's own pending timeout.** An elimination writes no deadline and a
+		// practice-zone death has no killer at all, so a wait with no end would be a subscription held for the rest
+		// of the session on every death outside a round.
+		awaitToken(at);
+
+		return;
+	}
 
 	const body = bodyFor(token);
 	if (body === undefined) return;
@@ -227,6 +248,39 @@ function begin(at: number): void {
 	// and the hand-back's) are how a session answers "did the cam start, on whom, and did it let go" without the
 	// Explorer. The name is the body's own, which for a rig is the alias it wears.
 	print(`[KillCam] up — watching ${body.GetFullName()} for ${string.format("%.2f", at - Workspace.GetServerTimeNow())}s`);
+}
+
+/**
+ * **Waits, briefly, for the killer's token to replicate — then gives up and lets the engine keep the camera.**
+ *
+ * One subscription, one deadline, and both are dropped on the first of them: the token's own changed-signal is the
+ * fast path (the server writes it a round trip after the death), and `PENDING_TIMEOUT_SECONDS` is the slow one. The
+ * connection is dropped by the handler as well as by the timer, so a start cannot run twice and a session cannot
+ * collect one stale subscription per death.
+ *
+ * **What this cannot fix, stated rather than implied**: a token that is *stale* rather than *missing* — the value
+ * from a previous hit, already replicated — is indistinguishable on the client from a fresh one without a sequence
+ * number on the write. This closes the absent case, which is the one a retry can close.
+ */
+function awaitToken(at: number): void {
+	let connection: RBXScriptConnection | undefined;
+
+	connection = Players.LocalPlayer.GetAttributeChangedSignal(LAST_HIT_BY_TOKEN_ATTRIBUTE).Connect(() => {
+		const token = Players.LocalPlayer.GetAttribute(LAST_HIT_BY_TOKEN_ATTRIBUTE);
+		if (!typeIs(token, "string")) return;
+
+		if (connection !== undefined) connection.Disconnect();
+		connection = undefined;
+
+		begin(at);
+	});
+
+	task.delay(KILL_CAM_CONFIG.PENDING_TIMEOUT_SECONDS, () => {
+		if (connection === undefined) return;
+
+		connection.Disconnect();
+		connection = undefined;
+	});
 }
 
 /**

@@ -6,6 +6,8 @@ import { Players, RunService, Workspace } from "@rbxts/services";
 import { LAST_HIT_BY_ATTRIBUTE, RESPAWN_AT_ATTRIBUTE } from "shared/constants";
 import { killCamActive } from "../../panels";
 import { splashStyle, styleSplashText } from "../../ui/actionSplash";
+import type { SplashStyle } from "../../ui/actionSplash";
+import { PREMIUM } from "../../ui/premiumTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -235,10 +237,18 @@ export class RespawnHudController implements OnStart {
 
 		// **The theme is read once and handed to all three labels, which is what makes them one look.** The
 		// style is `ui/actionSplash.ts`'s — the same `splashStyle()` the `HIT!` caption is drawn with, so the
-		// face, the white and the near-black outline are that module's values rather than copies of them. The
-		// alternative was to read `hudTheme()` here and write the three values again, which is the drift the
-		// prompt is about: a copied literal is right until either element is retuned.
-		const style = splashStyle();
+		// face and the white are that module's values rather than copies of them. The alternative was to read
+		// `hudTheme()` here and write the three values again, which is the drift the prompt is about: a copied
+		// literal is right until either element is retuned.
+		//
+		// **One value is replaced, and it is the outline.** `splashStyle()`'s outline is the light palette's
+		// near-black, which was right while the HUD was light and is now the one colour on screen that does not
+		// belong: the numerals sit over the arena with no panel behind them, so the outline is the only thing
+		// separating white glyphs from a bright sand pitch — and the game palette's deep plum is both darker enough
+		// to do that job and the surface every panel around them is made of. **Replaced rather than re-derived**,
+		// which is the point of `SplashStyle` being a value a caller may hand in: the face and the letters still
+		// come from the splash module, so a change there still reaches this countdown.
+		const style: SplashStyle = { ...splashStyle(), outline: PREMIUM.panel };
 
 		// **The numeral, in two parts, because the part that changes ten times a second is not the part that
 		// matters.** The whole seconds are `h4` and the tenths are a smaller, dimmer `subtitle1` beside them —
