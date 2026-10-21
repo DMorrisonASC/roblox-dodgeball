@@ -4,6 +4,7 @@ import type { TypographyVariant } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { LAST_HIT_BY_ATTRIBUTE, RESPAWN_AT_ATTRIBUTE } from "shared/constants";
+import { killCamActive } from "../../panels";
 import { splashStyle, styleSplashText } from "../../ui/actionSplash";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
@@ -202,7 +203,15 @@ export class RespawnHudController implements OnStart {
 			AnchorPoint: new Vector2(0.5, 0.5),
 			AutomaticSize: Enum.AutomaticSize.Y,
 			BackgroundTransparency: 1,
-			Visible: waiting,
+
+			// **And off while a kill cam is shooting, which is the one hide here worth arguing about.** This is
+			// the only element on the screen that is genuinely *about* the wait the cam is filling, so hiding it
+			// trades information for the shot: three seconds of somebody else's fight, and a numeral counting
+			// down over it is the clutter the whole change exists to remove. What makes the trade safe is that
+			// nothing is torn down — `waiting` keeps being written underneath by the same subscription, so the
+			// countdown is *correct* on the frame it comes back rather than restarting. See `panels.ts`'s
+			// paragraph on why the HUD is hidden rather than destroyed.
+			Visible: Fusion.Computed(scope, (use) => use(waiting) && !use(killCamActive)),
 		});
 
 		// `LABEL_WIDTH` is 320px and the element is centred, so a viewport narrower than that clips it on both

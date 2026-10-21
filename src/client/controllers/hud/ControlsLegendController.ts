@@ -5,6 +5,7 @@ import { RunService, UserInputService } from "@rbxts/services";
 import { isMobile } from "../../platform";
 import { makePressResponse } from "../../ui/elevation";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
+import { killCamActive } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 
@@ -259,6 +260,11 @@ export class ControlsLegendController implements OnStart {
 			Size: UDim2.fromOffset(0, 0),
 			AutomaticSize: Enum.AutomaticSize.XY,
 			BackgroundTransparency: 1,
+
+			// **Gone while a kill cam is shooting.** A legend of keys is the least cinematic thing on the screen,
+			// and every key it names is one a dead player cannot use. A `Visible` write rather than a teardown,
+			// so the rows are the same instances when it returns — see `panels.ts`.
+			Visible: Fusion.Computed(scope, (use) => !use(killCamActive)),
 		});
 
 		Fusion.New(scope, "UIListLayout")({

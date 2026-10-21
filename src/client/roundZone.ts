@@ -1,5 +1,11 @@
 import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
+import {
+	IN_ROUND_ATTRIBUTE,
+	PRACTICE_ZONE_TAG,
+	ROUND_STATE_ATTRIBUTE,
+	ROUND_STATUS_FOLDER,
+	TEAM_ATTRIBUTE,
+} from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 
 /**
@@ -98,12 +104,15 @@ export function sideOfBody(body: Model | Player): SideLabel | undefined {
 }
 
 /**
- * **Whether this player is on a side — the fact the round-edged client features gate on.**
+ * **Whether this player is wearing a side — which is not the same question as being in the round, and stopped
+ * being a usable proxy for it on 2026-10-20.**
  *
  * `TEAM_ATTRIBUTE` is written by `RoundService.assignTeams` from the opt-in roster, **cleared there for
  * everybody who is not in it**, and written again by `setTeam` for a player who joins a round that is
- * already being played. So "this player has a side" and "this player is in the round the phase is talking
- * about" are one statement, replicated per player with no remote, no poll and no new state.
+ * already being played. What it does *not* do is come off when somebody leaves a round mid-way:
+ * `surrender` keeps the roster entry on purpose, so the side survives into the lobby along with the seat it
+ * stands for. "This player has a side" and "this player is in the round" were one statement while nothing
+ * could leave a round in the middle; they are two now, and the second is {@link isParticipant}.
  *
  * **It is deliberately not "a round is on", which is {@link inRound}.** A player watching a round from the
  * lobby is not in it: they are not teleported, not held and not counted, so the things that follow the
@@ -119,18 +128,25 @@ export function onASide(player: Player): boolean {
 }
 
 /**
- * **The rule, in one place: a player is in the round when they are on a side and a round is being
- * played.** Both conditions, not either — the user's own wording — and the two halves fail in opposite
- * directions, which is why both are asked: a lobby spectator has no side while the round runs, and a
- * participant stands in the lobby while an intermission does.
+ * **The rule, in one place: a player is in the round when the round says it has them and a round is being
+ * played.** Both conditions, not either, and the two halves fail in opposite directions: the attribute is cleared
+ * where membership is cleared rather than where the phase changes, so a boundary can leave it true for a frame
+ * after the phase has moved — and a round being played is true for every spectator in the lobby.
  *
- * **This is what the camera asks**, and it lives here rather than inside the camera for the reason
- * `inTaggedZone` does: a second copy of a rule about where the game is being played does not survive
- * itself. The wipe asks a different question and says so — it plays for whoever is *moved*, which is
- * {@link onASide} alone, because at a round's end the phase has already left `Playing`.
+ * **"On a side" was the second condition until 2026-10-20, and a surrender broke it.** `RoundService.surrender`
+ * deliberately leaves a player in `teams` — the side's head count has to survive somebody walking out — so
+ * `TEAM_ATTRIBUTE` stays on them while they stand in the lobby, and this predicate went on reporting them as a
+ * participant. The visible result was the shift lock staying on: mouse held to the middle of the screen and a
+ * crosshair over a player who had left the round. `IN_ROUND_ATTRIBUTE` is the round's own answer to the question
+ * this function is actually asking, published at the four places membership changes — see it for why it exists.
+ *
+ * **This is what the camera and the dock ask**, and it lives here rather than inside either for the reason
+ * `inTaggedZone` does: a second copy of a rule about where the game is being played does not survive itself.
+ * The wipe asks a different question and says so — it plays for whoever is *moved*, which is {@link onASide}
+ * alone, because at a round's end the phase has already left `Playing`.
  */
 export function isParticipant(player: Player): boolean {
-	return inRound() && onASide(player);
+	return inRound() && player.GetAttribute(IN_ROUND_ATTRIBUTE) === true;
 }
 
 /**

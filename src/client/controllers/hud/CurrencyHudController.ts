@@ -3,6 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { COINS_ATTRIBUTE } from "shared/constants";
+import { killCamActive } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints once, when the readout is up — the line that says the controller ran at all. */
@@ -32,15 +33,32 @@ export class CurrencyHudController implements OnStart {
 		const scope = Fusion.scoped();
 		const player = Players.LocalPlayer;
 
+		// **A wrapper frame, because the visibility has to be reactive and a big-ui `Text` takes no reactive
+		// properties** — the same division `RespawnHudController` makes for its own label, and for the same
+		// reason. The wrapper carries the position and the `Visible`; the label keeps the typography and fills it.
+		// The alternative was to write `label.Visible` from a subscription, which is a second writing path to
+		// keep in step with the Fusion one.
+		const wrapper = Fusion.New(scope, "Frame")({
+			Name: "CoinReadout",
+			Position: new UDim2(0, 12, 0, 64),
+			Size: new UDim2(0, 160, 0, 22),
+			BackgroundTransparency: 1,
+
+			// **Hidden for the kill cam, like the rest of the HUD.** The wallet is not in question while the
+			// camera is over somebody else — and because this is a `Visible` write rather than a teardown, the
+			// number is still being tracked underneath and is current on the frame it returns.
+			Visible: Fusion.Computed(scope, (use) => !use(killCamActive)),
+		});
+
 		const label = Text(scope, {
 			text: "",
 			variant: "body1",
 			align: Enum.TextXAlignment.Left,
 		});
 
-		label.Name = "CoinReadout";
-		label.Position = new UDim2(0, 12, 0, 64);
-		label.Size = new UDim2(0, 160, 0, 22);
+		label.Name = "CoinReadoutText";
+		label.Position = UDim2.fromOffset(0, 0);
+		label.Size = UDim2.fromScale(1, 1);
 
 		// The number is written imperatively rather than through a `Value`, because it changes on an
 		// attribute write and nothing more — a per-frame value for a number that moves once a round would
@@ -54,7 +72,8 @@ export class CurrencyHudController implements OnStart {
 		scope.push(player.GetAttributeChangedSignal(COINS_ATTRIBUTE).Connect(refresh));
 		refresh();
 
-		label.Parent = getHudScreenGui();
+		label.Parent = wrapper;
+		wrapper.Parent = getHudScreenGui();
 
 		if (DEBUG) print(`[HUD] coin readout up — reading ${COINS_ATTRIBUTE} on the player`);
 	}

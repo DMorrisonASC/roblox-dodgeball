@@ -89,20 +89,21 @@ export const inPracticeZone = Fusion.Value(scope, false);
  * denied the one place they could spend the wait. See `DockController`'s visibility, both panels', and
  * {@link sessionHudVisible}.
  *
- * **The rule is `roundZone.isParticipant`'s, named once and read as a `Value` so a HUD can watch it.**
- * `TEAM_ATTRIBUTE` is written from the opt-in roster at every whistle and cleared for everybody who is
- * not in it, and `setTeam` writes it for a player admitted to a round already under way — so "I have a
- * side" and "this round is mine" are one statement, and a mid-round joiner loses the dock at the moment
- * they are admitted rather than at the next intermission.
+ * **The rule is `roundZone.isParticipant`'s, named once and read as a `Value` so a HUD can watch it.** That
+ * function is the one place "the round has this player, and a round is on" is written, and it reads
+ * `IN_ROUND_ATTRIBUTE` — see the paragraph below for why it stopped reading the side. A mid-round joiner loses the
+ * dock at the moment they are admitted rather than at the next intermission.
  *
- * **There is one case where those two statements are not the same, stated rather than left to be inferred.** A
- * player who surrenders keeps `TEAM_ATTRIBUTE` on purpose — `RoundService.surrender` leaves them in `teams` so
- * the side's head count survives somebody walking out — so `participating` stays true for them while they stand
- * in the lobby, and they keep the round's readouts for the rest of it. The fact that tells the two apart now
- * exists (`IN_ROUND_ATTRIBUTE`, written where a player is admitted and cleared in `eliminate`), and this file
- * has deliberately not been moved onto it: whether somebody watching the round from the lobby should lose the
- * readouts is a HUD decision rather than a correction, and it is the same shape as the dead-body case below,
- * which keeps them on purpose.
+ * **A surrender is the case that forced that change, and this value moved with it.** A player who leaves a round
+ * keeps `TEAM_ATTRIBUTE` on purpose — `RoundService.surrender` leaves them in `teams` so the side's head count
+ * survives somebody walking out — so "I have a side" and "this round is mine" stopped being one statement the day
+ * a round could be left mid-way. The visible fault was a shift lock that stayed on and a shop that stayed away for
+ * somebody standing in the lobby, so `isParticipant` was moved onto the attribute the round writes for exactly
+ * that question. **What follows for this value is stated rather than left to be discovered: a surrendered player
+ * now gets the dock back and loses the round's readouts for the rest of that round.** The note that used to stand
+ * here argued the other way — that this was a HUD decision and not a correction — and the correction that changed
+ * the answer is the one above: the alternative was a player with no camera release, no shop, and no visible way
+ * back into a round they had just left.
  *
  * **A `Value` rather than a `Computed`, which is the whole reason it is here at all.** The answer is an
  * attribute read, and an attribute read inside a `Computed` is a *sample* rather than a dependency — the
@@ -116,6 +117,24 @@ export const inPracticeZone = Fusion.Value(scope, false);
  * reported as.
  */
 export const participating = Fusion.Value(scope, false);
+
+/**
+ * **Whether the spectator kill cam is holding the camera right now.**
+ *
+ * **The one fact here that is not about the round**, and it lives in this module for this module's own reason:
+ * several HUDs have to agree about it and none of them may own it. **`client/killCam.ts` is the only writer** —
+ * it takes the camera, and the moment it does the screen has to become a shot rather than a dashboard — and every
+ * element that draws something reads it.
+ *
+ * **A `Value` and not an attribute, because it is this client's state.** The camera is taken on the client that is
+ * looking through it; a server publishing "somebody is watching a kill cam" would be telling every other player
+ * about it for nothing, and the whole feature is local by construction — the camera is placed from the body this
+ * machine is simulating.
+ *
+ * **Seeded `false`**, for `participating`'s reason: a client that has heard nothing is not in a kill cam, so it
+ * draws its HUD. A HUD element that is missing when a player looks for it is the worse failure.
+ */
+export const killCamActive = Fusion.Value(scope, false);
 
 /**
  * Whether the round's own HUDs should be on screen: **this player is in a round, or standing in a
@@ -142,7 +161,7 @@ export const participating = Fusion.Value(scope, false);
  * the dock instead of a readout for abilities they do not have.
  *
  * **A `Computed` factory rather than a `Value`**, because there is nothing to write: the answer is a
- * function of two values, and a third `Value` kept in step by a third connection would be a way to get
+ * function of three values, and a fourth `Value` kept in step by a fourth connection would be a way to get
  * it wrong. It is per-scope rather than module-level because a `Computed` belongs to whoever will
  * dispose it — the same reason `addViewportConstraint` builds one inside the caller's scope.
  */
@@ -151,13 +170,35 @@ export function sessionHudVisible(scope: Fusion.Scope<unknown>): Fusion.Computed
 		// Both `use()` calls are hoisted to the top, and the rule they feed is evaluated after them.
 		// `use(a) === X || use(b)` would subscribe to whichever ran, so a phase that stopped matching
 		// would stop the zone flag from being watched at all — the trap `DockController`'s own comment
-		// names about its own two values.
+		// names about its own two values. The third follows the same rule for the same reason.
 		const inRound = use(participating);
 		const zone = use(inPracticeZone);
+		const watching = use(killCamActive);
 
-		return inRound || zone;
+		return (inRound || zone) && !watching;
 	});
 }
+
+/**
+ * **Why the HUD is hidden rather than torn down for the kill cam, stated once because six elements now decide it
+ * and the reason must not be re-invented at each of them.**
+ *
+ * The cam lasts one respawn wait — three seconds — and what it covers is a tree of Fusion instances carrying live
+ * bindings, pushed subscriptions and per-element state: the countdown's last-shown tenth, the hit feed's cards,
+ * the shop's scroll position, the score bar's own `UIStroke`. **Every one of those is restored for free by a
+ * `Visible` write and would have to be rebuilt after a `Destroy()`** — a teardown and a re-mount inside the one
+ * second in which a player is waiting to be put back in the game, which is exactly the moment a stutter is least
+ * forgivable and most visible. And the rebuild would not be neutral: an element re-mounted from scratch comes back
+ * with its defaults, so a countdown would restart, the feed would forget the hits it was told about, and anything
+ * whose state is *not* derived from an attribute would come back wrong rather than blank.
+ *
+ * **So the rule is a visibility state, and every hider writes `Visible` and nothing else.** The bindings keep
+ * running underneath — the HUD keeps counting, the feed keeps its cards, the abilities keep their cooldowns — which
+ * is why the screen clearing for three seconds changes nothing about what the HUD knows when it returns. The two
+ * things that must *not* obey this are the `Return to Lobby` pill (`client/returnToLobby.ts`, which never reads
+ * {@link killCamActive} and so is never hidden) and the `Enemy View` overlay, which is the opposite of clutter —
+ * see `client/enemyView.ts`.
+ */
 
 /** Whether the shop panel is showing. */
 export const shopOpen = Fusion.Value(scope, false);

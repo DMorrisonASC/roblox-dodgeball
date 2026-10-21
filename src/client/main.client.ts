@@ -3,6 +3,8 @@ import { UserInputService } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
 import { startChargeEffects } from "./chargeEffect";
 import { startReturnToLobbyPrompt } from "./returnToLobby";
+import { startKillCam } from "./killCam";
+import { startEnemyView } from "./enemyView";
 import { startIasTest } from "./IasTest";
 import { startHitConfirm } from "./hitConfirm";
 import { startHitVfx } from "./hitVfx";
@@ -65,8 +67,23 @@ startCatchPrompt();
 // never-loads-it reasoning as the pair above. See `chargeEffect` for the two roads and the effect they share.
 startChargeEffects();
 
-// **And the "Return to Lobby" prompt, which is the same kind of module for the same reason** � it watches two
+// **And the "Return to Lobby" prompt, which is the same kind of module for the same reason** — it watches two
 // attributes and binds one key, owns no controller lifecycle and injects nothing. See `returnToLobby` for the
 // press-twice rule, for why the cancel is read rather than claimed, and for why it is a file of functions
 // rather than a class (Flamework records an exported class in `flamework.build` whether or not it is decorated).
 startReturnToLobbyPrompt();
+
+// **And the kill cam, which is the first module here that takes the camera away from Roblox's scripts.** It sets
+// `CameraType = Scriptable` for the length of the local player's respawn wait and places the camera itself —
+// watching the body that killed them — then hands the type back on the frame the new body exists. Same plain
+// module shape for the same reason, and the same two facts drive it: the wait end (`RESPAWN_AT_ATTRIBUTE`) and
+// who did it (`LAST_HIT_BY_TOKEN_ATTRIBUTE`). See `killCam` for why the hand-back is an identity test rather
+// than a timer, and for why a destroyed killer is a supported state.
+startKillCam();
+
+// **And the overlay the cam explains itself with.** `killCam` binds it on every death, and the two calls can be
+// in either order — `enemyView.show` mounts the element itself as a belt, so a cam that starts before this line
+// has run still has something to write into. Starting it here is what makes the element exist, hidden, from the
+// client's first frame rather than on the first death. See `enemyView` for why the caption is a separate module
+// from the camera, and for why a rig's stats read as an em dash.
+startEnemyView();

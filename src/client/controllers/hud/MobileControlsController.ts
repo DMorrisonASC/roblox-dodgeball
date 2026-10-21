@@ -1,7 +1,7 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, Workspace } from "@rbxts/services";
+import { Players, RunService, Workspace } from "@rbxts/services";
 import { isMobile } from "../../platform";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
 import { getScreenSpaceGui } from "../../ui/screenGui";
@@ -11,7 +11,7 @@ import { DodgeController } from "../input/DodgeController";
 import { ThrowController } from "../input/ThrowController";
 
 /** Prints the mount line, every press and every release, and the stick's own resolution. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+const DEBUG = true; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The hand-move mode: drag anywhere on the cluster and the whole box follows your finger.** **Placeholder —
@@ -21,23 +21,61 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  * that is the whole loop, and it is a live one: `rojo serve` is usually up, so flipping this and saving puts the
  * mode into the running game in a second or two.
  *
- * **It exists because the derivation is not something a person can nudge.** Where the box sits is computed from the
- * engine's jump button (see {@link BOX_PAD_GAP}), which is right for every device nobody has looked at and no help
- * at all for the one in front of you. The drag is how the delta gets found — one gesture, one number, one paste —
- * instead of by rebuilding with a guessed constant, and the gesture *starts from where the cluster already is*, so
- * switching the mode on never moves anything.
+ * **It exists because a corner gap is a guess about somebody else's thumb.** Where the box sits is
+ * {@link BOX_EDGE_GAP} in from two screen edges — right for every device nobody has looked at, and no help at all
+ * for the one in front of you, where a home indicator, a case or a slightly different grip moves where the thumb
+ * lands. The drag is how the delta gets found — one gesture, one number, one paste — instead of by rebuilding with a
+ * guessed constant, and the gesture *starts from where the cluster already is*, so switching the mode on never moves
+ * anything.
  *
  * **While it is on, a press on a button is a grip rather than a press**: no action fires, no colour changes, and
- * the same for all five, because the unit that moves is the *box*. That is the one thing this mode costs — the
+ * the same for all six, because the unit that moves is the *box*. That is the one thing this mode costs — the
  * cluster cannot be played while it is being placed — which is why it is a constant in the file rather than
  * something reachable at runtime.
  *
  * **The packing pass deleted this tool, and the argument that deleted it was true in one direction only.** The
  * claim was that a fixed box needs no drag tool: one number to tune, and the number is the box's size. True of the
- * *size* and false of the *place* — the place is derived from something that differs per device, so the only way
- * to disagree with it is by hand, and a tool is how a hand finds a number. See {@link BOX_NUDGE}.
+ * *size* and false of the *place* — the place is two constants and a screen edge now, the same on every device,
+ * but where a thumb *wants* it is not, so the only way to disagree with it is by hand, and a tool is how a hand
+ * finds a number. See {@link BOX_NUDGE}.
  */
 const ARRANGE: boolean = false;
+
+/**
+ * **Whether the engine's own jump button is hidden now that this cluster draws one.** **Placeholder — `true`.**
+ *
+ * **The one switch to flip if the custom jump ever stops working on a device**, and it is here rather than in a
+ * config because it is a *fallback for a bug*, not a preference: the engine's button is the control this project
+ * shipped for two years and it is driven by the `PlayerModule`, so it cannot be broken by anything this file
+ * does. Setting this to `false` puts it back on screen within a second of `rojo serve` — hidden rather than
+ * destroyed either way, so nothing else in the file changes. See {@link requestJump} for what the custom button
+ * does and why it needs a switch at all.
+ *
+ * **It hides the *appearance* only, and with the cluster anchored to the corner that now has a cost worth naming.**
+ * The engine's button is laid out in the bottom-right corner too — under the cluster's own bottom row — so flipping
+ * this to `false` puts the engine's circle *behind* three of ours rather than beside them. The cluster's buttons take
+ * the presses there, and the way to see the engine's control work as a fallback is to lift the cluster with a
+ * negative `Y` in {@link BOX_NUDGE} first.
+ */
+const HIDE_ENGINE_JUMP: boolean = true;
+
+/**
+ * **How long one press may keep asking the body to jump, in seconds.** **Placeholder — 0.25.**
+ *
+ * The custom jump writes `Humanoid.Jump` **every frame** while the button is held, because a single write is lost
+ * (see {@link requestJump}). A hold therefore has to end on something other than the finger: `InputEnded` is the
+ * normal stop, and this is the cap for a release that never arrives — a touch that ends off the button, a window
+ * that loses focus mid-press, a client whose input event was dropped. **A quarter of a second is a jump and never
+ * a held one**: the engine's own button repeats a jump on landing while held, and repeating that here would be a
+ * player who cannot stand still on a phone with a sticky digitizer.
+ */
+const JUMP_HOLD_SECONDS = 0.25;
+
+/**
+ * The render step's name, which **is** its handle — `BindToRenderStep` hands nothing back to cancel with, so the
+ * string is what {@link endJump} unbinds and why it is spelled once here.
+ */
+const JUMP_STEP_NAME = "MobileControlsJump";
 
 /**
  * The gap between two buttons in the box, in reference pixels. **Placeholder — 10.**
@@ -63,49 +101,81 @@ const BOX_GAP = 10;
 const LABEL_BAND = 20;
 
 /**
- * How far the box sits from the screen's right edge, in reference pixels. **Placeholder — 12.**
+ * How far the box sits from the screen's right edge **and from its bottom edge**, in reference pixels.
+ * **Placeholder — 12.**
  *
- * **The same 12 the rest of the furniture uses**, and it is the only screen edge this box names — the other three
- * sides come from the box's own size or from the pad below it.
+ * **The same 12 the rest of the furniture uses, on both axes.** These are the only two screen edges this box names —
+ * the other two sides come from the box's own size — and naming them is the whole of the position: the box is
+ * anchored bottom-right, so this pair *is* where the cluster sits.
+ *
+ * **On the screen's edge rather than the safe area's**, because the box is mounted into `getScreenSpaceGui`, whose
+ * insets are `None`. That is deliberate: "the bottom-right of the screen" is what a thumb expects, and an inset
+ * GUI moves that edge up by the home indicator on a phone and by nothing on a desktop, i.e. the same code would put
+ * the cluster at two different heights. **12px off a device's true bottom can be close to the home indicator**, which
+ * is what {@link BOX_NUDGE} is for — a negative `Y` there lifts the whole cluster for the device that needs it
+ * without touching this number.
  */
 const BOX_EDGE_GAP = 12;
 
 /**
- * How far the box sits *above the engine's jump button*, in reference pixels. **Placeholder — 8.**
+ * **How big each button is, relative to the others — one factor per cell, in {@link mount}'s control order.**
+ * **Placeholder — Throw and Jump at `1.3`, the four utilities at `1`.**
  *
- * **A gap from the pad rather than from the bottom edge of the screen, and this is the one thing the box could not
- * take from a fixed corner offset.** The engine's button is not at a fixed height: this project's own logs put its
- * top edge **90px** and **210px** above the bottom of the screen on two different runs, because the ControlModule
- * lays its own touch controls out per device. A fixed bottom margin would therefore either overlap the pad on the
- * tighter device or float the box most of a screen height above it on the looser one. So the box's bottom edge is
- * derived from the pad and this is the one number in that derivation.
+ * **The reason a layout instance cannot do this job.** `UIGridLayout.CellSize` is one `UDim2` for every cell, so a
+ * grid can only ever draw six identical squares — and Throw and Jump are the primary actions, the two a right thumb
+ * reaches for without looking. A cluster that draws them the same diameter as Drop is a cluster that says all six
+ * matter equally.
+ *
+ * **Nested `UIListLayout`s were the other candidate, and they fail in the other direction.** A list draws its
+ * children at the sizes it was given and does not shrink them to fit; a row that overflows its box overflows it
+ * silently, off the edge of the screen. Sizing rows by hand so that they fit *is* the arithmetic below, written once
+ * per row instead of once for the cluster — which is the third arrangement this file tried and the one that produced
+ * "a correct derivation of a shape that could not fit a phone".
+ *
+ * **So the packing formula is kept with one more degree of freedom**: every diameter is `factor × unit` for a single
+ * `unit`, and `unit` is the largest value that lets every row fit both ways. The cluster therefore always fits the
+ * box it is given, at any aspect ratio, **by construction** — which is the property the three earlier arrangements
+ * did not have and the only reason this file has arithmetic in it at all.
+ *
+ * **`1.3` rather than `2`, stated because the number is a compromise.** The factor scales the *smallest* button's
+ * size by the same `unit`, and once the two primaries share the bottom row it is that row's **height**, not its
+ * width, that binds: the reference box gives a row `92 − 20 = 72px` of room for its tallest circle, so at `1.3` the
+ * utilities come out at `72 ÷ 1.3 ≈ 55px` against `72px` primaries — the pair this cluster is logged at. At `1.5`
+ * they are 48px, and past about `1.63` they are under {@link TAP_MIN} and `minimumBox` starts growing the box
+ * instead. `1.3` is a fifth again as big as its neighbours, which reads as "primary" at arm's length without
+ * costing the utilities their width. It is one number per cell, so tuning it is one edit.
+ *
+ * **The order is `mount`'s fill order** — Drop, Catch, Curve, Dodge, Throw, Jump — which is the order the cells fill,
+ * so `[0]` is Drop, `[4]` is Throw and `[5]` is Jump. **This array is indexed by position, not by control**, so
+ * moving a control in that list means moving its weight here too; the two are one fact written in two places and
+ * that is the cost of a layout that reads its inputs in order. A weight missing from the end of this array reads as
+ * `1`, so shortening it does not break the layout; the count is checked at mount all the same, because a *misordered*
+ * array is a silent design bug rather than a crash.
  */
-const BOX_PAD_GAP = 8;
+const BUTTON_WEIGHT: number[] = [1, 1, 1, 1, 1.3, 1.3];
 
 /**
- * **How far the box is moved from where the derivation puts it, in reference pixels: `X` right, `Y` down.**
- * **Placeholder — `(0, 0)`, which is exactly where the derivation puts it.**
+ * **How far the box is moved from the bottom-right corner, in reference pixels: `X` right, `Y` down.**
+ * **Placeholder — `(0, 0)`, which is exactly the corner {@link BOX_EDGE_GAP} describes.**
  *
- * **This is the hand's half of the position, and it is a *nudge* rather than a corner on purpose.** The derived
- * place is right on every device — it is the pad that moves, not the layout — so a constant that *replaced* it
- * would throw that away and have to be found again on the next phone. A delta keeps it: `new Vector2(0, 40)` reads
- * as "40px lower than the derivation thinks, on whatever device this is", which is the sentence a person actually
- * has in mind when they say the buttons should be lower. See {@link BOX_PAD_GAP} for the derivation it modifies.
+ * **A *nudge* rather than a corner on purpose.** The corner is right by construction — two scale-1 offsets from two
+ * screen edges — so a constant that *replaced* it would have to be found again on the next phone. A delta keeps it:
+ * `new Vector2(0, -40)` reads as "40px higher than the corner, on whatever device this is", which is the sentence a
+ * person actually has in mind when a case or a home indicator is in the way of the bottom edge.
  *
- * **It is also the only way to move the cluster *down*.** The derivation puts the box's bottom edge just above the
- * pad's top edge, so below the cluster there is nothing but the engine's own button, and crossing that line is what
- * this constant is for. **`X` right and `Y` down, both positive in that direction**, because that is the way a
- * finger moves — a drag writes these two numbers with no sign flipped between the gesture and the file.
+ * **`Y` positive now means *down* and therefore off the screen**, which is the opposite of what it meant when the box
+ * hung off the engine's jump button — there, down from the pad's top edge was *into* the screen. The sign did not
+ * change; the edge it is measured from did. **The useful direction here is negative**, and a positive `Y` is only
+ * ever a mistake worth recognising as one.
  *
- * **What a downward nudge costs: the cluster can end up on the jump.** The five buttons draw over whatever is under
- * the box, so a button that lands on the engine's button takes its presses. That is why the derivation exists and
- * why the pad is where it is (the module keeps it clear of the home indicator) — this constant is for overruling
- * that deliberately, not for fixing it by accident.
+ * **What a `Y` below the floor costs: the bottom row is partly off the screen**, and a button whose centre is past
+ * the edge cannot be pressed at all — the label under it goes first, then the circle. Nothing clamps it, because a
+ * clamp would make the drag lie about the number it prints; the printed `Y` and the visible result are the same fact.
  *
  * **Nothing here is written back to the file**, so {@link ARRANGE} can take the box anywhere and a re-sync — or
- * simply turning the mode off — puts it back at the derivation. The number is the deliverable, not the position.
+ * simply turning the mode off — puts it back at the corner. The number is the deliverable, not the position.
  */
-const BOX_NUDGE = new Vector2(0, 40);
+const BOX_NUDGE = new Vector2(0, 0);
 
 /**
  * The smallest a button may be laid out, in pixels. **Placeholder — 44.**
@@ -164,10 +234,10 @@ const ICON_RATIO = 0.6;
  * `Visible` when it creates the button, and the discovery probe reads `0 child(ren)` on a fresh one. See
  * {@link restyleEngineJump}, which is where it is added.
  *
- * **The cluster uses the pad's size for two things and no more**: the box's bottom edge is derived from the pad's
- * top edge, and the pad's rendered size is the number a person compares the buttons against by eye. Nothing is
- * positioned *from* that size — see `measure` — which is the whole of the coupling that survived the arc being
- * deleted.
+ * **The cluster takes nothing from the pad any more — not its size, not its place.** `PAD_SIZE` is this file's own
+ * decision about how big *somebody else's* button renders, and the only thing it shares with the cluster is the
+ * viewport multiplier both are drawn at. That is why the pad's size cannot feed back into the layout: it no longer
+ * touches it.
  */
 const PAD_SIZE = 72;
 
@@ -265,18 +335,21 @@ const BOX_SIZE = new Vector2(
  * because it is the only place this constant's cap ever did anything: the fit is above `1.15` only past roughly
  * **452 × 980**, so every phone was already proportional and only a tablet was capped.
  *
- * **The floor is still needed, and it is not {@link TAP_MIN} under another name.** The multiplier is the *fit* —
+ * **The floor is still needed, and its failure mode changed when the tap floor moved.** The multiplier is the *fit* —
  * the smaller of the two axis ratios against {@link REFERENCE_VIEWPORT} — and a phone held sideways fits at about
- * `0.46`, which is a 33px button: below the tap floor, so `pack` would raise it to 44 and the two rows would then
- * overlap each other *and* spill out of the bottom of the box. Holding the layout at `0.85` keeps a sideways
- * phone at 58px buttons that still fit, which is the cheaper failure by a wide margin.
+ * `0.46`. That used to mean a 33px button which the packing then raised to {@link TAP_MIN} **per button**, so the two
+ * rows overlapped and spilled out of the box. It now means the *box* is grown until its smallest button is tappable
+ * — see `minimumBox` — which on a sideways phone pushes a cluster of full-size buttons a long way up the screen, over
+ * the engine's own corner. Holding the layout at `0.85` keeps a sideways phone at buttons that still fit where the
+ * design puts them, which is the cheaper failure by a wide margin.
  *
- * **Where `0.85` comes from: it is comfortably above the point where the packing stops fitting**, and that point
- * is arithmetic rather than taste. A row of buttons has `(194m − 10m)/2 − 20` pixels each, which reaches
- * `TAP_MIN`'s `44` only at `m ≈ 0.7` — below that `pack` is no longer fitting anything and the rows overlap the
- * box. `0.85` is the first round number above that edge.
+ * **Where `0.85` comes from**, stated as what it protects rather than as a measurement: the smallest button in a row
+ * is `min(weight) × unit` and `unit` falls with the box, so there is a multiplier below which `minimumBox` starts
+ * doing the growing. `0.85` keeps a sideways phone inside the design's own numbers on the screens this project has
+ * logs for. The exact crossover is arithmetic rather than taste, and it moves whenever {@link BUTTON_WEIGHT} does —
+ * which is why it is not written down here as a formula. `minimumBox` is the one place that answers it.
  */
-const SCALE_MIN = 0.85;
+const SCALE_MIN = 1.1;
 
 /**
  * **That scale, as a function of the viewport** — pulled out of {@link buildScale} so the cluster's own arithmetic
@@ -300,63 +373,153 @@ function scaleFor(viewport: Vector2): number {
 }
 
 /**
- * **One button size from one box: the whole of this cluster's layout, as a pure function.**
+ * **One layout for the whole cluster, as a pure function — and it is a function because a layout instance cannot do
+ * this job.**
  *
- * Handed the *row counts* — `[3, 2]` today, and `[5]` or `[1, 1, 1, 1, 1]` are the same call — plus the box it has
- * to fit, the gap between buttons and the band each row's label needs, and it returns where every button goes and
- * how big it is. **Nothing here reads the screen, the engine's button or the scale**, which is why it can be
- * reasoned about on paper — and why the box is the only knob: a bigger box means bigger buttons, because this is
- * the only line that decides.
+ * **A `UIGridLayout` forces every cell to the same size**, which is the one thing this cluster cannot have: see
+ * {@link BUTTON_WEIGHT} for why Throw and Jump are bigger and why nested `UIListLayout`s are worse rather than
+ * better. What is kept from the previous arrangement is the property that made it work at all — **the cluster fits
+ * the box it is given, on any aspect ratio, by construction** — with one more degree of freedom: a weight per cell.
  *
- * **The size is the smaller of the two bounds the box imposes**: how much width a full row has per button, and how
- * much height a row has per button once every row's label band is taken out. **Every button gets the same size,
- * including the throw** — and that is this arrangement's whole trade, deliberately: four passes of making the
- * primary action bigger produced arcs that had to stretch to survive it. **The pattern is the shape here, not the
- * sizes.**
+ * **Every diameter is `weight × unit` for a single `unit`, and `unit` is the largest value that lets *every* row fit
+ * both ways**: across, its circles plus its gaps must fit the box's width; down, its tallest circle and the row's
+ * label band must fit an even share of the box's height. The smaller bound wins, so nothing is ever drawn outside
+ * the box and no row is ever given more room than another.
  *
- * **The short row is centred by construction** rather than by a special case: a row with fewer buttons than the
- * widest one starts half of the difference in, so `[3, 2]` puts its two buttons under the *gaps* of the row above
- * — the pattern the brief drew — and `[5]` simply centres against nothing. That is the reason the pattern is an
- * array of row counts rather than a flag: changing `[3, 2]` to `[5]` is one number, and every formula below reads
- * that array rather than assuming it.
+ * **A row's buttons are bottom-aligned on a common baseline**, not centred. With one size that distinction did not
+ * exist; with mixed sizes it decides whether the six words under the buttons sit on one line or at six different
+ * heights. The baseline is the top of the label band, so a small button's circle simply starts lower and its word
+ * lands beside the big one's.
  *
- * `x` and `y` are each button's **centre**, in the box's own coordinates from its top-left. See {@link mount} for
- * where the box is, and {@link TAP_MIN} for what happens when the answer is too small to tap.
+ * **A row narrower than the box is still centred by construction**, which is what keeps the pattern a plain array of
+ * row counts: `[3, 3]` today, and `[5]` or `[1, 1, 1, 1, 1]` are the same call.
+ *
+ * **There is no tap floor here any more.** The smallest button is `min(weights) × unit`, so a floor on a button is
+ * really a floor on the *box* — and it lives there now, in `boxSize`, where growing the box makes the cluster bigger
+ * instead of making the buttons spill out of it. See {@link minimumBox}.
+ *
+ * `x` is each button's **centre** across the box, `bottom` its **bottom edge** down the box (which is where its label
+ * starts, {@link LABEL_GAP} lower), and `size` its diameter. See {@link mount} for where the box is.
+ *
+ * **Debt, recorded where the code that owes it lives: this file should eventually be migrated to `UIListLayout` +
+ * `UIFlexItem(GrowRatio)` per `HANDOFF.md` §9** ("Flexbox over math", "Grids over pixels"). It was deferred because
+ * rewriting the layout math alongside the custom jump physics was too high a risk to do blind: the jump shares this
+ * box, and a flex layout's exact semantics — how `GrowRatio` distributes free space against each button's base size,
+ * and what happens to a row that cannot fit — cannot be confirmed without a device in front of somebody. **The
+ * deviation is a decision with an owner, not an oversight**: the extension here is what makes the primary actions
+ * bigger than the utilities, and `UIGridLayout` cannot express that at all. The migration should be its own pass,
+ * with the emulator open, and it should move the weights onto `GrowRatio` and the floor onto the row's own sizing.
  */
 function pack(
 	rows: number[],
+	weights: number[],
 	box: Vector2,
 	gap: number,
 	labelBand: number,
-): Array<{ x: number; y: number; size: number }> {
-	let columns = 0;
-	for (const count of rows) columns = math.max(columns, count);
+): Array<{ x: number; bottom: number; size: number }> {
+	// **The rows are measured before a single `unit` is chosen**, because the answer is the smallest bound over all
+	// of them — measuring and placing in one pass would place the first row at a unit the last row then reduced.
+	const rowHeight = (box.Y - (rows.size() - 1) * gap) / rows.size();
 
-	const across = (box.X - (columns - 1) * gap) / columns;
-	const down = (box.Y - (rows.size() - 1) * gap) / rows.size() - labelBand;
+	const measured = new Array<{ factors: number[]; sum: number; largest: number }>();
+	let cell = 0;
+	let unit = math.huge;
 
-	// **The floor is applied here rather than checked here.** A box too small for a thumb target is a box the
-	// layout grows out of — see {@link TAP_MIN} — and what the caller gets is a size that is always tappable and
-	// positions that are always the same gap apart, which is the pair of properties worth keeping.
-	const size = math.max(math.min(across, down), TAP_MIN);
-
-	const cells: Array<{ x: number; y: number; size: number }> = [];
-
-	for (let row = 0; row < rows.size(); row++) {
-		const count = rows[row];
-		const inset = ((columns - count) * (size + gap)) / 2;
+	for (const count of rows) {
+		const factors = new Array<number>();
+		let sum = 0;
+		let largest = 0;
 
 		for (let column = 0; column < count; column++) {
-			cells.push({
-				x: inset + column * (size + gap) + size / 2,
-				// The pitch is the circle *plus its label* plus the gap, because the label hangs inside the row.
-				y: row * (size + gap + labelBand) + size / 2,
-				size,
-			});
+			const weight = weights[cell] ?? 1;
+
+			factors.push(weight);
+			sum += weight;
+			largest = math.max(largest, weight);
+
+			cell++;
+		}
+
+		measured.push({ factors, sum, largest });
+
+		unit = math.min(unit, (box.X - (count - 1) * gap) / sum, (rowHeight - labelBand) / largest);
+	}
+
+	// **A box too small to hold anything reads as a unit of nought or less.** The caller's floor is what stops that
+	// happening; this clamp is so a box that somehow gets past it produces a small cluster rather than NaNs in every
+	// button's `Position`.
+	unit = math.max(unit, 0);
+
+	const cells = new Array<{ x: number; bottom: number; size: number }>();
+
+	for (let row = 0; row < measured.size(); row++) {
+		const here = measured[row];
+		const sizes = here.factors.map((weight) => weight * unit);
+
+		let total = (sizes.size() - 1) * gap;
+		for (const size of sizes) total += size;
+
+		// **Centred, and the baseline is the band's top edge**, so every word in the row hangs from one line.
+		let across = (box.X - total) / 2;
+		const bottom = row * (rowHeight + gap) + rowHeight - labelBand;
+
+		for (const size of sizes) {
+			cells.push({ x: across + size / 2, bottom, size });
+
+			across += size + gap;
 		}
 	}
 
 	return cells;
+}
+
+/**
+ * **The smallest box the cluster may be drawn in, if its smallest button is to be at least {@link TAP_MIN} across.**
+ *
+ * **The floor used to live inside {@link pack}, and that was the bug this move fixes.** Applying it per button meant
+ * a cluster whose buttons were bigger than the box that contained them: they were placed by the packing's positions
+ * and drawn at the floor's size, so they overlapped each other, spilled onto the engine's pad and, on a short screen,
+ * ran off the top. **A floor on a button is really a floor on the box** — a box grown until its smallest button is
+ * tappable, with the packing then doing what it does for any other box.
+ *
+ * **Exact rather than approximate.** `unit` must be at least `TAP_MIN / smallest`, so every row's width must be at
+ * least `sum × unit` plus its gaps, and the box's height `rows × (tallest × unit + band)` plus the gaps between rows
+ * — the widest row and the tallest one are the two answers. All of it reads the pattern and the weights, which are
+ * constants, and the gap and band, which are the caller's scaled pixels.
+ */
+function minimumBox(rows: number[], weights: number[], gap: number, labelBand: number): Vector2 {
+	const sums = new Array<number>();
+	let smallest = math.huge;
+	let tallest = 0;
+	let cell = 0;
+
+	for (const count of rows) {
+		let sum = 0;
+		let largest = 0;
+
+		for (let column = 0; column < count; column++) {
+			const weight = weights[cell] ?? 1;
+
+			sum += weight;
+			largest = math.max(largest, weight);
+			smallest = math.min(smallest, weight);
+
+			cell++;
+		}
+
+		sums.push(sum);
+		tallest = math.max(tallest, largest);
+	}
+
+	const unit = TAP_MIN / smallest;
+
+	let across = 0;
+	for (let row = 0; row < sums.size(); row++) across = math.max(across, sums[row] * unit + (rows[row] - 1) * gap);
+
+	return new Vector2(
+		across,
+		rows.size() * (tallest * unit + labelBand) + (rows.size() - 1) * gap,
+	);
 }
 
 /**
@@ -444,7 +607,7 @@ interface TouchControl {
  * **A hook rather than the flag read inside `buildButton`**, so a button stays what it has always been — a circle,
  * a word and a press — and the only thing that knows about dragging is the code that owns the box's position. When
  * arrange mode is off the hook is `undefined` and every line of it is dead: the buttons behave exactly as they did
- * before this existed. **One instance is shared by all five**, because the thing that moves is the box and not the
+ * before this existed. **One instance is shared by all six**, because the thing that moves is the box and not the
  * button the finger happened to land on. See {@link mount}, which builds it.
  *
  * **Declared as function-typed *properties* rather than as methods**, which is this codebase's own trap recorded
@@ -467,46 +630,7 @@ interface ArrangeHook {
 }
 
 /**
- * Where the engine's jump button is and how big it is — **three readings off somebody else's instance, kept live.**
- *
- * **Everything the cluster is positioned from comes from here**, which is why it is a record rather than the
- * single number this file's first column asked for: the box is placed against the pad's **top edge**, and that is
- * a corner plus half a size — where the column that started this file wanted only the edge itself. It is also
- * where the pad's *rendered* size comes from, which is the number a person compares the buttons beside it against.
- *
- * **Values rather than numbers, because the engine moves this button.** A rotation or a viewport change re-lays
- * out the engine's own touch GUI, and both readings are re-taken from the signals the restyle already watches — so
- * the box follows the pad rather than being right at mount and wrong after the first rotation.
- *
- * **`size` is one number and not a `Vector2`**, deliberately: it is a *reading for a person* rather than a
- * clearance to compute with — "the pad rendered at 78px" is a sentence and the pair of axes is not — and the one
- * place a clearance is wanted is `measure`, which takes the larger axis because the engine's button is not
- * guaranteed square. See `measure` for that `math.max` and for why nothing is placed *inside* the pad any more.
- *
- * **`found` is separate from the other two rather than a nil centre**, so that the box can be built once and stay
- * invisible until there is something for it to sit above. See {@link mount}: the engine creates this button about
- * a second and a half after the client ignites, and a box placed at `(0, 0)` is the top-left corner of the screen.
- */
-interface JumpGeometry {
-	/** The button's centre, in screen pixels from the top-left of the screen. */
-	readonly centre: Fusion.Value<Vector2>;
-
-	/**
-	 * The button's larger axis **as it is actually rendered** — after the shrink *and* the viewport multiplier,
-	 * see {@link PAD_SIZE} — in screen pixels. It is the size a person sees when they compare the pad with the
-	 * buttons beside it, which is what everything reads it for; the box's derivation measures from the opposite
-	 * corner and cancels this number out of its own arithmetic, so nothing here can feed back into what is drawn.
-	 * See `measure` in {@link restyleEngineJump}.
-	 */
-	readonly size: Fusion.Value<number>;
-
-	/** Whether the button has been found at all. `false` until the engine's touch GUI exists. */
-	readonly found: Fusion.Value<boolean>;
-}
-
-/**
- * The mobile controls: **a box of five buttons packed into the bottom-right corner, sitting above the engine's own
- * jump button.**
+ * The mobile controls: **a box of five buttons packed into the bottom-right corner of the screen.**
  *
  * **The cluster is a box of five buttons in the corner, packed by one formula, and that is the fourth shape.** The
  * first three were arrangements of the *same* idea — place each button relative to the engine's jump button — and
@@ -514,15 +638,20 @@ interface JumpGeometry {
  * never the size anybody assumed, and the geometry that avoided overlapping it kept stretching. The paw was the
  * clearest version of that: a correct derivation of a shape that could not fit a phone.
  *
- * **So this one stops deriving and starts packing.** The five buttons live in a fixed rectangle in the bottom-right
- * corner, and `{@link pack}` computes one size for all five from the box's dimensions — three across the top, two
- * centred underneath. **The box's size is the only thing that decides how big a button is**, so tuning is one
- * number rather than a rebuild-and-look, which is the complaint that killed the last three arrangements.
+ * **So this one stops deriving and starts packing.** The six buttons live in a fixed rectangle in the bottom-right
+ * corner, and `{@link pack}` sizes them from the box's dimensions — three across the top, three under it, with the
+ * two primaries a factor larger than the four utilities (see {@link BUTTON_WEIGHT}). **The box's size is the only
+ * thing that decides how big a button is**, so tuning is one number rather than a rebuild-and-look, which is the
+ * complaint that killed the last three arrangements.
  *
- * **What the pad is still for, and it is exactly one thing: the box sits above it.** The engine's button is where a
- * thumb rests, so the box's bottom edge is its top edge plus a gap — see {@link BOX_PAD_GAP} for why that could not
- * be a fixed margin. Beyond that the two are neighbours rather than a system, which is the whole of what changed:
- * **no bearings, no radius, no arc, and no drag tool for finding numbers by hand.**
+ * **What the pad is no longer for.** The box used to sit above it — its bottom edge derived from the pad's top
+ * edge, on the argument that the pad is where a thumb rests. **That argument was right about the thumb and wrong
+ * about the number**: the pad's top edge is 90px off the floor on one of this project's logged devices and 210px on
+ * another, so a cluster hung from it was drawn 90–210px too high — which is the complaint this pass answers. The
+ * box's edges are the screen's own now, see {@link BOX_EDGE_GAP}; the pad is a thing this file **dresses and
+ * hides** rather than a thing it *measures*, and {@link HIDE_ENGINE_JUMP} is the switch that decides whether there
+ * is anything on the screen there at all. **The two are no longer neighbours in any sense the layout depends on**,
+ * which is the whole of what changed: no bearings, no radius, no arc, no derived edge.
  *
  * **It exists because a key is not a control on a device that has no keyboard.** `ControlsLegendController` is a
  * reference card — every row on it names a key — and on a phone that card is a list of things a player cannot
@@ -588,14 +717,26 @@ interface JumpGeometry {
  * a control the player's other thumb is already holding — and no change to any desktop control: the keys, the
  * binds and the legend are exactly as they were.
  *
- * **Mounted into `getScreenSpaceGui` rather than the shared HUD `ScreenGui`, and the engine's button forces
- * that.** Every other HUD here mounts into the shared GUI, which is inset inside Roblox's topbar so that its
- * contents sit in the safe area; this box cannot, because its bottom edge is derived from the engine's button's
- * `AbsolutePosition` — a *screen* coordinate, measured from the top-left of the screen — and an inset GUI has a
- * different origin. The aim
- * sight needed the same thing for the same kind of reason, and that GUI's own doc is where the argument is written;
- * see `ui/screenGui.ts`. The shared GUI is still what the rest of this project's furniture mounts into, so this is
- * a second home for the one element that cannot live in the first rather than a departure from it.
+ * **Mounted into `getScreenSpaceGui` rather than the shared HUD `ScreenGui`, and what asks for that now is the
+ * corner itself.** Every other HUD here mounts into the shared GUI, which is inset inside Roblox's chrome so that
+ * its contents sit in the safe area — a *good* thing for a readout, and the wrong frame for a thumb cluster whose
+ * specification is "the bottom-right of the screen". `getScreenSpaceGui` is `ScreenInsets.None`, so its
+ * bottom-right corner is the screen's, which is what {@link BOX_EDGE_GAP} measures from; an inset GUI on a phone has
+ * its bottom edge above the home indicator, and the cluster would sit that much higher on that device than on the
+ * next. **The reason this paragraph used to give — the pad's `AbsolutePosition` being a screen coordinate — is gone
+ * with the derivation**, and the choice survived it because the corner is asking for the same thing the pad was.
+ * The aim sight needed the same GUI for the same kind of reason, and that GUI's own doc is where the argument is
+ * written; see `ui/screenGui.ts`. The shared GUI is still what the rest of this project's furniture mounts into, so
+ * this is a second home for the one element that cannot live in the first rather than a departure from it.
+ *
+ * **Two things here superseded paragraphs above, and both are named rather than edited out of them.** The first is
+ * the jump: the paragraph above says a custom jump "never worked" and that the engine's button is therefore kept.
+ * It works now — the one-shot write it lost is replaced by a per-frame one with a physics fallback, and the engine's
+ * button is *hidden* by default rather than kept. See {@link beginJump}, which carries the whole of why, and
+ * {@link HIDE_ENGINE_JUMP}, which is the one constant that puts the old control back. The second is the shape: the
+ * paragraph above describes a packing in which "every button gets the same size", and that is no longer what
+ * {@link pack} does — it takes a weight per cell, so the two primary actions are drawn a factor larger than the four
+ * utilities. {@link BUTTON_WEIGHT} argues why that is still a packing formula rather than a layout instance.
  */
 @Controller()
 export class MobileControlsController implements OnStart {
@@ -623,6 +764,132 @@ export class MobileControlsController implements OnStart {
 		private readonly actionController: ActionController,
 	) {}
 
+	/**
+	 * Whether the jump step is bound right now.
+	 *
+	 * **A flag rather than a connection, because `BindToRenderStep` gives nothing back.** The name is the handle; this
+	 * is what makes {@link endJump} idempotent and the next press safe.
+	 */
+	private jumping = false;
+
+	/**
+	 * **The custom jump, and the whole of why it works where the last one did not.**
+	 *
+	 * **The old button set `Humanoid.Jump = true` once, on the press, and the jump never happened.** That is not a
+	 * suspicion: the source records the attempt in two places — this file's class doc ("there was a custom jump
+	 * button here for two passes and it never worked … the write to `Humanoid.Jump` was lost") and `main.server.ts`
+	 * ("a button of ours that wrote `Humanoid.Jump = true` never produced a jump: the `PlayerModule` writes that
+	 * flag too, later in the frame"). **`Humanoid.Jump` is not a request, it is a level**: it is read by the
+	 * humanoid's physics step, and the `PlayerModule`'s control module rewrites it **every frame** from the input
+	 * *it* is holding. A single write from an `InputBegan` handler is therefore a value that is true for a fraction
+	 * of a frame and false again before anything reads it — the engine's own button produces a jump precisely
+	 * because it keeps that flag true for as long as the finger is down, which is the mechanism this button copies.
+	 *
+	 * **So this writes it every frame while held**, from a render step — which is the last thing in the frame
+	 * before physics — instead of once from an input event. That is the whole bypass: no remote, no
+	 * `ContextActionService` rebound action, and nothing asked of the server. The state change rides along so the
+	 * *animation* is immediate rather than waiting for the velocity to be noticed, and it is gated on the body
+	 * actually standing on something, because `ChangeState(Jumping)` on a body in mid-air is a state the humanoid
+	 * would have to contradict a frame later.
+	 *
+	 * **The humanoid is read fresh on every frame, which is the respawn answer.** Nothing here holds a character:
+	 * `Players.LocalPlayer.Character` is asked each time, so a body replaced by a death is jumped by the *new*
+	 * humanoid with nothing to re-subscribe — and a press during the respawn gap finds no character and does
+	 * nothing rather than writing to a destroyed one. This is the whole reason `CharacterAdded` is not used: a
+	 * reference kept across deaths is the stale-humanoid bug, and reading the player's current body is the same fact
+	 * without a lifetime to manage.
+	 */
+	private beginJump(): void {
+		this.endJump();
+
+		let elapsed = 0;
+
+		this.requestJump(true);
+
+		// **Bound at `Last` rather than on `RenderStepped`, and that rung is the point.** The flag this writes is
+		// rewritten by the `PlayerModule`, and *when* it is rewritten is not something this project can read — so
+		// the write is put as late in the frame as the engine allows, which is the only ordering argument available
+		// without knowing where the module's own step sits. `Last` is after `Character` (where a control module's
+		// per-frame update conventionally runs) and after this project's own camera steps.
+		this.jumping = true;
+
+		RunService.BindToRenderStep(JUMP_STEP_NAME, Enum.RenderPriority.Last.Value, (delta) => {
+			elapsed += delta;
+
+			if (elapsed > JUMP_HOLD_SECONDS) {
+				this.endJump();
+
+				return;
+			}
+
+			this.requestJump(false);
+		});
+	}
+
+	/** Stops asking. Called by the release, by the hold cap, and by the next press. Idempotent. */
+	private endJump(): void {
+		if (!this.jumping) return;
+
+		this.jumping = false;
+
+		RunService.UnbindFromRenderStep(JUMP_STEP_NAME);
+	}
+
+	/**
+	 * One frame's worth of "jump", written to whatever body the player has right now.
+	 *
+	 * **`FloorMaterial` is the gate rather than `Humanoid.Jump`.** The property reads what the *control module*
+	 * last wrote, so asking it whether a jump is in progress answers about somebody else's input; whether the feet
+	 * are on anything is a fact about the body, and it is also what stops the frame loop from re-entering the
+	 * `Jumping` state for the whole hold. A body in the air therefore gets nothing, which is what makes this one
+	 * jump per press instead of one per frame.
+	 *
+	 * **A dead body is refused**, because the loop can run for a quarter of a second and the humanoid it reads on
+	 * the third frame may be one that died on the second. Writing `Jump` on a dead humanoid is harmless, but
+	 * `ChangeState` on one is a state the respawn would inherit.
+	 *
+	 * **`first` decides whether the flag is backed up by an impulse, and that belt is what makes the button work
+	 * even if the flag is lost again.** On the *first* frame only the flag and the state are written, exactly like
+	 * the engine's own button. On every frame after that the body is still asked whether it left the ground — and
+	 * a body that is **still standing on it a frame later did not jump**, so the impulse is applied directly to the
+	 * root part's velocity. That is self-correcting in both directions: if the flag took, the second frame finds
+	 * the body airborne and returns before anything else is written (no double jump, no extra height), and if it
+	 * did not, the player jumps anyway. It is the one part of this that does not depend on an ordering this project
+	 * cannot see.
+	 */
+	private requestJump(first: boolean): void {
+		const character = Players.LocalPlayer.Character;
+		if (character === undefined) return;
+
+		const humanoid = character.FindFirstChildOfClass("Humanoid");
+		if (humanoid === undefined || humanoid.Health <= 0) return;
+		if (humanoid.FloorMaterial === Enum.Material.Air) return;
+
+		humanoid.Jump = true;
+
+		if (first) {
+			humanoid.ChangeState(Enum.HumanoidStateType.Jumping);
+
+			return;
+		}
+
+		// **Still grounded a frame after asking, so the flag did not survive the frame.** The speed is the
+		// humanoid's own: `JumpPower` where the game uses power, and the launch speed that reaches `JumpHeight`
+		// otherwise — `v = sqrt(2 * g * h)` — so a jump this makes is the height a jump this game is configured for.
+		const root = humanoid.RootPart;
+		if (root === undefined) return;
+
+		const speed = humanoid.UseJumpPower
+			? humanoid.JumpPower
+			: math.sqrt(2 * Workspace.Gravity * humanoid.JumpHeight);
+
+		const moving = root.AssemblyLinearVelocity;
+
+		root.AssemblyLinearVelocity = new Vector3(moving.X, speed, moving.Z);
+
+		if (DEBUG) print(`[HUD] jump — the flag was lost; impulse applied at ${string.format("%.1f", speed)}`);
+	}
+
 	public onStart(): void {
 		// Spawned rather than done inline, matching every other HUD: mounting waits for `PlayerGui`, and a
 		// controller's `onStart` is the wrong place to hold up the client's boot.
@@ -647,16 +914,19 @@ export class MobileControlsController implements OnStart {
 		// here** — there is not one `Color3.fromRGB` in this file, which is the rule `hudTheme` exists to keep.
 		const theme = hudTheme();
 
-		// **The five controls, and this is only what each one says and does.** Where they sit is {@link pack}'s
+		// **The six controls, and this is only what each one says and does.** Where they sit is {@link pack}'s
 		// business now, and this list's order is the order they fill the box — left to right, top row first, which is
 		// the order the pattern below is written in:
 		//
-		//                          [Throw]  [Catch]  [Curve]
-		//                             [Dodge]  [Drop]
+		//                          [Drop]   [Catch]  [Curve]
+		//                          [Dodge]  [Throw]  [Jump]
 		//
-		// **`Throw` leads because it is the primary action** and the box's top-left is the corner a right thumb
-		// reaches first. **No control carries a size any more** — one box, one derived button size, every button the
-		// same — which is the simplification this arrangement exists for. See {@link pack}.
+		// **The second row is the thumb's row, and that is what the order is for.** `Throw` and `Jump` are the two
+		// controls a rally is won with and they sit beside each other under the thumb's arc; `Dodge` sits just left
+		// of `Throw`, because the answer to a ball that is already coming has to be reachable by the same hand that
+		// is about to send the next one. **The top row is what is reached for deliberately rather than reflexively**
+		// — `Catch` and `Curve` are aimed, and `Drop` gives the ball away. **No control carries a size here** — the
+		// diameters come from one box and one weight per cell, see {@link BUTTON_WEIGHT} and {@link pack}.
 		const curve: TouchControl = { label: "Curve", down: () => this.throwController.toggleCurve() };
 		const throwBall: TouchControl = {
 			label: "Throw",
@@ -674,17 +944,36 @@ export class MobileControlsController implements OnStart {
 		const dodge: TouchControl = { label: "Dodge", down: () => this.dodgeController.push() };
 		const drop: TouchControl = { label: "Drop", down: () => this.actionController.drop() };
 
-		const controls: TouchControl[] = [throwBall, catchBall, curve, dodge, drop];
+		// **The jump, which is the one control here that is not a way into another controller.** There is no
+		// `JumpController` and there never has been — the humanoid is the whole of it — so this pair calls into *this*
+		// file's {@link beginJump}/{@link endJump}, which are the two writers of the body's own jump. See
+		// {@link requestJump} for why the press does not simply set `Humanoid.Jump` once and stop.
+		const jumpUp: TouchControl = {
+			label: JUMP_LABEL,
+			down: () => this.beginJump(),
+			up: () => this.endJump(),
+		};
+
+		// **The fill order, which is the layout.** `pack` reads this array in order — left to right across the top
+		// row, then the bottom one — so a reordering here *is* a rearrangement on screen, with no number to keep in
+		// step anywhere else. **The weights are indexed by this same order**, so a control moved in this list needs
+		// its weight moved with it: see {@link BUTTON_WEIGHT}, which is the one thing here that is not free.
+		const controls: TouchControl[] = [drop, catchBall, curve, dodge, throwBall, jumpUp];
 
 		/**
-		 * **The packing pattern, which is the whole description of the shape.** Three across the top and two centred
-		 * underneath; `[5]` would be one row, `[1, 1, 1, 1, 1]` a column, and nothing else in this file changes.
+		 * **The packing pattern, which is the whole description of the shape.** Three across the top and three
+		 * across the bottom; `[6]` would be one row, `[1, 1, 1, 1, 1, 1]` a column, and nothing else in this file
+		 * changes.
 		 *
-		 * **It has to total the five controls**, and the two are checked against each other after the packing rather
-		 * than trusted: `pack` counts cells from this array and knows nothing about buttons, so a pattern of `[3, 1]`
-		 * would quietly leave one control unbuilt.
+		 * **It has to total the controls**, and the two are checked against each other after the packing rather
+		 * than trusted: `pack` counts cells from this array and knows nothing about buttons, so a pattern of
+		 * `[3, 1]` would quietly leave one control unbuilt.
+		 *
+		 * **`[3, 3]` since the jump became ours** — it was `[3, 2]` for the five that were here before, and the
+		 * second row is no longer the short one. The jump takes the bottom-right cell, which is the corner a right
+		 * thumb reaches without moving, and it is where the engine's own button used to be drawn.
 		 */
-		const rows: number[] = [3, 2];
+		const rows: number[] = [3, 3];
 
 		// **The one responsive number on this HUD, and it is built *before* the pad rather than after it**: every
 		// size below is written in reference pixels and this turns them into the pixels this screen actually has —
@@ -694,12 +983,13 @@ export class MobileControlsController implements OnStart {
 		// block describes, one frame smaller. See {@link buildScale} for the signal it watches.
 		const scale = this.buildScale(scope);
 
-		// **The engine's jump button is restyled rather than replaced, and it is what the box sits above.** What
-		// comes back is its centre and its size in screen pixels — or nothing until it exists — and the *only* thing
-		// this cluster still takes *from it* is the top edge. It is also the second reader of the multiplier above,
-		// which is what keeps the pad the same size as the buttons beside it. See {@link restyleEngineJump} for the
-		// hunt, the restyle and the reason the jump stopped being ours to draw.
-		const jump = this.restyleEngineJump(scope, theme, scale);
+		// **The engine's jump button is restyled rather than replaced, and this file now takes nothing back from
+		// it.** It used to return the pad's centre and size, because the box was hung off its top edge; the box hangs
+		// off the screen's corner now, so the call is made for what it *does* — dress the button, or hide it — rather
+		// than for what it reports. It is still the second reader of the multiplier above, which is what keeps a pad
+		// that is left visible at the same rate as the buttons beside it. See {@link restyleEngineJump} for the hunt,
+		// the restyle and the reason the jump stopped being ours to draw.
+		this.restyleEngineJump(scope, theme, scale);
 
 		/**
 		 * **The hand-move state, which is dead unless {@link ARRANGE} is on — one nudge and the drag's memory.**
@@ -727,7 +1017,7 @@ export class MobileControlsController implements OnStart {
 					// arithmetic here is the division that turns a screen measurement into a reference one, which is
 					// what keeps one drag the same distance *of layout* at every multiplier. **Nothing is clamped and
 					// nothing is written back**, so the box can be taken off the screen while a finger is down and the
-					// derivation puts it straight back the moment this mode is switched off. See {@link BOX_NUDGE}.
+					// corner puts it straight back the moment this mode is switched off. See {@link BOX_NUDGE}.
 					move: (screenPoint) => {
 						const from = grabbedAt;
 						if (from === undefined) return;
@@ -762,47 +1052,60 @@ export class MobileControlsController implements OnStart {
 		 * against. **So this is where the cluster's proportion comes from** — a bigger screen multiplies this up,
 		 * `pack` turns it into a bigger button, and nothing else in the file has to know the screen changed.
 		 *
-		 * Then **capped at the room above the pad**: on a phone held sideways the pad can sit half way up a
-		 * 393-tall viewport, and a box that ran off the top of the screen would put its top row where no thumb can
-		 * reach. Capping the number `pack` is handed is the self-consistent way for that to fail — the buttons come
-		 * out smaller — where a `UISizeConstraint` on the frame would clamp the rendered size *after* the packing
-		 * had been worked out for the bigger one, and the buttons would overlap instead.
+		 * **Nothing caps it any more, and the cap that used to be here is worth recording because it was a bug
+		 * wearing a safeguard's clothes.** The box's height was clamped to the room above the engine's jump button,
+		 * so that on a sideways phone — where a box of the design's height would run off the top — the buttons came
+		 * out smaller. **The reading was another element's place rather than this one's**, so the clamp did nothing
+		 * on the devices it was written for and pulled the whole cluster up on the ones where the pad sat high: the
+		 * pad's top edge is 90px off the floor on one logged device and 210px on another. A box anchored to the
+		 * corner needs no such cap — the only thing that could push it off the top is its own height, `0.2277` of
+		 * the reference height times a multiplier floored at {@link SCALE_MIN}, which is under a quarter of every
+		 * viewport this project has logs for. **A cap whose worst case cannot happen is a second source of truth
+		 * about the size**, and this file has spent three passes deleting those.
 		 *
-		 * **And the cap needs a pad to be measured against, so a client without one takes the full design size.**
-		 * `room` is the distance from the screen's *top* down to the pad, and with no pad it is computed from a
-		 * centre of `(0, 0)` — a negative number, which `pack` answers with its tap floor: a cluster of 44px
-		 * buttons that would read as a bug rather than as a layout. **This is not a hypothetical client.** The
-		 * switch this project's joystick asks for (`DevTouchMovementMode.Scriptable`) is a movement-mode change,
-		 * and a device whose engine touch controls are *absent* rather than merely late is the case this branch and
-		 * the position below together exist for.
+		 * **And the floor, which is the box's now rather than each button's.** The smallest button in the cluster
+		 * is `min(weights) × unit`, so the way to guarantee a tappable one is to grow the *box* until the packing
+		 * gives it that size — see `minimumBox`. The gap and the band are the same scaled pixels the packing is
+		 * given one line below.
 		 */
 		const boxSize = Fusion.Computed(scope, (use) => {
 			const multiplier = use(scale);
-			const centre = use(jump.centre);
-			const padSize = use(jump.size);
-			const pad = use(jump.found);
-			const room = centre.Y - padSize / 2 - BOX_PAD_GAP * multiplier;
-			const wanted = BOX_SIZE.Y * multiplier;
 
-			return new Vector2(BOX_SIZE.X * multiplier, pad ? math.min(wanted, room) : wanted);
+			const floor = minimumBox(
+				rows,
+				BUTTON_WEIGHT,
+				BOX_GAP * multiplier,
+				LABEL_GAP + theme.typography.caption.lineHeight,
+			);
+
+			return new Vector2(
+				math.max(BOX_SIZE.X * multiplier, floor.X),
+				math.max(BOX_SIZE.Y * multiplier, floor.Y),
+			);
 		});
 
 		/**
 		 * The box itself: **a plain frame in the bottom-right corner whose size is the layout.**
 		 *
-		 * **Its bottom edge is derived from the engine's button rather than from the screen's edge**, which is the
-		 * one thing this design could not take from a corner offset: the pad sits 90px off the floor on one of this
-		 * project's logged devices and 210px on another, so a fixed bottom margin either overlaps the pad or floats
-		 * the box into the middle of the screen. The pad's top edge, a {@link BOX_PAD_GAP} above it, is right on both
-		 * — **and that edge is a distance *down* from the screen's top, not up from its bottom**, which is why the
-		 * `Position` below spells its two axes differently. See the note there for what mixing them cost.
+		 * **Both of its edges are the screen's own now, and that is this pass's whole change.** The box's
+		 * bottom-right corner sits {@link BOX_EDGE_GAP} in from the screen's bottom-right corner — the place a right
+		 * thumb rests without moving, which is what "the bottom-right of the screen" means to the hand using it.
 		 *
-		 * **The right edge is the one screen edge it names** ({@link BOX_EDGE_GAP}); the other two come from the
-		 * size. **No layout instance goes inside it** — the buttons' positions are written by `pack` — and it has no
-		 * background, because it is a footprint rather than a surface.
+		 * **The arrangement this replaces hung the box off the engine's jump button**, whose top edge arrives as a
+		 * distance down from the screen's *top* (an `AbsolutePosition`). That was defensible while the pad was the
+		 * control; it became wrong the moment the pad was hidden, because the pad is not where a thumb rests — it is
+		 * **90px off the floor on one of this project's logged devices and 210px on another**, so a cluster hung
+		 * from its top edge was drawn that far too high, and the complaint was exactly "the buttons are too high".
+		 * **A derived edge is only as good as the thing it is derived from**, and that thing was invisible.
 		 *
-		 * **And {@link BOX_NUDGE} moves the whole thing by hand**, which is the only way below the pad's top edge. See
-		 * that constant for what it costs and {@link ARRANGE} for finding the number with a finger.
+		 * **Two edges rather than four, because the other two come from the size** — which keeps the box's
+		 * *position* independent of its *size* instead of the two being each other's inputs. **No layout instance
+		 * goes inside it** — the buttons' positions are written by `pack` — and it has no background, because it is
+		 * a footprint rather than a surface.
+		 *
+		 * **And {@link BOX_NUDGE} moves the whole thing by hand**, which is now a correction of millimetres rather
+		 * than of a derivation: a negative `Y` lifts the cluster off the bottom edge on a device whose home indicator
+		 * is in the way, and that is the useful direction. See {@link ARRANGE} for finding the number with a finger.
 		 */
 		const box = Fusion.New(scope, "Frame")({
 			Name: "MobileControls",
@@ -814,61 +1117,41 @@ export class MobileControlsController implements OnStart {
 			BackgroundTransparency: 1,
 			AnchorPoint: new Vector2(1, 1),
 			Position: Fusion.Computed(scope, (use) => {
-				// **Every `use` sits above the branch, unconditionally** — a `use()` after an early return is a
-				// subscription that exists only while that branch is taken, which this codebase has been bitten by
-				// before (`RoundStatusController`'s winner). Branching after them costs one spare subscription while
-				// the derived path is live, which is the cheaper of the two mistakes.
+				// **One expression, and the same shape on both axes** — which is the point of anchoring to the
+				// corner. `AnchorPoint (1, 1)` puts the box's *bottom-right* at this position, so each axis is a
+				// scale-1 offset inwards from the screen's right and bottom edges: a gap, then the hand's nudge,
+				// in reference pixels and scaled like every other size here.
+				//
+				// **`Y` positive means *down* and therefore off the bottom edge**, which is why the shipped
+				// {@link BOX_NUDGE} is `(0, 0)` and the useful direction here is negative. That reads backwards
+				// against the old derivation, where the box hung from a distance measured down from the screen's
+				// top and a positive `Y` was how it went lower; see that constant for the flip.
+				//
+				// **The trap the old shape carried is gone, and it is worth keeping the reason written down.** The
+				// position used to mix axes on purpose — a scale-1 offset from the parent's bottom for `Y` beside a
+				// scale-0 offset from its top for the pad's edge — and the one version that spelled the pad's top
+				// edge as a scale-1 offset from the *bottom* drew the cluster mirrored about the screen's midline,
+				// in the top-right corner. **One edge, one number, two spellings.** Two screen edges and no derived
+				// distance has nowhere to put that mistake.
 				const multiplier = use(scale);
-				const centre = use(jump.centre);
-				const padSize = use(jump.size);
-				const pad = use(jump.found);
 				const hand = use(nudge);
 
-				// **The pad's top edge, in the axis it actually arrives in.** `centre` is built from an
-				// `AbsolutePosition`, so `centre.Y − padSize/2` is a distance *down from the screen's top edge* — and
-				// the box's bottom edge goes a gap above that, which is a **scale-0 Y**: an offset from the parent's
-				// *top*. `X` stays a scale-1 offset from the parent's right edge, so the two axes of this `UDim2` are
-				// deliberately spelled differently. That is the whole of the position; {@link BOX_NUDGE} is added to
-				// both afterwards, in reference pixels like every other size here.
-				//
-				// **And the bug that shape replaces is worth keeping written down, because it was invisible from the
-				// code alone.** This line used to read `UDim2.new(1, -BOX_EDGE_GAP * multiplier, 1, -(padTop + gap))`
-				// — the *same* pad number, spent as a scale-1 offset from the parent's **bottom** instead of a scale-0
-				// offset from its top. On the reference phone the pad's top edge is 642px down an 852-tall screen, so
-				// that expression put the box's bottom edge **650px above the floor**: the cluster was drawn mirrored
-				// about the screen's midline, in the top-right corner, 440px from the pad it was supposed to sit above.
-				// **Two different edges, one number** — the same mistake this corner made in its first version, and
-				// the reason the sentence above states which edge the number is measured from.
-				const padTop = centre.Y - padSize / 2;
-				const bottomEdge = padTop - BOX_PAD_GAP * multiplier + hand.Y * multiplier;
-
-				// **No pad, no anchor — the box takes the corner instead**, which is the second shape this position
-				// can have, and the one that matters on a client whose engine touch controls are *gone* rather than
-				// late. The expression is the ordinary HUD corner: scale 1 on both axes, offset by
-				// {@link BOX_EDGE_GAP}, with this file's one signed nudge added in reference pixels like every other
-				// size here — so `Y` positive still means *down*, which is the direction {@link BOX_NUDGE} is
-				// written in. **Without this branch the cluster has nowhere to be on such a client**, and the gate
-				// below used to hide it rather than place it.
-				if (!pad) {
-					return new UDim2(
-						1,
-						-(BOX_EDGE_GAP - hand.X) * multiplier,
-						1,
-						-(BOX_EDGE_GAP - hand.Y) * multiplier,
-					);
-				}
-
-				return new UDim2(1, -(BOX_EDGE_GAP - hand.X) * multiplier, 0, bottomEdge);
+				return new UDim2(
+					1,
+					-(BOX_EDGE_GAP - hand.X) * multiplier,
+					1,
+					-(BOX_EDGE_GAP - hand.Y) * multiplier,
+				);
 			}),
-			// **Drawn always, and that is a correction rather than a simplification.** This used to wait for the
-			// engine's jump button (`ARRANGE || jump.found`), because until that button exists the pad's top edge
-			// reads `0` and a box positioned against it is drawn across the wrong end of the screen. **The position
-			// above no longer depends on the pad existing** — it falls back to the corner — so there is nothing left
-			// for a gate to protect, and it was hiding the entire cluster on the one client that certainly has no
-			// engine jump button: a touch client whose movement mode is `Scriptable`, which is exactly what this
-			// project's own joystick asks for. **The five buttons are ours and one of them cannot be made to depend
-			// on a control that the same feature takes away.** See {@link restyleEngineJump} for the pad's hunt and
-			// {@link BOX_EDGE_GAP} for the corner the fallback uses.
+			// **Drawn always, and that is no longer a correction — it is now a consequence.** This used to wait for
+			// the engine's jump button (`ARRANGE || jump.found`), because until that button existed the box was hung
+			// off a reading that was still `0` and it was drawn across the wrong end of the screen. **The position
+			// above names two screen edges and nothing else**, so there is no reading to wait for, and the gate that
+			// used to be here would have hidden the entire cluster on the one client that certainly has no engine
+			// jump button: a touch client whose movement mode is `Scriptable`, which is exactly what this project's
+			// own joystick asks for. **The five buttons are ours and one of them cannot be made to depend on a
+			// control that the same feature takes away.** See {@link restyleEngineJump} for the pad's hunt and
+			// {@link BOX_EDGE_GAP} for the corner the box is anchored to.
 			Visible: true,
 		});
 
@@ -887,7 +1170,13 @@ export class MobileControlsController implements OnStart {
 		const cells = Fusion.Computed(scope, (use) => {
 			const size = use(boxSize);
 
-			return pack(rows, size, BOX_GAP * use(scale), LABEL_GAP + theme.typography.caption.lineHeight);
+			return pack(
+				rows,
+				BUTTON_WEIGHT,
+				size,
+				BOX_GAP * use(scale),
+				LABEL_GAP + theme.typography.caption.lineHeight,
+			);
 		});
 
 		// **The pattern is checked against the controls before anything is built**, and the check is static: both
@@ -899,6 +1188,14 @@ export class MobileControlsController implements OnStart {
 
 		if (patterned !== controls.size()) {
 			warn(`[HUD] the pattern ${rows.join("+")} packs ${patterned} cells for ${controls.size()} controls`);
+		}
+
+		// **And the weights, which fail silently in the other direction.** A `BUTTON_WEIGHT` shorter than the cluster
+		// reads as `1` for the cells it does not cover — no crash, no nil, just primary actions drawn the same size
+		// as everything else, which is the one thing that array exists to prevent. `pack` cannot tell a short array
+		// from a deliberately plain one, so the count is checked here beside the pattern's.
+		if (BUTTON_WEIGHT.size() !== controls.size()) {
+			warn(`[HUD] ${BUTTON_WEIGHT.size()} button weights for ${controls.size()} controls`);
 		}
 
 		for (let index = 0; index < controls.size(); index++) {
@@ -932,51 +1229,50 @@ export class MobileControlsController implements OnStart {
 		 * printed when the pad exists and the number means something.
 		 */
 		if (DEBUG) {
-			const reference = pack(rows, BOX_SIZE, BOX_GAP, LABEL_BAND)[0];
+			const reference = pack(rows, BUTTON_WEIGHT, BOX_SIZE, BOX_GAP, LABEL_BAND);
+			// **The two indices are read from the fill order, not assumed.** `pack` returns one entry per cell in
+			// order, so `[4]` is Throw — the first primary in `mount`'s list — and `[1]` is Catch, a utility. They
+			// follow {@link BUTTON_WEIGHT}, which is why they are spelled with a comment rather than as `[0]`/`[1]`
+			// as they were before the rows were rearranged.
+			const primary = reference[4];
+			const utility = reference[1];
 
 			print(
 				`[HUD] mobile controls up — the pack: ${controls.size()} buttons, ` +
-					`${string.format("%.0f", reference !== undefined ? reference.size : 0)}px each at the reference ` +
-					`box, pattern ${rows.join("+")}, gaps ${BOX_GAP}px, ` +
+					`${string.format("%.0f", utility !== undefined ? utility.size : 0)}px utility / ` +
+					`${string.format("%.0f", primary !== undefined ? primary.size : 0)}px primary at the ` +
+					`reference box, pattern ${rows.join("+")}, gaps ${BOX_GAP}px, ` +
 					`box ${string.format("%.0fx%.0f", BOX_SIZE.X, BOX_SIZE.Y)} reference px ` +
 					`(${BOX_FRACTION.X} x ${BOX_FRACTION.Y} of the screen), ` +
 					`viewport x${string.format("%.3f", Fusion.peek(scale))}` +
-					(reference !== undefined && reference.size <= TAP_MIN ? " — AT THE TAP FLOOR" : ""),
+					(utility !== undefined && utility.size <= TAP_MIN ? " — BELOW THE TAP FLOOR" : ""),
 			);
 		}
 
 		/**
-		 * **This screen's own numbers, printed once the engine's button exists — which is when they exist at all.**
+		 * **This screen's own numbers, printed at mount — nothing has to arrive first any more.**
 		 *
-		 * The box's height is capped by the room above the pad (see `boxSize`), so before the pad appears the
-		 * packing is being asked to fit a rectangle that is not there yet. That is a state, not an error — the box
-		 * is invisible until the pad exists for exactly this reason — and the honest report of it is "not yet"
-		 * rather than a number. **Bounded rather than patient**, because a client whose pad never arrives has no
-		 * cluster on screen either, and a task waiting forever for a figure nobody is looking at is the leak this
-		 * file's own notes warn about; three seconds is six times longer than the one-and-a-half the engine has
-		 * been measured taking.
+		 * This used to wait up to three seconds for the engine's jump button, because the box's height was capped by
+		 * the room above the pad and the packing was therefore being asked to fit a rectangle that did not exist
+		 * yet. **The box is anchored to the screen's corner now**, so its size is the design's fraction and nothing
+		 * else — see `boxSize` — and the packing is answerable on the first frame. The wait went with the cap; a
+		 * `task` kept alive to report a number that is already known is the leak this file's own notes warn about.
 		 *
 		 * **The two lines together are the whole acceptance argument for the scaling**: the line above is what the
 		 * design produces at 393 × 852, and this one is what `pack` produced for the viewport in front of you. See
 		 * {@link BOX_FRACTION} and {@link scaleFor}.
 		 */
 		if (DEBUG) {
-			task.spawn(() => {
-				for (let waited = 0; waited < 30 && !Fusion.peek(jump.found); waited++) task.wait(0.1);
+			const live = Fusion.peek(cells)[0];
+			const box = Fusion.peek(boxSize);
 
-				if (!Fusion.peek(jump.found)) return;
-
-				const live = Fusion.peek(cells)[0];
-				const box = Fusion.peek(boxSize);
-
-				print(
-					`[HUD] the cluster on this screen — ` +
-						`${string.format("%.0f", live !== undefined ? live.size : 0)}px buttons, ` +
-						`box ${string.format("%.0fx%.0f", box.X, box.Y)}px, ` +
-						`viewport x${string.format("%.3f", Fusion.peek(scale))}` +
-						(live !== undefined && live.size <= TAP_MIN ? " — AT THE TAP FLOOR" : ""),
-				);
-			});
+			print(
+				`[HUD] the cluster on this screen — ` +
+					`${string.format("%.0f", live !== undefined ? live.size : 0)}px buttons, ` +
+					`box ${string.format("%.0fx%.0f", box.X, box.Y)}px, ` +
+					`viewport x${string.format("%.3f", Fusion.peek(scale))}` +
+					(live !== undefined && live.size <= TAP_MIN ? " — AT THE TAP FLOOR" : ""),
+			);
 		}
 	}
 
@@ -1032,7 +1328,7 @@ export class MobileControlsController implements OnStart {
 		scope: Fusion.Scope<unknown>,
 		theme: HudTheme,
 		control: TouchControl,
-		slots: Fusion.UsedAs<Array<{ x: number; y: number; size: number }>>,
+		slots: Fusion.UsedAs<Array<{ x: number; bottom: number; size: number }>>,
 		index: number,
 		arrange: ArrangeHook | undefined,
 	): TextButton {
@@ -1048,25 +1344,27 @@ export class MobileControlsController implements OnStart {
 		const slot = Fusion.Computed(scope, (use) => {
 			const packed = use(slots);
 
-			return packed[index] ?? { x: 0, y: 0, size: TAP_MIN };
+			return packed[index] ?? { x: 0, bottom: 0, size: TAP_MIN };
 		});
 
 		const button = Fusion.New(scope, "TextButton")({
 			Name: control.label,
-			// **The size from the packing, and one size for the entire cluster** — there is no per-control size any
-			// more, which is what {@link pack} traded away for a shape that always fits. See {@link BOX_SIZE}.
+			// **The diameter from the packing, and it is per control now** — Throw and Jump are a factor larger than
+			// the utilities, which is the whole reason `pack` was kept instead of a `UIGridLayout`. See
+			// `BUTTON_WEIGHT` for the factors and `pack` for the fit.
 			Size: Fusion.Computed(scope, (use) => {
 				const here = use(slot);
 
 				return UDim2.fromOffset(here.size, here.size);
 			}),
-			// **The position too**, in the box's own coordinates: `slot` is a button *centre*, so this anchor puts
-			// the circle's middle exactly where `pack` said it goes rather than its corner.
-			AnchorPoint: new Vector2(0.5, 0.5),
+			// **The position, anchored on the circle's bottom edge.** `slot.bottom` is the top of the row's label
+			// band, so buttons of different diameters in one row share a baseline and their words sit on one line —
+			// which is what makes a cluster of two sizes read as a layout rather than as a mistake.
+			AnchorPoint: new Vector2(0.5, 1),
 			Position: Fusion.Computed(scope, (use) => {
 				const here = use(slot);
 
-				return UDim2.fromOffset(here.x, here.y);
+				return UDim2.fromOffset(here.x, here.bottom);
 			}),
 			// **The idle state, and the two properties are the whole of the difference between the states.** See
 			// {@link IDLE_TRANSPARENCY} for the colour and the opacity and for what the alternative was.
@@ -1081,6 +1379,15 @@ export class MobileControlsController implements OnStart {
 		// `UDim(1, 0)` — all of it — which is a circle at any size. See the class doc for why the shape is drawn
 		// rather than loaded.
 		Fusion.New(scope, "UICorner")({ Parent: button, CornerRadius: new UDim(1, 0) });
+
+		// **And a ratio constraint, which is the belt rather than the mechanism.** `pack` already hands every button
+		// a square diameter, so on every screen this cluster is measured for there is nothing for this to do. It
+		// earns its place on the one case the packing cannot see: a frame in which the button's size and its position
+		// disagree — a reflow between the size `Computed` and the position one — where a square that came out a
+		// rectangle would be drawn as an **ellipse**, which is the one shape a round button must never be. With the
+		// constraint the button stays a circle inside whatever box it is given, and `FitWithinMaxSize`/`Width` is
+		// the default pair: fit inside, and let the width decide.
+		Fusion.New(scope, "UIAspectRatioConstraint")({ Parent: button, AspectRatio: 1 });
 
 		// The icon's space, centred and empty. `ScaleType.Fit` so the art that arrives is never squashed into the
 		// square — `SuperHudController`'s rule at its own icon, and for the same reason: two icons from whoever
@@ -1204,10 +1511,11 @@ export class MobileControlsController implements OnStart {
 	 * `ArenaFreezeCountdownController`'s `NUMBER_SCALE` argument with the factor derived from the screen instead
 	 * of chosen by hand.
 	 *
-	 * **It is also one of the two numbers the arc's radius is made of**, which is why it is returned rather than
-	 * parented here: the placement in {@link mount} needs the multiplier as a *value* — the engine's button is
-	 * measured in screen pixels and our toes in reference ones, so the two kinds have to be compared after one of
-	 * them has been multiplied. See `radius` for that comparison and for why it is not a constant.
+	 * **It is returned rather than applied in here**, because its two readers want it in two different forms:
+	 * {@link mount} multiplies sizes by it, and `restyleEngineJump` folds it into a `UIScale` on somebody else's
+	 * button. **One `UIScale` over the whole cluster was the alternative and it cannot work here**: the box's size
+	 * and every button's position are computed *from* the multiplier — see `boxSize` and `pack` — so a scale laid
+	 * on top of computed sizes would multiply the same number twice.
 	 *
 	 * **The smaller of the two axes fits**, rather than one axis or the other. The width alone would let a phone
 	 * held sideways keep full-size buttons on a viewport half as tall; the height alone would shrink the buttons
@@ -1319,32 +1627,26 @@ export class MobileControlsController implements OnStart {
 	 * bigger pad beside bigger buttons. **Handed in rather than read here** for `scaleFor`'s own reason — a second
 	 * copy of the fit would be a second answer to one question, and the copy that went stale would be the pad's.
 	 *
-	 * **Returns where the button is and how big it is, kept live** — see {@link JumpGeometry}, which carries the
-	 * three readings and why they are three. **Nothing is returned for a client with no touch GUI** (a desktop
-	 * client, an emulator without one): the values stay at `(0, 0)`, `0` and `false`, and `false` is what keeps
-	 * the paw invisible rather than parked in the corner — see {@link mount}, which is where that is used.
+	 * **Nothing is reported back any more, and that is this pass's subtraction.** The three live readings this
+	 * used to return — the pad's centre, its rendered size and whether it had been found — existed because the
+	 * cluster's box was hung off the pad's top edge. The box hangs off the screen's corner now, so there is no
+	 * consumer left, and a `Fusion.Value` nobody reads is a subscription kept alive to answer a question nobody
+	 * asks. **The two facts the cluster does use are still measured here**: the shrink this writes to the pad's
+	 * `UIScale`, and the printed evidence of it.
 	 *
-	 * **Where the button is, is now two numbers rather than one, and that is the fix to a real bug.** This
-	 * function returned the button's *top edge* to the first column, which that cluster spent as a margin from
-	 * the bottom of the screen — one number measured from one edge and used against another, which put the whole
-	 * cluster in the top-right corner and cut it in half in landscape. A centre and a size cannot be spent that
-	 * way: they describe the button rather than a distance to it.
+	 * **The bug the old return fixed is worth keeping written down even though the return is gone.** This
+	 * function once reported the button's *top edge*, which the cluster spent as a margin from the bottom of the
+	 * screen — one number measured from one edge and used against another, which put the whole cluster in the
+	 * top-right corner and cut it in half in landscape. **A number that crosses a boundary has to name the edge it
+	 * was measured from**, which is why the corner the box is anchored to now is two scale-1 offsets and nothing
+	 * derived.
 	 */
 	private restyleEngineJump(
 		scope: Fusion.Scope<unknown>,
 		theme: HudTheme,
 		scale: Fusion.UsedAs<number>,
-	): JumpGeometry {
+	): void {
 		const playerGui = Players.LocalPlayer.WaitForChild("PlayerGui") as PlayerGui;
-
-		// **The three readings, and every one of them is written by `measure` below rather than here.** These are
-		// the values {@link mount} derives the arc from, so they outlive this method and are returned to it —
-		// see {@link JumpGeometry}.
-		const geometry: JumpGeometry = {
-			centre: Fusion.Value(scope, new Vector2(0, 0)),
-			size: Fusion.Value(scope, 0),
-			found: Fusion.Value(scope, false),
-		};
 
 		/** The button already dressed, so a rebuilt frame inside the same GUI is not dressed twice. */
 		let dressed: GuiButton | undefined;
@@ -1369,6 +1671,30 @@ export class MobileControlsController implements OnStart {
 			// through. `GuiButton` rather than `ImageButton` in the signature because the hunt accepts either (the
 			// class check that found it is `GuiButton`, which both are) and only the image properties are narrower.
 			if (button.IsA("ImageButton")) button.Image = "";
+
+			// **And the button itself goes while this cluster draws its own jump.** One jump control on the screen
+			// rather than two, and the hidden one is the engine's — so a client that loses the custom button has a
+			// single constant to flip rather than a control to rebuild. See {@link HIDE_ENGINE_JUMP}.
+			//
+			// **Four properties rather than one, and the three beside `Visible` are not decoration.** `Visible` is
+			// what stops the control drawing; `ImageTransparency` is the belt for the frame in which the module has
+			// put its sprite back but this pass has not yet run; `BackgroundTransparency` is the same belt for the
+			// engine's grey circle; and the `Image` empty above is what stops a later `Visible` restoring the
+			// sprite it still holds. **All of it re-runs whenever the module writes any of them** — see `sweep`,
+			// where the connections are, and why `Visible = false` on its own was not enough.
+			//
+			// **This is the appearance pass, so the hidden state lives here rather than beside the connections.**
+			// The alternative was two lists of properties to hide — one at find-time and one on the module's
+			// rewrites — and the failure that produces is exactly the one reported: the second list missing a
+			// property the first had.
+			if (HIDE_ENGINE_JUMP) {
+				button.Visible = false;
+				button.BackgroundTransparency = 1;
+
+				if (button.IsA("ImageButton")) button.ImageTransparency = 1;
+			} else {
+				button.Visible = true;
+			}
 
 			// `AutoButtonColor` off for the reason every hand-built button in this project has it off: the engine's
 			// own darkening fights the state this HUD writes.
@@ -1451,6 +1777,49 @@ export class MobileControlsController implements OnStart {
 			dress(button);
 
 			/**
+			 * **The engine's button is hidden, and staying hidden is this pair of connections rather than the
+			 * write in `dress`.**
+			 *
+			 * **`Visible = false` once was not enough, and the log that found this is worth keeping.** The session
+			 * printed `[HUD] engine jump button — … bg … at 1.00, image "rbxasset://textures/ui/Input/
+			 * TouchControlsSheetV2.png" at 0.00`, and the player went on seeing the engine's **white arrow**: that
+			 * line is the state *before* the restyle, and the reason the arrow outlived the restyle is that
+			 * `TouchJump` owns this button. It swaps the sprite between the jump and fall images, it shows and hides
+			 * the control as the body becomes able to jump, and it rewrites properties on its own schedule — so a
+			 * hide written once at find-time is undone within a second of the first jump.
+			 *
+			 * **So the appearance pass is re-run whenever any property it owns moves.** That is why `paintParts`
+			 * writes four of them rather than only `Visible`: a frame in which the module has restored the sprite and
+			 * this has not yet re-hidden the button is a frame the player sees an arrow in.
+			 *
+			 * **`Image` and `ImageTransparency` are only watched on an `ImageButton`.** `GetPropertyChangedSignal`
+			 * *raises* for a property the instance does not have, and the hunt accepts either class (`GuiButton`), so
+			 * the narrow pair is a guarded connection rather than a hopeful one.
+			 *
+			 * **Hiding rather than moving, and the reason belongs to the module rather than to this cluster.** This
+			 * button's `Position` and `Size` are written by `TouchJump` every time it re-lays the control out — on a
+			 * viewport change, on a device-class change — so a position this file wrote would be reverted within a
+			 * second of the first rotation, and the reader would be hiding it again by moving it again. A property
+			 * the module does not own, like `Visible`, is the statement that survives those rewrites. **A
+			 * `UIScale` of `0` is refused for the neighbouring reason**: that is this file's own size lever (see
+			 * `hudScale`), and one property with two meanings is how a pad ends up invisible with no line of code
+			 * that visibly says so.
+			 */
+			const rehide = (): void => {
+				if (HIDE_ENGINE_JUMP) paintParts(button);
+			};
+
+			// **Watched for the module's writes, not for ours.** Setting a property to the value it already has does
+			// not fire its changed signal, so the re-entry this could cause is one extra pass and then silence —
+			// `paintParts` writes the same values twice and the second write is a no-op.
+			scope.push(button.GetPropertyChangedSignal("Visible").Connect(rehide));
+
+			if (button.IsA("ImageButton")) {
+				scope.push(button.GetPropertyChangedSignal("Image").Connect(rehide));
+				scope.push(button.GetPropertyChangedSignal("ImageTransparency").Connect(rehide));
+			}
+
+			/**
 			 * **The pad's shrink: the one thing this file writes to the engine's button besides its look.**
 			 *
 			 * **A `UIScale`, because that is the property that changes how big a `GuiObject` renders without
@@ -1509,12 +1878,11 @@ export class MobileControlsController implements OnStart {
 			);
 
 			/**
-			 * **Where the button is, how big it is, and how small it has been made — kept up to date.**
+			 * **How small the pad has been made — kept up to date, and nothing else.**
 			 *
-			 * The engine moves and resizes its button on every viewport change, so all of it is re-taken from the
+			 * The engine moves and resizes its button on every viewport change, so the shrink is re-taken from the
 			 * same two signals rather than captured once — and this is also where the cluster's own multiplier is
-			 * applied, because a viewport change is exactly the moment that changes. The five buttons follow the
-			 * box; the pad now follows it too, rather than sitting at a fixed size beside a moving cluster.
+			 * applied, because a viewport change is exactly the moment that changes.
 			 *
 			 * **The pad's own size is recovered by dividing the scale back out, and that is the subtle line here.**
 			 * `AbsoluteSize` *includes* our `UIScale` — that is what a `UIScale` is — so the engine's own size is
@@ -1534,23 +1902,15 @@ export class MobileControlsController implements OnStart {
 			 * still grows the pad; what the rule protects is the comparison with the engine's own draw, not the
 			 * final size. See {@link PAD_SIZE} for why that distinction is the one that matters.
 			 *
-			 * **The centre rather than the corner, because a centre is the reading both uses can be built from.** An
-			 * `AnchorPoint` of `(0, 0)` means the rendered button expands from its own top-left, so that corner is
-			 * where the engine left it and the centre is that corner plus half of the *visual* size. **The visual
-			 * size is computed rather than re-read from `AbsoluteSize`**, so this lands on the frame the scale
-			 * changes instead of one signal later — and the box asks for that top-left corner back out of the same
-			 * two numbers (`centre.Y − visualSize/2`), so neither reading has to re-derive the other.
-			 *
-			 * **And the box's own derivation is untouched by any of it.** What the box hangs from is the pad's
-			 * *top-left* — `centre.Y − visualSize/2` — and the corner is where the module put the button: the
-			 * rendered size cancels out of that subtraction, so growing the pad moves its bottom edge and never the
-			 * number the box is placed from. That cancellation is what lets the pad's size depend on the viewport
-			 * at all without the box's size and the box's *position* becoming each other's inputs.
-			 *
 			 * **The larger axis rather than `X`**, because the engine's own button is not guaranteed square and a
-			 * clearance taken from the narrow axis would put a neighbour *inside* a wide button. A button that is
-			 * wider than it is tall therefore gets a little more room than it strictly needs, which is the harmless
-			 * direction for that mistake to go in.
+			 * size taken from the narrow axis would report — and therefore render — a pad smaller than the one on
+			 * screen. A button wider than it is tall therefore reads a little bigger than it strictly is, which is
+			 * the harmless direction for that mistake to go in.
+			 *
+			 * **A centre and a size used to be written from here too**, into the record the box was placed from.
+			 * That is what this method stopped doing when the box moved to the screen's corner — see the note on
+			 * this function's return — so **nothing about the layout reads it now**: it measures to keep the pad at
+			 * the cluster's rate and to say so in the log, and for nothing else.
 			 */
 			const measure = (): void => {
 				const rendered = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y);
@@ -1559,9 +1919,6 @@ export class MobileControlsController implements OnStart {
 				const visualSize = math.min(engineSize, PAD_SIZE) * multiplier;
 
 				hudScale.Scale = math.min(1, PAD_SIZE / engineSize) * multiplier;
-
-				geometry.centre.set(button.AbsolutePosition.add(new Vector2(visualSize / 2, visualSize / 2)));
-				geometry.size.set(visualSize);
 
 				// **The line that makes the shrink answerable from a log**, and the numbers a run needs if the pad
 				// ever comes out at the wrong size: what the engine drew, what it is being rendered at, the scale
@@ -1583,19 +1940,12 @@ export class MobileControlsController implements OnStart {
 
 			measure();
 
-			// **And the paw may be shown now.** This is the flag {@link mount} builds the toes' `Visible` from, and
-			// it is set here rather than at the end of the method because this is the moment the button exists and
-			// its centre is therefore a real place to draw around. See {@link JumpGeometry}.
-			geometry.found.set(true);
-
 			scope.push(button.GetPropertyChangedSignal("AbsolutePosition").Connect(measure));
 			scope.push(button.GetPropertyChangedSignal("AbsoluteSize").Connect(measure));
 		};
 
 		sweep();
 		scope.push(playerGui.ChildAdded.Connect(() => sweep()));
-
-		return geometry;
 	}
 
 	/**

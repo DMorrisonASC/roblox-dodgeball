@@ -2,7 +2,13 @@ import { Controller, OnStart } from "@flamework/core";
 import { Button } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, ReplicatedStorage } from "@rbxts/services";
-import { PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
+import {
+	IN_ROUND_ATTRIBUTE,
+	PRACTICE_ZONE_ATTRIBUTE,
+	ROUND_STATE_ATTRIBUTE,
+	ROUND_STATUS_FOLDER,
+	TEAM_ATTRIBUTE,
+} from "shared/constants";
 import { inPracticeZone, participating, roundPhase, togglePanel } from "../../panels";
 import { isParticipant } from "../../roundZone";
 import { addElevation, wireInteraction } from "../../ui/elevation";
@@ -142,6 +148,17 @@ export class DockController implements OnStart {
 			player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => this.publishParticipation()),
 		);
 
+		// **And membership, because a side is not the same fact and the dock is what a player leaves a round to
+		// reach.** A surrendered player keeps `TEAM_ATTRIBUTE` on purpose, so this dock stayed hidden for them
+		// while they stood in the lobby with nothing to do — the same fault the shift lock had, from the other
+		// side: the camera stayed on and the shop stayed off. `IN_ROUND_ATTRIBUTE` is written where the round
+		// admits somebody and cleared in `eliminate`, so one subscription answers both directions of a round
+		// somebody leaves or rejoins mid-flight. See `publishParticipation`, and `roundZone.isParticipant` for the
+		// rule itself.
+		this.scope.push(
+			player.GetAttributeChangedSignal(IN_ROUND_ATTRIBUTE).Connect(() => this.publishParticipation()),
+		);
+
 		const initial = status.GetAttribute(ROUND_STATE_ATTRIBUTE);
 		if (typeIs(initial, "string")) roundPhase.set(initial);
 
@@ -152,9 +169,10 @@ export class DockController implements OnStart {
 	 * Publishes whether **this player is in the round being played**, which is `roundZone.isParticipant`'s
 	 * rule read as a value a HUD can watch.
 	 *
-	 * **The rule is not restated here.** `isParticipant` is the one place "on a side, and a round on" is
-	 * written — it is what the shift lock and the round wipe already gate on — and calling it means the
-	 * dock cannot come to a different answer about a player the camera is already holding.
+	 * **The rule is not restated here.** `isParticipant` is the one place "the round has this player, and a round
+	 * is on" is written — it is what the shift lock works its camera from — and calling it means the dock cannot
+	 * come to a different answer about a player the camera is already holding, or let go of one the camera has
+	 * already released.
 	 *
 	 * **Read fresh rather than combined from the two subscribers**, because both of them can fire for a
 	 * change the other one has not seen yet and the function re-reads both attributes anyway.

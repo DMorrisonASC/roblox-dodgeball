@@ -13,7 +13,13 @@ import { AIM_CONFIG } from "shared/config/aim.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SHIFT_LOCK_CONFIG } from "shared/config/shiftLock.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
-import { PRACTICE_ZONE_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
+import {
+	IN_ROUND_ATTRIBUTE,
+	PRACTICE_ZONE_TAG,
+	ROUND_STATE_ATTRIBUTE,
+	ROUND_STATUS_FOLDER,
+	TEAM_ATTRIBUTE,
+} from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
 import { latchedTarget } from "../../aimAssist";
 import { isMobile } from "../../platform";
@@ -397,14 +403,25 @@ export class ShiftLock implements OnStart {
 		// — and that one takes the transition's own delay, which is what keeps the lock from snapping on
 		// while the player is still standing in the lobby under the grid. See `applyRound`, which reads the
 		// attribute again when the timer fires rather than trusting the values captured here.
-		scope.push(
-			this.player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(() => {
-				const phase = phaseOf(status);
-				const delay = phase === PLAYING ? 0 : this.phaseDelay(phase);
+		//
+		// **One closure for both subscriptions below**, so a side change and a membership change cannot come to
+		// different answers about *when* the camera is allowed to change.
+		const applySoon = () => {
+			const phase = phaseOf(status);
+			const delay = phase === PLAYING ? 0 : this.phaseDelay(phase);
 
-				task.delay(delay, () => this.applyRound());
-			}),
-		);
+			task.delay(delay, () => this.applyRound());
+		};
+
+		scope.push(this.player.GetAttributeChangedSignal(TEAM_ATTRIBUTE).Connect(applySoon));
+
+		// **And membership, which is the half that was missing and is what left the lock stuck in the lobby.** A
+		// surrendered player keeps `TEAM_ATTRIBUTE` — the round keeps their seat so the side's head count survives
+		// them leaving — so the side subscription never fired and the camera stayed locked, with a crosshair over
+		// somebody who had gone back to the lobby. `IN_ROUND_ATTRIBUTE` is cleared in `eliminate`, which is the one
+		// method a live round loses a body through, so this is the edge that releases the camera. See
+		// `roundZone.isParticipant`, which is the rule both of these end up asking.
+		scope.push(this.player.GetAttributeChangedSignal(IN_ROUND_ATTRIBUTE).Connect(applySoon));
 
 		// The seed, and it is the case that matters for a client joining a round already in progress: the
 		// folder is there with `Playing` on it and there may be no change left to hear.

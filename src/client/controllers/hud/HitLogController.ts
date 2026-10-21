@@ -4,7 +4,7 @@ import type { TypographyVariant } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { teamColourOf } from "shared/gameMode";
 import { events, HitDirection } from "shared/networking";
-import { PLAYING, roundPhase } from "../../panels";
+import { killCamActive, PLAYING, roundPhase } from "../../panels";
 import { raiseZIndex } from "../../ui/panelChrome";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { HudTheme, hudTheme } from "../../ui/hudTheme";
@@ -408,7 +408,13 @@ export class HitLogController implements OnStart {
 			const playingNow = use(roundPhase) === PLAYING;
 			const hasHitsNow = use(anyHits);
 
-			return playingNow && hasHitsNow;
+			// **And nothing while a kill cam is shooting.** The feed is a list of names and outcomes over the
+			// left of the screen, which is the half a cinematic shot is composed on; the overlay the cam draws
+			// says everything about the body in frame, which is the question a feed cannot answer. Hidden and not
+			// torn down, so `anyHits` and every card are still there when it returns — see `panels.ts`.
+			const watchingNow = use(killCamActive);
+
+			return playingNow && hasHitsNow && !watchingNow;
 		});
 
 		const frame = Fusion.New(scope, "Frame")({

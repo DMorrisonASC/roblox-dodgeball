@@ -68,7 +68,7 @@ export const SUPER_CONFIG = {
 	 * pointless. Nothing else changes with it: the clock is per body, so a body frozen late in the
 	 * effect's window is held for the full duration rather than whatever was left.
 	 */
-	FREEZE_DURATION_SECONDS: 3,
+	FREEZE_DURATION_SECONDS: 5,
 
 	/**
 	 * How far the freeze reaches from the body part a Freeze ball struck, in studs. **Placeholder.**
@@ -84,7 +84,7 @@ export const SUPER_CONFIG = {
 	 * small and the splash is a slower Pierce with no splash at all, too large and one throw in a
 	 * group freezes everybody in it.
 	 */
-	FREEZE_HIT_RADIUS: 8,
+	FREEZE_HIT_RADIUS: 15,
 
 	/**
 	 * How far the freeze reaches from where a Freeze ball stopped, in studs, when it tagged nobody.
@@ -110,7 +110,7 @@ export const SUPER_CONFIG = {
 	 * the line before the splash (`ended on … 0 tag(s) [Freeze]` versus `was tagged by … [Freeze]`) is what
 	 * says whether it was a miss or a hit.
 	 */
-	FREEZE_MISS_RADIUS: 8,
+	FREEZE_MISS_RADIUS: 10,
 
 	/**
 	 * The colour a frozen body's outline is drawn in. **Placeholder — and the one non-number here.**
@@ -222,7 +222,7 @@ export const SUPER_CONFIG = {
 	 * ability's own freeze lasts seconds — the two are deliberately unrelated, which is why the burst is
 	 * not stored on any frozen body and does not care when a freeze ends.
 	 */
-	FREEZE_BURST_LIFETIME: 0.6,
+	FREEZE_BURST_LIFETIME: 1,
 
 	/**
 	 * How fast the shards leave the impact, in studs per second. **Placeholder — 18 is the ask.**

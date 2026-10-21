@@ -6,6 +6,8 @@ import {
 	NPC_ANIM_MOVING_ATTRIBUTE,
 	NPC_ANIM_SPRINTING_ATTRIBUTE,
 	NPC_ANIM_THROWING_ATTRIBUTE,
+	STAT_HITS,
+	STAT_OUTS,
 	THROWER_TOKEN,
 } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
@@ -352,6 +354,39 @@ export class NpcService implements OnStart {
 		// through, and giving it a trail only when it is cloned would make the place file the one route that
 		// produces a bare body.
 		this.dressRig(model);
+
+		// **Two fake counts, so the kill cam has something to say about a rig.** A rig has no record to read —
+		// `StatsService` keeps one per `Player`, and an NPC is not a player — so the Enemy View draws an em dash
+		// where a person's figures go, which is a readout that says "not recorded" during the one moment it is
+		// supposed to be describing the enemy. Two random counts make it look like a body with a history, and
+		// **the numbers are only ever read there**: see the billboard note below.
+		//
+		// **Written here because this is the one route a cloned rig takes into the world.** `LobbyRigService`
+		// reaches this method twice (`spawnLobbyRig`, `spawnArenaRig`) and nothing else calls it, so this is the
+		// one place that covers both, in the same spirit as the template report above.
+		//
+		// **And before the tags**, because the tag is what starts the rig: the added-signal runs `start`, whose
+		// loop makes `RespawnBehavior.prepare` take the live copy every later respawn is cloned from. An
+		// attribute written after `NPC` would be missing from that copy for a rig killed before its first turn.
+		//
+		// **They survive a respawn with no code here to make it so**, which is worth stating because it looks
+		// like something that ought to need some: a replacement is `template.Clone()` of a *live* rig, and
+		// `Clone` copies attributes, so the new body comes back carrying the same two numbers. That is the right
+		// answer for a body that is meant to be the same rig, and it is why the rebuild in `RespawnBehavior`
+		// writes nothing here.
+		//
+		// **These are a player's own attribute names, chosen rather than invented, and the reader is why**: the
+		// Enemy View asks whichever instance holds the record and does not have to know whose body it is looking
+		// at. **The one thing that could have gone wrong does not**: `StatsBillboardController` mounts a badge
+		// strip and *no* stats line on a rig (`attachRig` passes no stats label, and `mountBadges` is handed only
+		// the badges attribute on that path), so these numbers do not appear above a rig's head in the lobby or
+		// the arena. They are read by the kill cam and nothing else.
+		//
+		// **The clone only — never the template**, which is the rule this method already keeps for the token and
+		// the trail: writing to a pooled model would put fake stats into the place file the next time it is
+		// saved, and every rig cloned from it after that would be born with the same pair.
+		model.SetAttribute(STAT_HITS, math.random(0, 100));
+		model.SetAttribute(STAT_OUTS, math.random(0, 100));
 
 		for (const tag of behaviorTags) model.AddTag(tag);
 		model.AddTag(NPC_TAG);

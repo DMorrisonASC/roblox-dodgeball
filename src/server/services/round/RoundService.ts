@@ -14,6 +14,7 @@ import { events, HitDirection } from "shared/networking";
 import {
     IN_ROUND_ATTRIBUTE,
     LAST_HIT_BY_ATTRIBUTE,
+    LAST_HIT_BY_TOKEN_ATTRIBUTE,
     PRACTICE_ZONE_ATTRIBUTE,
     ROUND_MODE_ATTRIBUTE,
     ROUND_STATE_ATTRIBUTE,
@@ -835,6 +836,11 @@ export class RoundService implements OnStart {
         // lobby has no round to be described by.
         for (const player of Players.GetPlayers()) {
             player.SetAttribute(LAST_HIT_BY_ATTRIBUTE, undefined);
+
+            // **The identity goes with the name here too**, for the reason above and one more that is this
+            // loop's own: a round that has just started has no hits in it, so a first death of the round must
+            // not hand the kill cam a body from the round before. See `LAST_HIT_BY_TOKEN_ATTRIBUTE`.
+            player.SetAttribute(LAST_HIT_BY_TOKEN_ATTRIBUTE, undefined);
         }
 
         const assigned = this.matches.roster();
@@ -1647,6 +1653,13 @@ export class RoundService implements OnStart {
             // than one `WaitForChild` later.
             player.SetAttribute(LAST_HIT_BY_ATTRIBUTE, undefined);
 
+            // **And the identity with the name, on the same line and for the same lifetime.** A new body is a
+            // new life with no killer yet, and the kill cam reads this one: leaving it would let a death with no
+            // hit behind it — a fall, a reset — hand the camera a body that hit this player in the *previous*
+            // life. The two attributes are one sentence read by two kinds of reader, so they are cleared by one
+            // pair of statements rather than by two rules that could drift.
+            player.SetAttribute(LAST_HIT_BY_TOKEN_ATTRIBUTE, undefined);
+
             const humanoid = character.WaitForChild("Humanoid") as Humanoid;
             humanoid.Died.Connect(() => this.handleDeath(player));
 
@@ -2262,6 +2275,19 @@ export class RoundService implements OnStart {
             victimPlayer.SetAttribute(
                 LAST_HIT_BY_ATTRIBUTE,
                 thrower === undefined ? undefined : thrower.IsA("Player") ? thrower.DisplayName : thrower.Name,
+            );
+
+            // **And the same fact in the form a client can act on.** The name above is drawn; this is what a
+            // camera can *find*. They are written together and cleared together — see
+            // `LAST_HIT_BY_TOKEN_ATTRIBUTE` for why a token is the only unambiguous answer, and note that this
+            // costs no lookup: `thrower` is already resolved, and both kinds of body already wear the token.
+            //
+            // **`undefined` for an unresolved thrower, like the name above it.** A hit whose token names nobody
+            // has to leave the previous identity cleared as well as the previous name, or a kill cam would track
+            // whoever hit this player in an earlier life.
+            victimPlayer.SetAttribute(
+                LAST_HIT_BY_TOKEN_ATTRIBUTE,
+                thrower === undefined ? undefined : tokenOfThrower(thrower),
             );
         }
 
@@ -3066,6 +3092,18 @@ export class RoundService implements OnStart {
             // --- Intermission ---
             this.state = RoundState.Intermission;
             this.activePlayers.clear();
+
+            // **And the client's copy of the same fact, on the same line.** `IN_ROUND_ATTRIBUTE` describes a
+            // round, so it has to go when the round does — and leaving it to `assignTeams` would mean it survived
+            // the *whole* intermission, because that method runs at the next whistle. Four readers watch it (the
+            // floor ring, the outline, the shift lock and the dock), and every one of them also checks the phase,
+            // so the stale value is not visible as a bug in the ordinary case — until the phase is `Playing` and
+            // this player is not, which is exactly the case the attribute exists for. Clearing here makes the
+            // attribute mean membership and nothing else.
+            for (const player of Players.GetPlayers()) {
+                player.SetAttribute(IN_ROUND_ATTRIBUTE, undefined);
+            }
+
             print("Intermission started");
 
             // **The phase goes out here, before anything that can hold, and that is a reversal.**
@@ -3735,6 +3773,28 @@ function playerFromToken(throwerToken: string): Player | undefined {
     if (userId === undefined) return undefined;
 
     return Players.GetPlayerByUserId(userId);
+}
+
+/**
+ * **The token that names `thrower` — the exact inverse of {@link playerFromToken} plus `throwerOf`'s rig arm.**
+ *
+ * **Read from the body rather than derived here, because both kinds of body already carry it and neither
+ * writes it in this file.** `JoinService` stamps a player's character with `tostring(UserId)`, `NpcService`
+ * stamps a rig with a generated GUID, and `THROWER_TOKEN`'s own doc is the one description of the pair. The
+ * consequence worth stating is that a **player's** token could be derived without the body — `tostring` of the
+ * id is the whole of it — while a **rig's** could not, since the GUID is the rig's own and nothing else knows
+ * it. One branch for the first case and one attribute read for the second keeps them the same shape.
+ *
+ * **`undefined` rather than a fallback**, because the caller writes it to an attribute whose absence means "no
+ * killer": a rig that has somehow lost its token is a body a client cannot find, and inventing a name-based
+ * substitute here would be exactly the ambiguity `LAST_HIT_BY_TOKEN_ATTRIBUTE` exists to avoid.
+ */
+function tokenOfThrower(thrower: Player | Model): string | undefined {
+    if (thrower.IsA("Player")) return tostring(thrower.UserId);
+
+    const token = thrower.GetAttribute(THROWER_TOKEN);
+
+    return typeIs(token, "string") ? token : undefined;
 }
 
 /** The name of `team`'s spawn folder inside the arena. The labels are the folder names. */

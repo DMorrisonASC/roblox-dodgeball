@@ -1,5 +1,6 @@
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, UserInputService, Workspace } from "@rbxts/services";
+import { killCamActive } from "../panels";
 import { isMobile } from "../platform";
 
 /**
@@ -464,6 +465,14 @@ export function getHudColumn(): Frame {
 		AnchorPoint: new Vector2(0.5, 0),
 		Position: new UDim2(0.5, 0, 0, COLUMN_TOP_INSET),
 		BackgroundTransparency: 1,
+
+		// **The whole column goes while a kill cam is shooting, and this is the one place that can say so.**
+		// Its two tenants — the score bar and the clock — are separate controllers with separate visibility rules
+		// of their own, and neither of them owns this frame; the column does, so the cam's fact is read here
+		// rather than copied into both. A `Visible` write and not a teardown, for the reason `panels.ts` argues
+		// at `killCamActive`: the children keep their bindings and their state, and the column is the same
+		// instance when they come back.
+		Visible: Fusion.Computed(columnScope, (use) => !use(killCamActive)),
 	});
 
 	Fusion.New(columnScope, "UIListLayout")({

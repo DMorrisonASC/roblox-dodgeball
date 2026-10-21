@@ -658,6 +658,31 @@ export const RESPAWN_AT_ATTRIBUTE = "RespawnAt";
 export const LAST_HIT_BY_ATTRIBUTE = "LastHitBy";
 
 /**
+ * Attribute on a **`Player`** holding *who* landed the latest hit on them, as a {@link THROWER_TOKEN} — the
+ * machine-readable half of {@link LAST_HIT_BY_ATTRIBUTE}.
+ *
+ * **Two attributes rather than one, because a name is not an identity and this one has to be resolvable.** The
+ * name beside this is a *display* string: a player is written by `DisplayName` and a rig by its alias, which are
+ * the right things to draw and the wrong things to look a body up by. Two accounts can share a display name, a
+ * display name is not a `Player.Name`, and a rig's alias is drawn from the same pool of invented names the rigs
+ * themselves wear — so "find the body called PixelPhantom23" is a lookup with more than one possible answer, and
+ * the answer it picks is the wrong one exactly when two bodies collide.
+ *
+ * **A token has no such ambiguity**, and both kinds of body already carry one: `JoinService` stamps a
+ * character with its player's `UserId` as text, and `NpcService` stamps a rig model with a generated GUID. So
+ * the client's rule is the server's own rule, written once in `RoundService.playerFromToken` and mirrored in
+ * `client/killCam.ts`: **`tonumber` succeeding means a person**, and anything else is matched against the tag's
+ * models. That is what makes the kill cam able to track a rig at all — a rig has no `Player` to ask.
+ *
+ * **Written and cleared exactly where its neighbour is**, in `RoundService`: written in `registerHit` at the
+ * tag, cleared when a body arrives and at the `Playing` edge for the whole roster. Two attributes with one
+ * lifetime, kept in one place rather than two, so a stale killer cannot outlive a stale name.
+ *
+ * **Its only reader is the kill cam.** Nothing draws this: it exists to be resolved to a `Model` and followed.
+ */
+export const LAST_HIT_BY_TOKEN_ATTRIBUTE = "LastHitByToken";
+
+/**
  * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
  *
  * Written by `BallService.dropBall`, read by `BallPickupService`. On the ball rather than
