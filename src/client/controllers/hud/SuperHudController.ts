@@ -187,6 +187,43 @@ const SEGMENT_COUNT = 3;
 /** What one segment represents, in seconds. See {@link SEGMENT_COUNT} for why this is a division. */
 const SECONDS_PER_SEGMENT = CHARACTER_CONFIG.STAMINA_MAX_SECONDS / SEGMENT_COUNT;
 
+/**
+ * **The colour a segment takes while the pool is actually being spent**, and the one tone in this readout that is
+ * about an *event* rather than a level.
+ *
+ * **Orange, and not the theme's `warning`, because `warning` already means "not full".** That tone is drawn from the
+ * moment the pool leaves maximum until it refills — which includes standing still with a quarter of a bar, the
+ * opposite of spending it. This is the state a player cannot otherwise see: the three lights are the same three
+ * lights whether they are holding still or running themselves dry, so the thing being spent is shown by *movement*
+ * — the colour is on while the number is going down and off a moment after it stops. **See `staminaDraining` for
+ * how "going down" is measured, and note that the level rule above is deliberately left standing underneath.**
+ *
+ * **A literal rather than a theme entry**, and the reason is that this is not a palette role: it is one signal that
+ * means one thing, it exists for exactly one reading, and a theme that recoloured it would be recolouring a warning
+ * rather than restyling a surface. `255, 165, 0` is the orange the request named.
+ */
+const STAMINA_DRAINING_COLOR = Color3.fromRGB(255, 165, 0);
+
+/**
+ * **How long the draining colour outlives the last drop it saw**, in seconds.
+ *
+ * **Non-zero because the attribute is a sample.** `WalkSpeedService` publishes `STAMINA_ATTRIBUTE` ten times a second
+ * (see its `PUBLISH_INTERVAL_SECONDS`), while the pool drains every frame — so a "the number went down" test on its
+ * own is true for one frame in six and the colour would strobe. A quarter of a second bridges two publishes with
+ * room for a missed one, and it is short enough that the orange is gone before a player who has stopped running
+ * could notice it lagging.
+ */
+const STAMINA_DRAIN_HOLD_SECONDS = 0.25;
+
+/**
+ * **The smallest drop that counts as draining**, in pool seconds.
+ *
+ * **A floor rather than `>` because the number is a `float` that arrives over the wire**: a publish that repeats a
+ * value the client already holds (a rounding difference, a frame where nothing drained) must not read as spending.
+ * One millisecond of pool is three orders below anything a player could cause, so nothing real is filtered out.
+ */
+const STAMINA_DROP_EPSILON = 0.001;
+
 /** One segment's size, the gap between two of them, and the gap between the icon and the row. */
 const SEGMENT_WIDTH = 44;
 const SEGMENT_HEIGHT = 10;
@@ -425,6 +462,23 @@ export class SuperHudController implements OnStart {
 		const staminaUnits = Fusion.Value(scope, SEGMENT_COUNT);
 
 		/**
+		 * **Whether the pool is being spent right now** — the one fact the three lights cannot show on their own, and
+		 * the reason `STAMINA_DRAINING_COLOR` exists.
+		 *
+		 * **Detected by watching the published number go down**, which is the only way a client can ask the question:
+		 * the drain is the server's arithmetic on every frame and what reaches this machine is a sample of it ten
+		 * times a second. The alternative — reading the sprint key and assuming — is wrong in the two cases that
+		 * matter: a sprint the server refuses because the pool is empty, where the key is down and nothing is being
+		 * spent, and an action that holds the pool, where the key is down and the body is not paying either.
+		 *
+		 * **A `Value` rather than the loop writing the colours**, for the reason `staminaUnits` is one: the three
+		 * segment fills are `Computed`s already, so a fourth thing they read is a fourth binding and no new
+		 * bookkeeping. Seeded `false`, because a client that mounts mid-round has not seen a drop and a readout that
+		 * started orange would be claiming something it did not know.
+		 */
+		const staminaDraining = Fusion.Value(scope, false);
+
+		/**
 		 * **Whether a power is waiting to be spent, and what the slot's two pieces of feedback are drawn from.**
 		 * One `Value<boolean>` rather than two subscriptions and rather than a second read of the two attributes
 		 * at the stroke: the loop already reads both of them every frame, so this is the loop's answer being
@@ -487,7 +541,7 @@ export class SuperHudController implements OnStart {
 		// jump with every pop.
 		this.addCount(scope, theme, slot.frame, usesLeft);
 
-		const segments = this.addSegments(scope, theme, staminaUnits);
+		const segments = this.addSegments(scope, theme, staminaUnits, staminaDraining);
 
 		const column = Fusion.New(scope, "Frame")({
 			Name: "SuperHud",
@@ -547,6 +601,15 @@ export class SuperHudController implements OnStart {
 		// pickup edge below.
 		let previousPrize = this.prizeOf(player);
 		let previousWaiting = this.armedOf(player) !== undefined || previousPrize !== undefined;
+
+		// **And the two the drain colour needs, which are the same kind of memory.** `previousStamina` is the last
+		// published pool this loop saw — seeded from the attribute rather than from full, so a client that mounts
+		// with an empty pool does not read its first frame as a two-second drop. `drainedAt` is `os.clock` at the
+		// last drop, which is what carries the colour across the gaps between publishes; see
+		// `STAMINA_DRAIN_HOLD_SECONDS`.
+		const startingStamina = player.GetAttribute(STAMINA_ATTRIBUTE);
+		let previousStamina = typeIs(startingStamina, "number") ? startingStamina : CHARACTER_CONFIG.STAMINA_MAX_SECONDS;
+		let drainedAt = 0;
 
 		// The one connection in this file, reading all three values. See the class doc for why this is a loop
 		// rather than three subscriptions.
@@ -649,7 +712,19 @@ export class SuperHudController implements OnStart {
 				// beside it, which is the honest answer to "how many pierces do you have left".
 				usesLeft.set(shownKind === MULTI_BALL_KIND ? multiBall : undefined);
 
-				staminaUnits.set(staminaOf(player.GetAttribute(STAMINA_ATTRIBUTE)));
+				// **The pool, and whether it is moving, in one read.** The fill's level and the drain colour are two
+				// answers to one question, so the attribute is asked once and both are derived from that one sample —
+				// two reads a line apart could straddle a publish and disagree about the level the colour describes.
+				// The drop is measured against the value this loop last saw, and the hold is what carries the colour
+				// across the gaps between publishes; both are argued at their constants.
+				const pool = player.GetAttribute(STAMINA_ATTRIBUTE);
+				const stamina = typeIs(pool, "number") ? pool : CHARACTER_CONFIG.STAMINA_MAX_SECONDS;
+
+				if (stamina < previousStamina - STAMINA_DROP_EPSILON) drainedAt = os.clock();
+				previousStamina = stamina;
+
+				staminaDraining.set(os.clock() - drainedAt <= STAMINA_DRAIN_HOLD_SECONDS);
+				staminaUnits.set(staminaOf(pool));
 
 				// **And the one word about an armed power, off the one attribute the server publishes for it.**
 				// No inference here: `SuperService` decides what "armed" means for both kinds of power (a mark
@@ -1322,6 +1397,7 @@ export class SuperHudController implements OnStart {
 		scope: Fusion.Scope<unknown>,
 		theme: HudTheme,
 		staminaUnits: Fusion.Value<number>,
+		draining: Fusion.Value<boolean>,
 	): Frame {
 		const row = Fusion.New(scope, "Frame")({
 			Name: "StaminaSegments",
@@ -1357,13 +1433,18 @@ export class SuperHudController implements OnStart {
 					scope,
 					(use) => new UDim2(math.clamp(use(staminaUnits) - position, 0, 1), 0, 1, 0),
 				),
-				// **The colour rule carried over from the cooldown bar this row replaces.** Still filling is the
-				// busy tone and ready is the success tone, and the switch is on the reading rather than on an event,
-				// so the two can never disagree about which side of ready we are on: a pool at full is success,
-				// anything being spent is warning. That is the project's one rule for a fill/ready readout rather
-				// than a third colour for a third kind of bar.
+				// **The colour rule carried over from the cooldown bar this row replaces, plus the one state a level
+				// cannot express.** Still filling is the busy tone and ready is the success tone, and the switch is on
+				// the reading rather than on an event, so the two can never disagree about which side of ready we are
+				// on: a pool at full is success, anything being spent is warning. That is the project's one rule for a
+				// fill/ready readout rather than a third colour for a third kind of bar.
+				//
+				// **And on top of it, orange while the pool is being spent.** That is not a third interpretation of
+				// the level — it is the answer to a question the level cannot answer, and it is why the two are
+				// ranked rather than blended: a draining pool is orange whatever the reading is, and the moment the
+				// spending stops the level's own rule is back. See `STAMINA_DRAINING_COLOR` and `staminaDraining`.
 				BackgroundColor3: Fusion.Computed(scope, (use) =>
-					use(staminaUnits) >= SEGMENT_COUNT ? theme.colors.success : theme.colors.warning,
+					segmentColour(use(staminaUnits), use(draining), theme),
 				),
 			});
 
@@ -1375,6 +1456,27 @@ export class SuperHudController implements OnStart {
 
 		return row;
 	}
+}
+
+/**
+ * **The colour one stamina segment's fill takes** — the drain signal first, the level rule underneath.
+ *
+ * **A plain function rather than two nested ternaries inside the `Computed`**, because the precedence is the whole
+ * of the rule and a reader should not have to parse it out of an expression: a segment is orange while the pool is
+ * being spent, and otherwise it is the level's own pair. It also puts the one place that decides a segment's colour
+ * next to the constants it uses rather than eighty lines down inside the builder.
+ *
+ * **The partial level is the accent now rather than `warning`, and the drain colour is why.** `warning` is an amber,
+ * and an amber "cost something" beside an orange "costing something" is two tones a player cannot tell apart at
+ * eleven pixels tall — the drain signal would be invisible exactly where it matters. So the three states are now
+ * three *different* colours: full is success, a pool sitting below full is the accent, and a pool being spent is
+ * orange. That is a change to the rule the row used to keep, accepted because the row gained a state it could not
+ * previously express; see `STAMINA_DRAINING_COLOR`.
+ */
+function segmentColour(units: number, draining: boolean, theme: HudTheme): Color3 {
+	if (draining) return STAMINA_DRAINING_COLOR;
+
+	return units >= SEGMENT_COUNT ? theme.colors.success : theme.colors.accent;
 }
 
 /**

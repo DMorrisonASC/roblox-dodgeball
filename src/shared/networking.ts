@@ -87,6 +87,25 @@ export const events = Net.Definitions.Create({
 	surrender: Net.Definitions.ClientToServerEvent<[]>(),
 
 	/**
+	 * Client → server: this player has sat still long enough to be asked, and has not answered.
+	 *
+	 * **A second event rather than a flag on `surrender`, and the reason is what the server does differently.** The
+	 * round treats both requests identically — a surrender is exactly what an absent player wants — but this one is
+	 * *reported*: the server poofs the body and prints why it left, so a round that loses a body has a line in the
+	 * output saying it was the player's absence rather than their choice. A boolean on the surrender event would
+	 * have put that branch inside a handler whose only job is the round's own bookkeeping.
+	 *
+	 * **No payload again**, and for `surrender`'s reason: the server already knows who sent it, and how long the
+	 * client waited is the client's own threshold — a number it could send is a number the server should not
+	 * believe. `AFK_CONFIG.IDLE_SECONDS` is shared instead, so the line the server prints names the same figure the
+	 * client actually waited.
+	 *
+	 * **The client sends it at the end of a countdown it drew itself**, so this is not a poll and not a timeout on
+	 * the server: a player who moves during the five seconds never sends it at all.
+	 */
+	afk: Net.Definitions.ClientToServerEvent<[]>(),
+
+	/**
 	 * Client → server: this character wants to duck.
 	 *
 	 * Carries nothing, on `catch`'s terms and for its reason — a key press is the only fact the client

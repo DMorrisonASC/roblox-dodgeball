@@ -1,5 +1,6 @@
 import { Service, OnStart } from "@flamework/core";
 import { CollectionService, Players, Workspace } from "@rbxts/services";
+import { AFK_CONFIG } from "shared/config/afk.config";
 import { ARENA_CONFIG } from "shared/config/arena.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
@@ -461,6 +462,12 @@ export class RoundService implements OnStart {
         // this class rather than a closure: the rules it asks — is a round being played, is this player still
         // in it — are the round's own state, and a closure holding them would be a second copy of `state`.
         events.Server.OnEvent("surrender", (player) => this.surrender(player));
+
+        // **And the second door, which is the same request made by absence.** A method rather than a closure for
+        // the reason above — the guards are this service's own state — and registered here rather than anywhere
+        // else because this is where the round's inbound requests are wired. See `afkReturn`.
+        events.Server.OnEvent("afk", (player) => this.afkReturn(player));
+
         Players.PlayerRemoving.Connect((player) => {
             this.activePlayers.delete(player);
             this.teams.delete(player);
@@ -1940,6 +1947,42 @@ export class RoundService implements OnStart {
 
             print(`[Round] ${player.Name} returned to the lobby — a rig takes their place, rewards halved`);
         });
+    }
+
+    /**
+     * **A player who was asked "are you still there" and did not answer — the round's half of `client/afk.ts`.**
+     *
+     * **It is a surrender, and it deliberately does not become a second way out of a round.** Everything a
+     * surrender does — the cover, the seat released before the body is handed back, the halved rewards, the rig
+     * that takes the place — is exactly what an absent player wants, so this method adds two things and then
+     * calls it: a **poof** where the body stood, and a line in the output naming the reason. "Returned to the
+     * lobby" is also what a deliberate surrender prints, and the two are the same request from different people.
+     *
+     * **The poof is fired here rather than inside `surrender`'s spawned thread, and the timing is the whole
+     * argument.** That thread opens with `TRANSITION_COVER_SECONDS` of cover — a fade the player is looking
+     * through — so a poof fired after it would happen behind the cover and be invisible to the bodies still
+     * standing in the arena. Fired at the decision, it is the last thing they see of that body. **It is also not
+     * a second poof**: `RespawnService` used to fire one on the line that loads the new body and no longer does
+     * (see its note), so the only poof on this path is this one.
+     *
+     * **The two guards are the same two `surrender` opens with, asked here as well, and asking twice is not
+     * redundant.** This is a separate entry point: a request that arrives as the round ends — a client whose
+     * countdown finished while the boundary was closing — would otherwise poof a body standing in the lobby and
+     * print a line about a round that is already over, and only then be refused one call later. Asking first
+     * means the poof and the print happen only for a request about to be honoured.
+     *
+     * **`AFK_CONFIG.IDLE_SECONDS` rather than a number**, so the line names the figure the client actually waited
+     * rather than a copy of it that can drift. The client's own countdown is in the same file, one entry down.
+     */
+    private afkReturn(player: Player): void {
+        if (this.state !== RoundState.Playing) return;
+        if (!this.activePlayers.has(player)) return;
+
+        playSpawnPoof(player.Character);
+
+        print(`[AFK] ${player.Name}: returned to lobby after ${AFK_CONFIG.IDLE_SECONDS}s of inactivity`);
+
+        this.surrender(player);
     }
 
     /**

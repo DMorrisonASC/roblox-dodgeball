@@ -70,18 +70,42 @@ export const SHIFT_LOCK_CONFIG = {
 	CAMERA_OFFSET: new Vector3(2, 2, 0),
 
 	/**
-	 * The cursor shown while the lock is on.
+	 * The crosshair the sight draws while the lock is on.
 	 *
-	 * **The image is the whole of the cursor, and nothing here adjusts it.** No tint, no scale, and above
-	 * all **no transparency** — a mouse icon has no transparency property to set, so the alpha the PNG
-	 * carries *is* the cursor's alpha. A crosshair with a faint middle is a crosshair with a faint middle
-	 * in the artwork, and the thing to change is the file rather than this line. That cuts the other way
-	 * too, and it is worth knowing before the artwork is redrawn: **this line is how the lock feels**, so
-	 * a new PNG is a change to the game rather than to its looks.
+	 * **The picture, and only the picture.** Nothing here tints or fades it: the alpha the PNG carries *is* the
+	 * sight's alpha, and a crosshair with a faint middle is a crosshair with a faint middle in the file. What sizes
+	 * it is not here either — the `ImageLabel` is `SIGHT_SIZE` pixels square, one number for every platform, and
+	 * that constant lives in `ShiftLock` beside the thing it sizes. **This line is how the lock feels**, so a new PNG
+	 * is a change to the game rather than to its looks.
 	 *
 	 * The value is a `ContentId`, which the typings define as a plain `string`. The empty string means
 	 * "no custom icon", which is what the release path writes — see `ShiftLock.restingCursor`, which
 	 * remembers what the client was wearing so that letting go puts *that* back instead of a guess.
 	 */
 	LOCKED_CURSOR: "rbxassetid://88266069771631",
+
+	/**
+	 * **The cursor shown while the lock is on *and the player is holding a ball*** — the same sight, saying one more
+	 * thing.
+	 *
+	 * **A second id rather than a tint or a size**, for {@link LOCKED_CURSOR}'s reason read the other way: a mouse
+	 * icon has no transparency, no tint and no scale to set here, so the picture *is* the whole message. That makes
+	 * a second state a second file, which is the cost this entry buys the feature with.
+	 *
+	 * **What it is for is telling a player whether a press will throw.** The lock is held for the whole of a round
+	 * — since 2026-10-21 that includes the time before a ball is picked up, because the camera turns onto a target
+	 * while the player is only looking — so the sight alone no longer says whether the throw button has anything to
+	 * do. A player with an empty hand reading the same mark as one about to throw is the fault this fixes, and the
+	 * cursor is the one piece of the HUD already in the middle of the screen saying where the ball would go.
+	 *
+	 * **It is read by the one thing that draws the sight** — `ShiftLock.applySight`'s `Computed` over `holdingBall`,
+	 * which draws on every platform since 2026-10-22. The desktop used to wear `MouseIcon` instead, and the
+	 * `cursorImage` helper that chose between these two ids for it was deleted with that arrangement; the two ids
+	 * survived it because they are the *art* of the sight rather than of a platform.
+	 *
+	 * **Supplied rather than invented**, so what is unverified about it is not the spelling but its *character*: that
+	 * it reads as the same sight with something added, rather than as a different cursor. That is an eye judgement
+	 * on a real screen, and it is why the swap is one string rather than a piece of state anybody has to unwind.
+	 */
+	HOLDING_CURSOR: "rbxassetid://125036298377773",
 } as const;

@@ -25,8 +25,8 @@ import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { Trajectory } from "shared/Trajectory";
 import { AssistRequest, assistedAim, watchAim } from "../../aimAssist";
 import { aiming, aimSessionStartedAt, predictedLanding, predictedTargets } from "../../aiming";
+import { holdingBall } from "../camera/ShiftLock";
 import { shakeCamera, startChargeTremble } from "../../cameraShake";
-import { playAbilityConsumed } from "../../personalAudio";
 import { isMobile } from "../../platform";
 import { inRound, isParticipant, sideOfBody } from "../../roundZone";
 import { chargeStartedAt, releasedCharge } from "../../throwing";
@@ -479,6 +479,19 @@ export class ThrowController implements OnStart {
 	private updateGuide() {
 		const character = this.player.Character;
 		const ball = character?.FindFirstChild(BALL_NAME);
+
+		// **And the sight says whether a press would throw.** Published here because this is the method that already
+		// reads the hand every frame, and because `holdingBall` is the cursor's state rather than a second opinion
+		// about the throw: `ShiftLock` draws one of two crosshairs from it, on a desktop through `MouseIcon` and on a
+		// touch device through the `AimSight` label. **Set every frame and free** — a Fusion `Value` given the value
+		// it already holds does nothing — which is the same arrangement `aiming.set(charging)` below relies on, and
+		// it means the cursor cannot be left saying "empty hand" after a throw that took the ball out of the map.
+		//
+		// **Before the charge-cancel below, deliberately.** That cancel is the engine's own edge for a ball leaving
+		// the hand; this is the fact the cursor draws, and it belongs on the same frame either way. `ball !== undefined`
+		// rather than the `IsA("BasePart")` test the cancel uses, because the cursor's question is only whether there
+		// is something in the hand to throw, and the throw itself re-checks the type where it matters.
+		holdingBall.set(ball !== undefined);
 
 		// **A ball that is no longer in the hand cancels the charge, and this is the only cancellation this
 		// file owns.** A drop, a death, a round boundary that destroyed the ball, and a throw made by some
@@ -1056,14 +1069,6 @@ export class ThrowController implements OnStart {
 		const charge = this.currentCharge();
 		const drawn = this.lastCharge;
 
-		// **What the ball in this hand is carrying, read at the top and only once.** The mark is an attribute
-		// on the ball, and this is the client's own copy of the ball the player is holding — the server clears
-		// the mark when a ball *arrives* in a hand rather than when one leaves it, so this is exactly the
-		// state the throw about to be sent will carry. Read here rather than at the sound two blocks down so
-		// the answer cannot depend on anything between: the redraw, the shake and the send all happen in this
-		// method, and none of them is allowed to be part of the question.
-		const carried = abilityOn(character.FindFirstChild(BALL_NAME));
-
 		// **Read before the clear on the next line, and this is the one place that order matters.** The aim
 		// assist's no-re-pick window is decided by whether a hold is running, and the request built below has to
 		// be told that this throw is part of one — which happens after the charge is gone. Read after the clear,
@@ -1111,19 +1116,12 @@ export class ThrowController implements OnStart {
 		// wire not at all.
 		shakeCamera(charge);
 
-		// **And the release's second piece of feedback, which makes the same trade the shake above makes** —
-		// the player's own action rather than the server's answer to it. A marked ball leaving the hand is a
-		// charge or a box's prize spent, so this is the local confirmation that the power went; the server's
-		// spend is a bookkeeping call a round trip away, and waiting for it would put the sound after the throw
-		// it is describing. What that costs is stated rather than hidden, in the same words the shake's doc
-		// uses: a throw the server *refuses* — a frozen body, a hand that emptied on its own — makes the sound
-		// anyway, because the client has no frozen flag to read and no reply to wait for.
-		//
-		// **Only for a ball that is carrying something**, so an ordinary throw makes no sound here and a player
-		// hears the charge's click, the impact and nothing else. A MultiBall throw is ordinary by this measure:
-		// its window was announced when it opened, not once per throw spent out of it — see
-		// `personalAudio.watchMultiBalls`.
-		if (carried !== undefined) playAbilityConsumed();
+		// **There used to be a second piece of release feedback here — the spent-power sound — and it has moved to
+		// the mark.** `personalAudio` now plays it when the ball in the hand is marked, which is the moment the
+		// power is actually spent; a sound here announced it at the release, a second or more after the player
+		// pressed the key, so it confirmed a decision they had already made rather than the one they had just
+		// taken. Nothing else about the release moved: the shake is still the client's own, on this frame, for the
+		// reasons its doc states.
 
 		// **The heading is taken once and used twice**, so the line below names the vector the wire actually
 		// carried rather than a second reading of the same mouse a frame later. The rigs' `[Rig] … throw` lines

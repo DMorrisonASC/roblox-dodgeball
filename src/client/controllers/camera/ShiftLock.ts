@@ -2,6 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import {
 	CollectionService,
+	ContextActionService,
 	Players,
 	ReplicatedStorage,
 	RunService,
@@ -22,6 +23,7 @@ import {
 } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
 import { latchedTarget } from "../../aimAssist";
+import { pushNotification } from "../../notifications";
 import { isMobile } from "../../platform";
 import { getScreenSpaceGui } from "../../ui/screenGui";
 import { inTaggedZone, isParticipant } from "../../roundZone";
@@ -33,19 +35,60 @@ const PLAYING = "Playing";
 /** What it says between rounds — the only phase the lobby zone is allowed to decide anything in. */
 const INTERMISSION = "Intermission";
 
+/** The `ContextActionService` action the player's release key is bound to. Named so an unbind could find it. */
+const RELEASE_ACTION_NAME = "ShiftLockRelease";
+
 /** Prints the lock's transitions. See `shared/config/debug.config.ts` — they are behind the gate too. */
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
- * The sight's size, in pixels. **Placeholder — 44.**
+ * **The crosshair's size, in pixels — the one number that sizes the sight, on every platform. `44`.**
  *
- * **About the size of the cursor it stands in for, and not tied to it.** A mouse icon is drawn by the operating
- * system at whatever size that system gives a pointer, so there is no number in this project that matches it —
- * this is the size a crosshair reads at on a phone screen, big enough to be a mark and small enough not to cover
- * the thing being aimed at. It is a fixed square rather than a fraction of the viewport, because that is what a
- * cursor is: one bitmap of one size, in the middle of the screen, on every device.
+ * **This is the lever, and it did not used to be.** While a desktop wore `UserInputService.MouseIcon` as its
+ * crosshair, this constant reached only the phone — a mouse icon has no size property to set (`MouseIcon`,
+ * `MouseIconContent` and `MouseIconEnabled` are the whole of what the service offers), so on a keyboard client a
+ * bigger or smaller number here changed nothing at all. The sight is now drawn as an `ImageLabel` on every platform
+ * and the engine's pointer is hidden while the lock is on, so **this is the only thing to edit** to make the
+ * crosshair bigger or smaller. See {@link applySight}.
+ *
+ * **Pixels rather than a fraction of the viewport**, deliberately: the middle of the view is where the throw goes, so
+ * the mark that says so should be the same mark on a phone, a tablet and an ultrawide — one image of one size, not a
+ * thing that grows with the window. Forty-four is big enough to read at arm's length and small enough not to cover
+ * the body being aimed at.
  */
 const SIGHT_SIZE = 44;
+
+/**
+ * The scope the exported `Value` below lives in — **module state, so module scope.**
+ *
+ * The same shape `client/aiming.ts` and `client/throwing.ts` use for the facts they publish, and for the same
+ * reason: a controller's scope is created in its own boot and a value exported for another controller to write
+ * cannot be owned by one of them.
+ */
+const cursorScope = Fusion.scoped();
+
+/**
+ * **Whether the local player is holding a ball — the one fact the cursor draws, written by `ThrowController`.**
+ *
+ * **A `Value` rather than a method on this controller**, because the fact has one writer and the *drawing* of it
+ * belongs to the thing being drawn: the sight's `Image` is a `Computed` over this, so Fusion repaints it on the frame
+ * the hand changes and does nothing at all in between. A `setCrosshair(id)` method would have put that decision at the
+ * call site — the throw controller choosing the crosshair — and the caller would have had to reach this controller to
+ * make it.
+ *
+ * **It had two readers until 2026-10-22**, when the desktop's `MouseIcon` was retired as the crosshair in favour of the
+ * drawn sight (see `applySight`); the `Observer` that kept the icon in step went with it, so what is left is one label
+ * and one `Computed` — on every platform.
+ *
+ * **Written by `ThrowController.updateGuide` and nobody else**, which is the rule `aiming` and
+ * `aimSessionStartedAt` already keep: that method reads the hand every frame, and a second place asking "is there a
+ * ball" would be a second answer to one question. It is written every frame, which is free — a `Value` given the
+ * value it already holds does nothing, exactly as `aiming.set(charging)` beside it relies on.
+ *
+ * **Read here and nowhere else**, which is why it is exported from this file rather than from `throwing.ts`: the
+ * cursor is the only consumer, and the two ids it chooses between are the ones this controller writes.
+ */
+export const holdingBall = Fusion.Value(cursorScope, false);
 
 /**
  * **Whether the camera diagnostics are on. `false` — this is a switch for one session, and it costs a log line
@@ -131,13 +174,20 @@ function cameraSettings(): UserGameSettings | undefined {
  * **except inside a zone somebody places** ({@link PRACTICE_ZONE_TAG}), where it comes back so a practice
  * throw lines up the way a real one will.
  *
- * **There used to be a third and it was the player's own key. It is gone.** `~` handed the camera back
- * — even in the middle of a round — on the argument that a player who would rather have their ordinary
- * camera than an aimed throw should be allowed one. What that argument missed is what the lock *is*:
- * the camera is the aim, so taking it off is not opting out of a comfort feature, it is switching off
- * the mechanism the game is played through. The key was also the backpack's, so its only other effect
- * was to open an empty inventory over the press. **The camera is the game's to decide, and nobody's to
- * refuse** — which leaves one input fewer to combine below, and one state the HUD has to explain.
+ * **And a third input, which is the player's own key — restored 2026-10-22 after a spell without it.** `~` lets go
+ * of the camera even in the middle of a round, and **the next click or tap takes it back** — see
+ * {@link releaseCamera} and {@link reclaimOnPress}. **The argument for removing it is kept here, because it is still
+ * the reason this is a *release* rather than a preference**: the camera *is* the aim, so switching it off is not
+ * opting out of a comfort feature, it is switching off the mechanism the game is played through. What the removal
+ * got wrong is how little the press actually costs. The lock comes back on the next press of a mouse button, so
+ * what `~` buys is a look at the score, a pointer that can reach the interface, or a second without a crosshair over
+ * somebody the round is about to move. It is the one input on this lock that belongs to the player rather than to
+ * the round, and it can only ever **refuse** what the other two ask for — see {@link refresh}, where it is checked
+ * first.
+ *
+ * **The key was also the backpack's, and no longer conflicts with it.** `mount` disables the backpack's core GUI
+ * outright — there are no `Tool`s in this game, the ball is a part welded to a hand — so there is no window for the
+ * press to open over the lock.
  *
  * **The inputs are combined rather than ordered, and the zone is checked in every phase.** The lock is
  * on while the round or the zone is asking, which is what makes the zone safe to leave armed all the
@@ -182,13 +232,15 @@ function cameraSettings(): UserGameSettings | undefined {
  * makes the *body's* facing the thing the throw reads rather than the camera's. See the note on
  * `shared/throw.ts`'s `forward` — that dependency is real and was checked rather than assumed.
  *
- * **And the cursor, which is the fourth thing the lock controls.** While it is on, the mouse is a
- * crosshair — which is the point of the whole feature stated as a picture, since the throw goes where
- * the centre of the screen is looking and the cursor stops being a pointer and becomes a sight. It is
- * the *whole* of the cursor: nothing here tints it, scales it or fades it, and **a mouse icon has no
- * transparency property to set**, so the PNG's alpha is the cursor's alpha. A crosshair whose middle is
- * faint is a crosshair whose middle is faint in the artwork — see
- * {@link SHIFT_LOCK_CONFIG.LOCKED_CURSOR}, which is where the file lives.
+ * **And the cursor, which is the fourth thing the lock controls — by taking it away.** While the lock is on, the
+ * engine's pointer is *hidden* and a crosshair is drawn in its place: the throw goes where the centre of the screen
+ * is looking, and at that point the pointer has stopped being a pointer at all — `MouseBehavior.LockCenter` pins it
+ * to the middle, so it cannot be pointed anywhere, and a mark that says where the shot goes is the honest thing to
+ * draw. **It used to be the icon itself** — `MouseIcon` set to the crosshair — and that was given up on 2026-10-22
+ * for one missing property: **an icon cannot be sized.** `MouseIcon`, `MouseIconContent` and `MouseIconEnabled` are
+ * the whole of what `UserInputService` offers, so the crosshair's size was whatever the PNG happened to be, on every
+ * device, with nothing in this project able to change it. See {@link applySight}, which draws the sight at
+ * {@link SIGHT_SIZE}.
  *
  * **Unlike `RotationType`, the cursor does not outlive the client.** `UserInputService` is the session's
  * input state rather than the user's saved settings, so a session that ends mid-lock leaves nothing
@@ -196,12 +248,12 @@ function cameraSettings(): UserGameSettings | undefined {
  * arrived wearing rather than a forced default: there is nothing to undo, and the capture is what lets a
  * release hand back a cursor somebody else set instead of inventing one.
  *
- * **And the cursor is only half of the sight, which is the thing that was missing on a phone.**
- * `MouseIcon`/`MouseBehavior` describe a pointer, and a touch device has none: its throw is aimed along the
- * camera's own axis (`ThrowController.getThrowDirection`) and nothing was drawing where that pointed. So the
- * lock draws the same crosshair — the same {@link SHIFT_LOCK_CONFIG.LOCKED_CURSOR} id — on the screen itself,
- * on the platforms with no cursor to set. See {@link applySight}, which is a third call in `applyState`
- * beside {@link writeSettings} and {@link applyOffset} rather than part of either.
+ * **And what that sight is now is the whole of it, on every platform.** It began as the phone's half — a touch
+ * device has no pointer at all, and its throw is aimed along the camera's own axis
+ * (`ThrowController.getThrowDirection`), so nothing was drawing where that pointed — and an `ImageLabel` drew it
+ * there. On 2026-10-22 the desktop moved onto that same label, for the sizing reason above, so there is now one
+ * sight, one size and one picture rather than two platform halves. See {@link applySight}, which is a third call in
+ * `applyState` beside {@link writeSettings} and {@link applyOffset} rather than part of either.
  *
  * **The camera offset is per *character*, and only that.** `RotationType` and `MouseBehavior` belong to
  * the user, so they are written once and hold across every respawn; the offset lives on the `Humanoid`,
@@ -248,23 +300,24 @@ export class ShiftLock implements OnStart {
 	 *
 	 * **Both halves, because the flag on its own is not the cursor.** `MouseIconEnabled` only decides
 	 * whether an icon is *drawn*; the image stays in `MouseIcon` either way, so restoring the flag alone
-	 * would leave the crosshair sitting in the property and bring it straight back the moment anything
-	 * enabled the icon again — this file included, on the next lock. Captured once at {@link mount} and
-	 * put back together on every release, which is also what makes the release honest: a client that
-	 * arrived wearing somebody else's cursor gets *that* back rather than a default invented here.
+	 * would hand back whatever image happened to be sitting in the property rather than the one the client
+	 * arrived with. Captured once at {@link mount} and put back together on every release, which is also what
+	 * makes the release honest: a client wearing somebody else's cursor gets *that* back rather than a default
+	 * invented here. **This file only ever switches the icon off now** — the crosshair is drawn rather than worn,
+	 * see {@link applySight} — so the capture exists for the restore rather than for a swap.
 	 */
 	private restingCursor?: string;
 	private restingCursorEnabled?: boolean;
 
 	/**
-	 * The sight the lock draws on a touch device, or nothing before the first lock.
+	 * The sight the lock draws — the crosshair, on every platform — or nothing before the first lock.
 	 *
 	 * **A scope of its own, because this element's life is not the file's.** Everything else here is a
 	 * subscription made once at {@link mount} and handed to the mount's scope; the sight cannot be, because it
 	 * is created on the first lock rather than at mount (see {@link applySight}) — so it is made inside
 	 * `sightScope`, which exists for exactly one element and is never torn down. The alternative was to build it
-	 * at mount unconditionally, which would put an invisible `ImageLabel` in the GUI of every desktop client for
-	 * the whole session.
+	 * at mount unconditionally, which would put an invisible `ImageLabel` in the GUI of every client that never
+	 * locks — a lobby, or a practice zone nobody has walked into.
 	 */
 	private readonly sightScope = Fusion.scoped();
 	private sight?: ImageLabel;
@@ -287,6 +340,18 @@ export class ShiftLock implements OnStart {
 
 	/** What the zone says: the local player's body is inside a tagged box right now. */
 	private inZone = false;
+
+	/**
+	 * **Whether the player has let go of the camera with `~`, and it outranks both of the fields above.**
+	 *
+	 * A veto rather than a third ask: while this is set, {@link refresh} releases the camera whatever the round and
+	 * the zone are saying, which is the only way to get the ordinary camera back in the middle of a round. Cleared by
+	 * the next click or tap ({@link reclaimOnPress}), by the same key again ({@link releaseCamera}), and by a round
+	 * starting ({@link applyRound}) — and by nothing else, so a player who lets go mid-round keeps the camera until
+	 * one of those three happens. **Moving the mouse does not clear it**, deliberately: the release exists to give the
+	 * pointer back, and a pointer that reclaims the camera five pixels into its journey can never reach a control.
+	 */
+	private released = false;
 
 	/**
 	 * The local player's body, held so the camera offset can be put on the next one.
@@ -484,6 +549,31 @@ export class ShiftLock implements OnStart {
 		// gated inside rather than re-bound when a hold starts. See `watchFollow`.
 		this.watchFollow();
 
+		// **The player's key, bound once for the client's life.** Through `ContextActionService` rather than
+		// `UserInputService.InputBegan`, because that is what makes the chat box win: an action does not fire while a
+		// text box has focus, so a player typing a line with a `~` in it does not lose their camera. **Two `KeyCode`s
+		// for one key**, because the same physical press reports `Backquote` unshifted and `Tilde` with shift — and on
+		// some layouts the pair is the other way round — so binding both is what makes the label on the key and the
+		// binding the same thing whatever the keyboard says.
+		ContextActionService.BindAction(
+			RELEASE_ACTION_NAME,
+			(_name, state) => {
+				if (state !== Enum.UserInputState.Begin) return Enum.ContextActionResult.Pass;
+
+				this.releaseCamera();
+
+				return Enum.ContextActionResult.Pass;
+			},
+			false,
+			Enum.KeyCode.Backquote,
+			Enum.KeyCode.Tilde,
+		);
+
+		// **And the way back, which is a press rather than the key.** Bound once and gated inside, for the reason
+		// `watchOffset` gives about its own render step: the release comes and goes several times a session and a
+		// binding re-made on each of them would be a second thing to keep in step with the field.
+		scope.push(UserInputService.InputBegan.Connect((input) => this.reclaimOnPress(input)));
+
 		task.spawn(() => this.watchZones());
 
 		// **The count is subscribed to before it is taken, so a tag that lands between the two is not
@@ -596,14 +686,21 @@ export class ShiftLock implements OnStart {
 	 * difference is one case, and it is a fix: a player standing in a zone when a round ends keeps the
 	 * camera, instead of losing it for the tenth of a second the zone tick takes to put it back.
 	 *
-	 * **It used to do one thing more, and losing that is what made it this short.** It was also where the
-	 * player's `~` release was taken back — on the one edge it should be, a round *starting* rather than a
-	 * round being played, so that any later publication of `Playing` could not clear a release the player
-	 * had just set mid-round. With no release there is nothing to take back, and the edge test went with
-	 * it: this now records the answer and does nothing else.
+	 * **It does one thing more: it takes the player's release back, on a round *starting*.** See the edge test in the
+	 * body — a round beginning is a new ask and the release belonged to the old one, while a later publication of
+	 * `Playing` (a mid-round rejoin, a membership write) must not clear a release the player made during the round.
+	 * That was this method's job before the key was removed and it is its job again now the key is back
+	 * (2026-10-22).
 	 */
 	private applyRound(): void {
+		const wasLocked = this.roundLocked;
+
 		this.roundLocked = isParticipant(this.player);
+
+		// **The edge rather than the state, and the difference is one press.** `applyRound` runs on every phase change
+		// and every membership write, so clearing whenever `roundLocked` is true would take the release back on a
+		// mid-round rejoining write, a second after the player made it.
+		if (!wasLocked && this.roundLocked) this.released = false;
 
 		this.refresh();
 	}
@@ -698,6 +795,82 @@ export class ShiftLock implements OnStart {
 	}
 
 	/**
+	 * **The player's `~` press: let go of the camera, or take it back — whichever way the switch is pointing.**
+	 *
+	 * **A veto rather than a third ask**, which is the distinction the class doc works out: the round and the zone
+	 * ask for the lock, and this only ever refuses to honour them. That is what lets it work in the middle of a round
+	 * without a second set of conditions in {@link refresh} — the release is checked first and, while it is set,
+	 * nothing below it gets a say.
+	 *
+	 * **Both directions, because a key that only works one way is a key a player presses twice.** A click or a tap is
+	 * how the camera normally comes back ({@link reclaimOnPress}), so pressing `~` again is the second way to do the
+	 * same thing and costs one branch here rather than a second binding.
+	 *
+	 * **Silent when there is nothing to let go of.** A press in the lobby changes no state, so it says nothing: a
+	 * notification reading "Camera Unlocked" over a camera the round never held would be the one message this feature
+	 * must not send. The notification is pushed on the *transition* and nowhere else, so the string always describes
+	 * something that happened.
+	 *
+	 * **Two presses in one second push two notifications**, which is deliberate — the stack caps itself at three and
+	 * a switch flipped twice is two facts — rather than a dedupe this file would have to keep.
+	 */
+	private releaseCamera(): void {
+		if (this.released) {
+			this.released = false;
+			this.refresh();
+			pushNotification("Camera Locked");
+
+			return;
+		}
+
+		if (!this.isLocked()) return;
+
+		this.released = true;
+		this.refresh();
+		pushNotification("Camera Unlocked");
+	}
+
+	/**
+	 * **The way back: any click, or a tap.** Pressing a mouse button while the camera is released puts the lock back
+	 * on — all three buttons, because "any click" is the rule and a middle-click is a click.
+	 *
+	 * **A press rather than the pointer moving, and the first version of this got that wrong in a way worth
+	 * recording.** It re-locked when a single `InputChanged` delta crossed five pixels, on the reasoning that a
+	 * deliberate look is tens of pixels and a resting hand is one or two. What that missed is what the release is
+	 * *for*: with the pointer free, reaching any control — the dock, a panel, the score — is hundreds of pixels of
+	 * movement, so the camera came back five pixels into the journey and the pointer could never arrive. The
+	 * threshold was measuring the thing the release exists to allow. **A click is the moment the player is going
+	 * back to playing**, and it is a single unambiguous event rather than a distance.
+	 *
+	 * **`InputBegan` and not a claim**, so the click still does its own job: `MouseButton1` is the throw and
+	 * `MouseButton2` the dodge, both bound elsewhere, and this observes the press rather than sinking it — which
+	 * means the shot a player fires to get their camera back is a shot, not a swallowed input.
+	 *
+	 * **`Touch` is accepted for the same reason it was before**: a tablet with a keyboard attached can reach `~`
+	 * and its screen is also a button. A touch-only client cannot enter the released state at all, because `~` is
+	 * the only way in and there is no key to press.
+	 *
+	 * **The release is cleared before `refresh`, never after**, so the lock's own state machine is the only thing
+	 * that decides what the camera does; this method's whole job is to flip one field and report it.
+	 */
+	private reclaimOnPress(input: InputObject): void {
+		if (!this.released) return;
+
+		if (
+			input.UserInputType !== Enum.UserInputType.MouseButton1 &&
+			input.UserInputType !== Enum.UserInputType.MouseButton2 &&
+			input.UserInputType !== Enum.UserInputType.MouseButton3 &&
+			input.UserInputType !== Enum.UserInputType.Touch
+		) {
+			return;
+		}
+
+		this.released = false;
+		this.refresh();
+		pushNotification("Camera Locked");
+	}
+
+	/**
 	 * Works out whether the camera should be held, from the two things that can ask for it.
 	 *
 	 * **The round and the zone are added, and neither can undo the other.** A player who is *in* the round
@@ -711,17 +884,25 @@ export class ShiftLock implements OnStart {
 	 * and was in nothing; see the field's own comment. What is unchanged is the reading order below, so the
 	 * line still names the round when the round is why.
 	 *
-	 * **There used to be a third input, and it could refuse both.** It was the player's `~` release, and it
-	 * outranked these two, which was the only way to get the ordinary camera back in the middle of a round.
-	 * See the class doc for why it is gone; what is left is one rule with two terms in it, and the function
-	 * is the shorter for it.
+	 * **There is a third input and it is the player's own key, restored 2026-10-22, and it outranks both of these.**
+	 * See {@link releaseCamera}: it is a *veto* rather than an ask, so it can never hold a lock nothing asked for, and
+	 * it is the only way to get the ordinary camera back in the middle of a round. It is checked first and returns
+	 * early, because that is the only thing "outranks" can mean while the two terms below stay as they are.
 	 *
 	 * **The reason printed names which input is saying something**, so the log reads the way the rule does:
-	 * `locked — the round`, `locked — the zone`, and `unlocked — nothing is asking for it`. Every unlock
-	 * line therefore names a phase or a zone the player has left, and none of them can be a player asking
-	 * for their camera back — there is no such ask any more.
+	 * `locked — the round`, `locked — the zone`, `unlocked — nothing is asking for it`, and
+	 * `unlocked — the player let go of it`. The last is the only one that names a person, and the only one that can
+	 * print while a round is still being played.
 	 */
 	private refresh(): void {
+		// **The veto, checked before anything else can ask.** Nothing below this line runs while the player has the
+		// camera, which is why neither the round nor the zone needs a second condition added to it.
+		if (this.released) {
+			this.unlock("the player let go of it");
+
+			return;
+		}
+
 		const asking = this.roundLocked ? "the round" : this.inZone ? "the zone" : "nothing is asking for it";
 
 		if (this.roundLocked || this.inZone) {
@@ -759,46 +940,52 @@ export class ShiftLock implements OnStart {
 	}
 
 	/**
-	 * **The sight: the crosshair, drawn on the screen itself, for the platform that has no cursor to put it in.**
+	 * **The sight: the crosshair, drawn on the screen itself — on every platform, and it is the whole of the cursor.**
 	 *
-	 * **The desktop's third effect and the mobile's second, and they are the same effect reached two ways.** On a
-	 * desktop the cursor *is* the crosshair: `MouseIcon` is set to {@link SHIFT_LOCK_CONFIG.LOCKED_CURSOR} and
-	 * `MouseBehavior.LockCenter` holds it in the middle of the screen, which is what makes the aim read — see
-	 * `ThrowController.getThrowDirection`, which shoots its ray through that pixel. **A phone has neither a
-	 * cursor nor a place to put one**, so the lock had no visible marker on it at all: the camera moved to the
-	 * shoulder and the throw started going wherever the middle of the screen pointed, with nothing on the screen
-	 * saying where that was. This draws the same image at the same place, so the two platforms say the same thing
-	 * about where a throw will go.
+	 * **It used to be the phone's half. It is the crosshair everywhere as of 2026-10-22**, and the reason is a
+	 * property that does not exist: **a mouse icon cannot be sized.** `UserInputService` offers `MouseIcon`,
+	 * `MouseIconContent` and `MouseIconEnabled` and nothing else, so while a desktop wore the cursor its crosshair was
+	 * whatever size that PNG happened to be, on every device, with no number in this project able to change it. From a
+	 * seat in front of one, `SIGHT_SIZE` looked like a constant that was not connected to anything.
 	 *
-	 * **The same `LOCKED_CURSOR` id rather than a second asset**, deliberately: it is the art of the sight, and a
-	 * second id here would be two pictures to keep looking alike — and the one place a player compares the two
-	 * platforms is this shape in the middle of their screen.
+	 * **So the icon is *hidden* while the lock is on and this marks the same pixel instead.** Nothing is given up by
+	 * hiding it: `MouseBehavior.LockCenter` has already pinned the pointer to the middle of the screen — see
+	 * {@link writeSettings} — so a locked client's icon was a pointer that could not be pointed anywhere. What it drew
+	 * is now drawn by an `ImageLabel` of a size this project chooses, and the cursor the client arrived wearing is put
+	 * back, image and flag together, on every release.
+	 *
+	 * **The same two ids the cursor used**, because they are the art of the sight rather than of one platform: the
+	 * lock's crosshair, and the lock's crosshair while a ball is in hand. One `Computed` over `holdingBall` swaps them,
+	 * so the swap costs one property on the frame the hand changes and nothing at all in between.
 	 *
 	 * **It is a sibling of the HUD rather than part of one.** The lock is not a HUD: it is a camera rule that
 	 * three readouts happen to move with, and it is on for players who have no HUD element in mind at all. So the
 	 * aim marker belongs to the thing that owns the aim, and any HUD that ever wants to draw over it can — the
 	 * rung is below the dock's.
-	 *
-	 * **Nothing says "touch device" here except the one test**, which is the same `isMobile()` the two control
-	 * surfaces use: a client with a keyboard has a cursor, and drawing a second crosshair on top of it would be
-	 * the same mark twice.
 	 */
 	private applySight(on: boolean): void {
-		if (!isMobile()) return;
-
 		if (this.sight === undefined) {
 			// Built on the first lock rather than at mount, so a client that never locks never makes an instance.
 			// **Into its own GUI**, and that is what makes the position below two scale numbers rather than
 			// arithmetic: a `ScreenGui` with `None` insets has the screen for its coordinate space, so
-			// `(0.5, 0.5)` *is* the middle of the screen — and the middle of the screen is where the throw goes,
-			// because a phone aims along the camera's own axis. See `getScreenSpaceGui`, which carries the
-			// argument for the GUI this lives in and for why the shared one cannot do this job.
+			// `(0.5, 0.5)` *is* the middle of the screen — and the middle of the screen is where the throw goes on
+			// both platforms: a phone aims along the camera's own axis, and a locked desktop's pointer has been
+			// pinned to that same pixel. See `getScreenSpaceGui` for why the shared HUD GUI cannot do this job.
 			const sight = Fusion.New(this.sightScope, "ImageLabel")({
 				Name: "AimSight",
-				Image: SHIFT_LOCK_CONFIG.LOCKED_CURSOR,
+				// **Bound to the hand rather than fixed to one id.** The sight has two pictures now — the lock's, and
+				// the lock's while a ball is in hand — and a `Computed` is what makes the swap one property on the
+				// frame the hand changes and nothing at all on the frames in between. Fusion re-evaluates it only
+				// when `holdingBall` is set to a different value, which is what stops this being a per-frame write
+				// to an `Image` (a content id, and therefore an asset lookup, not a cheap property).
+				Image: Fusion.Computed(this.sightScope, (use) =>
+					use(holdingBall) ? SHIFT_LOCK_CONFIG.HOLDING_CURSOR : SHIFT_LOCK_CONFIG.LOCKED_CURSOR,
+				),
 				BackgroundTransparency: 1,
-				// A fixed square at the middle of the screen: the shape the desktop's cursor has, which is a
-				// bitmap of one size rather than a thing that scales with the viewport.
+				// **`SIGHT_SIZE`, and it is now the only number that sizes a crosshair in this project** — the one
+				// thing a reader changes to make the sight bigger or smaller. Pixels rather than a fraction of the
+				// viewport, so it is the same mark on a phone, a tablet and an ultrawide: the middle of the view is
+				// where the throw goes, and the thing that says so should not grow with the window.
 				Size: UDim2.fromOffset(SIGHT_SIZE, SIGHT_SIZE),
 				AnchorPoint: new Vector2(0.5, 0.5),
 				Position: UDim2.fromScale(0.5, 0.5),
@@ -826,11 +1013,11 @@ export class ShiftLock implements OnStart {
 	 *
 	 * **The three are written independently, so one failing does not cost the others.** They are three
 	 * parts of one effect — the character turning with the view, the mouse being held at its centre, and
-	 * the cursor saying so — and a client that can do two of them should do the two and report which one
-	 * is missing.
+	 * the engine's own cursor getting out of the way of the drawn sight — and a client that can do two of
+	 * them should do the two and report which one is missing.
 	 *
-	 * See the class doc for why the camera's `CFrame` is not the seam to use instead, and
-	 * {@link SHIFT_LOCK_CONFIG.LOCKED_CURSOR} for why there is no transparency to set on the cursor.
+	 * See the class doc for why the camera's `CFrame` is not the seam to use instead, and {@link applySight}
+	 * for the crosshair that replaces the hidden cursor.
 	 */
 	private writeSettings(on: boolean): void {
 		const settings = cameraSettings();
@@ -849,16 +1036,17 @@ export class ShiftLock implements OnStart {
 
 		if (!mouseOk) warn(`[ShiftLock] MouseBehavior refused: ${tostring(mouseProblem)}`);
 
-		// **The cursor, which is the one of the three that fails visibly.** The icon is *set* rather than
-		// assumed on the way in: it is the part of this something outside the game could have turned off,
-		// and a crosshair that never appears because a flag was already false would look exactly like a
-		// broken asset id. On the way out both halves go back together — the image is cleared as well as
-		// the flag, so that anything which enables the icon later, this file on its next lock included,
-		// gets the engine's cursor rather than a crosshair left behind in the property.
+		// **The engine's cursor is *hidden* while locked, because the sight is the crosshair now.** The write above has
+		// already pinned the pointer to the middle of the screen (`LockCenter`), so the icon it would draw is a pointer
+		// that cannot be pointed anywhere — and it cannot be sized or tinted either, which is why `SIGHT_SIZE` used to
+		// reach only a phone. The drawn sight marks exactly the same pixel at a size this project decides.
+		//
+		// **Both halves still go back on the way out**, image and flag, for the reason the resting capture exists: a
+		// client that arrived wearing somebody else's cursor gets *that* back, and leaving a crosshair in the property
+		// would bring it straight back the moment anything re-enabled the icon.
 		const [cursorOk, cursorProblem] = pcall(() => {
 			if (on) {
-				UserInputService.MouseIcon = SHIFT_LOCK_CONFIG.LOCKED_CURSOR;
-				UserInputService.MouseIconEnabled = true;
+				UserInputService.MouseIconEnabled = false;
 			} else {
 				UserInputService.MouseIcon = this.restingCursor ?? "";
 				UserInputService.MouseIconEnabled = this.restingCursorEnabled ?? false;

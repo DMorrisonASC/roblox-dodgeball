@@ -1,7 +1,8 @@
 import { ContentProvider, Players, SoundService } from "@rbxts/services";
 import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
-import { PICKUP_COUNT_ATTRIBUTE, SUPER_MULTI_BALL_COUNT_ATTRIBUTE } from "shared/constants";
+import { BALL_ABILITY_ATTRIBUTE, BALL_NAME, PICKUP_COUNT_ATTRIBUTE, SUPER_MULTI_BALL_COUNT_ATTRIBUTE } from "shared/constants";
+import { abilityOn } from "shared/ability";
 
 /**
  * The two sounds a player makes that **only that player hears**: collecting a ball, and spending a power.
@@ -53,6 +54,18 @@ let pickupSound: Sound | undefined;
 let abilitySound: Sound | undefined;
 
 /**
+ * **The subscription that watches the mark on the ball in this player's hand, keyed by the ball.**
+ *
+ * **A `Map` and not a bare connection, because a thrown ball outlives the hand it left.** `attachToHand` parents a
+ * ball into the character and `throwBall` puts it back into `Workspace`; the *attribute* survives both, and the
+ * server only clears a mark when a ball arrives in a hand again. A watcher connected to a ball that was thrown
+ * would therefore fire when somebody else's hand marked it later — a spent-power sound for a power this player did
+ * not spend. So the keys are balls currently in this character, and the value is what has to be disconnected when
+ * one leaves the hand.
+ */
+const ballMarks = new Map<BasePart, RBXScriptConnection>();
+
+/**
  * Whether the boot call has already run.
  *
  * **A guard rather than a promise that the boot runs once**, because the two failure modes of running twice
@@ -91,21 +104,58 @@ export function startPersonalAudio(): void {
 		}
 	});
 
-	watchPickups();
+	watchCharacter();
 	watchMultiBalls();
 }
 
 /**
- * Plays the spent-power sound.
+ * Fires the ability sound when **the ball in this player's hand is marked**, which is the moment a power is spent.
  *
- * **Exported because one of its two callers cannot watch anything.** A MultiBall window is announced by the
- * state the server publishes — see {@link watchMultiBalls} — but a marked ball leaving a hand is an *action*
- * this client is in the middle of taking, so the throw site calls this directly rather than an attribute
- * changing a round trip later. `ThrowController.releaseThrow` is the only caller; see it for why the read
- * that decides is the ball's own and not the player's intent.
+ * **Not at the throw, which is where this sound started and where it was wrong.** A mark is applied by
+ * `BallService.markHeldBall` — the answer to the ability key, or to a box's prize being used — and spent by the
+ * throw that carries it. Those are two moments a second or more apart, because a player marks and then aims; a
+ * sound at the release told them their power had been used when what they had actually done was throw it away.
+ * The card this pays for is `SuperHudController`'s slot, which already draws the mark the instant it exists, so the
+ * sound now lands where the picture changes.
+ *
+ * **Read from the ball's own attribute rather than from the key press**, for the reason `watchMultiBalls` gives
+ * about MultiBall: a press is a request, and the server refuses one from a player who does not own the power, has
+ * nothing to pay with, or is not in a round. The attribute only appears on a ball the server actually marked.
+ *
+ * **A dev's arm is the one case that reads oddly and it is the honest one.** `SuperService.armPower` writes
+ * `ARMED_ABILITY_ATTRIBUTE` on a *player* when a dev asks for a power with no ball to put it on, and
+ * `BallService.attachToHand` moves that arm onto the first ball the dev picks up — so a dev hears this when the
+ * ball becomes marked, not when the key was pressed. That is the same rule as everybody else's: the sound marks
+ * the ball, and a shortcut with nothing to mark has not spent anything yet.
  */
-export function playAbilityConsumed(): void {
-	play(abilitySound, "spent a power");
+function watchBallMark(ball: BasePart): void {
+	if (ballMarks.has(ball)) return;
+
+	// **Seeded with whatever the ball is already carrying, and deliberately not played for it.** A caught ball
+	// arrives *still wearing the mark of the throw it was caught out of* — `attachToHand` clears it a moment later —
+	// so a play on arrival would sound a power for a ball this player did not mark, which is a sound with no owner.
+	// The clear that follows is the change that opens the door for the real mark, and the edge above catches it.
+	let last = abilityOn(ball);
+
+	ballMarks.set(
+		ball,
+		ball.GetAttributeChangedSignal(BALL_ABILITY_ATTRIBUTE).Connect(() => {
+			const now = abilityOn(ball);
+
+			if (now !== undefined && now !== last) play(abilitySound, `${Players.LocalPlayer.Name} marked a ${now} ball`);
+
+			last = now;
+		}),
+	);
+}
+
+/** Drops the watcher for a ball that has left this character's hand. */
+function forgetBallMark(ball: BasePart): void {
+	const connection = ballMarks.get(ball);
+	if (connection === undefined) return;
+
+	connection.Disconnect();
+	ballMarks.delete(ball);
 }
 
 /**
@@ -192,8 +242,13 @@ function countOn(instance: Instance, attribute: string): number {
  * makes a new `Model` with a new attribute table — so the current body is wired if it is there and
  * `CharacterAdded` covers the rest. A connection to a destroyed body's attribute signal dies with the body
  * rather than needing to be disconnected by hand.
+ *
+ * **The same closure watches the ball in that body's hand**, because that is the other half of the same subject:
+ * everything this module reports is a fact about *this player's own hands*, and both facts live on the body. The
+ * child being watched is a ball by name (`BALL_NAME`, which is what a ball is called and what
+ * `BallService.attachToHand` parents into the character), and the subscription it gets is `watchBallMark`'s.
  */
-function watchPickups(): void {
+function watchCharacter(): void {
 	const player = Players.LocalPlayer;
 
 	const watch = (character: Model) => {
@@ -208,6 +263,24 @@ function watchPickups(): void {
 			if (count > last) play(pickupSound, `${player.Name} collected a ball`);
 
 			last = count;
+		});
+
+		// **And the ball, from the same closure.** Wired for whatever is already in the hand — a respawn can be
+		// handed a ball before this line runs — and then kept in step by the two child signals. The removal is the
+		// load-bearing one: a thrown ball goes back into `Workspace` with its watcher still attached, and
+		// `forgetBallMark` is what stops it sounding for a mark somebody else's hand makes later.
+		const wireBall = (child: Instance) => {
+			if (!child.IsA("BasePart")) return;
+			if (child.Name !== BALL_NAME) return;
+
+			watchBallMark(child);
+		};
+
+		for (const child of character.GetChildren()) wireBall(child);
+
+		character.ChildAdded.Connect(wireBall);
+		character.ChildRemoved.Connect((child) => {
+			if (child.IsA("BasePart")) forgetBallMark(child);
 		});
 	};
 

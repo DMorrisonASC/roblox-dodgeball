@@ -1,6 +1,13 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, RunService } from "@rbxts/services";
-import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, DUCKING_ATTRIBUTE, STAMINA_ATTRIBUTE } from "shared/constants";
+import {
+    CHARGING_ATTRIBUTE,
+    DODGE_DIRECTION_ATTRIBUTE,
+    DUCKING_ATTRIBUTE,
+    IN_ROUND_ATTRIBUTE,
+    PRACTICE_ZONE_ATTRIBUTE,
+    STAMINA_ATTRIBUTE,
+} from "shared/constants";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { events } from "shared/networking";
@@ -711,7 +718,9 @@ export class WalkSpeedService implements OnStart {
         this.enforceActionCaps();
 
         // Iterated rather than keyed by character, because the pool belongs to the *player* and must
-        // keep draining or recovering whether or not that player currently has a body.
+        // keep draining or recovering whether or not that player currently has a body. **Where they are is a third
+        // fact and it outranks both**: see `canDrainStamina`, which refills rather than spends for anybody outside a
+        // round and outside a practice zone.
         for (const [player, state] of this.sprints) {
             this.step(player, state, dt, now);
         }
@@ -763,10 +772,11 @@ export class WalkSpeedService implements OnStart {
     private step(player: Player, state: SprintState, dt: number, now: number): void {
         const sprinting = state.active && state.stamina > 0;
 
-        // **The body, and a dead player has none** — which reads as `undefined` here and therefore as "not
-        // held", so the pool keeps draining or recovering through a death exactly as the class comment says
-        // it must. A hold is a rule about a body in the middle of an action, and a player with no body is not
-        // in one.
+        // **The body, and a dead player has none** — which reads as `undefined` here and therefore as "not held", so a
+        // hold is a rule about a living body in the middle of an action and nothing else. **What a *dead* player's
+        // pool does is no longer this method's business and is decided below**: a body that is out of a round has no
+        // pool to spend, so the death case the old comment here described ("the pool keeps draining through a death")
+        // is now the refill in `canDrainStamina`'s branch.
         const character = player.Character;
         const hold = character !== undefined ? this.poolHold(character) : undefined;
 
@@ -782,7 +792,26 @@ export class WalkSpeedService implements OnStart {
             !sprinting &&
             now - state.lastDrainAt >= CHARACTER_CONFIG.STAMINA_RECOVERY_DELAY_SECONDS;
 
-        if (drains) {
+        // **And the third rule, which is about *where* the body is rather than how it is moving: a pool outside a
+        // round and outside a practice zone is refilled rather than spent.** The sprint key works everywhere — the
+        // lobby is where a player learns the movement — so the *speed* is untouched here and only the cost is; a
+        // player running around the lobby, watching a round they are out of, or waiting to respawn cannot run
+        // themselves dry, and the three rules in the paragraph above never see them.
+        //
+        // **This reverses a documented decision, and the reversal is the point.** The class comment used to say the
+        // pool "keeps draining or recovering through a death", on the argument that a hold is about a body in an
+        // action and a player with no body is not in one. That is still true of a *hold* — `poolHold` reads a body
+        // and a player without one has none — but it left a killed player's pool draining to nothing while they
+        // watched, so they came back into the next round with the pool they died on. A pool that refills when there
+        // is nothing to spend it on is the only version where "stamina is a cost of sprinting in a round" is true.
+        //
+        // **`canDrainStamina` is asked once per player per frame and reads two published attributes**, which is what
+        // keeps this out of the dependency cycle `poolHold` describes: `PracticeZoneService` publishes the zone fact
+        // on the player and `RoundService` publishes membership, so no service is reached into here.
+        if (!this.canDrainStamina(player)) {
+            state.stamina = CHARACTER_CONFIG.STAMINA_MAX_SECONDS;
+            state.lastDrainAt = now;
+        } else if (drains) {
             state.stamina = math.max(0, state.stamina - CHARACTER_CONFIG.STAMINA_DRAIN_PER_SECOND * dt);
             state.lastDrainAt = now;
         } else if (recovers) {
@@ -820,6 +849,35 @@ export class WalkSpeedService implements OnStart {
         }
 
         this.publish(player, state, now);
+    }
+
+    /**
+     * **Whether this player's stamina pool exists at all right now** — the one question `step` asks before it
+     * spends anything.
+     *
+     * **Two places and only two: a live round this player is in, and a practice zone.** Everywhere else the pool is
+     * full and stays full — the lobby while waiting, the lobby after an elimination, the death screen, the
+     * intermission — because there is nothing being tested there. The sprint is unaffected: it is the key and the
+     * contribution, and `step` still applies both, so a lobby sprint looks and moves exactly as it always did and
+     * simply costs nothing.
+     *
+     * **Attributes rather than services, and that is the dependency answer `poolHold` gives for its own reads.**
+     * `IN_ROUND_ATTRIBUTE` is written by `RoundService` at the four places membership changes, so it is exactly
+     * "in a round and in it" — a player who surrendered or was eliminated keeps their side but loses this — and
+     * `PRACTICE_ZONE_ATTRIBUTE` is written by `PracticeZoneService` on the same tick it decides membership. Reaching
+     * for either service from here would be the cycle `poolHold` documents; a published fact costs one read.
+     *
+     * **Inside a practice zone the pool drains**, which is deliberate rather than an oversight: the zone is where a
+     * player goes to practise, and a sprint that never tired there would teach a rhythm the round does not have.
+     * That is why this is an `or` and not "in a round, full stop".
+     *
+     * **`=== true` on both**, the convention every optional boolean attribute in this project keeps: an absent
+     * attribute, a `false` and an unrelated value are all "no", and only the literal `true` is a yes.
+     */
+    private canDrainStamina(player: Player): boolean {
+        if (player.GetAttribute(IN_ROUND_ATTRIBUTE) === true) return true;
+
+        return player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true;
     }
 
 /**

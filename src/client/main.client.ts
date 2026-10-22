@@ -9,6 +9,7 @@ import { startIasTest } from "./IasTest";
 import { startHitConfirm } from "./hitConfirm";
 import { startHitVfx } from "./hitVfx";
 import { startCatchPrompt } from "./catchPrompt";
+import { startAfkWatcher } from "./afk";
 import { startPersonalAudio } from "./personalAudio";
 
 print("[client] igniting");
@@ -73,6 +74,13 @@ startChargeEffects();
 // press-twice rule, for why the cancel is read rather than claimed, and for why it is a file of functions
 // rather than a class (Flamework records an exported class in `flamework.build` whether or not it is decorated).
 startReturnToLobbyPrompt();
+
+// **And the same question asked automatically: the AFK watcher, which is the surrender above with the player's
+// silence as the press.** It is here rather than beside the other watchers because the two share a subject — a body
+// leaving a round it can no longer play — and because the one it sends is the round's own `surrender` handler, one
+// door over. The clock only runs while the window is focused and the player is in a round; see `afk` for why each
+// of those is a gate rather than a condition.
+startAfkWatcher();
 
 // **And the kill cam, which is the first module here that takes the camera away from Roblox's scripts.** It sets
 // `CameraType = Scriptable` for the length of the local player's respawn wait and places the camera itself —

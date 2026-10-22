@@ -153,11 +153,24 @@ function mount(): void {
 	pill.Visible = false;
 	pill.Parent = gui;
 
-	// **Laid out from the corner rather than by a `Scale` fraction**, because a `Scale` position is a fraction
-	// of the GUI's own area and the HUD GUI's origin is not the screen's — see `screenGui.ts` on insets. An
-	// offset against a `(0, 1)` anchor is the bottom-left of the region the GUI actually occupies, which is the
-	// corner a player means by "bottom left".
-	pill.Position = UDim2.fromOffset(EDGE_X, gui.AbsoluteSize.Y - EDGE_Y);
+	// **Pinned to the bottom-left corner by the region's own geometry, not by a measurement of it.** The horizontal
+	// half is the pixel inset from the region's left edge; the vertical half is `Scale = 1` — *the region's bottom
+	// edge, whatever it is right now* — less the same inset, with the `(0, 1)` anchor above making that edge the
+	// pill's bottom rather than its top.
+	//
+	// **This replaces `UDim2.fromOffset(EDGE_X, gui.AbsoluteSize.Y - EDGE_Y)`, and the difference is not tidiness.**
+	// An offset-only position is measured from the region's *top*, so the old line had to subtract the region's
+	// height to reach the bottom — a number read once, at mount, out of a property that is a layout product. Nothing
+	// kept it in step afterwards, so the pill was placed against whatever the GUI measured in that one instant (a
+	// client that has not been laid out yet, or one that is resized after boot, puts it somewhere else entirely). The
+	// scale form has no number in it that can go stale: it is re-resolved on every layout pass, and it needs no
+	// `ViewportSize` listener. Same idiom as the power column below it (`SuperHudController`: `UDim2(0.5, 0, 1, -N)`).
+	//
+	// **And the inset region is the right region for it.** On a mobile client this GUI is `CoreUISafeInsets`, so
+	// `Scale = 1` is the bottom of the safe area rather than the screen's last pixel — which is the same corner the
+	// stamina column is anchored to, and the one that keeps a prompt out of a home indicator. (The pill is not built
+	// at all on a touch-only client — see the class doc — so that corner is only ever shared with the column.)
+	pill.Position = new UDim2(0, EDGE_X, 1, -EDGE_Y);
 
 	// **The rounded outline, made the way the rest of this HUD makes one** — a `UICorner` plus a `UIStroke`,
 	// rather than a `Frame`'s own border, which cannot be rounded. **The two numbers come from the theme now**, so
