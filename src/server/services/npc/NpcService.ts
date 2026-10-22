@@ -488,14 +488,37 @@ export class NpcService implements OnStart {
 		// therefore aborted the whole scan — no loops, no behaviors, no `[NPC]` lines, and nothing in
 		// the output naming the rig it happened on. A rig whose setup fails is a rig that does nothing,
 		// because the loop is what runs it; the least this can do is fail alone and say so.
+		//
+		// **Ownership is only claimed here if the rig is already in the world.** A rig tagged while it is
+		// parked — which is what `LobbyRigService` does to a placeholder the roster immediately stands down —
+		// cannot be claimed at all: `CanSetNetworkOwnership` answers `false` with *"Can only call Network
+		// Ownership API on a part that is descendent of Workspace"*, and the first version of this loop
+		// reported that as a permanent fault and then **never tried again for five seconds per attempt**,
+		// which is long enough for a rig that is cycled through the lobby to live out its whole life unowned.
+		//
+		// **An unowned rig is not merely untidy: its published state is a lie.** `AnimGrounded` below is
+		// computed from `Humanoid.FloorMaterial`, and the floor a humanoid is standing on is decided by
+		// whichever machine is simulating it. A rig the server does not own is simulated by the nearest
+		// client, so *the server's* `FloorMaterial` reads `Air` — and every client is then told the rig is
+		// off the ground, which dresses it in the **jump** clip on a loop. That is the 2026-10-21 report
+		// (*"sometimes I see a rig repeatably jumping"*) and it has nothing to do with the hop: there is no
+		// `[Rig] … jump` line in the log because nothing asked the rig to jump.
 		const [prepared, err] = pcall(() => {
 			this.ensureAnimator(model);
-			this.ownForServer(model, true);
+
+			// The claim itself is the loop's job when the rig is parked — see the ownership seed below.
+			if (model.IsDescendantOf(Workspace)) this.ownForServer(model, true);
 		});
 
 		if (!prepared) warn(`[NPC] ${model.Name}: setup failed — ${tostring(err)}`);
 
-		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: os.clock(), runningSpeed: 0 };
+		// **`ownershipCheckedAt` starts at nought rather than at now, and that one word is the fix.** The
+		// throttle in `publishAnimationBody` is `now - checkedAt < RECHECK_SECONDS`, so seeding it with the
+		// clock made a rig's *first* ownership claim happen five seconds after it was tagged — and if that
+		// turn fell while the rig was parked again, another five. Seeded with nought, the first turn the rig
+		// spends in the world claims it, which is the same promise `ensureToken` keeps one line up: the first
+		// turn in the world is when a rig's setup is settled.
+		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: 0, runningSpeed: 0 };
 		this.loops.set(model, loop);
 
 		task.spawn(() => this.run(model, loop));
@@ -927,16 +950,95 @@ export class NpcService implements OnStart {
 	 * deeper, and the frame costs a call whether the flag is on or off.
 	 */
 	private publishAnimationBody(model: Model, humanoid: Humanoid, frozen: boolean, loop: NpcLoop, now: number): void {
-		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED);
+		// **Read once, because two things below are the same question.** `AnimGrounded` is what a client dresses the
+		// body from, and the jump-request rule at the end of this block is about the same fact — so a second
+		// `FloorMaterial` read would be a second sample of the floor on one turn, and the two could disagree.
+		const grounded = humanoid.FloorMaterial !== Enum.Material.Air;
+
+		// **Read once and shared, because the grounded line below asks about it.** Whether a rig was asked to move
+		// is what separates a body leaving the floor on purpose from one leaving it while standing still, so the
+		// two reads have to be the same sample of the same turn.
+		const moving = loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED;
+
+		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, moving);
 		this.writeAttribute(model, NPC_ANIM_SPRINTING_ATTRIBUTE, this.speeds.isSprinting(model));
-		this.writeAttribute(model, NPC_ANIM_GROUNDED_ATTRIBUTE, humanoid.FloorMaterial !== Enum.Material.Air);
+
+		// **A rig that is off the floor while standing still is the one grounded change worth a line, and it is
+		// the only way to tell two very different faults apart from a log.** The ordinary case is a hop: the rig
+		// is *moving*, `AnimGrounded` goes false, and a `[Rig] … jump` line already says why — so that case is
+		// filtered out here rather than repeated. What is left is a body nobody asked to leave the ground, and
+		// there are two of those: a rig whose floor material cannot be trusted because the server is not the one
+		// simulating it (see `start` on ownership), and a rig standing on something that is not a floor.
+		//
+		// **The network owner is on the line because it is the answer to the first of them.** A rig reported as
+		// owned by a *client* is a rig whose `FloorMaterial` the server is not computing, which makes every
+		// attribute derived from it — this one above all — a statement about the wrong machine. That is the
+		// whole of the 2026-10-21 "a rig repeatably jumping" report, and it is why this line exists rather than
+		// another guess.
+		//
+		// **Cheap and self-limiting**: it fires on a *change* of the published value and only while the rig is
+		// standing, so a healthy session prints nothing at all and a flickering rig prints exactly the flips
+		// that are the diagnosis. Not behind a flag, for the reason every boot count in this project is not:
+		// the fault is otherwise silent, and a line that names it costs one `print` per fault.
+		const wasGrounded = model.GetAttribute(NPC_ANIM_GROUNDED_ATTRIBUTE);
+
+		if (wasGrounded !== grounded) {
+			if (!grounded && !moving) {
+				const owner = humanoid.RootPart?.GetNetworkOwner();
+
+				print(
+					`[NPC] ${model.Name}: off the floor while standing — ${humanoid.FloorMaterial.Name}, ` +
+						`owned by ${owner === undefined ? "server" : owner.Name}`,
+				);
+			}
+
+			model.SetAttribute(NPC_ANIM_GROUNDED_ATTRIBUTE, grounded);
+		}
+
 		this.writeAttribute(model, NPC_ANIM_FROZEN_ATTRIBUTE, frozen);
 		this.writeAttribute(model, NPC_ANIM_THROWING_ATTRIBUTE, this.balls.getHeldBall(model) !== undefined);
 
+		// **A jump request is spent the moment the body is standing on something again, and this line is what stops
+		// a rig hopping for ever.**
+		//
+		// **`Humanoid.Jump` is a level and not a request.** The engine reads it every step and jumps whenever it is
+		// true and the body *can* — which is the same fact `MobileControlsController` writes down from the other
+		// side, where the custom jump writes the flag every frame while the button is held and gates those writes
+		// on `FloorMaterial`, because the gate is the only thing that makes it one jump per press rather than one
+		// jump per landing. **A held jump button is a body that bounces**, and that is deliberate engine
+		// behaviour rather than a bug in it.
+		//
+		// **`SeekBehavior.maybeJump` is the only thing in the game that ever sets it on a rig, it sets it once per
+		// hop, and nothing ever set it back.** So one hop bought a rig an unbounded run of them at the humanoid's
+		// own landing cadence — roughly one a second, for as long as the body lived. That is the 2026-10-21 report
+		// (*"sometimes I see a rig repeatably jumping"*), it is why the cooldown rate was innocent even though the
+		// gap between hops is what it looks like, and it is why the rig made no noise about it: the cooldown only
+		// gates a *new* request, and a standing one needs no gate. The log line beside the hop prints once per
+		// request, so a bouncing rig printed nothing at all while it bounced.
+		//
+		// **Here rather than in `maybeJump`, because the walk is not the only way out of a hop.** That function runs
+		// only on turns where the rig is walking at a ball, so a hop followed by an arrival, a full hand or a lost
+		// target would leave the flag standing with nothing left to clear it — which is very likely how the rigs
+		// that showed this were the ones standing still. **This method runs for every rig on every turn, above the
+		// frozen gate**, so the rule is stated once, in the one place that is already holding the floor reading.
+		//
+		// **Gated on the flag, so the ordinary case is one property read and no write**: a rig that has never hopped
+		// is untouched here. And the floor is the gate rather than a timer, because a request made one turn ago is
+		// still in the air — a turn is a tenth of a second and the body is a third of a stud up by the time the next
+		// one arrives, so this cannot clear a request before the engine has spent it.
+		if (humanoid.Jump && grounded) humanoid.Jump = false;
+
 		if (now - loop.ownershipCheckedAt < NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS) return;
 
+		// **The first claim a rig makes is made loudly, and every one after it is silent.** `ownershipCheckedAt`
+		// is seeded with nought by `start`, so this is the first turn the rig has ever spent in the world —
+		// which is the only turn a claim can be made on a rig that was parked when it was tagged. Reporting
+		// that one and not the rest is what `ownForServer`'s `report` argument is for: a rig that genuinely
+		// cannot be owned says so once, and the re-check behind it does not repeat the line for ever.
+		const firstClaim = loop.ownershipCheckedAt === 0;
+
 		loop.ownershipCheckedAt = now;
-		this.ownForServer(model, false);
+		this.ownForServer(model, firstClaim);
 	}
 
 	/**

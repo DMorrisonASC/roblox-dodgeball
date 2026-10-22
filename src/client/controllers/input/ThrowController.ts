@@ -2,6 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import Net from "@rbxts/net";
 import {
+	CollectionService,
 	ContextActionService,
 	ContentProvider,
 	Players,
@@ -15,17 +16,19 @@ import { AimGuide } from "shared/AimGuide";
 import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
-import { BALL_NAME, BALL_SIZE } from "shared/constants";
+import { AIM_IGNORE_TAG, BALL_NAME, BALL_SIZE } from "shared/constants";
 import { events } from "shared/networking";
 import { REMOTES } from "shared/remotes";
 import { abilityOn } from "shared/ability";
 import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
+import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { Trajectory } from "shared/Trajectory";
-import { assistedAim } from "../../aimAssist";
-import { aiming, predictedLanding, predictedTargets } from "../../aiming";
+import { AssistRequest, assistedAim, watchAim } from "../../aimAssist";
+import { aiming, aimSessionStartedAt, predictedLanding, predictedTargets } from "../../aiming";
 import { shakeCamera, startChargeTremble } from "../../cameraShake";
+import { playAbilityConsumed } from "../../personalAudio";
 import { isMobile } from "../../platform";
-import { inRound, sideOfBody } from "../../roundZone";
+import { inRound, isParticipant, sideOfBody } from "../../roundZone";
 import { chargeStartedAt, releasedCharge } from "../../throwing";
 
 const ACTION_NAME = "ThrowDodgeball";
@@ -261,6 +264,38 @@ export class ThrowController implements OnStart {
 	 */
 	private curve = false;
 
+	/**
+	 * Every part in the world tagged `AimIgnore` — the invisible stadium walls — cached, so that no frame
+	 * pays for a tag read.
+	 *
+	 * **The list is what the guide and the aim ray skip, and it is deliberately not a second copy of the
+	 * tag.** Both of this file's exclusion lists spread this array rather than calling
+	 * `CollectionService.GetTagged` themselves, so there is one answer to "which parts are walls" and it is
+	 * refreshed in one place — see {@link refreshAimIgnores}.
+	 *
+	 * **Why a cache at all, when the walls never move.** `aimExclusions` runs once per charging frame — every
+	 * frame the guide is drawn — and `GetTagged` allocates a fresh array from the service each call, so a
+	 * direct read would be a per-frame allocation and a per-frame walk of the tag's registry for a list that
+	 * changes a handful of times in a session. The cost this saves is the same one `looseBalls`'s own note
+	 * describes, one layer down.
+	 *
+	 * **Why the signals rather than a boot snapshot**, which would be the cheapest possible thing: a snapshot
+	 * is only right if every wall is already in *this client's* `Workspace` when the controller mounts, and
+	 * two ordinary states break that. A place file edited while a server is running — which is how this
+	 * project is developed, see `TAGS.md` on why the barrier pass runs every round — can put a wall there
+	 * after the client booted, and with streaming enabled the client's world is filled in over the first
+	 * seconds, so a wall outside the streaming radius simply is not there yet. Both arrive as the same
+	 * signal, so neither has to be true or false for the answer to be right.
+	 *
+	 * **A stale entry is harmless and a missing one is not**, which is why the refresh re-reads everything
+	 * rather than trying to add and remove single instances: an entry for a part that has gone is an
+	 * `ExcludeInstances` member that excludes nothing, while a wall missing from this array is an arc that
+	 * stops on it. It also keeps the "a tag on a folder means the parts inside it" rule in one place — see
+	 * `taggedParts` — instead of expanding containers here for the added signal and un-expanding them for
+	 * the removed one.
+	 */
+	private aimIgnoredParts = new Array<BasePart>();
+
 	onStart() {
 		// **The camera's charge tremble is armed here, at boot, rather than at the first press.** It is a
 		// Heartbeat watcher on `chargeStartedAt` and binds nothing until a charge runs — see
@@ -298,6 +333,19 @@ export class ThrowController implements OnStart {
 				);
 			}
 		});
+
+		// **The `AimIgnore` walls are read here rather than lazily at the first cast**, because the read is a
+		// tag walk and the first cast happens on the frame a player starts holding the button — the one moment
+		// a hitch is felt. Seeding at mount moves it into boot, where nothing is being aimed.
+		//
+		// **And the two signals are what keep it right rather than merely current.** Both call the same
+		// refresh: what a wall appearing or losing its tag has in common is that the answer changed, and one
+		// function that recomputes it cannot get the two cases out of step. See {@link aimIgnoredParts} for why
+		// a boot snapshot would not do. Note that neither connection is ever disconnected — this controller
+		// lives as long as the client, and its own lifetime is the list's.
+		this.refreshAimIgnores();
+		CollectionService.GetInstanceAddedSignal(AIM_IGNORE_TAG).Connect(() => this.refreshAimIgnores());
+		CollectionService.GetInstanceRemovedSignal(AIM_IGNORE_TAG).Connect(() => this.refreshAimIgnores());
 
 		this.throwRemote = this.getThrowRemote();
 
@@ -441,11 +489,49 @@ export class ThrowController implements OnStart {
 			this.cancelCharge("the ball left the hand");
 		}
 
-		// **The hold's own instant is read once here and carried**, because the aim assist's latch is keyed on it
-		// and the release has to name the same hold after it has cleared the charge — see `AssistRequest.hold`.
-		// `charging` is derived from it rather than read a second time, so the two cannot disagree.
+		// **The hold's own instant is read once here and carried**, because the aim assist's no-re-pick window is
+		// decided by whether one is running, and the release has to name the same hold after it has cleared the
+		// charge — see `AssistRequest.hold`. (`charging` is derived from it rather than read a second time, so the
+		// two cannot disagree.)
 		const began = Fusion.peek(chargeStartedAt);
 		const charging = began !== undefined;
+
+		// **Whether the aim assist may act at all — and it is no longer "a ball in the hand".** The ball was the
+		// right question while the assist only existed to shape a preview, because a preview wants a throw behind
+		// it. It is the wrong question for the camera: a player walking around a round with an empty hand is still
+		// looking at the room, and the body they will be throwing at a second later is already the one worth
+		// watching. So the gate is **alive and in the round** — `isParticipant`, the same predicate `ShiftLock`'s
+		// own lock uses, which is `IN_ROUND_ATTRIBUTE` *and* the phase, so a spectator in the lobby and a player
+		// who surrendered mid-round are both outside it.
+		//
+		// **The health test is what keeps it off a corpse, and it is doing two jobs.** `IN_ROUND_ATTRIBUTE` stays
+		// true through a death — a player waiting to respawn is still in the round — so participation alone would
+		// leave the assist pulling the camera of a body that has been killed, and `killCam` is writing that same
+		// `CFrame` from its own render step for the length of a shot. `Health > 0` is false in both windows, which
+		// is why it is the fact used rather than `killCamActive`: the cam's flag is about who owns the camera for
+		// a few seconds, and the corpse outlives it.
+		//
+		// **The ball is kept as a second way in, and it is not the gate in a round.** A practice zone is not a
+		// round, so `isParticipant` is false there and the assist used to work only because the hand held a ball;
+		// dropping that clause would silently turn the assist off in every practice zone. It reads as "in a round
+		// and alive, or holding something to throw", which is exactly where the assist has something to help with.
+		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
+		const alive = humanoid !== undefined && humanoid.Health > 0;
+		const participating = isParticipant(this.player);
+		const aimLive = alive && (participating || (ball !== undefined && ball.IsA("BasePart")));
+
+		// **The aim session, opened and closed from the one place that knows both halves.** It is the key the
+		// mobile assist's latch is held under, and it outlives a charge on purpose: pressing the button must not
+		// re-pick the body the player was already looking at. See `aimSessionStartedAt`.
+		this.syncAimSession(aimLive);
+
+		// **And the assist keeps a target while the player is only looking at one.** Mobile only, and its own
+		// call rather than `assistedAim` because there is no preview and no wire to feed before the hold: the
+		// camera is the only consumer, and it wants the latched *body* rather than a lead point. See `watchAim`,
+		// which does no plan solve and adds no tag walk of its own — the scan is still the throttled one.
+		if (!charging && isMobile() && character !== undefined && aimLive) {
+			watchAim(this.assistInputs(character, 0, began));
+		}
 
 		// **The cap's wire, sent on the edge and from here rather than from the six places a charge can end.**
 		//
@@ -549,7 +635,7 @@ export class ThrowController implements OnStart {
 		// the size of the ball, and the solve aimed the ball's *centre* out from
 		// the surface so its *edge* is what arrives on it.
 		const arc = new Trajectory(plan.origin, plan.velocity, {
-			ignore: [character, this.guide.instance, ...this.looseBalls()],
+			ignore: [character, this.guide.instance, ...this.looseBalls(), ...this.aimIgnoredParts],
 			radius: BALL_SIZE / 2,
 			// **The plan's own gravity, read off the plan rather than from the config.** The solve used
 			// it and the ball's `VectorForce` makes it the ball's real pull — see
@@ -663,35 +749,85 @@ export class ThrowController implements OnStart {
 	 * sight and the wire cannot be given two points that merely agree. See `client/aimAssist.ts`, whose file
 	 * doc is about that property, and note that a desktop client's point is untouched by construction rather
 	 * than by a setting.
+	 *
+	 * **It is now two calls rather than one**, because {@link assistInputs} is also what the pre-charge half
+	 * (`watchAim`) is handed — a frame that is merely aiming builds the same five inputs and asks the assist to
+	 * keep its latch in step. **The construction still happens in one place**, which is the property the doc
+	 * above is really about: `chargeRequest` adds nothing but the `assistedAim` call, so a field added to the
+	 * assist's inputs reaches the preview, the wire and the pre-charge watch together or not at all.
 	 */
 	private chargeRequest(character: Model, charge: number, hold: number | undefined): ChargeRequest {
-		// **The heading is read once and shared with the assist**, so the cone it measures bodies against is
-		// the same vector the throw is sent along — a second reading of the camera a line later is a second
-		// direction for one throw.
-		const heading = this.getThrowDirection();
-
-		// **And the exclusion list once, for the same reason**: `aimPoint` skips the thrower, the guide and
-		// every loose ball, and so does the assist's sight test, so building it twice a frame would be a second
-		// `Workspace.GetChildren` walk for a list with two readers. See `aimExclusions`.
-		const ignore = this.aimExclusions(character);
+		const inputs = this.assistInputs(character, charge, hold);
 
 		return {
-			heading,
+			heading: inputs.heading,
 			charge: charge,
-			curve: this.curve,
+			curve: inputs.curve,
 			// **The cursor's point, and it is built here for the reason this whole method exists.** The preview
 			// and the wire have to be handed the *same* point — an aim read twice could be two points a frame
 			// apart, and the arc would end somewhere the ball does not. See `aimPoint` for the cast.
-			aim: assistedAim({
-				character,
-				raw: this.aimPoint(ignore),
-				heading,
-				charge,
-				curve: this.curve,
-				hold,
-				ignore,
-			}),
+			aim: assistedAim(inputs),
 		};
+	}
+
+	/**
+	 * **Everything the mobile assist is handed, built once per frame for however many callers it has** — the
+	 * preview and the wire through {@link chargeRequest}, and the pre-charge latch through `watchAim`.
+	 *
+	 * **The heading is read once and shared with the assist**, so the cone it measures bodies against is the
+	 * same vector the throw is sent along — a second reading of the camera a line later is a second direction
+	 * for one throw.
+	 *
+	 * **And the exclusion list once, for the same reason**: `aimPoint` skips the thrower, the guide and every
+	 * loose ball, and so does the assist's sight test, so building it twice a frame would be a second
+	 * `Workspace.GetChildren` walk for a list with two readers. See `aimExclusions`.
+	 *
+	 * **`charge` is `0` on the pre-charge path, and that is an honest number rather than a placeholder** — no
+	 * hold is running, so the hold is zero, which is exactly what a tap would be if the player let go now.
+	 * `watchAim` reads none of it; it is filled in because this is the one construction and leaving a field
+	 * unset for one caller is how two constructions come back.
+	 */
+	private assistInputs(character: Model, charge: number, hold: number | undefined): AssistRequest {
+		const heading = this.getThrowDirection();
+		const ignore = this.aimExclusions(character);
+
+		return {
+			character,
+			raw: this.aimPoint(ignore),
+			heading,
+			charge,
+			curve: this.curve,
+			hold,
+			// **The aim session, peeked here rather than passed in**, because every caller in this file is
+			// inside the frame loop or the release handler and the value is this file's own — unlike `hold`,
+			// which has to be carried across the release's clear. See `aimSessionStartedAt`.
+			session: Fusion.peek(aimSessionStartedAt),
+			ignore,
+		};
+	}
+
+	/**
+	 * **Opens the aim session when the assist may act and closes it when it may not** — one boolean, one edge,
+	 * no state of this controller's own.
+	 *
+	 * **Derived from where the player is rather than from a throw or a press**, which is what makes it the right
+	 * key for the assist: an aim begins when a body is in the round and ends when it is not — a death, a round
+	 * ending, a surrender. Those all arrive here as the same edge a frame later, exactly as they do for `aiming`.
+	 *
+	 * **It used to be derived from the hand, and the difference is the whole of the 2026-10-21 report.** Opening
+	 * and closing on "a ball is in the hand" made the camera wait for a ball before it would turn onto anybody —
+	 * which is the opposite of an assist, because the moment a player wants to know where the enemy is is the
+	 * moment before they pick one up. The session is now open for the length of the round, so **a throw no longer
+	 * ends it either**: the latch survives the release and the next ball inherits the same target, which is a
+	 * second click narrower than the one the previous version had to arrange.
+	 *
+	 * And a session that ends takes the latch with it: `latchedTarget()` compares against this value, so the
+	 * camera lets go without a second write anywhere.
+	 */
+	private syncAimSession(live: boolean): void {
+		if (live === (Fusion.peek(aimSessionStartedAt) !== undefined)) return;
+
+		aimSessionStartedAt.set(live ? os.clock() : undefined);
 	}
 
 	/**
@@ -920,11 +1056,20 @@ export class ThrowController implements OnStart {
 		const charge = this.currentCharge();
 		const drawn = this.lastCharge;
 
+		// **What the ball in this hand is carrying, read at the top and only once.** The mark is an attribute
+		// on the ball, and this is the client's own copy of the ball the player is holding — the server clears
+		// the mark when a ball *arrives* in a hand rather than when one leaves it, so this is exactly the
+		// state the throw about to be sent will carry. Read here rather than at the sound two blocks down so
+		// the answer cannot depend on anything between: the redraw, the shake and the send all happen in this
+		// method, and none of them is allowed to be part of the question.
+		const carried = abilityOn(character.FindFirstChild(BALL_NAME));
+
 		// **Read before the clear on the next line, and this is the one place that order matters.** The aim
-		// assist's latch is keyed on the instant the hold began, and it has to be handed to the request built
-		// below — which happens after the charge is gone. Read after the clear, this release would look like a
-		// fresh hold and re-pick its target, which is exactly the drawn-versus-thrown disagreement the latch
-		// exists to close. See `AssistRequest.hold`.
+		// assist's no-re-pick window is decided by whether a hold is running, and the request built below has to
+		// be told that this throw is part of one — which happens after the charge is gone. Read after the clear,
+		// this release would look like a player who was only aiming, and a latch that had dropped mid-hold would
+		// be free to re-pick: exactly the drawn-versus-thrown disagreement the latch exists to close. See
+		// `AssistRequest.hold`.
 		const began = Fusion.peek(chargeStartedAt);
 
 		chargeStartedAt.set(undefined);
@@ -935,6 +1080,14 @@ export class ThrowController implements OnStart {
 		// from. See `releasedCharge` for the whole of why it is a separate value rather than a read of the
 		// mark.
 		releasedCharge.set(charge);
+
+		// **The request is built *before* the redraw two blocks down, and that order is load-bearing now.** With
+		// the charge cleared, `updateGuide` takes its not-charging path — which on a mobile client asks the
+		// assist to keep its latch in step — and a request built after it could be handed a body the player never
+		// watched, which is the one thing the latch exists to prevent. Nothing about the *drawing* moves: the
+		// redraw still happens on this frame and still happens before the send.
+		const request = this.chargeRequest(character, charge, began);
+		const heading = request.heading;
 
 		// Drawn once more before the send, so the log's order is the order the player lived — hold, arc,
 		// release — and so the preview comes down on this frame rather than hanging over a ball that has
@@ -958,6 +1111,20 @@ export class ThrowController implements OnStart {
 		// wire not at all.
 		shakeCamera(charge);
 
+		// **And the release's second piece of feedback, which makes the same trade the shake above makes** —
+		// the player's own action rather than the server's answer to it. A marked ball leaving the hand is a
+		// charge or a box's prize spent, so this is the local confirmation that the power went; the server's
+		// spend is a bookkeeping call a round trip away, and waiting for it would put the sound after the throw
+		// it is describing. What that costs is stated rather than hidden, in the same words the shake's doc
+		// uses: a throw the server *refuses* — a frozen body, a hand that emptied on its own — makes the sound
+		// anyway, because the client has no frozen flag to read and no reply to wait for.
+		//
+		// **Only for a ball that is carrying something**, so an ordinary throw makes no sound here and a player
+		// hears the charge's click, the impact and nothing else. A MultiBall throw is ordinary by this measure:
+		// its window was announced when it opened, not once per throw spent out of it — see
+		// `personalAudio.watchMultiBalls`.
+		if (carried !== undefined) playAbilityConsumed();
+
 		// **The heading is taken once and used twice**, so the line below names the vector the wire actually
 		// carried rather than a second reading of the same mouse a frame later. The rigs' `[Rig] … throw` lines
 		// print their heading in this same shape, which is what lets a reader put the two side by side: same
@@ -966,10 +1133,8 @@ export class ThrowController implements OnStart {
 		// **And it is the request rather than the raw direction, since the aim point arrived.** The arc is
 		// drawn from `chargeRequest` on every frame of the hold, so sending anything else would be a throw built
 		// from different inputs than the preview — which is the one fault this arrangement exists to make
-		// impossible. See that method.
-		const request = this.chargeRequest(character, charge, began);
-		const heading = request.heading;
-
+		// impossible. See that method. **The request itself is built above, before the redraw** — see the note
+		// there for why the order is what it is.
 		this.throwRemote?.FireServer(heading, request.charge, request.curve, getThrowMuzzle(character), request.aim);
 
 		if (DEBUG) {
@@ -1377,8 +1542,46 @@ export class ThrowController implements OnStart {
 	 * **The reasons each entry is here are `aimPoint`'s**, and they are unchanged: the guide sits *along* the arc
 	 * and would be hit by every cast, a held or rolling ball is not a place anybody is aiming, and the thrower's
 	 * own body is behind the muzzle's own line.
+	 *
+	 * **And the stadium walls, which are the one entry that is not about aiming at all.** Every part tagged
+	 * `AimIgnore` is a wall the *ball* bounces off — the invisible perimeter that keeps throws in the map — so
+	 * without it the arc stops inside the arena and the guide describes a bounce the player never asked for.
+	 * They are excluded from every cast this list feeds, including the assist's sight test, and that is the
+	 * shared-list decision working as intended rather than a leak: there is no body on the far side of a
+	 * perimeter wall, so the entry excludes a case that cannot occur, and a second list for the sight test
+	 * would be exactly the pair of lists this method exists to collapse. See `AIM_IGNORE_TAG` for the tag and
+	 * for its relationship with `CanQuery`.
 	 */
 	private aimExclusions(character: Model): Array<Instance> {
-		return [character, this.guide.instance, ...this.looseBalls()];
+		return [character, this.guide.instance, ...this.looseBalls(), ...this.aimIgnoredParts];
+	}
+
+	/**
+	 * Reads every `AimIgnore` part in the world and replaces {@link aimIgnoredParts} with the result.
+	 *
+	 * **A whole re-read rather than an increment, and the reason is that a tag on a container means its parts.**
+	 * `taggedPartsInWorkspace` expands a tagged `Folder` or `Model` into the `BasePart`s inside it — the rule
+	 * `shared/taggedParts.ts` exists for, and the one this project has got wrong three times — so adding "the
+	 * instance the signal handed us" would add a folder and exclude nothing, while removing one would take
+	 * away a part that is no longer in the result anyway. Re-reading after either signal means one expansion
+	 * rule instead of an expansion and an un-expansion that have to agree.
+	 *
+	 * **It also replaces rather than mutates**, which is free here: the two consumers spread this array into a
+	 * fresh list on the frame they build it, so nothing downstream is holding the array itself.
+	 *
+	 * **The print is the diagnostic, and it fires on a change of count only.** A tag read is silent when it
+	 * finds nothing — the whole point of `TAGS.md` — so a line naming the number is the only evidence that a
+	 * painted wall was read at all, and a zero is the line that says the string is misspelled or the part is
+	 * outside `Workspace`. It is behind no `DEBUG` flag on purpose: it fires once per tag change and never
+	 * per frame, which is the same trade `[Collision] … barrier part(s)` and `[ShiftLock] up — N practiceZone
+	 * part(s)` make. The count guard is what stops a folder and a part inside it reporting twice for one wall.
+	 */
+	private refreshAimIgnores(): void {
+		const previous = this.aimIgnoredParts.size();
+		const parts = taggedPartsInWorkspace(AIM_IGNORE_TAG);
+
+		this.aimIgnoredParts = parts;
+
+		if (parts.size() !== previous) print(`[Throw] aim ignores ${parts.size()} ${AIM_IGNORE_TAG} part(s)`);
 	}
 }

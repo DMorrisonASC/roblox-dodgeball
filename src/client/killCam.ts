@@ -2,6 +2,7 @@ import { CollectionService, Players, RunService, Workspace } from "@rbxts/servic
 import { KILL_CAM_CONFIG } from "shared/config/killCam.config";
 import {
 	IN_ROUND_ATTRIBUTE,
+	LAST_HIT_BY_POSITION_ATTRIBUTE,
 	LAST_HIT_BY_TOKEN_ATTRIBUTE,
 	NPC_TAG,
 	RESPAWN_AT_ATTRIBUTE,
@@ -76,6 +77,17 @@ let corpse: Model | undefined;
 
 /** The body being watched, while it is still in the world. */
 let killer: Model | undefined;
+
+/**
+ * **The token this shot started from**, kept so a killer's *new* body can be looked up without a tag scan.
+ *
+ * A player's token is their `UserId`, so "is the killer back" is `Players.GetPlayerByUserId` — one call, no
+ * walk. A rig's token is a GUID and can only be matched by scanning the tagged models, which is a per-frame
+ * walk this file does not do; a rig that is destroyed mid-shot therefore holds the place it died at. That
+ * asymmetry is the same one `bodyFor` already lives with, and it is stated here because it decides what
+ * {@link pointOfKiller} does.
+ */
+let killerToken: string | undefined;
 
 /** The last place the killer's root was seen, held after the killer is destroyed. See {@link pointOfKiller}. */
 let lastPoint: Vector3 | undefined;

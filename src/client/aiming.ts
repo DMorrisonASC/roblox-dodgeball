@@ -4,6 +4,14 @@ import Fusion from "@rbxts/fusion-3.0";
  * The two things `ThrowController` knows and `AimTargetController` needs: whether the player is
  * aiming, and what the drawn arc would hit.
  *
+ * **Three more have been added since, and the shape of the file has not changed with them** — which is
+ * the point of naming it as a module rather than as a wire between two controllers. It is now "what
+ * `ThrowController` publishes that other client modules need": `predictedLanding` for
+ * `AimFacingController`, which turns the body onto where the throw would land, and
+ * `aimSessionStartedAt` for the mobile assist's latch, which `ShiftLock.followTarget` reads through
+ * `aimAssist.latchedTarget()`. **The first sentence above is kept because it is where the file came
+ * from**, and a reader who finds a fourth value here deserves to know which two it started as.
+ *
  * **A module rather than a wire between the two controllers.** `ThrowController` is the only thing
  * that knows either answer, and `AimTargetController` is the only thing that wants them — but
  * neither should hold the other. A controller reaching into a controller is a
@@ -83,3 +91,35 @@ export const predictedTargets = Fusion.Value<Array<Model>>(scope, []);
  * one reader, which builds no graph edge and so cannot outlive anything.
  */
 export const predictedLanding = Fusion.Value<Vector3 | undefined>(scope, undefined);
+
+/**
+ * **`os.clock` seconds at which the player's current *aim* began, or nothing when they have no ball in hand
+ * — the key the mobile assist's latch is held under.**
+ *
+ * **A second key beside `chargeStartedAt`, because the assist now starts before the hold does.** The latch
+ * used to be keyed on the charge, which was sound while the assist only ran during a hold: the hold was the
+ * unit of aiming, so a body was picked once per hold and never re-picked. Once the camera turns onto a target
+ * while the player is still only *looking* at one, the hold is no longer the unit — an aim can last for
+ * several seconds and end in no throw at all — so the latch needs a key of its own that starts when the
+ * player becomes able to throw and survives the press.
+ *
+ * **Written by `ThrowController.updateGuide` and nobody else**, which is the same rule `aiming` and
+ * `predictedTargets` follow: this is a fact the throw controller has and other client modules need. It opens
+ * when the assist may act — **alive and in the round** (`isParticipant`), or holding a ball in a practice zone —
+ * and closes when it may not: a death, a round ending, a surrender. `releaseThrow` does not touch it.
+ *
+ * **It used to be the hand, and the 2026-10-21 report is the correction.** An aim session opened on "a ball is
+ * in the hand" and closed when the hand emptied, which meant the camera would not turn onto an enemy until the
+ * player had picked a ball up — and threw the latch away on every release. The round is the right unit: a player
+ * is aiming at the room for as long as they are in it, and the body they are watching before they collect a ball
+ * is the body they throw at after.
+ *
+ * **Read by `aimAssist.latchedTarget()`**, which is what `ShiftLock.followTarget` asks once a frame. A latch
+ * whose session is not this value belongs to an aim that is over, and answers nothing — which is how the
+ * camera stops following without a "stop" write anywhere, exactly as the charge-keyed version did.
+ *
+ * **Not the charge, and not derived from one.** A player can aim for a minute and never press; a charge can
+ * end and leave the player still aiming at the same body. Tying the two together is what made the assist be
+ * off whenever somebody was not holding the button.
+ */
+export const aimSessionStartedAt = Fusion.Value<number | undefined>(scope, undefined);

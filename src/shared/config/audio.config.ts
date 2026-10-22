@@ -1,5 +1,6 @@
 /**
- * The audio this client plays: the two tracks, the round's two cues, and the numbers that shape them.
+ * The audio this client plays: the two tracks, the round's two cues, everything the interface answers with,
+ * and the numbers that shape them.
  *
  * **Not `sound.config.ts`, and the reason is its own doc.** That file is the six ids a *server* hands to
  * `SoundEmitter` — positional impact sounds, with a roll-off distance and a minimum distance under them,
@@ -294,4 +295,68 @@ export const AUDIO_CONFIG = {
 	 * noise somebody will turn the game off to escape, where a half-second one is a flourish.
 	 */
 	POWER_SPIN_VOLUME: 0.4,
+
+	/**
+	 * **Placeholder.** A ball collected off the ground.
+	 *
+	 * **Personal feedback rather than a world event, and this file is where that is decided.** The same
+	 * pickup happens to somebody else on the other side of the arena several times a second, and a clip
+	 * played for each of them — positioned, so the volume falls off with distance — would be a texture of
+	 * clicks nobody could locate. What a player actually wants to know is that *their* hand changed, so this
+	 * is heard by exactly one machine: the one whose character did the collecting. See
+	 * `client/personalAudio` for the reader and `PICKUP_COUNT_ATTRIBUTE` for how it knows.
+	 *
+	 * **Not in `sound.config.ts`, and the reason is that file's own header.** It is the six ids a *server*
+	 * hands to `SoundEmitter`, played at a point in the world with a roll-off distance under them. This one
+	 * has none of that: it is played on this machine, at one volume, from nowhere in particular — the case
+	 * the four entries above it are here for.
+	 *
+	 * **A pickup and not a ball arriving in a hand.** A ball reaches a hand four ways and only the first is
+	 * a pickup; a catch already has its own clip on the server, and a round's hand-out and a MultiBall refill
+	 * are events nobody in particular acted on, so neither should sound like a ball being fetched.
+	 */
+	BALL_PICKUP: "rbxassetid://132377833025330",
+
+	/**
+	 * **Placeholder.** The pickup's level, against the two UI tones and the charge beneath them.
+	 *
+	 * **Level with the charge sound's ballpark rather than with a cue**, which is the honest comparison:
+	 * `THROW_CHARGE_VOLUME` is 0.4 and a pickup is at least as frequent — a player walking an empty floor
+	 * collects whatever they pass — so this is set as feedback rather than as an event. It is *above* that
+	 * one because a pickup is not self-paced the way a charge is: nobody holds a button to fetch a ball, and
+	 * the sound is the only confirmation the hand changed at all. Tune by ear, and expect the two to want to
+	 * be the same number eventually.
+	 */
+	BALL_PICKUP_VOLUME: 0.5,
+
+	/**
+	 * **Placeholder.** A power being spent: a MultiBall window opened, or a ball marked Pierce or Freeze
+	 * leaving the hand.
+	 *
+	 * **One id for three powers, which is the decision rather than a shortcut.** They differ in what they do
+	 * and are identical in what they cost — a charge or a box's prize, gone — and the person listening is the
+	 * only one being told anything. The player who pressed wants confirmation the press landed; the people
+	 * nearby do not need a personal cue about somebody else's wallet. Three clips would be three things to
+	 * learn for a difference nobody listening is being told.
+	 *
+	 * **Client-side, so it is the *spend* that is announced rather than the press** — and the two are not the
+	 * same event. A MultiBall press with no window left in it, or with no charge to pay, is refused on the
+	 * server and buys nothing, so a sound at the key would be a lie in the only direction that matters: it
+	 * would teach a player that a press always works. What the client watches instead is the state the server
+	 * publishes when a window actually opens, and the ball in its own hand when a marked throw goes. Both are
+	 * read in `client/personalAudio`.
+	 */
+	ABILITY_CONSUMED: "rbxassetid://102138016386476",
+
+	/**
+	 * **Placeholder.** The spent power's level, against everything else here.
+	 *
+	 * **Slightly louder than the pickup above, and the difference is rarity rather than importance.** A
+	 * pickup happens dozens of times a round and has to be able to happen without being noticed; a power is
+	 * spent a few times a round at most, is the thing a player has been saving for, and is the moment they
+	 * look away from their own hand to see what they bought. Both are personal cues on one machine, so the
+	 * usual positional argument — carry distance, near against far — does not apply here at all: this number
+	 * is the whole of how loud it is, from any camera angle.
+	 */
+	ABILITY_CONSUMED_VOLUME: 0.6,
 } as const;

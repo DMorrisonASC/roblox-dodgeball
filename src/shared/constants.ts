@@ -49,6 +49,37 @@ export const BALL_NAME = "DodgeballBall";
 export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
 
 /**
+ * Tag marking a part the **aim preview** passes through and the **physics** does not.
+ *
+ * **A label somebody paints on a part in the place file**, exactly like {@link CHARACTER_BARRIER_TAG}
+ * above. What it is for: the invisible walls around the stadium that stop a thrown ball leaving the map.
+ * Those walls are solid, so the swept sphere the aim guide draws with hits them and the arc stops a few
+ * studs in front of the thrower — the guide then describes a throw that bounces off a wall nobody can
+ * see, and a player reads it as the game refusing to aim.
+ *
+ * **Read by `client/controllers/input/ThrowController`, in its exclusion list**, which is the same list
+ * `aimPoint`'s raw ray and the assist's sight test both use. Ignored by the aim preview, obeyed by the
+ * ball: nothing here touches collision, collision groups or the server, so a ball thrown at one of these
+ * walls bounces exactly as it did before this tag existed.
+ *
+ * **`CanQuery = false` is the mechanism and this tag is the statement, and both are wanted.** A part with
+ * `CanQuery = false` is invisible to *every* query in the game — the guide's spherecast, the aim ray, the
+ * sight test, the probes — which is the cheapest possible version of this fix and the one to prefer. What
+ * the tag adds is the part of that property a file can hold: a fact a reader can grep, a name that
+ * survives somebody re-enabling the flag "to make the wall more solid", and a reason written down. **With
+ * `CanQuery = false` this tag changes nothing about the preview**, and that is the intended pairing rather
+ * than a redundancy to remove: the flag is the behaviour, the tag is the intent.
+ *
+ * **Not {@link CHARACTER_BARRIER_TAG}, and the difference is the whole reason this one exists.** That tag
+ * means *characters and not balls*: `CollisionGroups.applyBarrierGroups` puts its parts in the `Barrier`
+ * group, which is registered non-collidable against `Ball`, so a stadium wall wearing it would let every
+ * ball straight out of the map. An edge wall and a midline wall are opposites on the axis that matters
+ * here, and this tag is the one that says "stops the ball" — see that tag's own note on why an edge is
+ * deliberately untagged, and `TAGS.md` for what happens when the two are confused.
+ */
+export const AIM_IGNORE_TAG = "AimIgnore";
+
+/**
  * A lobby part that turns the custom shift lock on while a player stands inside it.
  *
  * **A label somebody paints on a part in the place file**, exactly like {@link CHARACTER_BARRIER_TAG}
@@ -683,6 +714,32 @@ export const LAST_HIT_BY_ATTRIBUTE = "LastHitBy";
 export const LAST_HIT_BY_TOKEN_ATTRIBUTE = "LastHitByToken";
 
 /**
+ * Attribute on a **`Player`** holding **where** the latest hit on them came from, as a world position — the third
+ * of the three, and the one that outlives its subject.
+ *
+ * **The kill cam's fallback, and the reason it needs one.** It watches the *body* a token resolves to, and that
+ * body can be gone before the camera's first frame: a rig is destroyed and re-cloned by `RespawnBehavior`, and a
+ * player who kills you and then dies immediately has their character replaced. `client/killCam.ts` already keeps
+ * the last place it *saw* a killer standing, so a body destroyed **mid**-shot is not a problem — but a body
+ * destroyed **before** the shot begins has never been seen, and the camera used to give up there and leave
+ * Roblox's own death camera in charge. This is the place the hit came from, recorded at the hit, which is the one
+ * moment it is certainly knowable.
+ *
+ * **A position rather than a body, because the reader may have no body to ask.** The thrower's
+ * `HumanoidRootPart.Position` at the tag — where they were standing when they threw — which is what "shot from
+ * over there" means to a player watching. The framing is the camera's: `KILL_CAM_CONFIG.OFFSET` is applied to this
+ * point exactly as it is applied to a followed killer's root, so a held shot and a tracking one look like the same
+ * shot rather than two different ones.
+ *
+ * **Written and cleared exactly where its two neighbours are**, in `RoundService`: written in `registerHit` at the
+ * tag, cleared when a body arrives and at the `Playing` edge for the whole roster. `nil` where the thrower could
+ * not be resolved — the same absence `LAST_HIT_BY_TOKEN_ATTRIBUTE` writes, and for the same reason.
+ *
+ * **Read by the kill cam alone.** Nothing draws this: it exists to be a camera position.
+ */
+export const LAST_HIT_BY_POSITION_ATTRIBUTE = "LastHitByPosition";
+
+/**
  * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
  *
  * Written by `BallService.dropBall`, read by `BallPickupService`. On the ball rather than
@@ -692,6 +749,34 @@ export const LAST_HIT_BY_TOKEN_ATTRIBUTE = "LastHitByToken";
  * is for.
  */
 export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
+
+/**
+ * Attribute on a **character** counting the balls it has collected off the floor.
+ *
+ * Written by `BallService.pickupBall` — the one method in the game that is *only* a pickup — and read by
+ * one thing: `client/personalAudio`, which plays the pickup sound when the number goes up.
+ *
+ * **The whole reason it exists is that a client cannot otherwise tell a pickup from a catch.** A ball
+ * arrives in a hand four ways — collected off the arena, caught out of the air, handed over at the start
+ * of a round, and refilled by a MultiBall window — and all four end in the same place: `attachToHand`
+ * parents the ball to the character, so `Character.ChildAdded` fires for every one of them and says
+ * nothing about which happened. The sound wanted is the pickup's alone, so the *server*, which does know,
+ * publishes the one word the client cannot work out. See `pickupBall` for the write.
+ *
+ * **A count rather than a boolean, because a boolean has to be cleared and the clear is a second event.**
+ * A flag would need a matching "I have heard it" write or every pickup after the first would read the
+ * same `true`; a number that only ever goes up makes each pickup a distinct value, so the client's
+ * watcher needs no handshake in either direction. It is also *self-describing in a log*: the tenth
+ * pickup of a life reads as ten.
+ *
+ * **On the body and not on the `Player`**, which is the opposite of {@link SUPER_MULTI_BALL_COUNT_ATTRIBUTE}
+ * and worth the contrast. That one is a currency a player owns, so it outlives every body it was bought
+ * in. This one is a fact about a pair of hands: it resets at a respawn because the hands do, and it is
+ * written for a rig as readily as for a player because `pickupBall` is handed nothing but a body and
+ * needs no `IsA("Player")` branch to say so. The client watches its own character and therefore never
+ * sees a rig's copy.
+ */
+export const PICKUP_COUNT_ATTRIBUTE = "PickupCount";
 
 /**
  * Attribute on a **ball** naming the super ability it is carrying, or `""` for an ordinary ball.

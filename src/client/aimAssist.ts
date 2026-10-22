@@ -3,9 +3,9 @@ import { CollectionService, Players, Workspace } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
 import { NPC_TAG } from "shared/constants";
 import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
+import { aimSessionStartedAt } from "./aiming";
 import { isMobile } from "./platform";
-import { inRound, inTaggedZone, sideOfBody, SideLabel } from "./roundZone";
-import { chargeStartedAt } from "./throwing";
+import { inTaggedZone, isParticipant, sideOfBody, SideLabel } from "./roundZone";
 
 /**
  * **A pull toward a predicted lead point, for the client whose aim is a thumb rather than a mouse.**
@@ -29,27 +29,66 @@ import { chargeStartedAt } from "./throwing";
  * against, and it can never buy reach. A body beyond the hold's reach still lands short, along the line the
  * pull chose. See `shared/throw.ts` for the cap and for why it is "a cap and never a solve".
  *
- * ## The latch: one body per hold, and no re-pick
+ * ## The latch: one body per aim, and no re-pick within a hold
  *
  * **The point is latched to a *body*, not re-chosen every frame.** `ThrowController` builds a request in the
  * frame loop and again at the release, so a picker with no memory would let a body entering the cone on the
  * release frame — or two candidates trading the nearest slot — hand the throw a different target from the one
- * the player watched. The latch is keyed on the hold's own start instant (`AssistRequest.hold`) and lives
- * until that hold ends, and **a latch that drops is dropped for the rest of the hold**: the body it named is
- * destroyed, leaves the world, or stops being eligible, and the assist turns *off* rather than choosing
- * somebody else. What the player watched stops being what they throw either way, and "no assist" is the only
- * version of that which is not a lie.
+ * the player watched. The latch is keyed on the **aim session** (`AssistRequest.session`, which is
+ * `aiming.ts`'s `aimSessionStartedAt`) and lives until that session ends, and **a latch that drops inside a
+ * hold is dropped for the rest of that hold**: the body it named is destroyed, leaves the world, or stops
+ * being eligible, and the assist turns *off* rather than choosing somebody else. What the player watched stops
+ * being what they throw either way, and "no assist" is the only version of that which is not a lie.
+ *
+ * ## Aiming before the button — the aim session, and why the hold stopped being the unit
+ *
+ * **The latch used to be keyed on the charge, and that was right while the assist only ran during one.** The
+ * hold was then the unit of aiming: a body was picked when the button went down and never re-picked, so the
+ * arc drawn and the throw sent could not name two different bodies. It also meant the assist was invisible
+ * until the player committed — they had to guess where it would take them and press to find out, which on a
+ * touch screen is the whole complaint, because the press is the same finger that is aiming.
+ *
+ * **So the unit is now the *aim session*: the span in which the player is in the round and alive.** That last
+ * clause is a correction to the first version of this section, which said "has a ball in hand": opening the
+ * session on the ball made the camera wait for one, which is the opposite of an assist — the moment a player
+ * wants to know where the enemy is is the moment *before* they pick a ball up. `ThrowController` opens a session
+ * when the assist may act and closes it on a death or the round ending, the latch is keyed on it, and the
+ * camera's follow answers for as long as it is the live one. A player who is merely looking at an enemy therefore
+ * gets the target chosen and the view turned onto it, and turning onto it is the *only* thing a pre-charge assist
+ * can honestly do: **on a touch client the aim point is the camera's own axis**
+ * (`ThrowController.getThrowDirection`), so "pull the aim point toward the lead before the hold" and "turn the
+ * camera toward the body" are the same act, and inventing a pulled point with no throw behind it would be the
+ * second aim this file exists to refuse.
+ *
+ * **The no-re-pick rule still holds inside a hold and only inside one.** Outside a hold nothing has been drawn
+ * from the target yet, so a body that dies or takes cover between one frame and the next is simply re-picked —
+ * which is what any player watching an aim assist expects of it. **The player turning away is the other half of
+ * that, and it is geometry rather than input plumbing**: an uncharged latch is dropped as soon as the body
+ * leaves the cone, so the camera lets go the moment somebody looks elsewhere. See `stillEligible`, which owns
+ * that rule and the argument for why a hold turns it off. Inside a hold the property above still applies,
+ * unchanged: the first body of the hold is the body of the throw.
+ *
+ * **What that costs, and the throttle is the whole of it.** A session now lasts a whole round rather than a
+ * hold, so the scan runs for that long — still at `AIM_CONFIG.TARGET_UPDATE_HZ`, still one
+ * `GetTagged(NPC_TAG)` walk per tick and never one per frame, and still only on a mobile client that is alive and
+ * in the round. The per-frame half is the latch's re-validation (`stillEligible`), which is attribute reads, one
+ * angle comparison and at most one ray — the same work a charging client already did every frame. **The window
+ * being a round rather than a hold is the real cost of running without a ball**, and it is named here rather than
+ * discovered: a mobile client now pays the scan and the aim cast for the whole of a round instead of the stretches
+ * it spent holding a ball. What it does not pay is a new *kind* of work — every item in that list was already on
+ * the per-frame path before, just less of the time.
  *
  * **`latchedTarget()` is the whole of what leaves this file for the camera**, and it answers nothing unless
- * the latch belongs to the hold running right now — see its own doc for why the *query* is where the hold is
- * checked, rather than a second "the hold ended" write somewhere in this file.
+ * the latch belongs to the aim session running right now — see its own doc for why the *query* is where the
+ * session is checked, rather than a second "the aim ended" write somewhere in this file.
  *
  * ## Desktop is untouched, verified by construction
  *
  * **The first line of {@link assistedAim} returns the caller's own value when `isMobile()` is false**, before
  * any ray, tag walk or clock read — so a desktop client cannot reach the picker at all and its aim point is
  * bit-for-bit the one `aimPoint` produced. That is acceptance criterion 2, and it is a property of the order
- * of the guards rather than of a test.
+ * of the guards rather than of a test. **{@link watchAim} makes the same first-line refusal**, so the
+ * pre-charge half is desktop-free by the same construction rather than by a second gate in the caller.
  *
  * ## The four things that have to be true for a target, and each is a separate refusal
  *
@@ -91,16 +130,37 @@ export interface AssistRequest {
 	/** The hold as a fraction, for the probe plan's flight time. */
 	readonly charge: number;
 	/**
-	 * **The instant this hold began — `client/throwing.ts`'s `chargeStartedAt` as it stood when the request was
-	 * built** — and the key the latch is held under.
+	 * **The instant this hold began, or nothing when the player is aiming without holding the button** — as
+	 * `client/throwing.ts`'s `chargeStartedAt` stood when the request was built.
+	 *
+	 * **It is no longer the latch's key; {@link session} is.** What this still decides is the *no-re-pick
+	 * window*: a latch that drops while this is a number stays dropped until the hold ends, and a latch that
+	 * drops while it is `undefined` is re-picked on the next frame because nothing has been drawn from it yet.
+	 * See the file doc's "Aiming before the button". The value itself is not compared to anything — only its
+	 * presence matters — and this doc used to describe it as a key, which is what the split changed.
 	 *
 	 * **It has to be passed rather than read from that value here, and the release is why.**
 	 * `ThrowController.releaseThrow` clears `chargeStartedAt` *before* it builds the request it sends, so a read
-	 * at this end would see "no hold" on the one frame the latch matters most and hand the release a fresh pick
-	 * — the defect this key exists to close. `undefined` is the honest state of a caller that cannot name its
-	 * hold; see `assistedAim` for what that gets.
+	 * at this end would see "no hold" on the one frame the no-re-pick rule matters most and would let the
+	 * release re-pick a target — the defect this field exists to close.
 	 */
 	readonly hold: number | undefined;
+	/**
+	 * **The aim session this request belongs to — `aiming.ts`'s `aimSessionStartedAt` — and the key the latch
+	 * is held under.**
+	 *
+	 * Carried in the request rather than peeked inside this file for the reason every other field is: the request
+	 * is one value describing one aim, built once by `ThrowController.assistInputs` for all three callers, and a
+	 * lookup at read time would be a second reading of a fact the caller already had. **The release always sees
+	 * it live** — the session now lasts a whole round rather than a hand — so nothing here depends on an
+	 * ordering trick the way {@link AssistRequest.hold} does; it is passed because that is the one construction,
+	 * not because of a race.
+	 *
+	 * A session that does not match the latch's is a different aim, and the latch is replaced rather than
+	 * inherited. `undefined` is the honest state of a caller with no aim session open — dead, in the lobby, out
+	 * of the round — and it gets no assist at all; see `assistedAim`.
+	 */
+	readonly session: number | undefined;
 	/** Whether the ball bends, for the same reason. */
 	readonly curve: boolean;
 	/**
@@ -122,11 +182,18 @@ export interface AssistRequest {
  * clock would be a `GetTagged(NPC_TAG)` sixty times a second for the length of every hold, which is the shape
  * `HANDOFF.md` §15 item 19 suspects of the client's boot cost. The walk happens at
  * `AIM_CONFIG.TARGET_UPDATE_HZ` instead — the constant that was kept as "the number to start from if the
- * design comes back" — and *only while a mobile client is charging a throw*, because `assistedAim` is the
- * only caller and the aim point is only computed during a hold. Nothing here runs at boot.
+ * design comes back" — and *only while the aim session is open*, because the two callers (`assistedAim` and
+ * `watchAim`) are both reached from `ThrowController`'s frame loop under that condition and neither runs
+ * otherwise. That condition is "alive and in the round" since 2026-10-21; it used to be "holding a ball", which
+ * is why the section above had to grow a paragraph about it. Nothing here runs at boot.
+ *
+ * **The window has now been narrow twice and wide once.** It began as "while a mobile client is charging a
+ * throw" — a fraction of a second at a time — then became "while a ball is in the hand", and is now the round.
+ * What has never moved is the *rate*: the tick is the throttle, and widening the window changes how long it runs
+ * for and not how often.
  *
  * **What the staleness costs, stated rather than hidden.** Membership can be up to one refresh behind: a rig
- * that is spawned or comes into sight mid-hold is assisted from the next tick, and one that dies or takes
+ * that is spawned or comes into sight mid-aim is assisted from the next tick, and one that dies or takes
  * cover stops being assisted from the next tick. Positions and velocities are *not* cached — they are read
  * off the body every frame — so the lead point is never stale; only the answer to "who is a candidate".
  */
@@ -152,22 +219,32 @@ type AssistMode =
 let mode: AssistMode = { kind: "none" };
 
 /**
- * **The body this hold is pulling towards, and the hold it belongs to — the latch.**
+ * **The body this aim is pulling towards, the aim it belongs to, and the two pieces of state a lead needs —
+ * the latch.**
  *
- * `hold` is `AssistRequest.hold`'s instant: a latch whose `hold` does not match the request in hand belongs to
- * a finished hold and is replaced. `model` is absent until the first eligible body is found, which is why a
- * target that walks into the cone mid-hold can still be taken — **that is a first pick, not a re-pick**, and
- * the difference is `dropped`.
+ * `session` is `AssistRequest.session`'s value: a latch whose session does not match the request in hand
+ * belongs to an aim that is over and is replaced, which is the whole of what ends an aim. `model` is absent
+ * until the first eligible body is found, which is why a target that walks into the cone mid-aim can still be
+ * taken — **that is a first pick, not a re-pick**, and the difference is `dropped`.
  *
  * **`dropped` is the whole of "never pick again this hold".** Once a latched body stops being eligible the
- * model is cleared and this goes true, and the assist stays off until the next hold starts. Clearing the model
- * alone would let the next frame choose somebody else, which is the drawn-versus-thrown disagreement this
- * latch exists to end.
+ * model is cleared and this goes true, and the assist stays off until the hold ends or the aim does. Clearing the
+ * model alone would let the next frame choose somebody else, which is the drawn-versus-thrown disagreement this
+ * latch exists to end. **The hold is not stored here**, because it is not a property of the latch: whether one is
+ * running is `AssistRequest.hold` on the call in hand, and storing a copy would be a second thing to keep in step
+ * with it — the mistake `ShiftLock`'s docs make a principle of.
+ *
+ * **`velocity` and `velocityAt` are the smoothed velocity a player target's lead is computed from**, and they
+ * live here rather than in a table keyed by model for the one reason that matters: only the latched body is
+ * ever led, so a map would be state for bodies nothing reads. `velocityAt` is `os.clock` of the last sample and
+ * is what makes the filter frame-rate independent — see `leadVelocity`.
  */
 interface Latch {
-	readonly hold: number;
+	readonly session: number;
 	model?: Model;
 	dropped: boolean;
+	velocity?: Vector3;
+	velocityAt: number;
 }
 let latch: Latch | undefined;
 
@@ -187,16 +264,37 @@ let lastReport = "";
  * "no assist" is always the *unchanged* point rather than a substitute one, and every one of those cases falls
  * back to exactly the throw the game had before this file existed.
  *
- * **The prediction is one iteration of a fixed point, and it is named rather than converged.** The lead is
- * `root + velocity × flight`, and the flight is the pre-pull plan's own (`planChargedThrow` with the raw
- * point) — which is the value `reachTo` returns for that point, so it is the throw's own arithmetic rather
- * than a second estimate. The pull then changes the distance the cap is measured against, which changes the
- * hold, which changes the flight the lead should have used: a second iteration would chase that, and every
- * iteration after it. **One pass is the approximation, and what it costs is small and bounded**: the flight
- * moves by the ratio of the two distances at most, so a body moving at walking speed over a ~0.6 s hang
- * carries roughly ten studs, a 20% flight error is two studs of lead error, and the strength takes a third of
- * that — under a stud on a body this assist exists to help aim at. Converging it would buy that stud and cost
- * a second solve inside a per-frame path for a point that moves every frame anyway.
+ * **The prediction is two passes of a fixed point, and the second one is exact — not a better approximation.**
+ * The lead is `root + velocity × flight`, and the flight is the throw's own —
+ * `planChargedThrow(...).flightTime`, which is `reachTo`'s answer for the point handed in. **The pull moves the
+ * point, so it moves the flight, so it moves the lead**, and one pass therefore leads from a flight the throw
+ * will not have:
+ *
+ * 1. flight to the *raw* point → lead → pull;
+ * 2. flight to the *pulled* point → lead → pull again, and that second pull is the answer.
+ *
+ * **Why pass two is the last one, from the code rather than from a tolerance.** The lead's `Y` is the body's
+ * root whichever pass computed it, because `leadVelocity` drops the vertical component of the velocity and
+ * `root.Position.add(velocity.mul(t))` therefore has `root.Y` for any `t`. So the pulled point's height is
+ * `raw.Y + strength · (root.Y − raw.Y)`, which **does not depend on the flight at all** — it settles on the
+ * first pull and never moves again. And the flight depends only on that height (`chargedFlight` reads
+ * `delta.Y` and nothing else). So pass two is handed the flight the final point really has, and a third pass
+ * would read the same number back and return the same point. **Two is the number of passes the shape needs**,
+ * which is a better reason than "two is cheap".
+ *
+ * **What pass one was wrong about, and the prompt for this change named the wrong mechanism.** It said the
+ * pull changes the *distance*, so the flight moves with it. It does not: `reachTo` divides no distance by a
+ * speed, it solves `v_y·t − ½·g·t² = rise` for the **height** difference between the muzzle and the point. The
+ * error pass one carried is therefore a height error — with `BALL_GRAVITY` at `50` and the peak at `0.5`, a
+ * cursor resting on the floor about four and a half studs below the hand is led by `~0.59 s`, while the time to
+ * reach a body's root two and a half studs down is `~0.49 s`: roughly a fifth more lead than the throw needs.
+ * Aiming *on* the body was already right, which is why the fault showed up as a lead that missed when the thumb
+ * was past the target rather than on it.
+ *
+ * **The cost is one extra `planChargedThrow` per frame on a mobile client with a target.** That function is
+ * arithmetic — `chargeForRange`, `peakAngle`, one `velocityAtAngle` — with no raycast in it, and it is already
+ * called once a frame by the preview. Doubling it is cheaper than the `Trajectory` sweep the same frame does,
+ * and it only happens when a body is actually latched.
  */
 export function assistedAim(request: AssistRequest): Vector3 | undefined {
 	// **The desktop guarantee, first, before anything is read.** See this file's doc: a client that is not
@@ -209,17 +307,18 @@ export function assistedAim(request: AssistRequest): Vector3 | undefined {
 	const raw = request.raw;
 	if (raw === undefined) return raw;
 
-	// **A request that cannot name its hold gets no assist, rather than a latch keyed on nothing.** The latch is
-	// per hold, and a caller that could not say which hold this is cannot be given a body that outlives one.
-	// Only `releaseThrow` can reach this, and only if it were ever called with no charge running — see `hold`.
-	if (request.hold === undefined) return raw;
+	// **A request that cannot name its aim gets no assist, rather than a latch keyed on nothing.** The latch is
+	// per aim session, and a caller that could not say which aim this is cannot be given a body that outlives
+	// one. Only `releaseThrow` can reach this, and only if it were ever called with no session open — see
+	// `session`.
+	if (request.session === undefined) return raw;
 
 	// **The scan runs before the latch is looked at, so the latch is validated against the world as it is now.**
 	// Its own refresh is inside it; this call is the aim's clock reaching the throttled one.
 	scan(request.character, request.ignore);
 
 	// **One body for the whole hold, or none.** See the file doc and `latchFor`: this is the one place a target
-	// is chosen, and it is reached only when nothing is latched yet or the latch belongs to a finished hold.
+	// is chosen, and it is reached only when nothing is latched yet or the latch belongs to a finished aim.
 	const chosen = latchFor(request, raw);
 
 	// **A drop reports itself, in its own words**, and this line is why the answer carries the flag: the drop
@@ -233,26 +332,46 @@ export function assistedAim(request: AssistRequest): Vector3 | undefined {
 	const root = rootOf(target);
 	if (root === undefined) return raw;
 
-	// **The probe plan, built from the throw's own inputs and the pre-pull point.** Its `flightTime` is
-	// `reachTo`'s answer for that point when the point is worth solving for, and the ballistic hang when it is
-	// not — both of which are the flight the throw would take, which is what the lead wants. See this
-	// function's doc for why the number is not recomputed after the pull.
 	const muzzle = getThrowMuzzle(request.character);
+
+	// **The horizontal velocity and only that**, for the reason `leadVelocity` gives at length: the lead is
+	// where the body's feet will be, and the throw's own arc is what carries the ball up to it.
+	const velocity = leadVelocity(root, target);
+
+	// **The first pass, from the flight to the point the player actually aimed at.** See this function's doc.
+	const firstFlight = flightToPoint(request, muzzle, raw);
+	const firstLead = root.Position.add(velocity.mul(firstFlight));
+	const firstPull = raw.Lerp(firstLead, AIM_CONFIG.AIM_ASSIST_STRENGTH);
+
+	// **And the second, from the flight to the point the first pass produced** — the one ask the previous
+	// version of this function named as an approximation and then declined to make.
+	const secondFlight = flightToPoint(request, muzzle, firstPull);
+	const secondLead = root.Position.add(velocity.mul(secondFlight));
+
+	return raw.Lerp(secondLead, AIM_CONFIG.AIM_ASSIST_STRENGTH);
+}
+
+/**
+ * **The flight time the throw would really take to arrive at `aim`** — the throw's own arithmetic, asked of the
+ * same solve the throw uses rather than estimated here.
+ *
+ * A function so that {@link assistedAim}'s two passes cannot be two different questions: both build the same
+ * {@link ChargeRequest} the wire will carry, change only the point, and read `flightTime` off the plan. Nothing
+ * else about the plan is used, and nothing is cached — the number depends on the point, which moves every frame.
+ *
+ * **`request.charge` and not the capped charge**, because the cap is what `planChargedThrow` computes *from*
+ * the point: handing it the held charge is exactly what the real throw does, and reading the capped value out
+ * of the first pass to feed the second would be this file deciding the cap instead of `reachTo`.
+ */
+function flightToPoint(request: AssistRequest, muzzle: Vector3, aim: Vector3): number {
 	const probe: ChargeRequest = {
 		heading: request.heading,
 		charge: request.charge,
 		curve: request.curve,
-		aim: raw,
+		aim,
 	};
 
-	const flight = planChargedThrow(request.character, probe, muzzle).flightTime;
-
-	// **The horizontal velocity and only that**, for the reason `leadVelocity` gives at length: the lead is
-	// where the body's feet will be, and the throw's own arc is what carries the ball up to it.
-	const velocity = leadVelocity(root);
-	const lead = root.Position.add(velocity.mul(flight));
-
-	return raw.Lerp(lead, AIM_CONFIG.AIM_ASSIST_STRENGTH);
+	return planChargedThrow(request.character, probe, muzzle).flightTime;
 }
 
 /**
@@ -267,19 +386,73 @@ export function assistedAim(request: AssistRequest): Vector3 | undefined {
  * humanoid in the end, and the physics assembly reports what actually happened.
  *
  * **Y is dropped deliberately, and it is not a shortcut.** The throw's vertical is decided by
- * `CHARGE_PEAK_HEIGHT` — every hold hangs the same 0.6 s — so where the body will be *vertically* at the end
- * of the flight is not something the thrower can influence; what a lead can correct is the horizontal
- * walking. Keeping Y would also let a jumping body's zero vertical velocity at the apex drag the aim point
- * down, which is a lead point below the body the player is looking at.
+ * `CHARGE_PEAK_HEIGHT` — `v_y = sqrt(2·g·h)` is the same at every charge, so every throw hangs for the same
+ * `2·v_y/g` (about 0.28 s back to the hand's own height at the shipped `g = 50`, `h = 0.5`, and about 0.49 s to
+ * a body's root below it; the two are unrelated to `CHARGE_SECONDS`, which only decides how fast the ball goes
+ * horizontally) — so where the body will be *vertically* at the end of the flight is not something the thrower
+ * can influence; what a lead can correct is the horizontal walking. Keeping Y would also let a jumping body's
+ * zero vertical velocity at the apex drag the aim point down, which is a lead point below the body the player
+ * is looking at.
  *
  * **What this is not: a prediction of a dodge.** A body that dodges during the flight moves somewhere this
  * cannot know, and a lead that pretended to would be a second guess stacked on a first. The assist is for a
  * thumb that is close but not exact, not for reading an opponent's mind.
+ *
+ * **A player's velocity is smoothed and a rig's is not, and the difference is who simulates the body.**
+ * `AssemblyLinearVelocity` is the right *quantity* for both — the argument above is unchanged — but it is a
+ * different *kind of number* for the two, and the prompt that asked for this had it right: a rig's assembly is
+ * owned and stepped by the server, so what arrives here is the velocity the game actually moved it with; a
+ * player's assembly is owned by that player's client, so what arrives here is that machine's physics after a
+ * replication delay and whatever correction the server applied to it. On a target walking in a dead straight
+ * line the second one jitters by a stud or two per frame, and a lead computed from it shakes — which reads, to
+ * the player, as an assist that cannot make up its mind.
+ *
+ * **The filter is on the sample, not on the body.** One exponential average per latched body, weighted by
+ * `1 − e^(−dt/τ)` so the smoothing is the same 0.12 s of memory at 30 fps and at 240 — see
+ * `AIM_CONFIG.AIM_ASSIST_VELOCITY_SMOOTHING_SECONDS` for the constant and its cost. It does not predict a
+ * dodge, does not know about walls, and does not smooth a rig at all: `Players.GetPlayerFromCharacter` is the
+ * branch, and it is the same test `inMode` uses to tell a rig from a person.
+ *
+ * **Two alternatives were considered and rejected, both on purpose.** `Humanoid.MoveDirection × WalkSpeed` is
+ * the obvious "smoother" source and is the wrong *quantity*: it is the walk the humanoid was asked for, so it
+ * is zero during a dodge (which is a `LinearVelocity`), zero during a knockback, and wrong on a conveyor —
+ * every case where the target is moving the way a lead matters. A fixed blend factor instead of a time
+ * constant would smooth twice as hard on a client running twice as fast, which is a filter tuned by the
+ * hardware. The state lives on the latch rather than in a table keyed by model because only the latched body
+ * is led, so a table would be state for bodies nothing reads.
  */
-function leadVelocity(root: BasePart): Vector3 {
-	const velocity = root.AssemblyLinearVelocity;
+function leadVelocity(root: BasePart, target: Model): Vector3 {
+	const sampled = root.AssemblyLinearVelocity;
+	const flat = new Vector3(sampled.X, 0, sampled.Z);
 
-	return new Vector3(velocity.X, 0, velocity.Z);
+	// A rig, which needs no filter — see the doc above for why that is a fact about ownership rather than a
+	// shortcut. The smoothing is deliberately behind this branch, so a rig never seeds the latch's state.
+	if (Players.GetPlayerFromCharacter(target) === undefined) return flat;
+
+	const tau = AIM_CONFIG.AIM_ASSIST_VELOCITY_SMOOTHING_SECONDS;
+	if (tau <= 0) return flat;
+
+	// The latch this body is held in. It is the module's own rather than a parameter because `latchFor` has
+	// just decided it and a second copy passed through would be a second thing that could disagree; the guard
+	// is the honest refusal for the one case it cannot be this body (a target whose root changed between the
+	// pick and this line).
+	const held = latch;
+	if (held === undefined || held.model !== target) return flat;
+
+	const now = os.clock();
+	const previous = held.velocity;
+
+	// **The first sample is taken whole rather than eased in from zero**, which is the one thing a filter like
+	// this gets wrong most often: seeding it with nothing would under-lead a body that was already walking when
+	// the latch took it, and it would take `tau` of a throw to recover.
+	const elapsed = previous === undefined ? 0 : now - held.velocityAt;
+	const weight = previous === undefined || elapsed <= 0 ? 1 : 1 - math.exp(-elapsed / tau);
+	const smoothed = previous === undefined ? flat : previous.Lerp(flat, weight);
+
+	held.velocity = smoothed;
+	held.velocityAt = now;
+
+	return smoothed;
 }
 
 /**
@@ -355,10 +528,15 @@ function pick(request: AssistRequest, raw: Vector3): Model | undefined {
  * one of the two in practice (`RoundService.assignTeams` keeps a practice-zone player off a side), and where
  * both would answer, the round wins: the sides are the narrower, more deliberate statement.
  *
- * **The local player's side is read only while a round is playing**, which is `AimTargetController.hittable`'s
- * reading and `RoundService.isFriendlyFire`'s: `assignTeams` leaves the last round's label standing through
- * the intermission, so a side read outside a round would compare against a side that has stopped meaning
- * anything. Outside a round, `mine` is `undefined` and the round branch is not taken.
+ * **The local player's side is read only while they are *in* the round**, which is `isParticipant` —
+ * `IN_ROUND_ATTRIBUTE` **and** the phase — rather than `inRound()` alone, and the difference is the lobby. A
+ * round being played is true for every spectator watching from the lobby, and `assignTeams` leaves the last
+ * round's label standing through the intermission and after a surrender, so `inRound() && sideOf(...)` would
+ * keep naming opponents for a player who had walked out. **That is the 2026-10-21 change on this line**: the
+ * assist may now run without a ball, so it has to stop the moment the player is not in the round, and
+ * `isParticipant` is the predicate `ShiftLock`'s own lock already uses — one rule, two readers. Outside a round,
+ * `mine` is `undefined` and the round branch is not taken; a surrendered player in the lobby therefore has no
+ * targets at all, rather than targets they cannot act on.
  *
  * **A body with no side is not a target in a round.** The spec is "a body whose `TEAM_ATTRIBUTE` differs from
  * the local player's", and a side-less rig differs from everything only because it has said nothing — so this
@@ -387,7 +565,7 @@ function scan(character: Model, ignore: ReadonlyArray<Instance>): void {
 	// who walks out of a zone mid-hold, or whose side changes under a conversion, is a player whose latched body
 	// has stopped being a target — see `stillEligible`, which asks `inMode` and therefore this.
 	const localPlayer = Players.LocalPlayer;
-	const mine = inRound() ? sideOfBody(localPlayer) : undefined;
+	const mine = isParticipant(localPlayer) ? sideOfBody(localPlayer) : undefined;
 	const current: AssistMode =
 		mine !== undefined
 			? { kind: "round", mine }
@@ -518,33 +696,41 @@ interface Chosen {
 }
 
 /**
- * **The body this hold is latched to, or nothing — decided once and never re-picked.**
+ * **The body this aim is latched to, or nothing — decided once per aim, and once per hold inside one.**
  *
- * **A hold is the unit, not a frame.** `ThrowController` builds a request in the frame loop and again at the
- * release, so a picker with no memory would allow a body entering the cone on the release frame — or two
+ * **The aim session is the unit, not a frame.** `ThrowController` builds a request in the frame loop and again
+ * at the release, so a picker with no memory would allow a body entering the cone on the release frame — or two
  * candidates trading the nearest slot — to hand the throw a target the player never watched. The key is the
- * hold's own start instant, which survives the release because `releaseThrow` reads it *before* it clears the
- * charge; see `AssistRequest.hold`.
+ * session (`AssistRequest.session`), and a latch belonging to a different session is replaced outright: a new
+ * aim is a new chance to pick.
  *
  * **A first pick is allowed while nothing is latched, and only then.** A body that walks into the cone two
- * frames into a hold is taken, because that is the assist turning on — what it must never do is *change*
+ * frames into an aim is taken, because that is the assist turning on — what it must never do is *change*
  * target. `dropped` is the difference: once a latched body stops being eligible the model is cleared and this
- * function refuses to look again until the next hold, so a death, a step behind cover or a side change turns
- * the assist **off** rather than redirecting it. What the player watched stops being what they throw either way;
- * "no assist" is the only version of that which is not a lie.
+ * function refuses to look again **for the rest of the hold**, so a death, a step behind cover or a side change
+ * turns the assist **off** rather than redirecting it. What the player watched stops being what they throw
+ * either way; "no assist" is the only version of that which is not a lie.
+ *
+ * **And outside a hold, a dropped latch is simply picked again — which is the one rule that changed.** Nothing
+ * has been drawn from it yet, so there is no drawn-versus-thrown disagreement to protect, and an assist that
+ * went off for the rest of a minute-long aim because one enemy stepped behind a crate would read as broken. The
+ * `dropped` flag is therefore scoped to *the hold* rather than to the aim: **set when a body is lost, and
+ * cleared as soon as a request arrives saying no hold is running.**
  *
  * **The drop is reported once, with the body's name**, because "the assist stopped helping" has two causes
  * that look identical from the outside — a body that left, and a latch that never took — and this is the line
  * that tells them apart in a session.
  */
 function latchFor(request: AssistRequest, raw: Vector3): Chosen {
-	const hold = request.hold;
-	if (hold === undefined) return { dropped: false };
+	const session = request.session;
+	if (session === undefined) return { dropped: false };
 
 	let held = latch;
 
-	if (held === undefined || held.hold !== hold) {
-		held = { hold, dropped: false };
+	// **A different aim replaces the latch**, and that is the only unconditional reset of `dropped` there is:
+	// a new session has nothing drawn from it, whatever the last one was doing.
+	if (held === undefined || held.session !== session) {
+		held = { session, dropped: false, velocityAt: 0 };
 		latch = held;
 	}
 
@@ -554,15 +740,27 @@ function latchFor(request: AssistRequest, raw: Vector3): Chosen {
 		if (DEBUG) print(`[Aim] assist: dropped ${held.model.Name} — nothing else is picked this hold`);
 
 		held.model = undefined;
+		// The smoothing state goes with the body — the next one has its own velocity, and averaging the two
+		// would lead the second target from the first one's motion for a fifth of a second.
+		held.velocity = undefined;
 		held.dropped = true;
 
 		return { dropped: true };
 	}
 
-	if (held.dropped) return { dropped: true };
+	// **`dropped` blocks a pick only while a hold is running.** Outside one, the assist picks again — see the
+	// doc above for why that is the honest reading rather than a loosening.
+	if (held.dropped) {
+		if (request.hold !== undefined) return { dropped: true };
+
+		held.dropped = false;
+	}
 
 	const chosen = pick(request, raw);
-	if (chosen !== undefined) held.model = chosen;
+	if (chosen !== undefined) {
+		held.model = chosen;
+		held.velocity = undefined;
+	}
 
 	return { model: held.model, dropped: false };
 }
@@ -577,6 +775,22 @@ function latchFor(request: AssistRequest, raw: Vector3): Chosen {
  * `inTaggedZone` on the aim's clock would be the tag walk this file spends its doc refusing. **The staleness
  * that leaves is one scan at most**, and its worst case is a player who steps out of a zone mid-hold and keeps
  * the assist for 66 ms. Named rather than hidden.
+ *
+ * **And outside a hold, the *cone* is a condition too — the one that lets the player leave.** This is the
+ * 2026-10-21 half of making the assist run without a ball: a latch is now taken while somebody is merely
+ * walking around, and a rule that kept the camera on a body the player had deliberately turned away from would
+ * be a camera they cannot steer. So an uncharged latch is dropped as soon as the body leaves
+ * `AIM_ASSIST_CONE_HALF_DEGREES` — **the same cone that acquired it**, which is what makes the statement
+ * simple: the assist only ever helps with something you are looking at. Inside a hold it is not asked, and
+ * that asymmetry is deliberate rather than an oversight: a press is a commitment, and the camera winning the
+ * argument with it is the behaviour the throw's own preview depends on (the heading follows the view, the throw
+ * follows the heading — see `pick`'s doc). **The release is the ball, not the cone.**
+ *
+ * **No wider release angle has been added, and if it proves twitchy that is the knob to add** — a body walking
+ * across the view at the edge of the cone would drop and re-acquire it, and a hysteresis pair (acquire at the
+ * cone, release at a wider one) is the standard fix. It is not here because one angle is a rule and two is a
+ * tuning session, and the cost of being wrong is a camera that lets go slightly early rather than one that will
+ * not let go at all.
  */
 function stillEligible(model: Model, request: AssistRequest): boolean {
 	if (model.Parent === undefined) return false;
@@ -589,19 +803,36 @@ function stillEligible(model: Model, request: AssistRequest): boolean {
 	const muzzle = getThrowMuzzle(request.character);
 	if (muzzle.sub(root.Position).Magnitude > AIM_CONFIG.TARGET_MAX_DISTANCE) return false;
 
+	// **The cone, and only while nothing is being charged** — see this function's doc for why the hold turns it
+	// off. A heading with no horizontal part is the same degenerate aim `pick` refuses, and the honest answer
+	// here is to let go rather than to measure an angle off a near-vertical vector.
+	if (request.hold === undefined) {
+		const axis = flatUnit(request.heading);
+		if (axis === undefined) return false;
+
+		const bearing = flatUnit(root.Position.sub(muzzle));
+		if (bearing === undefined) return false;
+		if (axis.Angle(bearing) > math.rad(AIM_CONFIG.AIM_ASSIST_CONE_HALF_DEGREES)) return false;
+	}
+
 	return inSight(muzzle, root, model, request.ignore);
 }
 
 /**
- * **The one query this file offers the camera: the body the current hold is pulling towards, or nothing.**
+ * **The one query this file offers the camera: the body the current aim is latched to, or nothing.**
  *
- * **It answers only while the hold that latched it is still the live one**, which is what makes it safe for a
+ * **It answers only while the aim that latched it is still the live one**, which is what makes it safe for a
  * reader that is not in the aim's call path at all. `ShiftLock` writes the camera from a render step of its own,
- * once a frame, and the latch outlives its hold by exactly one call — `releaseThrow` builds its request after
- * `chargeStartedAt` has been cleared, and it must still get the body the drawing did. So the *query* is where the
- * hold is checked: `chargeStartedAt` is read here, and a latch from a finished hold reads as no target. That is
- * what stops the camera on the release frame **without a second "the hold ended" write anywhere**, which would be
- * a second thing to keep in step with the one the aim already does.
+ * once a frame, and the latch outlives its aim by exactly one call — `releaseThrow` builds its request after the
+ * session has been closed, and it must still get the body the drawing did. So the *query* is where the session is
+ * checked: `aimSessionStartedAt` is read here, and a latch from a finished aim reads as no target. That is what
+ * stops the camera **without a second "the aim ended" write anywhere**, which would be a second thing to keep in
+ * step with the one the aim already does.
+ *
+ * **It used to check `chargeStartedAt`, and that is the whole of what "pre-charge aim assist" changed here.** The
+ * charge was the right key while the follow only ran during a hold; now the key is the aim session, so the camera
+ * turns onto a body the moment one is in the cone — whether or not the player has pressed. `ShiftLock.followTarget`
+ * did not change for this: it asks the same question it always did, and the answer got longer-lived.
  *
  * **Nothing else about the assist leaves this file.** No point, no lead, no strength: a caller that wants any of
  * those would be building a second aim, and `ShiftLock` wants only to know which *body* to turn onto.
@@ -609,11 +840,50 @@ function stillEligible(model: Model, request: AssistRequest): boolean {
 export function latchedTarget(): Model | undefined {
 	const held = latch;
 	if (held === undefined || held.model === undefined) return undefined;
-	if (Fusion.peek(chargeStartedAt) !== held.hold) return undefined;
+	if (Fusion.peek(aimSessionStartedAt) !== held.session) return undefined;
 
 	return held.model;
 }
 
+/**
+ * **Keeps the latch in step while the player is aiming but not holding the button** — the pre-charge half.
+ *
+ * **Why this exists as a second entry point rather than a call to {@link assistedAim}.** `assistedAim` answers a
+ * *point*, and a point is only wanted when a throw is being drawn or sent. Before the hold there is no preview and
+ * no wire, so the only consumer of an assist is the camera — and the camera wants the *latch*, not a lead. Running
+ * the whole of `assistedAim` here would do two `planChargedThrow`s a frame to produce a number nobody reads, which
+ * is the sort of cost this file's throttled scan exists to avoid.
+ *
+ * **It is not a second set of rules.** Both functions reach the same `scan` and the same `latchFor`, so "who is a
+ * candidate", "which body is latched" and "when a latch drops" are one implementation with two clocks asking it.
+ * What this method adds is nothing at all beyond the call: the answer is thrown away.
+ *
+ * **What it costs, stated rather than hidden.** The caller has to have an aim point to pick *near* — `pick`
+ * measures candidates against it — so `ThrowController` casts its aim ray on every frame a mobile client holds a
+ * ball, not only while charging. That is one `Workspace.Raycast` plus the exclusion list's one
+ * `Workspace.GetChildren` walk per frame, on mobile only, against a preview path that used to do a full arc
+ * solve and sweep every frame for everybody. **The tag walk the scan does is unchanged** and still runs at
+ * `TARGET_UPDATE_HZ`; this adds no `GetTagged` call of its own.
+ *
+ * **Desktop is untouched by the same construction as `assistedAim`** — the first line, before any read.
+ */
+export function watchAim(request: AssistRequest): void {
+	if (!isMobile()) return;
+	if (request.session === undefined) return;
+
+	// **A cast that hit nothing keeps the latch it has and picks nothing new**, which is `assistedAim`'s answer
+	// to the same input and deliberately not a second rule: the pick is made *near the aim point*, and there is
+	// no aim point to be near when the camera is on the sky. Freezing rather than clearing it matters here —
+	// clearing would make the camera let go of a body every time a player looked up at nothing, and the next
+	// frame would grab it back.
+	const raw = request.raw;
+	if (raw === undefined) return;
+
+	scan(request.character, request.ignore);
+
+	const chosen = latchFor(request, raw);
+	if (!chosen.dropped) report(chosen.model);
+}
 /**
  * Every `NPC`-tagged model in the world.
  *
@@ -668,12 +938,13 @@ function flatUnit(vector: Vector3): Vector3 | undefined {
 }
 
 /**
- * Prints the assist's edges: the body a hold has latched, and when a hold ends with nothing latched.
+ * Prints the assist's edges: the body an aim has latched, and when it has nothing latched.
  *
  * **`[Aim] assist: …` and not a per-frame line**, because the three questions a Studio session has to answer
  * about this feature — is it running, which body did it pick, is it ever picking one on my own side — are all
- * answered by a line that appears when the *latch* changes. That is now once per hold on each side: the latch is
- * taken once and dropped once, so a line per frame would say the same thing sixty times.
+ * answered by a line that appears when the *latch* changes. That is now once per aim on each side, plus once
+ * more whenever a dropped latch is picked again outside a hold, so a line per frame would say the same thing
+ * sixty times.
  */
 function report(target: Model | undefined): void {
 	if (!DEBUG) return;

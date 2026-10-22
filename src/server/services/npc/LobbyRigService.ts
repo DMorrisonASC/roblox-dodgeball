@@ -3280,10 +3280,23 @@ export class LobbyRigService implements OnStart {
 	 * **`side`'s half of the lobby's spawn parts — or all of them when the place file does not say which half
 	 * is which.**
 	 *
-	 * **Two ways to say it, and either is enough.** A rig placed at a part on the other side's end of the room
-	 * is a rig that has visibly "spawned on the wrong side", and the pad walk that follows is a correction
-	 * rather than a placement — which is the 2026-10-17 report, where the refill had no sided placement at
-	 * all and the cursor could land anywhere in the folder.
+	 * **An unmarked folder is not a fault, and this method says nothing about it.** The whole folder becomes
+	 * the pool, the cursor spreads rigs over all of it, and the pad walk takes each one to its own side — so a
+	 * rig can appear at the other side's end of the room and cross it. **That is the wanted behaviour**, and the
+	 * 2026-10-21 report is the argument for it: rigs scattered through the lobby and then finding their pads is
+	 * what makes the place read as alive, like a crowd milling about before a match. Placement on the exact team
+	 * side makes the lobby look staged. So the marking below is optional polish for a lobby that wants a tidier
+	 * start, not something a place file owes this service.
+	 *
+	 * **This reverses a warning, and the reversal is worth keeping rather than deleting.** It used to print
+	 * `[Rig] "LobbySpawns" has no side marking, so a rig can be placed on the other side's end of the lobby and
+	 * walk across it` once a session, with instructions for opting in — because the spread was read as the
+	 * 2026-10-17 bug, where a refill landed a rig anywhere in the folder and the walk was a correction rather
+	 * than a placement. The behaviour was never the bug; the *absence of a choice* was, and the choice has now
+	 * been made in the other direction. One reading of the same code, two reports a week apart, and the newer
+	 * one is the one from somebody watching the lobby.
+	 *
+	 * **Two ways to say which half is which, and either is enough for a place file that wants them.**
 	 *
 	 * - **A folder per side inside `LobbySpawns`**, named as `ArenaSpawns`' are
 	 *   ({@link ARENA_CONFIG.ARENA_TEAM_FOLDER_A} / {@link ARENA_CONFIG.ARENA_TEAM_FOLDER_B}), with direct
@@ -3291,12 +3304,6 @@ export class LobbyRigService implements OnStart {
 	 * - **A `Team` attribute on each part**, `"A"` or `"B"` — `TEAM_ATTRIBUTE`, the same name a rig wears, so
 	 *   there is one word for "which side is this" in the project. Marked parts are found anywhere inside the
 	 *   folder, which tolerates a grouping model between the folder and the floor.
-	 *
-	 * **The fallback is the old behaviour, kept deliberately.** A lobby authored before this existed has no
-	 * marking, and refusing to place a rig there would be a worse fault than a rig walking across the room:
-	 * the whole folder is the pool, the cursor still spreads rigs over it, and the walk still takes each one to
-	 * its own pad. What it costs is a warning once per session saying how to opt in — which is the only way
-	 * this stops being a thing to notice.
 	 */
 	private lobbySpawnsFor(side: TeamLabel): Array<BasePart> {
 		// **The sided derivation has moved to `npc/lobbySpawns.ts`, because this is no longer its only
@@ -3304,16 +3311,11 @@ export class LobbyRigService implements OnStart {
 		// it was drawing from the side-less `lobbySpawn()` — the same "spawned on the wrong side" fault
 		// this method was written to fix, arriving by the other road one round boundary later. One rule
 		// with two askers means the rule gets one home rather than two copies free to drift.
+		//
+		// **The marking is still honoured when a place file has it**, and the fallback below is unchanged: this
+		// is one lookup, and a lobby that does not use it pays for nothing but the `findFolder` walk.
 		const sided = lobbySpawnPartsFor(Workspace, side);
 		if (sided.size() > 0) return sided;
-
-		this.reportOnce(
-			"lobbySpawnsUnsided",
-			`[Rig] "${ARENA_CONFIG.LOBBY_SPAWNS_FOLDER}" has no side marking, so a rig can be placed on the ` +
-				`other side's end of the lobby and walk across it — put ` +
-				`"${ARENA_CONFIG.ARENA_TEAM_FOLDER_A}"/"${ARENA_CONFIG.ARENA_TEAM_FOLDER_B}" folders inside it, ` +
-				`or a ${TEAM_ATTRIBUTE} attribute on each part`,
-		);
 
 		return this.lobbySpawns();
 	}

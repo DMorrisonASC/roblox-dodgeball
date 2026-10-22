@@ -23,12 +23,13 @@ changes "working-tree change, not in any commit yet", and every one of them has 
 are labelled as landed rather than as pending.
 
 **Tags added since that re-verification, and this is the whole list:** the keep-out pair
-(`SideKeepOutA`, `SideKeepOutB`) and `Behavior_AlwaysSeeking` — three strings, which is why the count
-below reads **twenty-three**. **One number in this block is stale and is left standing rather than
+(`SideKeepOutA`, `SideKeepOutB`) and `Behavior_AlwaysSeeking` — three strings, which took the count to
+**twenty-three** — and then `AimIgnore`, painted on the invisible walls around the stadium, which takes it
+to **twenty-four**. **One number in this block is stale and is left standing rather than
 quietly corrected:** the note further down that the pair took the count to "twenty-three rather than
 twenty-one" was true for the day the pair landed and before `Behavior_AlwaysSeeking` did, and
-"twenty-one" is the count as it stood *then*. The register's own line under the table — twenty-three —
-is the count. See the two dated notes below for what each addition means.
+"twenty-one" is the count as it stood *then*. The register's own line under the table — twenty-four —
+is the count. See the dated notes below for what each addition means.
 
 **Earlier revisions, for the record.** The revision *before* 2026-10-06 was three tags short —
 `MatchJoinA`, `MatchJoinB` and `ShiftLockZone` (now `practiceZone`) — and described `CharacterBarrier`
@@ -82,7 +83,8 @@ this file has taken so far — see the walk section below for the one it caused.
 redefined by any of it** — the rigs are the newest wearers of tags that already existed. What *was* added
 later is the keep-out pair, `SideKeepOutA` and `SideKeepOutB`, which is why the count below reads twenty-three
 rather than twenty-one: two painted boxes that say which region of the court a rig may fetch a ball from.
-Nothing else in the register moved for it.
+Nothing else in the register moved for it. **(Twenty-three *then*, not now: `AimIgnore` has since taken the
+count to twenty-four — see the top of this file and the section below.)**
 
 **Landed 2026-10-13: the boxes' meaning is inverted, and seeking is split in two.** The pair was
 added as a *denylist* — a rig read the other side's box and skipped the balls inside it, so every remaining ball
@@ -139,6 +141,7 @@ a place file that no build touches.
 | `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.roundBallCount` (the budget). **`cleanupRoundBalls` no longer reads it** — see below |
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
+| `AimIgnore` | `shared/constants.ts`, `AIM_IGNORE_TAG` | *painted in Studio*, and `CanQuery = false` on the same part is the flag that actually does the work — see the section below | `client/controllers/input/ThrowController` — `refreshAimIgnores` caches it and both of that file's exclusion lists spread the result: the arc's `Trajectory`, and the shared list `aimPoint`'s ray and the assist's sight test cast with. **The only tag in this register with no server reader at all** — physics never needs to know a wall is invisible to the preview |
 | `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` / `.insideZoneAt` on the server — the tracker that publishes the attribute; `MysteryBoxService` calls `insideZoneAt` to ask whether a spawn point is on a practice floor; and **`AlwaysSeekingBehavior` reads the tag itself to ask whether a loose ball is inside the zone** — the practice half of the seek split, and the only reader of this tag that is a behaviour. **On the client** the rule is `client/roundZone.ts` (`inTaggedZone`), which the camera (`ShiftLock.checkZone`) and the dodge input (`DodgeController`) both ask — plus `ShiftLock.reportZoneParts`, which reads the tag a second time for its own count. One of the two tags a client reads |
 | `mysterySpawnPrize` | `shared/constants.ts`, `MYSTERY_SPAWN_TAG` | *painted in Studio* | `MysteryBoxService.report`, `.tick` and `forgetLostSpawns`. It also asks `PracticeZoneService.insideZoneAt(spawn.Position)` whether a spawn point is on a practice floor — **a question about the spawn, asked of the zone, not a second reader of this tag** |
 | `MatchJoinA` | `shared/constants.ts`, `MATCH_JOIN_A_TAG` | *painted in Studio* — the part's flags are then forced from code | `MatchService.mountSide` |
@@ -159,9 +162,9 @@ a place file that no build touches.
 | `Behavior_Respawn` | `npc/Behavior.ts`, `BEHAVIOR_RESPAWN` | as above — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate, which calls `onDied` when a loop ends with no health left |
 | `Behavior_WalkToJoinPad` | `npc/Behavior.ts`, `BEHAVIOR_WALK_TO_JOIN_PAD` | `LobbyRigService`, through `NpcService.spawn` | `NpcService`'s per-behavior gate — and `WalkToJoinPadBehavior` itself, which reads the rig's `WalkToJoinPad` (a `Vector3` destination) and `WalkToJoinPadSide` (the side to take **on arrival**) attributes. **It is the one behaviour tag that writes `Team`**, which is what makes the walker a round participant the moment it stands on the pad |
 
-Twenty-three tags. Of them, **four are the same rule** — a tag that only means something while the part is
+Twenty-four tags. Of them, **five are the same rule** — a tag that only means something while the part is
 in the world — and the rule is now enforced by the reader rather than repeated in each one: see the
-four sections below that say so.
+five sections below that say so.
 
 **`mysterySpawnPrize` is the one that is a fact about a *place* rather than about a part.** Nothing of
 the tagged part is used except where it is, and the same part in two different places means two
@@ -290,6 +293,42 @@ cross it and balls bounce off it, which is the exact symptom pair described in
 `CanTouch` and `CanQuery` true and **no tag at all**, which is what stopping characters *and* balls
 means. Tagging one would invite a reader to route it through this wall's code and silently take the
 balls out of it.
+
+## `AimIgnore` — painted, and the only tag here with no server reader
+
+Marks the invisible wall around the stadium: **the aim preview passes through it, the ball does not.**
+Read by `client/controllers/input/ThrowController` alone, and the two things it feeds are the two that draw
+and solve a throw — the arc's `Trajectory` and the shared exclusion list that `aimPoint`'s raw ray and the
+assist's sight test both cast with.
+
+**It exists because a solid wall the player cannot see is a lie in the guide.** The perimeter parts are
+ordinary `Default` geometry: `CanCollide` true, so a hard throw bounces instead of leaving the map. The
+guide sweeps a sphere of the ball's own radius along the path it predicts, so it hits that wall and stops
+the arc a few studs from the thrower's hand — a preview that describes a bounce off nothing. The tag is how
+a part is said to be *there for the ball and not for the aim*.
+
+**`CanQuery = false` on the part is the flag that does the work; this tag is the statement of intent.** A
+part with `CanQuery` off is invisible to every query in the game at once — the guide, the aim ray, the
+sight test, the probes — which is cheaper than any exclusion list and is what these walls should carry as
+well. What the tag adds is what a property cannot: a name to grep, the reason written down in the place
+file's own vocabulary, and insurance against somebody turning `CanQuery` back on "to make the wall more
+solid". **With the flag set this tag changes nothing about the preview**, and that pairing is deliberate —
+the same way `CharacterBarrier`'s tag and its two flags are one contract, described in the section above.
+
+**It is not `CharacterBarrier`, and confusing the two is the expensive mistake.** That tag means
+*characters and not balls*: `CollisionGroups.applyBarrierGroups` puts its parts in the `Barrier` group,
+which is registered non-collidable against `Ball`, so a stadium wall wearing it would let every throw
+straight out of the map — the exact fault it was painted to prevent. The two wall tags are opposites on the
+one axis that matters. The section above says an arena edge is *deliberately untagged*; this tag is the
+alternative that says "keep the ball" while still telling the aim preview where not to stop.
+
+**Read through `taggedPartsInWorkspace`, so it carries the same world-only rule as the four tags below** —
+a wall parked in `ServerStorage`, or inside a copy of the arena nobody has placed, is not a wall. The list
+is cached on the controller and refreshed from `GetInstanceAddedSignal` and `GetInstanceRemovedSignal`
+rather than read once at boot, because a place file edited while a server is running can put a wall in the
+world after the client mounted — and with streaming on, a wall outside the radius is not there yet either.
+The count is printed on every change: `[Throw] aim ignores N AimIgnore part(s)`, where **a zero is the
+diagnostic** — the tag is misspelled, the part is not in `Workspace`, or nothing was painted at all.
 
 ## `practiceZone` — painted, and now a rule rather than a camera
 

@@ -106,7 +106,7 @@ export const AIM_CONFIG = {
 	 * be two ways to express one product — and two knobs that multiply are a tuning session with no way to
 	 * tell which one did it. Move this toward `1` for a harder assist; `0` is the off switch.
 	 */
-	AIM_ASSIST_STRENGTH: 0.35,
+	AIM_ASSIST_STRENGTH: 0.5,
 
 	/**
 	 * **Placeholder — `10`.** The **half-angle** of the cone a body has to be inside to be pulled towards,
@@ -125,8 +125,19 @@ export const AIM_CONFIG = {
 	AIM_ASSIST_CONE_HALF_DEGREES: 10,
 
 	/**
-	 * **Placeholder — `90`.** How fast the camera is allowed to turn onto the latched target's root while a
-	 * mobile client charges at it, in degrees per second. Read by `ShiftLock.followTarget` alone.
+	 * **Placeholder — `90`.** How fast the camera is allowed to turn onto the latched target's root on a
+	 * mobile client **while a throw is being charged**, in degrees per second. Read by `ShiftLock.followTarget`
+	 * alone; the rate for the rest of the time is
+	 * {@link AIM_CONFIG.AIM_ASSIST_FOLLOW_IDLE_DEGREES_PER_SECOND}.
+	 *
+	 * **It no longer waits for a hold, and it is no longer the only rate.** The follow used to engage only
+	 * while a throw was being charged, which meant a player had to guess where the assist would take them and
+	 * press before they could see it; the latch is now live for the whole of a round, so the camera turns onto a
+	 * body as soon as one is in the cone — with or without a ball in hand. **That was a bigger behaviour change
+	 * than the number is**, and the honest consequence was a second, gentler rate for the time when nobody is
+	 * aiming. What is still true is that the *charging* rate is one number: the player's own drag is the blend
+	 * below it, and an ease on top would be a third speed to tune against these two — see
+	 * `ShiftLock.followTarget`.
 	 *
 	 * **A rate rather than a duration or an ease, and the shape is the decision.** The camera converges on the
 	 * body by taking at most this much of the remaining angle each frame, so a large error is corrected at a
@@ -143,6 +154,30 @@ export const AIM_CONFIG = {
 	AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND: 90,
 
 	/**
+	 * **Placeholder — `40`.** How fast the camera may turn onto the latched body **when no throw is being
+	 * charged**, in degrees per second. Read by `ShiftLock.followTarget` alone.
+	 *
+	 * **A second rate because there are two jobs, and this number is the whole of the difference.** 90°/s is
+	 * right while a player is *aiming*: they have pressed, they are committed, and the camera closing a
+	 * ten-degree error in about a third of a second is the assist doing what it was asked. **Nobody is aiming
+	 * while they walk to their pad**, and the same turn then reads as the game taking the view off them — the
+	 * camera is how a touch client looks around at all, so a strong pull while there is nothing to throw is a
+	 * pull with no purpose. Forty is less than half, so a body crossing the cone tugs rather than grabs, and the
+	 * player's own drag wins the argument much earlier than it does inside a hold.
+	 *
+	 * **It is not a blend and there is no state that eases between the two.** `followTarget` picks one or the
+	 * other from `chargeStartedAt` on each frame. An ease across the press would put a third behaviour in the
+	 * middle of the one moment the player is asserting something, which is the wrong place for a ramp.
+	 *
+	 * **`0` is a supported answer rather than a degenerate one: it disables the uncharged *turn* and leaves the
+	 * latch alone.** The target would still be picked and still be waiting when the player pressed; the camera
+	 * would simply not move until they did. That is the setting to reach for if the pre-charge pull turns out
+	 * to be unwelcome — `stillEligible` is the other half of "breakable", and it is the half that needs no
+	 * number.
+	 */
+	AIM_ASSIST_FOLLOW_IDLE_DEGREES_PER_SECOND: 40,
+
+	/**
 	 * **Placeholder — `1`.** The angular error below which the camera stops turning onto the latched body, in
 	 * degrees. Read by `ShiftLock.followTarget` alone.
 	 *
@@ -153,6 +188,31 @@ export const AIM_CONFIG = {
 	 * below it stops moving the view.
 	 */
 	AIM_ASSIST_FOLLOW_DEADZONE_DEGREES: 1,
+
+	/**
+	 * **Placeholder — `0.12`.** How hard a **player's** velocity is smoothed before it is used to lead a
+	 * throw, as a time constant in seconds. Read by `client/aimAssist.ts` alone.
+	 *
+	 * **A time constant rather than a blend factor, so the smoothing means the same thing at every frame
+	 * rate.** The per-frame weight is `1 − e^(−dt/this)`, which at 60 fps is about 0.13 of the way to the
+	 * sample and at 30 fps about 0.24 — the same 0.12 s of memory either way. A fixed fraction would smooth
+	 * twice as hard on a client that happened to be running twice as fast, which is a filter that changes
+	 * with the hardware rather than with the tuning.
+	 *
+	 * **Why a player's velocity needs smoothing and a rig's does not.** A rig's body is owned and simulated
+	 * by the server, so the velocity this client receives *is* the number the game used. A player's body is
+	 * owned by that player's client, so what arrives here is that machine's physics with a replication delay
+	 * and whatever correction the server applied — which reads as a lead point that shakes by a stud or two
+	 * from frame to frame on a target that is walking in a straight line. Smoothing is a filter on the
+	 * *sample*, not a model of the body: it does not predict a dodge, it just stops the assist chasing the
+	 * replication.
+	 *
+	 * **What it costs is lag, and the number is the price.** A body that starts moving is under-lead by
+	 * about this long — 0.12 s at walking speed is a stud and a half, well inside a torso, and the assist
+	 * only takes `AIM_ASSIST_STRENGTH` of the lead anyway. Raise it and the lead gets steadier and later;
+	 * lower it and the shake comes back. `0` disables the filter entirely and reads the sample raw.
+	 */
+	AIM_ASSIST_VELOCITY_SMOOTHING_SECONDS: 0.12,
 
 	/**
 	 * **Placeholder — `0.52`.** The mouse sensitivity this game runs at, written once at client start to

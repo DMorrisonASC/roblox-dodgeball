@@ -535,7 +535,43 @@ export class Trajectory {
 	 * {@link contact} for the point that actually stopped it.
 	 */
 	public readonly landing: Vector3;
-	/** The point on a surface that stopped the projectile, if anything did. */
+	/**
+	 * **The point on a surface that stopped the projectile — the ball's *edge* touching, not its centre — and
+	 * the marker needs no correction because of it.**
+	 *
+	 * This is `RaycastResult.Position` from the sweep that ended the arc, and the API reference defines that as
+	 * *"the world space point at which the intersection occurred, usually a point directly on the surface of the
+	 * `BasePart`"*. A `Spherecast` reports where the *shape* touched, so the ball's centre at that instant is one
+	 * radius back along the cast — which is the last entry {@link Trajectory.points} holds, and is why
+	 * {@link Trajectory.landing} is described as sitting one radius clear of a surface.
+	 *
+	 * **So a marker drawn here must not be pushed out along the normal, and that is worth writing down because
+	 * the mistake looks like a fix.** The tempting line is `contact.add(normal.mul(radius))`, on the reasoning
+	 * that *"the cast returns where the sphere was, so the surface is a radius further on"* — which moves the disc
+	 * a full stud off the floor on this project's two-stud ball, i.e. it *creates* the "the ball does not land on
+	 * the marker" complaint rather than answering it. `ThrowController.updateGuide` hands this field straight to
+	 * `AimGuide.update`, and `AimGuide` writes it into the disc's `CFrame` untouched; the only offset anywhere in
+	 * that path is the disc's own half-thickness, which is what lets a flat cylinder lie *on* a surface instead of
+	 * hovering over it.
+	 *
+	 * **What the radius *is* for is the cast, and it is the ball's physical radius.** `ThrowController` passes
+	 * `BALL_SIZE / 2` — `BALL_SIZE` is the *diameter* (`shared/constants.ts`) and `SphereService.createBall`
+	 * builds a `Shape = Ball` part with `Size = (BALL_SIZE, BALL_SIZE, BALL_SIZE)` — so the swept sphere and the
+	 * thrown part are the same volume, and the arc stops when the ball's edge touches rather than when its centre
+	 * would. That is the whole of "the preview accounts for the ball's volume": there is no second volume to
+	 * model, and no separate surface offset to apply.
+	 *
+	 * **"Usually" is the engine's word, kept deliberately.** Against a `BasePart` this is a point on the face;
+	 * against Terrain or a `MeshPart` it can be the cell or hull point that produced the hit, a fraction of a stud
+	 * out. Nothing in this game throws at either — the arena is parts — and a consumer that needs exactness there
+	 * would have to re-cast against the geometry, which is not what this field promises.
+	 *
+	 * **And what this is not: the ball's resting place.** The sweep stops at the first thing the ball touches; the
+	 * part then bounces (`BALL_CONFIG.ELASTICITY`) and rolls (`ROLL_RESISTANCE`), so the ball can come to rest
+	 * several studs past the contact point on a hard throw. Predicting the bounce is refused on purpose — see the
+	 * file doc — so "the ball is not on the marker" is the correct reading of a throw that hit and bounced, and a
+	 * different complaint from the marker being in the wrong place.
+	 */
 	public readonly contact: Vector3 | undefined;
 	/** Which way that surface faces, if anything was hit. */
 	public readonly normal: Vector3 | undefined;

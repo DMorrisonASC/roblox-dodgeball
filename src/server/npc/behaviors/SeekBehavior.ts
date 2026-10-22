@@ -980,7 +980,7 @@ export function createSeekBehavior(
 	 *
 	 * **The one thing a moving throw needs from the walk, and the reason it is not simply "do not stand".** A
 	 * carry-through is eight studs at a rig's own walk — about half a second — and a hold is `charge ×
-	 * CHARGE_SECONDS`, up to one and a quarter. A body left walking to a point it has already reached is a body
+	 * RIG_CHARGE_SECONDS`, up to one and a quarter. A body left walking to a point it has already reached is a body
 	 * *standing* on that point with a live `MoveTo`: the point is under its feet, the engine has nothing to walk
 	 * to, and the throw would come out of a stationary body while every line in the log said it moved. Re-drawing
 	 * the leg is what makes the log line true, and it is the difference between this and the fallback the task

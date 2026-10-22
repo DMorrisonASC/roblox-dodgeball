@@ -14,6 +14,7 @@ import { events, HitDirection } from "shared/networking";
 import {
     IN_ROUND_ATTRIBUTE,
     LAST_HIT_BY_ATTRIBUTE,
+    LAST_HIT_BY_POSITION_ATTRIBUTE,
     LAST_HIT_BY_TOKEN_ATTRIBUTE,
     PRACTICE_ZONE_ATTRIBUTE,
     ROUND_MODE_ATTRIBUTE,
@@ -841,6 +842,12 @@ export class RoundService implements OnStart {
             // loop's own: a round that has just started has no hits in it, so a first death of the round must
             // not hand the kill cam a body from the round before. See `LAST_HIT_BY_TOKEN_ATTRIBUTE`.
             player.SetAttribute(LAST_HIT_BY_TOKEN_ATTRIBUTE, undefined);
+
+            // **And the place the last hit came from, which is the third half of the same sentence.** A stale
+            // position is worse than a stale name, because the cam has nothing else to fall back on: a first
+            // death of the round with no ball behind it would hold the shot over last round's fight instead of
+            // handing the camera to Roblox. See `LAST_HIT_BY_POSITION_ATTRIBUTE`.
+            player.SetAttribute(LAST_HIT_BY_POSITION_ATTRIBUTE, undefined);
         }
 
         const assigned = this.matches.roster();
@@ -1660,6 +1667,12 @@ export class RoundService implements OnStart {
             // pair of statements rather than by two rules that could drift.
             player.SetAttribute(LAST_HIT_BY_TOKEN_ATTRIBUTE, undefined);
 
+            // **And the place, because the cam falls back to it when the body it would have watched is gone.**
+            // A position left from the previous life is the worst of the three to leave standing: it is the one
+            // value the cam can use with *no* body at all, so a death with no hit behind it would hold the shot
+            // over a fight this player was not even part of. See `LAST_HIT_BY_POSITION_ATTRIBUTE`.
+            player.SetAttribute(LAST_HIT_BY_POSITION_ATTRIBUTE, undefined);
+
             const humanoid = character.WaitForChild("Humanoid") as Humanoid;
             humanoid.Died.Connect(() => this.handleDeath(player));
 
@@ -2288,6 +2301,23 @@ export class RoundService implements OnStart {
             victimPlayer.SetAttribute(
                 LAST_HIT_BY_TOKEN_ATTRIBUTE,
                 thrower === undefined ? undefined : tokenOfThrower(thrower),
+            );
+
+            // **And where the hit came from, because the body it came from may not exist by the time anybody
+            // looks.** The kill cam watches a body, and a body is the one thing here that can be gone before the
+            // camera's first frame: a rig is destroyed and re-cloned by `RespawnBehavior`, and a player who kills
+            // and is killed has their character replaced. `client/killCam.ts` already holds the last place it
+            // *saw* a killer standing, so a body that goes **mid**-shot is handled — but one that went before the
+            // shot began was never seen, and the cam used to hand the death back to Roblox's own camera there.
+            // Written on the same line as the token, from the same resolved thrower, so a cam that can find the
+            // body and a cam that cannot are looking at the same moment in the same place.
+            //
+            // **`undefined` for an unresolved thrower, like the two above it**, and for a thrower with no root:
+            // a position from a body that has already been dismantled would be a stale point, which is the exact
+            // failure `pointOfThrower` avoids by asking for the root rather than a cached pivot.
+            victimPlayer.SetAttribute(
+                LAST_HIT_BY_POSITION_ATTRIBUTE,
+                thrower === undefined ? undefined : pointOfThrower(thrower),
             );
         }
 
@@ -3795,6 +3825,31 @@ function tokenOfThrower(thrower: Player | Model): string | undefined {
     const token = thrower.GetAttribute(THROWER_TOKEN);
 
     return typeIs(token, "string") ? token : undefined;
+}
+
+/**
+ * **Where `thrower` was standing — the fact a camera can still use after the body is gone.**
+ *
+ * **A root read rather than `GetPivot()`, and the difference is what the number means.** A model's pivot is its
+ * `PrimaryPart`'s `CFrame`, and a rig's `PrimaryPart` is whatever the place file set — often the torso, sometimes
+ * nothing at all — while `HumanoidRootPart` is the part a humanoid actually stands on and the part the client's
+ * `rootPointOf` reads to follow a killer. One answer for both ends means the shot that *follows* a body and the
+ * shot that *holds* the place it left are framed from the same point.
+ *
+ * **`undefined` rather than a fallback**, on `tokenOfThrower`'s reasoning: the caller writes this to an attribute
+ * whose absence means "no place to look", and a body with no root is a body nothing can be framed on. A made-up
+ * origin would put a camera at the centre of the map with nothing to say why.
+ *
+ * **A `Player` is asked for its character rather than for a position of its own**, because a `Player` has none —
+ * it is a table of account state, not a thing in the world. The character can be nil at the instant a hit lands,
+ * which is exactly when a player's body has been replaced, and that is the case this whole attribute exists for.
+ */
+function pointOfThrower(thrower: Player | Model): Vector3 | undefined {
+    const body = thrower.IsA("Player") ? thrower.Character : thrower;
+    const root = body?.FindFirstChild("HumanoidRootPart");
+    if (root === undefined || !root.IsA("BasePart")) return undefined;
+
+    return root.Position;
 }
 
 /** The name of `team`'s spawn folder inside the arena. The labels are the folder names. */

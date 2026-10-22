@@ -785,22 +785,28 @@ export const NPC_CONFIG = {
 	SEEK_SPRINT_DISTANCE_STUDS: 5,
 
 	/**
-	 * How close a walking rig has to be to another body before it will hop, in studs. **Placeholder — 24.**
+	 * How close a walking rig has to be to another body before it will hop, in studs. **Placeholder — 16.**
 	 *
 	 * **A hop is a thing a person does near somebody, so the radius is small and it is about legibility rather
 	 * than about effect.** At this range the body the rig is passing is the nearest thing in the frame and the
 	 * jump reads as *at* that body; at `DETECTION_RADIUS` (60) it would be a rig hopping on its own in the middle
 	 * of the floor, which is the one reading that looks like a fault rather than like a person.
 	 *
-	 * **What it is measured against is the throw, not the dodge.** Twenty-four studs is inside
+	 * **What it is measured against is the throw, not the dodge.** Sixteen studs is inside
 	 * {@link NPC_CONFIG.THROW_RANGE_STUDS} several times over, so the body a rig hops past is one it could
 	 * actually throw at — which is the reason a person would be moving like that in the first place. See
 	 * `detectEnemy` for what counts as an enemy, which is a *side* question and not a distance one.
+	 *
+	 * **This line used to read "Placeholder — 24" while the value was `16`**, which is the same drift
+	 * {@link NPC_CONFIG.SEEK_JUMP_COOLDOWN_SECONDS} records one entry below and `SEEK_SPRINT_DISTANCE_STUDS`
+	 * still has (it is documented as 30 and set to 5). The number here is the one in the sentence above: the
+	 * *argument* never depended on which of the two figures it was, and the prose naming "twenty-four" is what
+	 * made the mismatch worth correcting rather than leaving as trivia.
 	 */
 	SEEK_JUMP_ENEMY_RADIUS_STUDS: 16,
 
 	/**
-	 * How long a rig waits after a hop before it will hop again, in seconds. **Placeholder — 6.**
+	 * How long a rig waits after a hop before it will hop again, in seconds. **Placeholder — 2.**
 	 *
 	 * **Per rig, and that is the whole reason it is a cooldown rather than a chance.** A roll would let two rigs
 	 * hopping in the same second hop again together, and a rig that failed a roll would hop at the next
@@ -814,6 +820,23 @@ export const NPC_CONFIG = {
 	 * are not a coincidence nobody sees. See `SEEK_SPRINT_DISTANCE_STUDS` for the walk a cooldown has to sit
 	 * inside: a rig sprints thirty studs in about a second and a half, which is *faster* than this, so a hop is
 	 * not a thing that happens once per walk by construction — it is rarer than that.
+	 *
+	 * **The value is `2`, and the paragraph above was written for `6`.** At two seconds a rig has one second of
+	 * walking between hops rather than five, so a rig that has hopped reads as *bouncy* where the paragraph argues
+	 * for *occasional*. It was suspected of causing the 2026-10-21 report — *"sometimes I see a rig repeatably
+	 * jumping"* — and **it was raised to `6` for that and the rigs went on jumping exactly as fast, which is the
+	 * evidence that settled it: they were not hopping at all.**
+	 *
+	 * **The fault was `Humanoid.Jump` being left standing.** It is a level the engine reads every step rather than
+	 * a request it consumes, so a body holding it bounces on every landing — the same behaviour that makes a held
+	 * jump button bunny-hop. `SeekBehavior.maybeJump` is the only thing in the game that sets it on a rig, it sets
+	 * it once per hop, and nothing ever set it back: one hop bought a rig an unbounded run of them at the humanoid's
+	 * own cadence, with no log line, because the hop's line prints per *request* and a standing request needs none.
+	 * `NpcService.publishAnimationBody` clears it now, on the first turn the rig is back on the floor.
+	 *
+	 * **What is left here is a taste question and not a fault.** This number is the gap between hops a rig chooses
+	 * to make, and the paragraph above is the case for the larger end of it. Move it without expecting the bouncing
+	 * to change: the thing that bounced is fixed elsewhere, and this only decides how often a rig may ask again.
 	 */
 	SEEK_JUMP_COOLDOWN_SECONDS: 2,
 

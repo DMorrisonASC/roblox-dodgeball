@@ -57,7 +57,11 @@ const MIN_AIM_DISTANCE = 0.5;
  *
  *   **And as of 2026-10-19 the camera itself turns onto the latched body** while a throw is charged at one
  *   (`client/aimAssist.ts`'s latch, `ShiftLock.followTarget`), so the body — which follows the camera — ends up
- *   facing the *body* rather than merely whatever bearing the player had. **What remains of the old divergence
+ *   facing the *body* rather than merely whatever bearing the player had. **Since the pre-charge change that
+ *   turn starts as soon as a body is in the cone, before any charge exists**, and the facing does not follow it
+ *   there: this file still only acts while `aiming` is true, so the body turns when the player presses and not
+ *   while they are looking. That asymmetry is deliberate — an idle body must not swivel on its own — and it is
+ *   the reason `aiming` was left keyed on the charge rather than widened with the session. **What remains of the old divergence
  *   is the lead angle**: the arc is pulled ahead of the target by the assist, and the body faces the target
  *   rather than the lead. That is the identical relationship the desktop path has had since `predictedLanding`
  *   was published — the body faces the aim, the ball leads — so it is accepted rather than corrected here.

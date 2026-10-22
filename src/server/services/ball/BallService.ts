@@ -7,6 +7,7 @@ import {
 	CATCH_ANIMATION_ATTRIBUTE,
 	CatchCause,
 	DUCKING_ATTRIBUTE,
+	PICKUP_COUNT_ATTRIBUTE,
 	PICKUP_LOCKED_UNTIL,
 	TEAM_ATTRIBUTE,
 	THROWER_TOKEN,
@@ -705,11 +706,35 @@ export class BallService implements OnStart {
 	 * The same hand either way, which is the point: a picked-up ball is thrown by
 	 * the same call as a caught one, because by the time it is in the hand there is
 	 * nothing left to tell the two apart.
+	 *
+	 * **And it is the one method in the game that is *only* a pickup**, which is what makes it the place to
+	 * publish that fact. Four routes put a ball in a hand — this one, a catch, a round's hand-out and a
+	 * MultiBall refill — and all four end in `attachToHand`, so `attachToHand` knows everything a held ball
+	 * needs and nothing about which route it took. Nothing downstream needs to know either, *except* the
+	 * picker's own client, which plays a sound for a pickup and must stay silent for the other three. It
+	 * cannot tell them apart by watching the ball arrive, so this line is the answer it cannot work out for
+	 * itself. See {@link PICKUP_COUNT_ATTRIBUTE} for why it is a counter rather than a flag, and
+	 * `client/personalAudio` for the reader.
+	 *
+	 * **A rig's pickups are counted too**, for the reason the count is on the body rather than on a
+	 * `Player`: this method is handed a body and needs no owner type to say so. A rig's client does not
+	 * exist, so nothing reads its copy, and if a rig ever grew one a body-level counter already says the
+	 * right thing.
 	 */
 	public pickupBall(model: Model, ball: BasePart): boolean {
 		if (!this.attachToHand(model, ball)) return false;
 
 		print(`[Ball] ${model.Name} picked up a dodgeball`);
+
+		// **Written only on a pickup that happened.** `attachToHand` above is the refusal — a hand that
+		// filled between the search and this line — and a refused pickup is nothing to announce, so the
+		// count cannot be moved by an attempt. The read is validated rather than trusted, the way every
+		// other attribute reader in this project is: a fresh body has no attribute at all, and a value this
+		// build did not write reads as nought rather than poisoning the tally forever.
+		const collected = model.GetAttribute(PICKUP_COUNT_ATTRIBUTE);
+		const previous = typeIs(collected, "number") ? collected : 0;
+
+		model.SetAttribute(PICKUP_COUNT_ATTRIBUTE, previous + 1);
 
 		return true;
 	}

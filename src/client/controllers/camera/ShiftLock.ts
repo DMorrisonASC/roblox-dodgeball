@@ -25,6 +25,7 @@ import { latchedTarget } from "../../aimAssist";
 import { isMobile } from "../../platform";
 import { getScreenSpaceGui } from "../../ui/screenGui";
 import { inTaggedZone, isParticipant } from "../../roundZone";
+import { chargeStartedAt } from "../../throwing";
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. */
 const PLAYING = "Playing";
@@ -1015,10 +1016,16 @@ export class ShiftLock implements OnStart {
 	 * steps earlier, from the camera rotation this step last left behind — which is the lag that doc already
 	 * accepts for a mouse movement.
 	 *
-	 * **Nothing happens on a desktop, outside a hold, or with nothing latched**, and the query answers the last
-	 * two: `latchedTarget()` returns nothing unless the latch belongs to the *live* hold, so a release, a
-	 * cancelled charge, a drop or a death all end the follow on the frame they happen — **with no "stop" write
-	 * anywhere**, because not writing is stopping.
+	 * **Nothing happens on a desktop, with no ball in hand, or with nothing latched**, and the query answers the
+	 * last two: `latchedTarget()` returns nothing unless the latch belongs to the *live aim session*, so a drop, a
+	 * death, a round boundary that empties the hand and a throw that does not refill it all end the follow on the
+	 * frame they happen — **with no "stop" write anywhere**, because not writing is stopping.
+	 *
+	 * **It used to say "outside a hold", and the gate was `chargeStartedAt`; the difference is the feature.** The
+	 * follow now runs while the player is only *aiming* at a body, which is the whole point of the change — the
+	 * query is unchanged, and what got longer-lived is the answer it reads. A release on its own therefore does
+	 * **not** end the follow: the throw is gone, the aim is not, and the hand holds the next ball. That is
+	 * deliberate rather than an oversight — see `followTarget` for what it costs the player.
 	 *
 	 * **Not gated on the lock being on, deliberately.** The lock's inputs are the round and the zone, and both are
 	 * where a latched body can exist, so the two gates agree in practice — but the follow needs only its own
@@ -1056,8 +1063,15 @@ export class ShiftLock implements OnStart {
 	 * then takes back up to the rate limit's worth of it. Below the rate the drag wins, above it the follow does,
 	 * and the crossover is why the number is a *rate*: the player's input is never discarded outright and there is
 	 * no second blend factor to tune against the first. **What that costs, stated**: a player who deliberately
-	 * swings the view away mid-hold is slowly pulled back, which is the assist working rather than a fault — and
-	 * the way to stop it is to release, which ends the hold and the follow together.
+	 * swings the view away mid-hold is slowly pulled back, which is the assist working rather than a fault.
+	 *
+	 * **And releasing no longer stops it, which is the one cost the pre-charge change added.** The way out used to
+	 * be "let go of the button", because the follow was keyed on the charge. It is now keyed on having a ball in
+	 * hand — the honest answer to "could this player throw at that body" — so the ways out are to lose the ball
+	 * (throw it, drop it, die) or to aim so far off a body that the latch drops. **A player who finds the pull
+	 * itself unwelcome has no off switch**, and that is stated here rather than solved: the alternative is a
+	 * preference, the assist is `isMobile()`-only by construction, and `AIM_CONFIG.AIM_ASSIST_STRENGTH` is the
+	 * number to turn down if the answer turns out to be "less of it".
 	 *
 	 * **`Camera.CFrame` is written, and the class doc's one exception is this line.** Only the *orientation*
 	 * changes: the position is read from what the camera scripts produced, which is what keeps
@@ -1107,12 +1121,39 @@ export class ShiftLock implements OnStart {
 		const degrees = math.deg(math.acos(math.clamp(look.Dot(want), -1, 1)));
 		if (degrees <= AIM_CONFIG.AIM_ASSIST_FOLLOW_DEADZONE_DEGREES) return;
 
-		const step = math.min(degrees, AIM_CONFIG.AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND * delta);
+		const step = math.min(degrees, this.followRate() * delta);
+		if (step <= 0) return;
+
 		const axis = look.Cross(want);
 		if (axis.Magnitude <= 0.001) return;
 
 		const turned = CFrame.fromAxisAngle(axis.Unit, math.rad(step)).VectorToWorldSpace(look);
 		camera.CFrame = CFrame.lookAt(camera.CFrame.Position, camera.CFrame.Position.add(turned));
+	}
+
+	/**
+	 * **The degrees per second this frame may spend, which depends on whether anybody is aiming.**
+	 *
+	 * **Two rates and no third behaviour between them**: a hold running means the player has pressed, so the
+	 * committed figure applies; anything else means they are looking around while the assist watches, and the
+	 * gentle one applies. See `AIM_CONFIG.AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND` and
+	 * `AIM_CONFIG.AIM_ASSIST_FOLLOW_IDLE_DEGREES_PER_SECOND`, whose docs carry the argument and the `0` case.
+	 *
+	 * **`chargeStartedAt` rather than a flag of the latch's own**, because "am I aiming" is already one fact with
+	 * one writer (`client/throwing.ts`) and every other reader of it in the game — the arc, the charge sound, the
+	 * pose, the tremble — asks the same value. A copy here would be a second thing to keep in step with it, and
+	 * it would be the copy that decided how hard the camera pulled.
+	 *
+	 * **A frame that straddles the press is not smoothed between the two**, deliberately: the press is the
+	 * instant the player wants authority over the view, so the rate is allowed to jump on it. See the config entry
+	 * for why an ease is refused.
+	 */
+	private followRate(): number {
+		const aiming = Fusion.peek(chargeStartedAt) !== undefined;
+
+		return aiming
+			? AIM_CONFIG.AIM_ASSIST_FOLLOW_DEGREES_PER_SECOND
+			: AIM_CONFIG.AIM_ASSIST_FOLLOW_IDLE_DEGREES_PER_SECOND;
 	}
 
 	/**

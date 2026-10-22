@@ -9,6 +9,7 @@ import { startIasTest } from "./IasTest";
 import { startHitConfirm } from "./hitConfirm";
 import { startHitVfx } from "./hitVfx";
 import { startCatchPrompt } from "./catchPrompt";
+import { startPersonalAudio } from "./personalAudio";
 
 print("[client] igniting");
 Flamework.addPaths("src/client/controllers");
@@ -87,3 +88,12 @@ startKillCam();
 // client's first frame rather than on the first death. See `enemyView` for why the caption is a separate module
 // from the camera, and for why a rig's stats read as an em dash.
 startEnemyView();
+
+// **And the two sounds only this player hears, which is the same plain-module shape for the same reason.**
+// They are `Sound`s in this client's `SoundService` and two subscriptions to attributes the server already
+// publishes, so there is no lifecycle to own and nothing to inject. **Started at boot rather than on the
+// first pickup**, because the clips are preloaded here and a sound whose asset is still downloading when it
+// is asked for arrives after the event it describes — see `personalAudio` for both triggers, for why the
+// pickup counter is the server's, and for why a MultiBall window is announced by its published count rather
+// than by the key that asked for it.
+startPersonalAudio();

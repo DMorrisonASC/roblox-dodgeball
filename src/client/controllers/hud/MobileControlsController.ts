@@ -87,7 +87,7 @@ const JUMP_STEP_NAME = "MobileControlsJump";
  * last hand-tuning arrived at: close enough to read as one object, far enough that two half-transparent circles
  * do not look like they touch.
  */
-const BOX_GAP = 10;
+const BOX_GAP = 15;
 
 /**
  * The room a button's word needs under it, in pixels. **Placeholder — 20, and it is `LABEL_GAP` plus one line.**
@@ -121,7 +121,7 @@ const BOX_EDGE_GAP = 12;
 
 /**
  * **How big each button is, relative to the others — one factor per cell, in {@link mount}'s control order.**
- * **Placeholder — Throw and Jump at `1.3`, the four utilities at `1`.**
+ * **Placeholder — Throw and Jump at `1.4`, the four utilities at `0.9`.**
  *
  * **The reason a layout instance cannot do this job.** `UIGridLayout.CellSize` is one `UDim2` for every cell, so a
  * grid can only ever draw six identical squares — and Throw and Jump are the primary actions, the two a right thumb
@@ -139,13 +139,34 @@ const BOX_EDGE_GAP = 12;
  * box it is given, at any aspect ratio, **by construction** — which is the property the three earlier arrangements
  * did not have and the only reason this file has arithmetic in it at all.
  *
- * **`1.3` rather than `2`, stated because the number is a compromise.** The factor scales the *smallest* button's
- * size by the same `unit`, and once the two primaries share the bottom row it is that row's **height**, not its
- * width, that binds: the reference box gives a row `92 − 20 = 72px` of room for its tallest circle, so at `1.3` the
- * utilities come out at `72 ÷ 1.3 ≈ 55px` against `72px` primaries — the pair this cluster is logged at. At `1.5`
- * they are 48px, and past about `1.63` they are under {@link TAP_MIN} and `minimumBox` starts growing the box
- * instead. `1.3` is a fifth again as big as its neighbours, which reads as "primary" at arm's length without
- * costing the utilities their width. It is one number per cell, so tuning it is one edit.
+ * **`0.9` and `1.4` rather than `1` and `1.3`, and what that actually changes is smaller utilities — not bigger
+ * primaries.** The tallest circle in a row is **always** `rowHeight − labelBand`, whatever its weight is, because
+ * the weight is what *sets* the unit that fits it: at `1.3` the arithmetic gives `unit = 72 ÷ 1.3 = 55.4`, so the
+ * primaries come out at `55.4 × 1.3 = 72px`; at `1.4` it gives `unit = 72 ÷ 1.4 = 51.4` and they come out at
+ * `51.4 × 1.4 = 72px` again. **The primary diameter is pinned by the row and cannot grow from here** — the only
+ * thing a wider ratio can do is take width away from its neighbours, which is exactly the hierarchy being asked
+ * for, and it is what the numbers below say rather than what a first reading of "make them 1.4" suggests.
+ *
+ * **So the utilities go from `55.4` reference px to `46.3`**, a fifth smaller, and the ratio between the two
+ * classes goes from `1.3` to `1.56`. `46.3` is still comfortably over {@link TAP_MIN} (44) — which is the bound
+ * that matters, and the one this array is nearly at: **the crossover is a ratio of `72 ÷ 44 ≈ 1.64`**, so at
+ * `0.9`/`1.4` the margin is about eight tenths of a pixel of reference size. Push the utilities much below `0.85`
+ * and `minimumBox` starts growing the whole box instead, which is the failure the previous paragraph of this file's
+ * history records (`TAP_MIN` applied per button, overlapping clusters). `1.56` reads as "primary" at arm's length;
+ * it is also far enough from `1.64` to be safe on the sizes this project has logs for.
+ *
+ * **The row that binds is the bottom one, and *which side of it* binds changes with the screen.** Row two is
+ * `1.4 + 1.4 = 2.8` wide, so its width gives `(box.X − gap) ÷ 2.8` and its circle room gives
+ * `(rowHeight − labelBand) ÷ 1.4`. At the reference box with `BOX_GAP` at `15` those are `78.9` and `49.6`, so a
+ * phone is **height**-bound and `unit` is set by the row's circle. **On a tablet it is width-bound**, because the
+ * gap and the box both multiply by the device tier while the label band does not — the band is fixed text, so the
+ * circle room grows faster than the row's width as the multiplier rises. On the 10th-gen iPad at `2.216` the two
+ * bounds are `123.4` and `127.4`: the row's *width* is the smaller one, and the utilities come out at `111px`
+ * rather than the `114` the circle room alone would allow. **Nothing needs doing about it** — the packing takes the
+ * smaller bound whichever it is — but the sentence that used to stand here ("it still binds on height at every
+ * scale this design is drawn at") was true only of the phones, and of `BOX_GAP = 10`. **`BOX_FRACTION.X` is still
+ * untouched**: both bounds are properties of the box this design chose, and the tablet crossing over asks it for a
+ * different *size*, which is the tier's job, not a different *shape*.
  *
  * **The order is `mount`'s fill order** — Drop, Catch, Curve, Dodge, Throw, Jump — which is the order the cells fill,
  * so `[0]` is Drop, `[4]` is Throw and `[5]` is Jump. **This array is indexed by position, not by control**, so
@@ -154,7 +175,7 @@ const BOX_EDGE_GAP = 12;
  * `1`, so shortening it does not break the layout; the count is checked at mount all the same, because a *misordered*
  * array is a silent design bug rather than a crash.
  */
-const BUTTON_WEIGHT: number[] = [1, 1, 1, 1, 1.3, 1.3];
+const BUTTON_WEIGHT: number[] = [0.9, 0.9, 0.9, 0.9, 1.4, 1.4];
 
 /**
  * **How far the box is moved from the bottom-right corner, in reference pixels: `X` right, `Y` down.**
@@ -326,7 +347,9 @@ const BOX_SIZE = new Vector2(
 );
 
 /**
- * The smallest the cluster is ever *drawn*, as a fraction of the reference layout. **Placeholder — 0.85.**
+ * The smallest the cluster is ever *drawn*, as a fraction of the reference layout. **Placeholder — `1.1`**, and
+ * the `0.85` the paragraphs below were written for is history: the number was raised and those two mentions were
+ * not, which is why they read as a floor *below* the design rather than above it.
  *
  * **A floor and no ceiling, and losing the ceiling is this pass's change.** The cap that used to be here (`1.15`)
  * belonged to the old shape: five toes on an arc are a fixed figure at a fixed radius, so a tablet's 2×
@@ -342,16 +365,93 @@ const BOX_SIZE = new Vector2(
  * `0.46`. That used to mean a 33px button which the packing then raised to {@link TAP_MIN} **per button**, so the two
  * rows overlapped and spilled out of the box. It now means the *box* is grown until its smallest button is tappable
  * — see `minimumBox` — which on a sideways phone pushes a cluster of full-size buttons a long way up the screen, over
- * the engine's own corner. Holding the layout at `0.85` keeps a sideways phone at buttons that still fit where the
- * design puts them, which is the cheaper failure by a wide margin.
+ * the engine's own corner. Holding the layout at `1.1` keeps a sideways phone at buttons that still fit where the
+ * design puts them, which is the cheaper failure by a wide margin. **`1.1` rather than `0.85` also means the floor
+ * is above the reference fit of `1.0`**, so a 393 × 852 phone is drawn ten per cent *larger* than the design's own
+ * numbers — which is a deliberate part of the current look rather than an accident of the clamp, and it is why the
+ * device tiers multiply the fit rather than replacing it: a phone's multiplier is still exactly what it was.
  *
- * **Where `0.85` comes from**, stated as what it protects rather than as a measurement: the smallest button in a row
+ * **Where `1.1` comes from**, stated as what it protects rather than as a measurement: the smallest button in a row
  * is `min(weight) × unit` and `unit` falls with the box, so there is a multiplier below which `minimumBox` starts
- * doing the growing. `0.85` keeps a sideways phone inside the design's own numbers on the screens this project has
+ * doing the growing. `1.1` keeps a sideways phone inside the design's own numbers on the screens this project has
  * logs for. The exact crossover is arithmetic rather than taste, and it moves whenever {@link BUTTON_WEIGHT} does —
  * which is why it is not written down here as a formula. `minimumBox` is the one place that answers it.
  */
 const SCALE_MIN = 1.1;
+
+/**
+ * **The three device tiers the cluster is drawn at, as a boost on the continuous fit — and the numbers come from
+ * where a device sits in the emulator's own device list rather than from a CSS framework.**
+ *
+ * **What a phone and a tablet are, in the units this file has.** A viewport is measured in *pixels*, so the only
+ * honest question is at what pixel count a device stops being a phone. The emulator's own set answers it: the
+ * widest phone is the iPhone 16 Pro Max at **430 × 932**, and the smallest tablet is the iPad mini at
+ * **744 × 1133**. Nothing in that gap is sold as either, so any threshold inside `430..744` is defensible, and
+ * `600` is the middle of it — the same figure the web uses for the same breakpoint, arrived at independently.
+ * `1024` is where a 12.9" iPad and the larger tablets begin, and it is likewise the web's second breakpoint.
+ *
+ * **Measured on the SHORT axis, and that is the load-bearing correction to a width test.** A phone held sideways
+ * reports `viewport.X = 852`; a *portrait* iPad mini reports `744`. A width test therefore calls the landscape
+ * phone a tablet and hands a cluster that has 393 pixels of height a `1.6` boost — in the one orientation where the
+ * box is already the largest thing on the screen. The short axis does not move when a device rotates: `393` for the
+ * iPhone in both orientations, `820` for the 10th-gen iPad in both, which is the property the tier is supposed to
+ * have. **`GuiService.ViewportDisplaySize` cannot answer this question either** — see {@link scaleFor}.
+ *
+ * **A boost rather than a replacement, because the continuous fit is right about everything else.** An iPad 10th's
+ * fit is `min(820/393, 1180/852) = 1.385`, and the fault is not the arithmetic but what the arithmetic is
+ * averaging: 393 × 852 is a *phone's* shape, so the fit answers "how many phones fit in this rectangle" and a
+ * tablet's extra inches are mostly spent along its long axis. Multiplying the fit keeps the proportional behaviour
+ * that makes the box the same fraction of every screen, and adds the step that says a bigger device gets a bigger
+ * *relative* control — which is what a thumb on a 10-inch display actually needs.
+ *
+ * **`1.3` was not enough, and the reason is physical rather than arithmetic.** At `1.385 × 1.3 = 1.80` the buttons
+ * are 80% larger than the iPhone's in *pixels* — but a 10th-gen iPad is about `1.7×` a phone's diagonal at the
+ * same pixel density, so 80% of the linear size lands at roughly *half* the angular size under a thumb's eye. The
+ * complaint was exactly that: "79% larger still looks tiny" on a screen that is physically massive. `1.6` takes
+ * the multiplier to `2.216` — a utility button of about `115 px` and a primary of about `178 px`, where they were
+ * `94` and `146`. **The boost is the only knob that does this**: {@link BUTTON_WEIGHT} changes the *ratio* between
+ * the two classes and cannot change either absolute size, because the tallest circle in a row is pinned at
+ * `rowHeight − labelBand` whatever the weights are (see that constant's own note).
+ *
+ * **No boost on a phone, and that is an acceptance criterion rather than an omission.** `1` is a tier and not a
+ * missing value: an iPhone must render exactly what it rendered before this existed, and that is the only thing
+ * that makes a change in the boost distinguishable from a change in the fit.
+ *
+ * **What it costs, stated because the boost is not free: the engine's jump pad is inside this multiplier too.**
+ * {@link restyleEngineJump} folds this number into the pad's `UIScale`, so a tablet now gets a pad `1.6×` larger as
+ * well. That is the same rate as the buttons beside it and therefore correct, but it does mean the pad is the
+ * largest it has ever been on a tablet. See {@link PAD_SIZE}, where the one-shared-rate argument is written.
+ *
+ * **And the other cost, measured rather than discovered: a bigger cluster reaches further left.** The box is
+ * anchored to the bottom-right corner, so every pixel the multiplier adds is taken from the space between the
+ * cluster and the joystick — which is on the bottom-**left**, about `0.38` of the viewport's width wide (its
+ * `MOVEMENT_ZONE_WIDTH_SCALE` plus its edge inset). At these boosts the leftmost utility's left edge and the
+ * movement zone's right edge come out as:
+ *
+ * | device | multiplier | leftmost button | zone's right edge | clear |
+ * |---|---|---|---|---|
+ * | iPhone 16 393 × 852 | `1.10` | 130 px | 149 px | −19 px *(unchanged by this)* |
+ * | **iPad 10th 820 × 1180** | **`2.216`** | 327 px | 312 px | **+15 px** |
+ * | iPad mini 744 × 1133 | `2.128` | 271 px | 283 px | −12 px |
+ * | iPad Pro 12.9 1024 × 1366 | `2.886` | 376 px | 389 px | −13 px |
+ *
+ * **So the 10th-gen iPad — the device this was tuned for — clears, and the two tablets either side of it do
+ * not**, by a sliver of a button that is itself between 110 and 155 px across. The negative rows on the phones
+ * have always been there: the zone is a *movement* zone, deliberately much wider than the ring it is named after,
+ * so a sliver under it is the normal case rather than a fault. If Studio shows a leftmost button refusing
+ * presses, the number to move is `MOVEMENT_ZONE_WIDTH_SCALE` on the joystick side rather than this boost —
+ * narrowing the zone costs a little thumb room, while lowering the boost would undo the thing this change is
+ * for. **Which of the two is right is a question for a device**, and it is recorded here so that whoever finds it
+ * does not start by re-deriving these four rows.
+ *
+ * **The two axes are separate numbers on purpose.** A `TABLET_SHORT_AXIS`/`LARGE_SHORT_AXIS` pair reads as a
+ * tolerance band, which is what it is: nothing in the `600..744` range is a device anybody ships, so the exact
+ * threshold cannot be wrong, only far from the edge.
+ */
+const TABLET_SHORT_AXIS = 600;
+const LARGE_SHORT_AXIS = 1024;
+const TABLET_SCALE_BOOST = 1.6;
+const LARGE_SCALE_BOOST = 1.8;
 
 /**
  * **That scale, as a function of the viewport** — pulled out of {@link buildScale} so the cluster's own arithmetic
@@ -366,12 +466,39 @@ const SCALE_MIN = 1.1;
  * **Clamped at the bottom only** — {@link SCALE_MIN} — which is why this is a `math.max` around the fit rather
  * than the `math.clamp` it used to be: there is no longer a ceiling to express. See that constant for why the
  * floor is not optional, and for the arithmetic that says where the packing stops fitting without it.
+ *
+ * **And a device tier on top of it, which is the newest input here.** The fit alone is a *proportion*, and a
+ * proportion is the wrong shape of answer for a table: a 10-inch display is not a phone scaled up, it is a phone
+ * with more inches, and the arithmetic above spends most of them on the long axis. See the tier constants for the
+ * thresholds and the short-axis argument — this function's part in it is one multiplication and one comparison.
+ *
+ * **`GuiService.ViewportDisplaySize` was researched and is the wrong tool, which is worth recording because it is
+ * the documented one.** The API reference defines `Enum.DisplaySize.Small` as *"most tablet/mobile/handheld
+ * devices"* — **the same value a phone and an iPad report** — with `Medium` for laptops and monitors and `Large`
+ * for TVs. So the engine's own categorisation is a *device class* answer where this file needs a *size* answer; a
+ * tablet and a phone are one class to it, and a tier built on it could not separate them. It is also
+ * `Read|NotReplicated|ReadParallel` on `GuiService`, i.e. another service to inject into a controller whose only
+ * other input is the camera's viewport — and `buildScale` already watches exactly one signal
+ * (`ViewportSize`) that changes on precisely the events this cares about (rotation, window resize, device change).
+ * **Two sources of truth for one number is the pattern this file has spent four passes deleting**, so the
+ * viewport stays the only input.
  */
 function scaleFor(viewport: Vector2): number {
-	return math.max(
-		math.min(viewport.X / REFERENCE_VIEWPORT.X, viewport.Y / REFERENCE_VIEWPORT.Y),
-		SCALE_MIN,
-	);
+	const fit = math.min(viewport.X / REFERENCE_VIEWPORT.X, viewport.Y / REFERENCE_VIEWPORT.Y);
+
+	// **The tier, measured on the short axis** — see the constants above for why it is not `viewport.X`. `>=` at
+	// both steps so the classes are exhaustive and a device sitting exactly on a breakpoint lands in the larger
+	// one, which is the "give the bigger screen the benefit" direction.
+	const short = math.min(viewport.X, viewport.Y);
+	const boost =
+		short >= LARGE_SHORT_AXIS ? LARGE_SCALE_BOOST : short >= TABLET_SHORT_AXIS ? TABLET_SCALE_BOOST : 1;
+
+	// **The boost is applied before the floor, and the order is what keeps a phone unchanged.** A phone's
+	// multiplier is `1`, so this is the expression that was here before it existed; on a tablet the product clears
+	// {@link SCALE_MIN} long before the floor is reached, so the floor only decides the sideways-phone case it was
+	// written for. `math.max(fit * boost, SCALE_MIN)` with `boost = 1` is `math.max(fit, SCALE_MIN)` — the old line,
+	// exactly.
+	return math.max(fit * boost, SCALE_MIN);
 }
 
 /**

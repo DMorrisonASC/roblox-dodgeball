@@ -27,7 +27,7 @@ import type { BallService } from "../../services/ball/BallService";
  *
  * **Exported, because the practice variant next door now runs at it too.** `AlwaysThrowBehavior` used to be
  * ticked once every five seconds — the tick *was* its pace — which a windup cannot be held on: a hold that
- * cannot be looked at for five seconds is a hold that is not `charge × CHARGE_SECONDS`. So the pair shares this
+ * cannot be looked at for five seconds is a hold that is not `charge × RIG_CHARGE_SECONDS`. So the pair shares this
  * cadence, that behaviour keeps its five seconds as a pace of its own (see its `DECISION_SECONDS`), and the
  * windup is watched on the same tenth of a second for both.
  */
@@ -138,10 +138,17 @@ interface Aim {
  * effect whose meaning is "this is being held".** A player's charge is a *duration*: the button is down for
  * `CHARGE_SECONDS` and the arm is visibly loaded for all of it. A rig has no button — it has a distance, and
  * `chargeForRange` answers which hold covers it — so the hold exists as a number and nothing else unless the rig
- * is made to *take* it. That is what this is: the rig decides, holds for exactly the time a player's hold of
- * that charge would have taken, and then releases. **The effect on its hand therefore means the same thing on
- * both bodies**, which is the whole property being bought; a rig playing a brief flash before an instant release
- * would be an effect whose meaning only held on one of the two.
+ * is made to *take* it. That is what this is: the rig decides, holds for a hold's worth of time, and then
+ * releases. **The effect on its hand therefore means the same thing on both bodies**, which is the whole
+ * property being bought; a rig playing a brief flash before an instant release would be an effect whose meaning
+ * only held on one of the two.
+ *
+ * **The duration behind that effect is the rig's own figure, and it has been longer than a player's since the
+ * charge split.** It was one constant, and a mobile complaint about how long a hold takes shortened the
+ * *player's* — see `BALL_CONFIG.CHARGE_SECONDS`, and `BALL_CONFIG.RIG_CHARGE_SECONDS` for the number this file
+ * reads. What the split protects is exactly the property in the paragraph above: the *meaning* of a loaded hand
+ * has to be shared, and the *length* of the hold is not part of that meaning — a rig that released a fifth of a
+ * second after it decided would still be showing the same effect, on a body nobody had time to dodge.
  *
  * **What it costs, named because it is a gameplay change rather than a graphics one: a rig now telegraphs its
  * throw.** A player watching sees the windup on the rig's hand and knows a ball is coming, which is exactly what
@@ -163,7 +170,7 @@ interface Windup {
 	 *
 	 * **Recorded rather than recomputed at the release, so the hold lasts exactly as long as the charge it is
 	 * holding.** Recomputing would make the release solve a fresh distance against a deadline set by the old
-	 * one, and then a rig's windup would no longer be `charge × CHARGE_SECONDS` for any charge in particular —
+	 * one, and then a rig's windup would no longer be `charge × RIG_CHARGE_SECONDS` for any charge in particular —
 	 * which is the one thing acceptance rests on and the one property a reader can check. The price is stated
 	 * with the fire path: a rig that is *shoved or dashes* mid-windup releases the charge for where it was.
 	 *
@@ -484,11 +491,19 @@ export function createWindupTracker(): WindupTracker {
 	 * Starts a hold: **the charge is recorded, the deadline is set from it, and the rig is published as
 	 * charging.**
 	 *
-	 * **The duration is arithmetic rather than a constant** — `charge × CHARGE_SECONDS`, which is the same number
-	 * a player's hold of that charge takes — so a rig winding up for a short throw holds briefly and one throwing
-	 * across the arena holds for the full charge. That is the property the whole change rests on, and it is why
-	 * there is no windup constant in any config: a number here would be a second way of saying how long a charge
-	 * takes, free to disagree with the one a player's own arm obeys.
+	 * **The duration is arithmetic rather than a constant** — `charge × RIG_CHARGE_SECONDS` — so a rig winding up
+	 * for a short throw holds briefly and one throwing across the arena holds for the full charge. That is the
+	 * property the whole change rests on, and it is why there is no windup constant here: a number written into
+	 * this file would be a second way of saying how long a hold takes, free to disagree with the config's.
+	 *
+	 * **What it is no longer is "the same number a player's hold of that charge takes", and the sentence is
+	 * corrected rather than deleted because it was true for the life of this file until the charge split.** It
+	 * read `charge × CHARGE_SECONDS` and argued exactly that. Then a mobile complaint shortened the *player's*
+	 * hold to 0.6 s, and a rig's windup — which is the only warning a player gets that a ball is coming — was
+	 * the last thing that should have come down with it. So the config now carries two figures:
+	 * {@link BALL_CONFIG.CHARGE_SECONDS} for a hold in a hand, {@link BALL_CONFIG.RIG_CHARGE_SECONDS} for the
+	 * hold a rig takes on purpose, and this line reads the second. **A rig's hold is now deliberately longer
+	 * than a player's**, which is the honest description of a body that telegraphs to be dodgeable.
 	 *
 	 * **And the timer armed at the end is the only timer anywhere near a hold.** It is armed for the hold's own
 	 * length plus a margin, and it does nothing at all in the ordinary case — the turn that releases the throw, or
@@ -541,7 +556,11 @@ export function createWindupTracker(): WindupTracker {
 		const distance = flat.Magnitude;
 		const charge = chargeForRange(distance, point.Y - muzzle.Y);
 
-		const duration = charge * BALL_CONFIG.CHARGE_SECONDS;
+		// **The rig's own figure, and not the player's.** The two were one constant until a mobile complaint
+		// about how long a hold takes; they are separate now because a player's hold is a decision and a rig's
+		// is a telegraph, and shortening this one would make every rig harder to dodge. See
+		// `BALL_CONFIG.RIG_CHARGE_SECONDS`, which is the value this line held before the split and still does.
+		const duration = charge * BALL_CONFIG.RIG_CHARGE_SECONDS;
 
 		nextWindupToken += 1;
 		const token = nextWindupToken;
@@ -1107,7 +1126,7 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// **Two charges, and the divide is not "moving or not" but "did this body walk at all".** `plantNow`
 			// throws `windup.charge`, solved on the decision turn, because the hold it bought has to *be* that
 			// charge's hold — recomputing would solve a fresh distance against a deadline the old one set, and then a
-			// hold would last `charge × CHARGE_SECONDS` for no charge in particular. That shape can afford the
+			// hold would last `charge × RIG_CHARGE_SECONDS` for no charge in particular. That shape can afford the
 			// decision's figures for the reason it is a shape at all: the hold stops the body on the very turn the
 			// charge was solved, so the two distances are the same one and the throw cannot land short. The price it
 			// still pays is unchanged and still named: a rig *shoved*, or that dashes, between deciding and releasing

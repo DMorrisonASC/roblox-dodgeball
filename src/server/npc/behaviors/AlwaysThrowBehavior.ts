@@ -30,7 +30,7 @@ const THROW_RANGE = 60;
  * seconds (the hand is refilled on one turn and thrown on the next — see the tick, where the empty hand is
  * checked first). A windup cannot work that way: the hold has to be *watched*, and a rig whose turns are five
  * seconds apart would either fire on the same turn it decided — no hold at all — or hold for five seconds, which
- * is not `charge × CHARGE_SECONDS` and would put a five-second looping effect on a practice dummy. So the
+ * is not `charge × RIG_CHARGE_SECONDS` and would put a five-second looping effect on a practice dummy. So the
  * cadence moved here and the tick moved onto the shared tenth.
  *
  * **What that changes, stated rather than discovered.** The decision is still every five seconds, but the release

@@ -456,32 +456,84 @@ export const BALL_CONFIG = {
 	// ------------------------------------------------ the charged player throw
 
 	/**
-	 * How long a hold takes to reach full charge, in seconds. **Placeholder.**
+	 * How long a **player's** hold takes to reach full charge, in seconds. **Placeholder — `0.6`.**
 	 *
-	 * **Read by the client and by nothing else, because the charge is a *length of time* and the server
-	 * never sees one.** What crosses the wire is the charge itself — a number in `0..1` — so this constant
-	 * only decides how fast a player's own hold fills up. The server's half of the rule is the four numbers
-	 * below, which are what turn that number into a launch.
+	 * **The player's number, and not every body's — that is the change this entry carries.** A rig's windup
+	 * is {@link BALL_CONFIG.RIG_CHARGE_SECONDS}, and the two are one law read at two speeds because they buy
+	 * two different things: a player's hold is a *decision* they are making about power, and a rig's hold is
+	 * a *telegraph* it is showing somebody else. Shortening the first makes the throw responsive; shortening
+	 * the second makes the rigs harder to dodge, which is the opposite of what a mobile complaint about the
+	 * charge is asking for.
 	 *
-	 * **Three seconds, which is a reversal of the argument that used to stand here.** It said one second
-	 * was the longest hold that still reads as drawing an arm back rather than hesitating — and against a
-	 * *throw*, that is still true: a full-power shot now costs three seconds of standing with a ball in hand
-	 * and, until the release, no ball in the air. What that argument was really choosing between is which
-	 * failure the hold has, and the user has picked the other one. At one second the **middle of the range**
-	 * is the failure: the whole span from a tap to full power is under a second of finger, so a half-power
-	 * throw is a timing trick rather than a decision, and the power the player meant is not one they can
-	 * reproduce. Three seconds is long enough that each of the levels in between is a length a person can
-	 * hold on purpose, which is what a charge is *for*.
+	 * **What reads it: this client's own clock, and nothing else.** The charge is a *length of time* and the
+	 * server never sees one — what crosses the wire is the charge itself, a number in `0..1` — so every
+	 * reader is a client-side division of a hold against this: `ThrowController.currentCharge` for the throw
+	 * and the preview, `chargeEffect` for the fire ball, `cameraShake` for the tremble,
+	 * `LocomotionAnimationController` for the charge pose, and `ThrowController.chargePlaybackSpeed` for the
+	 * sound. The server's half of the rule is the four numbers below, which are what turn that number into a
+	 * launch.
 	 *
-	 * **What it costs, stated so it is not a surprise.** The charge sound is stretched to fit — see
-	 * {@link BALL_CONFIG.CHARGE_SECONDS} in `audio.config.ts`, which plays the clip at
-	 * `TimeLength / CHARGE_SECONDS`, so a two-second clip now runs at two thirds speed and sounds a third
-	 * lower. A clip recorded at about three seconds would play unshifted; that is an asset decision rather
-	 * than a code one, and `[Throw] charge sound loaded` prints the speed on every run.
+	 * **The sentence that used to stand here — "read by the client and by nothing else, because the server
+	 * never sees one" — was false, and how it was false is the reason for the split above.**
+	 * `ThrowBehavior.beginWindup` read it too, on the server, as `charge × CHARGE_SECONDS` for a rig's
+	 * hold — so this was never a player's number at all, and shortening it for a player's complaint would
+	 * silently have halved every rig's windup. A comment saying "don't touch" would not have stopped that
+	 * either; a name of its own does.
+	 *
+	 * **`0.6`, which reverses an argument that has now stood here twice.** It said one second was the
+	 * longest hold that still reads as drawing an arm back rather than hesitating, and then — on the
+	 * opposite finding — that a *long* hold is what makes the middle of the range a length a person can hold
+	 * on purpose rather than a timing trick. Both of those are arguments about a desktop mouse, where a
+	 * cursor is already covering the target and a wrong power is corrected by holding again. **On a touch
+	 * screen the hold is the whole gesture and the same finger is also holding the button down**, so a range
+	 * of powers nobody can hit deliberately sits on the side of a control that reads as unresponsive. The
+	 * reported fault is "it takes too long to charge", and this is the number that answers it.
+	 *
+	 * **What it costs, stated so it is not a surprise.** The charge sound is resampled to fit — see
+	 * `AUDIO_CONFIG.THROW_CHARGE` in `audio.config.ts`, which plays the clip at
+	 * `TimeLength / CHARGE_SECONDS`, so a clip recorded for a longer hold now plays faster and *higher*
+	 * pitched. `[Throw] charge sound loaded` prints the ratio on every run, and the fix for a bad one is on
+	 * the file rather than here: a re-export pitched for the speed it plays at, or a clip cut to this length.
+	 * The narrower band of powers is the other cost, and it is the deliberate trade above.
 	 *
 	 * It is not a rate: nothing accumulates, and the mapping is one division. See `ChargeRequest`.
+	 *
+	 * **It applies to every player on every platform, and that is a decision rather than an oversight.** The
+	 * complaint that produced `0.6` was a mobile one, but the hold is one constant and one division
+	 * (`ThrowController.currentCharge`) with no client-side branch in it, so a desktop player now reaches full
+	 * power in 0.6 s too. A platform test beside `isMobile()` was considered and not written, because it costs
+	 * more than it looks: **five client readers divide a hold by this number** — the throw and the preview, the
+	 * fire ball in `chargeEffect`, the camera tremble, the charge pose in `LocomotionAnimationController`, and
+	 * the charge sound's playback speed — so a per-platform figure would have to be one shared function or all
+	 * five would drift from the charge they are describing. **If desktop is meant to keep `1.25`, that function
+	 * is where it goes**, and the cost should be named when it is written: a phone would then reach full power
+	 * twice as fast as a desktop, which is a gameplay asymmetry rather than a comfort setting.
 	 */
-	CHARGE_SECONDS: 1.25,
+	CHARGE_SECONDS: 0.6,
+
+	/**
+	 * How long a **rig's** windup lasts at full charge, in seconds. **Placeholder — `1.25`, the figure
+	 * {@link BALL_CONFIG.CHARGE_SECONDS} held before the split.**
+	 *
+	 * **The same law at the speed a rig was always played at, kept there on purpose.** A rig has no button:
+	 * `ThrowBehavior` works out the charge a distance needs and then makes the rig *take* it, so that the effect
+	 * on its hand means the same thing a player's loaded arm does. See `Windup` in that file for the argument,
+	 * and for what a rig gives up by showing its hand. **What is shared is the law, not the duration** — the
+	 * sentence that used to stand here said "hold for exactly as long as a player's hold of that charge would
+	 * have taken", and that stopped being true the moment a player's hold got its own number.
+	 *
+	 * **Why it did not move with the player's number.** A rig's windup is the only warning a player gets
+	 * that a ball is coming from that body, and it lasts `charge × this`. Halving the player's hold must not
+	 * halve it: a dodgeable rig is the whole reason the windup exists, and a rig that releases 0.6 s after
+	 * it decides is a rig nobody can react to. **The two figures are deliberately free to differ**, because
+	 * they answer two different questions — one is about how a throw feels in the hand, the other about what
+	 * a rig is worth playing against — and tying them together is what made a mobile tuning change a
+	 * difficulty change.
+	 *
+	 * Read by `ThrowBehavior.beginWindup` and by nothing else; a player's hold never reads it, so tuning this
+	 * cannot change how a throw feels to throw.
+	 */
+	RIG_CHARGE_SECONDS: 1.25,
 
 	/**
 	 * How high above the thrower's hand a charged throw arcs, in studs. **A peak rather than an angle, and it
