@@ -62,8 +62,14 @@ const TEXT_GLOW_TRANSPARENCY = 0.5;
  *   touches layout.
  * @param colour The light's colour. Defaults to {@link PREMIUM.glow}, which is what every caller in this project
  *   wants; the parameter exists because a bloomed element in a team colour is the obvious next request.
+ * @param blur Whether the wide half may be the engine's blurred `UIShadow`. **`true` for a surface that is meant to
+ *   be read as solid, `false` for one that is meant to be seen *through*** — and that distinction is not cosmetic.
+ *   A shadow is a blurred **silhouette**, so it is inked across the shape's whole *interior* as well as around it;
+ *   behind an opaque panel nobody can tell, and behind a `0.7`-transparent one the glow shines through the face and
+ *   the "glass" reads as a lit disc. The stroke bloom is a `Border` stroke, so its ink is only ever the rim. See
+ *   `MobileControlsController`, which is the caller that needs the second.
  */
-export function applyGlow(instance: GuiObject, colour: Color3 = PREMIUM.glow): void {
+export function applyGlow(instance: GuiObject, colour: Color3 = PREMIUM.glow, blur = true): void {
 	// **The core: an existing stroke if there is one, otherwise a new one.** A `UIStroke` is looked for rather than
 	// assumed, because the same helper has to work on a plain `Frame` this file built and on a big-ui card that
 	// arrives with a hairline of its own — and on the second kind, adding a fourth stroke is exactly the mistake
@@ -76,6 +82,20 @@ export function applyGlow(instance: GuiObject, colour: Color3 = PREMIUM.glow): v
 	core.Thickness = PREMIUM.strokeThickness;
 	core.Transparency = 0;
 	core.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
+
+	// **A caller that asked for the rim bloom retires any shadow a previous call left.** This helper is idempotent by
+	// name, so "the object already has its bloom" has to mean *this kind* of bloom — a repaint that switched from a
+	// shadow to a stroke would otherwise keep both, and the shadow is the one that fills the face.
+	if (!blur) {
+		const stale = instance.FindFirstChild(GLOW_SHADOW_NAME);
+		if (stale !== undefined) stale.Destroy();
+
+		const rim = instance.FindFirstChild(GLOW_BLOOM_NAME);
+
+		paintBloom(rim !== undefined && rim.IsA("UIStroke") ? rim : makeStroke(instance, GLOW_BLOOM_NAME), colour);
+
+		return;
+	}
 
 	// **The bloom, made once.** The `UIShadow` is an `Instance.new` inside a `pcall` because the class is newer than
 	// some clients; a failure is not an error but a reason to use the stroke below.
@@ -103,8 +123,17 @@ export function applyGlow(instance: GuiObject, colour: Color3 = PREMIUM.glow): v
 
 	// **The fallback: the same two-layer trick, with a stroke doing the blur's job.** Wider than the core and mostly
 	// transparent, so what the eye reads is a soft band rather than a second border.
-	const bloom = makeStroke(instance, GLOW_BLOOM_NAME);
+	paintBloom(makeStroke(instance, GLOW_BLOOM_NAME), colour);
+}
 
+/**
+ * **The wide half as a `Border` stroke — ink on the rim and nowhere else.**
+ *
+ * One function because it has two callers now: the no-`UIShadow` fallback, and the caller that *asks* for this shape
+ * of bloom because its face is transparent (see this file's `blur` note). Two copies of these four properties would
+ * be two answers to "what does a rim bloom look like".
+ */
+function paintBloom(bloom: UIStroke, colour: Color3): void {
 	bloom.Color = colour;
 	bloom.Thickness = BLOOM_THICKNESS;
 	bloom.Transparency = BLOOM_TRANSPARENCY;

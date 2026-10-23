@@ -1,7 +1,8 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { Players, RunService, Workspace } from "@rbxts/services";
+import { Players, RunService, UserInputService, Workspace } from "@rbxts/services";
+import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { isMobile } from "../../platform";
 import { applyGlow } from "../../ui/glow";
 import { hudTheme } from "../../ui/hudTheme";
@@ -680,25 +681,164 @@ const LABEL_GAP = 4;
 /**
  * The two states of a button, and **the only thing on this HUD that changes**.
  *
- * **Idle: the theme's plum at the theme's `0.15`.** That is the fill every panel on this HUD wears — see
- * `ui/premiumTheme.ts` — which is what makes the cluster read as part of the interface rather than as six dark
- * discs dropped onto the arena. It is dark enough that the near-white word under each circle stays legible over
- * grass, sky or sand, and thin enough that the game is still visibly behind it: a control over the world should not
- * black the world out.
+ * **Idle: the theme's near-black at `0.7`, i.e. seven tenths given back to the arena.** This was `PREMIUM.transparency`
+ * (`0.15`) — the same glass every panel wears — on the argument that the cluster should read as part of the interface
+ * rather than as six dark discs dropped onto the world. **That argument was written for a HUD over a dark background
+ * and this one is over bright green turf**, where six near-solid discs at the bottom of the screen are the loudest
+ * thing in the frame and fight the game for attention; the report was exactly that, in those words. At `0.7` the arena
+ * is what a player sees and the control is a rim: an outline, a bloom (`applyGlow`) and a word, with the world running
+ * through the middle of the circle.
  *
- * **Down: the theme's crimson, at `0`.** The palette's red is this direction's "this is happening" colour — it is
- * what the Return to Lobby pill turns when it arms, and what side A's score wears — so a held button is the same
- * statement in the same vocabulary rather than a colour invented for a press. Fully opaque, because this is the
- * state that has to be unmistakable at a glance.
+ * **The cost, stated rather than discovered: the circle itself is now barely a shape.** What holds it together is the
+ * neon edge and the label under it, both of which are opaque — the buttons read as six lit rings rather than six
+ * filled discs, which is the Material "outlined" variant and is the intent. Anything that later wants *fill* to carry
+ * meaning here (a charge level, a selected state) has to draw it rather than assume the face is visible.
  *
- * **And the pair differs in hue, which is the change this pass makes.** It used to be one idea at two opacities —
- * `trough` at `0.6` and `accent` at `0` — which worked because the light palette's accent is a strong blue against
- * a near-black. On this palette a plum "pressed harder" is the same plum, so the held state takes a *different*
- * colour from the five; a state that moves one property reads as a colour that shifted rather than as a button
- * that was pressed.
+ * **Down: `0.2`, and that alpha now means "almost solid white" rather than "solid red".** Near-opaque rather than
+ * fully opaque, deliberately: at `0` a white circle in a bright scene is a hole punched in the screen, and the whole
+ * HUD has been glass on glass since the palette arrived. A fifth of the world still showing through keeps a press in
+ * that language while making the state unmistakable at a glance.
+ *
+ * **And the pair is an *inversion* rather than two colours**, which is the change this pass makes. It used to be a
+ * hue change — plum to crimson — and before that one idea at two opacities (`trough` at `0.6`, `accent` at `0`). A
+ * crimson disc is a statement borrowed from the game's own "this matters" red (the arming pill, side A's score), which
+ * is fine on a dark plate and reads as an alarm over grass. **Dark face with white ink, then white face with dark
+ * ink**: the press is the *negative* of the idle state, so nothing new is introduced to say "pressed" — see `paint`,
+ * which writes both colours together because they are one state, and `paintJump`, which applies the same pair to the
+ * engine's own jump button.
  */
-const IDLE_TRANSPARENCY = PREMIUM.transparency;
-const HELD_TRANSPARENCY = 0;
+const IDLE_TRANSPARENCY = 0.7;
+const HELD_TRANSPARENCY = 0.2;
+
+/**
+ * **How far a finger may travel from where it landed before the press stops counting — the slop, in pixels: `10`.**
+ *
+ * **Roblox has no built-in drag threshold, and this is the number that replaces it.** A `GuiButton` reports
+ * `InputBegan` when a finger lands on it and `InputEnded` when that finger leaves the screen — wherever it is by
+ * then — and nothing in between says "this was a swipe, not a press". So a thumb dragged across the lower-right
+ * corner while steering fires whatever button it happened to start on, which is the fault this number exists to
+ * stop. The community answer, and what this file now does, is to remember the landing point and measure the travel:
+ * past this many pixels the press is a drag and is thrown away.
+ *
+ * **Ten, and it is a *strict* number on purpose.** On the 393-wide phone this cluster is drawn for, the packing gives
+ * every button **72 px** across (see `TAP_MIN`, which records that figure), so this is a seventh of a diameter and a
+ * long way under the 36 px radius: a press that stays anywhere near the circle it landed on counts, and anything that
+ * has become travel has stopped being a press. A resting thumb on glass reports a couple of pixels of jitter between
+ * the press and the release, so the threshold has to clear three or four; ten is the tightest figure that does. The
+ * revision before this one used fifteen and the report against it was that swipes still landed — the number moved
+ * *down*, which is also the direction that makes the rule strict rather than forgiving.
+ *
+ * **Screen pixels, not reference pixels, and no multiplication by {@link buildScale}.** What is being measured is
+ * the finger's own travel, and a thumb does not wobble further because the circle under it was drawn larger. This
+ * is the one distance in this file that is a property of the hand rather than of the layout.
+ */
+const DRAG_THRESHOLD = 10;
+
+/**
+ * **How long a hold button waits before it starts doing anything, in seconds: `0.05`.**
+ *
+ * **The press is not an event, it is an interval that has to survive its first frames.** A thumb being dragged across
+ * the cluster lands on a button for a frame or two on the way past, and with the action fired at `InputBegan` that
+ * landing is indistinguishable from a press — which is exactly what was reported. Waiting fifty milliseconds and
+ * checking again means the button has to still be under a still finger before anything happens: a drag has moved far
+ * more than {@link DRAG_THRESHOLD} by then at any thumb speed, so it is already disqualified.
+ *
+ * **Fifty milliseconds is three frames at 60 Hz, and it is not added to the charge.** `ThrowController.beginHold` is
+ * what starts the clock, so the only cost is that the clock starts 0.05 s after the finger landed — about 8% of
+ * `CHARGE_SECONDS`, and invisible to a player watching the arc grow rather than the button. **A release inside this
+ * window is a flick rather than a miss**: it is handled at the release instead of being dropped, because a quick tap
+ * on Throw is how a mobile player throws at all. See {@link trackRelease}.
+ */
+const HOLD_CONFIRM_SECONDS = 0.05;
+
+/**
+ * **How long a tapped button stays lit after its action runs, in seconds: `0.12`.**
+ *
+ * A tap now fires at its *release*, which is the moment the finger leaves, so there is nothing left to hold the paint
+ * up for. This is the flash that says the tap was accepted — short enough to read as a blink rather than as a state,
+ * and deliberately not a press-time paint: a button that lights up when the finger lands is a button claiming to have
+ * pressed while the press is still on probation.
+ */
+const TAP_FLASH_SECONDS = 0.12;
+
+/**
+ * **The colour of the progress ring: a pale violet, `#E2D8FF` — the reference's own colour.**
+ *
+ * **The one colour on this HUD that is not a palette step, and the reason is that the palette has no word for this
+ * job.** `premiumTheme`'s five values are four near-blacks (`void`, `panel`, `raised`, `band`), one white (`text`) and
+ * one cyan (`gold`/`stroke`/`glow`). A cooldown needs a colour that means *not yet* and then *ready*, and every one of
+ * those is spoken for: the darks are the surfaces, the cyan is this cluster's **held** face (see `buildButton`'s
+ * `paint`), and white is ink. **A dark-on-dark ring is what an earlier attempt drew and nobody could see it** — the
+ * palette cannot express "this is coming back" on a near-black button, so this is a new colour rather than a shade.
+ *
+ * **Pale violet rather than green, because the ring now sits *beside* the button rather than on it**: it is drawn on
+ * the arena floor, in the gap the shrinking button opens up, and it has to read against bright green turf, sand and
+ * the red side's paint. A near-white violet does; a mid green does not. It is also what the reference image shows. If
+ * a second feature ever wants it, it belongs in `premiumTheme` as a `ready` job; until then it lives here.
+ */
+const RING_COLOUR = Color3.fromRGB(226, 216, 255);
+
+/** **How solid the ring is: `0.05` — effectively opaque, because it is a *line*, not a surface.** */
+const RING_TRANSPARENCY = 0.05;
+
+/**
+ * **How far past the hard edge the second keypoint sits, as a fraction of the fill: `0.001`.**
+ *
+ * **A hard edge needs two keypoints**, because a `UIGradient` interpolates between the keys it is given and a single
+ * key cannot be a step. A thousandth of the container is a fraction of a pixel on a 62 px ring, so the edge reads as a
+ * line rather than as a fade — which is what makes the fill look like a gauge instead of a soft wipe, and what keeps
+ * the two halves' handover invisible at the halfway point.
+ */
+const SWEEP_EDGE = 0.001;
+
+/**
+ * **How thick the ring is, as a fraction of the button's diameter: `0.08` — about 5 px on a 62 px button.**
+ *
+ * **A Material-style progress indicator is a *hairline* around the control, not a disc**, which is the whole of what
+ * the reference shows and the thing every previous attempt here got wrong. The two halves fill a disc; this is how
+ * much of that disc the hole leaves showing at its edge. The value is the hole's inset **on each side**, so the hole
+ * is sized `1 - 2 × RING_WIDTH` and the visible band is this fraction of the diameter — five pixels of a 62 px ring.
+ * That is the weight a control under a thumb wants: thick enough to read at arm's length through the finger covering
+ * it, thin enough to look drawn rather than filled.
+ */
+const RING_WIDTH = 0.08;
+
+/**
+ * **How far the button shrinks while its cooldown runs: `0.85`, i.e. 15% of its diameter.**
+ *
+ * **This number is what makes the ring visible at all, and that is the trick the whole component is built on.** The
+ * ring is a sibling *behind* the button at the button's full size, so while the button is at `1` the ring is
+ * completely covered by it — and when the button shrinks, the 7.5% of the radius it gives up on every side is exactly
+ * the band the ring is drawn in. Nothing about the ring changes between ready and cooling except whether it exists;
+ * the *button* is what moves. See {@link COOLDOWN_SHRINK_SECONDS} for the motion and `trackCooldowns` for the three
+ * lines that drive it.
+ */
+const COOLDOWN_SHRINK = 0.85;
+
+/**
+ * **How long the shrink and the grow-back take, in seconds: `0.1`.**
+ *
+ * **Short enough to read as a consequence of the press rather than as an animation about it**, which is Material's own
+ * answer for a state change this small: the indicator arrives *with* the action, and a player who presses Catch twice
+ * in a second should never see the button mid-move. It is also inside {@link TAP_FLASH_SECONDS}'s neighbourhood, so
+ * the press flash and the shrink overlap rather than queue.
+ */
+const COOLDOWN_SHRINK_SECONDS = 0.1;
+
+/**
+ * **The ring's `ZIndex`: `0`, i.e. *behind* the button rather than on it.**
+ *
+ * **The ladder is the component.** The ring is a sibling of the button inside the same box, one rung below it, at the
+ * button's full size: covered while idle, revealed as the button shrinks. Putting it above the button would make it a
+ * line drawn across the control's face, which is the thing the reference does **not** show.
+ */
+const COOLDOWN_Z_INDEX = 0;
+
+/**
+ * **The hole's `ZIndex`: `1`, one rung above the fills it has to cover.** See {@link RING_WIDTH} for why the hole
+ * exists and {@link COOLDOWN_Z_INDEX} for the ladder it sits on.
+ */
+const COOLDOWN_HOLE_Z_INDEX = 1;
 
 /**
  * One button: what it says and what it does. **Where it goes and how big it is are not in here at all.**
@@ -724,11 +864,680 @@ interface TouchControl {
 	/** The word under the button, which on this HUD is the whole of the legend. */
 	readonly label: string;
 
-	/** What the press does. Called once per press, and never twice without a release between them. */
+	/**
+	 * **What the press does** — once per press, and never twice without a release between them.
+	 *
+	 * **When it is called depends on which kind of control this is.** A *held* control (the throw, the jump) fires
+	 * `HOLD_CONFIRM_SECONDS` after the press, once the finger has proved it is staying put — a charge that waited for
+	 * the release would not be a charge, and one that fired at the landing would fire for a thumb passing over the
+	 * button. A *tapped* one fires at the **release**, because a tap cannot be told from the first half of a swipe
+	 * until the finger has either moved or left. A press that travels past `DRAG_THRESHOLD` calls this not at all, on
+	 * either kind. See {@link beginPress} and {@link trackRelease}.
+	 */
 	readonly down: () => void;
 
 	/** What the release does, for the control that is held rather than tapped. */
 	readonly up?: () => void;
+
+	/**
+	 * **The attribute that says when this control is ready again — and the whole of whether it gets a cooldown arc.**
+	 *
+	 * Two controls have one (`Catch`, `Dodge`). The other four do not, and the four are not an oversight:
+	 *
+	 * - **`Throw` has no cooldown anywhere in this game.** There is no `THROW_READY_AT`, no attribute and no timer on
+	 *   either side — `readyAt.ts` has exactly three writers, and they are the catch's, the dodge's and the duck's.
+	 *   A throw is gated by having a ball in the hand, which is a *state* rather than a deadline, so there is nothing
+	 *   for an arc to count down and **it deliberately has none**. A charge meter was tried on this button and removed
+	 *   at the player's request: it is a different fact wearing the same clothes, and one clock on this HUD that means
+	 *   something other than "when am I allowed to press this" is worse than none.
+	 * - **`Jump` waits on the body landing**, which is a physical fact rather than a window the server opens, and
+	 *   `Humanoid.Jump` refuses itself while airborne. An arc would be a second, disagreeing answer.
+	 * - **`Drop` and `Curve` are instant.** Dropping is a state change on the hand and the curve is a preference
+	 *   toggled between throws; neither has a window that shuts, so neither has anything to show.
+	 *
+	 * **Saying so here rather than in a list beside `buildButton`** is the same decision the rest of this interface
+	 * makes — the table is the description of the cluster, so "this one has a cooldown" belongs in it and a second
+	 * table of names would be a second place to forget a control. A control that later grows a clock adds one field
+	 * here and gets its arc, its tracker entry and its debug lines from the code that already exists; nothing outside
+	 * this interface needs to learn about it.
+	 */
+	readonly cooldown?: string;
+}
+
+/**
+ * **One press in flight, as the cluster's global tracker sees it — the record that replaces a button's own events.**
+ *
+ * **Why a record rather than two locals in `buildButton`, and this is the whole of the rewrite.** A `GuiButton`'s
+ * `InputEnded` is only reliable while the finger is *on* the button: drag a thumb off the circle and the pair of
+ * events that a press was built out of stops describing the same gesture — the begin happened on the button and the
+ * end happens somewhere else, or arrives from an input the button never saw begin. The one thing the engine does
+ * report exactly, for the life of the touch and wherever the finger goes, is `UserInputService.InputChanged` /
+ * `InputEnded` on the `InputObject` itself. So the button's events are used only to learn **which** input landed on
+ * it, and everything after that is measured against the global streams.
+ *
+ * **`pressed` is not the same question as "is the record live".** A hold waits {@link HOLD_CONFIRM_SECONDS} before
+ * calling `control.down()`, so there is a window in which the record exists and nothing has been pressed — and a
+ * cancel inside that window has no `up` to make. Liveness is the record's presence in {@link presses}; `pressed` is
+ * whether an action is owed a release.
+ */
+interface Press {
+	/** The button this press landed on, kept so a second finger on the same button is refused. */
+	readonly button: TextButton;
+
+	/** What the press will call, and — for a hold — the release it owes. */
+	readonly control: TouchControl;
+
+	/** **The engine's own input, matched by identity.** Two fingers are two `InputObject`s, not two positions. */
+	readonly input: InputObject;
+
+	/** Where the finger landed, in screen pixels. */
+	readonly start: Vector2;
+
+	/** Whether `control.down()` has been called and therefore whether a cancel owes `control.up()`. */
+	pressed: boolean;
+
+	/** The button's own paint, so a press can light and unlight it without the tracker knowing the theme. */
+	readonly paint: (down: boolean) => void;
+}
+
+/**
+ * **Every press in flight, one per button.** The cluster is the only thing that reads it, and it holds at most six
+ * records — two thumbs cannot press more than two buttons at once, and the per-button latch refuses a second finger
+ * on one button.
+ */
+const presses = new Array<Press>();
+
+/** The engine's input point as this file's 2D point. `InputObject.Position` carries a Z that nothing here uses. */
+function pointOf(input: InputObject): Vector2 {
+	return new Vector2(input.Position.X, input.Position.Y);
+}
+
+/** How far a finger has travelled, which is the only thing {@link DRAG_THRESHOLD} is compared against. */
+function travel(from: Vector2, to: Vector2): number {
+	return from.sub(to).Magnitude;
+}
+
+/**
+ * **The press on one button, or nothing — the latch that makes one press one press.** `InputBegan` is re-sent for an
+ * input that never ended when the window regains focus, so a button that trusted the event would start a second press
+ * inside the first.
+ */
+function pressFor(button: TextButton): Press | undefined {
+	for (const press of presses) {
+		if (press.button === button) return press;
+	}
+
+	return undefined;
+}
+
+/** Whether a record is still the live one — presence in the registry is the whole of that question. */
+function isLive(press: Press): boolean {
+	return presses.indexOf(press) >= 0;
+}
+
+/** Drops a record, which is what makes it dead to the global tracker. */
+function forget(press: Press): void {
+	const index = presses.indexOf(press);
+	if (index >= 0) presses.remove(index);
+}
+
+/**
+ * **A finger landed on a button: the record is made, and — for a hold — the timer that decides whether it was a press.**
+ *
+ * **Nothing happens at the landing itself, for either kind of control.** A tap cannot fire until it is known to have
+ * stayed put, and a hold waits {@link HOLD_CONFIRM_SECONDS} so that a thumb passing over the button on its way
+ * somewhere else is gone by the time the action would run. **Nothing is painted either**: the paint is the claim that
+ * something was pressed, and this is the moment before that has been decided.
+ */
+function beginPress(button: TextButton, control: TouchControl, input: InputObject, paint: (down: boolean) => void): void {
+	const press: Press = {
+		button,
+		control,
+		input,
+		start: pointOf(input),
+		pressed: false,
+		paint,
+	};
+
+	presses.push(press);
+
+	// A tap has nothing to arm: it fires at its release, or not at all. See `trackRelease`.
+	if (control.up === undefined) return;
+
+	task.delay(HOLD_CONFIRM_SECONDS, () => {
+		// **The one check that has to be made again after a wait.** The record is gone if the finger lifted or slid;
+		// a record that is still live here has survived both, which is exactly what "a press rather than a swipe"
+		// means.
+		if (!isLive(press)) return;
+
+		press.pressed = true;
+		paint(true);
+		control.down();
+
+		// **Printed here rather than at the landing**, which is the correction the log asked for: `[HUD] X down` used
+		// to appear for every finger that touched a button, including the ones this file went on to refuse, so a
+		// swipe and a press looked identical in the output. It now means the action ran.
+		if (DEBUG) print(`[HUD] ${control.label} down — still after ${HOLD_CONFIRM_SECONDS}s`);
+	});
+}
+
+/**
+ * **Stands a press down: the record goes, the paint goes, and a hold that had started is ended.**
+ *
+ * Called from {@link trackMovement} the moment a finger travels past the threshold, which is what makes a dragged
+ * press cancel at the frame it becomes a drag rather than at the release that follows it.
+ */
+function cancelPress(press: Press): void {
+	forget(press);
+
+	press.paint(false);
+
+	if (DEBUG) print(`[HUD] ${press.control.label} press cancelled — a drag, not a tap`);
+
+	if (!press.pressed) return;
+
+	press.pressed = false;
+	if (press.control.up !== undefined) press.control.up();
+}
+
+/**
+ * **A finger moved: any press it belongs to that has travelled past the slop is cancelled.**
+ *
+ * **Read from `UserInputService.InputChanged` rather than from the button**, which is the point of the rewrite: the
+ * global stream keeps reporting a finger that has left the button, and the button's own event does not. The input is
+ * matched by **identity** (`press.input === input`), because that is the only thing the engine guarantees about a
+ * multi-touch client — two fingers share a `UserInputType` and nothing else.
+ *
+ * **Walked backwards so a removal cannot skip a record**, which is the one trap in mutating a list while iterating it.
+ */
+function trackMovement(input: InputObject): void {
+	for (let index = presses.size() - 1; index >= 0; index -= 1) {
+		const press = presses[index];
+		if (press.input !== input) continue;
+		if (travel(press.start, pointOf(input)) <= DRAG_THRESHOLD) continue;
+
+		cancelPress(press);
+	}
+}
+
+/**
+ * **The finger left the screen: the press fires, or it does not, and either way the record is finished here.**
+ *
+ * **This — not the button's `InputEnded` — is the authority on a release.** It arrives wherever the finger has got to,
+ * which is the case a press that slid off its circle was losing.
+ *
+ * **A hold that never started is a flick, and it fires here.** Released inside {@link HOLD_CONFIRM_SECONDS} with no
+ * travel, it calls `down()` and `up()` back to back: a quick tap on Throw is how this game is played on a phone, and
+ * the confirm delay must not swallow it.
+ *
+ * **A tap fires only if it stayed put.** The distance is measured again here rather than trusted from
+ * {@link trackMovement}, because a flick fast enough to begin and end inside one frame produces no change event at all
+ * — and that press is measured for the first time at this line, with the same threshold.
+ */
+function trackRelease(input: InputObject): void {
+	for (let index = presses.size() - 1; index >= 0; index -= 1) {
+		const press = presses[index];
+		if (press.input !== input) continue;
+
+		const moved = travel(press.start, pointOf(input));
+
+		forget(press);
+
+		if (press.control.up !== undefined) {
+			// **A drag that began and ended inside one frame.** Nothing was ever pressed, so nothing is ended; a hold
+			// that *had* committed before the flick gets its release, which is the only way out of it.
+			if (moved > DRAG_THRESHOLD) {
+				press.paint(false);
+
+				if (press.pressed && press.control.up !== undefined) press.control.up();
+
+				continue;
+			}
+
+			// **A flick: released inside the confirm window with the finger still.** `down` and `up` back to back, and
+			// the same flash a tap gets — without it the flick's paint would be the one thing in this file that nothing
+			// ever took back down.
+			if (!press.pressed) {
+				press.control.down();
+				press.control.up();
+
+				if (DEBUG) print(`[HUD] ${press.control.label} down — a flick, released inside the confirm window`);
+
+				press.paint(true);
+				task.delay(TAP_FLASH_SECONDS, () => press.paint(false));
+
+				continue;
+			}
+
+			// **A hold that was running: unpaint, then release.** The order is the reverse of the commit's for the
+			// reason the commit's is what it is — the paint is the visible claim, and it should be true for exactly as
+			// long as the action is.
+			press.paint(false);
+			press.control.up();
+
+			if (DEBUG) print(`[HUD] ${press.control.label} up`);
+
+			continue;
+		}
+
+		if (moved > DRAG_THRESHOLD) {
+			// **A tap that is refused says so, with the distance that refused it.** This branch used to be silent, and
+			// silence is the one answer a player cannot act on: "I tapped Catch and nothing happened" has two very
+			// different causes — the press never reached this file at all (the finger missed the button, or something
+			// took focus) and the press arrived and was measured as a drag — and only the number in this line tells
+			// them apart. A tap on a 70 px button that travels `14px` is a thumb, not a swipe.
+			if (DEBUG) print(`[HUD] ${press.control.label} tap lost — moved ${string.format("%.0f", moved)}px`);
+
+			continue;
+		}
+
+		press.control.down();
+
+		// **And an accepted tap prints how far it moved**, which is the number to compare with {@link DRAG_THRESHOLD}
+		// when a button feels unreliable on one device rather than another.
+		if (DEBUG) print(`[HUD] ${press.control.label} tap — ${string.format("%.0f", moved)}px of travel`);
+
+		// **The only paint a tap ever gets**, and it arrives after the action rather than before it — see
+		// `TAP_FLASH_SECONDS`. A second tap inside the flash simply restarts it.
+		press.paint(true);
+		task.delay(TAP_FLASH_SECONDS, () => press.paint(false));
+	}
+}
+
+/**
+ * **One button's cooldown: the ring that fills behind it, the two halves that draw it, and the value that shrinks the
+ * button to reveal it.**
+ *
+ * **A ring around the control that only exists while the control is cooling — a Material progress indicator on a
+ * FAB.** The earlier shapes this went through are worth keeping as a list, because each one failed for a reason the
+ * next one had to answer: a full-button disc that *drained* was two near-blacks apart and could not be seen; a
+ * full-button wedge that *filled* was correct but read as the button changing colour; a small corner dial was the right
+ * idea in the wrong place, because a 21 px widget competes with the button's own label for attention and is covered by
+ * the thumb that just pressed it. What is left is the shape the reference shows — **a hairline ring at the button's
+ * own diameter** — and the trick that makes it legible without decorating the control: the ring sits *behind* the
+ * button and the button **shrinks** to reveal it. See {@link COOLDOWN_SHRINK} and `addCooldownOverlay`.
+ *
+ * **Which half is which is the direction of the sweep, and it is clockwise.** The ring starts at 12 o'clock and grows
+ * 12 → 3 → 6 → 9 → 12: the **right** half covers the first 180° (0 to 50% of the wait) and the **left** half covers
+ * the second. See {@link rightHalfAngle} and {@link leftHalfAngle} for the two expressions, and `addArcHalf` for the
+ * geometry that makes a gradient's rotation carve a wedge rather than a chord.
+ *
+ * **`total` is measured rather than configured, and that is the decision worth stating.** The server publishes an
+ * *instant* (`CATCH_READY_AT` is `Workspace.GetServerTimeNow() + seconds`), not a duration — see `readyAt.ts`, whose
+ * doc argues for exactly that — so a client wanting a fraction has two choices: re-derive the length from the same
+ * config arithmetic the server used, or read it off the first frame the cooldown is visible, when the remaining time
+ * *is* the total. The second is what happens here. It costs a small inaccuracy and buys one number instead of two
+ * files' worth of them: `CATCH_BUSY_SECONDS` is `WINDOW + LOCKOUT` in `CatchService` and a copy of that sum here would
+ * be a second place to keep it right, which is the drift this codebase refuses everywhere else.
+ *
+ * **What the inaccuracy is, stated.** A cooldown first seen mid-flight — the ring mounts while a catch is already
+ * running, or a second press extends one — takes the *remaining* as its total, so the ring starts part-filled and
+ * reaches full before the button is actually ready, then sits full for the tail. On this HUD the ring is invisible
+ * until a press, and a press starts its cooldown at the same moment, so the case that can hit it is an extension.
+ */
+interface CooldownRing {
+	/** The control's word, so a log line about this ring names the button rather than an attribute. */
+	readonly label: string;
+
+	/** The circular clip both halves live in — a sibling of the button, behind it, at the button's full diameter. */
+	readonly container: Frame;
+
+	/** The right half's edge — the first 180° of the sweep, 12 o'clock to 6. See {@link rightHalfAngle}. */
+	readonly rightGradient: UIGradient;
+
+	/** The left half's edge — the second 180°, 6 o'clock back round to 12. See {@link leftHalfAngle}. */
+	readonly leftGradient: UIGradient;
+
+	/** The `Player` attribute holding the instant this control is ready — `CATCH_READY_AT`, `DODGE_READY_AT`. */
+	readonly attribute: string;
+
+	/**
+	 * **The value the button's size tweens toward: `1` while ready, {@link COOLDOWN_SHRINK} while cooling.**
+	 *
+	 * This is the ring's *other* half. The ring itself is a static drawing — it is hidden or shown, never resized — and
+	 * everything that moves during a cooldown is here, on the button. That split is what keeps the indicator legible:
+	 * a ring that grew while a button also grew would be two motions saying one thing.
+	 */
+	readonly shrinkGoal: Fusion.Value<number>;
+
+	/** How long this cooldown lasts, taken from the first frame it was seen. See this interface's doc. */
+	total: number;
+
+	/** Whether the arc was drawn on the previous frame, so a hidden ring costs two comparisons and no writes. */
+	showing: boolean;
+}
+
+/** Every ring on the cluster, one per control that carries a `cooldown`. Two today: Catch and Dodge. */
+const cooldowns = new Array<CooldownRing>();
+
+/**
+ * **The `Transparency` ramp that turns a rotated gradient into a half-plane — a hard edge through the centre.**
+ *
+ * **A `UIGradient` is linear, so this is one straight edge and not an arc in itself.** What makes it an arc is where
+ * it is *placed*: both halves use this same ramp inside a fill the size of the whole container, whose centre is the
+ * container's centre, so the edge always passes through that centre — which is a **radius**, not a chord. Rotating
+ * the gradient rotates the radius, and the clipped half (see `addArcHalf`) shows the wedge behind it.
+ *
+ * **The two keypoints at `0.5` are the whole trick, and one of them is why `SWEEP_EDGE` exists.** Transparency `0` is
+ * opaque and `1` is clear, so `0 → 0` up to the midpoint and `1 → 1` from it would in principle be a step; in
+ * practice a sequence with a single pair of keypoints interpolates, so the step is spelled as two keypoints a
+ * thousandth apart. That is well under a pixel on a 21 px corner arc: the boundary reads as a line.
+ *
+ * **The opaque half is the *first* half of the ramp**, i.e. the side the gradient points away from. Which way that
+ * ends up facing is entirely `Rotation`'s business — see {@link rightHalfAngle} and {@link leftHalfAngle}.
+ */
+function wedge(): NumberSequence {
+	return new NumberSequence([
+		new NumberSequenceKeypoint(0, 0),
+		new NumberSequenceKeypoint(0.5, 0),
+		new NumberSequenceKeypoint(0.5 + SWEEP_EDGE, 1),
+		new NumberSequenceKeypoint(1, 1),
+	]);
+}
+
+/**
+ * **Where the right half's edge sits when the cooldown starts: `0°`, and the right half-frame shows nothing.**
+ *
+ * A gradient at `0` points right, so the opaque half-plane is the **left** half of the container — and the right
+ * half-frame, which is the only part of it that is drawn first, therefore shows nothing. That is "empty", and it is a
+ * *value* rather than a hidden instance so the arc has exactly one way to be invisible: `container.Visible`.
+ */
+const RIGHT_EMPTY_ROTATION = 0;
+
+/**
+ * **Where the left half's edge sits at the halfway handover: `180°`, which is the right half's *full* end.**
+ *
+ * A gradient at `180` points left, so the opaque half-plane is the **right** half; the right half-frame is therefore
+ * drawn complete and the left half-frame shows nothing. The handover is exact — the right half has just finished at
+ * `180` and the left half starts at `180` — so at 50% the arc is one unbroken semicircle with no seam.
+ */
+const LEFT_EMPTY_ROTATION = 180;
+
+/**
+ * **The right half: the first 180° of a clockwise sweep, in degrees, for `progress` (0 to 1) of the way back.**
+ *
+ * Positive rotation is clockwise (the Creator reference says so in as many words), and a gradient's edge always runs
+ * through the container's centre — which is what makes this a radius sweeping 12 o'clock → 3 o'clock → 6. The value
+ * is capped at `180` with a `math.min` rather than by a branch, because past the handover the right half must *stay*
+ * complete while the left one takes over; a cap says that in one expression.
+ */
+function rightHalfAngle(progress: number): number {
+	return math.min(RIGHT_EMPTY_ROTATION + 360 * progress, 180);
+}
+
+/**
+ * **The left half: the second 180°, 6 o'clock → 9 o'clock → 12, for `progress` (0 to 1) of the way back.**
+ *
+ * It holds at `180` for the whole first half of the wait — which is the state that shows nothing, see
+ * {@link LEFT_EMPTY_ROTATION} — and then sweeps to `360` (`≡ 0`), where the opaque half-plane is the left half and
+ * the left frame is drawn complete. At `progress` 1 both halves are full and the next frame hides the container.
+ */
+function leftHalfAngle(progress: number): number {
+	if (progress <= 0.5) return LEFT_EMPTY_ROTATION;
+
+	return LEFT_EMPTY_ROTATION + 360 * (progress - 0.5);
+}
+
+/**
+ * **One half of the arc: a clipped semicircle with a container-sized disc inside it, and the gradient that carves it.**
+ *
+ * **This is the "two half-circle" construction, and the reason it works is that a gradient's hard edge always runs
+ * through the frame's centre.** The fill is the size of the *whole container* (`2, 1` inside a half that is `0.5, 1`),
+ * so its centre is the container's centre; the half-frame clips the result to one side. What is left is a **wedge** —
+ * a radius sweeping out from the centre — whose angle is set by the gradient's `Rotation`. That is a true radial
+ * sweep, not a chord: rotating the edge about the centre is exactly rotating a radius, because the edge passes
+ * through the centre at every angle.
+ *
+ * **The transparency sequence is the hard edge**, `{0: clear… }` — opaque for the first half of the gradient and
+ * clear for the second, with {@link SWEEP_EDGE} between them so it is a line rather than a fade. Which *side* of the
+ * edge is opaque is decided by the rotation, and that is the whole state this arc has.
+ *
+ * **`offset` is where this half starts across the container** (`0` for the left, `0.5` for the right), and the fill's
+ * `Position` is derived from it rather than passed: `-2 * offset` puts the fill's left edge at the container's left
+ * edge in both halves, which is what makes the two gradients measure the same axis from the same origin.
+ */
+function addArcHalf(container: Frame, name: string, offset: number, rotation: number): UIGradient {
+	const half = new Instance("Frame");
+	half.Name = name;
+	half.Size = UDim2.fromScale(0.5, 1);
+	half.Position = UDim2.fromScale(offset, 0);
+	half.BackgroundTransparency = 1;
+	half.BorderSizePixel = 0;
+	// **The first of the two clips.** Without it the fill below would cover the whole container from either half.
+	half.ClipsDescendants = true;
+	// **Explicit, so the ladder does not depend on which `ZIndexBehavior` this GUI happens to have**: fills `0`, halves
+	// `0`, the hole `1`. Under `Sibling` the hole is above the halves because it is the later child of the container;
+	// under `Global` it is above them because `1 > 0`. Both answers are the one this needs.
+	half.ZIndex = COOLDOWN_Z_INDEX;
+	half.Parent = container;
+
+	const fill = new Instance("Frame");
+	fill.Name = "Fill";
+	fill.Size = UDim2.fromScale(2, 1);
+	fill.Position = UDim2.fromScale(-2 * offset, 0);
+	fill.BackgroundColor3 = RING_COLOUR;
+	fill.BackgroundTransparency = RING_TRANSPARENCY;
+	fill.BorderSizePixel = 0;
+	// **The fill is a circle in its own right, and that is the correction a screenshot cost.** The container carries a
+	// `UICorner` and clips its children, but **a clip does not carry a rounded corner down two levels**: the half below
+	// is clipped to its *rectangle*, so a fill that relied on the container for its shape came out as a **square** — and
+	// with the hole punched in the middle of it, the "ring" was a square frame with a round hole: exactly what was
+	// reported. The fill is `2 × 1` of a `0.5 × 1` half, i.e. a square the size of the container, so one `UICorner` at
+	// `(1, 0)` makes it a circle at any diameter; the half's rectangular clip then cuts that circle into a semicircle,
+	// which is the shape this whole construction wants. **The two clips now do one job each** — the half's rect makes
+	// the semicircle, the fill's own corner makes the circle — instead of both depending on one corner that is not
+	// applied where it is needed.
+	fill.ZIndex = COOLDOWN_Z_INDEX;
+	fill.Parent = half;
+
+	const fillCorner = new Instance("UICorner");
+	fillCorner.CornerRadius = new UDim(1, 0);
+	fillCorner.Parent = fill;
+
+	const gradient = new Instance("UIGradient");
+	gradient.Name = "Edge";
+	gradient.Transparency = wedge();
+	gradient.Rotation = rotation;
+	gradient.Parent = fill;
+
+	return gradient;
+}
+
+/**
+ * **Builds and registers one control's progress ring.** Called from `buildButton` for the two controls whose
+ * `TouchControl` names a cooldown, so the four that have none pay nothing at all — no instance, no entry in
+ * {@link cooldowns}, and no per-frame work.
+ *
+ * **Nine instances per control**: the container, its `UICorner`, two clipped halves, two fills, two gradients and the
+ * hole that turns the wedge into a ring. Built once at mount; then two rotations and one `Value` do all the work.
+ *
+ * **The ring is a *sibling* of the button, one `ZIndex` below it, at the button's full size — and that is the whole
+ * of the reveal trick.** A child of the button could not do this: under `ZIndexBehavior.Sibling` a child always draws
+ * *above* its parent, so a ring inside the button would be a line across the control's face. Sitting behind it, at
+ * the same size, the ring is completely covered while the button is at its full diameter, and the moment the button
+ * shrinks to {@link COOLDOWN_SHRINK} the 7.5% of the radius it gives up on every side is exactly the band the ring
+ * lives in. **Nothing about the ring is animated to reveal it — the button moves and the ring is simply there.**
+ *
+ * **This is the Material pattern the brief describes, and it is the same idea as a `CircularProgressIndicator` inside
+ * a `FloatingActionButton`.** Material's morphing FAB reveals its icon by *shrinking back to a disc*; here the control
+ * shrinks and the indicator is what is left showing around it. See {@link COOLDOWN_SHRINK} for the number and
+ * {@link COOLDOWN_SHRINK_SECONDS} for the motion.
+ *
+ * **Nothing renders unless a cooldown exists**: the container starts hidden, is shown only while the attribute is in
+ * the future, and is hidden again the frame the wait ends. The button is therefore never shaded and never decorated —
+ * see `trackCooldowns`, which is the only thing allowed to show it.
+ *
+ * **`Active` is deliberately left at its default `false`.** A `Frame` that is not `Active` does not take part in the
+ * engine's GUI picking. This one is behind a button that *is* the target, so it could not steal a press in any case,
+ * but the property is the statement of that intent.
+ */
+function addCooldownOverlay(
+	scope: Fusion.Scope<unknown>,
+	box: Frame,
+	slots: Fusion.UsedAs<Array<{ x: number; bottom: number; size: number }>>,
+	index: number,
+	label: string,
+	attribute: string,
+	shrinkGoal: Fusion.Value<number>,
+): void {
+	const container = new Instance("Frame");
+	container.Name = `Cooldown${label}`;
+	container.AnchorPoint = new Vector2(0.5, 1);
+	container.BackgroundTransparency = 1;
+	container.BorderSizePixel = 0;
+	// **The circle *is* the clip.** `ClipsDescendants` on a frame carrying a full `UICorner` clips its children to the
+	// rounded shape, which is what turns two half-rectangles of fill into two semicircles — and what keeps the ring
+	// round rather than letting its corners show.
+	container.ClipsDescendants = true;
+	container.Visible = false;
+	container.ZIndex = COOLDOWN_Z_INDEX;
+	container.Parent = box;
+
+	// **The button's own geometry, read from the same packing slot**, so the ring follows a rotation or a resized
+	// screen exactly as the button does — see `buildButton`'s `slot` for why these are `Computed`s rather than
+	// numbers. **Not shrunk, deliberately**: the ring is the full-diameter reference the button shrinks *inside*, so
+	// the band it occupies is whatever the shrink gives up.
+	//
+	// **`Hydrate` rather than assignment**, because this frame is built by hand and a `Computed` cannot be written to
+	// a property — Fusion applies it, and keeps it applied, from here.
+	Fusion.Hydrate(scope, container)({
+		Size: Fusion.Computed(scope, (use) => {
+			const here = use(slots)[index];
+			const size = here !== undefined ? here.size : TAP_MIN;
+
+			return UDim2.fromOffset(size, size);
+		}),
+		Position: Fusion.Computed(scope, (use) => {
+			const here = use(slots)[index];
+			if (here === undefined) return new UDim2(0.5, 0, 1, 0);
+
+			return UDim2.fromOffset(here.x, here.bottom);
+		}),
+	});
+
+	const circle = new Instance("UICorner");
+	circle.CornerRadius = new UDim(1, 0);
+	circle.Parent = container;
+
+	// **The right half first and the left half second, which is the *order of the sweep*, not the order of drawing.**
+	// Clockwise from 12 o'clock means the right half is the first 180° of the wait — see {@link rightHalfAngle}. Both
+	// start at their *empty* end, so the frame between the container being shown and the first update paints nothing
+	// rather than a full circle.
+	const rightGradient = addArcHalf(container, "RightHalf", 0.5, RIGHT_EMPTY_ROTATION);
+	const leftGradient = addArcHalf(container, "LeftHalf", 0, LEFT_EMPTY_ROTATION);
+
+	// **The hole, and without it this is a pie chart rather than a ring.** The two halves fill a *disc*; this disc,
+	// transparent and clipped by nothing, is not what draws the ring — it is what *hides* the middle of the wedge, so
+	// only the outer band of {@link RING_WIDTH} is left. It is painted `PREMIUM.void` at full opacity rather than in
+	// the button's glass: it sits behind the button and over the arena, so "the button's colour" is not a thing it can
+	// be — a dark disc under a dark button reads as the button's own shadow, which is exactly the Material look.
+	//
+	// **And now that the button is glass at {@link IDLE_TRANSPARENCY} (`0.7`) the hole is doing a second job, which is
+	// worth naming because it is the one thing this transparency change alters about the ring.** The wedge is drawn
+	// underneath the *whole* control, so at 70% see-through its lavender would tint the button's face for the length of
+	// the cooldown — the "the button changes colour" look that was already rejected once. This disc covers all of that
+	// interior opaquely, so the only part of the wedge a player can see is the band outside the control, i.e. the ring
+	// itself. The side effect is deliberate and readable: **a cooling button is backed and therefore looks solid, a
+	// ready one looks like glass** — the two states of the control and the two states of the face now agree.
+	const hole = new Instance("Frame");
+	hole.Name = "Hole";
+	hole.AnchorPoint = new Vector2(0.5, 0.5);
+	hole.Position = UDim2.fromScale(0.5, 0.5);
+	hole.Size = UDim2.fromScale(1 - 2 * RING_WIDTH, 1 - 2 * RING_WIDTH);
+	hole.BackgroundColor3 = PREMIUM.void;
+	hole.BackgroundTransparency = 0;
+	hole.BorderSizePixel = 0;
+	// **Above the two fills, which are at the default `1`.** It is a sibling of the halves rather than a child of
+	// either, so one number here puts it over both.
+	hole.ZIndex = COOLDOWN_HOLE_Z_INDEX;
+	hole.Parent = container;
+
+	const holeCorner = new Instance("UICorner");
+	holeCorner.CornerRadius = new UDim(1, 0);
+	holeCorner.Parent = hole;
+
+	cooldowns.push({ label, container, leftGradient, rightGradient, attribute, shrinkGoal, total: 0, showing: false });
+}
+
+/**
+ * **One frame of every arc: read the clock behind it, work out the fraction, and turn the two halves.**
+ *
+ * **One kind of clock: the server's instant, read off the `Player`.** `CATCH_READY_AT` and `DODGE_READY_AT` are
+ * written by `readyAt.ts` as *when this action is ready again*, and everything here is a division of what is left of
+ * that against the total captured when the arc appeared. **Throw has no entry in this loop and no arc**, because it
+ * has no such instant anywhere in the game — see {@link TouchControl.cooldown}.
+ *
+ * **A `RenderStepped` step rather than a `Computed` over a Fusion value**, and the reason is the shape of the input.
+ * The cooldown arrives as an *attribute*, and an attribute read inside a `Computed` is a sample rather than a
+ * dependency — the lesson `RespawnHudController` and `StatsBillboardController` both record — so a binding would need
+ * a `Value` fed by `GetAttributeChangedSignal` *and* a second `Value` fed per frame by the clock, which is the loop
+ * below written twice with a graph in the middle. One step over two records is less machinery for the same result,
+ * and `RenderStepped` is the right step for a thing drawn rather than simulated.
+ *
+ * **A ring with nothing to show costs one attribute read and two comparisons.** Visibility and the shrink goal are
+ * written only on the frames they change, and the two rotations are two arithmetic results assigned to two properties
+ * — no instance is created, destroyed or re-parented per frame.
+ */
+function trackCooldowns(): void {
+	const player = Players.LocalPlayer;
+	const now = Workspace.GetServerTimeNow();
+
+	for (const ring of cooldowns) {
+		const readyAt = player.GetAttribute(ring.attribute);
+		const remaining = typeIs(readyAt, "number") ? readyAt - now : 0;
+
+		if (remaining <= 0) {
+			if (ring.showing) {
+				ring.showing = false;
+
+				// **Both halves of the indicator are put back on the same frame**: the ring disappears and the button
+				// grows back to its full diameter, over {@link COOLDOWN_SHRINK_SECONDS}. The two are deliberately
+				// written together rather than sequenced, because they are one fact — *this control is ready* — and a
+				// ring that vanished after the button had grown, or the reverse, would read as two events.
+				//
+				// **Nothing is reset on the gradients.** They are recomputed from `progress` on every frame the ring is
+				// visible, so the next cooldown's first frame writes both rotations before anything is drawn.
+				ring.container.Visible = false;
+				ring.shrinkGoal.set(1);
+
+				if (DEBUG) print(`[HUD] cooldown finished — ${ring.label}`);
+			}
+
+			continue;
+		}
+
+		// **The total is taken on the frame the ring appears**, which is the frame a press started it — see the
+		// interface's doc for what that costs on an extension.
+		if (!ring.showing) {
+			ring.showing = true;
+			ring.total = remaining;
+			ring.container.Visible = true;
+			ring.shrinkGoal.set(COOLDOWN_SHRINK);
+
+			// **Said out loud, because a ring that never appears and a ring that appears invisibly look identical in a
+			// screenshot.** Two lines per cooldown, at its two edges, and the pair is the whole diagnostic: a `started`
+			// with no `finished` is a clock that never came back (the attribute stopped being written), and neither
+			// line at all means the button never published — which for Catch and Dodge is a refused press rather than
+			// a broken arc. The seconds are the wait *as the client reads it*, so they are also a check on the clock.
+			if (DEBUG) {
+				print(
+					`[HUD] cooldown started — ${ring.label}, ${string.format("%.1f", remaining)}s ` +
+						`(arc ${string.format("%.0f", ring.container.AbsoluteSize.X)}px)`,
+				);
+			}
+		}
+
+		// **The fraction that has come *back*, not the fraction left.** 0 on the frame the press landed and 1 when the
+		// control is ready again — the direction the arc has to grow in, and the whole reason this is `1 - remaining`.
+		const progress = math.clamp(1 - remaining / math.max(ring.total, 0.001), 0, 1);
+
+		// **Two rotations, and the ranges are the whole of the maths.** {@link rightHalfAngle} and
+		// {@link leftHalfAngle} own them, so this loop says *when* they are written and those two functions say
+		// *what* they are — which is the pair that has to stay continuous across the halfway handover, and the pair
+		// that a reader can check against a circle without reading this file's drawing code.
+		ring.rightGradient.Rotation = rightHalfAngle(progress);
+		ring.leftGradient.Rotation = leftHalfAngle(progress);
+	}
 }
 
 /**
@@ -1039,6 +1848,18 @@ export class MobileControlsController implements OnStart {
 
 		const scope = Fusion.scoped();
 
+		// **The cluster's two global input streams, connected once rather than once per button.** This pair is the
+		// rewrite's core: a button's own events say only *which* input landed on it, and everything after that — has it
+		// moved, has it lifted, has it left the circle — is asked of `UserInputService`, which keeps reporting a finger
+		// for as long as it is on the screen. A `GuiButton`'s own pair stops being a description of the gesture the
+		// moment the thumb slides off it, which is the fault that made a swipe press a button.
+		scope.push(UserInputService.InputChanged.Connect((input) => trackMovement(input)));
+		scope.push(UserInputService.InputEnded.Connect((input) => trackRelease(input)));
+
+		// **And the cooldown arcs' clock**, one step for every arc on the cluster — two of them today. See
+		// `trackCooldowns` for why this is a render step rather than a `Computed` over the same attribute.
+		scope.push(RunService.RenderStepped.Connect(() => trackCooldowns()));
+
 		// **`hudTheme()` is read here for one number now — the caption line height the label band is measured
 		// with** — and that is why it is still a call rather than a constant: big-ui's tables are mutated by
 		// `configureTheme`, so a module-level read could capture the defaults depending on load order.
@@ -1068,14 +1889,28 @@ export class MobileControlsController implements OnStart {
 			// whether there was a ball to charge; the answer is dropped here rather than branched on, because a
 			// press that threw nothing has to look exactly like any other press — the visual state of a button is
 			// about the finger on it, not about what the game did with the press. See `buildButton`.
+			//
+			// **And no arc, deliberately.** A throw is gated by a ball in the hand, not by a clock, so there is no
+			// wait to draw — see {@link TouchControl.cooldown}.
 			down: () => this.throwController.beginHold(),
 			up: () => this.throwController.endHold(),
 		};
-		const catchBall: TouchControl = { label: "Catch", down: () => this.catchController.press() };
+		const catchBall: TouchControl = {
+			label: "Catch",
+			down: () => this.catchController.press(),
+			// **The one cooldown on this HUD that is a window rather than a wait**: `CatchService` shuts the pair for
+			// the attempt plus the lockout, and publishes the instant it ends. See `CooldownRing`.
+			cooldown: CATCH_READY_AT,
+		};
 		// **The dodge's direction is the stick's**, which is the one place this cluster makes a decision the
 		// keyboard did not have to: there are no movement keys to read, so the body is asked where it is going.
 		// See `DodgeController.push` for the read and for why a centred stick refuses rather than guesses.
-		const dodge: TouchControl = { label: "Dodge", down: () => this.dodgeController.push() };
+		const dodge: TouchControl = {
+			label: "Dodge",
+			down: () => this.dodgeController.push(),
+			// The lockout after a dodge, published by `DodgeService` through the same `publishReadyAt` the catch uses.
+			cooldown: DODGE_READY_AT,
+		};
 		const drop: TouchControl = { label: "Drop", down: () => this.actionController.drop() };
 
 		// **The jump, which is the one control here that is not a way into another controller.** There is no
@@ -1333,7 +2168,7 @@ export class MobileControlsController implements OnStart {
 		}
 
 		for (let index = 0; index < controls.size(); index++) {
-			this.buildButton(scope, controls[index], cells, index, arrange).Parent = box;
+			this.buildButton(scope, controls[index], cells, index, arrange, box);
 		}
 
 		// **The hand-move mode announces itself**, because a cluster that does not answer a tap is otherwise
@@ -1408,6 +2243,23 @@ export class MobileControlsController implements OnStart {
 					(live !== undefined && live.size <= TAP_MIN ? " — AT THE TAP FLOOR" : ""),
 			);
 		}
+
+		/**
+		 * **Which of the six got a cooldown arc, said at build so a session does not have to be asked.** "I pressed a
+		 * button and no arc appeared" is ambiguous between *the arc is broken* and *that button has no arc*, and only
+		 * two of the six have one — Catch and Dodge, the two whose `TouchControl` names an attribute. This is the
+		 * build's own answer, printed once, and it names the attribute each arc reads so a missing value on the player
+		 * is the next thing to look at rather than a guess. **Throw, Jump, Drop and Curve have no clock of any kind** —
+		 * see {@link TouchControl.cooldown} for why each. See {@link trackCooldowns}, which prints the two edges of
+		 * every arc it actually shows.
+		 */
+		if (DEBUG) {
+			const built = new Array<string>();
+
+			for (const ring of cooldowns) built.push(`${ring.label} (${ring.attribute})`);
+
+			print(`[HUD] cooldown arcs — ${built.isEmpty() ? "none" : built.join(", ")}`);
+		}
 	}
 
 	// **The stick's reader — `watchStick` and `findStick`, with their two routes, their `pcall`ed `require` and
@@ -1455,8 +2307,18 @@ export class MobileControlsController implements OnStart {
 	 * the argument that a fixed box needs no hand-tuning, and the second half of that argument was wrong: the box's
 	 * *place* is derived from the engine's button, so moving the cluster down means stating a nudge by hand — and a
 	 * hand needs a tool. While {@link ARRANGE} is on, the same press that would act on the game starts a drag of the
-	 * whole box through {@link ArrangeHook}: nothing fires and nothing is painted, and the `InputChanged` connection
-	 * that feeds the drag is made **only** in that mode, so the shipped path carries no dead machinery.
+	 * whole box through {@link ArrangeHook}: nothing fires and nothing is painted. The `InputChanged` connection that
+	 * feeds that drag is the one the slop test needs as well, so it is made always now rather than only in that mode —
+	 * see the connection's own comment for what that costs.
+	 *
+	 * **And a press has to survive being a swipe, which is the strict-tap rule.** Roblox reports `InputBegan` on the
+	 * circle a finger lands on and `InputEnded` wherever that finger leaves the screen, with no notion of a drag in
+	 * between — so a thumb dragged across the corner while steering used to fire whatever button it started on, and
+	 * the button's own events cannot tell the difference because a finger that slides off the circle is a finger the
+	 * button stops hearing about. **So the button's events are used only to learn which input landed on it**
+	 * ({@link beginPress}), and the gesture itself is measured against `UserInputService`'s global streams
+	 * ({@link trackMovement}, {@link trackRelease}): a press is a press only while its finger is still, inside
+	 * {@link DRAG_THRESHOLD}, and still on the screen. See the two connections at the end of this method.
 	 */
 	private buildButton(
 		scope: Fusion.Scope<unknown>,
@@ -1464,6 +2326,7 @@ export class MobileControlsController implements OnStart {
 		slots: Fusion.UsedAs<Array<{ x: number; bottom: number; size: number }>>,
 		index: number,
 		arrange: ArrangeHook | undefined,
+		box: Frame,
 	): TextButton {
 		/**
 		 * **This button's place in the packing, read through the graph rather than handed in as numbers.** `pack`
@@ -1480,29 +2343,63 @@ export class MobileControlsController implements OnStart {
 			return packed[index] ?? { x: 0, bottom: 0, size: TAP_MIN };
 		});
 
+		/**
+		 * **The shrink that reveals the progress ring, and the reason it is a *value* rather than a tween on the
+		 * button's `Size`.** `Size` is a `Computed` of the packing (see `slot`), so writing a tween onto it directly
+		 * would be overwritten on the next reflow — a rotation mid-cooldown would snap the button back to full size
+		 * with the ring still showing. Instead the packing stays the single source of the *full* diameter and this
+		 * multiplies it: the goal is `1` when ready and {@link COOLDOWN_SHRINK} while cooling, `Fusion.Tween` does
+		 * the interpolation, and the `Computed`s below read it like any other state.
+		 *
+		 * **`Fusion.Tween` rather than `TweenService` on the instance**, because what is being animated is a Fusion
+		 * value, not a property — and because a second press inside the same second has to *retarget* a tween already
+		 * in flight rather than start a second one beside it. Setting `shrinkGoal` again is exactly that: the tween
+		 * re-aims from wherever it has got to.
+		 */
+		const shrinkGoal = Fusion.Value(scope, 1);
+		const shrink = Fusion.Tween(
+			scope,
+			shrinkGoal,
+			new TweenInfo(COOLDOWN_SHRINK_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		);
+
 		const button = Fusion.New(scope, "TextButton")({
 			Name: control.label,
 			// **The diameter from the packing, and it is per control now** — Throw and Jump are a factor larger than
 			// the utilities, which is the whole reason `pack` was kept instead of a `UIGridLayout`. See
 			// `BUTTON_WEIGHT` for the factors and `pack` for the fit.
+			//
+			// **Multiplied by the shrink**, which is the whole of the "the button steps back and the ring is revealed"
+			// motion. On every frame but a cooldown the multiplier is exactly `1`, so this is the packing's own number
+			// and nothing else — see {@link COOLDOWN_SHRINK}.
 			Size: Fusion.Computed(scope, (use) => {
 				const here = use(slot);
+				const scale = use(shrink);
+				const diameter = here.size * scale;
 
-				return UDim2.fromOffset(here.size, here.size);
+				return UDim2.fromOffset(diameter, diameter);
 			}),
 			// **The position, anchored on the circle's bottom edge.** `slot.bottom` is the top of the row's label
 			// band, so buttons of different diameters in one row share a baseline and their words sit on one line —
 			// which is what makes a cluster of two sizes read as a layout rather than as a mistake.
+			//
+			// **And raised by half of what the shrink took**, so the circle shrinks about its own *centre* rather than
+			// about the bottom edge. Without this the ring would be revealed only above the button — a crescent with
+			// the bottom flush against nothing — which is the one thing that would make the trick look like a glitch.
+			// The half is `size·(1 − scale)/2`: the difference in radius between the full and the shrunk circle.
 			AnchorPoint: new Vector2(0.5, 1),
 			Position: Fusion.Computed(scope, (use) => {
 				const here = use(slot);
+				const scale = use(shrink);
 
-				return UDim2.fromOffset(here.x, here.bottom);
+				return UDim2.fromOffset(here.x, here.bottom - (here.size * (1 - scale)) / 2);
 			}),
 			// **The idle state, and the two properties are the whole of the difference between the states.** See
-			// {@link IDLE_TRANSPARENCY} for the colour and the opacity and for why the held state is a different
-			// hue rather than a shorter shadow of the same one.
-			BackgroundColor3: PREMIUM.panel,
+			// {@link IDLE_TRANSPARENCY} for the colour and the opacity and for why the held state is an inversion
+			// rather than a second hue. **`PREMIUM.void` rather than `panel`**: at `0.7` the difference between the two
+			// is a couple of units, but the palette's blackest value is what "transparent black" means and the idle
+			// face should be the black one, not the second-from-black one that the panels wear.
+			BackgroundColor3: PREMIUM.void,
 			BackgroundTransparency: IDLE_TRANSPARENCY,
 			BorderSizePixel: 0,
 			AutoButtonColor: false,
@@ -1518,12 +2415,20 @@ export class MobileControlsController implements OnStart {
 
 		// **The theme's neon edge, and the primaries are simply brighter.** The weight half of the old pair is gone —
 		// a bloom is a fixed halo, so "twice as thick" no longer distinguishes anything — and the *light* does the job
-		// instead: the two primary actions get the full bloom (a `UIShadow`, see `ui/glow.ts`) while the four utilities
-		// get a dimmed one, written by tinting the bloom's ink rather than by skipping it, so every button reads as lit
-		// and the primaries read as *more* lit. The weight is read from `BUTTON_WEIGHT`, this file's one answer to
+		// instead: the two primary actions are bloomed in the theme's glow colour while the four utilities get the
+		// dimmer side-B tint, written by tinting the bloom's ink rather than by skipping it, so every button reads as
+		// lit and the primaries read as *more* lit. The weight is read from `BUTTON_WEIGHT`, this file's one answer to
 		// "which of these is primary", rather than from a second list.
+		//
+		// **`false` for the bloom, and this is the one line that decides whether the buttons are see-through at all.**
+		// A `UIShadow` is a blurred *silhouette*, so its ink covers the shape's whole interior as well as its halo —
+		// which nobody could see behind a `0.15`-opaque face and which is the entire reason these buttons read as solid
+		// once the face went to {@link IDLE_TRANSPARENCY}: the glow was the fill. Asking for the rim bloom instead keeps
+		// the same light around the control (`glow.ts`'s stroke, the same one an engine without `UIShadow` gets) with
+		// its ink only ever on the edge, so the arena shows through the middle of the circle and the glow stays outside
+		// it. **The glow is unchanged in colour, weight and meaning** — only *where* it is allowed to be ink is.
 		const primary = (BUTTON_WEIGHT[index] ?? 1) > 1;
-		applyGlow(button, primary ? PREMIUM.glow : PREMIUM.sideB);
+		applyGlow(button, primary ? PREMIUM.glow : PREMIUM.sideB, false);
 
 		// **And a ratio constraint, which is the belt rather than the mechanism.** `pack` already hands every button
 		// a square diameter, so on every screen this cluster is measured for there is nothing for this to do. It
@@ -1547,17 +2452,66 @@ export class MobileControlsController implements OnStart {
 			ScaleType: Enum.ScaleType.Fit,
 		});
 
-		// **One press per finger, whatever the engine announces.** `InputBegan` does not mean "the player pressed
-		// this once" — it is re-sent for an input that never ended, when the window regains focus — and every
-		// other input controller in this project keeps the same latch for the same reason. Without it a held
-		// throw would restart its charge on each announcement, and a held sprint would send a stream of requests.
-		let held = false;
+		// **The progress ring, for the controls that have a clock** — a sibling of the button rather than a child, so
+		// it can sit *behind* it and be revealed by the shrink. Driven by the *table* rather than by a list here: a
+		// `cooldown` names the server's instant, and a control without one has no ring at all. See
+		// `addCooldownOverlay` for the two halves and the hole, and `trackCooldowns` for the values that turn them.
+		if (control.cooldown !== undefined) {
+			addCooldownOverlay(scope, box, slots, index, control.label, control.cooldown, shrinkGoal);
+		}
 
+		// **The word, hung off the button's own bottom edge** rather than stacked by a layout — the same
+		// arrangement the engine's jump button has, and the reason there is no cell frame at all. `AnchorPoint
+		// (0.5, 0)` with `Position (0.5, 1)` puts its top-centre on the circle's bottom edge, so the word is
+		// centred under the disc at whatever size the packing gave it, plus {@link LABEL_GAP} of air.
+		//
+		// **And it is pushed back down by exactly what the shrink raised the button by**, so the word does not move
+		// while the control shrinks for a cooldown. The button's own bottom edge is `size·(1 − scale)/2` higher than
+		// the packing put it (see the `Position` above), and the label hangs from that edge — so the same distance is
+		// added here and the two cancel. A word that crept upwards for every cooldown would be worse than the ring is
+		// good, and it is the one thing this effect could break.
+		//
+		// **Built *before* `paint` rather than at the end of this method, and that order is load-bearing.** The pressed
+		// state is an inversion — a near-white face with dark ink — so the paint has to write this label's colour as
+		// well as the button's background, which means the label has to exist by the time that closure is defined. See
+		// `paint` immediately below for the pair of colours and why the pairing is the whole of the state.
+		const label = this.buildLabel(scope, control.label);
+		label.AnchorPoint = new Vector2(0.5, 0);
+		Fusion.Hydrate(scope, label)({
+			Position: Fusion.Computed(scope, (use) => {
+				const here = use(slot);
+				const scale = use(shrink);
+
+				return new UDim2(0.5, 0, 1, LABEL_GAP + (here.size * (1 - scale)) / 2);
+			}),
+		});
+		label.Parent = button;
+
+		/**
+		 * **The button's own paint, and the only thing in this file that knows the theme's press colours.** It is a
+		 * closure rather than a method because the press tracker lives outside this method: each record carries it, so
+		 * `trackMovement` and `trackRelease` can light and unlight a button without knowing a colour or a property.
+		 *
+		 * **The pressed state is an *inversion*, not a hue change, and that is the whole of this version.** It used to
+		 * be the palette's crimson (`PREMIUM.sideA`) at full opacity, which reads as an alarm against a game whose
+		 * floor is bright green — the report was that a finger landing on a button painted a red disc onto the world.
+		 * Transparent black face with white ink, then white face with dark ink: a press is the *negative* of the idle
+		 * state, so nothing new is introduced to say "pressed". **The writes below are one state**, which is why they
+		 * live in one closure: a white face with the label's own white ink on it is invisible, and a label that changed
+		 * colour on its own would be a second thing to keep in step. See {@link IDLE_TRANSPARENCY} and
+		 * {@link HELD_TRANSPARENCY} for the two alphas, and `paintJump` for the engine's button, which is this same
+		 * pair applied to somebody else's instance.
+		 */
 		const paint = (down: boolean): void => {
-			button.BackgroundColor3 = down ? PREMIUM.sideA : PREMIUM.panel;
+			button.BackgroundColor3 = down ? PREMIUM.text : PREMIUM.void;
 			button.BackgroundTransparency = down ? HELD_TRANSPARENCY : IDLE_TRANSPARENCY;
+			label.TextColor3 = down ? PREMIUM.void : PREMIUM.text;
 		};
 
+		// **The button's own `InputBegan` is used for exactly one thing now: learning which input landed on it.** No
+		// action, no paint and no timer starts here — the record that `beginPress` makes is what those hang off, and
+		// it is measured against the global input streams from then on. That is the rewrite in one sentence: the
+		// button's events only say *where a finger arrived*, and `UserInputService` says what the finger then did.
 		scope.push(
 			button.InputBegan.Connect((input) => {
 				// A button is a `GuiObject` and this event fires for hovers on a desktop pointer as well, so the
@@ -1567,79 +2521,57 @@ export class MobileControlsController implements OnStart {
 				const kind = input.UserInputType;
 				if (kind !== Enum.UserInputType.Touch && kind !== Enum.UserInputType.MouseButton1) return;
 
-				// **In hand-move mode the press is a grip**, and it takes the whole press: no latch, no paint, no
-				// action. The latch matters here rather than being tidiness — a grip that set `held` would swallow
-				// the release's `control.up()` for a control that never went down. See {@link ARRANGE}.
+				// **In hand-move mode the press is a grip**, and it takes the whole press: no record, no paint, no
+				// action. See {@link ARRANGE}.
 				if (arrange !== undefined) {
-					// `InputObject.Position` is a `Vector3` — the engine's input points carry a Z — and everything
-					// here is 2D. Dropping the axis at the one place it enters is the whole conversion.
-					arrange.grab(new Vector2(input.Position.X, input.Position.Y));
+					arrange.grab(pointOf(input));
 
 					return;
 				}
 
-				if (held) return;
-				held = true;
+				// **One press per button, whatever the engine announces.** `InputBegan` is re-sent for an input that
+				// never ended when the window regains focus, so a button that trusted the event would start a second
+				// press inside the first. The registry is the latch now; it used to be a local flag.
+				if (pressFor(button) !== undefined) return;
 
-				// **The press itself, printed once per press.** Every action this cluster drives already has a log
-				// line of its own inside the controller that owns it, so without this a press that reached nothing
-				// at all and a press that reached the wrong thing look the same from the outside. It is also what
-				// separates the two halves of "a button does nothing": this line missing means the *input* never
-				// arrived here, and this line followed by nothing means the action itself refused.
-				if (DEBUG) print(`[HUD] ${control.label} down`);
-
-				paint(true);
-				control.down();
+				beginPress(button, control, input, paint);
 			}),
 		);
 
+		// **The button's own `InputEnded` is the grip's now, and nothing else's.** A press is released through
+		// `UserInputService.InputEnded` — see `trackRelease`, which is where the release is authoritative — because the
+		// button's own ending is exactly the event that goes missing when a thumb slides off the circle. Keeping this
+		// connection for the grip costs one closure per button and never runs on the shipped path.
 		scope.push(
 			button.InputEnded.Connect(() => {
-				// **A grip ends the same way a press does**, and ending it is when the nudge is worth printing —
-				// see {@link ArrangeHook}. Nothing to paint and no action to end, so this returns rather than
-				// falling through.
-				if (arrange !== undefined) {
-					arrange.done();
+				if (arrange === undefined) return;
 
-					return;
-				}
-
-				// **The release is taken however it arrives**, which is the rule `DodgeController` and
-				// `SprintController` both follow for their own releases: an ending is unambiguous, and a finger that
-				// slides off the button still has to end the hold it began. A release with no hold is a no-op, so
-				// nothing here needs to ask which kind of input ended.
-				if (!held) return;
-				held = false;
-
-				paint(false);
-				if (control.up !== undefined) control.up();
+				arrange.done();
 			}),
 		);
 
-		// **The drag's own connection, made only in hand-move mode.** Every other button in this project lives
-		// without one — a press is a begin and an end and nothing between them is this file's business — so the
-		// shipped path does not pay for a feature it is not using. **The `grab`/`move` pairing is the safety here**:
-		// a `MouseMovement` that began nowhere near a button still fires this, and it does nothing because
-		// {@link ArrangeHook} has no starting point to measure it from.
+		// **The drag's own connection, made only in hand-move mode — and this is the connection the rewrite gave
+		// back.** The previous revision made one of these per button unconditionally, so that a press could watch its
+		// own finger; the tracker moved to `UserInputService`, which is one pair of streams for the whole cluster
+		// rather than six pairs of listeners, so what is left here is the grip and only the grip.
+		//
+		// **The `grab`/`move` pairing is the safety**: a `MouseMovement` that began nowhere near a button still fires
+		// this, and it does nothing because {@link ArrangeHook} has no starting point to measure it from.
 		if (arrange !== undefined) {
 			scope.push(
 				button.InputChanged.Connect((input) => {
 					const kind = input.UserInputType;
 					if (kind !== Enum.UserInputType.Touch && kind !== Enum.UserInputType.MouseMovement) return;
 
-					arrange.move(new Vector2(input.Position.X, input.Position.Y));
+					arrange.move(pointOf(input));
 				}),
 			);
 		}
 
-		// **The word, hung off the button's own bottom edge** rather than stacked by a layout — the same
-		// arrangement the engine's jump button has, and the reason there is no cell frame at all. `AnchorPoint
-		// (0.5, 0)` with `Position (0.5, 1)` puts its top-centre on the circle's bottom edge, so the word is
-		// centred under the disc at whatever size the packing gave it, plus {@link LABEL_GAP} of air.
-		const label = this.buildLabel(scope, control.label);
-		label.AnchorPoint = new Vector2(0.5, 0);
-		label.Position = new UDim2(0.5, 0, 1, LABEL_GAP);
-		label.Parent = button;
+		// **The word is built further up this method, before `paint`** — see the note there for why the order matters
+		// now that the pressed state writes the label's ink as well as the button's face.
+
+		button.Parent = box;
 
 		return button;
 	}
@@ -2092,20 +3024,29 @@ export class MobileControlsController implements OnStart {
 	/**
 	 * The engine's button in this HUD's two states, which are the cluster's two states.
 	 *
-	 * **Two property writes and no tween**, for the reason `buildCell` gives about the cluster's own buttons: a
-	 * button is held or it is not, and a fade would leave the colour somewhere between the two at exactly the
-	 * moment a player wants to know which one they are in. **The pair is the cluster's own** — `PREMIUM.panel` idle
-	 * and `PREMIUM.sideA` held — so the engine's button, on the clients that show it, is painted by the same two
-	 * values as the six beside it rather than by a second copy of the idea. See `IDLE_TRANSPARENCY`, which is the
-	 * same fill and the same alpha the cluster uses.
+	 * **Three writes and no tween**, for the reason `buildButton` gives about the cluster's own buttons: a button is
+	 * held or it is not, and a fade would leave the colour somewhere between the two at exactly the moment a player
+	 * wants to know which one they are in. **The pair is the cluster's own** — `PREMIUM.panel` idle, `PREMIUM.text`
+	 * held, with `PREMIUM.void` ink on the white face — so the engine's button, on the clients that show it, is
+	 * painted by the same two values as the six beside it rather than by a second copy of the idea. See
+	 * `IDLE_TRANSPARENCY` for the alphas and `paint` in `buildButton` for the same inversion on the cluster.
+	 *
+	 * **The label is looked up and guarded, which is the one thing this method has to be careful about.** `HudLabel`
+	 * is created by `paintParts` during discovery, and this is called from three places — the discovery itself, the
+	 * press and the release. The guards cost a `FindFirstChild` per press, which is nothing next to the state being
+	 * invisible on the one client whose label has not been built yet: a white face with white ink is not a press a
+	 * player can see.
 	 *
 	 * **Kept as a method rather than inlined**, because it has three callers — the discovery, the press and the
 	 * release — and one definition is what makes "the pressed state is the cluster's pressed state" a fact
 	 * rather than three copies of a hope.
 	 */
 	private paintJump(button: GuiButton, held: boolean): void {
-		button.BackgroundColor3 = held ? PREMIUM.sideA : PREMIUM.panel;
+		button.BackgroundColor3 = held ? PREMIUM.text : PREMIUM.void;
 		button.BackgroundTransparency = held ? HELD_TRANSPARENCY : IDLE_TRANSPARENCY;
+
+		const label = button.FindFirstChild("HudLabel");
+		if (label !== undefined && label.IsA("TextLabel")) label.TextColor3 = held ? PREMIUM.void : PREMIUM.text;
 	}
 
 	/**

@@ -13,8 +13,10 @@ import { GAME_MODE_NAMES, sideNameOf } from "shared/gameMode";
 import { findFolder } from "shared/find";
 import { events, HitDirection } from "shared/networking";
 import {
+    ARMED_ABILITY_ATTRIBUTE,
     IN_ROUND_ATTRIBUTE,
     LAST_HIT_BY_ATTRIBUTE,
+    LAST_HIT_BY_CAUSE_ATTRIBUTE,
     LAST_HIT_BY_POSITION_ATTRIBUTE,
     LAST_HIT_BY_TOKEN_ATTRIBUTE,
     PRACTICE_ZONE_ATTRIBUTE,
@@ -855,6 +857,11 @@ export class RoundService implements OnStart {
             // death of the round with no ball behind it would hold the shot over last round's fight instead of
             // handing the camera to Roblox. See `LAST_HIT_BY_POSITION_ATTRIBUTE`.
             player.SetAttribute(LAST_HIT_BY_POSITION_ATTRIBUTE, undefined);
+
+            // **And the cause, which is the fourth half.** A `"Catch"` surviving into a new round would caption that
+            // round's first death — a ball that landed, or nothing at all — as somebody's catch. See
+            // `LAST_HIT_BY_CAUSE_ATTRIBUTE`.
+            player.SetAttribute(LAST_HIT_BY_CAUSE_ATTRIBUTE, undefined);
         }
 
         const assigned = this.matches.roster();
@@ -1018,6 +1025,36 @@ export class RoundService implements OnStart {
         // **A side is not admission, and the difference is the surrender.** Read again here rather than only in
         // the caller, because a cover is long enough for the answer to change — see `admittedThisRound`.
         if (this.admittedThisRound(player)) return;
+
+        // **A player arriving from a practice zone brings nothing with them, and this is the case no boundary can
+        // cover.** They were standing in a zone when the whistle went, so `clearHeldBalls` skipped them on purpose and
+        // the intermission's sweep skipped them for the same reason — and now they are *entering the round*, so the two
+        // things that were theirs to keep while practising are the round's to take. Both go here, **before the side is
+        // written and before the body is moved**, so nothing on the field ever sees a participant holding a practice
+        // ball or carrying a mark from one.
+        //
+        // **`removeBall` rather than `dropBall`**, which is `clearHeldBalls`'s choice for its reason: a dropped ball
+        // would land in the lobby — or in the zone they just left — and stay there. The two lines below are the
+        // boundary's pair of calls, made for one player because one player is what an admission is.
+        const arriving = player.Character;
+        const droppedBall = arriving !== undefined && this.balls.removeBall(arriving);
+
+        // **Read before the clear, because the clear is what erases the evidence.** `SuperService.publish` writes the
+        // armed kind as a string and `""` for *nothing armed*, so a non-empty value here is the only way this line can
+        // say what the admission actually took — after `completePower` the attribute is empty and the report would have
+        // nothing to describe.
+        const armed = player.GetAttribute(ARMED_ABILITY_ATTRIBUTE);
+        const hadArm = typeIs(armed, "string") && armed !== "";
+
+        this.abilities.completePower(player);
+
+        // **One line, printing only when something was taken.** It is the acceptance criterion written as evidence: a
+        // session where the strip does not happen is a session with no line, and a session where it does says which
+        // player and that both halves went. A round full of admissions from the lobby stays quiet, because there was
+        // nothing in their hands to begin with.
+        if (droppedBall || hadArm) {
+            print(`[Round] ${player.Name}: admitted — held ball and armed power cleared`);
+        }
 
         this.abilities.resetForRound(player);
         this.setTeam(player, side);
@@ -1679,6 +1716,11 @@ export class RoundService implements OnStart {
             // value the cam can use with *no* body at all, so a death with no hit behind it would hold the shot
             // over a fight this player was not even part of. See `LAST_HIT_BY_POSITION_ATTRIBUTE`.
             player.SetAttribute(LAST_HIT_BY_POSITION_ATTRIBUTE, undefined);
+
+            // **And the cause, which is the fourth of the family and the one that changes what the caption says.**
+            // Left standing, a `"Catch"` from a previous life would caption the *next* death — a ball that landed, a
+            // fall, a reset — as somebody's catch. See `LAST_HIT_BY_CAUSE_ATTRIBUTE`.
+            player.SetAttribute(LAST_HIT_BY_CAUSE_ATTRIBUTE, undefined);
 
             const humanoid = character.WaitForChild("Humanoid") as Humanoid;
             humanoid.Died.Connect(() => this.handleDeath(player));
@@ -2362,6 +2404,13 @@ export class RoundService implements OnStart {
                 LAST_HIT_BY_POSITION_ATTRIBUTE,
                 thrower === undefined ? undefined : pointOfThrower(thrower),
             );
+
+            // **And how it happened — the fourth half of the sentence, and the one the death cam's caption reads.**
+            // A landed ball is `"Hit"`; the catch path (`resolveCaughtThrower`) writes `"Catch"` on a *different*
+            // player, the thrower of the ball that was caught, because that is the one who dies. Two writers, one
+            // attribute, and the reader is whichever of the two is looking at their own screen. See
+            // `LAST_HIT_BY_CAUSE_ATTRIBUTE`.
+            victimPlayer.SetAttribute(LAST_HIT_BY_CAUSE_ATTRIBUTE, "Hit");
         }
 
         // **The badge counter, and it is fed from here rather than from the ball because this is where a hit
@@ -2652,6 +2701,35 @@ export class RoundService implements OnStart {
         const humanoid = thrower.IsA("Player")
             ? thrower.Character?.FindFirstChildWhichIsA("Humanoid")
             : thrower.FindFirstChildWhichIsA("Humanoid");
+
+        // **And the thrower's own screen is told who did this to them, which for a catch is the *catcher*.** The three
+        // attributes the hit path writes on a victim have no writer on this path at all — a caught throw never tags
+        // anybody — so without this a catch death reaches the kill cam with either no identity (the death is handed
+        // back to Roblox's own camera) or, worse, a **stale** one from a hit earlier in the same life, and the caption
+        // would describe a completely different body. Written here rather than beside the damage below because these
+        // are facts about the catch that has just resolved: the catcher is the killer, and `tokenOfThrower` /
+        // `pointOfThrower` take either kind of body, so a rig's catch is written exactly as a player's.
+        //
+        // **The name is resolved from the character's player rather than from the model**, because `catcher` is always
+        // a `Model` — a player's character or a rig — and the two spell a name differently: `DisplayName` for a person,
+        // the alias for a rig. That is the same rule `registerHit` writes the name by, and the same reason it exists.
+        //
+        // **Only a player has attributes to write.** A rig whose throw is caught dies through `RespawnBehavior` and no
+        // client is watching it, which is the asymmetry the `caughtThrow` event above already lives with.
+        if (thrower.IsA("Player")) {
+            const catcherPlayer = Players.GetPlayerFromCharacter(catcher);
+
+            thrower.SetAttribute(
+                LAST_HIT_BY_ATTRIBUTE,
+                catcherPlayer !== undefined ? catcherPlayer.DisplayName : catcher.Name,
+            );
+            thrower.SetAttribute(LAST_HIT_BY_TOKEN_ATTRIBUTE, tokenOfThrower(catcher));
+            thrower.SetAttribute(LAST_HIT_BY_POSITION_ATTRIBUTE, pointOfThrower(catcher));
+
+            // **The word the caption reads**, and the reason this death looks different from a hit's. See
+            // `LAST_HIT_BY_CAUSE_ATTRIBUTE`.
+            thrower.SetAttribute(LAST_HIT_BY_CAUSE_ATTRIBUTE, "Catch");
+        }
 
         if (humanoid && humanoid.Health > 0) humanoid.TakeDamage(CATCH_DEATH_DAMAGE);
 
@@ -3110,6 +3188,26 @@ export class RoundService implements OnStart {
     }
 
     /**
+     * **Ends any armed power for everybody about to walk into a round** — the `SuperService` half of the sweep above.
+     *
+     * **The same population and the same skip as {@link clearHeldBalls}, and it has to be a separate ceiling because
+     * the two states are not the same state.** A marked ball is a fact about *the ball*, and destroying the ball
+     * clears it for free; an arm with no ball — a dev's, or one whose ball never attached — is a fact about the
+     * *player*, and nothing in the hand is there to notice. A player in a practice zone is skipped for the reason its
+     * neighbour gives: they are not on their way into a round, so their arm is not the round's to end.
+     *
+     * **Silent when nothing is armed**, because `completePower` guards on the delete — which matters here, where the
+     * ordinary case is most players having nothing.
+     */
+    private clearArmedPowers(): void {
+        for (const player of Players.GetPlayers()) {
+            if (this.isPracticePlayer(player)) continue;
+
+            this.abilities.completePower(player);
+        }
+    }
+
+    /**
      * Takes the ball out of every hand the round that has just ended could have filled.
      *
      * **The round-end companion to {@link clearHeldBalls}, and the two are not the same job.** That
@@ -3509,6 +3607,15 @@ export class RoundService implements OnStart {
             // The intermission's last act: nobody carries a ball into a round. See
             // `clearHeldBalls` for why it is destroyed here rather than dropped after the teleport.
             this.clearHeldBalls();
+
+            // **And nobody carries an armed *power* into a round either, which the ball sweep above only half
+            // guarantees.** Destroying a held ball ends the arm on it (`BallService.syncArmedPower`, which
+            // `removeBall` calls), so a player who marked a ball and then left a practice zone is already covered — but
+            // an arm with **no ball behind it** survives a sweep that only looks at hands, and the HUD would carry a
+            // `READY` into a round where the marker means nothing. The intermission's own sweep clears the same state
+            // for the same reason; this is its second half, because a player can arm *during* the intermission, after
+            // that loop has already run. See `clearArmedPowers`.
+            this.clearArmedPowers();
 
             // --- Playing ---
 

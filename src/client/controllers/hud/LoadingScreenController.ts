@@ -11,7 +11,7 @@ import { addViewportConstraint } from "../../ui/viewportConstraint";
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** What the game is called, in the one place the client writes it. */
-const TITLE = "DODGEBALL Hero";
+const TITLE = "No Headshots";
 
 /**
  * The splash image: the full-viewport background the title sits on.

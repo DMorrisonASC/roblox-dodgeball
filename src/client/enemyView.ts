@@ -1,6 +1,6 @@
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
-import { STAT_HITS, STAT_OUTS } from "shared/constants";
+import { LAST_HIT_BY_CAUSE_ATTRIBUTE, STAT_HITS, STAT_OUTS } from "shared/constants";
 import { killCamActive } from "./panels";
 import { applyGlow, applyTextGlow } from "./ui/glow";
 import { PREMIUM } from "./ui/premiumTheme";
@@ -92,6 +92,20 @@ const Z_INDEX = 10;
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
+ * **The two words a caught-throw death is drawn with** — the server's cause value, and the caption that replaces the
+ * stat line.
+ *
+ * **`CAUSE_CATCH` is a literal between two files**, which is `roundZone`'s `PLAYING` convention: the server writes
+ * `"Hit"` or `"Catch"` into `LAST_HIT_BY_CAUSE_ATTRIBUTE` and this file compares against the one that changes the
+ * layout. Spelled here rather than imported as a second constant, so a reader of either file sees the string being
+ * compared rather than a name that hides it.
+ */
+const CAUSE_CATCH = "Catch";
+
+/** **What the panel says instead of `Hits: n | Outs: m`** — the sentence a player whose throw was caught needs. */
+const CAUGHT_TEXT = "caught your shot!";
+
+/**
  * The panel, once it has been made.
  *
  * **Made once and never destroyed**, and that is the whole of its lifecycle: the element hides and shows by the
@@ -103,6 +117,15 @@ let frame: Frame | undefined;
 /** The three lines. Held rather than searched for, because every shot writes two of them. */
 let nameLabel: TextLabel | undefined;
 let statsLabel: TextLabel | undefined;
+
+/**
+ * The header, held since the catch caption hides it — the one line whose *visibility* a shot can change.
+ *
+ * The note in {@link mount} used to say "the header never changes", which was true while every death in the game was
+ * a ball that landed. A death caused by a caught throw has no "ENEMY VIEW" to name — there is no view to describe,
+ * there is one sentence to read — so the header is now held like its two neighbours. See {@link showEnemyView}.
+ */
+let headerLabel: TextLabel | undefined;
 
 /**
  * The connections that keep the numbers live, one per attribute.
@@ -144,24 +167,45 @@ export function showEnemyView(body: Model): void {
 	const source: Instance = player !== undefined ? player : body;
 
 	if (nameLabel !== undefined) nameLabel.Text = nameOf(body);
-	if (statsLabel !== undefined) statsLabel.Text = describeStats(source);
 
-	// **Live, because the overlay says "how are they doing" and the answer can change while it is being read.**
-	// Two signals rather than a poll, and one connection per attribute rather than one per number: a `Value` and
-	// a `Computed` would be the Fusion way to do the same thing, but an attribute read inside a `Computed` is a
-	// *sample* rather than a dependency — the lesson `RespawnHudController` and `StatsBillboardController` both
-	// record — so the subscription has to exist somewhere and here is where it belongs.
-	for (const attribute of [STAT_HITS, STAT_OUTS]) {
-		live.push(
-			source.GetAttributeChangedSignal(attribute).Connect(() => {
-				if (statsLabel !== undefined) statsLabel.Text = describeStats(source);
-			}),
-		);
+	// **Why this death happened, asked of the local player's own copy of the attribute.** A caught throw kills its
+	// thrower, and the server writes that into the same four attributes a landed hit writes — on the player who died,
+	// whose client is this one — with the **catcher** as the name, the token and the position. `killCam` has already
+	// resolved that token to `body`, so the three facts come from one write and cannot describe different people.
+	//
+	// **One read and no subscription, deliberately.** The four writes are one server tick, so what is read here is
+	// what was written alongside the token the cam just resolved. A subscription would be able to see a *later* write
+	// arrive — the token can be a frame stale at a death, which `killCam` documents and cannot fix — and would then
+	// caption a body the camera is following for an older reason.
+	const caught = Players.LocalPlayer.GetAttribute(LAST_HIT_BY_CAUSE_ATTRIBUTE) === CAUSE_CATCH;
+
+	// **The header goes rather than being rewritten.** "CAUGHT!" over "caught your shot!" is one sentence said twice,
+	// and a `UIListLayout` leaves an invisible child out of the layout entirely, so hiding this line closes the gap
+	// rather than leaving a hole where a word used to be.
+	if (headerLabel !== undefined) headerLabel.Visible = !caught;
+
+	if (statsLabel !== undefined) statsLabel.Text = caught ? CAUGHT_TEXT : describeStats(source);
+
+	// **The numbers are live only for a hit.** A catch's line is a fixed sentence, so a stat write arriving under it a
+	// frame later would replace the explanation with `Hits: 4 | Outs: 1` — the exact thing this case exists to stop
+	// saying.
+	if (!caught) {
+		// **Live, because the overlay says "how are they doing" and the answer can change while it is being read.**
+		// Two signals rather than a poll, and one connection per attribute rather than one per number: a `Value` and
+		// a `Computed` would be the Fusion way to do the same thing, but an attribute read inside a `Computed` is a
+		// *sample* rather than a dependency — the lesson `RespawnHudController` and `StatsBillboardController` both
+		// record — so the subscription has to exist somewhere and here is where it belongs.
+		for (const attribute of [STAT_HITS, STAT_OUTS]) {
+			live.push(
+				source.GetAttributeChangedSignal(attribute).Connect(() => {
+					if (statsLabel !== undefined) statsLabel.Text = describeStats(source);
+				}),
+			);
+		}
 	}
 
-	if (DEBUG) print(`[EnemyView] watching ${body.GetFullName()}`);
+	if (DEBUG) print(`[EnemyView] watching ${body.GetFullName()}${caught ? " — a caught throw" : ""}`);
 }
-
 /**
  * Drops the bindings. **The panel's visibility is not touched here**, and that is deliberate: it follows
  * `panels.killCamActive`, which the cam writes on its own edges, so there is one writer for "is a shot happening"
@@ -227,16 +271,21 @@ function mount(): void {
 	// because the name is the subject, and a medium one for the numbers because they are a caption on the name.
 	// **The header is built last and given `LayoutOrder` 1**, so the list draws it first without the code having to
 	// build things in the order they appear — the same contract the round readout column writes down for its two
-	// children. Both labels that are written to later are held; the header never changes.
+	// children.
 	//
 	// **The header is the theme's gold and the other two lines are its near-white**, which is the whole of how the
 	// direction reads here: one gold thing says what you are looking at, and everything you actually want to read is
 	// white on plum. The header also takes `GothamBlack` — the heaviest of the two faces the theme allows — because
 	// it is the one line drawn entirely in capitals, and a cap-height row in the same weight as the name under it
 	// reads as a second name rather than as a label.
+	//
+	// **All three are held now, and the note that used to say "the header never changes" is retired with its
+	// reason.** The header *is* the one line a shot can hide — a death caused by a caught throw has no "view" to
+	// describe — and holding it is what lets `showEnemyView` close the line rather than blank it and leave a hole
+	// where a word used to be.
 	nameLabel = line(scope, panel, "Name", "", Enum.Font.GothamBold, 20, PREMIUM.text, 2);
 	statsLabel = line(scope, panel, "Stats", "", Enum.Font.GothamMedium, 14, PREMIUM.text, 3);
-	line(scope, panel, "Header", "ENEMY VIEW", Enum.Font.GothamBlack, 12, PREMIUM.gold, 1);
+	headerLabel = line(scope, panel, "Header", "ENEMY VIEW", Enum.Font.GothamBlack, 12, PREMIUM.gold, 1);
 
 	// **Into the full-screen GUI rather than the HUD's**, because this is furniture pinned to the screen's own top
 	// edge: `None` insets on both devices, so `TOP_INSET` means the same distance everywhere. See the two notes at the
@@ -326,4 +375,9 @@ function unbind(): void {
 	// frame before `showEnemyView` writes again — an empty line is invisible where somebody else's name is a lie.
 	if (nameLabel !== undefined) nameLabel.Text = "";
 	if (statsLabel !== undefined) statsLabel.Text = "";
+
+	// **And the header comes back**, because the next shot may be an ordinary hit death — the kind that does have a
+	// view to name. A header left hidden by a catch would caption the next hit with a name and a stat line and no
+	// heading at all, which reads as a panel that failed to draw its first line.
+	if (headerLabel !== undefined) headerLabel.Visible = true;
 }

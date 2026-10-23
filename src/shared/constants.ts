@@ -740,6 +740,35 @@ export const LAST_HIT_BY_TOKEN_ATTRIBUTE = "LastHitByToken";
 export const LAST_HIT_BY_POSITION_ATTRIBUTE = "LastHitByPosition";
 
 /**
+ * Attribute on a **`Player`** holding **how** the latest hit on them happened: `"Hit"` for a ball that landed, or
+ * `"Catch"` for a throw of theirs that somebody caught. The fourth of the family, and the one that changes what the
+ * death cam says.
+ *
+ * **The three attributes beside this one describe a death the cam can *show*; this one describes a death it has to
+ * *explain*.** A caught throw kills its thrower — the catcher's side gets the point and the thrower is out — and
+ * "Hits: 4 | Outs: 1" about the catcher is a true sentence that answers a question nobody asked. `"Catch"` is what
+ * lets the caption say `caught your shot!` instead.
+ *
+ * **It is written on two different people, and that is the one thing to get right.** The hit path
+ * (`RoundService.registerHit`) writes the family on the **victim**, at the tag. The catch path
+ * (`RoundService.resolveCaughtThrower`) writes it on the **thrower**, because the thrower is the one who dies — the
+ * catcher is unharmed and is the *killer* for this attribute's purposes, which is why the name, token and position
+ * written at that moment all describe the catcher. Both readers are the same reader: `client/enemyView.ts` asks the
+ * **local player's** own copy, and the local player is whoever is dying.
+ *
+ * **Two values as literals between two files**, which is `roundZone`'s `PLAYING`/`SIDE_A` convention: the server
+ * writes `"Hit"` or `"Catch"`, the client compares against `"Catch"`, and a typo in one of them is a death that
+ * reads as one it is not. Declared here so a third value has an obvious place to be written down.
+ *
+ * **Cleared exactly where its three neighbours are** — when a body arrives, and at the `Playing` edge for the whole
+ * roster — so a stale cause cannot outlive a stale name. That matters more here than for the others: a `"Catch"`
+ * left on a player would caption their *next* death, from something else entirely, as a catch.
+ *
+ * **Its only reader is `client/enemyView.ts`.** Nothing draws the value itself.
+ */
+export const LAST_HIT_BY_CAUSE_ATTRIBUTE = "LastHitByCause";
+
+/**
  * Attribute on a **ball** holding the `os.clock` time before which nobody may pick it up.
  *
  * Written by `BallService.dropBall`, read by `BallPickupService`. On the ball rather than

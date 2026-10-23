@@ -1,13 +1,43 @@
 # Handoff — roblox-dodgeball
 
 A guide for a fresh session. Written 2026-09-28 against a green build (`npm run build` → exit 0);
-**brought up to date 2026-10-19** against `efcbc37` plus one uncommitted change from the same day (the
-readout column moved to `getFullScreenGui()` — §9, §10). Earlier revisions: 2026-10-17 at
-`a73c0a7` (the persistence pass, **since committed as `008963b`** — the paragraph below used to call it
-uncommitted), 2026-10-16 at `196a5b3` with the mobile input surface and the GUI region rule, 2026-10-14
-at `9b47369`, 2026-10-11 at `9e2e971`, 2026-10-06 at `5bcc374`. Where this file and the source disagree,
-the source wins — and the tag count in §7 is deliberately not quoted here (it is `TAGS.md`'s own table,
-which is the count).
+**brought up to date 2026-10-23** against `f062372` **plus six uncommitted files from the same day** —
+`controllers/hud/MobileControlsController.ts`, `ui/glow.ts`, `client/enemyView.ts`,
+`services/round/RoundService.ts`, `shared/constants.ts` and `controllers/hud/LoadingScreenController.ts`
+(§9, §10, §15). Earlier revisions: 2026-10-19 at `efcbc37` plus the readout column moved to
+`getFullScreenGui()` — **that change is committed now, in `f062372`**; 2026-10-17 at `a73c0a7` (the
+persistence pass, **since committed as `008963b`** — the paragraph below used to call it uncommitted),
+2026-10-16 at `196a5b3` with the mobile input surface and the GUI region rule, 2026-10-14 at `9b47369`,
+2026-10-11 at `9e2e971`, 2026-10-06 at `5bcc374`. Where this file and the source disagree, the source
+wins — and the tag count in §7 is deliberately not quoted here (it is `TAGS.md`'s own table, which is the
+count).
+
+**What has landed since the 2026-10-19 revision, and all of it is uncommitted at the time of writing.**
+Five things, and the first two are one component:
+
+1. **The mobile cluster is glass, and a press is its negative.** Idle the face is `PREMIUM.void` at `0.7`
+   (`IDLE_TRANSPARENCY`); held it is `PREMIUM.text` at `0.2` with `void` ink, and the word under the button
+   inverts with it (`HELD_TRANSPARENCY`, `buildButton`'s `paint`). That replaced a crimson held-face, which
+   read as an alarm over bright green turf. **The look needed a change underneath it**: `ui/glow.ts`'s
+   `applyGlow` grew a third argument and the cluster passes `false`, so its bloom is a `Border` `UIStroke`
+   rather than a `UIShadow` — a shadow is a blurred *silhouette*, so it inks the shape's interior, and
+   behind a `0.7` face the glow *was* the fill. §10 has the story.
+2. **Catch and Dodge have a cooldown ring, and it is a hairline revealed by the button shrinking** rather
+   than a disc drawn on the button: two `UIGradient` halves clipped to a circle, clockwise from 12 o'clock,
+   plus an opaque `PREMIUM.void` disc that leaves only the outer band. §10 lists the four shapes it went
+   through to get there. **Throw has neither an arc nor a charge meter** — that one was removed at the
+   player's request, and `ThrowController.currentCharge` is private again.
+3. **A caught throw says so on the thrower's screen.** `LAST_HIT_BY_CAUSE_ATTRIBUTE` is `"Hit"` from
+   `registerHit` and `"Catch"` from `resolveCaughtThrower`, written on the **thrower** — the thrower is the
+   one who dies — with the catcher as the name, token and position; `client/enemyView.ts` hides its header
+   and prints `caught your shot!` in place of the stat line. The `LAST_HIT_BY_*` family has a fourth member
+   and it is the only one that changes a *caption* rather than a camera.
+4. **Nothing arrives from a practice zone holding anything, and no power survives a round's start.**
+   `admitWithCover` removes the arriving player's ball and ends their armed power before the side is written
+   and before the body is moved, printing `[Round] <name>: admitted — held ball and armed power cleared`
+   only when something was taken; `clearArmedPowers()` is the `SuperService` half of the intermission sweep,
+   which the ball sweep alone could not do — an arm with no ball behind it is a fact about the *player*.
+5. **The loading screen's `TITLE` is `No Headshots`**, against `DODGEBALL Hero`.
 
 **What has landed since the 2026-10-17 revision** (`git log a73c0a7..efcbc37`, and it is the whole of
 `196a5b3..efcbc37` that §4, §7, §10, §15 and §16 were brought in step with). Five things:
@@ -128,6 +158,15 @@ new modules in `src/server/persistence/`. It added §12b, corrected §12's persi
 and added §15 items 24–28. **Everything else in this file stands as the 2026-10-16 revision left it**,
 including §12's economy rules, which this pass did not touch: the coin values, the chest, the milestones
 and the catalog are unchanged and still unconfirmed in Studio (§15 item 1).
+
+**What the 2026-10-23 pass re-read, and where it stopped.** It re-read `MobileControlsController.ts` end to
+end — the packing, `buildButton`, `addCooldownOverlay`/`addArcHalf`, `trackCooldowns`, the press tracker and
+`paintJump` — and `ui/glow.ts` whole. **It read `client/enemyView.ts`, `RoundService.ts` and
+`shared/constants.ts` as *diffs* rather than as files**: the changed hunks in each were read in full and the
+rest of those three files was not re-derived, which is the distinction to keep in mind when one of their
+sentences turns out to be stale. It corrected §9's inventory (two deleted controllers, one that was missing),
+added §10's two stories and its completed list, and added §15 items 34–37. **§5–§8, §11–§14, §17 and §18
+were not touched at all**, and **§16 gained no confirmation** — see its own note.
 
 **Read this file, then read the actual source.** This document describes *where* things are and *why*
 the shape is what it is; it deliberately does not reproduce code, because code copied into prose
@@ -372,7 +411,8 @@ src/client/
                                  controllers; panels.ts is the same shape for session state
   roundZone.ts                   "in a round or in a practice zone" — the client's one rule
   platform.ts                    `isMobile()` — the client's one device test and the only place that
-                                 decides it; seven callers, no two asking the same question (§9)
+                                 decides it; a caller per question and no two asking the same one — §9
+                                 is the list
   IasTest.ts                     finished input test, DEBUG = false, meant to be deleted
   bodyAnimation.ts /             **the body effects and the one animation renderer, and they are plain
   hitVfx.ts / hitConfirm.ts /    modules started by hand from `main.client.ts`** — `startHitVfx()`,
@@ -389,6 +429,11 @@ src/client/
                                  started from `main.client.ts` like the others; it owns one prompt per
                                  tagged ball and reads only published attributes, so it never asks the
                                  server whether a catch is owed (§7)
+  enemyView.ts                   `startEnemyView()` — the kill cam's panel: the killer's name, then
+                                 either the per-head stat line or, since 2026-10-23, `caught your
+                                 shot!` with the `ENEMY VIEW` header hidden, decided by
+                                 `LAST_HIT_BY_CAUSE_ATTRIBUTE` read off the local player. Another plain
+                                 module started from `main.client.ts` (§10, §15 item 37)
   ui/                            screenGui.ts (every `ScreenGui` in the client and the written rule for
                                  which one a thing belongs in — HudGui, FullScreenGui, SplashGui,
                                  TransitionGui, ScreenSpaceGui, StickGui, **plus `getHudColumn()`**, the
@@ -398,12 +443,21 @@ src/client/
                                  second caller can share it — `styleSplashText` styles any `TextLabel`
                                  and never animates; `createActionSplash` adds the frame and an opt-in
                                  `pop`; `catchPrompt.ts` uses the first and deliberately not the
-                                 second), elevation.ts, panelChrome.ts
+                                 second), elevation.ts, panelChrome.ts, **glow.ts** (`applyGlow` — the
+                                 two-layer bloom under every neon edge here: a hairline `GlowCore`
+                                 stroke plus either a `UIShadow` or, when the caller passes
+                                 `blur: false`, a `GlowBloom` `Border` stroke. The cluster passes
+                                 `false`, because a shadow inks the shape's interior and its face is
+                                 transparent — §10)
   controllers/                   CoreGuiController.ts (shared core-GUI wiring)
   controllers/hud/               RoundStatus, RoundTransition, LoadingScreen,
                                  RespawnHud, CurrencyHud, SuperHud, StatsBillboard, ScoreHud,
-                                 CooldownHud, ThrowStateToast, ControlsLegend, ModeVote,
-                                 ArenaFreezeCountdown, Dock, Shop, Inventory, Theme
+                                 ControlsLegend, MobileControls (the six-button cluster — packed by
+                                 `pack()`, glass face, a cooldown ring per control with a clock; §9,
+                                 §10), ModeVote, ArenaFreezeCountdown, Dock, Shop, Inventory, Theme.
+                                 **`CooldownHud` and `ThrowStateToast` stood in this list and are
+                                 deleted** — nothing in `src/` names either any more, and the second
+                                 one took `ui/hudToast.ts`'s only caller with it (§9, §15 item 36)
   controllers/input/             Action, Catch, Dodge, Throw, AimTarget, SuperAbility,
                                  AlternativeMovement, Sprint, **TouchJoystickController** — the ring,
                                  its thumb and the movement pad, touch clients only
@@ -836,9 +890,8 @@ wrong:
 | `SuperHudController` | streak / charge / armed ability / MultiBall window | the four `SUPER_*` attributes + the held ball's mark |
 | `StatsBillboardController` | **the round's badges, or** the per-head hit/out record — one billboard, two contents; a rig wears the badge strip alone. **The crown visual is retired** (`CROWN_ATTRIBUTE` still drives `EconomyService.checkMilestones`; the `onFire` badge is the picture now) | `BADGES_ATTRIBUTE`, `STAT_HITS`, `STAT_OUTS` |
 | `HitLogController` | who you hit / who hit you, top left, during a round | the `roundHit` event |
-| `CooldownHudController` | dodge / catch / stamina bars | `DODGE_READY_AT`, `CATCH_READY_AT`, `STAMINA_ATTRIBUTE` |
-| `ThrowStateToastController` | throwing on/off toast | `THROW_ENABLED` |
 | `ControlsLegendController` | the control legend | `THROW_ENABLED` |
+| `MobileControlsController` | **the six mobile buttons** — `Drop`, `Catch`, `Curve`, `Dodge`, `Throw`, `Jump` — packed by `pack()` into the bottom-right corner of `getScreenSpaceGui()`, with a cooldown ring behind the two that have a clock and the engine's own jump button dressed or hidden (`HIDE_ENGINE_JUMP`). Glass face at `0.7`, white inverse on a press — §10 has both stories | `CATCH_READY_AT`, `DODGE_READY_AT`; `isMobile()` |
 | `ModeVoteController` | the vote row — **dormant**, nothing opens a vote | the `ROUND_VOTE_*` attributes |
 | `ScoreHudController` | each side's points during a scoring round | `ROUND_SCORE_A_ATTRIBUTE` / `ROUND_SCORE_B_ATTRIBUTE` |
 | `ArenaFreezeCountdownController` | the arena-entry freeze countdown | `ROUND_STATE_ATTRIBUTE`, `TEAM_ATTRIBUTE` (derives its clock from `ARENA_FREEZE_SECONDS`) |
@@ -847,11 +900,20 @@ wrong:
 | `InventoryController` | owned cosmetics, equip buttons, milestone conditions | `OWNED_COSMETICS_ATTRIBUTE`, `EQUIPPED_TRAIL_ATTRIBUTE`, `EQUIPPED_ELIMINATION_ATTRIBUTE` |
 | `ThemeController` | configures the big-ui theme | — |
 
-Three shared pieces worth knowing about: `ui/hudToast.ts` (the bottom-centre toast column, used by the
-throw toast), `ui/actionSplash.ts` (the `HIT!` look and its one pop — **the style and the animation are
-separate calls on purpose**, see below) and the small module-scoped Fusion values (`aiming.ts`,
-`sprinting.ts`, `throwing.ts`, `cameraShake.ts`) that carry one fact between two controllers without either
-depending on the other.
+**Three rows of this table have changed since it was last reconciled, and only one of them is an
+addition.** `MobileControlsController` was missing from it altogether — a strange omission for the newest
+thing on the HUD, and the reason the controller's own doc has had to serve as the inventory of the cluster.
+`CooldownHudController` (dodge / catch / stamina bars) and `ThrowStateToastController` (the throw's on/off
+toast) are **deleted**: neither name appears anywhere in `src/` any more, and the second one took
+`ui/hudToast.ts`'s only caller with it (§15 item 36). The first deletion is *why* the cluster's rings
+became the only cooldown readout on a phone — see the ring story in §10.
+
+Three shared pieces worth knowing about: `ui/hudToast.ts` (the bottom-centre toast column — **with no
+caller at all as of 2026-10-23**: its one consumer was `ThrowStateToastController`, which is gone, and §15
+item 36 is what that left behind), `ui/actionSplash.ts` (the `HIT!` look and its one pop — **the style and
+the animation are separate calls on purpose**, see below) and the small module-scoped Fusion values
+(`aiming.ts`, `sprinting.ts`, `throwing.ts`, `cameraShake.ts`) that carry one fact between two controllers
+without either depending on the other.
 
 **`ui/actionSplash.ts` is the answer to "apply the hit-confirm look somewhere else", and it is split in two.**
 `styleSplashText(label, { strokeThickness, fit })` applies the theme's font, colour, centring and a `Contextual`
@@ -978,6 +1040,65 @@ the shared GUI with `CoreUISafeInsets` and then set `None` on every later call �
 find-or-create is one careless `if` away from at all times; the 2026-10-16 pass answered it by routing all
 four writes through one function, and §9 has the rule the two of them now follow.
 
+### The buttons that were not transparent black — a glow is a silhouette
+
+Reported in as many words — *"The buttons are not transparent black, they should be"* — one pass after the
+one that had already asked for more transparency. The face had moved from `PREMIUM.transparency` (`0.15`,
+the glass every panel wears) to `0.7` — seven tenths given back to the arena — and on screen they still read
+as six solid discs.
+
+**The cause was not the face; it was the light behind it.** `ui/glow.ts`'s `applyGlow` delivered the wide
+half of the bloom as a `UIShadow`, and **a shadow is a blurred silhouette** — it is inked across the
+shape's whole *interior* as well as around it. Behind a `0.15` face nobody could tell, because the face was
+nearly what the glow was; behind a `0.7` one the glow *was* the fill, and the transparency had nothing left
+to show. Every property the file was writing was correct, which is why two passes went into the alpha
+rather than into the bloom.
+
+**The fix is a different shape of bloom, not a different colour.** `applyGlow(instance, colour, blur)` now
+takes a third argument; `false` makes the wide half a `Border` `UIStroke` — the same one the helper already
+fell back to on an engine without `UIShadow` — whose ink is only ever the rim. The cluster passes `false`,
+every other caller keeps the soft shadow, and the default is `true` so nothing changed by silence. **What
+the glow loses is softness; what it keeps is colour, weight and meaning**, and that distinction is worth
+stating plainly because the request was for it to be unchanged, and literally unchanged was not available.
+
+**The general rule, which is the part worth carrying:** an effect parented to a control that has to be seen
+through must be a stroke, a child drawn inside the rim, or a sibling behind it whose own alpha *is* the
+shape wanted. A blur or a drop shadow works on the silhouette, and the silhouette of a disc is a disc.
+
+### The cooldown ring, in four shapes — and the one that needed the button to move
+
+The request was *"a small, thin circular cooldown arc in the top-right corner of the mobile action
+button"*, then a Material progress indicator. Getting there took four drawings, and each failure is worth
+keeping because the next one answered it:
+
+1. **A full-button disc that drained** — right geometry, invisible: the two states were `#080A0F` and
+   `#0C0F16`, four to seven units apart on 255, on a control that was nearly that colour itself.
+2. **A full-button wedge that filled** — visible, and it read as *the button changing colour*, which was
+   rejected. A pie chart on the control is not a gauge beside it.
+3. **A corner dial, 21 px** — the right idea in the wrong place: it competed with the button's own word for
+   attention and, being in the corner, was under the thumb that had just pressed it.
+4. **A hairline ring at the button's own diameter, behind the button, revealed by shrinking it** — what
+   shipped. The ring is a **sibling** at the button's full size and one `ZIndex` below it, so while the
+   button is at `1` the ring is entirely covered; the button shrinks to `COOLDOWN_SHRINK` (`0.85`) and the
+   7.5 % of the radius it gives up on every side *is* the band the ring occupies. **Nothing about the ring
+   animates** — the button moves and the ring is simply there.
+
+**Three engine facts were learned against the thing itself rather than read, and all three are now in this
+project's notes:**
+
+- **`UIGradient.Rotation` is clockwise**, and its control points stay centred on the frame at every angle,
+  so a hard edge at offset `0.5` is a **diameter** — rotating it sweeps a **radius**. That is what makes two
+  clipped half-frames a sweep from 12 o'clock rather than two wipes out from the centre.
+- **`ClipsDescendants` with a `UICorner` rounds its immediate children and never its grandchildren.** The
+  first ring came out as a **square with a round hole in it**, because the fill two levels down was clipped
+  to its *rectangle*. Each fill now carries its own `UICorner(1, 0)`: the half's rectangular clip makes the
+  semicircle, the fill's own corner makes the circle, and the two clips do one job each.
+- **A ring behind a transparent button has a second job.** The wedge is drawn under the *whole* control, so
+  at `0.7` its lavender tinted the face for the length of the cooldown. An opaque `PREMIUM.void` disc at
+  `ZIndex 1`, sized `1 − 2 × RING_WIDTH`, covers that interior and leaves only the band outside the button.
+  The side effect — a cooling button looks backed, a ready one looks like glass — is deliberate, and it is
+  the first thing §15 item 34 says to check if the transparency is still wrong.
+
 ### Completed since the last handoff
 
 Roughly in commit order (`git log` from 2026-09-28):
@@ -1097,6 +1218,40 @@ Roughly in commit order (`git log` from 2026-09-28):
   and the stroke had to be **faded everywhere the number fades** — a crossing's departure, an arrival,
   "Start"'s fade-out and `resetLabels` — because `UIStroke.Transparency` is not part of its label's
   `TextTransparency`. Left alone, every tick would have left a black outline of a number that had gone.
+
+**Completed 2026-10-23, and every one of these is uncommitted at the time of writing:**
+
+- **The mobile cluster's face, its press, and its glow** — §9's inventory table has the controller in it
+  now, which it did not before. Idle is `PREMIUM.void` at `IDLE_TRANSPARENCY` (`0.7`); held is
+  `PREMIUM.text` at `HELD_TRANSPARENCY` (`0.2`) with `void` ink on the face *and* on the word under it;
+  and `ui/glow.ts`'s `applyGlow` grew a `blur` argument so the cluster can ask for a `Border` stroke bloom
+  instead of a `UIShadow`. **The story is above this list, and it is a story because those two halves look
+  independent and are not** — the bloom had to change shape before the face could be see-through at all.
+- **The press tracker the cluster is built on**, which is what makes a swipe not a press: the button's own
+  events are used only to learn *which input landed on it*, and the gesture is measured against
+  `UserInputService.InputChanged` / `InputEnded`, identity-matched on the `InputObject`, with
+  `DRAG_THRESHOLD` 10 px, `HOLD_CONFIRM_SECONDS` 0.05 s and `TAP_FLASH_SECONDS` 0.12 s. A tap fires at its
+  release, a hold at the confirm, a flick fires `down` + `up` back to back, and every one of those
+  decisions prints a line.
+- **The cooldown ring** (`addCooldownOverlay`, `trackCooldowns`, `rightHalfAngle` / `leftHalfAngle`): a
+  hairline ring *behind* the button, revealed by shrinking the button to `COOLDOWN_SHRINK` (`0.85`) over
+  `COOLDOWN_SHRINK_SECONDS` (`0.1`). Catch and Dodge only — the two `TouchControl`s that name a
+  `cooldown` attribute, which is also the whole of what gives a control an arc. **Throw's charge meter is
+  gone** and `ThrowController.currentCharge` is private again.
+- **A caught throw gets its own sentence** (`LAST_HIT_BY_CAUSE_ATTRIBUTE`; `client/enemyView.ts`).
+  `"Hit"` is written by `registerHit`, `"Catch"` by `resolveCaughtThrower`, and the caption becomes
+  `caught your shot!` with the `ENEMY VIEW` header hidden rather than rewritten. **The catch path had no
+  writer for the other three attributes at all**, so a catch death used to reach the kill cam with no
+  identity or with a stale one from earlier in the same life; the four writes now come from one place.
+  §15 item 37 is what is still open about it.
+- **The round's admission strip and its armed-power sweep** (`RoundService.admitWithCover`,
+  `clearArmedPowers`). A player arriving from a practice zone loses the ball in their hand and the power
+  in their arm **before the side is written**, printing `[Round] <name>: admitted — held ball and armed
+  power cleared` only when something was actually taken; and every player not in a practice zone has
+  their arm ended at the round's start, which the ball sweep alone could not do (an arm with no ball
+  behind it is a fact about the *player*). The new attribute is cleared exactly where its three
+  neighbours are — on a body arriving, and at the `Playing` edge for the whole roster.
+- **The loading screen's `TITLE` is `No Headshots`**, against `DODGEBALL Hero`.
 
 ### Completed since the 2026-10-11 revision (the four in the header, in detail)
 
@@ -1652,6 +1807,45 @@ open; 33 is the measurement that would settle the report all four came out of.**
     again by group in a practice zone (`Ball` vs `PracticePlayer`). One run with the flag on reads the
     launch directly.
 
+**Found by the 2026-10-23 pass. Item 34 is a visual claim nobody has re-checked; 35 is a deliberate
+divergence in one helper; 36 is a file that lost its last caller; 37 is the gap in the newest attribute
+family.**
+
+34. **The buttons are described as "transparent black" and that has only ever been *argued*, not
+    measured.** The face is `PREMIUM.void` at `0.7`, with the bloom moved off the `UIShadow` so the glow
+    cannot ink the interior (§10) — and the reason it was changed at all is that the user reported the
+    buttons as *not* transparent once already, on the previous arrangement. **The next suspect is named
+    rather than left to be found**: the cooldown ring's hole is an opaque `PREMIUM.void` disc behind the
+    button, so a cooling button is backed and a ready one is not. That asymmetry is written down as
+    intentional in `addCooldownOverlay`, and if it is the objection then the fix is the hole's alpha, not
+    the face's. **One look answers it; nothing in this file can.**
+35. **`applyGlow` has two bloom shapes now and they are not the same light.** The cluster passes
+    `blur = false` and gets a `Border` `UIStroke`; every other caller (`DockController`, and anything
+    that never passes the argument) still gets the `UIShadow`, whose blurred silhouette reaches further
+    and softer. **The divergence is deliberate** — a shadow behind a see-through face *is* a fill — but it
+    means "the theme's bloom" is two appearances on one screen, and a future caller that wants the soft
+    one on a transparent surface will find out the hard way. The default is `true`, so nothing changes by
+    silence. **Also unverified in-engine:** that a `UIShadow` inks a shape's interior at all is reasoning
+    from what the class is, not a measurement — the cluster's own test is the one that settles it (if the
+    rim bloom leaves the face see-through, the diagnosis was right). **And one comment now describes half
+    the truth**: `ui/premiumTheme.ts`'s `stroke` doc still says the bloom "`ui/glow.ts` adds … as a
+    `UIShadow`", which is right for every caller but the cluster — a one-line correction in a file this
+    pass did not own.
+36. **`ui/hudToast.ts` has no caller left, and one comment still promises it has one.** Its only
+    consumer was `ThrowStateToastController`, which is gone (see §9's inventory note, corrected this
+    pass), and `hitConfirm.ts`'s own note says the toast, its column slot and the two-second hold went
+    with it. `mountToast` is exported and called by nothing; `ui/hudTheme.ts` still says *"`hudToast.mountToast`
+    is the single call site"*. **A whole module and a comment that describes a subscriber** — the module
+    either wants deleting or wants a caller, and that is a decision rather than a typo.
+37. **A caught-throw death can still be captioned with the wrong killer, and the new attribute inherits
+    the existing gap rather than closing it.** `enemyView.showEnemyView` reads
+    `LAST_HIT_BY_CAUSE_ATTRIBUTE` **once and deliberately not live**, on the argument that the four
+    writes are one server tick — but the *token* it resolves the body from can be a frame stale at a
+    death, which `killCam` documents and this file cannot fix. So a catch that lands in the same frame as
+    a real hit can show `caught your shot!` over the previous attacker's body. Nothing in the caption has
+    been in a log either (§16); the two things to look at first are a catch death with a *stale* name and
+    a header left hidden by a catch that was never restored.
+
 ---
 
 ## 16. What a live log has actually confirmed
@@ -1664,6 +1858,15 @@ only worth anything about code that still exists.
 no session lock has been claimed, no round-end save has been seen, and no failed economy write has
 been printed in front of anyone. §12b says which lines would prove each one; §15 item 24 says which
 two of them are reachable in a Studio session at all.
+
+**Nothing from the 2026-10-23 pass appears below either, and it differs from persistence's in one way
+worth recording: the cooldown ring was *seen working* — it was reported as correct once it was finally
+drawn, which is the only confirmation that component has had — while not one of its log lines was ever
+captured.** So `[HUD] cooldown started — …` / `… finished — …`, `[HUD] the cluster on this screen — …`
+and every `[HUD] <label> tap — Npx of travel` line are unconfirmed as *output*, and everything the
+cluster's face does (glass at `0.7`, the inverted press, the rim bloom) is a description of the code
+rather than an observation. **A ring that appears is a fact about the drawing; the numbers behind it,
+and what colour it sits next to, are still readings.** §15 items 34–37 are what that leaves open.
 
 **Still true of the current build:**
 
@@ -1884,8 +2087,8 @@ is that the next recording will name it.
 
 | Document | What it is | State |
 |---|---|---|
-| `HANDOFF.md` | this file | current as of **2026-10-19**, against `efcbc37` plus one uncommitted change from the same day (the readout column moved to `getFullScreenGui()`). That pass brought **§4, §7, §9, §10, §15 and §16** in step with everything committed since `196a5b3` — the rig pool and the lobby walk, the walk-speed contributions and caps, the power slot, `playSpawnPoof`, the `CATCH IT!` prompt with the sided lobby spawns, and the cursor-driven throw. §15 gained items 29–33 and §16 the four log lines the 2026-10-19 capture confirmed. **§5, §6, §8 and §11–§14 stand as the 2026-10-16 revision left them, and §17 as 2026-10-17** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted |
-| `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of 2026-10-14. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
+| `HANDOFF.md` | this file | current as of **2026-10-23**, against `f062372` plus six uncommitted files from the same day (the mobile cluster's glass face and rim glow, the cooldown ring, the caught-throw caption, the round's admission strip, the loading screen's title). That pass brought **§4, §9, §10, §15 and §16** in step: §4's map lost two deleted controllers and gained `MobileControls`, `ui/glow.ts` and `client/enemyView.ts`; §9's inventory table was corrected the same way; §10 gained two stories and a completed list; §15 items 34–37 and §16 a note saying it confirmed nothing. **§5–§8, §11–§14, §17 and §18 stand as their own revisions left them** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted |
+| `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of **2026-10-23**, which added one row to its "not tags, but the same trap" table: `"Hit"` / `"Catch"`, the two values of `LAST_HIT_BY_CAUSE_ATTRIBUTE` and the only pair on that list whose disagreement is a wrong *sentence* rather than a wrong lookup. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
 | `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **a record, not a description.** It documents the retired mock (five tabs, a box picture with odds); the panel was rewritten onto the economy and `ui/panelChrome.ts`, and a caveat banner at the top now says so. Kept because **§7's arithmetic still holds** (the panel really does collapse below ~700 px of viewport height) and §8's ruled-out list is still worth not re-treading. §5 and §6 were corrected on 2026-10-16 for the shared GUI's region, which is a *device* decision now (§9) |
 | `README.md` | upstream roblox-ts boilerplate — its entire content is the line `First commit` | says nothing about this project; ignore it |
 | `tools/pattern/` | the Node renderer and PNG output used to design the ring pattern (`shared/ringPattern.ts`) | one-off design tooling, not part of the build |
