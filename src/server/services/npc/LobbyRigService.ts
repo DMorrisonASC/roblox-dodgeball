@@ -1187,7 +1187,8 @@ export class LobbyRigService implements OnStart {
 				// answers `undefined` when the stack is empty or nothing could be placed, and the pool is the
 				// fallback rather than the default.
 				const rig =
-					this.unparkFor(side) ?? (playing ? this.spawnArenaRig(side) : this.spawnLobbyRig(side));
+					this.unparkFor(side, playing) ??
+					(playing ? this.spawnArenaRig(side) : this.spawnLobbyRig(side));
 
 				// **A refill says so, and this is the line the file was missing.** Whether a seat was
 				// filled is invisible everywhere else: `NpcService` prints a rig being *managed*, which
@@ -1479,14 +1480,18 @@ export class LobbyRigService implements OnStart {
 	 * **A body that could not be placed goes straight back on the stack**, and the walk stops there: every
 	 * failure {@link placeParked} can report is a missing spawn folder or pad, which is the same for the next
 	 * body, so trying the rest of the stack would be a loop over rigs that would all fail identically.
+	 *
+	 * **`playing` is the caller's, and the caller is `rebalance`** — which read the phase once, for its own
+	 * choice between the two spawners. This used to re-read it here, which is two answers to one question in
+	 * the same call; see {@link placeParked} for the report that made the split visible.
 	 */
-	private unparkFor(side: TeamLabel): Model | undefined {
+	private unparkFor(side: TeamLabel, playing: boolean): Model | undefined {
 		while (this.parked.size() > 0) {
 			const rig = this.parked.pop();
 			if (rig === undefined) break;
 			if (rig.Parent === undefined) continue;
 
-			if (this.placeParked(rig, side)) return rig;
+			if (this.placeParked(rig, side, playing)) return rig;
 
 			this.parked.push(rig);
 			break;
@@ -1507,14 +1512,24 @@ export class LobbyRigService implements OnStart {
 	 * **The health reset is not cosmetic.** A rig parked at a quarter health would come back one hit from
 	 * dying, which reads as a placeholder that was quietly damaged while it was away. Health belongs to the
 	 * *life*, and a parked rig is between lives.
+	 *
+	 * **Which form it takes is a parameter rather than a read, and the difference was a bug report.** This
+	 * asked `phase()` for itself while its caller had already asked — and a rig was restored onto a lobby pad
+	 * in the middle of a live round, which is a body standing in the wrong room with a side on it, unable to
+	 * rejoin until the next whistle. Whether the two reads can actually disagree is *not* proven: the phase is
+	 * one attribute and every other reader in the file is consistent with it. What is proven is that this was
+	 * the only placement in the file with a second opinion about the phase, so it is the only one that could
+	 * have produced that line — and a single read, made once by the caller and handed down, is a shape that
+	 * cannot. The pad branch prints the phase it was told, so the next occurrence of this shows whether the
+	 * two disagreed or whether the phase itself read as `Intermission` while a round was on.
 	 */
-	private placeParked(rig: Model, side: TeamLabel): boolean {
+	private placeParked(rig: Model, side: TeamLabel, playing: boolean): boolean {
 		const humanoid = rig.FindFirstChildWhichIsA("Humanoid");
 		if (humanoid === undefined) return false;
 
 		humanoid.Health = humanoid.MaxHealth;
 
-		if (this.phase() === PLAYING) {
+		if (playing) {
 			const parts = this.arenaSpawnParts(side);
 			if (parts.size() === 0) return false;
 
@@ -1545,7 +1560,12 @@ export class LobbyRigService implements OnStart {
 		// refill may not walk, and for the report it comes from.
 		if (!this.standOnPad(rig, side)) return false;
 
-		print(`[Rig] ${rig.Name}: back on side ${side}'s pad`);
+		// **The phase that decided it is on the line, and that is a report's worth of difference.** This
+		// branch puts a body on a *lobby* pad, which is right between rounds and wrong in the middle of one —
+		// and when it was reported as happening mid-round there was nothing in the output to say what this
+		// service had believed. Read once, here, purely for the message: the caller's `playing` is what the
+		// placement used, so the two disagreeing is the finding rather than a cause of one.
+		print(`[Rig] ${rig.Name}: back on side ${side}'s pad (phase "${this.phase()}")`);
 
 		return true;
 	}
@@ -1829,8 +1849,13 @@ export class LobbyRigService implements OnStart {
 
 		if (seat === undefined) return;
 
+		// **One read of the phase, handed to both halves**, on `rebalanceBody`'s rule: a placement is either
+		// the arena's or the lobby's, and asking twice is asking a question whose answer can change between
+		// the two answers. See `placeParked` for the report that made this explicit.
+		const playing = this.phase() === PLAYING;
+
 		const rig =
-			this.unparkFor(seat) ?? (this.phase() === PLAYING ? this.spawnArenaRig(seat) : this.spawnLobbyRig(seat));
+			this.unparkFor(seat, playing) ?? (playing ? this.spawnArenaRig(seat) : this.spawnLobbyRig(seat));
 
 		// **Named, because the rig count is not a thing anybody watching can see.** This path is both the
 		// mid-round replacement and the lobby one, and in a round a body appearing where another left is

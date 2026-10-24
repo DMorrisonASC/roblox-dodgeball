@@ -73,7 +73,9 @@
 		"roblox-dodgeball:out/client/controllers/hud/MobileControlsController@MobileControlsController": "client/controllers/hud/MobileControlsController@MobileControlsController",
 		"roblox-dodgeball:out/client/controllers/input/TouchJoystickController@TouchJoystickController": "client/controllers/input/TouchJoystickController@TouchJoystickController",
 		"roblox-dodgeball:out/client/controllers/character/AimFacingController@AimFacingController": "client/controllers/character/AimFacingController@AimFacingController",
-		"roblox-dodgeball:out/server/services/badges/BadgeService@BadgeService": "server/services/badges/BadgeService@BadgeService"
+		"roblox-dodgeball:out/server/services/badges/BadgeService@BadgeService": "server/services/badges/BadgeService@BadgeService",
+		"roblox-dodgeball:out/server/services/stats/MatchStatsService@MatchStatsService": "server/services/stats/MatchStatsService@MatchStatsService",
+		"roblox-dodgeball:out/client/controllers/hud/MatchStatsController@MatchStatsController": "client/controllers/hud/MatchStatsController@MatchStatsController"
 	},
 	"metadata": {}
 }

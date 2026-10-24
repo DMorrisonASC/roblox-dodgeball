@@ -1,8 +1,15 @@
-import { CollectionService, Workspace } from "@rbxts/services";
-import { BADGES_ATTRIBUTE, BALL_NAME, TEAM_ATTRIBUTE } from "shared/constants";
+import { CollectionService, ReplicatedStorage, Workspace } from "@rbxts/services";
+import {
+	BADGES_ATTRIBUTE,
+	BALL_NAME,
+	ROUND_STATE_ATTRIBUTE,
+	ROUND_STATUS_FOLDER,
+	TEAM_ATTRIBUTE,
+} from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { TEAM_A, TEAM_B } from "../../services/round/team";
+import { arenaSpawnForRig } from "../arenaSpawns";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
 import { ragdoll } from "../ragdoll";
 import {
@@ -47,6 +54,29 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  * `tickInterval` is infinite, which is how a behavior says it wants no turns:
  * what this one waits for is a death, and a death is not an interval.
  */
+
+/**
+ * The phase name `RoundService` publishes while a round is being played, and the read of it.
+ *
+ * **A deliberate copy of a read nine other server files make** — `npc/detect.ts`, `DodgeService`,
+ * `MysteryBoxService`, `StatsService`, `BallSpawnerService`, `LobbyRigService`, `MatchService`,
+ * `OutlineService` and `SuperService` each have their own three lines, on `BallSpawnerService`'s stated
+ * reason: the phase is published as *text on an attribute* and there is nothing importable to agree on.
+ * A behaviour cannot reach a service to ask — it is constructed by `NpcService`, and `RoundService` and
+ * `LobbyRigService` both construct *that* — so the choice here is this copy or a fourth parameter on the
+ * factory, and a factory that takes a phase reader to answer one question per death is the heavier of the
+ * two.
+ *
+ * **The default is the intermission, which is the conservative answer here.** An unreadable phase means
+ * this behaviour places a rebuilt rig at its recorded home — the behaviour it had before any of this — and
+ * the next boundary overwrites the home anyway. Guessing "playing" instead would put a rig into an arena
+ * for a round that may not exist.
+ */
+function roundIsPlaying(): boolean {
+	const folder = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
+
+	return folder?.GetAttribute(ROUND_STATE_ATTRIBUTE) === "Playing";
+}
 export function createRespawnBehavior(balls: BallService): NpcBehavior {
 	/**
 	 * A live copy of each rig, taken before anything can kill it.
@@ -335,12 +365,34 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				templates.delete(model);
 				folders.delete(model);
 
+				// **A rig that holds a side comes back where its side is standing, not where its body was put.**
+				//
+				// A home is a *recorded* placement, so it is only as right as the last mover was: a rig
+				// refilled mid-round onto a lobby pad, or one whose restore took the lobby branch by mistake,
+				// carried a lobby home into a live round — and this is the line that then put a body in the
+				// lobby, on its side, in front of a match it could not rejoin, with nothing in the output
+				// saying which room it had been rebuilt in. That is the report this answers.
+				//
+				// **If the round is playing and the corpse had a side, the arena's own spawn for that side is
+				// the answer**, and it is a fresh read of the place file rather than a remembered point — see
+				// `npc/arenaSpawns.ts` for why the lookup lives beside the behaviours rather than being asked
+				// of the round, which does not construct them. Everything else keeps the home: a rig with no
+				// side is a lobby walker between rounds, a practice dummy, or a body nobody has painted, and
+				// for all three the place it was put is the place it belongs.
+				//
+				// **The chosen point becomes the home**, so the next death decides from the same rule rather
+				// than from a stale one, and the movers that follow — `returnRigsToLobby` at the round's end,
+				// `teleportTeamsToArena` at the next whistle — go on overwriting it as they always did.
+				const destination = (team !== undefined && roundIsPlaying()
+					? arenaSpawnForRig(team)
+					: undefined) ?? home;
+
 				// **Placed by its root part, not by `PivotTo`.** A model pivot has no orientation of
 				// its own — it is a point — so moving a model by one moves it without turning it,
 				// which is how a rig ends up standing *at* the right spot while lying on its back
 				// there. A root part's CFrame carries both, and the joints carry the rest of the
 				// rig along with it.
-				root.CFrame = home;
+				root.CFrame = destination;
 
 				// Every tag off the copy and back on again, rather than trusting `Clone` to have
 				// carried them: `NpcService` starts a loop when the entry point *arrives* on a
@@ -351,7 +403,7 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 
 				// Handed on before the entry point arrives: they belong to the rig that is here now,
 				// and the loop about to start will ask for them on its first turn.
-				homes.set(rig, home);
+				homes.set(rig, destination);
 				templates.set(rig, template);
 				folders.set(rig, filed);
 
@@ -431,11 +483,11 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// **And where it came back, which is the third fact of that kind.** A replacement put in
 				// the wrong *room* is not visible in the Explorer either — the tag set and the side read
 				// identically — and it is the one thing that made a respawn into the lobby look like a rig
-				// that never came back at all. Printed from the home rather than from the rig's position a
-				// frame later, because the home is what this behavior decided and placed.
+				// that never came back at all. Printed from the point this decided on rather than from the
+				// rig's position a frame later, because that point is what the rebuild placed.
 				if (DEBUG) {
 					const sideLabel = team === undefined ? "no side" : `side ${team}`;
-					const at = home.Position;
+					const at = destination.Position;
 
 					print(
 						`[NPC] ${name}: back — health ${fresh.Health}, state ${fresh.GetState()}, ${sideLabel}, ` +

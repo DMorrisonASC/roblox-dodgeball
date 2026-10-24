@@ -1,5 +1,6 @@
 import Fusion from "@rbxts/fusion-3.0";
-import { Players } from "@rbxts/services";
+import { ContentProvider, Players, SoundService } from "@rbxts/services";
+import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { events } from "shared/networking";
 import { createActionSplash, SPLASH_TOP_FRACTION } from "./ui/actionSplash";
 import { getHudScreenGui } from "./ui/screenGui";
@@ -8,15 +9,15 @@ import { getHudScreenGui } from "./ui/screenGui";
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
- * # The perfect dodge — a ball that missed by a ball's width, said out loud
+ * # The perfect dodge — a ball that missed by a ball's width, said and heard
  *
- * **A caption and nothing else: the geometry is the server's, and it is the only machine that can measure
- * it.** Whether a dash avoided a ball is a fact about where a ball went and where a body had been standing,
- * and a client can see neither with any authority — its copy of the ball is interpolated, its copy of another
- * body is lagged, and a client that decided for itself what "close enough" meant would be deciding for itself
- * whether it had earned a caption. So `DodgeService.watchForPerfectDodge` measures the miss and this module
- * draws the answer. See that method for what is measured and why it is measured against the space the body
- * left rather than the space it moved to.
+ * **A caption and a clip, and nothing else: the geometry is the server's, and it is the only machine that can
+ * measure it.** Whether a dash avoided a ball is a fact about where a ball went and where a body had been
+ * standing, and a client can see neither with any authority — its copy of the ball is interpolated, its copy of
+ * another body is lagged, and a client that decided for itself what "close enough" meant would be deciding for
+ * itself whether it had earned a caption. So `DodgeService.watchForPerfectDodge` measures the miss and this
+ * module draws — and plays — the answer. See that method for what is measured and why it is measured against
+ * the space the body left rather than the space it moved to.
  *
  * **An event rather than an attribute, and the difference from the rest of the HUD is what the fact is.**
  * Everything a body *is* travels as an attribute (`CATCH_ANIMATION_ATTRIBUTE`, `DODGE_DIRECTION_ATTRIBUTE`,
@@ -49,14 +50,20 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  *   through the same code and prints the same line — the rule is uniform — but a rig has no screen, and the
  *   only client that could draw for it is one watching a body it is not playing. The server does not send the
  *   event for a rig at all, so there is nothing here to filter out.
- * - **Not a change to the dodge.** The dash, its cooldown and the fact that a dodge avoids a ball by moving
- *   rather than by being invulnerable are all untouched; this only watches.
+ * **Not a change to the dodge.** The dash, its cooldown and the fact that a dodge avoids a ball by moving
+ * rather than by being invulnerable are all untouched; this only watches.
+ *
+ * **And not a caption alone any more: it is the caption and the one sound that belongs to it.** The sound is
+ * played by *this* machine, on the same frame the word pops, for the same reason the word is drawn here rather
+ * than sent — a perfect dodge is a moment, and a server-played clip would be a round trip behind the animation
+ * it is supposed to land with. See {@link makeSound} for where the instance lives and why it is made once, and
+ * `AUDIO_CONFIG.PERFECT_DODGE` for why the id is in the config rather than in this file.
  */
 export function startPerfectDodge(): void {
 	// **Said at boot**, for the reason `hitConfirm` says its own: a module with a subscription and no Flamework
 	// controller around it is started by hand from `main.client.ts`, and a caption that never fires and one
 	// that was never wired print the same nothing.
-	if (DEBUG) print(`[HUD] perfect dodge up — "${PERFECT_TEXT}" on a ball that missed me by a ball's width`);
+	if (DEBUG) print(`[HUD] perfect dodge up — "${PERFECT_TEXT}" and one clip on a ball that missed me by a ball's width`);
 
 	const scope = Fusion.scoped();
 
@@ -70,18 +77,102 @@ export function startPerfectDodge(): void {
 		position: new UDim2(0.5, 0, SPLASH_TOP_FRACTION + PERFECT_ROW_OFFSET, 0),
 	});
 
+	// **One `Sound` for the session, made here and never made again**, which is the arrangement every other
+	// client sound in this project uses — `MusicController`, `personalAudio`, `elevation`'s two interface tones
+	// and `ShopController.awardSound`, and the last of those is the closest precedent because it is also one
+	// clip played on an event rather than on a state. Built at mount for the splash's reason and one more: the
+	// moment it is needed is a frame that must not also pay for instance construction.
+	const sound = makeSound();
+
+	// **Preloaded, because the first perfect dodge of a session can arrive before the clip does.** Same problem
+	// `personalAudio` names: a `Sound` whose asset is still in flight when `Play` is called arrives after the
+	// moment it describes, or not at all — and unlike a pointer-driven tone there is nothing the player can do
+	// to wait for it. The window is only generous if the load starts at boot, which is here. The warn is the
+	// same shape too, and for the same reason: a wrong id is the one fault of this feature that can only be
+	// heard as silence.
+	ContentProvider.PreloadAsync([sound], (contentId, fetchStatus) => {
+		if (fetchStatus !== Enum.AssetFetchStatus.Success) {
+			warn(`[Audio] perfect dodge sound did not load — ${contentId} (${fetchStatus.Name})`);
+		}
+	});
+
 	events.Client.Get("perfectDodge").Connect((dodger) => {
 		// **The whole trigger: this client is the dodger.** The event is addressed to one player, so this
 		// comparison is a belt rather than the braces — but it is the same belt `hitImpact` and `teamWipe` wear,
 		// and keeping it here means a change in how the server addresses the message cannot turn a near miss on
 		// somebody else into a caption on this screen. A rig's name would never match a player's, which is the
-		// second half of "rigs do not draw".
+		// second half of "rigs do not draw". **The sound is inside this same gate**, so it cannot play for
+		// somebody else's dodge either — the two are one event and one answer.
 		if (dodger !== Players.LocalPlayer.Name) return;
 
+		// **The word and the sound are one announcement, written as two lines with nothing between them.**
+		// Both are synchronous, so they land on the same frame: `pop` starts its first tween and `Play` starts
+		// the clip on the same tick the event was handled on. Order is therefore arbitrary and this order is
+		// the reading order of the sentence — the thing you see, then the thing you hear.
 		splash.pop(PERFECT_TEXT);
+		play(sound);
 
 		if (DEBUG) print(`[HUD] splash — ${PERFECT_TEXT}`);
 	});
+}
+
+/**
+ * The perfect dodge's `Sound`: **one instance for the session, in `SoundService`, with every property applied
+ * in code.**
+ *
+ * **`SoundService` and not `PlayerGui`**, and this is the parent question the three other client-audio files
+ * answer the same way: a `Sound` is positional only when it hangs off a `BasePart` or an `Attachment`, so
+ * anywhere else is 2D — but `PlayerGui` is torn down and rebuilt on every respawn, and an instance made once
+ * for the session must not be sitting inside a container that does not outlive it. A `SoundGroup` would be a
+ * shared volume multiplier, and there is nothing here it should be multiplied by: this is one clip at one
+ * level, and `AUDIO_CONFIG.PERFECT_DODGE_VOLUME` is the whole of how loud it is.
+ *
+ * **Made once and restarted, not made per caption.** A `Sound` per perfect dodge would be an instance per
+ * event with an owner, constructed on the frame the word pops — the one frame that should not also be paying
+ * for an instance — and, worse, a *fresh* instance has not been preloaded, so the first one of a session would
+ * arrive late or not at all. That is the trade `ShopController.awardSound` and `personalAudio` both record.
+ *
+ * **`Looped = false` and `PlaybackSpeed = 1` are stated rather than left to the default**, as `personalAudio`'s
+ * twin of this function does: the loop is the one that would be a bug rather than a preference (a caption
+ * sound that looped would keep going after the word had faded), and the speed is written because the charge
+ * sound is the one client clip that derives its speed from the mechanic — this one is played as uploaded.
+ *
+ * **A fourth copy of these six lines, and that is named rather than hidden.** `MusicController` has a private
+ * `makeSound`, `personalAudio` has this same function, and `elevation`, `ShopController`, `ThrowController` and
+ * `ArenaFreezeCountdownController` each build their `Sound` inline. Consolidating all six into one helper is a
+ * pass of its own — it touches five files this feature does not, for no change a player could hear — so this
+ * one is written to match them. If that pass ever happens, this is the file to start from.
+ */
+function makeSound(): Sound {
+	const sound = new Instance("Sound");
+	sound.Name = "PerfectDodge";
+	sound.SoundId = AUDIO_CONFIG.PERFECT_DODGE;
+	sound.Looped = false;
+	sound.PlaybackSpeed = 1;
+	sound.Volume = AUDIO_CONFIG.PERFECT_DODGE_VOLUME;
+	sound.Parent = SoundService;
+
+	return sound;
+}
+
+/**
+ * Plays the caption's clip from the beginning, whatever it was doing.
+ *
+ * **`Stop` before `Play`, and the order is the whole of it.** `Sound:Play()` on a clip that is already playing
+ * does nothing — it is not a restart — so a second perfect dodge inside the first clip's length would be
+ * *silent*, which is the worst possible answer: the sound would be reliably present only when the dodges were
+ * far apart. `Stop` rewinds and silences, `Play` starts from there. `personalAudio.play` argues the same line
+ * for the same reason; `ShopController` gets away with a bare `Play()` because chests are minutes apart, and
+ * this is not.
+ *
+ * **No `Ended` cleanup, and the absence is deliberate.** The instance is one for the session and belongs to
+ * `SoundService` for as long as the client lives — destroying it after each play would mean building a new,
+ * unpreloaded one for the next, which is the late-clip fault {@link makeSound} exists to avoid. There is
+ * nothing here that accumulates: one `Sound`, one subscription, both made once at boot.
+ */
+function play(sound: Sound): void {
+	sound.Stop();
+	sound.Play();
 }
 
 /**

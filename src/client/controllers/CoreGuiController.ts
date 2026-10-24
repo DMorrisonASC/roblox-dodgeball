@@ -1,4 +1,5 @@
 import { Controller, OnStart } from "@flamework/core";
+import { StarterGui } from "@rbxts/services";
 
 /** Prints once, when the chrome has been dealt with — the line that says the controller ran at all. */
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
@@ -13,6 +14,20 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  * still about the session it was written in.
  */
 const WATCH_SECONDS = 5;
+
+/**
+ * How many times the **legacy** disable is asked for before the attempt is called a failure, and how long
+ * between asks. **Placeholder — 50 × 0.1 s, which is the same five seconds as {@link WATCH_SECONDS}.**
+ *
+ * **The two bounds are equal on purpose**: the configuration watch and the legacy request are two attempts at
+ * one outcome, so a client where both fail should say so in one report rather than one message at four seconds
+ * and another at nine. Fifty is `5 / 0.1` written out rather than a distinction — what it buys is that a client
+ * whose CoreGui is not ready on the first frame (the ordinary case, since Roblox's own scripts start after this
+ * controller) has a hundred milliseconds per try to get there, and a client where the call raises for another
+ * reason is not retried for the rest of the session.
+ */
+const LEGACY_ATTEMPTS = 50;
+const LEGACY_RETRY_SECONDS = 0.1;
 
 /**
  * The client's own decisions about Roblox's built-in UI: **which of the engine's surfaces this game turns off.**
@@ -65,14 +80,106 @@ export class CoreGuiController implements OnStart {
 		 *
 		 * **Disabled rather than restyled**, which is the same call `ShiftLock` makes about the backpack and for
 		 * the same reason: it is Roblox's surface, drawn in Roblox's language, and there is nothing this game wants
-		 * to say in it. A custom leaderboard would be a second score display standing beside the score bar — the
-		 * shape of second answer the rest of this client is built to avoid.
+		 * to say in it.
+		 *
+		 * **"A custom leaderboard would be a second score display" was the argument here, and it has been
+		 * narrowed rather than dropped.** That sentence was written when the only thing the game scored was a
+		 * *side* — and against a score bar, a second list of numbers would have been two answers to one question.
+		 * The stats board (`MatchStatsController`, on hold-`Tab`) is not that: it ranks **people** by what they
+		 * themselves did — throws, hits, catches, dodges — which is a question nothing else on screen answers, and
+		 * it is asked of the round's own ledger rather than of the score. So the default list is still off, and
+		 * what replaced it answers something different rather than the same thing twice. **The part of the
+		 * original argument that survives is the surface**: this is still Roblox's page, still drawn in Roblox's
+		 * language, and nothing of this game's sides is in it.
 		 */
 		this.disablePlayerList();
 	}
 
 	/**
-	 * Asks the engine to hide the default player list.
+	 * Asks the engine to hide the default player list — **twice, through the two levers the engine documents,
+	 * because one of them has been observed not to be enough.**
+	 *
+	 * **The report that forced this: `Tab` opened the default leaderboard.** The configuration path below was
+	 * already here and already wrote `Enabled = false`, and its own read-back is the only evidence it ever took.
+	 * It prints behind `DEBUG`, which is off, so nothing in a captured log said whether it worked — and a
+	 * leaderboard that is *enabled* still owns `Tab`. So there are now three changes, and none of them is a
+	 * guess about which one is missing:
+	 *
+	 * 1. **The legacy call, retried** ({@link retryLegacyPlayerListOff}). `SetCoreGuiEnabled` is the documented
+	 *    request and it is the one that reaches Roblox's CoreScripts; it can raise while those scripts are still
+	 *    coming up, which is the standard reason this call is wrapped in a pcall-retry loop everywhere it appears.
+	 * 2. **`Open = false` as well as `Enabled = false`** ({@link applyPlayerList}). These are two different
+	 *    properties on `PlayerListConfiguration`: `Enabled` gates the element, `Open` is the state `Tab` toggles.
+	 *    Writing both means the outcome does not depend on which one this build honours.
+	 * 3. **Both paths report, unconditionally.** A cosmetic setting that cannot be verified is a setting this
+	 *    file's own `pcall` paragraph calls "a cosmetic setting reporting itself as a fault" — the difference
+	 *    here is that a *silent* success and a *silent* failure looked identical, which is the one thing a log
+	 *    must never allow.
+	 *
+	 * **What the third lever is, and where it lives**: `MatchStatsController` now returns
+	 * `Enum.ContextActionResult.Sink` from its `Tab` binding rather than `Pass`, so the panel works whether or
+	 * not this file succeeded. That is the belt this file cannot hold — see that binding's own note.
+	 *
+	 * **Both levers are kept rather than one being chosen**, and the reason is the asymmetry of the failure:
+	 * the legacy call is a *request* whose result is not readable, and the configuration is a *value* whose
+	 * result is. Between them, one of the two has to be observable, and the pair costs a pcall and a property
+	 * write once per session.
+	 */
+	private disablePlayerList(): void {
+		this.retryLegacyPlayerListOff();
+		this.watchPlayerListConfiguration();
+	}
+
+	/**
+	 * **The legacy request, retried until the engine accepts it** — `StarterGui:SetCoreGuiEnabled(PlayerList,
+	 * false)`, wrapped because that call raises on a client whose CoreGui is not up yet.
+	 *
+	 * **The loop is bounded and the failure is loud**, which is the whole difference from the version this
+	 * replaces: a single unguarded call that raised would have taken the rest of `mount` with it — there is
+	 * nothing else in this controller's mount, so what it took was the report — and a single guarded call would
+	 * have been silent. Fifty tries at a tenth of a second is five seconds, the same window
+	 * {@link WATCH_SECONDS} gives the configuration path, so a client where both fail says so once.
+	 *
+	 * **A success prints the read-back**, because `SetCoreGuiEnabled` is a request to the CoreScripts rather than
+	 * a write to a setting: the call returning without raising means it was *accepted*, and the read-back is the
+	 * only evidence of what the engine then did with it. A `true` there is the finding that sends a reader to the
+	 * configuration path rather than to this one.
+	 *
+	 * **Spawned rather than run inline**, because the first attempt is deliberately made immediately — the common
+	 * case is a CoreGui that is already up — but a retry must not hold the frame it started on.
+	 */
+	private retryLegacyPlayerListOff(): void {
+		task.spawn(() => {
+			for (let attempt = 1; attempt <= LEGACY_ATTEMPTS; attempt++) {
+				const [ok, err] = pcall(() => {
+					StarterGui.SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false);
+				});
+
+				if (ok) {
+					print(`[CoreGui] PlayerList disabled — attempt ${attempt}, enabled now reads ${StarterGui.GetCoreGuiEnabled(Enum.CoreGuiType.PlayerList)}`);
+
+					return;
+				}
+
+				// **The reason on the way out only**, so fifty identical lines from a client that is simply early
+				// do not bury the one that matters.
+				if (attempt === LEGACY_ATTEMPTS) {
+					warn(
+						`[CoreGui] SetCoreGuiEnabled(PlayerList) refused ${LEGACY_ATTEMPTS} times over ` +
+							`${LEGACY_ATTEMPTS * LEGACY_RETRY_SECONDS}s — the list may stay. ${tostring(err)}`,
+					);
+
+					return;
+				}
+
+				task.wait(LEGACY_RETRY_SECONDS);
+			}
+		});
+	}
+
+	/**
+	 * Asks the engine to hide the default player list **through its configuration object** — the path that
+	 * writes a setting rather than requesting one.
 	 *
 	 * **Through `CoreGuiConfiguration`, which is the current mechanism rather than the older one.** Two
 	 * documented paths reach this setting — this service's `PlayerListConfiguration.Enabled`, and
@@ -114,19 +221,21 @@ export class CoreGuiController implements OnStart {
 	 *
 	 * **What is *not* claimed is why the engine leaves a documented reference unset.** That is not something this
 	 * repository can read, and inventing a reason for it would be the same mistake as reading the last one as a
-	 * race. What is known is narrow and enough: the child exists, it is the class the dump names, and `Enabled` is
-	 * the property the dump puts on that class.
+	 * race. What is known is narrow and enough: the child exists, it is the class the dump names, and the two
+	 * properties the dump puts on that class are `Enabled` (inherited from `BaseCoreGuiConfiguration`) and `Open`
+	 * (its own).
 	 *
 	 * **A property assignment rather than a request**, which is why the read-back in {@link applyPlayerList} is a
 	 * cheap assertion rather than the load-bearing half it is at `ShiftLock`'s backpack call: `SetCoreGuiEnabled`
 	 * asks the CoreScripts to do something, so printing the read-back there is the only evidence it was done;
-	 * this writes the setting itself. It is still worth printing, because a `true` would say the engine kept the
-	 * list — and would send the next reader looking somewhere else entirely.
+	 * this writes the setting itself. **Both read-backs are now printed unconditionally** — see
+	 * {@link applyPlayerList} for the run that made that necessary — because a `true` would say the engine kept
+	 * the list, and that is the line that sends the next reader somewhere else entirely.
 	 *
 	 * **The connection is not disconnected**, deliberately: it fires when the object is created, which happens
 	 * once, and a second firing would only re-assert a setting nothing else in this game writes.
 	 */
-	private disablePlayerList(): void {
+	private watchPlayerListConfiguration(): void {
 		const [ok, found] = pcall(() => game.GetService("CoreGuiConfiguration"));
 
 		if (!ok || !typeIs(found, "Instance") || !found.IsA("CoreGuiConfiguration")) {
@@ -183,9 +292,35 @@ export class CoreGuiController implements OnStart {
 		const playerList = config.FindFirstChild("PlayerListConfiguration");
 		if (playerList === undefined || !playerList.IsA("PlayerListConfiguration")) return false;
 
-		playerList.Enabled = false;
+		// **Two properties, because they are two different levers.** `Enabled` gates the element — the
+		// documentation on `BaseCoreGuiConfiguration` says "whether the built-in CoreGui element controlled by
+		// this configuration object is enabled" — while `PlayerListConfiguration.Open` is "whether the built-in
+		// player list is currently open", which is the state `Tab` toggles. Writing both means the answer does
+		// not depend on which one this build treats as authoritative, and the cost is one more assignment.
+		//
+		// **`pcall`'d as a pair, and the guard is what keeps a new lever from taking an old one with it.** These
+		// are property *writes* on an engine object whose writability is not something the typings can promise —
+		// `Enabled` is inherited and `Open` is this class's own — so a refusal would otherwise raise out of this
+		// method, out of `watchPlayerListConfiguration`, and into the mount thread: the child watch and its
+		// five-second report would never be set up, and the failure would be a missing log line rather than a
+		// warning. The object being found is still a `true`, because what this method answers is "is there
+		// something here to write to" — a refused write is reported where it happens.
+		const [wrote, err] = pcall(() => {
+			playerList.Enabled = false;
+			playerList.Open = false;
+		});
 
-		if (DEBUG) print(`[CoreGui] player list disabled ${when} — enabled reads ${playerList.Enabled}`);
+		// **Unconditional rather than behind `DEBUG`, which is the change the missing log forced.** The read-back
+		// is the only evidence this setting took, and a `true` here is the finding that sends a reader to the
+		// legacy path — a line that is off by default is a line that is not there on the run where it matters.
+		// The engine may also *accept* the write and keep the list, which is exactly what this prints and the
+		// `Debug` variant never could.
+		print(
+			`[CoreGui] PlayerList disabled ${when} — ` +
+				`enabled reads ${playerList.Enabled}, open reads ${playerList.Open}`,
+		);
+
+		if (!wrote) warn(`[CoreGui] could not write the player list's settings ${when} — ${tostring(err)}`);
 
 		return true;
 	}

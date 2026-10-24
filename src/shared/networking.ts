@@ -1,4 +1,5 @@
 import Net from "@rbxts/net";
+import type { MatchStatsRow } from "./matchStats";
 
 /**
  * Every remote in the game, declared once here and used by both sides.
@@ -405,6 +406,35 @@ export const events = Net.Definitions.Create({
 	 * about the direction, the sides and the count.
 	 */
 	perfectDodge: Net.Definitions.ServerToClientEvent<[dodger: string]>(),
+
+	/**
+	 * Client → server: **give me the board** — every body on a side, player or rig, with its round's counters and
+	 * its points.
+	 *
+	 * **A function rather than an event, and the reason is what the board is.** Every other remote in this file
+	 * carries a *moment*: a hit, a catch, a dodge, a wipe. The board is not a moment — it is a table that is
+	 * true at an instant and is asked for on demand, by a player holding a key. A push would mean sending N
+	 * bodies' rows to every client on every throw, catch, dodge and hit, almost all of it while nobody is
+	 * looking; a pull costs one round trip per open and nothing in between. **The round folder's attributes are
+	 * the wrong shape for this** — an attribute is one value rather than a table of rows, and the alternative
+	 * would be a hand-rolled string that two files have to parse the same way, which is the trap `TAGS.md`
+	 * documents for the strings that cannot be typed.
+	 *
+	 * **The cost, stated: the panel is empty for one ping when it opens.** `MatchStatsController` draws the
+	 * chrome immediately and fills the rows when this answers, so the wait reads as the panel arriving rather
+	 * than as it being broken — and at a LAN ping it is not visible at all. The push design had no wait and no
+	 * other advantage.
+	 *
+	 * **Nothing is sent by the client**, on `catch` and `drop`'s argument: the server already knows who is
+	 * asking, and there is nothing else to ask. There is no argument to validate, which is why this one has no
+	 * note about the wire being untyped — a caller cannot say anything untrue.
+	 *
+	 * **The answer is the round's own, not the asker's**: every body on a side — the players from
+	 * `Players.GetPlayers()` and the rigs from `rigsOnASide` — so the board is the same list
+	 * on every machine that asks. See `shared/matchStats.ts` for the row and `MatchStatsService` for what it
+	 * reads.
+	 */
+	matchStats: Net.Definitions.ServerAsyncFunction<() => ReadonlyArray<MatchStatsRow>>(),
 
 	/**
 	 * Client → server: this player wants to spend coins on a Power Chest.

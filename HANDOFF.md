@@ -385,6 +385,12 @@ src/server/
   services/super/SuperService.ts streak, charge (dev-only), MultiBall window, crowns
   services/stats/StatsService.ts hits + outs, DataStore "PlayerStats", the round-end + autosave
                                  boundaries, and `recordOut`'s caller in the round (§12b)
+  services/stats/MatchStatsService.ts  **the in-match stats board's server half, and it counts nothing** —
+                                 it reads `BadgeService.tally()` (throws, hits, catches, dodges already
+                                 increment at their own call sites), takes **every body on a side — players
+                                 from `Players.GetPlayers()` and rigs from `rigsOnASide()`**, applies
+                                 `MATCH_STATS_CONFIG` through `shared/matchStats.pointsOf`, and answers the
+                                 `matchStats` function. §15 item 45
   services/visual/OutlineService.ts   per-body Highlight, team colours, freeze override
   services/mystery/MysteryBoxService.ts  the tagged spawn points, the box, the chest prize
   services/zone/PracticeZoneService.ts   zone membership -> PRACTICE_ZONE_ATTRIBUTE
@@ -397,7 +403,9 @@ src/server/
                                  npc/lobbySpawns.ts (a lobby seat *by side*: the parts under
                                  `LobbySpawns/A` and `/B` carrying `TEAM_ATTRIBUTE`, with a
                                  whole-folder fallback and one warning when the place file has not
-                                 been split). `behaviors/WalkToJoinPadBehavior.ts` is the walk to a
+                                 been split), and npc/arenaSpawns.ts (one of a side's arena spawns,
+                                 lifted to a rig's root — the lookup `RespawnBehavior` needs and
+                                 cannot ask the round for; §15 item 50). `behaviors/WalkToJoinPadBehavior.ts` is the walk to a
                                  match join part, on the same movement law as `SeekBehavior`
   components/BallComponent.ts    the throw -> hit path (friendly-fire guard, tag deferral, splash)
   vfx/spawnPoof.ts               `playSpawnPoof(model)` — the one appear/disappear effect, anchored
@@ -436,9 +444,11 @@ src/client/
                                  module started from `main.client.ts` (§10, §15 item 37)
   perfectDodge.ts                `startPerfectDodge()` — the `Perfect` caption, one row under `HIT!`, drawn
                                  when the server reports a ball that passed within a ball's width of where
-                                 this player was standing when they dodged. Another plain module started
-                                 from `main.client.ts`; one event in, one splash out, and the measurement
-                                 is entirely `DodgeService`'s (§15 item 38)
+                                 this player was standing when they dodged — and **the one clip that goes with
+                                 it**, a single `Sound` in `SoundService` made at boot, preloaded, and
+                                 restarted on each caption. Another plain module started
+                                 from `main.client.ts`; one event in, one splash and one sound out, and the
+                                 measurement is entirely `DodgeService`'s (§15 item 38)
   ui/                            screenGui.ts (every `ScreenGui` in the client and the written rule for
                                  which one a thing belongs in — HudGui, FullScreenGui, SplashGui,
                                  TransitionGui, ScreenSpaceGui, StickGui, **plus `getHudColumn()`**, the
@@ -459,7 +469,10 @@ src/client/
                                  RespawnHud, CurrencyHud, SuperHud, StatsBillboard, ScoreHud,
                                  ControlsLegend, MobileControls (the six-button cluster — packed by
                                  `pack()`, glass face, a cooldown ring per control with a clock; §9,
-                                 §10), ModeVote, ArenaFreezeCountdown, Dock, Shop, Inventory, Theme.
+                                 §10), ModeVote, ArenaFreezeCountdown, Dock, Shop, Inventory, Theme,
+                                 **MatchStats** (hold `Tab`: a `lightPanelTheme` panel of rows grouped by
+                                 side and ranked by points, rebuilt into its list on every open; §15
+                                 item 43).
                                  **`CooldownHud` and `ThrowStateToast` stood in this list and are
                                  deleted** — nothing in `src/` names either any more, and the second
                                  one took `ui/hudToast.ts`'s only caller with it (§9, §15 item 36)
@@ -482,20 +495,31 @@ round on a timer. **The intermission waits for a match to be asked for** — the
 
 ### Intermission entry (top of `gameLoop`)
 
-1. `state = Intermission`, `activePlayers.clear()` — **after this point the round roster is gone**;
-   anything that needs "who was just playing" must use `Players.GetPlayers()` instead.
-2. Print, then publish `ROUND_STATE_ATTRIBUTE = "Intermission"` and `ROUND_TIME_ATTRIBUTE` at the
+1. `const playedThisRound = this.playersInRound()` — **the roster is read here because the next line
+   throws it away**, and it is the one list the end-of-round boundary both covers and moves. It is
+   deliberately *not* `this.teams`: `surrender` keeps a surrendered player on their side (the outcome
+   depends on it, §11), and that player is already standing in the lobby. Anything that needs "who was
+   just playing" must use this value rather than re-deriving it after the clear.
+2. `state = Intermission`, `activePlayers.clear()` — **after this point the round roster is gone**.
+3. Print, then publish `ROUND_STATE_ATTRIBUTE = "Intermission"` and `ROUND_TIME_ATTRIBUTE` at the
    **full** `ARENA_CONFIG.INTERMISSION_SECONDS` (16) — published *before* anything that can hold,
    so a held intermission cannot read as a frozen round.
-3. `await this.waitForLobby()` — holds indefinitely if the arena has no `LobbySpawns` parts, and
+4. `await this.waitForLobby()` — holds indefinitely if the arena has no `LobbySpawns` parts, and
    prints once on the way into the wait and once on the way out.
-4. `await this.transitionAround(() => this.teleportAll(lobby), { wipe: WIPE_AT_ROUND_END })`.
-5. `this.clearEndedRoundHeldBalls()` — strips held balls from all players + rigs in `Workspace`.
-6. `this.matches.clear()` — the roster is forgotten, so everybody picks a side again.
-7. Per player: `this.abilities.clearMultiBall(player)` and `this.respawns.cancel(player, true)`.
-8. `this.freezes.unfreezeAll()`.
-9. **No map swap.** The arena is permanent; nothing is cloned, placed or destroyed (§6).
-10. Seed `elapsed = 0`, `settledFor = 0`, `roster = this.matches.rosterRevision()`.
+5. `await this.transitionAround(playedThisRound, (roster) => { teleportAll(roster, lobby);
+   returnRigsToLobby(); }, { wipe: WIPE_AT_ROUND_END })` — **one list, handed to both halves.**
+   `transitionAround` no longer derives a cover list of its own: it bumps
+   `ROUND_TRANSITION_ATTRIBUTE` on the roster it is given and passes that same roster into the move,
+   so "who sees the grid" and "who is moved behind it" cannot disagree. The two faults this closed
+   were a spectator moved with no grid and a surrendered player given a grid over a move that no
+   longer included them (`teleportAll` used to walk `Players.GetPlayers()`; the cover was `this.teams`,
+   which keeps surrenders on purpose).
+6. `this.clearEndedRoundHeldBalls()` — strips held balls from all players + rigs in `Workspace`.
+7. `this.matches.clear()` — the roster is forgotten, so everybody picks a side again.
+8. Per player: `this.abilities.clearMultiBall(player)` and `this.respawns.cancel(player, true)`.
+9. `this.freezes.unfreezeAll()`.
+10. **No map swap.** The arena is permanent; nothing is cloned, placed or destroyed (§6).
+11. Seed `elapsed = 0`, `settledFor = 0`, `roster = this.matches.rosterRevision()`.
 
 ### Intermission loop — `while (this.pendingMatch === undefined)`
 
@@ -1880,7 +1904,13 @@ the fix was; 39 is the one number in it that is a guess; 40 is the gap the fix d
     still report while a 5-stud pass stays silent. **The caption remains unconfirmed** — switch
     `client/perfectDodge.ts`'s `DEBUG` on for one session to print `[HUD] perfect dodge up …` at boot and
     `[HUD] splash — Perfect` per caption. **Still unjudged**: whether `PERFECT_DISTANCE` = 4 fires on the dodges
-    a player thinks they earned, and whether an `h6` word reads under the 150-pixel `HIT!`.
+    a player thinks they earned, whether an `h6` word reads under the 150-pixel `HIT!`, and — added with the
+    sound — whether `AUDIO_CONFIG.PERFECT_DODGE_VOLUME` (0.6) sits right beside `HIT!` and the personal cues,
+    and whether the supplied clip is short enough for a caption that is gone in under a second. **The sound is
+    client-side on purpose**: it plays on the same frame the word pops, so it cannot lag the animation the way
+    a server-played `SoundEmitter` clip would. The line to check if it is silent is
+    `[Audio] perfect dodge sound did not load — <id> (<status>)`, which is the only way a wrong id announces
+    itself.
 39. **`PERFECT_WINDOW_SECONDS` is the one number in the feature that is a feel rather than an arithmetic.**
     0.6 s is three dashes, chosen because the ball a dash saves you from usually arrives *after* the dash
     ends. Given this game's throw envelope, every charge hangs for the same `2·sqrt(2·g·h)/g` — about 0.28 s
@@ -1924,6 +1954,149 @@ tuning decisions the code cannot settle, and both comments were corrected to des
     unchanged and now stated where it is enforced**: `rollMiss` is called once from
     `createWindupTracker.beginWindup`, the release re-applies the stored offset rather than drawing again, and a
     per-tick or per-second roll is a body changing its mind during its own hold.
+
+**Found by the 2026-10-23 stats-board pass. Item 43 is a feature nobody has opened; 44 is the reason it needed
+almost no server code; 45 is what it cannot show.**
+
+43. **The stats board has not been seen in Studio, and three things about it are only answerable there.** Hold
+    `Tab` for a `lightPanelTheme` panel — rows grouped by side, ranked by points — built from
+    `BadgeService`'s per-round ledger through `MatchStatsService` and the `matchStats` function. **The geometry
+    is the open question**: six fraction-width columns (`COLUMNS` in `MatchStatsController`) on a panel that is
+    the shop's `0.62 × 0.72`, a 26-pixel row, and whether a long player name reads better truncated than
+    scaled. Nothing in this file can answer any of it. **The empty state and the one-ping delay are also
+    unobserved**: the first hold of a session draws no rows until the function answers, and a player off a side
+    sees `no one is on a side yet`. The lines to read are `[Stats] board up — hold Tab to read the round` at
+    boot and, with that file's `DEBUG` on, `[Stats] board answered — N row(s)`.
+44. **The data already existed; the board added one read and no counters.** `BadgeService` has kept a
+    per-body tally of `throws`, `hits`, `catches` and `dodges` since the badge work, incremented at exactly the
+    four call sites where each fact becomes true (`BallService.throwBall` only when a ball left,
+    `BallComponent`'s catch branch only on a real catch, `DodgeService.requestDodge` past every gate,
+    `RoundService.registerHit` inside the round gate). **So the prompt's premise — "the round stats are
+    scattered across different services with no single source of truth" — was false**, and building a second
+    tally would have been a second chance to miss a call site. What was added is `BadgeService.tally()`
+    (read-only) plus the formula. **The cost is a naming debt that is now written down**: a service named for
+    the ribbons owns the ledger a scoreboard reads. If a third non-badge reader ever appears, the ledger wants
+    extracting into its own service and both readers pointing at it — the counters are already shaped for that
+    (`RoundCounters`, cleared at both boundaries by `clearAll`).
+45. **The board is every body on a side — players and rigs — and round-only.** *The first version listed players
+    only and the report came back "I see no stats for the rigs", against a round that had none on the human
+    side.* A rig is in the tally (`keyOf` folds a character to its `Player` and leaves a rig as its `Model`), it
+    has a side, and it is most of what a round is played against, so leaving it off is the one omission a
+    scoreboard cannot afford. **Rigs are read from `rigsOnASide()`** — world-filtered, side-validated, shared
+    with `RoundService` and `MatchService` — rather than from the tally, so a rig that has not thrown yet is
+    still on the board. **They are not marked as rigs**, on the reason the kill cam gives: the whole NPC system
+    is built to be hard to tell from people, and the scoreboard would be the one tell. **The round-only half is
+    `BadgeService`'s clearing**: it wipes on the `Playing` edge *and* after the fifteen-second badge window, so
+    the board reads `0` through most of an intermission. That is right for an in-match overlay and wrong for a
+    results screen — do not extend this panel to fill the gap the deleted end-of-round board left, because the
+    numbers it would need are exactly the ones `clearAll` has just thrown away. The two lifetimes would have to
+    part company first.
+46. **`Tab` opened Roblox's leaderboard, and there were two faults rather than one.** The report came back as
+    "the disable fails silently"; the code said something more specific. `CoreGuiController` never called
+    `SetCoreGuiEnabled` at all — it wrote `Enabled = false` on the `PlayerListConfiguration` child and reported
+    behind `DEBUG`, which is off, so **no captured log had ever shown whether it took**. And
+    `MatchStatsController`'s binding returned `ContextActionResult.Pass`, which is the opposite of claiming a
+    key — so the press reached the player-list CoreScript whatever the configuration said. **Both are fixed**:
+    the legacy call is now pcall-retried (50 × 0.1 s, the same five seconds the configuration watch gives),
+    both `Enabled` and `Open` are written on the config object (the second is the state `Tab` toggles), and the
+    binding sinks. **Three independent levers, on purpose**: the legacy call is a *request* whose result cannot
+    be read, the configuration is a *value* whose result can, and the sink does not depend on either. **The
+    lines a run should now show** are `[CoreGui] PlayerList disabled — attempt N, enabled now reads false` and
+    `[CoreGui] PlayerList disabled at mount — enabled reads false, open reads false`; a `true` in either
+    read-back is the finding. **Unverified**: whether the engine re-enables the list on respawn or at a round
+    boundary (nothing in this project does, and no re-assert is wired), and whether `Open` is writable on this
+    build — if it is not, `[CoreGui] could not write the player list's settings` says so.
+47. **The end-of-round teleport moved the whole server, and `teams` is not the gate that fixes it.** The
+    report was lobby players being cut back to a lobby spawn at every round end. Two teleport sites matter
+    and only one was wrong: `teleportTeamsToArena` already iterated `playersInRound()`, while `teleportAll`
+    walked `Players.GetPlayers()` with a practice-zone skip — so a never-opted-in spectator and a
+    *surrendered* player were both moved, to a spawn that is not where they were standing. **The asymmetry
+    the report described is the diagnosis**: `transitionAround` publishes `ROUND_TRANSITION_ATTRIBUTE` to
+    `this.teams` alone, so the wipe covered exactly the players who were supposed to move and none of the
+    ones who were not. **`teams` could not be the fix**, because `surrender` deliberately leaves the player
+    on their side (`rosterOutcome` needs the side), so a gate on `teams` would still yank them. **The fix
+    is a capture, not a query**: `gameLoop` reads `playedThisRound = playersInRound()` **above**
+    `activePlayers.clear()` and passes it to `teleportAll(roster, to)`, so both ends of the round move one
+    list by construction and there is no second definition of "participant" to drift. **`returnToLobby` and
+    `surrender` needed no roster change** — both already release the match and call `eliminate`, which is
+    what takes the player out of `activePlayers`; the teleport was reading the wrong list, not a stale one.
+    **Unverified without Studio**: whether a spectator standing mid-lobby is now left exactly in place
+    across a round end, and whether the surrender prompt's return is visibly unaffected. Open items remain
+    around respawn, since a player with no `Character` is still skipped.
+48. **The cover was published to a list the move did not use, so an opted-out player saw the boundary's
+    grid twice.** The same report's second half: with `teleportAll` fixed, a player who joined, pressed
+    Return to Lobby and then watched the round end *still saw the transition play* — because
+    `transitionAround` bumped `ROUND_TRANSITION_ATTRIBUTE` on `this.teams`, which keeps a surrendered
+    player on purpose, while the move took `playersInRound()`, which no longer contains them. **The
+    correction is structural rather than a second filter**: `transitionAround(roster, move, options)` now
+    takes the roster and hands that same array into the move, so the cover and the move are one set by
+    construction — a caller cannot cover one list and move another. `teleportTeamsToArena(players)` takes
+    the list too, so neither boundary reads `activePlayers` for itself. **Two side effects, both wanted**:
+    a practice-zone player who holds a roster seat no longer gets a round-start grid over a move they were
+    never in, and the round-start cover is now `playersInRound()` rather than `teams` (identical in the
+    ordinary case, which is why the split survived). **The next pass added "an empty roster skips the cover"
+    and that was wrong — see item 51.** That guard read the wait as the cover's own, when it is also the
+    window `LobbyRigService.promoteWalkers` needs before the move; it is gone, and the comment that argued
+    for it is corrected. **Unverified**: whether the two
+    grids a surrender used
+    to produce are now visibly one (the surrender's own bump, then nothing at the boundary), and whether
+    `TRANSITION_CONFIG.WIPE_AT_ROUND_END` off leaves a surrendered player seeing nothing at all — it
+    should, and that is the setting that would show it most plainly.
+49. **The round-end move now says who it took, because three reports have asked the same question and the log
+    could not answer it.** `teleportAll` prints one line per round end — `[Round] lobby move — N bod(ies) of M
+    to (x, y, z): names` — and a line per participant it *could not* move
+    (`… has no body to move; their next body lands in the lobby`). The distinction is the whole point: a body
+    left on the court is either a player who was not in the roster at all, or a player who is in it and has no
+    body yet, and nothing in the old output separated those two. **A participant missing from the move line is
+    the finding**; a participant *on* it who still ended up on the court is a client or camera fault, not a
+    server one. **Also closed: `handlePlayerJoined` now asks `finished` as well as the phase.** `finishRound`
+    sets `finished` inside the round's own loop, while the phase does not become `Intermission` until the next
+    turn of `gameLoop` — so a body handed back in that frame would have been placed on its **side's arena
+    spawn**, on the court that was just played, a fraction of a second before the round-end cover and the move
+    to the lobby. A body that arrives after the round is decided belongs in the lobby. **Unverified**: whether
+    that window is reachable at all on a live server (a `LoadCharacterAsync` resumption lands on a frame step,
+    and the phase change is the next one, so it may be a single frame wide) — the line above is what would show
+    it if it is.
+50. **A rig was restored onto a lobby pad during a live round, and its next respawn put a body in the
+    lobby.** The line is `23:46:09.035 [Rig] ThunderPix64: back on side A's pad` in a round that ran
+    `23:44:58 → 23:47:34` — `placeParked`'s **lobby** branch, in the middle of a match, for a seat freed by
+    `prospeed1: no side after 5s`. That rig died at `23:46:48.778`, and `RespawnBehavior` rebuilds a rig at
+    its *recorded home* — which was now the pad — so the replacement appeared in the lobby, on side A, in
+    front of a match it could not rejoin. **Two changes, one for each half.**
+    **(1) The respawn asks where the rig belongs now**: if the round is playing and the corpse had a side,
+    the rebuild is placed on one of that side's arena spawns (`npc/arenaSpawns.ts`, a fresh read of the place
+    file, +3 studs, the same lift every other mover uses) and that point becomes the new home. Everything
+    else — no side, no round — keeps the recorded home, which is the behaviour it always had. This makes the
+    reported symptom impossible regardless of how a home got to be wrong, and it self-heals every home
+    already wrong in a running server.
+    **(2) `placeParked` no longer reads the phase for itself.** It takes `playing` from `rebalance`, which
+    had already read it to choose between the two spawners, so one call can no longer hold two opinions; the
+    same one-read-per-call fix was applied at `onPlayerLeft`'s refill. The pad branch now prints the phase it
+    was told — `back on side A's pad (phase "Intermission")` — because **the root cause is not proven**:
+    nothing in this repository writes `ROUND_STATE_ATTRIBUTE` other than `RoundService`'s two boundaries, so
+    a phase of `Intermission` at `23:46:09` should have been impossible, and the next log with that line in it
+    will say which of the two it was. **Unverified**: whether a rig respawning into the arena during a round
+    is visible as a refresh rather than a body walking in (it is a cut, as every rig arrival is), and whether
+    the pad line now ever prints a phase other than `Intermission`.
+51. **Two rigs were left standing in the lobby for a whole round, and the cause was a guard added two passes
+    earlier.** The round that opened `23:58:35.619 … (players A: 0, B: 0; rigs A: 3, B: 3)` has **no
+    `[Round] transition — cover in …` line**, where every earlier round start had one: item 48's "an empty
+    roster skips the cover" had decided a grid over nobody was wasted time. `LobbyRigService.promoteWalkers`
+    runs **on the phase attribute's change** and is `task.spawn`ed, so it lands a few milliseconds after the
+    phase is published — `23:58:35.646`, one millisecond *after* `arena freeze` printed. It writes
+    `TEAM_ATTRIBUTE` on the rigs still walking so `teleportTeamsToArena` picks them up; with no cover the
+    move had already happened on the publish frame, so those two were promoted *after* the bodies left. They
+    were not moved, and `promoteWalkers` had removed their walk tag, so nothing downstream snapped them in
+    either — `moveWalkersToArena` only looks at walkers — and they stood in the lobby, on a side, for the
+    whole round. **The fix is the revert**: the cover runs whenever the boundary has one, and an empty roster
+    only means nobody sees it; `transitionAround`'s comment now states that the wait is also the promote
+    window, so the shortcut is not re-derived. **`TRANSITION_CONFIG.ENABLED` off still moves at once** and
+    still has that race — a debugging switch, unchanged, now named in the comment rather than discovered.
+    **New line, because the count was the missing evidence**: `[Round] arena move — N player(s) and M rig(s)
+    to their side's spawn`, printed at every round start. A round of eight bodies reading `6 rig(s)` there is
+    the finding, and it is the one thing this log could not say. **Unverified**: that the restored cover puts
+    all eight in the arena on a rigs-only round (it should — the promote now has 0.86 s), and whether
+    `moveWalkersToArena` is still needed at all now that the promote is reliable.
 
 ---
 

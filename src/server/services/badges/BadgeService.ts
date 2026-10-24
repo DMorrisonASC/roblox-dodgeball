@@ -50,7 +50,8 @@ import type { RoundParticipant } from "../round/modes/GameMode";
 const BADGE_WINDOW_SECONDS = 15;
 
 /**
- * What one body did in the round, **as the numbers the badges are derived from.**
+ * What one body did in the round, **as the numbers the badges are derived from — and, since the stats board,
+ * as the numbers the board is drawn from too.**
  *
  * **Seven counters and no more, and each one is here because a badge names it.** `hits` and `outs` are the
  * two the old result panel showed; `hitsTaken` is the other end of a hit; the last four are the mechanics
@@ -58,11 +59,18 @@ const BADGE_WINDOW_SECONDS = 15;
  * are about. Nothing is stored that no badge reads — a field kept "in case" would be a number somebody
  * would eventually draw.
  *
+ * **The board is the second reader, and it did not add a field.** `MatchStatsService` reads `hits`, `throws`,
+ * `catches` and `dodges` through {@link BadgeService.tally} rather than counting them again: every one of those
+ * four is already incremented at exactly the call site where the fact becomes true, so a second tally would be
+ * a second chance to miss a call site rather than a second source of truth. **That is the reason this
+ * paragraph changed rather than the reason the sentence above stopped being true** — nothing here exists for
+ * the board alone; the board is drawn from what the badges already needed.
+ *
  * **A player and a rig are counted the same way**, and the difference is only in where the body's key comes
  * from. A rig cannot be *eliminated* — the round has no concept of it — so `outs` is nought for a rig all
  * round; see {@link BadgeService.recordOut}.
  */
-interface RoundCounters {
+export interface RoundCounters {
 	hits: number;
 	outs: number;
 	hitsTaken: number;
@@ -124,7 +132,7 @@ interface Award {
 }
 
 /** A key: the `Player` for a person, the `Model` for a rig. See {@link BadgeService.recordHit}. */
-type BadgeKey = Player | Model;
+export type BadgeKey = Player | Model;
 
 /** A freshly cleared set of counters. */
 function emptyCounters(): RoundCounters {
@@ -430,6 +438,31 @@ export class BadgeService {
 	public onPlayingStart(): void {
 		this.sweepToken += 1;
 		this.clearAll();
+	}
+
+	/**
+	 * **What every body has done since the last boundary** — the round's own ledger, handed out read-only.
+	 *
+	 * **One reader outside this service, and it is why this is public at all.** `MatchStatsService` builds the
+	 * in-match stats board from these numbers rather than counting throws, catches and dodges a second time:
+	 * each of those is incremented at the one call site where the fact becomes true (`BallService.throwBall`,
+	 * `BallComponent`'s catch branch, `DodgeService.requestDodge`), so a parallel tally would be a second
+	 * chance to miss a call site and a second number to keep in step. See `RoundCounters` for the fields and
+	 * why the board did not add one.
+	 *
+	 * **The live map, typed read-only, rather than a copy.** The counters are written on the frame a throw
+	 * leaves a hand and read on the frame a player opens the board, so a copy would allocate a row per body per
+	 * press to protect against a mutation the only reader does not make. `Readonly` on both the map and the
+	 * values is the compiler's half of that promise; the convention is the other half, and it is the same
+	 * arrangement `RoundService.playersInRound` avoids by building fresh — there the caller is free to sort,
+	 * here the caller only reads.
+	 *
+	 * **Keys are `Player` for a person and `Model` for a rig** — see `BadgeKey`. The board filters to players,
+	 * which is a decision about what a board *is* rather than a limitation of this method: a rig has a side and
+	 * a score, but nobody is looking at a list to see how a placeholder did.
+	 */
+	public tally(): ReadonlyMap<BadgeKey, Readonly<RoundCounters>> {
+		return this.counters;
 	}
 
 	/** The counters for `key`, made on first use. */

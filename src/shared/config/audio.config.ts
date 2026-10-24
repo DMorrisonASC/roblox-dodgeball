@@ -359,4 +359,37 @@ export const AUDIO_CONFIG = {
 	 * is the whole of how loud it is, from any camera angle.
 	 */
 	ABILITY_CONSUMED_VOLUME: 0.6,
+
+	/**
+	 * The perfect dodge: what plays on the one screen that earned it, at the instant the `Perfect` caption pops.
+	 *
+	 * **Here rather than as a literal in `client/perfectDodge.ts`, and the argument is this file's own header.**
+	 * Tuning audio is somebody in Studio with the game running, changing a number and listening — so every clip
+	 * the client plays is named in one file, whether it is read in one module or four. A perfect dodge is rare
+	 * enough that the id may well be swapped; a swap should be one line in the file a person opens to do it.
+	 *
+	 * **Client-side, and that is a decision about *sync* rather than about volume.** The caption it goes with is
+	 * drawn by this machine from an event that has already arrived, so the sound is played on the same frame the
+	 * word pops. A server-played sound would be a round trip behind the animation it belongs to — `SoundEmitter`'s
+	 * world sounds are the opposite case and the right one there, because an impact has a *place* and every client
+	 * near it should hear it. A perfect dodge has no place: it is a fact about a body, told to the only person who
+	 * acted on it, which is `BALL_PICKUP`'s situation one entry above.
+	 *
+	 * **Not a `Placeholder.` in the sense of being invented** — the id was supplied, like the two UI tones — so
+	 * what is unverified is its *character*: whether it reads as a reward beside `HIT!`, and whether its length
+	 * suits a caption that is gone in under a second. That is a pair of ears' question.
+	 */
+	PERFECT_DODGE: "rbxassetid://130080486713923",
+
+	/**
+	 * **Placeholder.** The perfect dodge's level, against the personal cues above it.
+	 *
+	 * **Set as an event rather than as feedback**, which is `CHEST_GRANT`'s reasoning rather than the pickup's: a
+	 * perfect dodge happens a handful of times a round at most, is the thing the player was rewarded for, and is
+	 * the moment they are looking at the caption. So it sits with `ABILITY_CONSUMED_VOLUME` (0.6) rather than with
+	 * `BALL_PICKUP_VOLUME` (0.5) — louder, because a pickup must be able to happen without being noticed while
+	 * this one is meant to be noticed. Tune by ear beside the two of them; the three are the same kind of sound
+	 * and should settle as one family.
+	 */
+	PERFECT_DODGE_VOLUME: 0.6,
 } as const;

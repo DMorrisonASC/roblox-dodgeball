@@ -98,7 +98,7 @@ const ARENA_FREEZE_SPEED = -1000;
 const WIPE_ATTRIBUTION_SECONDS = 0.5;
 
 /**
- * What a boundary's transition does beyond covering the screen and moving everybody.
+ * What a boundary's transition does beyond covering the screen and moving the roster.
  *
  * **An options object rather than two more positional arguments**, because both are read at the call site as
  * often as they are written, and a bare `true` in the middle of a call is the shape that goes wrong quietly:
@@ -652,11 +652,14 @@ export class RoundService implements OnStart {
      * to `delete` from it would be able to eliminate somebody, and that is a decision for the round.
      *
      * **It stopped being what a mode reads when rigs became participants**, which is why it is still
-     * here and no longer on `RoundView`. Both readers left are about a *character*: holding bodies
-     * still on the arena's opening beat, and {@link teleportTeamsToArena}, which pairs each player with
-     * the body they walk around in. A rig has neither, so widening this one would have made both of
-     * them narrow on every line; a second accessor costs one method and keeps the distinction visible
-     * at the place it is made. See {@link participantsInRound} for what a mode reads.
+     * here and no longer on `RoundView`. Every reader is about a *character*: holding bodies still on
+     * the arena's opening beat, the two round boundaries — which hand it to {@link transitionAround} as
+     * the roster the cover and the move both act on, so `teleportTeamsToArena` and {@link teleportAll}
+     * pair each player with the body they walk around in — and the intermission's capture of the round
+     * just played, which has to be read **before** `activePlayers.clear()` takes it away. A rig has
+     * neither, so widening this one would have made all of them narrow on every line; a second accessor
+     * costs one method and keeps the distinction visible at the place it is made. See
+     * {@link participantsInRound} for what a mode reads.
      *
      * Built fresh on each read rather than kept in step beside the set: the readers are one loop at a
      * round boundary and one at a spawn, and a second collection maintained in parallel would be a
@@ -1463,7 +1466,7 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Runs one round transition: cover the screens, move everybody behind the cover, hold them where they
+     * Runs one round transition: cover the screens, move the roster behind the cover, hold them where they
      * land if the boundary asks for it, and open the screens again.
      *
      * **The move is inside the cover, and that is the whole of what this file owes the animation.** An
@@ -1472,22 +1475,33 @@ export class RoundService implements OnStart {
      * and *then* a curtain drawn over the aftermath. Doing it the other way round is only possible on this
      * side of the wire, because the move is the server's and so is the timing.
      *
+     * **One list, handed to both halves, and that is the correction this went through last.** The cover used
+     * to be published to `this.teams` while each boundary's move read a list of its own — `playersInRound()` at
+     * the whistle and the whole server at the round's end — and the two disagreed in both directions: a
+     * spectator was moved with no grid over their screen, and a player who had already walked out of the round
+     * got a grid over a move that no longer included them. Neither is visible as a bug in the ordinary case,
+     * where both lists happen to hold the same people, which is how they survived this long. **So the roster is
+     * a parameter, and it is the same argument the move receives** — a caller cannot cover one set of people and
+     * move another, because there is only one set. `TRANSITION_CONFIG`'s client is what turns a bump into a
+     * grid, and the rule this now enforces is its own: a cut nobody explains and an explanation of a cut that
+     * did not happen are both worse than either alone.
+     *
      * **And the hold begins at the move rather than after the cover**, which is the second correction this
      * went through. The first version applied the arena freeze once the transition had finished, so a round
      * opened with everybody arriving, walking about under the grid, and *then* being frozen wherever they had
      * wandered to — the freeze was a separate beat after the arrival instead of the thing that holds the
-     * arrival still. It is applied on the line after `moveEveryone` now, for the same reason the move is
-     * inside the cover: the hold has to be measured from the landing to mean anything.
+     * arrival still. It is applied on the line after the move now, for the same reason the move is inside the
+     * cover: the hold has to be measured from the landing to mean anything.
      *
      * **Four steps, in this order, and each one is load-bearing.**
      *
-     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE} **on every player this boundary covers** — the round's
-     *    roster, not everybody in the server — which is each client's cue to close its grid. A counter
+     * 1. Bump {@link ROUND_TRANSITION_ATTRIBUTE} **on every player this boundary moves** — the roster it was
+     *    given, not everybody in the server — which is each client's cue to close its grid. A counter
      *    rather than the phase, because the phase is published early by design — see that constant — and a
      *    wipe keyed on it would have finished and gone before this ran.
      * 2. Wait `TRANSITION_COVER_SECONDS`: the clients' own closing time plus a step of latency, so that the
      *    move below lands on covered screens rather than on half-covered ones.
-     * 3. `moveEveryone()` — the teleport, hidden — and {@link holdArenaEntry} on the very next line.
+     * 3. `move(roster)` — the teleport, hidden — and {@link holdArenaEntry} on the very next line.
      * 4. Wait, and {@link releaseArenaEntry}, which is the last thing this does.
      *
      * **The hold and the cover each run their own clock, which is the correction this went through last.**
@@ -1515,7 +1529,7 @@ export class RoundService implements OnStart {
      * than merely late in reporting. `await` rather than a bare `task.wait` because this is called from
      * `gameLoop`, which is `async` — see that function's note on why a throw from in there ends the session.
      *
-     * **Not gated on the pause.** A paused or below-minimum round still teleported everybody, so the cover is
+     * **Not gated on the pause.** A paused or below-minimum round still moved its roster, so the cover is
      * still the truth; what the pause holds is the *counting*, and this runs before anything counts.
      *
      * **`options` rather than more arguments**, because both of them are read at the call site as often as
@@ -1523,19 +1537,42 @@ export class RoundService implements OnStart {
      * is no cover to move behind, so the move happens at once — but a hold still runs, because the freeze is a
      * rule about the round rather than part of the cover.
      */
-    private async transitionAround(moveEveryone: () => void, options: TransitionOptions = {}): Promise<void> {
+    private async transitionAround(
+        roster: ReadonlyArray<Player>,
+        move: (roster: ReadonlyArray<Player>) => void,
+        options: TransitionOptions = {},
+    ): Promise<void> {
         const holdFor = options.holdEveryoneFor ?? 0;
+
+        // **The wait is not only the cover's, and that is the correction this line needed.** An empty roster
+        // used to skip the whole wait here, on the reasoning that a grid over nobody is wasted time. It is
+        // not wasted: `TRANSITION_COVER_SECONDS` is also the window `LobbyRigService` gets to promote the rigs
+        // still walking to a pad before the move — `promoteWalkers` runs on the phase attribute's change,
+        // which is a signal, which is a few milliseconds *after* the phase is published — and the arena
+        // teleport reads `rigsInRound()`, so a rig promoted after the move is a rig that was never moved. A
+        // round that opens with no players (`starting on its own — players A: 0, B: 0`) skipped the wait and
+        // left two promoted rigs standing in the lobby, on a side, for the whole round. So the cover runs
+        // whenever the boundary has one, and the empty roster only means nobody sees it.
+        //
+        // **The one case that still moves at once is `TRANSITION_CONFIG.ENABLED` off**, which is a debugging
+        // switch and was always this way: with no cover there is no window, and the same race is the price of
+        // it. Stated rather than guarded, because guarding it would mean a second copy of the promote rule
+        // here.
         const wiping = TRANSITION_CONFIG.ENABLED && (options.wipe ?? true);
 
         if (wiping) {
-            // **One bump per player this boundary covers, and the roster is what says who that is.** `teams`
-            // is the table `assignTeams` fills at the whistle and `roundOutcome` counts, and nothing clears it
-            // until the next `assignTeams` — so at a round's *start* it holds the players just admitted, and
-            // at its *end* it still holds the players who played it. **A player who never opted in is in
-            // neither**, which is the whole of "a wipe is not for a spectator": they are moved back to the
-            // lobby with everybody else and see the cut, and no grid closes over a room they were already
-            // watching. See `ROUND_TRANSITION_ATTRIBUTE` for why the cue is per player at all.
-            for (const [player] of this.teams) this.bumpTransition(player);
+            // **One bump per player in the roster, and nothing else decides who that is.** It is the list the
+            // move is about to be handed, so "who sees the grid" and "who is moved behind it" are one set by
+            // construction rather than two that have to be kept in step.
+            //
+            // **`teams` was the list here, and it is the wrong one at the round's end.** `teams` is what
+            // `assignTeams` fills and `roundOutcome` counts, and `surrender` deliberately leaves a player on
+            // their side so a side is not lost by somebody walking out — which meant every player who had used
+            // Return to Lobby got a grid over the round's end, for a cut that had already happened to them
+            // once, and no move behind it. That is the report this fixes: a player who opted out saw the
+            // transition twice and could not tell which one had taken them anywhere. See
+            // `ROUND_TRANSITION_ATTRIBUTE` for why the cue is per player at all.
+            for (const player of roster) this.bumpTransition(player);
 
             print(
                 `[Round] transition — cover in ${TRANSITION_COVER_SECONDS}s, then the move, ` +
@@ -1545,7 +1582,7 @@ export class RoundService implements OnStart {
             task.wait(TRANSITION_COVER_SECONDS);
         }
 
-        moveEveryone();
+        move(roster);
 
         // **The hold, on the line after the move, which is the whole of what it is for.** Everything held is
         // held from the instant it landed.
@@ -1747,7 +1784,17 @@ export class RoundService implements OnStart {
             // side they are on. A player who died is out of `activePlayers` by the time this
             // runs, so they land in the lobby like any other player who is not in the round,
             // which is the existing behaviour and not a team's side.
-            const inRound = this.state === RoundState.Playing && this.activePlayers.has(player);
+            //
+            // **`finished` is part of the question, and it is the round that is decided but not yet
+            // cleared.** `finishRound` sets it inside the round's own loop; the phase does not become
+            // `Intermission` until the next turn of `gameLoop`. So there is a window — the rest of the frame
+            // the outcome was worked out in — where this reads `Playing`, a player is still in
+            // `activePlayers`, and the round is over. A body handed back in that window would be placed on
+            // their **side's arena spawn**: the court they have just finished playing on, moments before the
+            // round-end cover goes up and the boundary moves them to the lobby behind it. A body that arrives
+            // after the round is decided belongs in the lobby, where the boundary would have put them anyway,
+            // so this asks first rather than moving them twice.
+            const inRound = this.state === RoundState.Playing && !this.finished && this.activePlayers.has(player);
 
             // **A missing lobby is not reported here, deliberately.** The intermission loop owns that
             // fault and says so once — see {@link waitForLobby} — and repeating the same sentence on
@@ -2984,7 +3031,7 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * Everyone to one place. The lobby's business: no side is on the lobby's side.
+     * The **round's players** back to one place. The lobby's business: no side is on the lobby's side.
      *
      * **Players only — and the rigs are moved back by {@link returnRigsToLobby} on the same frame**, which is a
      * decision this paragraph used to argue the *other* way. It read: a rig's own place is the one its author
@@ -2999,28 +3046,75 @@ export class RoundService implements OnStart {
      * **And a practice-zone player is not moved either**, for the opposite reason: they are the round's
      * business in no sense at all, and "undisturbed" begins with not being moved by a boundary they are
      * not part of. See {@link isPracticePlayer}, which is the test the loop below applies to every body.
+     *
+     * **The list is a parameter rather than a walk of the server, and that is the fix this carries.** It used
+     * to be `Players.GetPlayers()` with a practice-zone skip, and the argument for that was structural: by the
+     * time this runs, `activePlayers` has just been cleared, so the round's roster no longer exists to iterate
+     * *and* "everybody is in the arena" was taken as true. It is not true. A player who never opted in is
+     * standing in the lobby — that is the whole of opt-in — and a player who took the surrender prompt is
+     * standing there too, having been put back by `handlePlayerJoined` a moment after they left. Both were
+     * therefore moved to a lobby spawn at every round end, drawn from `lobbySpawn()`, which is a *different*
+     * spawn from wherever they happened to be standing.
+     *
+     * **And no cover was over their screens when it happened.** `transitionAround` bumps
+     * `ROUND_TRANSITION_ATTRIBUTE` on `this.teams` and nothing else, so the grid closes for the players who
+     * were in the round — the ones who needed to see a cut explained. A spectator's cut is not explained,
+     * because they were not supposed to be cut at all. That asymmetry is what the report described, and it was
+     * the cover being right and the move being wrong: the two must answer about the same people.
+     *
+     * **`playedThisRound` is captured at the top of the intermission, before the roster is cleared**, and it is
+     * the same `playersInRound()` the arena boundary moves in the other direction — so the two ends of a round
+     * are one list by construction. See the capture's own note for why `teams` could not serve: it keeps a
+     * surrendered player on purpose, and that player is already where this method would put them.
+     *
+     * **A player with no character is skipped and named**, which is not a gap: `RespawnService` owns the wait
+     * and `handlePlayerJoined` sends the body it hands back to the lobby once the round is over, so there is
+     * nothing here to move. The line this prints is what tells a skip apart from a fault — see the loop.
      */
-    private teleportAll(to: CFrame) {
-        for (const player of Players.GetPlayers()) {
+    private teleportAll(roster: ReadonlyArray<Player>, to: CFrame) {
+        const moved: Array<string> = [];
+
+        for (const player of roster) {
             if (this.isPracticePlayer(player)) continue;
 
             const character = player.Character;
-            if (!character) continue;
+
+            // **A player in the roster with no body is named rather than passed over in silence, and that is
+            // a report's worth of difference.** This loop can only skip two kinds of participant, and both
+            // used to disappear without a word: one is a body that has not been handed back yet — a death
+            // inside the round, waiting out `RESPAWN_DELAY_SECONDS`, whose `CharacterAdded` will land them in
+            // the lobby because the phase has moved on by then — and the other is a name that was in
+            // `activePlayers` when the boundary looked and has no body to move. Neither is a fault, but a body
+            // left standing on the court while everybody else is in the lobby is indistinguishable from this
+            // line being wrong, so the line says which it was.
+            if (!character) {
+                print(`[Round] lobby move — ${player.Name} has no body to move; their next body lands in the lobby`);
+
+                continue;
+            }
 
             // **The burst that turns one assignment into a teleport, played before the move.** One call and not
             // two: the clone is welded to the root, so what it emits is emitted where the body *was* and stays
             // there — see `vfx/spawnPoof.ts` for why a welded effect survives the `PivotTo` without dragging its
             // own particles along. There is therefore nothing at the destination to draw, and nothing here
             // changes where anybody ends up: the helper reads the body and never writes to it.
-            //
-            // **Who actually sees this is narrower than it looks, and it is worth writing down because it is the
-            // opposite of the other boundary.** `transitionAround` covers the round's *roster* (`this.teams`),
-            // and this loop moves **every non-practice player** — so the spectators in the lobby are being moved
-            // with no grid over their screens, and this is the only thing that turns their cut into a teleport.
-            // The players who played the round see their own move behind the cover, and see nothing of this.
             playSpawnPoof(character);
             character.PivotTo(to);
+
+            moved.push(player.Name);
         }
+
+        // **And the count, because "was I moved?" has been asked of this boundary three times and the log has
+        // never been able to answer it.** One line per round end, naming everybody the move took and the point
+        // it took them to. A participant missing from this list is the finding; a participant on it who ended
+        // up somewhere else is a different one, and only this line tells the two apart.
+        const at = to.Position;
+
+        print(
+            `[Round] lobby move — ${moved.size()} bod(ies) of ${roster.size()} to ` +
+                `(${string.format("%.1f", at.X)}, ${string.format("%.1f", at.Y)}, ${string.format("%.1f", at.Z)})` +
+                (moved.size() > 0 ? `: ${moved.join(", ")}` : ""),
+        );
     }
 
     /**
@@ -3083,9 +3177,12 @@ export class RoundService implements OnStart {
      * **The match's players and the round's rigs, which is what still leaves everybody else in the
      * lobby.** This used to move every player in the server, and with opt-in that would be the whole
      * feature undone in one line: a player standing in the lobby would be teleported into the arena and
-     * asked to play a match they never joined. `activePlayers` is exactly the player roster at this point
-     * — filled a few lines above and emptied at every intermission — so this is the roster by construction
-     * rather than by a second filter that could disagree with it. The rigs are the same idea one layer
+     * asked to play a match they never joined. **The players arrive as an argument**, supplied by the
+     * round-start boundary from `playersInRound()` — filled a few lines above and emptied at every
+     * intermission — so this is the roster by construction rather than by a second filter that could
+     * disagree with it, *and* it is the same list `transitionAround` publishes the cover to. Reading
+     * `activePlayers` here instead would be a second copy of an answer the caller already has, and a
+     * second copy is how a cover and a move come to disagree. The rigs are the same idea one layer
      * out: `rigsInRound` is the rigs *on a side*, so a rig nobody has given a side to is standing where
      * its author put it and is not moved, exactly as a player who never touched a join part is not.
      *
@@ -3106,8 +3203,11 @@ export class RoundService implements OnStart {
      * not turn up. The cost, stated plainly: a rig's arrival is a cut rather than a run, and with the
      * transition's cover switched off a rig teleported across the arena is visibly teleported.
      */
-    private teleportTeamsToArena() {
-        for (const player of this.playersInRound()) {
+    private teleportTeamsToArena(players: ReadonlyArray<Player>) {
+        let movedPlayers = 0;
+        let movedRigs = 0;
+
+        for (const player of players) {
             const character = player.Character;
             if (!character) continue;
 
@@ -3116,6 +3216,8 @@ export class RoundService implements OnStart {
             // did not opt in is standing and watching eight bodies leave.
             playSpawnPoof(character);
             character.PivotTo(this.arenaSpawnFor(player));
+
+            movedPlayers += 1;
         }
 
         // **By the root part rather than by `PivotTo`, and that is not a style choice.** A model's pivot
@@ -3146,7 +3248,17 @@ export class RoundService implements OnStart {
             // never again, so a rig born in the lobby kept a lobby home for life and came back there every
             // time it died in a round. See `NpcBehavior.onPlaced` and `NpcService.announcePlaced`.
             this.npcs.announcePlaced(rig);
+
+            movedRigs += 1;
         }
+
+        // **The count, because "was this rig in the round?" has now cost two sessions and a log cannot answer
+        // it from the bodies alone.** A rig left standing in the lobby while the round is played looks exactly
+        // like a rig that was never given a side — and the two have different owners: the first is this
+        // boundary moving too early (see `transitionAround` on the promote window), the second is a seat that
+        // was never filled. One line per round start, beside `[Rig] up — N placeholder rig(s)` at boot, is what
+        // makes a short move visible: a round of eight bodies that reads `6 rig(s)` here is the finding.
+        print(`[Round] arena move — ${movedPlayers} player(s) and ${movedRigs} rig(s) to their side's spawn`);
     }
 
     /**
@@ -3261,6 +3373,32 @@ export class RoundService implements OnStart {
     private async gameLoop() {
         while (true) {
             // --- Intermission ---
+
+            // **Who played the round that just ended, taken here because the next line throws them away.**
+            //
+            // This is the roster the boundary both covers and moves back to the lobby, and it has to be read
+            // *before* `activePlayers.clear()` rather than after: that set is cleared on the line below, and
+            // the cleanup below is the one place in the loop where "who was just playing" is still a question
+            // with an answer. **`teams` is not that answer** — it deliberately keeps a surrendered player,
+            // because `rosterOutcome` counts it, so a side is not lost by somebody walking out (see
+            // `surrender`). A surrendered player is in the lobby and must be neither moved nor told a cut is
+            // happening; handing this list to `transitionAround` is what makes the grid and the move answer
+            // about the same people. That player's own wipe, a second earlier, was the surrender's.
+            //
+            // **What the report was.** A player standing in the lobby — never opted in, or back from the
+            // surrender prompt — saw the round-end transition play on their screen, and the second half of the
+            // same fault moved them: the cover was published to `teams` while the teleport walked the whole
+            // server, so neither the grid nor the move was about the round's roster. From the seat that is a
+            // cut nobody asked for, over a room they were already standing in.
+            //
+            // **This list is the round's *survivors*, and that is the right list rather than a short one.**
+            // `eliminate` takes a player out of `activePlayers` as they are knocked out, and an eliminated
+            // player who respawns is sent back to the lobby by the branch a joiner takes — see
+            // `handlePlayerJoined` and the round-opening note that says so. So the people missing from this
+            // list are already where this teleport would have put them, and the ones on it are the ones still
+            // standing on the arena in the body they played in. Moving the survivors is the whole job.
+            const playedThisRound = this.playersInRound();
+
             this.state = RoundState.Intermission;
             this.activePlayers.clear();
 
@@ -3334,9 +3472,12 @@ export class RoundService implements OnStart {
             // nothing to hold anybody for — the only thing being covered here is the move back to the lobby.
             // **And the rigs move with them**, in the same closure rather than in a second transition: they are
             // the same kind of thing being sent to the same room, and the cover that hides one hides both.
+            // **The roster is handed in rather than closed over**, so the cover is published to exactly the
+            // players this closure moves — see `transitionAround`, which no longer keeps a list of its own.
             await this.transitionAround(
-                () => {
-                    this.teleportAll(lobby);
+                playedThisRound,
+                (roster) => {
+                    this.teleportAll(roster, lobby);
                     this.returnRigsToLobby();
                 },
                 {
@@ -3868,12 +4009,12 @@ export class RoundService implements OnStart {
 
             // **The move goes inside the transition, and the hold begins where the players land.** The phase
             // and its clock are published first — that is what the HUD reads, and it is what names the round —
-            // and then the transition covers the screens, moves everybody to their side's spawn, and keeps
+            // and then the transition covers the screens, moves the roster to their side's spawn, and keeps
             // them there for `ARENA_FREEZE_SECONDS` measured *from that move*. The clock published at its full
             // length above does not move until this returns, which is the tick the hold lifts: see
             // `transitionAround`, whose last act is the release, and `releaseArenaEntry` for why that and the
             // round's first second are one moment rather than two timers that agree.
-            await this.transitionAround(() => this.teleportTeamsToArena(), {
+            await this.transitionAround(this.playersInRound(), (roster) => this.teleportTeamsToArena(roster), {
                 holdEveryoneFor: ARENA_CONFIG.ARENA_FREEZE_SECONDS,
             });
 
