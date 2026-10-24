@@ -13,7 +13,10 @@ import { MATCH_STATS_CONFIG } from "./config/matchStats.config";
  * **`name` is the model/player name**, not the display name, on every other cross-service fact's convention
  * (`hitImpact`, `teamWipe`, `LAST_HIT_BY_*` all compare against `Players.LocalPlayer.Name`). **One field covers
  * both kinds of body**: a character's model name is its player's name and a rig's is its own, so a row needs no
- * flag saying which it is — and the board deliberately does not draw one. **`side` is the
+ * flag saying which it is — and the board deliberately does not draw one. **A rig's name is therefore the only
+ * `Name` it has**, and nothing on the drawing side looks it up: the client prints this string and resolves no
+ * `Player`, no `UserId` and no headshot, which is what lets eight rigs fill a board that no player appears on.
+ * **`side` is the
  * raw `TEAM_ATTRIBUTE`** — `"A"`, `"B"` or `""` — so the client can colour and group it through
  * `teamColourOf`/`sideNameOf` without the server deciding what a side is *called*; a mode may rename its sides
  * and this payload stays true.

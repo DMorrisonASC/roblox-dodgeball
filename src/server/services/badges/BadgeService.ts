@@ -457,9 +457,11 @@ export class BadgeService {
 	 * arrangement `RoundService.playersInRound` avoids by building fresh — there the caller is free to sort,
 	 * here the caller only reads.
 	 *
-	 * **Keys are `Player` for a person and `Model` for a rig** — see `BadgeKey`. The board filters to players,
-	 * which is a decision about what a board *is* rather than a limitation of this method: a rig has a side and
-	 * a score, but nobody is looking at a list to see how a placeholder did.
+	 * **Keys are `Player` for a person and `Model` for a rig** — see `BadgeKey`. **Both are counted and both are
+	 * read**, which is the correction a report bought: this comment used to say the board filtered to players on
+	 * the argument that "nobody is looking at a list to see how a placeholder did", and that was wrong about the
+	 * game it is in — a round against rigs is mostly rigs, so the board a player actually opens was the empty one.
+	 * See `MatchStatsService.board`, which walks this map's two key kinds through the same `rowFor`.
 	 */
 	public tally(): ReadonlyMap<BadgeKey, Readonly<RoundCounters>> {
 		return this.counters;

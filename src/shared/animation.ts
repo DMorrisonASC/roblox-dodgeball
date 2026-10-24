@@ -1,4 +1,4 @@
-import { AnimationState, BODY_ANIMATION, THROW_CHARGE_HOLD_SECONDS, THROW_CLIP_SECONDS } from "./config/animation.config";
+import { AnimationState, BODY_ANIMATION, CYCLE_STATES, THROW_CHARGE_HOLD_SECONDS, THROW_CLIP_SECONDS } from "./config/animation.config";
 import { DodgeDirection } from "./dodge";
 
 /**
@@ -53,9 +53,10 @@ export type AnimationClip = "idle" | "walk" | "run" | "jump";
  * move.** For a player's own body that is `MoveDirection`, which the client's own input writes — a request with
  * no line to sit on, so there is no jitter to smooth, no band, no grace, and no threshold to tune. **A rig has
  * no request to give**: its body is driven by `Humanoid:MoveTo()` and its half of this fact is the humanoid's
- * own running speed, which *is* a measurement — taken from an edge rather than sampled per turn, with the
- * reasoning and the cost written out in `NpcService.publishAnimation` and in `NPC_ANIM_MOVING_ATTRIBUTE`. See
- * {@link animationFor} for the rule the two facts make together.
+ * own running speed, which *is* a measurement — taken from an edge rather than sampled per turn, and *ended* by
+ * `Humanoid.MoveToFinished`, which is the only one of the two the engine promises to fire at a stop. Its
+ * reasoning and its cost are written out in `NpcService.publishAnimation` and in `NPC_ANIM_MOVING_ATTRIBUTE`.
+ * See {@link animationFor} for the rule the two facts make together.
  *
  * **What this is not:** not a claim that measurement is useless. It is what `WalkSpeedService`,
  * `SeekBehavior`'s distance gates and every physics question in this game are about. It is simply not what a

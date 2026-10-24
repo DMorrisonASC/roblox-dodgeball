@@ -66,9 +66,15 @@ export const NPC_CONFIG = {
 	 * that as standing, creeping rigs included.
 	 *
 	 * **What it is not:** not a band, and not a claim that a measurement is as good as a request. A rig is
-	 * published as moving the moment it is moving at all and reads exactly zero when it is still, and it is a
-	 * measurement only because a `MoveTo`-driven body has no readable request — see
-	 * `NpcService.publishAnimation` for the two properties that were tried before this and why both were zero.
+	 * published as moving the moment it is moving at all, and it is a measurement only because a `MoveTo`-driven
+	 * body has no readable request — see `NpcService.publishAnimation` for the two properties that were tried
+	 * before this and why both were zero.
+	 *
+	 * **The number is only half of what makes the comparison safe: the other half is the edge it is read on.**
+	 * This is compared against what `Humanoid.Running` last reported, and a walk *ends* on
+	 * `Humanoid.MoveToFinished` rather than on a reported zero, because a speed that changes is not a promise
+	 * that the last change was the stop — see `NpcLoop.moveToFinished` for the lobby of rigs that walked on the
+	 * spot because it was read as one.
 	 */
 	RIG_MOVING_SPEED: 0.01,
 
@@ -717,34 +723,26 @@ export const NPC_CONFIG = {
 	SEAT_POLL_SECONDS: 0.25,
 
 	/**
-	 * **How long a destroyed rig's seat stays reserved for the player who arrived before the rig comes
-	 * back**, in seconds. **Placeholder — 15.**
+	 * **There is no `SEAT_RESERVATION_SECONDS` any more, and this is where it was.**
 	 *
-	 * **The reservation is a loan, and this is its term.** A player joining the lobby stands one rig down
-	 * (`LobbyRigService.reserveSeat`) and the seat is counted as held until they choose a side — which is
-	 * what stops the lobby holding a ninth body in a room built for eight.
+	 * It was the term on a joining player's seat — five seconds, then the seat went back to a rig and
+	 * `rebalance` built a body for it. It was correct for the lobby it was written in, which spawned a full
+	 * roster and stood one rig down per player: the record was then a *hole* in a lobby that had already
+	 * built the body for it, so a hole nobody filled left a pad permanently a rig short.
 	 *
-	 * **A round already ends that loan, and the term is what covers the wait before one.** `releasePendingSeats`
-	 * clears every record inside the refill at the whistle, so a player who joined and never chose is not a
-	 * seat once the round starts — the side gets its rig in the arena. What is left is the intermission
-	 * itself: 16 seconds in which that pad shows one rig fewer than the match will field, and — when the
-	 * round cannot open at all, because a side is empty or the server is below `MATCH_MIN_PLAYERS` — an
-	 * intermission that wraps for ever, where nothing releases the seat and `rebalance` cannot repair it
-	 * because the record reads as a held seat. That is the state a rig short *stays* short.
+	 * **Deficit spawning inverted that, so the term was doing harm rather than repair.** A record is no
+	 * longer a hole — it is the player's own body, standing in the lobby, and rigs are only built for the
+	 * seats nobody is in. Expiring it therefore does not close a gap; it conjures an extra rig beside a
+	 * person who is already there, five seconds into an intermission that should show seven bodies. The
+	 * `09:11` session printed exactly that: `7 placeholder rig(s) for 1 player(s)`, then
+	 * `prospeed1: no side after 5s — the seat on A is a rig's again`, then a fresh `refill` line. See
+	 * `LobbyRigService.holdSeat`, which no longer sets a timer, and `bookSeats`, which re-establishes the
+	 * records a round boundary takes away.
 	 *
-	 * **`5` is a compromise between a walk and a wander.** A lobby spawn to a join pad is about sixty studs
-	 * and takes four or five seconds at walking speed, so five is roughly "they are on their way — give them
-	 * the walk", the shortest term that does not pull the seat from under a player doing exactly what the pad
-	 * asked. It was fifteen, which also covered the player who reads the HUD or joins mid-load; what that
-	 * longer term cost is the case that actually hurts, a player who arrives and then wanders off, during
-	 * which the pad shows one rig fewer than the match will field and `rebalance` cannot repair it because
-	 * the record reads as a held seat. **The player the shorter term drops is covered two paragraphs down
-	 * rather than by a longer clock** — a late opt-in is not refused, it stands a rig down.
-	 *
-	 * **Nothing is refused when the loan ends.** The pads stay live and a late opt-in still places the
-	 * player; the seat simply changes hands back to a rig in the meantime.
+	 * **What replaced the term is a rule with no clock in it**: a rig count of
+	 * `MATCH_MAX_PER_TEAM × 2 − Players.GetPlayers().size()` for as long as the intermission lasts, with the
+	 * three real events — choosing a side, leaving, and the whistle — as the only things that change it.
 	 */
-	SEAT_RESERVATION_SECONDS: 5,
 
 	/**
 	 * **How long a rig's claim on a fetch target survives without being renewed, in seconds.**

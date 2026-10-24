@@ -72,11 +72,16 @@ export const SHIFT_LOCK_CONFIG = {
 	/**
 	 * The crosshair the sight draws while the lock is on.
 	 *
-	 * **The picture, and only the picture.** Nothing here tints or fades it: the alpha the PNG carries *is* the
-	 * sight's alpha, and a crosshair with a faint middle is a crosshair with a faint middle in the file. What sizes
-	 * it is not here either — the `ImageLabel` is `SIGHT_SIZE` pixels square, one number for every platform, and
-	 * that constant lives in `ShiftLock` beside the thing it sizes. **This line is how the lock feels**, so a new PNG
-	 * is a change to the game rather than to its looks.
+	 * **The picture, and only the picture — but it is no longer the whole of the sight's alpha.** While a desktop
+	 * wore this as `UserInputService.MouseIcon` the PNG's own alpha *was* the sight's alpha, because a mouse icon
+	 * has no transparency to set. The sight has been a drawn `ImageLabel` on every platform since 2026-10-22, and
+	 * that label now carries an `ImageTransparency` of `0.5` — so a faint middle in the file is no longer the only
+	 * way to soften a crosshair, and the file is one of two places the look is decided.
+	 * **`ShiftLock.SIGHT_TRANSPARENCY` is the other one**, and it is the number to move: it fades *both* ids below
+	 * identically, which a per-file change cannot do in one edit. What sizes the sight is not here either — the
+	 * `ImageLabel` is `SIGHT_SIZE` pixels square, one number for every platform, and that constant lives in
+	 * `ShiftLock` beside the thing it sizes. **This line is how the lock feels**, so a new PNG is a change to the
+	 * game rather than to its looks.
 	 *
 	 * The value is a `ContentId`, which the typings define as a plain `string`. The empty string means
 	 * "no custom icon", which is what the release path writes — see `ShiftLock.restingCursor`, which
@@ -106,6 +111,10 @@ export const SHIFT_LOCK_CONFIG = {
 	 * **Supplied rather than invented**, so what is unverified about it is not the spelling but its *character*: that
 	 * it reads as the same sight with something added, rather than as a different cursor. That is an eye judgement
 	 * on a real screen, and it is why the swap is one string rather than a piece of state anybody has to unwind.
+	 *
+	 * **And it fades exactly as {@link LOCKED_CURSOR} does**, because the alpha is on the `ImageLabel` rather than on
+	 * either id — see that entry. A picture that needed to be fainter or stronger than the other one would have to
+	 * carry its own alpha in the file, which is the one case the `Computed` above cannot express.
 	 */
 	HOLDING_CURSOR: "rbxassetid://125036298377773",
 } as const;

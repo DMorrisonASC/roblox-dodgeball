@@ -59,6 +59,29 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 const SIGHT_SIZE = 44;
 
 /**
+ * **How see-through the sight is — `0.5`, half, and it is the only alpha this project puts on the crosshair.**
+ *
+ * **A property of the drawn sight, not of the art, which is the reversal this constant is.** The PNG was the
+ * whole of the sight's alpha while a desktop wore `UserInputService.MouseIcon`: a mouse icon cannot be faded
+ * either, so the only way to soften a crosshair was to edit the file, and `SHIFT_LOCK_CONFIG.LOCKED_CURSOR`
+ * documents that as the rule. The sight has been an `ImageLabel` on every platform since 2026-10-22 — see
+ * {@link applySight} — so the label carries an `ImageTransparency` and this is where it is set.
+ *
+ * **One number for both pictures.** The label swaps `LOCKED_CURSOR` for `HOLDING_CURSOR` on the frame the hand
+ * changes, and `ImageTransparency` is not part of that swap: it is written once when the label is built, so an
+ * empty hand and a full one fade identically. A per-state alpha would be a second thing to keep in step with two
+ * ids, and the two pictures are the same sight saying one more thing rather than a different sight.
+ *
+ * **`0.5` because the mark was competing with the thing it marks.** A full-strength crosshair sits in the middle
+ * of the screen — where a target is — and a solid white shape over a body reads as part of the body. Half is the
+ * value that leaves it legible against both the sky and a torso without ever being mistaken for one. `1` would
+ * fade it out entirely, which is the wrong lever for "less obtrusive": the sight says where the ball will go, and
+ * a player who cannot find it has lost the aim. **The threshold is an eye judgement on a real screen**, so this is
+ * the number to move if it is still too loud or now too faint — nothing else has to change with it.
+ */
+const SIGHT_TRANSPARENCY = 0.5;
+
+/**
  * The scope the exported `Value` below lives in — **module state, so module scope.**
  *
  * The same shape `client/aiming.ts` and `client/throwing.ts` use for the facts they publish, and for the same
@@ -982,6 +1005,11 @@ export class ShiftLock implements OnStart {
 					use(holdingBall) ? SHIFT_LOCK_CONFIG.HOLDING_CURSOR : SHIFT_LOCK_CONFIG.LOCKED_CURSOR,
 				),
 				BackgroundTransparency: 1,
+				// **The sight's own alpha, and it is the label's rather than the file's.** Half, one number for both
+				// pictures — see {@link SIGHT_TRANSPARENCY}, which is the lever and states the reversal. This is the
+				// property a reader looks for when a crosshair is too loud, and it is written here rather than in the
+				// `Computed` above because the two ids fade identically.
+				ImageTransparency: SIGHT_TRANSPARENCY,
 				// **`SIGHT_SIZE`, and it is now the only number that sizes a crosshair in this project** — the one
 				// thing a reader changes to make the sight bigger or smaller. Pixels rather than a fraction of the
 				// viewport, so it is the same mark on a phone, a tablet and an ultrawide: the middle of the view is

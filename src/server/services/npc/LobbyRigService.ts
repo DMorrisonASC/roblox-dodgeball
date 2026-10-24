@@ -183,6 +183,14 @@ const PAD_EDGE_MARGIN = NPC_CONFIG.WALK_TO_PAD_ARRIVAL_STUDS;
  * somebody stands undecided, and a round that cannot open keeps it that way for ever. It is the only place in
  * this file that makes a decision the seat count cannot make for it.
  *
+ * **A player who joins is displacing a body that exists; a player who was already in the server at the first
+ * fill is not.** That is the distinction the seeding rule turns on, and it is why there are two ways into
+ * `pending` rather than one. At the first fill nobody has been shown a lobby yet, so the rig for an absent
+ * player was never built: `reserveSeatAtSeed` books the seat and nothing is cloned, and the deficit is drawn
+ * once. Every join *after* that is the visible event the paragraph above describes, with a body to park. **The
+ * two produce the same record and the same lobby**, which is the property that lets the spawn be skipped
+ * without skipping the booking — see `seedLobby`.
+ *
  * **Nothing here keeps a list of the rigs on the field, and that is the design rather than an omission.**
  * The rigs are derived on every use — the ones holding a side from `npc/rigs.ts`, the ones still walking from
  * the walk tag — so there is no collection to prune when a rig leaves the field and no stale entry to find
@@ -312,9 +320,13 @@ export class LobbyRigService implements OnStart {
 	 * ending and `MatchService.clear` emptying the roster. That path used to leave an opted-in player
 	 * holding neither a roster seat nor a reservation, so the seat arithmetic spawned a rig back into the
 	 * seat they were standing in; see `syncSeats`, where the carry-over lives and where the whole of that
-	 * bug is written down. The two ways are one fact, and the name is the older half of it: the seat is
-	 * pending *the player's choice*, which they may make whenever the pads are live — including during a
-	 * round, where choosing is what puts them in it. See `RoundService.admitMidRoundJoins`.
+	 * bug is written down. **And that way in is intermission-only, which is the correction the round's own
+	 * surrender found**: a roster that shrinks *during* a round is somebody leaving it rather than a wipe, so
+	 * their seat belongs to the round's fill ({@link topUpDuringRound}) and not to a lobby reservation —
+	 * counting it here was a side reading full while it played a body short. See `syncSeats`. The two ways
+	 * are one fact, and the name is the older half of it: the seat is pending *the player's choice*, which
+	 * they may make whenever the pads are live — including during a round, where choosing is what puts them
+	 * in it. See `RoundService.admitMidRoundJoins`.
 	 *
 	 * **There is no side-less entry, and that is a decision rather than an omission.** The only join that
 	 * could produce one is a join with *no rig at all* to displace — a server with no rig pool or no
@@ -325,12 +337,11 @@ export class LobbyRigService implements OnStart {
 	 *
 	 * **A record in here counts as a held seat**, which is what stops the rebalance from spawning back the
 	 * rig this player displaced a moment later. It is released the moment it stops being true, and there are
-	 * three such moments: when the player appears in the roster, because they have taken a seat of their own;
-	 * when they leave, which `onPlayerLeft` owns; and **when its term runs out** — see `holdSeat` and
-	 * `releaseSeatIfUnused`, which are the only writer of this map and the expiry that goes with it. The
-	 * third one is new: a reservation counted as a seat means a pad shows one rig fewer than the match will
-	 * field for as long as a player stands undecided, and `releasePendingSeats` only gives those seats back
-	 * at the *whistle* — which never comes if the round cannot open.
+	 * exactly three such moments, all of them real events: when the player appears in the roster, because
+	 * they have taken a seat of their own (`syncSeats`); when they leave, which `onPlayerLeft` owns; and at
+	 * the whistle, because a round is played by eight bodies and a spectator who has not chosen is not one of
+	 * them (`releasePendingSeats`). **There is no term on it any more** — see `holdSeat` for the log that
+	 * removed one, and {@link bookSeats} for the sweep that re-makes these records after a round clears them.
 	 */
 	private readonly pending = new Map<Player, TeamLabel>();
 
@@ -403,8 +414,6 @@ export class LobbyRigService implements OnStart {
 	 * method** — the seat poll, a round boundary, the corpse sweep, and `reserveSeat`'s stand-down — with one
 	 * exception that cannot fire behind the gate: `onPlayerLeft` spawns directly, and a departure can only
 	 * free a seat that a *record* names, which requires a rig to have been stood down, which requires a rig.
-	 * `releaseSeatIfUnused` is the same argument from the other side: its record is written by the same
-	 * stand-down.
 	 *
 	 * **Not a deadline and not a countdown**, deliberately, because the clock does not start at boot: it
 	 * starts when somebody joins. See `NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS` for what the wait is for, and
@@ -566,23 +575,27 @@ export class LobbyRigService implements OnStart {
 		// not change that number — a repeated face is the price of it, and `rigPool.drawRigIdentity` is where
 		// that trade is made.
 		//
-		// **Why the connected players are settled *by hand* rather than by a smaller seed count.** Both routes
-		// end at seven rigs for one person, and only one of them leaves a record behind. `reserveSeat` is what
-		// writes down *which side's seat* that person displaced — and that record is what puts a rig in their
-		// seat when a round starts while they stay in the lobby, and what puts one back when they leave. A
-		// seed of `count - players` would produce the same bodies and forget the seat. `PlayerAdded` will not
-		// fire for these players: they were in `Players` before this service mounted, which is the ordinary
-		// Studio case, so nothing else would have reserved anything for them.
+		// **The connected players are settled *by hand* rather than by a smaller seed count — and the rig for
+		// each of them is simply never built.** This paragraph used to argue the other way: that the seed had
+		// to spawn a full roster and stand one rig down per player, because only `reserveSeat` leaves the
+		// record behind and "a seed of `count - players` would produce the same bodies and forget the seat".
+		// The record is what matters, and that half was right; the *rig* was the mistake. Eight bodies cloned
+		// so that one could be parked in the same frame is eight template audits, eight `NpcService` loops and
+		// eight walks for a lobby of seven — and with eight players connected it is eight bodies built and
+		// eight parked, for a lobby that wants none. **The seat is now recorded first and the deficit drawn
+		// second**, which leaves the record exactly where it was and nothing built to be thrown away. See
+		// {@link seedLobby} for the two steps and why that order is the one that makes nought rigs reachable.
+		// `PlayerAdded` will not fire for these players: they were in `Players` before this service mounted,
+		// which is the ordinary Studio case, so nothing else would have reserved anything for them.
 		//
 		// **And the rig is built by the same call a replacement is**, which is the property worth having: this is
 		// not a second way to make a lobby rig, it is the first few of them. See `spawnLobbyRig` for where the
 		// part comes from, why the placement is lifted, and why the walk it hands over is four attributes rather
 		// than one.
 		// **What the seeding rule *is* is unchanged — what changed is when it happens, and it is now one call.**
-		// One rig per seat a match allows, alternating sides, built by the same `spawnLobbyRig` a replacement is,
-		// and then one stood down per person already in the server. All of that is {@link seedLobby}, which this
-		// hands to a clock instead of running inline; the paragraph above is the reason that distinction matters
-		// (a seat has to be *recorded*, not just counted) and it is still true of the call.
+		// One rig per *open* seat a match allows, alternating sides, built by the same `spawnLobbyRig` a
+		// replacement is, with a seat recorded for everybody already in the server. All of that is
+		// {@link seedLobby}, which this hands to a clock instead of running inline.
 		//
 		// **Everything above this line is the server being ready, and none of it needs a body in the world.**
 		// That is the split: the pool line, the four missing-place warnings, the short-pool note and the
@@ -791,33 +804,106 @@ export class LobbyRigService implements OnStart {
 	 * in the line describing where the rigs went, rather than in a sentence about a world that no longer
 	 * exists. That is also why the line is here and not in `onStart` — see the note left where it used to be.
 	 */
+	/**
+	 * **Puts the lobby's bodies in the world: only the deficit, and a seat recorded for everybody already
+	 * here.**
+	 *
+	 * **The deficit is the rule, and this method used to break it in order to satisfy it.** The old shape was
+	 * "one rig per seat the match allows, then one stood down per person already in the server", on the
+	 * argument that only `reserveSeat` leaves the record behind and a smaller seed would forget the seat. That
+	 * argument is still right about the *record* and was wrong about the *rig*: eight bodies were cloned, one
+	 * was destroyed in the same frame, and the pair left `[Rig] up — 8 placeholder rig(s)` in the output over a
+	 * lobby of seven. **A body built to be thrown away is a clone, a name, a face, a burst, an `NpcService`
+	 * loop and eight behaviour tags** — the `[RigTemplate] spawn` audit above runs for it, `NpcService` starts
+	 * managing it — and none of it is ever seen.
+	 *
+	 * **So the order is reversed: the records first, the rigs second.** Every player already here takes a
+	 * pending seat *before* a single body is drawn, and the draw is then `MATCH_MAX_PER_TEAM` minus what that
+	 * side already accounts for — which is the same arithmetic `rebalanceBody` performs on every join, leave
+	 * and boundary. The seat is therefore recorded exactly as before (see `pending`, and `holdSeat` for the
+	 * term), and no rig is made for it. **The count this file has always promised is unchanged: eight seats,
+	 * one player, seven placeholders** — and it is now seven *clones* rather than eight clones and a park.
+	 *
+	 * **This is what makes nought rigs reachable at all.** With everybody connected already seated, both
+	 * deficits are nought and the loop does nothing; under the old shape that case stood down all eight, which
+	 * needed eight rigs to exist first and left eight parked bodies waiting for seats that a full server will
+	 * not free. See {@link seatForNewcomer} for which side an undecided player's seat is booked on, and
+	 * {@link spawnLobbyRig} for the walk that puts an arriving body on its pad.
+	 *
+	 * **The counts are read here rather than carried from boot**, because seconds have passed and a place
+	 * file can be edited inside a Studio session: a spawn part, a pad or a fetch box added since boot is then
+	 * in the line describing where the rigs went, rather than in a sentence about a world that no longer
+	 * exists. That is also why the line is here and not in `onStart` — see the note left where it used to be.
+	 */
 	private seedLobby(count: number): void {
 		const spawns = this.lobbySpawns();
 		const padsA = taggedPartsInWorkspace(MATCH_JOIN_A_TAG);
 		const padsB = taggedPartsInWorkspace(MATCH_JOIN_B_TAG);
 
-		let made = 0;
+		const present = Players.GetPlayers();
 
-		for (let index = 0; index < count; index++) {
-			if (this.spawnLobbyRig(index % 2 === 0 ? TEAM_A : TEAM_B) !== undefined) made++;
+		// **The seats first, and for every player, because the draw below is a subtraction.** An unrecorded
+		// player is a player the arithmetic cannot see, and a player the arithmetic cannot see is a rig built
+		// to stand where they are — which is the fault this whole method is shaped around.
+		for (const player of present) {
+			this.reserveSeatAtSeed(player);
 		}
 
-		// **One rig stands down per person already in the server, exactly as if they had just walked in.** The
-		// observable is the rule the class doc states: eight seats, one player, seven placeholders — and two
-		// players on a screen is six, wherever they are standing.
-		for (const player of Players.GetPlayers()) {
-			this.reserveSeat(player);
+		// **What each side still has open, which is the deficit written per side.** `playersOn` is the roster
+		// (a player who has chosen) and `pendingOn` is the seat booked for one who has not, and between them
+		// they are every human body the lobby has to account for — see `seatsHeld`, which is this same sum
+		// without the subtraction. A `math.max` because a server above capacity (spectators, a ninth joiner
+		// who cannot be seated) makes this negative, and a negative deficit is nought rigs rather than a
+		// negative number of them.
+		const openA = math.max(0, MATCH_MAX_PER_TEAM - this.playersOn(TEAM_A) - this.pendingOn(TEAM_A));
+		const openB = math.max(0, MATCH_MAX_PER_TEAM - this.playersOn(TEAM_B) - this.pendingOn(TEAM_B));
+
+		let made = 0;
+		let remainingA = openA;
+		let remainingB = openB;
+
+		// **Alternating, starting on the side with more room, so both pads fill together.** The counts are
+		// what matter (3 and 4 for one player) and the order is what a person watching sees: a loop that
+		// drained A first would put three bodies on one sign and then four on the other, and the first
+		// second of the lobby would look like one side is losing. **The two deficits can differ by as much
+		// as `MATCH_MAX_PER_TEAM`** — every player who has chosen `A` takes one off `A`'s deficit, so eight
+		// players all on `A` is nought rigs for `A` and four for `B` — and in that case the alternation
+		// simply runs the fuller side alone once the other is exhausted, which is why the turn below is
+		// allowed to spend itself without pushing anything.
+		let turn: TeamLabel = remainingA >= remainingB ? TEAM_A : TEAM_B;
+
+		while (remainingA > 0 || remainingB > 0) {
+			// **A turn on an exhausted side pushes nothing and hands over**, which is what keeps this from
+			// needing a second loop for the remainder.
+			if (turn === TEAM_A) {
+				if (remainingA > 0) {
+					if (this.spawnLobbyRig(TEAM_A) !== undefined) made++;
+					remainingA--;
+				}
+
+				turn = TEAM_B;
+			} else {
+				if (remainingB > 0) {
+					if (this.spawnLobbyRig(TEAM_B) !== undefined) made++;
+					remainingB--;
+				}
+
+				turn = TEAM_A;
+			}
 		}
 
 		const zones = zoneCounts();
 
-		// **The count that was actually *made*, not the count that was wanted.** They differ only when a spawn
-		// was refused outright — no rig-shaped model in the folder, no lobby spawn — and this line is the one a
-		// reader checks against the pool line, so it has to be the real number. The stand-down above is its own
-		// line, one per person, so `8 made` here plus one `stood down` reads as the seven placeholders the
-		// class doc describes rather than as an eight-body lobby.
+		// **The count that was actually *made*, beside the two numbers that decide what it should have been.**
+		// They differ only when a spawn was refused outright — no rig-shaped model in the folder, no lobby
+		// spawn — and this line is the one a reader checks against the pool line, so it has to be the real
+		// number. **The player count is on the line because it is now the input rather than an aftermath**: a
+		// reader who expects `8 seat(s)` to mean `8 rig(s)` is looking at the fault this method was rewritten
+		// for, and the two figures side by side is what says the deficit was applied. There is no stand-down
+		// to read beside it any more, because nothing is built to be stood down.
 		print(
-			`[Rig] up — ${made} placeholder rig(s) (${count} seat(s)), ` +
+			`[Rig] up — ${made} placeholder rig(s) for ${present.size()} player(s) of ${count} seat(s) ` +
+				`(${openA} open on A, ${openB} on B), ` +
 				`${spawns.size()} lobby spawn(s), pads ${padsA.size()} + ${padsB.size()}, ` +
 				`fetch boxes ${zones.a} + ${zones.b}`,
 		);
@@ -828,7 +914,9 @@ export class LobbyRigService implements OnStart {
 		// short (a refused spawn, a side that lost one). Behind the gate that call returns before it fills, so
 		// without this line a short lobby would wait for the next join, leave or whistle to be noticed. With
 		// it, the repair happens on the same frame as the seed; on a full lobby it is the arithmetic below
-		// finding nothing to do.
+		// finding nothing to do. **It is also the check on this method's own arithmetic**: a deficit that was
+		// computed wrong shows up here as a `refill` line immediately after the `up` line, which is a pair no
+		// reader can mistake for an ordinary join.
 		this.rebalance();
 	}
 
@@ -1138,6 +1226,14 @@ export class LobbyRigService implements OnStart {
 		// put a live rig in it — in the same call, rather than at the next trigger. See
 		// {@link retireHopelessCorpses}, and its doc for why the repair is not "leave respawn on".
 		this.retireHopelessCorpses();
+
+		// **And every connected body holds a seat, before either count is read.** Intermission only, because
+		// during a round the seats belong to the bodies on the field and `releasePendingSeats` has just given
+		// them all back deliberately. **This is the invariant's repair rather than a convenience**: the
+		// whistle empties `pending` so the round can field eight rigs, so the *next* intermission would
+		// otherwise read a lobby of eight rigs and one person and leave it that way — the deficit rule broken
+		// by the round that preceded it, with no line in the output saying so. See `bookSeats`.
+		if (!playing) this.bookSeats();
 
 		// **Then the wrong-side repair, before the counts below are read — so that they read the repaired
 		// lobby rather than the broken one.** A body moved here is counted as a walker bound for the other
@@ -1689,58 +1785,124 @@ export class LobbyRigService implements OnStart {
 	}
 
 	/**
-	 * **Records the seat as held for `player`, on a term rather than for ever.**
+	 * **The same seat, recorded at seed time, where there is no rig to stand down — because none was made.**
 	 *
-	 * Two callers and one meaning — see {@link pending} — and this is the only writer of that map. Making it
-	 * a method is what puts the term on *both* ways a record is made: a join, where a rig was destroyed and
-	 * the seat is owed back if nobody takes it, and the roster letting go of a player at the end of a round,
-	 * where the seat is theirs until they choose again.
+	 * This is the half of `reserveSeat` that a deficit-spawned lobby needs, and the only difference is the
+	 * missing destroy. {@link seedLobby} books the seats *before* it draws any body, so the body that
+	 * `reserveSeat` would stand down was never cloned: there is nothing to displace and nothing to park, and
+	 * the record is the whole of the operation. Downstream nothing can tell the two apart — `pending` holds a
+	 * player and a side either way, and `onPlayerLeft`, `releasePendingSeats` and `refillAtRoundStart` read it
+	 * either way — which is the property that makes this a second *way in* rather than a second seat model.
+	 * It is also the body {@link bookSeats} sweeps with on every intermission turn, so the seed and the
+	 * repair cannot come to two answers about which side a seat is on.
 	 *
-	 * **What the term adds, said against what already existed.** A round start already gives every
-	 * reservation back: `releasePendingSeats` clears the whole map inside the refill at the whistle, and the
-	 * side gets a rig in the arena. What was left unrepaired is the *wait*: for as long as an intermission
-	 * runs, a pad shows one rig fewer than the match will field, and when the round cannot open at all — one
-	 * side empty, the server below `MATCH_MIN_PLAYERS` — the intermission wraps for ever and nothing ever
-	 * releases the record, so that side stays a rig short indefinitely. The term bounds the first case to
-	 * fifteen seconds and is the only repair the second case has. {@link releaseSeatIfUnused} is the expiry.
+	 * **A player the roster already holds is skipped, and that test is the roster rather than `seated`.**
+	 * `playersOn` counts them already, so a record here would book a second seat for one person and the
+	 * arithmetic would then build one rig too few. `seated` is the *poll's* copy of the roster and is a
+	 * quarter of a second behind it at best; the roster itself is the same object `playersOn` counts, so
+	 * the two cannot disagree.
+	 *
+	 * **Nothing is recorded for a server at or over capacity.** A ninth player cannot be seated by a match
+	 * that holds eight, and booking them a seat would take a rig off somebody who can be.
 	 */
-	private holdSeat(player: Player, side: TeamLabel): void {
-		this.pending.set(player, side);
+	private reserveSeatAtSeed(player: Player): void {
+		if (this.matches.roster().has(player)) return;
+		if (this.pending.has(player) || this.seated.has(player)) return;
 
-		task.delay(NPC_CONFIG.SEAT_RESERVATION_SECONDS, () => this.releaseSeatIfUnused(player, side));
+		if (this.playersOn(TEAM_A) + this.pendingOn(TEAM_A) >= MATCH_MAX_PER_TEAM) {
+			if (this.playersOn(TEAM_B) + this.pendingOn(TEAM_B) >= MATCH_MAX_PER_TEAM) return;
+		}
+
+		this.holdSeat(player, this.seatForNewcomer());
 	}
 
 	/**
-	 * **The loan ends: the seat a player has not taken goes back to a rig.**
+	 * **Re-establishes one record per connected body, on every intermission turn — the invariant's own repair.**
 	 *
-	 * **Three guards, and each is a different reason the record is already gone or already right.** The
-	 * record must still name *this* side — a later write replaced it, or `onPlayerLeft` removed it; the
-	 * player must still be in the server — `onPlayerLeft` owns a departure, it puts a rig in the seat at
-	 * once, and a second rig here would be a ninth body in a room built for eight; and they must still hold
-	 * no roster seat — they chose, which is the outcome the reservation existed for.
+	 * **Why a sweep is needed at all, when every path into `pending` already writes one.** The whistle takes
+	 * them *all* back: `releasePendingSeats` clears the map so the round can be played by eight bodies, and a
+	 * spectator who has not chosen is not one of them. So the intermission that follows a round begins with
+	 * every seat already standing as an arena rig and nobody holding a record — and nothing in this file
+	 * would put one back. The next intermission would show eight rigs beside one person, which is the same
+	 * fault as the expiry one round later and harder to see, because no line printed it.
 	 *
-	 * **Then one deletion and one rebalance, and the rebalance is what fills the seat.** `rebalanceBody`
-	 * re-reads both counts, finds the side one short, and spawns a rig into it — a lobby rig walking to its
-	 * pad, or an arena rig with its side already written, which is the phase rule the whole file keeps.
+	 * **A sweep rather than a hook on the round end**, because there are three ways to reach an intermission
+	 * with the map empty — the whistle, a round that ends early, and a server that has never played — and
+	 * this is one statement that covers all three. It is the same rule `syncSeats` applies to the *roster*
+	 * side of the ledger, applied to the side that is not in it.
 	 *
-	 * **Nothing is refused, and nothing is charged to the player.** The pads stay live; a player who chooses
-	 * after their loan ended is placed exactly as before, and their side then goes over its cap so
-	 * `releaseRigs` stands one rig down. That is the same pair of events a join performs, paid once, and it
-	 * is the honest price of not leaving a pad a body short for a whole intermission.
+	 * **Cheap enough to be a turn cost, and it is only ever called while nothing is playing.** One
+	 * `Players.GetPlayers()` and three map lookups per player, four times a second, against a lobby of eight
+	 * — and on a settled intermission every lookup misses, so the common turn is the read and no write at
+	 * all. `reserveSeatAtSeed` is the body, so the seed and this cannot disagree about which side a seat is
+	 * booked on or whether there is room for it.
 	 */
-	private releaseSeatIfUnused(player: Player, side: TeamLabel): void {
-		if (this.pending.get(player) !== side) return;
-		if (!player.IsDescendantOf(Players)) return;
-		if (this.matches.roster().has(player)) return;
+	private bookSeats(): void {
+		for (const player of Players.GetPlayers()) {
+			this.reserveSeatAtSeed(player);
+		}
+	}
 
-		this.pending.delete(player);
+	/**
+	 * **Which side an undecided player's seat is booked on: the emptier one.**
+	 *
+	 * **This is the answer to "3 and 4, or 4 and 3", and the answer is that the pads end up even either
+	 * way.** A seat is a body, and every body the lobby accounts for is a rig or a person — so booking one
+	 * undecided player on `A` makes `A`'s deficit three and `B`'s four, and the pads read three rigs and
+	 * four rigs. That looks like an imbalance and is not one: the fourth body on `A` is the person, who is
+	 * standing in the lobby about to walk onto one of the two signs. **A player who has already chosen is not
+	 * a party to this at all** — their side's deficit is already short by one, which is why a decided player
+	 * on `A` gives three rigs on `A` and four on `B` and *their* pad is the full one the moment they arrive.
+	 *
+	 * **The emptier side, rather than a fixed one, so that several undecided players cancel out.** Two of
+	 * them take one seat each rather than two on the same side, which is what makes four connected players
+	 * read as two rigs a side instead of three and one. Ties go to `A`, which is the order `SIDES` keeps
+	 * everywhere else in this file — the alternative is a coin, and a lobby that books its seats differently
+	 * on two identical servers is a lobby no log can be compared against.
+	 *
+	 * **This is also the correction to `victimForArrival`'s side, which was never a decision.** The old seed
+	 * destroyed whichever rig the walk tag happened to list first and booked that rig's *destination* side —
+	 * so at boot, where nothing had arrived yet and every rig was still walking, the side was whichever body
+	 * the collection happened to offer. It was correct by accident and arbitrary in principle; this is the
+	 * same seat, chosen.
+	 */
+	private seatForNewcomer(): TeamLabel {
+		const a = this.playersOn(TEAM_A) + this.pendingOn(TEAM_A);
+		const b = this.playersOn(TEAM_B) + this.pendingOn(TEAM_B);
 
-		print(
-			`[Rig] ${player.Name}: no side after ${NPC_CONFIG.SEAT_RESERVATION_SECONDS}s — ` +
-				`the seat on ${side} is a rig's again`,
-		);
+		return a <= b ? TEAM_A : TEAM_B;
+	}
 
-		this.rebalance();
+	/**
+	 * **Records the seat as held for `player`, for as long as they are in the server.**
+	 *
+	 * One writer of {@link pending}, several callers and one meaning — see that field. **There is no term on
+	 * it any more, and the term is the fault a log found.** It used to expire after
+	 * `NPC_CONFIG.SEAT_RESERVATION_SECONDS` and hand the seat back to a rig if the player had not chosen,
+	 * which was right while the LobbyRigService spawned a full roster: the record was a *hole* in a lobby
+	 * that had already built the body for it, so a hole nobody filled was a pad permanently a rig short. Under
+	 * deficit spawning the record is not a hole — **it is the player's own body**, standing in the lobby, and
+	 * a rig is only built for the seats nobody is in. So releasing it after five seconds does not repair
+	 * anything; it conjures an extra rig beside a person who is already there. The `09:11` log is exactly
+	 * that, on four consecutive lines: `7 placeholder rig(s) for 1 player(s)`, then
+	 * `prospeed1: no side after 5s — the seat on A is a rig's again`, then `VelvetVenom8 … side A` and
+	 * `refill — VelvetVenom8 to side A`. Seven bodies became eight, five seconds into an intermission that
+	 * should have shown seven.
+	 *
+	 * **What the map still gives back the seat, and all three are real events rather than a clock.** Choosing
+	 * a side (`syncSeats` deletes the record, because the roster now counts them); leaving
+	 * (`onPlayerLeft` deletes it and puts a rig in the seat at once); and the round starting
+	 * (`releasePendingSeats`, because a whistle is played by eight bodies and a spectator who has not chosen
+	 * is not one of them). A player who stands undecided for a whole intermission therefore keeps the lobby
+	 * at `MATCH_MAX_PER_TEAM × 2 − players` for the whole intermission, which is the rule.
+	 *
+	 * **And the rule has to be re-established after a round, which is why {@link bookSeats} exists.** The
+	 * whistle takes every record, so the first intermission after a round begins with the seats already
+	 * handed to arena rigs and nobody holding one. Nothing would put them back, and the next intermission
+	 * would show eight rigs beside one person — the same fault one round later. See `bookSeats`.
+	 */
+	private holdSeat(player: Player, side: TeamLabel): void {
+		this.pending.set(player, side);
 	}
 
 	/**
@@ -2636,6 +2798,32 @@ export class LobbyRigService implements OnStart {
 	 * **A player who appears in the roster has chosen**, so any reservation held for them is spent — see
 	 * `pending`. That is what makes "the player opts into the side a rig stood down from" cost nothing:
 	 * the seat they take is the seat that was being counted for them a moment earlier.
+	 *
+	 * **And it does not make one during a round, which is the fourth reader this pair got wrong.** The
+	 * carry-over above was written for `clear` — the intermission's wipe of the whole roster — and it cannot
+	 * tell that apart from the *other* way a player leaves the roster, which is a **surrender**. A
+	 * surrendering player's roster entry is released mid-round by `RoundService.surrender`, this loop saw a
+	 * name it was holding that the roster no longer had, and booked their seat back as a reservation on the
+	 * side they had just walked out of. That is one seat counted for a body that is standing in the lobby,
+	 * so `seatsHeld` answered "full" to every later question and **the round played three against four for
+	 * the rest of its life** — the log had blue at 3 rigs while red had 4, from the surrender to the whistle,
+	 * with `RoundService`'s own "a rig takes their place" line promising a body that was never made.
+	 *
+	 * **The rule that settles it was already written, and this is the writer that missed it.** See
+	 * {@link releasePendingSeats}: a reservation means "a player who has not chosen yet", a round is played
+	 * by bodies, so **the whistle drops every reservation deliberately** — and the file's own arbitration
+	 * there rejects the alternative of teaching `rebalance` to ignore `pending`, on the grounds that a
+	 * definition which changes meaning depending on who asks is how two callers come to disagree. So the
+	 * record must not be made during a round rather than be ignored during one, and the same argument covers
+	 * this caller: {@link onPlayerArrived} already refuses to reserve anything while `Playing`, for the
+	 * reason given there, and this is the same refusal in the one place it was missing.
+	 *
+	 * **What a surrendered player gets instead is the round's own fill.** Their seat reads empty from the
+	 * moment they are off the roster, `topUpDuringRound` sees the side short on its next quarter-second
+	 * poll, and an arena rig takes it — which is what the promise in `RoundService` says happens. The
+	 * lobby's own accounting gets them back at the next whistle, because `bookSeats` re-makes a reservation
+	 * for every connected body that the roster does not hold, and `rebalanceBody` runs it on every
+	 * intermission turn.
 	 */
 	private syncSeats(): void {
 		const revision = this.matches.rosterRevision();
@@ -2644,6 +2832,7 @@ export class LobbyRigService implements OnStart {
 		this.revision = revision;
 
 		const roster = this.matches.roster();
+		const playing = this.phase() === PLAYING;
 
 		// **Read before the snapshot is replaced**, because the question this answers is what the roster
 		// has *stopped* saying. A player it let go of is still standing in the lobby, so the seat they were
@@ -2651,6 +2840,12 @@ export class LobbyRigService implements OnStart {
 		for (const [player, side] of this.seated) {
 			if (roster.has(player)) continue;
 			if (!player.IsDescendantOf(Players)) continue;
+
+			// **A roster shrunk during a round is a surrender, not a wipe**, and the two are the same event
+			// from here — which is why this test is the phase and not a flag on the release. A wipe empties
+			// the roster *after* the phase has gone back to `Intermission` (`RoundService` writes the state,
+			// then prints, then clears), so the carry-over this loop exists for still happens in full.
+			if (playing) continue;
 
 			this.holdSeat(player, side);
 		}

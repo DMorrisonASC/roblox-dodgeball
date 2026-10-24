@@ -411,19 +411,21 @@ export const events = Net.Definitions.Create({
 	 * Client → server: **give me the board** — every body on a side, player or rig, with its round's counters and
 	 * its points.
 	 *
-	 * **A function rather than an event, and the reason is what the board is.** Every other remote in this file
-	 * carries a *moment*: a hit, a catch, a dodge, a wipe. The board is not a moment — it is a table that is
-	 * true at an instant and is asked for on demand, by a player holding a key. A push would mean sending N
-	 * bodies' rows to every client on every throw, catch, dodge and hit, almost all of it while nobody is
-	 * looking; a pull costs one round trip per open and nothing in between. **The round folder's attributes are
-	 * the wrong shape for this** — an attribute is one value rather than a table of rows, and the alternative
-	 * would be a hand-rolled string that two files have to parse the same way, which is the trap `TAGS.md`
-	 * documents for the strings that cannot be typed.
+	 * **A request and an answer rather than a `ServerAsyncFunction`, and that is a reversal with a report
+	 * behind it.** It was declared as an async function, on the argument that a call that returns a value needs
+	 * no second event and carries no correlation id for anybody to get wrong. What the argument missed is what
+	 * the rest of this file is evidence for: **every remote in this game that has ever been seen to work is a
+	 * `ClientToServerEvent` or a `ServerToClientEvent`**, and the board's was the only `ServerAsyncFunction` in
+	 * the project — one call shape, used once, whose round trip was never observed to complete. Two sessions of
+	 * *"the panel is empty"* is what an unexercised mechanism costs, and the fix is not a better async function:
+	 * it is the pair of events that {@link openPowerChest}/{@link chestResult} already prove, in the same file,
+	 * for the same shape of conversation — *the client asks, the server answers that one client*.
 	 *
-	 * **The cost, stated: the panel is empty for one ping when it opens.** `MatchStatsController` draws the
-	 * chrome immediately and fills the rows when this answers, so the wait reads as the panel arriving rather
-	 * than as it being broken — and at a LAN ping it is not visible at all. The push design had no wait and no
-	 * other advantage.
+	 * **The round trip survives, and so does the cost.** The panel is still empty for one ping when it opens and
+	 * filled when the answer lands; what is gone is the id the library used to match a reply to its request,
+	 * which the board does not need: the payload is a *snapshot*, so the only thing a stale answer can do is
+	 * arrive after a newer one. Two opens inside one ping is a key press and its repeat, and the later arrival
+	 * wins — see `MatchStatsController.receive`, which draws whatever the last answer was.
 	 *
 	 * **Nothing is sent by the client**, on `catch` and `drop`'s argument: the server already knows who is
 	 * asking, and there is nothing else to ask. There is no argument to validate, which is why this one has no
@@ -431,10 +433,29 @@ export const events = Net.Definitions.Create({
 	 *
 	 * **The answer is the round's own, not the asker's**: every body on a side — the players from
 	 * `Players.GetPlayers()` and the rigs from `rigsOnASide` — so the board is the same list
-	 * on every machine that asks. See `shared/matchStats.ts` for the row and `MatchStatsService` for what it
-	 * reads.
+	 * on every machine that asks. See {@link matchStatsBoard} for the reply, `shared/matchStats.ts` for the row
+	 * and `MatchStatsService` for what it reads.
 	 */
-	matchStats: Net.Definitions.ServerAsyncFunction<() => ReadonlyArray<MatchStatsRow>>(),
+	matchStats: Net.Definitions.ClientToServerEvent<[]>(),
+
+	/**
+	 * Server → client: **the board** — one row per body on a side, for the one player who asked.
+	 *
+	 * **The answer to {@link matchStats}, and sent to that player alone.** `SendToPlayer` rather than
+	 * `SendToAllPlayers`, because nobody else asked and a board is the largest payload in the game: eight rows of
+	 * seven fields is fine once and wasteful sixteen times a second if it were pushed. See {@link matchStats} for
+	 * why this is a pair of events rather than a function.
+	 *
+	 * **No request id, and the omission is argued rather than accidental.** `chestResult` has none either, and
+	 * for the same reason: the payload is a whole state rather than an increment, so an answer that arrives out
+	 * of order is an answer that is merely older. A client that asked twice in one ping draws the answer it got
+	 * last, which is the same board.
+	 *
+	 * **`ReadonlyArray` on both sides of the wire and a plain array on it**: `MatchStatsRow` is two strings and
+	 * five numbers per row, so this is a table of tables — the one shape every remote in `@rbxts/net` carries
+	 * without a serialisation rule, and the reason `shared/matchStats.ts` keeps the row flat.
+	 */
+	matchStatsBoard: Net.Definitions.ServerToClientEvent<[rows: ReadonlyArray<MatchStatsRow>]>(),
 
 	/**
 	 * Client → server: this player wants to spend coins on a Power Chest.

@@ -50,7 +50,10 @@ import { DUCK_CONFIG } from "./duck.config";
  * **`holdBallIdle` is the user's `idle-throw` / `hold-ball-idle` under one name, and it is a rig's state.**
  * The fact behind it is `NPC_ANIM_THROWING_ATTRIBUTE`, which only a rig publishes: a rig holding a ball is
  * standing still and about to throw, while a player carrying one is usually running. **No clip is layered for
- * it** — a body in this state wears one clip, exactly like every other state in this table.
+ * it** — a body in this state wears one clip, exactly like every other state in this table, and that is now true
+ * of every state without exception. There was briefly a table here for an upper-body-only clip to draw over a
+ * walk, and it was removed when the decision was made not to author one: **one track per state is the pipeline**,
+ * on both bodies. See `client/bodyAnimation.ts` for the renderer that holds exactly that.
  *
  * **`throw`, `catch` and the four dodges are events**, not conditions: facts written at the moment they happen
  * and cleared shortly after, so a one-shot clip has a window to play in. The throw's mark is written by

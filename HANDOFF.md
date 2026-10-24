@@ -2098,9 +2098,376 @@ almost no server code; 45 is what it cannot show.**
     all eight in the arena on a rigs-only round (it should — the promote now has 0.86 s), and whether
     `moveWalkersToArena` is still needed at all now that the promote is reliable.
 
+52. **Every rig in the lobby stood still in its walking clip, and the fact was an edge with only one ending.**
+    The report was a client one — "the NPCs render as walking when they are completely still" — and the
+    client was innocent: `RigAnimationController` reads `AnimMoving` off the rig and `applyBodyRender` swaps
+    the clip the moment it changes, so a client that draws walking is being *told* walking.
+    `NpcService` published that fact as `loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED`, and
+    `runningSpeed` was written only by `Humanoid.Running` — "fires when the speed at which a `Humanoid` is
+    running changes". **That is an edge on the speed, not a level**, and it was being read as if the last
+    edge were always the stop. Three of the ways a rig here stops need not be a speed change the engine
+    publishes: `MoveTo` at the body's own position (the stop every behaviour uses — `SeekBehavior.stand`,
+    `WalkToJoinPadBehavior`'s arrival), an arrival inside the engine's own tolerance, and the engine's
+    eight-second give-up. A rig whose last published speed was a walking speed therefore kept `AnimMoving`
+    true for the rest of its life. **The lobby is where it showed** because a placeholder walks to its pad
+    exactly once and then never moves again, and it is the rigs the player is looking at through the whole
+    intermission. **The fix is the engine's other edge**, `Humanoid.MoveToFinished` — "fires when the
+    `Humanoid` finishes walking to a goal declared by `Humanoid:MoveTo()`", which fires on arrival *and* on
+    the give-up, and only ever when the engine has stopped the body. `NpcLoop.moveToFinished` is the new
+    subscription, held and dropped exactly as `running` is; `NpcLoop.runningSpeed` now has two writers and
+    says so. **A walk issued afterwards re-asserts through `Running`**, so the pair cannot leave a *walking*
+    rig standing — the only direction it can be wrong in is the benign one. **New line**:
+    `[NPC] <name>: <why> with the speed still N.NN studs/s — published as standing from here`, where `why`
+    names **which** clear found it (`the walk ended`, `taken out of the world`, `placed by a mover` — see item
+    53), printed **once per rig** and only when the speed being cleared was a walking one, so a session either
+    prints it once per rig (the fault was real, and this is the branch clearing it) or prints nothing (the
+    engine was reporting its own stops and something else is wrong). **Unverified**: that this is the whole
+    cause. Nothing about the animation itself is observable from a server log — the clip swap is client-side
+    — so the proof is the user's eyes plus either shape of that line. **And one mechanism of the same class is
+    left standing, named rather than hidden**: `MoveToFinished` only fires for a body that was *walking*, so a
+    rig that is shoved into motion and then comes to rest by physics has no edge to end it at all — it keeps
+    publishing *moving* until the next walk ends. A rig pressed against something it cannot pass is the other
+    half of the same allowance: it keeps publishing *moving* until `MoveToFinished`'s eight-second give-up,
+    which is what Roblox's own script gives a player pushing a wall. Both are the benign direction — a body
+    that is trying to move — and both would show in the same log line if they ever fired for a body that was
+    not.
+    **Also corrected here, because they were argued from the same fact**: the essay in
+    `publishAnimation` that claimed `Running` "fires `0` when the body stops", the note that called a blocked
+    rig "not moving" where a player reports a walk (a measured world speed reports the shove and the push, so
+    the direction of that cost was written backwards), `NPC_ANIM_MOVING_ATTRIBUTE`, `RIG_MOVING_SPEED`,
+    `animationFor`'s note on where a rig's half of the fact comes from, and `ThrowBehavior`'s
+    `moveThenPlant` note that said a shove could not delay it.
+
+53. **Still one rig walking on the spot per session — and it was the one a player's arrival stands down.**
+    The next log (`00:21`) was the proof item 52 asked for, and it disproved half of it. **Seven of eight
+    rigs printed the new line, and every one printed it with the engine's last speed still at
+    15.93–31.00 studs/s** — so `Running` does *not* report a stop, `MoveToFinished` is the only stop edge
+    there is, and the clear works. But the report survived, so `MoveToFinished` was not the whole story: the
+    eighth rig, **`CosmicChaos12`, printed nothing at all**, because it never finished a walk. It was stood
+    down for `prospeed1`'s arrival at `30.998` — `[Rig] CosmicChaos12: … stood down (A) — parked (1 waiting,
+    "Random girl" kept for it)` — and refilled onto a pad at `36.016`. **Exactly one rig per session goes
+    through that path** (one stood down per person already in the server), which is why the fault was always
+    one rig, and it is the only body whose lifecycle the two fixes below both touch.
+    **Two faults, one on each side, and the client one is a plain bug.**
+    **(a) The server kept a speed across a park.** `parkRig` reparents the body into `ServerStorage` without
+    issuing a stop, and `NpcService.run` stops turning for it in the same breath — so neither `Running` nor
+    `MoveToFinished` could fire while it was away, and the speed it had when it left was still there when it
+    came back. `clearWalk` is now the **one statement of "this rig is standing"**, with **three** callers:
+    the end of a walk, the out-of-world gate in `run`, and `announcePlaced` (a `PivotTo` moves a body without
+    changing its speed, so a placement can end the truth without either edge firing). All three only ever
+    withdraw a speed the body is not travelling at — `Running` re-asserts on the next change of speed — and
+    the line names which one found it.
+    **(b) The client never dressed the rig again.** `RigAnimationController` watched rigs on the `NPC` tag's
+    added-signal and dropped the row on `AncestryChanged` leaving `Workspace`. **A parked rig keeps its `NPC`
+    tag**, so neither `CollectionService` signal fires in either direction: the row was dropped on the way
+    out, its `AncestryChanged` handler was disconnected with it, and nothing watched the body on the way back.
+    `destroyBodyRender` had already destroyed its tracks, so that one rig stood for the rest of the session in
+    whatever pose the destroyed tracks left it in — a stride, if it was parked mid-walk, which reads exactly
+    as "it is playing the walk while standing still". **The fix is that leaving the world and being destroyed
+    are two different disposals**: `undress` tears the renderer down and keeps the row, and only `Parent ===
+    undefined` (the engine's own `Destroy`, which clears parents down the whole subtree) calls `forget`.
+    `apply` now refuses to dress a body that is out of the world, so a parked rig costs nothing while away,
+    and the `AncestryChanged` handler re-enters `apply` when the rig comes back — the one place a renderer is
+    built from published state.
+    **And every placement now issues the engine's own stop, not only the fact's withdrawal.** Clearing the
+    field alone would have been a claim the body did not honour: a rig snapped into the arena by
+    `moveWalkersToArena` still carries the `WalkToPoint` it was given in the lobby, so it would have gone on
+    walking toward a pad in another room while every client drew it standing — the opposite error, and a worse
+    one, because the body would be in the wrong place. `announcePlaced` therefore does
+    `MoveTo(root.Position)` — the idiom `SeekBehavior.stand` and `WalkToJoinPadBehavior`'s arrival both use —
+    before withdrawing the fact, and all five of its callers are movers saying *this is where the body belongs
+    now*: `RoundService.teleportTeamsToArena`, `returnRigsToLobby`, `LobbyRigService.moveWalkersToArena`,
+    `placeParked` in both forms, and `standOnPad`.
+    **Unverified**: the animation still cannot be seen from a log. What the next session proves: `[NPC]
+    CosmicChaos12: taken out of the world with the speed still …` (a), plus that rig animating correctly once
+    it is back on a pad (b). **A third mechanism is possible and NOT fixed**: if
+    `Humanoid.Running` ever fires a nonzero speed for a body that is not walking (a `WalkSpeed` write, say),
+    nothing would clear it until the next walk ends, because there is no walk to end. Ruling that out needs
+    `humanoid:GetPropertyChangedSignal("WalkToPoint")` — "a `MoveTo` was issued and has not finished" is the
+    one fact that would clamp it, and it is refused for now because if that signal ever failed, no rig would
+    publish *moving* at all and the R6 idle-clip fault of `02a0ad4` would be back. The three clears above
+    cover the reported case without that risk.
+
+54. **The Match Stats board was blank, and the reason it stayed blank for a whole session is that nothing in
+    the output could tell its three possible causes apart.** The report was *"pressing Tab shows the panel
+    frame but no rows, all game"*. **What was checked against the source, and found correct**, because a
+    prompt asked for four of them specifically: `BadgeService.tally()` **already counts rigs** — `keyOf` folds
+    a character to its `Player` and leaves a rig as its own `Model` — so no tally change was needed and none
+    was made; `MatchStatsService.board()` already walks **both** `Players.GetPlayers()` (side on the `Player`)
+    and `rigsOnASide()` (side on the model) and passes both through the same `rowFor`, so the points formula,
+    the `?? 0` and the side filter are identical for a rig and a person; the sides really are the same two
+    strings on both ends (`TEAM_A`/`TEAM_B` are `"A"`/`"B"`, which is what `SIDES` on the client groups by);
+    and the remote's plumbing is the library's own and **is** reachable — `events.Server.OnFunction` is
+    `Get(name):SetCallback(fn)` (`ServerDefinitionBuilder:OnFunction`), `CallServerAsync` returns a
+    `TS.Promise` that `then`/`catch` chain on, and `InferServerCallback` types the handler as
+    `(player: Player) => R`. **The server was not short of rigs, and the answer was sound** — which the next
+    log proved outright (see below).
+    **Three premises in the prompt were wrong and are worth recording.** (i) *"the UI may assume every row is
+    a `Player`"* — it cannot: `MatchStatsRow` is two strings and five numbers, built by the server from
+    `Player.Name`/`Model.Name`, and the client neither looks a name up nor branches on what a body is. (ii)
+    *"ensure the UI does not load a player headshot or avatar"* — there is no `ImageLabel` anywhere in this
+    panel, so there was nothing to guard. (iii) *"players use `DisplayName`"* — they deliberately do not:
+    `MatchStatsRow.name` is `Player.Name`, on the convention `hitImpact`/`teamWipe`/`LAST_HIT_BY_*` all keep,
+    and switching to `DisplayName` would make a row's identity disagree with every other line of text in the
+    game. **What was actually wrong, and both are ways the panel could be empty with nobody able to tell
+    which:** the *"no one is on a side yet"* line was a row appended to the `ScrollingFrame`, so the one
+    message that explains an empty board lived inside the frame that has no height of its own until the
+    layout gives it one — **an empty board and a board that never got an answer therefore looked identical**,
+    which is exactly the question this report asked; and a promise that *fulfilled* with nothing set
+    `this.last = undefined`, so the next `render` indexed `undefined` inside a `then` block whose `catch`
+    reports it as `board request failed` — i.e. **a client-side throw was announced as a transport failure**. 
+    Fixed: the empty state is now a `TextLabel` built once in the content band beside the list (not inside
+    it), showing **"Waiting for players…"**, switched by `Visible` against `list.Visible` so exactly one of
+    the two is ever on screen — **and it is now two sentences rather than one** (see the end of this item);
+    and `receive` validates the answer with `typeIs(rows, "table")` before storing
+    it, so a void answer becomes the empty state rather than a throw in a callback. **The server now says
+    what it answers**: `[Stats] board for <name> — N row(s), A n / B m, k with points`, or a `warn` naming
+    *0 rows*, both wrapped in `pcall` so a throw is reported against the board instead of vanishing into an
+    `OnServerEvent` traceback the client experiences as a sixty-second silence. **One line per press** — the
+    board is asked for on a `Begin` and never polled, so this is not a per-turn cost. **A Luau trap found
+    while writing that line, and worth knowing**: `new Map()` compiles to a plain table here and
+    `map.get(k)` to `map[k]`, so `map.size()` emits a generic `for` over a table and **raises** — `tally()`
+    is safe to index and not safe to count, which is why the line counts `rows` instead.
+    **The next session answered it, and the answer was "N rows with a blank panel".** The server printed
+    `[Stats] board for prospeed1 — 8 row(s), A 4 / B 4, 6 with points` while the panel showed its column
+    headings and nothing else, and the rig/person split, the side grouping and the points formula were all
+    visibly right as the intermission filled the sides (`0 rows` → `1` → `3` → `4` → `5` → `8`, `A 0/B 1` to
+    `A 4/B 4`). So **the data path was never the fault** and neither was the tally: the client received the
+    board and drew it nowhere. Two faults, found in that order:
+    **(a) The rows frame had no height.** `addRowList` had copied `addShelf`'s "take the rest" — a zero `Size`
+    plus `UIFlexItem{FlexMode = Fill}` — on the argument that this is how a `UIListLayout` spells `flex: 1`.
+    That holds for the plain `Frame`s it was copied from (`addContentBand`, `addFillColumn`, both of which do
+    visibly fill) and **not for a `ScrollingFrame`**: the frame kept the height it was given, which was nought,
+    so the headings above it drew and the eight rows built into it every press had nowhere to be. The
+    empty-state label was invisible for the same reason, which is why the panel looked identical whether the
+    server had answered or not. **The fix is arithmetic rather than flex**: `Size = (1, 0, 1, -(ROW_HEIGHT +
+    ROW_GAP + 2 × SHOP_CONFIG.PAD_Y))`, everything the band has less the heading strip, the gap and the band's
+    own vertical padding — subtracting the padding is right *both* ways of reading `UIPadding`, and erring
+    short is a gap at the bottom of a list that scrolls where erring long would cut the last row in half.
+    **(b) The board was the project's only `ServerAsyncFunction`.** Every remote in this game that has ever
+    been seen to work is a `ClientToServerEvent` or a `ServerToClientEvent` — the dodge, the catch, the sprint,
+    the drop, the vote, the chest, `teamWipe`, `hitImpact`, `perfectDodge` — and the board's round trip is the
+    one call shape here with no observed success. It is now **`matchStats`** (client → server, no payload) and
+    **`matchStatsBoard`** (server → the one client that asked), which is `openPowerChest`/`chestResult`'s shape
+    in the same file. The correlation id the library used to match a reply to its request is gone and its
+    absence is argued: the payload is a *snapshot*, so a stale answer can only be an older board.
+    **And a client-side line, once per session**: `[Stats] board answered — N row(s), M drawn into a frame
+    W×H px (visible yes/no)`, read a frame after the answer so the layouts have run. **A frame of `W×0` is the
+    whole diagnosis**, and it is the number that was in no output for four sessions. `DEBUG` stays off in that
+    file; this line is not behind it, on the same reasoning as every boot count in this project — a fault that
+    prints nothing is a fault that costs a session.
+    **Still unverified**: that (a) is what the screenshot showed and that (b) was ever actually breaking. Neither
+    can be settled without Studio, and the two were fixed together because the panel could not distinguish them.
+    If the board now draws, the new line says `8 row(s), 9 drawn into a frame …×N px` — nine children because the
+    two side headings are inside the rows frame and are counted as drawn content.
+    **And the panel now says which of its two empty states it is in, which is the change that stops this
+    costing another session.** *"Waiting for players…"* means the board has never been answered; *"Nobody is on
+    a side yet."* means an answer arrived and the round has not filled. Those are the same pixels and wholly
+    different faults — the first is the transport, the second is the roster — and one sentence for both is why
+    four reports of "the board is empty" could not say which. The flag is `MatchStatsController.answered`,
+    written by `receive` and read by `render`.
+
+55. **The lobby spawned a full roster and then parked one rig per player — the deficit is now drawn, not
+    thinned.** `seedLobby` cloned one rig per seat the match allows (eight) and then called `reserveSeat` for
+    every player already connected, each of which found a rig, stood it down and parked it. **The lobby a
+    player saw was always right — seven rigs for one person — and the eight bodies were built to produce
+    seven.** The `08:56` log is the whole of it on two adjacent lines: eight `[Rig] … lobby spawn, side …`
+    lines, then `[Rig] NeonBandit: prospeed1 arrived — stood down (B) — parked`, then
+    `[Rig] up — 8 placeholder rig(s) (8 seat(s))` over a lobby of seven. Each of those eight is a template
+    clone, a `[RigTemplate] spawn` audit, an `NpcService` loop, eight behaviour tags, a burst and a walk.
+    **The same shape with eight players connected builds eight bodies and parks all eight**, which is the
+    case that made the count indefensible. **The fix is an ordering, not a new rule**: `seedLobby` now records
+    a pending seat for every player *first* (`reserveSeatAtSeed`) and then draws only what each side still has
+    open (`MATCH_MAX_PER_TEAM − playersOn − pendingOn`). Nought rigs is now reachable, and the record the old
+    comment was defending is untouched — `pending` holds a player and a side either way, so
+    `releaseSeatIfUnused`, `onPlayerLeft`, `releasePendingSeats` and `refillAtRoundStart` cannot tell the two
+    ways in apart. **A join after the seed is unchanged**, and it is the case parking exists for: the body the
+    player displaces already exists, so `reserveSeat` still parks it (criterion 5: seven rigs plus one joiner
+    is six rigs, one parked, eight seats). **The side an undecided player's seat is booked on is now chosen**
+    — `seatForNewcomer` takes the emptier side — where the old seed booked whichever side the *first
+    walk-tagged rig the collection happened to offer* had been sent to, which at boot was arbitrary by
+    construction. Verified against a table of cases rather than in Studio: 0 players → 8 rigs, 1 → 7 (3 on
+    the player's own side, 4 on the other, so that pad reads four bodies including them), 2 → 6, 4 → 4
+    (2 and 2), 8 → 0, 8 seated 4/4 → 0, and a ninth player with eight seated → 0. **The two deficits can
+    differ by up to `MATCH_MAX_PER_TEAM`** — eight players all on `A` is nought rigs for `A` and four for
+    `B` — so the alternation runs the fuller side alone once the other is spent. **Unverified in Studio at the
+    time.** **The consequence named here is what the next report turned out to be** — a player who never
+    chooses lost their reserved seat after `SEAT_RESERVATION_SECONDS` and the lobby refilled to eight rigs —
+    and item 56 is that term's removal.
+
+56. **Seven rigs became eight five seconds into the intermission, and the cause was a clock that had stopped
+    meaning what it was written for.** The `09:11` log is four consecutive lines and they are the whole
+    fault: `[Rig] up — 7 placeholder rig(s) for 1 player(s) of 8 seat(s) (3 open on A, 4 on B)`, then
+    `prospeed1: no side after 5s — the seat on A is a rig's again`, then `VelvetVenom8 … lobby spawn, side A`
+    and `refill — VelvetVenom8 to side A (seats held before: A 3, B 4)`. So the deficit rule from item 55
+    worked exactly as written and was undone by `SEAT_RESERVATION_SECONDS`.
+    **That term was correct for the lobby it was written in and is wrong for this one.** It existed because a
+    full roster was spawned and one rig stood down per player: a joining player's seat was then a *hole* in a
+    lobby that had already built the body for it, so a hole nobody filled left a pad permanently a rig short,
+    and five seconds of grace was the repair. **Deficit spawning inverted the meaning of the record** — it is
+    no longer a hole, it is the player's own body, standing in the lobby, and rigs are only built for the
+    seats nobody is in. Expiring it therefore repairs nothing; it conjures an extra rig beside a person who is
+    already there. Removed: `holdSeat` sets no timer, `releaseSeatIfUnused` is deleted, and
+    `NPC_CONFIG.SEAT_RESERVATION_SECONDS` is deleted with a note in its place saying why (its doc is kept as
+    the record of the reversal).
+    **A record is now released by exactly three real events**: choosing a side (`syncSeats`), leaving
+    (`onPlayerLeft`), and the whistle (`releasePendingSeats`, because a round is played by eight bodies and a
+    spectator who has not chosen is not one of them).
+    **And removing the term exposed the second half, which no single log had shown yet: the whistle takes every
+    record, so nothing would put them back.** The intermission *after* a round begins with eight arena rigs and
+    nobody holding a seat, and would have stayed at eight rigs beside one person for the whole intermission —
+    the same fault one round later, with no line in the output to say so. `bookSeats` is the repair: an
+    intermission-only sweep in `rebalanceBody`, before either count is read, that calls `reserveSeatAtSeed` for
+    every connected player. It is the mirror of `syncSeats` (which syncs the roster half of the ledger) applied
+    to the half that is not in the roster, and on a settled intermission every lookup misses, so the common turn
+    is one `Players.GetPlayers()` read and no write. The parked rig is still the mechanism there — booking a
+    seat on a side that is over its cap makes `releaseRigs` park one — so the join path and the repair path
+    produce the same lobby by the same arithmetic.
+    **Now true for the whole intermission rather than for five seconds**: rigs in the lobby =
+    `MATCH_MAX_PER_TEAM × 2 − Players.GetPlayers().size()`, for as long as the intermission lasts, however long
+    that is. **Unverified in Studio** — this is the third pass at the same count and it needs one session to
+    confirm: `[Rig] up — 7 placeholder rig(s) for 1 player(s)` with no `no side after …` line following it, and
+    no eighth `lobby spawn` in the intermission. The round itself still fields eight rigs, which is `RoundService`'s
+    business and was not touched.
+
+57. **A body could be left with no track at all, and the renderer recorded a failure as a success — which is why
+    it froze in its rest pose.** `applyBodyRender` assigned `render.playing = clip` **before** it looked the track
+    up, and the guard at the top of the function returns when the wanted clip equals `playing`. So a clip whose
+    asset would not load — a moderated id, one this place does not own — was remembered as *being worn*, and every
+    later call answered "already playing this" and returned without starting anything. The body then had zero
+    tracks: the default rest pose, arms at the sides, which is the reported symptom exactly. **Two shapes, both
+    reproduced against a model of the old and new control flow:**
+
+    - **held in a state whose clip cannot be dressed** (`throw` is the one, because a charge holds it for a second
+      and a mark holds it for `THROW_CLIP_SECONDS`) — old: `playing` set, nothing started, every later call an
+      early return, **rest pose until the state changed**; new: `walk` is kept;
+    - **the first clip a body is ever asked for is the broken one** — old: **rest pose for the life of the body**;
+      new: the locomotion floor is played instead.
+
+    **The fix is an ordering plus a separate memory.** `trackFor` is resolved *before* anything is stopped, so a
+    state a body cannot dress now costs it nothing; the attempt is remembered in `BodyRender.unplayable`, which is
+    the idea the old comment was right about ("remembering the attempt is what stops every change from trying again
+    for a clip that will never exist") in a field that does not also claim the body is wearing it. And **a
+    locomotion floor** was added: when the wanted clip cannot be dressed *and nothing is playing at all*,
+    `animationFor` now supplies idle/walk/run/jump — the same pure rule `bodyClipFor` ends on, so the fallback and
+    the ordinary answer cannot disagree. A body already wearing something keeps it, which is the direction this has
+    to err in: an outdated clip is a body behind its state, no clip is a body that looks broken.
+
+    **A second freeze, found while fixing the first, and it needs no broken asset at all.** `Play(fadeTime, weight,
+    speed)` keeps the track's own speed when the third argument is omitted, and these tracks are reused for the life
+    of the body. A windup that was **cancelled** — a rig's `windup cancelled — the turns stopped`, a player letting
+    go of the key — leaves the throw track at `AdjustSpeed(0)` from `holdThrowAtWindup`, and nothing cleared it
+    because the release path only runs for a throw that *was* released. The next throw therefore replayed a clip
+    that `IsPlaying` and never advanced: a body stuck on its cocked pose. `Play(fade, 1, 1)` is now the reset, and
+    a one-shot also gets `TimePosition = 0` (a *cycle* is deliberately not rewound — restarting the walk on every
+    state change is legs that hitch each time the body is asked to move).
+
+    **The overlay half of that request was built, and then removed at the user's decision — the scaffold is gone
+    and the finding is kept, because it is the part worth having.** Roblox does blend two playing tracks per
+    **limb**: "where two playing animations direct the target to move the same limb in different ways, the
+    `AnimationTrack` with the highest priority will show" (Roblox, `AnimationTrack`). So the *obvious* asset is the
+    wrong one: **a legs-only walk under a whole-body throw changes nothing**, because the throw keys the legs too and
+    is the higher rung, so it owns them; **an upper-body-only throw over a whole-body walk is what would work**, the
+    walk keeping the legs because nothing else keys them and the throw taking the arms because both do. **So the
+    asset such a feature needs is an upper-body-only aim/throw clip, not a legs-only walk** — and if it is ever
+    wanted again, that is the fact to start from rather than the one the request assumed.
+    **Removed in full**: `UPPER_BODY_ONLY_R15` from `animation.config.ts`, `upperBodyIdFor` and `canLayerUnder` from
+    `shared/animation.ts`, and `underlay`/`armTracks`/`applyUnderlay`/`underlayFor`/`armTrackFor` from
+    `bodyAnimation.ts` — with `bodyRenderPlays` and `destroyBodyRender` back to walking `tracks` alone. **One track
+    per state is the pipeline again, on both bodies**, and nothing at runtime can print an overlay line because the
+    line itself is gone. **A reader who finds the notes above in some future archaeology should not read the removal
+    as a retreat**: the reason is that the feature needs an authored asset nobody has made, and dead scaffolding for
+    an unowned asset is a second path through the renderer that no session exercises.
+    **Unverified**: whether any of the reported freezes was the load-failure one. The proof is a rig that used to
+    freeze and now does not, plus a warn of the form `[Animation] clip <id> would not load` in a session that froze
+    — **no such line has ever been pasted**, which is why the ordering fix and the speed reset are both stated as
+    defects the source proves rather than as a diagnosis of that specific report.
+
+58. **A rig hit drew no VFX in the practice zone, and the request's diagnosis was wrong in every part — the
+    finding is what the file could not see, not what it computed.** The request said `hitVfx` used
+    `Players.GetPlayerFromCharacter(victim)` and a `TEAM_ATTRIBUTE` check, that a rig therefore resolved to
+    `nil`, and that the code fell back to a missing `HitNeutral` template. **None of that is in the file and none
+    of it ever was**: the role is decided by two string comparisons against `LocalPlayer.Name` — the shape the
+    request asked for — `bodyOf` already resolved rigs (by `NPC_TAG`, before this pass), the bystander branch
+    already drew `HitVictim`, and `NEUTRAL_TEMPLATE_NAME` was a constant **no line reads any more** (it was
+    live when §16 item 14's log was taken, which is how that warning was ever printed; the reader still went
+    out with the fallthrough fix below). So the honest answer
+    to "what was the blocker" is that the source shows no blocker on this path, and the change below is made for
+    a different and narrower reason.
+
+    **The real defect found is a fallthrough.** The `victim === localPlayer.Name` branch called `playOn` and did
+    not return, so a client drawing its *own* red burst went on into the spectator branch, resolved the same body
+    again by name, and played the same red on it a second time — and `playOn` destroys the previous clone on a
+    body before cloning the new one, so every red the local player wore was torn down and restarted in the frame
+    it was made. That reads as a stutter, never as "no effect", which is why it survived; it is fixed with the
+    `return` the other two branches already had.
+
+    **And the reason this could not be diagnosed from a session is that every diagnostic in the file was behind
+    `DEBUG`, which is `false`.** A hit has four ways to draw nothing — the event never arrived, no body by that
+    name, a body with no `HumanoidRootPart`, a template missing from `ReplicatedStorage` — and from the seat all
+    four are the same nothing. Only the missing template was ever warned about. **Two of the remaining three are
+    now `warn`ed**: `warnNoBody` (once per name, naming the seat, so the line itself proves the event arrived)
+    and the missing-anchor case in `playOn` (once per body name). The template warning stays once-per-name by
+    name and every-time by print, because a template can be added to the place file mid-session.
+
+    **`bodyOf` was widened, and it is a hedge rather than a proven fix.** The tag walk was *stricter than the
+    thing that sends the event*: `BallComponent`'s body test is a `Model` with a `Humanoid` and never consults
+    `NPC_TAG`, so a hand-placed or untagged rig in a practice zone is a body the server reports a hit for and a
+    name this client could not resolve. The walk of `Workspace` that follows the tag search requires a `Humanoid`,
+    which is what keeps it from matching a map part called `PlaceholderRig3` — the decoy the old comment refused a
+    walk over. **Unproven**: `PracticeZoneService` creates no rigs at all, and every rig this codebase spawns is
+    tagged at creation (`NpcService` and `RespawnBehavior` both `AddTag(NPC_TAG)`), so the untagged-rig case may
+    not exist in this place file. It is cheap and it removes a way for the client to be narrower than the server.
+
+    **Two candidate causes left unproven, both outside this file and neither touched**: `registerHit` sends
+    `hitImpact` only `if (thrower !== undefined)`, and `throwerOf` resolves a rig only through `rigsInRound()`,
+    which is `Playing`-gated — so **a rig's throw at a body in a practice zone produces no event at all**. That is
+    the mirror of the reported case (a player throwing at a rig), which *is* sent, so it is not the answer here;
+    and `resolveTags` skips a dead `Humanoid`, so a hit landing on a body already at `Health <= 0` is silent.
+    **To settle it in one session**: set `DEBUG = true` at the top of `hitVfx.ts` and the log will say which of
+    the four it is on the first rig hit.
+
+59. **A surrendered player's seat was booked back as a *reservation*, so the round they left played 4-vs-3 for the
+    rest of its life — "3 players on blue when I left", and the promise in the output was a rig that was never
+    made.** `RoundService.surrender` releases the roster seat and prints *"a rig takes their place"*; the fill it
+    relies on is `LobbyRigService.topUpDuringRound`, which asks `seatsHeld(side) < MATCH_MAX_PER_TEAM` on every
+    quarter-second turn of the seat poll. **`seatsHeld` counts rigs, opted-in players *and reservations*** — and
+    `syncSeats`'s carry-over, written for the intermission's `clear`, cannot tell a roster emptied at a round
+    boundary from a roster that shrank because one player walked out mid-round. So the surrenderer's seat became a
+    `pending` entry on the side they had just left, `seatsHeld` answered *full*, and no rig was ever spawned. It is
+    the one number that could have said so, and it was counted for a body standing in the lobby.
+
+    **Reproduced against the log's own arithmetic before touching anything.** A model of `seatsHeld` / `rebalance` /
+    `topUpDuringRound` replaying that session's four events — seed with one connected player, the player opting into
+    B (which is what parks a rig off B at 18:51:03.327 and refills A at 18:51:03.330, both matching the log), the
+    whistle's 4-and-3, the surrender — prints `A 4 / B 3` and *"nothing short, no rig made"* under the old code and
+    `A 4 / B 4` under the new one. The same model run one boundary further still reports **7 rigs for 1 player**,
+    which is the regression test for item 55. Nothing in `RoundService` changed for this.
+
+    **The rule was already arbitrated in this file, and this was the writer that missed it.** `releasePendingSeats`
+    drops every reservation at the whistle, on the grounds that *a round is played by eight bodies and a spectator
+    who has not chosen is not one of them* — and it explicitly rejects the alternative of teaching `rebalance` to
+    ignore `pending`, because a definition that changes meaning depending on who is asking is how two callers come
+    to disagree. `onPlayerArrived` refuses to reserve anything while `Playing` for the same reason. So the fix is
+    the third instance of the same refusal: **`syncSeats` does not create a reservation during a round**, and a
+    surrendered player's seat reads empty from the moment they are off the roster, which is what lets the round's
+    own fill take it. The lobby's accounting gets them back at the next whistle, because `bookSeats` re-makes a
+    record for every connected body the roster does not hold and `rebalanceBody` runs it before it counts.
+
+    **Why this keeps coming back, stated once rather than discovered again.** "The seat" has two definitions in this
+    codebase and they are both correct: `RoundService` counts *participants*, `LobbyRigService` counts *people
+    present*, and `pending` is the only place they meet. Every bug in this family has been one service using the
+    other's answer — a player over a cap read as a misplaced rig (item 18's predecessor), a cleared roster leaving
+    an eighth rig (item 55), a seat clock putting the rig back (item 56), and this. **The test to apply to any future
+    change here: during `Playing`, `pending` must be empty, and anything that writes it during a round is a leak.**
+    `RoundService`'s surrender therefore needs no code at all, which is why it was never the file to change — its
+    comment claiming the poll fills the seat "within a quarter of a second" was true of the poll and false of the
+    count it reads.
+
 ---
 
 ## 16. What a live log has actually confirmed
+
 
 Treat everything else as unverified. These were observed in the user's Studio output. Where the
 system they were observed in has since been removed, that is said explicitly — a confirmation is
@@ -2159,7 +2526,11 @@ observed**: `client/perfectDodge.ts` prints only behind its own `DEBUG`, so the 
   one gust per throw**. What that confirms is the *cadence*; the anchor has moved twice since (root →
   right foot → between the feet), so the placement is not what the log spoke to.
 - `[VFX] no HitNeutral in ReplicatedStorage — that hit effect will not play` — a confirmation by
-  *absence*, and the reason item 14 exists.
+  *absence*, and the reason item 14 exists. **The code that printed it has since been removed**:
+  the spectator branch was changed to `HitVictim` at the user's request, and the neutral name went
+  with it (§15 item 58), so this line can no longer be produced. What it still confirms is the fact
+  it was about — there was no neutral template in the place file on that date — which is the reason
+  the bystander case is red rather than white for a reason other than taste.
 - **The spawn poof, at both ends of a round, and the user's own verdict on it was "this looked good".**
   `[VFX] SpawnPoof at <name> — x, y, z (1 part(s), 1 emitter(s), texture rbxassetid://…, 2.00s)` fires
   once per body at the round-end teleport, and the effect was seen. **That is the confirmation for the
@@ -2342,13 +2713,25 @@ is that the next recording will name it.
   `ThrowProbe` — the latter because it is off with `VERBOSE_LOGS` and the former because it is the one
   loop already known to be periodic.
 
+**The 2026-10-24 rig-animation reports did confirm one engine fact outright, and it is the kind of thing that
+is only ever learned this way.** `Humanoid.Running` does **not** report a stop: in the `00:21` session,
+**seven of the eight rigs** printed `[NPC] <name>: the walk ended with the speed still N.NN studs/s …`, with
+the values `15.93`, `16.00`, `16.00`, `15.96`, `30.96`, `31.00` and `30.30` — full walk and sprint speed, at
+the instant the engine had finished the walk. So a rig's walking fact cannot be read from that event alone,
+`Humanoid.MoveToFinished` is the only stop edge there is, and the belief that `Running` fires `0` at a stop
+(which `NPC_ANIM_MOVING_ATTRIBUTE` and `NpcService.publishAnimation` both argued from) was wrong. **The eighth
+rig printed nothing**, and that absence was the diagnostic: it was the one stood down and parked for the
+first player's arrival, so it never finished a walk at all — see §15 item 53. **What is still not confirmed is
+the animation itself**, and nothing in a server log ever will confirm it: whether a given clip is on screen is
+the client's answer, so the proof for both items 52 and 53 is the user's eyes on the lobby.
+
 ---
 
 ## Appendix — the other documents, and how far to trust them
 
 | Document | What it is | State |
 |---|---|---|
-| `HANDOFF.md` | this file | current as of **2026-10-23**, against `f062372` plus six uncommitted files from the same day (the mobile cluster's glass face and rim glow, the cooldown ring, the caught-throw caption, the round's admission strip, the loading screen's title). That pass brought **§4, §9, §10, §15 and §16** in step: §4's map lost two deleted controllers and gained `MobileControls`, `ui/glow.ts` and `client/enemyView.ts`; §9's inventory table was corrected the same way; §10 gained two stories and a completed list; §15 items 34–37 and §16 a note saying it confirmed nothing. **§5–§8, §11–§14, §17 and §18 stand as their own revisions left them** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted |
+| `HANDOFF.md` | this file | current as of **2026-10-24**, against `6ce8770` plus the uncommitted work from the same day (§15 items 52–59: a rig's walking fact given a real stop edge, a parked rig's speed cleared on its way out of the world and on every placement, a client that had stopped dressing such a rig rather than forgetting it, a Match Stats board given an empty state that can be seen and a server line that says how many rows it answered with, a lobby that draws only the seat deficit instead of a full roster it then parks, the removal of the seat-reservation clock that was putting the eighth rig back five seconds into an intermission, the animation renderer's failure-as-success fixed along with its cancelled-windup speed reset, a hit-VFX pass that found the `victim` branch falling through into the spectator branch, warned about the two silent ways a rig hit draws nothing, and widened the body lookup past `NPC_TAG` alone, and a surrendered player's seat no longer booked back as a lobby reservation — which is why the round they left still had a body missing). **The 2026-10-24 passes touched §15 and §16 only.** **The 2026-10-23 pass** (against `f062372` plus six uncommitted files from the same day — the mobile cluster's glass face and rim glow, the cooldown ring, the caught-throw caption, the round's admission strip, the loading screen's title) brought **§4, §9, §10, §15 and §16** in step: §4's map lost two deleted controllers and gained `MobileControls`, `ui/glow.ts` and `client/enemyView.ts`; §9's inventory table was corrected the same way; §10 gained two stories and a completed list; §15 items 34–37 and §16 a note saying it confirmed nothing. **§5–§8, §11–§14, §17 and §18 stand as their own revisions left them** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted. §5's round lifecycle and §17's walk-speed table are the two most likely to have drifted since, because both describe code the later items changed |
 | `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of **2026-10-23**, which added one row to its "not tags, but the same trap" table: `"Hit"` / `"Catch"`, the two values of `LAST_HIT_BY_CAUSE_ATTRIBUTE` and the only pair on that list whose disagreement is a wrong *sentence* rather than a wrong lookup. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
 | `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **a record, not a description.** It documents the retired mock (five tabs, a box picture with odds); the panel was rewritten onto the economy and `ui/panelChrome.ts`, and a caveat banner at the top now says so. Kept because **§7's arithmetic still holds** (the panel really does collapse below ~700 px of viewport height) and §8's ruled-out list is still worth not re-treading. §5 and §6 were corrected on 2026-10-16 for the shared GUI's region, which is a *device* decision now (§9) |
 | `README.md` | upstream roblox-ts boilerplate — its entire content is the line `First commit` | says nothing about this project; ignore it |

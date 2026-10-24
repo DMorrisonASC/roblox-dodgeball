@@ -2,6 +2,7 @@ import Fusion from "@rbxts/fusion-3.0";
 import Net from "@rbxts/net";
 import { ContextActionService, ReplicatedStorage } from "@rbxts/services";
 import { ROUND_MODE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { SHOP_CONFIG } from "shared/config/shop.config";
 import { isGameModeId, sideNameOf, teamColourOf } from "shared/gameMode";
 import type { GameModeId } from "shared/gameMode";
 import type { MatchStatsRow } from "shared/matchStats";
@@ -56,6 +57,23 @@ const COLUMNS: ReadonlyArray<{ readonly heading: string; readonly width: number;
 const ROW_HEIGHT = 26;
 const ROW_GAP = 2;
 
+/**
+ * **The two sentences an empty board can say, and they are different sentences on purpose.**
+ *
+ * A board with no rows is one of two states that look identical and have nothing in common: **the server has
+ * not answered yet**, or **the server answered and nobody is on a side**. The first is a round trip, the second
+ * is an intermission that has not filled, and only one of them is a fault. The first version of this panel had
+ * one sentence for both, which is why four sessions of *"the board is empty"* could not say which state the
+ * player was looking at — the panel knew, and did not say.
+ *
+ * **So the waiting line means "no answer yet" and only that**, and it is replaced the moment any answer lands.
+ * A player who sees the second sentence knows the panel works and the round has not started; a player who sees
+ * the first for more than a moment is looking at a board that is not being answered, which is a different
+ * report and a different file.
+ */
+const WAITING_TEXT = "Waiting for players…";
+const NOBODY_TEXT = "Nobody is on a side yet.";
+
 /** How tall one side's heading is, in pixels. **Placeholder.** */
 const SIDE_HEADING_HEIGHT = 22;
 
@@ -104,19 +122,63 @@ export class MatchStatsController implements OnStart {
 	private open = Fusion.Value(this.scope, false);
 
 	/**
-	 * The remote, resolved once at mount rather than on the first press.
+	 * The two remotes, resolved once at mount rather than on the first press.
 	 *
 	 * **`Get` yields** until the server's remote exists, and a yield inside a key handler is a frame of nothing
 	 * happening after a press — the trap `ShopController.watchChest` names. Resolved from the spawned mount
-	 * thread, which is already the thread that may wait.
+	 * thread, which is already the thread that may wait. **Both** are resolved, not just the one that is sent:
+	 * the answer's connection is made here too, so a press before the listener was up cannot lose its reply.
 	 */
-	private remote?: ClientRemotes["matchStats"];
+	private request?: ClientRemotes["matchStats"];
+
+	/** The server's answer. See {@link request} for why both halves are resolved at mount. */
+	private answer?: ClientRemotes["matchStatsBoard"];
 
 	/** Where the rows go. Everything the board draws lives inside it, including the "nobody" line. */
 	private rows?: ScrollingFrame;
 
+	/**
+	 * **The empty state, and it is a sibling of the list rather than a child of it** — which is the correction
+	 * a report bought.
+	 *
+	 * It used to be a label appended to the scrolling frame, so that one clearing loop emptied the panel of
+	 * rows *and* of the line explaining there were none. The reasoning was sound and the placement was not: a
+	 * `ScrollingFrame` in a flex row has no height of its own until the layout gives it one, so a label inside
+	 * it inherits that frame's size — and a board that drew nothing had nothing on screen to say why, which is
+	 * indistinguishable from a board that never got an answer at all. **The empty state is the one thing on this
+	 * panel that must be visible when the rest of it is not**, so it lives beside the list, in the content band,
+	 * where nothing about the scrolling arrangement can hide it.
+	 */
+	private empty?: TextLabel;
+
+	/**
+	 * **Whether any answer has ever arrived**, which is the only difference between the panel's two empty states.
+	 *
+	 * See {@link WAITING_TEXT}: a board that has never been answered and a board answered with nought are the
+	 * same pixels and different faults, and this flag is what lets the sentence say which. It is written by
+	 * `receive` and read by `render`, so a panel opened before the first answer and re-opened after it says two
+	 * different things without a single extra instance.
+	 */
+	private answered = false;
+
 	/** The last answer, so a re-open draws instantly rather than emptying while the round trip runs. */
 	private last: ReadonlyArray<MatchStatsRow> = [];
+
+	/**
+	 * Whether the one-line layout report has been printed — **once per session, and it is the line this panel has
+	 * been missing for three sessions.**
+	 *
+	 * Every report so far could say the server had answered and nothing about what the client did with it. A
+	 * board that was told `8 row(s)` and drew none is a *different* fault from one whose request was refused, and
+	 * neither the server's line nor a screenshot of an empty table can tell them apart — the shape of an empty
+	 * panel is identical either way. So the first answer of a session prints the row count *and the size of the
+	 * frame the rows were put in*, after a frame has passed so the layouts have run. **A rows frame of
+	 * `612×0 px` is the whole diagnosis**, and it is the one number that was never in any output.
+	 *
+	 * Once per session rather than per press, because it is an instrument and not a log: a player who opens the
+	 * board twenty times should not read twenty copies of it.
+	 */
+	private reported = false;
 
 	onStart(): void {
 		// Spawned rather than inline, matching every other HUD: mounting waits for `PlayerGui`, and a
@@ -156,6 +218,7 @@ export class MatchStatsController implements OnStart {
 
 		this.addHeadings(theme, content);
 		this.rows = this.addRowList(content);
+		this.empty = this.addEmptyState(theme, content);
 
 		this.addFooter(theme, panel);
 
@@ -168,9 +231,17 @@ export class MatchStatsController implements OnStart {
 		// the row, and `TextWrapped` also switches off the `TextTruncate` that gives a long name its ellipsis
 		// instead. Every label this panel makes is one line by construction, so there is nothing here for it to
 		// wrap — see {@link fillCells}, which is where the two properties are set instead.
-		panel.Parent = getHudScreenGui(); // must stay the LAST statement in this method
+		//
+		// **This is the last *tree* statement in this method, and the two below it are the reason it is worded
+		// that way.** `getHudScreenGui()` is resolved and the panel is parented here, after every band, row and
+		// footer exists — a panel that went up half-built would be a frame that resizes under the player. What
+		// follows touches nothing in that tree: the remote (which yields) and the key binding (which does not).
+		panel.Parent = getHudScreenGui();
 
-		this.remote = events.Client.Get("matchStats");
+		this.request = events.Client.Get("matchStats");
+		this.answer = events.Client.Get("matchStatsBoard");
+
+		this.answer.Connect((rows) => this.receive(rows));
 
 		this.bindKey();
 	}
@@ -222,38 +293,77 @@ export class MatchStatsController implements OnStart {
 	}
 
 	/**
-	 * **Asks the server, and draws when the answer lands.** The previous answer is drawn first, so a second
-	 * hold shows the last round's numbers for one frame rather than an empty panel — the wait only reads as a
-	 * wait on the very first open, where there is nothing to show and nothing has been lost.
+	 * **Asks the server, and lets the answer draw itself.** The previous answer is drawn first, so a second hold
+	 * shows the last round's numbers for a frame rather than an empty panel — the wait only reads as a wait on
+	 * the very first open, where there is nothing to show and nothing has been lost.
 	 *
-	 * A refused call — a timeout, or a server that has not registered the function — leaves the old rows
-	 * standing and prints, which is the same "say it out loud" the panels use for a failed fetch. The failure is
-	 * cosmetic, so nothing else is done about it.
+	 * **A send and not a call**, which is the change this panel needed: the answer arrives on `receive`, wired
+	 * once at mount. Nothing here can fail in a way this method has to handle — a `SendToServer` on a remote that
+	 * exists either goes out or the whole client is broken — where the promise this used to await could reject on
+	 * a timeout, and a timeout is indistinguishable from a server that never answered. See `networking.ts` on
+	 * `matchStats` for why the pair of events replaced the async function.
 	 */
 	private refresh(): void {
-		const remote = this.remote;
-		if (!remote) return;
-
 		this.render(this.last);
 
-		remote
-			.CallServerAsync()
-			.then((rows: ReadonlyArray<MatchStatsRow>) => {
-				// **Only draw if the panel is still up.** A player who taps `Tab` and lets go inside one round
-				// trip would otherwise have the rows written behind a hidden panel — harmless, but it would also
-				// paint the *stale* answer over a newer one if two opens overlapped. Kept fresh either way, so
-				// the next open starts from the truth.
-				this.last = rows;
+		this.request?.SendToServer();
+	}
 
-				// **Re-read the value rather than trusting a capture.** The promise may settle after the key
-				// has been released, and `open` is the one fact that says whether anybody is looking.
-				if (Fusion.peek(this.open)) this.render(rows);
+	/**
+	 * **The server's answer, all of it** — validated, remembered, and drawn if anybody is looking.
+	 *
+	 * **A payload that is not a table is turned into the empty state rather than trusted.** A remote can deliver
+	 * nothing, and `this.last = rows` followed by a `render` that indexes it threw inside whatever called this —
+	 * which is the event's own handler, where a throw is a silent dead connection. The empty state is a sentence
+	 * a player can see; a throw is not.
+	 *
+	 * **Remembered even when the panel is closed**, so the next open starts from the truth rather than from an
+	 * empty table. The re-read of `open` after the fact is `Fusion.peek`'s own rule: a reply may land after the key
+	 * has been released, and the value — not a capture taken before the round trip — is the one fact that says
+	 * whether anybody is looking.
+	 */
+	private receive(rows: ReadonlyArray<MatchStatsRow>): void {
+		this.answered = true;
+		this.last = typeIs(rows, "table") ? rows : [];
 
-				if (DEBUG) print(`[Stats] board answered — ${rows.size()} row(s)`);
-			})
-			.catch((err: unknown) => {
-				warn(`[Stats] board request failed — ${tostring(err)}`);
-			});
+		if (Fusion.peek(this.open)) this.render(this.last);
+
+		this.reportOnce(this.last.size());
+
+		if (DEBUG) print(`[Stats] board answered — ${this.last.size()} row(s)`);
+	}
+
+	/**
+	 * **Prints what the answer was and how much room it was drawn into**, once per session — see
+	 * {@link reported}.
+	 *
+	 * The frame's size is read a frame later rather than on the spot, because a `UIListLayout` and a
+	 * `ScrollingFrame`'s automatic canvas are resolved by the engine's own layout pass: read in the same
+	 * resumption the answer arrives on, every size here would be the one it had *before* the rows were added,
+	 * and the number would be a lie in the direction that matters.
+	 *
+	 * `spawn`ed rather than awaited, so the promise this sits inside is not held open by a diagnostic.
+	 */
+	private reportOnce(rowCount: number): void {
+		if (this.reported) return;
+		this.reported = true;
+
+		const list = this.rows;
+		if (list === undefined) return;
+
+		task.spawn(() => {
+			task.wait();
+
+			const drawn = list.GetChildren().filter(
+				(child) => !child.IsA("UIListLayout") && !child.IsA("UIFlexItem"),
+			).size();
+
+			print(
+				`[Stats] board answered — ${rowCount} row(s), ${drawn} drawn into a frame ` +
+					`${string.format("%.0f", list.AbsoluteSize.X)}×${string.format("%.0f", list.AbsoluteSize.Y)} px ` +
+					`(visible ${list.Visible ? "yes" : "no"})`,
+			);
+		});
 	}
 
 	/**
@@ -278,11 +388,29 @@ export class MatchStatsController implements OnStart {
 	 * is a single column of full-width rows, so the layout is a `UIListLayout` and each row is one frame of its
 	 * own; the scroll mechanics are the shelf's (`AutomaticCanvasSize.Y`, an elastic behaviour off so a row
 	 * cannot slide away from the pointer) because those are properties of scrolling rather than of grids.
+	 *
+	 * **The height is arithmetic, and it used to be a `UIFlexItem` — which is the bug behind an empty board that
+	 * answered `8 row(s)` on the server.** The first version copied `addShelf`'s "take the rest" verbatim: a
+	 * zero size plus `UIFlexItem{FlexMode = Fill}`, on `addColumns`' argument that this is how a `UIListLayout`
+	 * spells `flex: 1`. It is — for a plain `Frame`, which is what the content band and the fill column are. **A
+	 * `ScrollingFrame` is not resized by a flex item here**, so this frame stayed at the height it was given,
+	 * which was nought: the headings above it drew, eight rows were built and parented into it every press, and
+	 * none of them had anywhere to be. A screenshot of the panel shows exactly that — the column headings and
+	 * then nothing — and its own empty-state label was invisible for the same reason, which is why the board
+	 * looked identical whether the server had answered or not.
+	 *
+	 * **So the height is written out: everything the band has, less the heading strip and the two gaps.** The
+	 * band's own height is the panel's remainder (`addContentBand`), its `UIPadding` takes `PAD_Y` off the top
+	 * and the bottom, and this list is the last item in the band's stack after a `ROW_HEIGHT` strip and one
+	 * `ROW_GAP`. Subtracting the padding as well as the two gaps is deliberate: **it is right in both readings**
+	 * of `UIPadding` — a scale child that is measured against the padded area lands exactly, and one measured
+	 * against the raw frame lands sixteen pixels short, which is a small gap at the bottom of a list that
+	 * scrolls. Erring long would instead have cut the last row in half.
 	 */
 	private addRowList(content: Frame): ScrollingFrame {
 		const list = new Instance("ScrollingFrame");
 		list.Name = "Rows";
-		list.Size = new UDim2(1, 0, 0, 0);
+		list.Size = new UDim2(1, 0, 1, -(ROW_HEIGHT + ROW_GAP + 2 * SHOP_CONFIG.PAD_Y));
 		list.LayoutOrder = 1;
 		list.BackgroundTransparency = 1;
 		list.BorderSizePixel = 0;
@@ -293,12 +421,6 @@ export class MatchStatsController implements OnStart {
 		list.ElasticBehavior = Enum.ElasticBehavior.Never;
 		list.Parent = content;
 
-		// **A flex item rather than a computed height**, because the band's height is whatever the panel has
-		// left after its header and footer — the same "take the rest" the content band itself uses.
-		const flex = new Instance("UIFlexItem");
-		flex.FlexMode = Enum.UIFlexMode.Fill;
-		flex.Parent = list;
-
 		const layout = new Instance("UIListLayout");
 		layout.Name = "RowLayout";
 		layout.FillDirection = Enum.FillDirection.Vertical;
@@ -307,6 +429,41 @@ export class MatchStatsController implements OnStart {
 		layout.Parent = list;
 
 		return list;
+	}
+
+	/**
+	 * **The "nobody yet" line, built once and switched by `Visible`** — a sibling of the row list, in the
+	 * content band, on `addColumns`' rule that a thing which must be seen is not put inside the thing that
+	 * scrolls.
+	 *
+	 * Built once rather than rebuilt per press, because it is one label whose *existence* does not depend on the
+	 * answer: a press with rows hides it and a press without shows it, and neither case destroys an instance.
+	 * That is the opposite of the rows, which are rebuilt — see {@link render} for why the two differ.
+	 *
+	 * **`LayoutOrder` above the footer and below the list**, which is where a sentence explaining an empty table
+	 * belongs. `UIListLayout` skips a `Visible = false` child entirely, so the list and this label share the
+	 * band without either reserving space for the other — which is what makes the swap a property write rather
+	 * than a re-layout. `AutomaticSize.Y` and a wrapped sentence, because this is the one label here that is
+	 * prose rather than a column: a phone narrow enough to wrap it should grow the line rather than clip it.
+	 */
+	private addEmptyState(theme: HudTheme, content: Frame): TextLabel {
+		const message = new Instance("TextLabel");
+		message.Name = "Empty";
+		message.Size = new UDim2(1, 0, 0, ROW_HEIGHT * 2);
+		message.AutomaticSize = Enum.AutomaticSize.Y;
+		message.BackgroundTransparency = 1;
+		message.Font = theme.typography.body.font;
+		message.TextSize = theme.typography.body.size;
+		message.TextColor3 = theme.colors.textSecondary;
+		message.TextXAlignment = Enum.TextXAlignment.Center;
+		message.TextYAlignment = Enum.TextYAlignment.Center;
+		message.TextWrapped = true;
+		message.Text = WAITING_TEXT;
+		message.LayoutOrder = 2;
+		message.Visible = false;
+		message.Parent = content;
+
+		return message;
 	}
 
 	/** The one line of small print: what the numbers mean and how the key behaves. */
@@ -339,9 +496,17 @@ export class MatchStatsController implements OnStart {
 	 * means anything. The sort is on the number the server sent rather than on the counters, so the board and
 	 * the formula cannot disagree about who is ahead — see `shared/matchStats.ts`.
 	 *
-	 * **A tie keeps the server's order**, which is the player list's, so repeated holds do not shuffle two
-	 * players on equal points. `table.sort` is not stable, so the comparison is written to be total: equal
+	 * **A tie keeps the order the server sent**, which is players then rigs, so repeated holds do not shuffle two
+	 * bodies on equal points. `table.sort` is not stable, so the comparison is written to be total: equal
 	 * points fall back to the name.
+	 *
+	 * **The rows and the empty state are drawn by different means, and the difference is what each one is for.**
+	 * A row is transient — a different set on every press, and destroyed and rebuilt each time — while the line
+	 * that explains an empty table is permanent: one label, built at mount, that this method shows or hides.
+	 * **That split is the fix for a board that was blank with nothing to say why**: the "nobody yet" text used
+	 * to be a row like any other, appended to the scrolling frame, and a frame that has no height of its own
+	 * cannot show a label inside it. `drawn === 0` now hides the list and shows the label — which is also the
+	 * arrangement that makes the two mutually exclusive by construction rather than by convention.
 	 */
 	private render(rows: ReadonlyArray<MatchStatsRow>): void {
 		const list = this.rows;
@@ -393,24 +558,37 @@ export class MatchStatsController implements OnStart {
 			}
 		}
 
-		if (drawn === 0) {
-			const message = new Instance("TextLabel");
-			message.Name = "Empty";
-			message.Size = new UDim2(1, 0, 0, ROW_HEIGHT);
-			message.BackgroundTransparency = 1;
-			message.Font = theme.typography.body.font;
-			message.TextSize = theme.typography.body.size;
-			message.TextColor3 = theme.colors.textSecondary;
-			message.TextXAlignment = Enum.TextXAlignment.Center;
-			message.Text = "no one is on a side yet";
-			message.LayoutOrder = order;
-			message.Parent = list;
+		// **One of the two is always visible, and neither is ever both.** An empty table is a sentence, and a
+		// sentence needs to be somewhere the flex cannot collapse it; a populated one needs the scroller. Hiding
+		// the list also takes it out of the band's list layout, so the sentence is not pushed to the bottom of a
+		// frame sized for rows that are not there. See `addEmptyState`.
+		//
+		// **And the sentence is chosen by `answered`, not by the row count.** *"Waiting for players…"* is a round
+		// trip that has not landed; *"Nobody is on a side yet."* is an answer that says the intermission has not
+		// filled. Same pixels, different faults — see {@link WAITING_TEXT} for the four sessions that cost.
+		list.Visible = drawn > 0;
+
+		const empty = this.empty;
+		if (empty !== undefined) {
+			empty.Text = this.answered ? NOBODY_TEXT : WAITING_TEXT;
+			empty.Visible = drawn === 0;
 		}
 
 		if (DEBUG) print(`[Stats] board drew — ${drawn} row(s)`);
 	}
 
-	/** One player's line: six cells, the name left-aligned and the rest centred. */
+	/**
+	 * **One body's line** — six cells, the name left-aligned and the rest centred.
+	 *
+	 * **A "body" rather than a player, and that is the whole of what the row can tell a rig from a person
+	 * apart: nothing.** `row.name` is a plain string the server took from `Player.Name` or `Model.Name`, and
+	 * every other field is a number, so this method has no branch and needs none — a rig's line is built by
+	 * exactly the code that builds a player's. **What it deliberately does not do:** look the name up on
+	 * `Players`, request a headshot, or draw an avatar. A board that resolved a row through `Players` would
+	 * have to answer "what is this?" for a name that is not there, and the answer would be a column of blank
+	 * heads for the eight bodies that actually played. The name is the identity the server chose, and the
+	 * card's job is to print it.
+	 */
 	private addRow(parent: ScrollingFrame, theme: HudTheme, row: MatchStatsRow, order: number): void {
 		const line = new Instance("Frame");
 		line.Name = row.name;

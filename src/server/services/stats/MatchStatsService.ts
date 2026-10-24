@@ -5,6 +5,7 @@ import { pointsOf } from "shared/matchStats";
 import type { MatchStatsRow } from "shared/matchStats";
 import { events } from "shared/networking";
 import { rigsOnASide } from "../../npc/rigs";
+import { TEAM_A } from "../round/team";
 import { BadgeService } from "../badges/BadgeService";
 import type { RoundCounters } from "../badges/BadgeService";
 
@@ -40,11 +41,91 @@ export class MatchStatsService implements OnStart {
 	constructor(private readonly badges: BadgeService) {}
 
 	public onStart(): void {
-		// **`OnFunction` rather than a RemoteEvent pair**, because the board is asked for rather than pushed —
-		// see `networking.ts` on `matchStats` for the round-trip argument and the one cost it carries.
-		events.Server.OnFunction("matchStats", () => this.board());
+		// **A request event and an answer event, rather than an async function** — see `networking.ts` on
+		// `matchStats` for the reversal and the report behind it. Both are resolved here, at boot, for the reason
+		// every other sender in this project resolves its remote once: `Get` creates the instance, and doing it
+		// inside the handler would build a remote on the first press — when the client that wants to *listen* on
+		// it has already mounted and found nothing.
+		const answer = events.Server.Get("matchStatsBoard");
+
+		events.Server.OnEvent("matchStats", (player) => {
+			answer.SendToPlayer(player, this.answer(player));
+		});
 
 		print("[Stats] board up — throws, hits, catches and dodges, read from the badge ledger");
+	}
+
+	/**
+	 * **The remote's whole server side, and it says out loud what it answers** — the one line that separates
+	 * the three ways this panel can be empty.
+	 *
+	 * The report is the fix for a report. A player came back with *"the board is completely empty"*, and every
+	 * part of the chain had been written and none of it had ever been seen to work: `MatchStatsService` was
+	 * constructed and printed its boot line, the client mounted and printed its own, the panel appeared — and
+	 * whether the server had answered "eight rows" or "no rows" or nothing at all was not in the output
+	 * anywhere. **Three faults share that symptom and this line is what tells them apart**: *no line at all* is
+	 * a call that never arrived (the remote, the key binding, the request), *`0 rows`* is a server that
+	 * answered and had nothing to say — which is a filter or a side, not a client — and *`N rows`* with an
+	 * empty panel is a client that received the answer and drew it nowhere. Each of those is a different file.
+	 *
+	 * **One line per press, and that is affordable for exactly the reason a per-turn line would not be.** The
+	 * board is asked for on a `Begin` and never polled — see `MatchStatsController.refresh`, which asks once
+	 * per hold — so this is one `print` per player per press, on a service that owns no state and runs no loop.
+	 * It names the asker, because a board the *server* is filling and a board somebody is *looking at* are
+	 * different questions and a name on the line answers both.
+	 *
+	 * **The counts are derived from the rows themselves, so they cannot disagree with what is sent.** The side
+	 * split is the client's own grouping (`"A"` then `"B"`, `SIDES` on the far side), and `scored` is how many
+	 * of those bodies have earned anything — which is the one number that says whether the *formula* had
+	 * something to read. A board of eight rows whose points are all nought is a board where nobody has thrown
+	 * anything yet; eight rows and eight scored is a board with a match in it. Those two are identical on screen
+	 * and one word apart here.
+	 *
+	 * **`scored` rather than the ledger's own size, and that is a Luau fact rather than a preference.**
+	 * `BadgeService.tally()` is *typed* `ReadonlyMap` but compiles to a plain table — `new Map()` is `{}` and
+	 * `get` is an index — so `tally.size()` emits a generic `for` over a table, which raises. Counting the rows
+	 * is the same number of bodies by a route that cannot fail.
+	 *
+	 * **The `pcall` is because a throw inside an `OnServerEvent` handler is the silence this whole method is
+	 * about.** The engine prints the traceback, but it prints it as a server error with no mention of the board,
+	 * and the client is left waiting on a promise that will not resolve until its sixty-second timeout — so a
+	 * thrown board looks exactly like a board that was never asked for. Caught here, the player gets an empty
+	 * board and the output says why.
+	 */
+	private answer(player: Player): ReadonlyArray<MatchStatsRow> {
+		const [ok, result] = pcall(() => this.board());
+
+		if (!ok) {
+			warn(`[Stats] the board threw for ${player.Name} — ${tostring(result)}`);
+
+			return [];
+		}
+
+		const rows = result as ReadonlyArray<MatchStatsRow>;
+
+		if (rows.size() === 0) {
+			warn(
+				`[Stats] board for ${player.Name} — 0 rows: nobody is on a side ` +
+					`(${Players.GetPlayers().size()} player(s) connected)`,
+			);
+
+			return rows;
+		}
+
+		let a = 0;
+		let scored = 0;
+
+		for (const row of rows) {
+			if (row.side === TEAM_A) a += 1;
+			if (row.points > 0) scored += 1;
+		}
+
+		print(
+			`[Stats] board for ${player.Name} — ${rows.size()} row(s), A ${a} / B ${rows.size() - a}` +
+				`, ${scored} with points`,
+		);
+
+		return rows;
 	}
 
 	/**
@@ -81,6 +162,12 @@ export class MatchStatsService implements OnStart {
 	 * body off a board about the *match* rather than about the server. **The player's side is read and passed
 	 * through unvalidated** while the rig's comes from `sideOfRig`'s own check, so a client groups by `"A"`/`"B"`
 	 * with `teamColourOf` and a mode free to rename its sides stays true; the HUD falls back rather than erroring.
+	 *
+	 * **`Player.Name` and `Model.Name`, and nothing else, is the identity that travels.** Both loops pass a
+	 * plain string to {@link rowFor}, so a row carries no `Player`, no `Model`, no `UserId` and no `DisplayName`
+	 * — which is what makes a rig a first-class row rather than a special case on the far side. The client
+	 * prints that string and looks nothing up, so there is no avatar to fail to load and no headshot to request
+	 * for a body that has none. See `MatchStatsRow.name`, which is why the *name* and not the display name.
 	 *
 	 * **Not phase-gated, which matches `rigsOnASide`'s own note.** During a round the list is the match; during
 	 * an intermission it is who is already seated for the next one, and the tallies survive a round end until

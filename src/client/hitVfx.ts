@@ -61,7 +61,7 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  * A client that is in neither end of a hit draws `HitVictim` — **the same red the dying body's own client sees**
  * — on the victim's body. **This has been three decisions, and the third one is the user's own report**, so the
  * history is worth keeping rather than flattening: the first version drew nothing for a third party; the second
- * drew `HitNeutral`, white, on the argument that a spectator's burst should say "that was not yours to take";
+ * drew a white neutral burst, on the argument that a spectator's burst should say "that was not yours to take";
  * and the current one draws the red, because *"I don't see the effect when my team mates or opposing rig/player
  * dies, it should be the same as the one I see when I die"*.
  *
@@ -74,9 +74,14 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  *
  * **What survives from the white version is the *reason* it existed** — a fight this client is not in is still a
  * fight it is watching, and the hits between two rigs are most of what happens in a round against them. That
- * argument was always in favour of drawing *something*; only the colour was in dispute. The template is still in
- * the place file and still named here ({@link NEUTRAL_TEMPLATE_NAME}), because it is the one-line undo if the
- * red proves too loud on every client at once.
+ * argument was always in favour of drawing *something*; only the colour was in dispute.
+ *
+ * **The white template's name is gone from this file, and that is deliberate.** It stayed for a while as an
+ * unused constant described as "the one-line undo", which is not an undo — an undo is a line you change, and a
+ * name nothing reads is a line you would have to *find* first, in a file whose whole point is that the colour
+ * question is settled. The way back is one string at the two call sites that pass `VICTIM_TEMPLATE_NAME`, and a
+ * comment that has to say "still named here, unused" is a comment arguing for code that is not there. The
+ * neutral template *instance* is still in the place file; this file no longer has an opinion about it.
  *
  * **The cost is unchanged from the white version**: every client draws every hit, so the particle work per hit
  * is multiplied by the number of clients that can see it. It is one clone per client per hit either way — the
@@ -177,7 +182,7 @@ export function startHitVfx(): void {
 		if (thrower === localPlayer.Name) {
 			const body = bodyOf(victim);
 			if (body === undefined) {
-				if (DEBUG) print(`[VFX] ${localPlayer.Name}: hit ${victim} — but no body to put it on`);
+				warnNoBody("attacker", victim);
 				return;
 			}
 
@@ -198,6 +203,15 @@ export function startHitVfx(): void {
 			}
 
 			playOn(VICTIM_TEMPLATE_NAME, own, `${localPlayer.Name}: hit by ${thrower} — red`);
+
+			// **And the branch ends here, which it did not before.** The block below is the *spectator's*, and
+			// nothing guarded it against a victim reaching it: the case that got this far fell straight through
+			// into it, asked `bodyOf` for the same player by name — answering with the very character the red
+			// had just been put on — and played the red on it a second time. `playOn` destroys the previous
+			// burst on a body before cloning the new one, so the effect the victim had just been given was torn
+			// down and restarted in the same frame. It never read as "no effect", which is why it went unnoticed;
+			// what it cost was the first frame of every red burst the local player ever wore.
+			return;
 		}
 
 		// **Neither end is mine, so I am a spectator — and I see exactly what the body's own client sees.** Red,
@@ -211,11 +225,11 @@ export function startHitVfx(): void {
 		// **The cost, named rather than discovered**: this branch runs on *every* client for *every* hit, so a
 		// body that dies now draws its burst on every screen at once rather than one white clone and one red one.
 		// It is the same particle work as before — one burst per hit per client either way — and what changed is
-		// only which template is cloned. If the red reads as too loud, the lever is the still-present
-		// `NEUTRAL_TEMPLATE_NAME` below: one name here and the bystander case is white again.
+		// only which template is cloned. If the red ever reads as too loud, the lever is the two `playOn` calls
+		// above and this one: they name the template, and this file decides nothing else about the colour.
 		const body = bodyOf(victim);
 		if (body === undefined) {
-			if (DEBUG) print(`[VFX] ${localPlayer.Name}: bystander — but no body for ${victim}`);
+			warnNoBody("bystander", victim);
 			return;
 		}
 
@@ -279,16 +293,30 @@ export function startHitVfx(): void {
  * by a different door. A player is a child of `Players` and nothing else is, but the lookup is *asking about
  * a player*, so it says so.
  *
- * **And the rigs by tag rather than by a walk of `Workspace`**, because that is what a rig *is* here: the
- * thing `NpcService` creates and `RigAnimationController` dresses, and `NPC_TAG` is how every other reader
- * finds one. A name search over the whole of `Workspace` would match a map part called `PlaceholderRig3`
- * just as readily, which is the same decoy one level out.
+ * **And then the rigs — by tag first, then by a walk of `Workspace` that requires a `Humanoid`.** The tag is
+ * still the right first answer, because `NPC_TAG` is how every other reader here finds a rig and a tagged rig is
+ * one this client is already dressing. **But the tag alone was narrower than the thing that sends the event.**
+ * `BallComponent`'s body test is a `Model` with a `Humanoid` in it — it never looks at `NPC_TAG` — so a rig
+ * standing in a practice zone that a person placed by hand, or one whose tag was painted off, is a body the
+ * server happily reports a hit for and a name this function could not resolve. The symptom of that asymmetry is
+ * precise: the throw lands, the tag resolves, the event arrives, and **nothing is drawn**, because the client
+ * could not turn a name it was given back into the body it was standing next to.
+ *
+ * **The `Humanoid` is what makes the walk safe**, and it is the whole of the difference between this and the
+ * name search the paragraph above refuses. A map part called `PlaceholderRig3` is a `Model` and would match on
+ * name; a map part with a `Humanoid` in it is a body by every definition this game uses — it can be thrown at,
+ * it can be tagged, and a hit on it is a hit worth drawing. So the decoy disappears not because the search got
+ * narrower but because the question got asked correctly: *"is there a body by this name"*, rather than *"is
+ * there a tagged body by this name"*, which is a different and stricter question that only usually has the same
+ * answer. The walk costs a descendant scan of `Workspace` on a hit, which is once per hit per client and not a
+ * per-frame cost — the alternative, a name index kept in step with the world, is a service for a lookup that
+ * happens a few times a second at most.
  *
  * **`Character` and not `FindFirstChild("HumanoidRootPart")`**: whether a body exists is a different
  * question from whether it has a root, and the two are answered in two places on purpose — a character
  * mid-respawn has none at all (here), while a body whose model has not streamed its root is a real fault
- * with a line of its own (in `playOn`). The same split holds for a rig: it comes back from here if it is
- * tagged, and `playOn` is what says whether it has anything to weld to.
+ * with a line of its own (in `playOn`). The same split holds for a rig: it comes back from here whether or not
+ * it is tagged, and `playOn` is what says whether it has anything to weld to.
  */
 function bodyOf(name: string): Model | undefined {
 	for (const player of Players.GetPlayers()) {
@@ -302,6 +330,18 @@ function bodyOf(name: string): Model | undefined {
 		if (tagged.Name !== name) continue;
 
 		return tagged;
+	}
+
+	// The untagged body, which only a practice zone is likely to hold — see the doc above for why the tag alone
+	// was the wrong test and why the `Humanoid` below is what keeps this from matching scenery.
+	if (name !== "") {
+		for (const descendant of Workspace.GetDescendants()) {
+			if (!descendant.IsA("Model")) continue;
+			if (descendant.Name !== name) continue;
+			if (descendant.FindFirstChildWhichIsA("Humanoid") === undefined) continue;
+
+			return descendant;
+		}
 	}
 
 	return undefined;
@@ -337,7 +377,17 @@ function playOn(templateName: string, body: Model, line: string): void {
 
 	const root = body.FindFirstChild(ANCHOR_PART);
 	if (root === undefined || !root.IsA("BasePart")) {
-		if (DEBUG) print(`[VFX] ${body.Name}: hit, but no ${ANCHOR_PART} to attach it to`);
+		// **Warned rather than traced**, and this is the line that ends the guessing. A body with no
+		// `HumanoidRootPart` is a rig whose model is not what this file assumes, and it is one of the four
+		// ways a hit can draw nothing at all — the other three being an event that never arrived, a name this
+		// client could not resolve and a template that is not there. Those four are indistinguishable from the
+		// seat, and three of them used to be `DEBUG`-only prints in a file whose `DEBUG` is off. Once per body
+		// name, like the template warning below, because a rig with no root will never grow one.
+		if (!warnedBodies.has(body.Name)) {
+			warnedBodies.add(body.Name);
+			warn(`[VFX] ${body.Name}: hit, but no ${ANCHOR_PART} to attach it to — nothing will draw there`);
+		}
+
 		return;
 	}
 
@@ -704,24 +754,6 @@ const ATTACKER_TEMPLATE_NAME = "HitAttacker";
 const VICTIM_TEMPLATE_NAME = "HitVictim";
 
 /**
- * The template for a hit **this client is in neither end of** — white, drawn on the victim's body so that a
- * spectator can see an impact they are not part of.
- *
- * **Nothing reads this name any more, and it is kept rather than deleted.** The spectator branch was changed to
- * `HitVictim` at the user's request — *"it should be the same as the one I see when I die"* — so this is now the
- * **undo**: one identifier in `startHitVfx`'s third branch and the bystander case is white again, with the place
- * file untouched because the template still exists. See the module doc for the whole of that reversal, including
- * why the argument for white was reasonable and why the game's lethality overrules it.
- *
- * **A third template rather than a tint applied to one of the other two**, which is the same rule as for
- * those: the colour lives in the emitters, in the place file, and a `Color3` written here would be a second
- * colour authority beside the one a person authored — with the emitter's own sequence, `LIGHT_EMISSION` and
- * texture all multiplying into the pixel, none of it knowable from code. **Which of the templates plays is the
- * only thing this file decides.**
- */
-const NEUTRAL_TEMPLATE_NAME = "HitNeutral";
-
-/**
  * The part on the body the effect is welded to. **`HumanoidRootPart`, one constant, matching the catch
  * effect** — so the two effects sit at the same point on a body and a reader comparing them is not
  * comparing two placements.
@@ -798,3 +830,32 @@ const describedTemplates = new Set<string>();
 
 /** The template names this client has already had to give a carrier part to. **Once each per session.** */
 const adoptedTemplates = new Set<string>();
+
+/** The body names this client has already failed to draw on. **Once each** — see `warnNoBody` and `playOn`. */
+const warnedBodies = new Set<string>();
+
+/**
+ * Says, once per name, that a hit arrived for a body this client could not find. **The single most useful line
+ * this file can print, and it was a `DEBUG` trace until it was not.**
+ *
+ * The four ways a hit draws nothing are: the event never reached this client; a name that resolves to no body;
+ * a body with no `HumanoidRootPart`; and a template missing from `ReplicatedStorage`. **From the seat they are
+ * all the same nothing**, and the first is upstream of this file while the third is a problem with a rig's model
+ * — so a report of "rig hits draw no VFX" cannot be answered without separating them. Only the missing template
+ * was ever warned about, because it was the one that had been hit before.
+ *
+ * **Once per name rather than once per hit**, unlike the template warning's every-time print: a template can be
+ * added to the place file mid-session, so its warning is worth repeating, while a name that resolves to no body
+ * is usually a name that will never resolve — and a warning on every hit in a round would be its own kind of
+ * silent. `seat` is in the line because it is the cheapest way to see that the *event* arrived at all: a body
+ * this client cannot find as the attacker is a different fault from the same body unfound as a bystander.
+ */
+function warnNoBody(seat: string, name: string): void {
+	if (warnedBodies.has(name)) return;
+
+	warnedBodies.add(name);
+	warn(
+		`[VFX] ${name}: hit seen as the ${seat}, but no body by that name — no player, no ${NPC_TAG} rig, ` +
+			`and nothing carrying a Humanoid in Workspace`,
+	);
+}

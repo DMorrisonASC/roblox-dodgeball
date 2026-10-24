@@ -1,7 +1,7 @@
 import { AnimationState, CYCLE_STATES, STATE_CLIP_SECONDS } from "shared/config/animation.config";
 import { THROW_CHARGE_HOLD_SECONDS } from "shared/config/animation.config";
 import { playCatchShockwave } from "./catchShockwave";
-import { BodyAction, bodyClipFor, clipIdFor, throwAnimationWindowSeconds } from "shared/animation";
+import { BodyAction, animationFor, bodyClipFor, clipIdFor, throwAnimationWindowSeconds } from "shared/animation";
 import {
 	CATCH_ANIMATION_ATTRIBUTE,
 	CatchCause,
@@ -55,6 +55,25 @@ export interface BodyRender {
 
 	/** One track per state this body has played, loaded on first use and reused after that. */
 	readonly tracks: Map<AnimationState, AnimationTrack>;
+
+	/**
+	 * **The states this body has tried to load and could not** — the memory that used to be `playing`.
+	 *
+	 * **A separate set, because the old arrangement recorded a failure as a *success* and that is the freeze.**
+	 * `playing` was assigned the new state before its track was looked for, so a clip whose asset would not load
+	 * — a moderated id, one this place does not own, an empty row — left `playing` naming a clip with no track
+	 * behind it. The guard at the top of {@link applyBodyRender} then read "the clip is already this one" on
+	 * every later call and returned, so the body never tried again and never played anything: it stood in its
+	 * bind pose, arms at its sides, for the rest of its life. Every other clip was unreachable too, because
+	 * reaching one first requires passing that same guard with a *different* name — which the next throw does, so
+	 * the symptom was a body that looked fine, then froze mid-session and stayed frozen.
+	 *
+	 * **What the old comment was right about is worth keeping**: a clip that cannot be loaded must not be retried
+	 * on every change, because `loadTrack` warns and a body that changes state ten times a second would print ten
+	 * warnings. Remembering the *attempt* is the idea; remembering it in the field that means "this is on screen"
+	 * was the mistake. This set is the same idea with nothing else riding on it.
+	 */
+	readonly unplayable: Set<AnimationState>;
 
 	/** The clip playing right now, so a state change that names the same clip writes nothing. */
 	playing?: AnimationState;
@@ -208,7 +227,7 @@ export function startBodyRender(
 	animator: Animator,
 	logTag: string,
 ): BodyRender {
-	return { body, humanoid, animator, logTag, tracks: new Map() };
+	return { body, humanoid, animator, logTag, tracks: new Map(), unplayable: new Set() };
 }
 
 /**
@@ -276,16 +295,18 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	// Whether a released throw's clip is still owed to this body — see `BodyRender.throwPlayingUntil`.
 	const lifted = render.throwPlayingUntil !== undefined && os.clock() < render.throwPlayingUntil;
 
-	const clip = bodyClipFor({
+	const state = {
 		moving: conditions.moving,
 		sprinting: conditions.sprinting,
 		grounded: conditions.grounded,
 		frozen: conditions.frozen,
 		deferToDefault: conditions.deferToDefault,
 		dodge: publishedDodge(render.body),
-		action: lifted ? "throw" : publishedAction(render.body),
+		action: (lifted ? "throw" : publishedAction(render.body)) as BodyAction | undefined,
 		charge: conditions.charge,
-	});
+	};
+
+	const clip = bodyClipFor(state);
 
 	// **And while the charge lasts, the pose is re-asserted rather than assumed.** Two property writes on the
 	// frames a body is charging, and they earn it: `AnimationTrack.Length` reads `0` until the asset streams, so
@@ -301,25 +322,60 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 		}
 	}
 
+	// **One clip, and the comparison is the whole of the guard.** `playing` is the state this body was last
+	// dressed in, so a call that wants the same one is a comparison and nothing else — which is what makes this
+	// safe to call from an attribute change, from a per-frame tick, or from both.
 	if (clip === render.playing) return;
+
+	// **The track is resolved before anything is stopped, and that ordering is the fix for a body that froze in
+	// its rest pose.** The first version recorded the new clip here — `render.playing = clip` — and only then
+	// looked for its track, so a clip that would not load was remembered as *playing it* and the guard above
+	// suppressed every later attempt. Resolving first means a state this body cannot dress costs it nothing: the
+	// clip it is already wearing keeps running and the next call tries again, or `trackFor` has remembered the
+	// failure and the body simply keeps what it has. See {@link BodyRender.unplayable} for the whole of that
+	// fault and for what the old comment was right about.
+	const actionTrack = clip === undefined ? undefined : trackFor(render, clip);
+
+	// **The fallback, and it is the second half of the freeze fix rather than a politeness.** Resolving before
+	// committing already stops a failed load from *destroying* what was playing — but it does nothing for the body
+	// that had nothing playing yet, which is the whole of the cold case: the first state a rig is ever dressed in
+	// is one clip, and if that one asset will not load the body has no track, no history, and nothing to fall back
+	// on. Standing in a bind pose with its arms at its sides is exactly what that looks like, and it never recovers
+	// because every later call wants a different state and `unplayable` refuses them one at a time.
+	//
+	// **So the locomotion answer is the floor.** `animationFor` is the same pure rule `bodyClipFor` ends on, so this
+	// asks for the clip a body with no action on it would have worn anyway — idle, walk, run or jump — and it is
+	// only consulted when the wanted clip cannot be dressed *and* nothing at all is playing. A body that is
+	// already wearing something keeps it, which is the direction this whole function has to err in: an outdated
+	// clip is a body slightly behind its state, and no clip is a body that looks broken.
+	let worn = clip;
+	let wornTrack = actionTrack;
+
+	if (wornTrack === undefined && render.playing === undefined) {
+		const base = animationFor(state.moving, state.sprinting, state.grounded, state.frozen);
+
+		if (base !== undefined) {
+			const baseTrack = trackFor(render, base);
+
+			if (baseTrack !== undefined) {
+				worn = base;
+				wornTrack = baseTrack;
+			}
+		}
+	}
+
+	// A clip this body cannot play is not a clip it stops for. `undefined` here means the asset refused to load
+	// and no floor could be found either, and the body keeps whatever it was wearing — which is the honest
+	// answer, and the one that cannot leave it standing in a bind pose with no track at all.
+	if (worn !== undefined && wornTrack === undefined) return;
 
 	if (render.playing !== undefined) render.tracks.get(render.playing)?.Stop(fadeFor(render.playing));
 
-	// **Recorded before the track is looked for, on purpose.** A clip this body has no id for — a config row
-	// left empty, which is how a state opts out — is not a clip that can be loaded, and remembering the attempt
-	// is what stops every change from trying again for a clip that will never exist.
-	render.playing = clip;
+	// **Recorded after the track is in hand**, which is the whole correction described above.
+	render.playing = worn;
 
-	// **The catch's effect used to be fired here, on `clip === "catch"`, and it has moved to the top of this
-	// function.** That line was right while both halves of a catch wrote one value: the pose *was* the event, and
-	// the edge into it was the edge into the catch. It stopped being right the moment the attribute carried its
-	// cause, because the second cause arrives while this clip is already playing — the guard above returns, and
-	// this branch would never be reached. A successful catch drew nothing at all. See the hand-off at the top for
-	// what replaced it, and `bodyClipFor` for why the clip is deliberately the same for both causes.
-	//
 	// **What is deliberately *not* here** is any effect that belongs to the clip rather than to the attribute: the
-	// track lookup below is the clip's own business, and this function's other job — starting and stopping tracks
-	// — is unchanged.
+	// catch's effect fires at the top of this function, and the track lookup above is the clip's own business.
 
 	// **And `undefined` is the release: the stop above has already happened and no track is started here, which
 	// is the whole of "play nothing".** The body is left to whoever else is animating it — for a player that is
@@ -327,49 +383,48 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	// claimed sets are the only tracks `LocomotionAnimationController.suppressScript` stops. The record is
 	// `undefined` rather than the clip that was playing, so the next *owned* state is a change again and the
 	// body resumes rather than sitting in a stale track. See `BodyState.deferToDefault`.
-	if (clip === undefined) return;
+	if (worn === undefined || wornTrack === undefined) return;
 
-	const track = trackFor(render, clip);
-	if (track === undefined) return;
-
-	// **The clip is stretched to fill the state it is describing, for the states that name a duration.** See
-	// `STATE_CLIP_SECONDS` for which states those are and why the duck is one: its state *is* the animation,
-	// because the head and arms are out of a ball's way for exactly as long as the state lasts — so a crouch
-	// that ends early, or is cut in half, is a body the game says is ducking while it looks like it is
-	// standing up. The speed is *derived* from the track's own `Length` rather than written down, which is
-	// `chargePlaybackSpeed`'s trick on the charge sound and for its reason: `Length` is a fact about the asset
-	// and not about this game, so the duck's duration stays the one number to change.
-	//
-	// **Asked on every play rather than once when the track was loaded, and that is the load-bearing half.**
-	// `Length` reads `0` until the animation has streamed, and a track is cached for the life of the body — so
-	// a one-time read would settle on `1×` for the whole session the first time a client ducked before the
-	// asset arrived, silently, with nothing anywhere saying why. Asked here, the next duck picks the real
-	// length up. The `1×` branch is that same case answered rather than derived, which is the honest answer
-	// and the same one the charge sound gives.
-	const stretched = STATE_CLIP_SECONDS[clip];
+	const stretched = STATE_CLIP_SECONDS[worn];
 	if (stretched !== undefined) {
-		track.AdjustSpeed(track.Length > 0 ? stretched / track.Length : 1);
+		wornTrack.AdjustSpeed(wornTrack.Length > 0 ? stretched / wornTrack.Length : 1);
 	}
 
-	track.Play(fadeFor(clip));
+	// **`1` for the speed, explicitly, and that argument is a bug fix rather than a default spelled out.**
+	// `Play(fadeTime, weight, speed)` keeps the track's own speed when the third argument is omitted, and these
+	// tracks are *reused* for the life of the body — so a windup that was cancelled (a rig's
+	// `windup cancelled — the turns stopped`, a player letting go of the key) left the throw track at
+	// `AdjustSpeed(0)` from the hold, and the next throw replayed it frozen on its cocked pose. Nothing reset it:
+	// the release path only ran for a throw that *was* released. Passing `1` here is the reset, and it is the one
+	// place a stale speed can be cleared, because it runs on every start.
+	wornTrack.Play(fadeFor(worn), 1, 1);
+
+	// **And a one-shot starts from its beginning**, for the same reason and with one more: `Play` resumes from the
+	// track's stored `TimePosition`, so a second throw would begin part-way through the last one's motion and a
+	// short clip would appear to do nothing at all. A *cycle* is deliberately not rewound — restarting the walk on
+	// every state change would be a body whose legs hitch each time it was asked to move.
+	if (!isCycle(worn)) wornTrack.TimePosition = 0;
 
 	// **A throw clip that starts while a charge is live starts *held*, and that is the only place the hold is
 	// established.** The charge is what made the clip appear, so the pose has to be on the wind-up rather than
 	// at the start of the clip: `Play` on a fresh track begins at `TimePosition` 0, which is the body swinging
 	// back rather than already back. See `holdThrowAtWindup` for what it writes and `BodyRender.throwHeld` for
 	// why the flag exists at all.
-	render.throwHeld = clip === "throw" && conditions.charge !== undefined;
+	render.throwHeld = worn === "throw" && conditions.charge !== undefined;
 
-	if (render.throwHeld) holdThrowAtWindup(track);
+	if (render.throwHeld) holdThrowAtWindup(wornTrack);
 
 	// **Printed at the edge, and the rung is on the line because it is half of the answer.** The same shape for
 	// both bodies — the caller's tag, the body's name, the state, the priority — so a player's line and a rig's
 	// can be read side by side, which is how "do the two bodies do the same thing" is answered from a log. A
 	// clip that will not load prints its own line instead (see {@link trackFor}), so this one means the body is
-	// actually wearing the state.
+	// actually wearing the state. **The state printed is `worn`, not the one that was wanted**, because the
+	// locomotion floor below can answer with a different clip — and a line naming a clip the body is not wearing
+	// is the one thing a diagnosis cannot survive.
 	if (DEBUG) {
-		const rung = isCycle(clip) ? "Movement" : "Action";
-		print(`[${render.logTag}] ${render.body.Name}: ${clip} — ${rung}`);
+		const rung = isCycle(worn) ? "Movement" : "Action";
+
+		print(`[${render.logTag}] ${render.body.Name}: ${worn} — ${rung}`);
 	}
 }
 
@@ -458,6 +513,7 @@ export function destroyBodyRender(render: BodyRender): void {
 	});
 
 	render.tracks.clear();
+	render.unplayable.clear();
 	render.playing = undefined;
 }
 
@@ -554,14 +610,26 @@ function trackFor(render: BodyRender, clip: AnimationState): AnimationTrack | un
 	const cached = render.tracks.get(clip);
 	if (cached !== undefined) return cached;
 
+	// **Already tried, already failed.** See {@link BodyRender.unplayable}: the memory used to live in `playing`,
+	// which both suppressed the retry *and* claimed the body was wearing the clip — the body then had no track at
+	// all. Kept out of the way here, so the caller can answer "this body keeps what it has" and be right.
+	if (render.unplayable.has(clip)) return undefined;
+
 	const id = clipIdFor(clip, render.humanoid.RigType === Enum.HumanoidRigType.R15);
 	if (id === "") {
 		if (DEBUG) print(`[${render.logTag}] ${clip}: no id for this body — left as it stands`);
+
+		render.unplayable.add(clip);
+
 		return undefined;
 	}
 
 	const track = loadTrack(id, render.animator, clip);
-	if (track === undefined) return undefined;
+	if (track === undefined) {
+		render.unplayable.add(clip);
+
+		return undefined;
+	}
 
 	render.tracks.set(clip, track);
 

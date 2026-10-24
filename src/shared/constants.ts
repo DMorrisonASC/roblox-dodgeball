@@ -1215,6 +1215,13 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * no idle *state* to ask about. See `NpcService.publishAnimation` for the whole of the reasoning and for the
  * cost it accepts, and `NPC_CONFIG.RIG_MOVING_SPEED` for the threshold.
  *
+ * **And the fact has two edges, because one of them is a speed and a speed does not promise to report a stop.**
+ * `Humanoid.Running` says when the speed changed; nothing says the last change is the one that leaves the body
+ * standing, so a rig could publish *moving* for ever after its last walk — every client drawing a lobby of
+ * bodies walking on the spot while they stood still. The walk now ends where the engine promises it ends,
+ * `Humanoid.MoveToFinished`, which fires on arrival and on the engine's own give-up. See
+ * `NpcLoop.moveToFinished`.
+ *
  * **The name is kept although it is a slight lie.** "Asked to move" is what a *player* is, and the two bodies
  * still answer one question for one decision (`animationFor`), which is the property this set of attributes
  * exists to give; renaming it would touch both sides of the wire to fix a word.

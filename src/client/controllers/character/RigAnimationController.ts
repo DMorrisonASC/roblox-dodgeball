@@ -173,9 +173,35 @@ export class RigAnimationController implements OnStart {
 		// `Workspace` — the three ways a rig stops being something a client should be spending tracks
 		// on. `IsDescendantOf(Workspace)` is the same test the server's own gate makes, for the same
 		// reason.
+		//
+		// **And the two are not the same disposal any more, which is the fix for a rig that stood frozen
+		// mid-stride in every lobby.** *Destroyed* drops the row; *taken out of the world* only tears down the
+		// renderer and keeps the row, because the rig is coming back. `LobbyRigService.parkRig` moves a body
+		// into `ServerStorage` and `placeParked` moves it out again — a player arriving stands one rig down
+		// and a seat being refilled puts it back — and **the `NPC` tag stays on it the whole time**, so
+		// neither of the two `CollectionService` signals in `onStart` fires for it in either direction. The
+		// first version dropped the row on the way out and had nothing to watch it on the way back, so that
+		// one body per session was never dressed again: whatever clip was playing when it was parked stayed
+		// where `destroyBodyRender` left it, for the rest of the session. That body is the one a player's
+		// arrival stands down, which is why it was always exactly one rig.
+		//
+		// **`Parent === undefined` is the test for "gone" rather than "parked"**, and it is the engine's own:
+		// `Destroy` clears the parent of the instance and of everything under it, where a reparent into
+		// `ServerStorage` sets one. A rig whose *folder* was destroyed therefore also reads as gone, which is
+		// what keeps the row from outliving the body it describes.
 		rig.connections.push(
 			model.AncestryChanged.Connect(() => {
-				if (!model.IsDescendantOf(Workspace)) this.forget(model);
+				if (model.IsDescendantOf(Workspace)) {
+					// **Back in the world, and the row still owes it a renderer.** `apply` is the one place a
+					// renderer is built from published state, so this is one call and no second copy of the
+					// dressing. It is a no-op for a rig that was never undressed, which is every rig arriving
+					// here from its tag rather than from `ServerStorage`.
+					this.apply(model, rig);
+					return;
+				}
+
+				if (model.Parent !== undefined) this.undress(rig);
+				else this.forget(model);
 			}),
 		);
 
@@ -266,6 +292,14 @@ export class RigAnimationController implements OnStart {
 	 * changes on its own as a rig starts and stops walking.
 	 */
 	private apply(model: Model, rig: Rig): void {
+		// **A body that is not on anybody's screen is not dressed**, and this gate is what makes the row
+		// worth keeping across a park. A parked rig's attributes can still change on this client (its side is
+		// cleared on the way out), and building a renderer for a body inside `ServerStorage` would be tracks
+		// loaded for something nobody can see — which is the cost `forget` was originally written to avoid.
+		// The row survives; the tracks do not, and the next call after the rig is back in the world rebuilds
+		// them. See the `AncestryChanged` handler in `watch`.
+		if (!model.IsDescendantOf(Workspace)) return;
+
 		const humanoid = rig.humanoid;
 		if (!humanoid) return;
 
@@ -370,12 +404,38 @@ export class RigAnimationController implements OnStart {
 	}
 
 	/**
+	 * **Stops drawing `model` without forgetting it** — the half of {@link forget} that a parked rig needs.
+	 *
+	 * The distinction is one sentence and it was worth exactly one bug report per session: a rig that has been
+	 * *taken out of the world* is a rig that is coming back (`LobbyRigService.parkRig` and `placeParked`), and
+	 * a rig that has been *destroyed* is not. Both used to end in `forget`, and `forget` drops the row and
+	 * disconnects the signals — including the `AncestryChanged` handler that would have noticed the rig coming
+	 * back. So the parked body was never dressed again and stood in whatever pose the destroyed tracks left
+	 * it, which for a rig parked mid-walk is a stride. See the `AncestryChanged` handler in `watch`.
+	 *
+	 * What survives a park is everything a rig's renderer is *built from*: the row, the `Humanoid`, the
+	 * `Animator`, the two `CollectionService` signals and this one. What goes is the renderer, because it is
+	 * the only part that costs anything while nobody can see the body.
+	 */
+	private undress(rig: Rig): void {
+		const body = rig.body;
+		if (body !== undefined) destroyBodyRender(body);
+
+		rig.body = undefined;
+	}
+
+	/**
 	 * Stops dressing `model`: everything it was given goes with the row.
 	 *
 	 * **The renderer's teardown is its own, and it is guarded there** — see `BodyAnimation.destroy`, which
 	 * destroys the tracks and swallows the case where the animator has already gone with the body. All this
 	 * method has to get right is the row: drop it *first*, so a late attribute change or a signal already in
 	 * flight finds nothing and cannot rebuild a renderer for a body that is leaving.
+	 *
+	 * **The renderer goes through `undress`, and that is a sharing rather than a tidy-up.** Dropping the row
+	 * and tearing the tracks down are two different questions — "is this body coming back" and "is anything
+	 * still playing on it" — and only the first one differs between a destroyed rig and a parked one. One
+	 * implementation of the second is what stops a park from leaving a track running.
 	 */
 	private forget(model: Model): void {
 		const rig = this.rigs.get(model);
@@ -386,10 +446,7 @@ export class RigAnimationController implements OnStart {
 		for (const connection of rig.connections) connection.Disconnect();
 		rig.connections = [];
 
-		const body = rig.body;
-		if (body !== undefined) destroyBodyRender(body);
-
-		rig.body = undefined;
+		this.undress(rig);
 	}
 
 	/** A boolean attribute, or `fallback` where it is absent or is not a boolean. */

@@ -995,11 +995,13 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				// from a body that has come to a stop, so its release waits for that stop as well as for the clock:
 				// the rig is still walking its carry-through, or decelerating out of it, and letting the ball go now
 				// would make this shape identical to `moveAndAim` — the other seventy per cent of throws. The fact
-				// is `NPC_ANIM_MOVING_ATTRIBUTE`, written by `NpcService.publishAnimation` from `Humanoid.Running`
-				// *before* this behaviour ticks, so it is this turn's answer rather than a stale one — and it is the
-				// same fact every client is already using to choose the rig's walk or idle clip, so the rule reads
-				// as "the body waits to be seen standing before it throws". A body being *shoved* does not delay
-				// this: `Humanoid.Running` reports locomotion and not physics.
+				// is `NPC_ANIM_MOVING_ATTRIBUTE`, written by `NpcService.publishAnimation` *before* this behaviour
+				// ticks from the two edges a rig's walk has — `Humanoid.Running` for the start and
+				// `Humanoid.MoveToFinished` for the stop — so it is this turn's answer rather than a stale one, and
+				// it is the same fact every client is already using to choose the rig's walk or idle clip, so the
+				// rule reads as "the body waits to be seen standing before it throws". A body being *shoved* does
+				// delay this, because the engine reports the speed the body actually moved at rather than a key:
+				// the shove is motion, and the expiry timer below covers the frame where it never quite ends.
 				//
 				// **Nothing here can hold forever, which is what makes waiting safe.** The seek ends the walk on its
 				// own — arrival, or its `PICKUP_WALK_SECONDS` window — and the expiry timer is armed to cover that
