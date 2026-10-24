@@ -379,6 +379,29 @@ export const IN_ROUND_ATTRIBUTE = "InRound";
 export const BALL_TAGGED_TEAM_ATTRIBUTE = "BallTaggedTeam";
 
 /**
+ * Attribute on a **ball** naming the bodies it has tagged, `|`-joined, or `""` when it has tagged nobody.
+ *
+ * **Written and cleared at exactly the same moments as {@link BALL_TAGGED_TEAM_ATTRIBUTE}** — the tag itself, a
+ * re-arm, a resolution on the world and a catch — because the two are one statement of state read by two
+ * different questions. `BallComponent.publishTaggedBodies` is the writer, and it is called beside every mutation
+ * of the list, so "the list is empty" and "the attribute is empty" cannot drift apart.
+ *
+ * **Published for the one reader that has to know whether a *particular body* was hit: the perfect dodge's
+ * measurement.** `DodgeService.watchForPerfectDodge` opens when a dash starts, and a ball that tagged the body
+ * *before* that instant is invisible to any geometric test it can run afterwards — the body has dashed away, so
+ * the ball is several studs from where it stood. The log that found this had a body tagged at `20:15:30.512` and
+ * a "perfect dodge" reported against it at `20:15:30.793`, 281 ms later: the body was already hit and the watch
+ * knew nothing about it. **The tag list is the only signal that answers "was this body hit", which is why it is
+ * published rather than the list staying private.** See that method for what the alternative cost.
+ *
+ * **A name list rather than a count or a set of ids.** The name is the identity every other cross-service fact
+ * about a body uses — `hitImpact` and `teamWipe` compare model names against `Players.LocalPlayer.Name` — and a
+ * model name is the player's name for a character and the rig's own for a rig, so one string answers both. It is
+ * a *string* rather than an array because attributes cannot carry tables.
+ */
+export const BALL_TAGGED_BODIES_ATTRIBUTE = "BallTaggedBodies";
+
+/**
  * Attribute on a **`Player`** holding the server-time instant at which their next dodge is allowed.
  *
  * `Workspace:GetServerTimeNow()` seconds, written by `DodgeService` at the moment a dodge is

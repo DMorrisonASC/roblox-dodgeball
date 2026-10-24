@@ -56,6 +56,44 @@ export const DODGE_CONFIG = {
 	COOLDOWN: 1.5,
 
 	/**
+	 * How close an in-flight ball has to pass to the body for the dodge that avoided it to be a **perfect**
+	 * dodge, in studs. **Placeholder — 4.**
+	 *
+	 * **The number is a hitbox and a ball rather than a taste.** A contact happens at about two studs from
+	 * the root — a torso's own half-width plus `BALL_SIZE / 2` — so four studs is a pass that came within
+	 * about one ball's width of touching, which is the sentence a player would use: *it missed me by a
+	 * ball.* Lower it and only the whisker passes count; raise it and a ball that was never going to reach
+	 * the body starts counting, and a perfect dodge stops saying anything.
+	 *
+	 * **Measured against where the body was standing when it dodged**, not where the dash took it — see
+	 * `DodgeService.watchForPerfectDodge` for the whole argument. That is what makes this a *hitbox*
+	 * distance rather than a distance to a body that has already left.
+	 */
+	PERFECT_DISTANCE: 8,
+
+	/**
+	 * How long after a dodge starts the ball is still counted against it, in seconds. **Placeholder — 0.6.**
+	 *
+	 * **Three dashes long, and the tail is the part that matters.** The dash itself is
+	 * {@link DODGE_CONFIG.DURATION} (0.2 s), and a ball that a dash genuinely saved a body from usually
+	 * arrives at the space the body *vacated* a moment **after** the dash has finished — the dash is what
+	 * put the body somewhere else, and it is that arrival the player watched. A window that closed with the
+	 * dash would therefore miss exactly the dodges that worked, which is the wrong half to be silent about.
+	 *
+	 * **Bounded rather than open**, because a ball that arrives a second later was not dodged: the body has
+	 * been standing in its new place for five times the length of the move, and a dodge is a step rather
+	 * than an aura. The window is a statement about *how long a step excuses you*, and it is the one number
+	 * here that is a feel rather than an arithmetic.
+	 *
+	 * **In practice the ball ends the watch before this does.** A landing sets `Armed = false` in
+	 * `BallComponent.handleTouch`, and `BallService.armedBalls` — which is what the watch measures — only
+	 * answers for armed balls, so a ball that comes down stops being watched on its own. With this game's
+	 * envelope every charge hangs for about `0.28 s`, which makes the window a backstop rather than a clock;
+	 * it is the number to cut if a caption ever fires for a ball that had clearly stopped being one.
+	 */
+	PERFECT_WINDOW_SECONDS: 0.6,
+
+	/**
 	 * The four dodge clips live below this object, as {@link DODGE_ANIMATION}, rather than in here — the
 	 * reason is mechanical and worth one line: this object is `as const`, so a member of it cannot carry a
 	 * `Record<…>` annotation, and the table wants one so that a missing direction is a compile error.

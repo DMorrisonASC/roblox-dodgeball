@@ -1,4 +1,6 @@
 import type Fusion from "@rbxts/fusion-3.0";
+import { Typography } from "@rbxts/big-ui";
+import type { TypographyVariant } from "@rbxts/big-ui";
 import { TweenService } from "@rbxts/services";
 import { hudTheme, UI_FONT } from "./hudTheme";
 import { addViewportConstraint } from "./viewportConstraint";
@@ -177,8 +179,12 @@ const SPLASH_HEIGHT = 150;
  * way of the next throw. `0.26` clears the round's own top readouts — a column starting 14 pixels below the
  * screen's top and about 90 pixels tall in the worst case, see `screenGui.ts`'s `COLUMN_TOP_INSET` — and stays
  * well above the crosshair. **Placeholder.**
+ *
+ * **Exported since a second splash wanted the same row**, so that "the line the hit caption draws on" is one
+ * number rather than two files agreeing about `0.26`. `hitConfirm` takes the default; `perfectDodge` adds its
+ * own offset to this so its smaller word sits under the big one rather than through it.
  */
-const SPLASH_TOP_FRACTION = 0.26;
+export const SPLASH_TOP_FRACTION = 0.26;
 
 /**
  * The most of the viewport the splash may take — **the phone and ultrawide cap**, handed to
@@ -303,6 +309,30 @@ export interface ActionSplashOptions {
 	/** See {@link SplashTextOptions.strokeThickness}. */
 	readonly strokeThickness?: number;
 
+	/**
+	 * Draw the word in a big-ui **typography variant** instead of filling the box, and the whole of why a
+	 * second caller needed a door here.
+	 *
+	 * **`TextScaled` and a variant are two answers to the same question**, and the action splash's answer is
+	 * the box: `760 × 150` *is* how big `HIT!` is, because a caption that has to be read without looking away
+	 * from the arena is a design size rather than a type size. A caller drawing a *second, smaller* line — a
+	 * quiet word under the loud one — wants the theme's type scale instead, and asking it for a 760 × 150 box
+	 * would draw a 150-pixel word. Handing it a 20-pixel box instead does not work either: the box is what the
+	 * pop scales and what the viewport cap measures, so the animation's pivot would become the word's own
+	 * height, and the `maxFraction` cap would be measuring a box nobody designed.
+	 *
+	 * So the two instructions are separated rather than reconciled: **naming a variant says the type size is
+	 * the theme's, and the box goes back to being only the pivot and the cap's subject.** The style, the
+	 * stroke, the five steps and the position are unchanged — this is the one property of the label the
+	 * caller takes over, and it is taken over here rather than by reaching into `label` after construction,
+	 * because the box is this module's decision to give away.
+	 *
+	 * **`Typography[variant].size` and not the whole spec**, on `styleSplashText`'s rule: the face is
+	 * `UI_FONT` for every splash in the game and `ThemeController` has already written it into every variant,
+	 * so reading the font from the table here would be a second statement of the same thing.
+	 */
+	readonly variant?: TypographyVariant;
+
 	/** Pass one to share a theme read across several splashes; defaults to {@link splashStyle}. */
 	readonly style?: SplashStyle;
 }
@@ -409,8 +439,18 @@ export function createActionSplash(
 	label.TextTransparency = 1;
 	label.Parent = frame;
 
-	const stroke = styleSplashText(label, { strokeThickness: options.strokeThickness, style });
+	const stroke = styleSplashText(label, {
+		strokeThickness: options.strokeThickness,
+		style,
+		fit: options.variant === undefined,
+	});
 	stroke.Transparency = 1;
+
+	// **The variant's own type size, applied where the fit was switched off above.** The two are one decision
+	// seen twice — see `ActionSplashOptions.variant` — and they are next to each other so that a reader cannot
+	// find one without the other. `TextWrapped` is left off by `fit: false`, which is right for a word: a
+	// caption that wraps is two captions.
+	if (options.variant !== undefined) label.TextSize = Typography[options.variant].size;
 
 	const scale = new Instance("UIScale");
 	scale.Name = "Pop";

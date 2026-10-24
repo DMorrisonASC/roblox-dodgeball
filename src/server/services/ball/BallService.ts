@@ -2695,6 +2695,44 @@ export class BallService implements OnStart {
 	}
 
 	/**
+	 * **Every ball that is a live throw right now**, in the world and still armed — the answer to "what is
+	 * flying", asked by anything that has to look at balls it does not own.
+	 *
+	 * **`Armed` is the definition and not a proxy for one.** It is set at the release
+	 * ({@link throwBallBody}) and cleared when the throw dies on the world — see the branch in
+	 * `BallComponent.handleTouch` that detaches the pierce trail "because this is the throw's death" — so
+	 * `true` means exactly "this ball is still able to hurt somebody". `npc/detect.ts` and `DodgeBehavior`
+	 * both make the same read for the same reason, and a ball lying on the floor after a landing is one whose
+	 * throw is over however fast it is still rolling.
+	 *
+	 * **`Parent === Workspace` is the held check**, and it is the cheap half of a question `isHeld` answers
+	 * properly: a ball in a hand is welded to that character and parented to it, so it is not a child of the
+	 * world at all. `settleLooseBalls` filters on the same line for the same reason. A ball parented
+	 * somewhere that is *not* `Workspace` and is not a hand — a template in `ServerStorage` — is likewise not
+	 * flying, which is why this is a parent test rather than a `GetDescendants` of the arena.
+	 *
+	 * **A fresh array rather than the tag list**, because the caller iterates it per frame and must be free
+	 * to filter and sort it: the tag list is `CollectionService`'s and is the whole DataModel's.
+	 *
+	 * **Read by `DodgeService` once a frame for the length of one dodge**, which is what `PERFECT_DISTANCE`
+	 * and `PERFECT_WINDOW_SECONDS` are measured against — it is the only reader, and it is why this belongs
+	 * here rather than being enumerated by the caller: "which of these is a ball" is this file's rule.
+	 */
+	public armedBalls(): ReadonlyArray<BasePart> {
+		const flying = new Array<BasePart>();
+
+		for (const instance of CollectionService.GetTagged(BALL_TAG)) {
+			if (!instance.IsA("BasePart")) continue;
+			if (instance.Parent !== Workspace) continue;
+			if (instance.GetAttribute("Armed") !== true) continue;
+
+			flying.push(instance);
+		}
+
+		return flying;
+	}
+
+	/**
 	 * The launch point to plan from.
 	 *
 	 * Normally the thrower's own, because that is the one their aim guide was

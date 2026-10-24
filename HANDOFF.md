@@ -434,6 +434,11 @@ src/client/
                                  shot!` with the `ENEMY VIEW` header hidden, decided by
                                  `LAST_HIT_BY_CAUSE_ATTRIBUTE` read off the local player. Another plain
                                  module started from `main.client.ts` (§10, §15 item 37)
+  perfectDodge.ts                `startPerfectDodge()` — the `Perfect` caption, one row under `HIT!`, drawn
+                                 when the server reports a ball that passed within a ball's width of where
+                                 this player was standing when they dodged. Another plain module started
+                                 from `main.client.ts`; one event in, one splash out, and the measurement
+                                 is entirely `DodgeService`'s (§15 item 38)
   ui/                            screenGui.ts (every `ScreenGui` in the client and the written rule for
                                  which one a thing belongs in — HudGui, FullScreenGui, SplashGui,
                                  TransitionGui, ScreenSpaceGui, StickGui, **plus `getHudColumn()`**, the
@@ -1846,6 +1851,80 @@ family.**
     been in a log either (§16); the two things to look at first are a catch death with a *stale* name and
     a header left hidden by a catch that was never restored.
 
+**Found by the 2026-10-23 perfect-dodge pass, and corrected by the same day's second pass. Item 38 is what
+the fix was; 39 is the one number in it that is a guess; 40 is the gap the fix deliberately leaves.**
+
+38. **The measurement fired on a body that had already been hit, and the fault was the *clock* rather than the
+    tolerance.** The 20:14–20:15 log's player report was `prospeed1 … perfect dodge — the ball missed by 3.3
+    studs`, and the line above it in the same log is `20:15:30.512 prospeed1 was tagged by DodgeballBall on
+    UpperTorso` — **281 ms earlier**. The watch opened when the dash started, which was *after* the tag, so it
+    measured a ball leaving a body it had already struck and reported the leaving as a dodge. **The first pass's
+    diagnosis ("a one-frame false positive, ~20 ms") was wrong, and wrong in the direction that matters: it
+    turned a systematic fault into an edge case and then documented it instead of fixing it.** Two things were
+    wrong and both are now fixed, in `DodgeService.watchForPerfectDodge`:
+    - **The body's own hit state is now read**, not inferred from geometry. `BallComponent` publishes the bodies
+      a throw has tagged (`BALL_TAGGED_BODIES_ATTRIBUTE`, written beside the tagged-team attribute at the same
+      four moments), and the watch ends the first frame that list contains this body. A tag is the exact record
+      of a contact and it survives the ball flying on, which a radius around the root cannot do.
+    - **A dead body ends the watch**, checked every tick and once more where a miss is settled at the window's
+      end. A tagged body is not killed at the tag — the tags resolve when the ball lands, up to a second later —
+      so the tag list catches the 281 ms case and the health check catches every other death mid-dash.
+    **`BODY_CONTACT_RADIUS` is deleted rather than widened.** It was a root-centred sphere standing in for "was
+    this body hit"; it missed the chest, head and arms, and it could not see a contact that happened before the
+    watch opened. `GetBoundingBox()` was considered and refused for a reason worth keeping: **a held ball is a
+    child of the character**, so the model's own box includes it and would reach about three studs out on the
+    hand's side — past `PERFECT_DISTANCE` — silently swallowing every dodge made while carrying a ball. The
+    radius that survives is `PREDICTED_HIT_RADIUS`, used only by `stillOnCourse`, which asks a question about
+    the *future* and so cannot be answered by a tag. **The fix is simulated rather than observed**: the tag gate
+    cancels at t=0 on the log's own scenario, a death at 0.10 s cancels, and clean dodges at 0.5 and 3.0 studs
+    still report while a 5-stud pass stays silent. **The caption remains unconfirmed** — switch
+    `client/perfectDodge.ts`'s `DEBUG` on for one session to print `[HUD] perfect dodge up …` at boot and
+    `[HUD] splash — Perfect` per caption. **Still unjudged**: whether `PERFECT_DISTANCE` = 4 fires on the dodges
+    a player thinks they earned, and whether an `h6` word reads under the 150-pixel `HIT!`.
+39. **`PERFECT_WINDOW_SECONDS` is the one number in the feature that is a feel rather than an arithmetic.**
+    0.6 s is three dashes, chosen because the ball a dash saves you from usually arrives *after* the dash
+    ends. Given this game's throw envelope, every charge hangs for the same `2·sqrt(2·g·h)/g` — about 0.28 s
+    with `BALL_GRAVITY` 50 and `CHARGE_PEAK_HEIGHT` 0.5 — so in practice the window is bounded by the ball's
+    own landing rather than by this constant. **The 2026-10-23 log supports that reading and cannot prove
+    it**: the confirmed dodges all arrived well inside the window, and none of them produced a line for a ball
+    that had already stopped — but the window was never the thing that ended a watch, so nothing in the output
+    distinguishes 0.6 from 0.3. It is the number to cut if a caption ever fires for a ball that had clearly
+    stopped being one.
+40. **A contact that writes no tag is invisible to the perfect dodge, and two kinds of contact write none.** A
+    same-side ball is vetoed at `BallComponent.handleTouch` before any tag exists, and a ball into a
+    practice-zone player is not a body to a ball at all — so in both cases a pass close enough to count is
+    counted, and a teammate's throw going past you can raise `Perfect`. **This is not a regression from the
+    radius**: that test only reached 2.5 studs, so the same pass at 3.5 fired before the fix too. Making it
+    exact is a *side comparison*, not a geometry change — the dodger's `TEAM_ATTRIBUTE` against the thrower's —
+    and the thrower's side is not on the ball today. **`RoundService` cannot be injected to get it**:
+    `RoundService` reaches `DodgeService` through `NpcService`, so the dependency would be a cycle and Flamework
+    refuses those at ignite. The route is to publish the thrower's side on the ball beside `ThrowerId`, which is
+    the throw path's state rather than this feature's, so it is left as a decision.
+
+**Found by the 2026-10-23 rig-miss pass, which was asked a question rather than given a bug. Both items are
+tuning decisions the code cannot settle, and both comments were corrected to describe the shipped values.**
+
+41. **A rig is deliberately wide nine throws in ten, and that is the value rather than the prose's.** The block
+    above `THROW_MISS_CHANCE` used to say **"one throw in two"** and argue that "a rate leaves *the other half*
+    of the throws exactly as accurate" — the constant has been **`0.9`**, so one throw in ten is honest. The
+    comment has been rewritten to the value (it described a character the game does not have: "capable, and
+    occasionally wrong" against a rig that is wrong nine times out of ten), and **the number itself was left
+    alone on the user's instruction**, because a 2026-10-23 log shows rigs `missed on purpose` on nearly every
+    throw and that is what the game actually feels like. **Whether nine in ten is the wanted balance is open**:
+    `0.5` is the figure the original prose described, `0` is fully accurate, and the constant is the only dial
+    either way. Nothing else reads it — `rollMiss` is the sole caller.
+42. **The miss *width* is a flat band, and the comment used to describe a ladder.** `THROW_MISS_STUDS_MAX`'s
+    block claimed "spread across five to ten, **most misses are small and a full-width one is occasional**";
+    `rollMiss` draws `MIN + math.random() * (MAX - MIN)`, so every width in the band is equally likely — and the
+    band is **7–10**, not 5–10 (the `_MIN` block's own "Placeholder — 5" was two revisions stale as well). Both
+    comments now state the flat band and the real floor. **A weighted band was considered and refused**: the
+    range already varies throw to throw, which is the property that stops a tell, and weighting it would change
+    how the rigs feel without anything in a log to say it improved. If a session ever reads the wide throws as
+    too uniform, this is the place to add weight — not `THROW_MISS_CHANCE`. **One decision per throw is
+    unchanged and now stated where it is enforced**: `rollMiss` is called once from
+    `createWindupTracker.beginWindup`, the release re-applies the stored offset rather than drawing again, and a
+    per-tick or per-second roll is a body changing its mind during its own hold.
+
 ---
 
 ## 16. What a live log has actually confirmed
@@ -1867,6 +1946,15 @@ and every `[HUD] <label> tap — Npx of travel` line are unconfirmed as *output*
 cluster's face does (glass at `0.7`, the inverted press, the rim bloom) is a description of the code
 rather than an observation. **A ring that appears is a fact about the drawing; the numbers behind it,
 and what colour it sits next to, are still readings.** §15 items 34–37 are what that leaves open.
+
+**The 2026-10-23 perfect-dodge pass is half recorded below, and the halves are worth telling apart.**
+The **server** rule was seen running — five reports in one fifty-second session, four from rigs and one from a
+player, with no error anywhere — so `[Dodge] <name>: perfect dodge — the ball missed by N studs` is an
+observed line and the player branch that sends the event is observed too. **But one of those five was a false
+positive** (§15 item 38): `prospeed1`'s report came 281 ms after the same body was tagged, and the fix — a
+tag-list gate and a health gate — has been simulated rather than seen. **Nothing on the client half is
+observed**: `client/perfectDodge.ts` prints only behind its own `DEBUG`, so the caption, its position and the
+`h6` size are still readings of the code. §15 item 38 says which flag to switch to close that gap.
 
 **Still true of the current build:**
 

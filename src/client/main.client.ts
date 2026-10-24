@@ -11,6 +11,7 @@ import { startHitVfx } from "./hitVfx";
 import { startCatchPrompt } from "./catchPrompt";
 import { startAfkWatcher } from "./afk";
 import { startPersonalAudio } from "./personalAudio";
+import { startPerfectDodge } from "./perfectDodge";
 
 print("[client] igniting");
 Flamework.addPaths("src/client/controllers");
@@ -105,3 +106,11 @@ startEnemyView();
 // pickup counter is the server's, and for why a MultiBall window is announced by its published count rather
 // than by the key that asked for it.
 startPersonalAudio();
+
+// **And the perfect dodge, which is the third subscriber to a fact about a throw and the first one that is
+// told a *measurement* rather than an outcome.** A dodge leaves nothing behind for a touch to resolve — the
+// body is simply not where the ball went — so the server watches the ball for the length of the dash and sends
+// the one word when it comes close. Same plain-module shape for the same reason: it owns one subscription and
+// draws a word. See `perfectDodge` for why this is an event rather than an attribute, and for why a rig's
+// perfect dodge exists in the output and never on a screen.
+startPerfectDodge();

@@ -204,7 +204,7 @@ export const NPC_CONFIG = {
 
 	/**
 	 * How often a rig throws **deliberately wide** — the chance that a throw is aimed a few studs to one
-	 * side of its target instead of at it. **Placeholder — `2 / 4`, i.e. one throw in two.**
+	 * side of its target instead of at it. **Placeholder — `0.9`, i.e. nine throws in ten.**
 	 *
 	 * **A perfectly accurate rig is not a player, and that is the whole reason this exists.** Every throw
 	 * a rig makes is a solved shot to the target's own position, so at any range where the angle gate
@@ -213,23 +213,35 @@ export const NPC_CONFIG = {
 	 * too accurate and difficult for players — add some randomness to make them intentionally throw a few
 	 * studs to the left or right, to simulate real player misclicks". This is that.
 	 *
-	 * **A miss *rate*, and deliberately not a spread — the difference is what the rig reads as.** A spread
-	 * applied to every throw would make every ball slightly off, which reads as a rig that is *imprecise*: no
-	 * throw is honest and the player learns to distrust the whole envelope. A rate leaves the other half of the
-	 * throws exactly as accurate as they have always been, so the rig reads as *fallible* — capable, and
-	 * occasionally wrong. **It is also the only version that keeps the windup worth watching**: a rig that
-	 * visibly commits and then misses is a telegraph with an outcome; a rig whose every throw is a metre out is
-	 * just noise, and its hold tells a player nothing they can act on. Do not turn this constant into a noise
-	 * term — if the rigs still feel too accurate, move this number, not the magnitude below.
+	 * **The shipped value is nine in ten, and the arithmetic is written down because it is easy to misread.**
+	 * One throw in ten is honest and the other nine are wide, which is the opposite balance from the one this
+	 * block used to describe ("one throw in two", "a rate leaves the other half exactly as accurate"). **The
+	 * argument for a rate over a spread is unchanged by the number**: a spread applied to every throw makes every
+	 * ball slightly wrong, which reads as a rig that is *imprecise*, while a rate leaves some throws exactly as
+	 * accurate as they have always been. What the number decides is only *how many* are left — and at `0.9` the
+	 * rig is a body that usually throws wide, which is a different character from the "capable, and occasionally
+	 * wrong" one the paragraph above argues for. **The value is left as it is and the description is corrected
+	 * to it**, because a log from 2026-10-23 shows rigs `missed on purpose` on nearly every throw: that is what
+	 * the game currently feels like, so the prose is what was wrong. **Whether nine in ten is the wanted balance
+	 * is a tuning question rather than a comment one** — see `HANDOFF.md` §15 item 41, which records it as open.
 	 *
-	 * **Rolled once per throw, at the decision, and never at the release.** The roll happens in
-	 * `createWindupTracker.beginWindup`, so both rig behaviours inherit it and neither can be forgotten — see
-	 * {@link NPC_CONFIG.THROW_MISS_STUDS_MAX} for the geometry. At the decision rather than at the release for
-	 * two reasons: the hold is solved *against the point the ball will actually leave for*, so the published
-	 * `CHARGING_ATTRIBUTE` describes the throw that happens; and the rig's **facing** can be turned onto that
-	 * same point, so a rig about to miss visibly aims wide instead of pointing at the player while the ball goes
-	 * elsewhere. A roll at the release could do neither — it would change the ball after the body had been
-	 * pointed honestly.
+	 * **It is still the only version that keeps the windup worth watching**, and that argument does not depend
+	 * on the rate either: a rig that visibly commits and then misses is a telegraph with an outcome, while a rig
+	 * whose every throw is a metre out is just noise. Do not turn this constant into a noise term — if the rigs
+	 * feel too accurate or too wild, move this number, not the magnitude below.
+	 *
+	 * **Rolled once per throw attempt, at the decision, and never again** — not per tick, and not at the
+	 * release. The roll happens in `createWindupTracker.beginWindup`, so both rig behaviours inherit it and
+	 * neither can be forgotten — see {@link NPC_CONFIG.THROW_MISS_STUDS_MAX} for the geometry. **One roll means
+	 * one decision**: the rig decides "hit or miss" exactly once per throw, and everything downstream reads that
+	 * single answer. `beginWindup` is reachable only on the decide branch of the behaviour, which is only
+	 * reachable while no windup is live, and the release re-applies the stored offset with `missedPoint` rather
+	 * than drawing again — so a hold is one commitment from the turn it starts to the ball that leaves it.
+	 * At the decision rather than at the release for two reasons: the hold is solved *against the point the ball
+	 * will actually leave for*, so the published `CHARGING_ATTRIBUTE` describes the throw that happens; and the
+	 * rig's **facing** can be turned onto that same point, so a rig about to miss visibly aims wide instead of
+	 * pointing at the player while the ball goes elsewhere. A roll at the release could do neither — it would
+	 * change the ball after the body had been pointed honestly.
 	 *
 	 * **What it does not do: touch the charge.** Lowering the charge for a miss would make the ball fall short,
 	 * which reads as *weak* rather than as *inaccurate* — a different and worse character. The error is lateral,
@@ -240,13 +252,17 @@ export const NPC_CONFIG = {
 	THROW_MISS_CHANCE: 0.9,
 
 	/**
-	 * The shortest deliberate miss, in studs. **Placeholder — 5.**
+	 * The shortest deliberate miss, in studs. **Placeholder — 7.**
 	 *
 	 * **The floor is what makes the log line true, and it is chosen from a body's width rather than from feel.**
 	 * A player's torso is about two studs across and the ball is `BALL_SIZE` (2) studs in diameter, so a
 	 * *centre* offset past roughly two studs leaves both the body and its ball-radius margin — anything from
 	 * five up is a clean miss at every range a rig throws at, where a "miss" of half a stud would be a throw
-	 * that landed on the body and was logged as wide. That contradiction is what this floor prevents.
+	 * that landed on the body and was logged as wide. That contradiction is what this floor prevents. **Seven
+	 * rather than the five this block used to name, and why it moved is not recorded anywhere** — no comment and
+	 * no commit message records it. What is verifiable is the constraint: two studs is the smallest floor that
+	 * is still a miss, and everything above it is margin that makes a wide throw read as wide from a seat rather
+	 * than as a near miss. Seven is what the game ships with.
 	 *
 	 * **Studs rather than degrees, and the units are the argument.** What a throw has to miss is a body of a
 	 * fixed width, so the error has to be measured in the same units as that width. An *angular* offset would
@@ -254,16 +270,25 @@ export const NPC_CONFIG = {
 	 * degrees is a hit — which is precisely backwards for a mistake: a person's misclick is about as far off in
 	 * studs whatever they are aiming at.
 	 */
-	THROW_MISS_STUDS_MIN: 7,
+	THROW_MISS_STUDS_MIN: 10,
 
 	/**
 	 * The longest deliberate miss, in studs. **Placeholder — 10.**
 	 *
 	 * **A range rather than a fixed offset, which is the difference between a mistake and a rule.** A
 	 * rig that misses by exactly ten studs every time it misses has a *tell*: the wide throws all look
-	 * identical, and a player learns the shape of them instead of reading them as error. Spread across
-	 * five to ten, most misses are small and a full-width one is occasional, which is what a person's
-	 * misclicks actually look like.
+	 * identical, and a player learns the shape of them instead of reading them as error. A band gives
+	 * every miss its own width, which is what a person's misclicks actually look like.
+	 *
+	 * **The band is drawn flat, and the block that stood here claimed otherwise.** It said "spread across
+	 * five to ten, most misses are small and a full-width one is occasional" — a weighted ladder — and
+	 * `rollMiss` does not implement one: it draws `MIN + math.random() * (MAX - MIN)`, so 7.1 studs and 9.9
+	 * studs are equally likely and there is no "most" anywhere in it. **The claim is corrected rather than the
+	 * code**, because a flat band is what the rigs have been throwing with and the difference is not visible
+	 * from a seat: the widths already vary throw to throw, and a watcher reading a hundred of them is reading
+	 * *a* distribution either way. Weighting the band would be a change to how the rigs feel, and it is
+	 * written up in `HANDOFF.md` §15 item 42 rather than made here. **The range's own argument survives it**:
+	 * the value that would be a tell is a *fixed* offset, and no flat band is one.
 	 *
 	 * **Ten studs is a clean miss of a standing body and a near miss of a moving one**, which is the
 	 * intended reading: a player's torso is about two studs wide, so an offset past one stud leaves the
@@ -272,7 +297,7 @@ export const NPC_CONFIG = {
 	 * is also a *plausible* wide ball rather than an absurd one: about fourteen degrees off the line, which is
 	 * a bad throw rather than a throw at nothing. See {@link NPC_CONFIG.THROW_MISS_CHANCE} for the rate.
 	 */
-	THROW_MISS_STUDS_MAX: 10,
+	THROW_MISS_STUDS_MAX: 15,
 
 	/**
 	 * The share of a rig's throws made **on the move** — the first of the two bands a throw's shape is drawn
@@ -374,7 +399,7 @@ export const NPC_CONFIG = {
 	 *
 	 * **Placeholder.**
 	 */
-	DODGE_CHANCE_PER_BALL: 0.5,
+	DODGE_CHANCE_PER_BALL: 0.1,
 
 	/**
 	 * **The folder in `ServerStorage` the placeholder rigs are cloned from — one model per rig, drawn at

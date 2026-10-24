@@ -380,6 +380,33 @@ export const events = Net.Definitions.Create({
 	teamWipe: Net.Definitions.ServerToClientEvent<[thrower: string]>(),
 
 	/**
+	 * Server → client: **you dodged a ball that came within a ball's width of hitting you** — the caption
+	 * `Perfect` on the dodger's own screen.
+	 *
+	 * **A moment rather than a state, so it is an event**, on the argument `teamWipe` above makes: there is no
+	 * attribute here for anyone else to read. What it describes is a *near miss*, and nothing in the world
+	 * changes because of one — the ball is already past, the body is already somewhere else, and the round's
+	 * own records do not count it (a dodge is `BadgeService.recordDodge`'s, taken at the request; a perfect
+	 * dodge is the same dodge with a finer measurement, not a second one). An attribute would be a value
+	 * written for one client and cleared by that client, which is a handshake with nothing on the other end.
+	 *
+	 * **Sent to one player rather than broadcast**, like {@link teamWipe} — the caption is on the dodger's own
+	 * screen and the ball's near-miss is not news to anybody else. **It carries the dodger's name anyway**, so
+	 * the one client that receives it makes the same `Players.LocalPlayer.Name` comparison it makes for every
+	 * other event rather than trusting the addressing — the same belt `teamWipe` wears.
+	 *
+	 * **Sent from `DodgeService` and nowhere else**, because that is the only machine that can measure it: the
+	 * ball's path and the body's own position at the instant it dodged are both server facts, and a client
+	 * that claimed one would be claiming the other. It is sent for a *player* only — a rig's perfect dodge is
+	 * measured and printed, and has no screen to appear on (see `DodgeService.watchForPerfectDodge`).
+	 *
+	 * **No distance on the wire.** The caption is a word; the stud figure is the server's log line, and a
+	 * field no client reads is a field that gets believed later — the argument {@link hitImpact}'s doc makes
+	 * about the direction, the sides and the count.
+	 */
+	perfectDodge: Net.Definitions.ServerToClientEvent<[dodger: string]>(),
+
+	/**
 	 * Client → server: this player wants to spend coins on a Power Chest.
 	 *
 	 * **Carries nothing, for {@link multiBall}'s reason.** The chest's price, the roster and this

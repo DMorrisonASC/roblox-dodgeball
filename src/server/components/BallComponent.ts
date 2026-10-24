@@ -5,6 +5,7 @@ import { abilityOn } from "shared/ability";
 import { CollisionIgnore } from "shared/CollisionIgnore";
 import {
 	BALL_NAME,
+	BALL_TAGGED_BODIES_ATTRIBUTE,
 	BALL_TAGGED_TEAM_ATTRIBUTE,
 	DUCKING_ATTRIBUTE,
 	PRACTICE_ZONE_ATTRIBUTE,
@@ -260,6 +261,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// The two writes are one statement of state and always happen together — see
 			// `BALL_TAGGED_TEAM_ATTRIBUTE`.
 			this.instance.SetAttribute(BALL_TAGGED_TEAM_ATTRIBUTE, "");
+			this.publishTaggedBodies();
 
 			// And the throw is unscored again, for the same reason and at the same moment: `Armed`
 			// going on *is* a new throw, and a new throw gets its own one contact. See {@link score}.
@@ -654,6 +656,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 				: character.GetAttribute(TEAM_ATTRIBUTE);
 
 		this.instance.SetAttribute(BALL_TAGGED_TEAM_ATTRIBUTE, typeIs(taggedTeam, "string") ? taggedTeam : "");
+		this.publishTaggedBodies();
 
 		// **The other half of `landHit`'s line, and the half that was missing.** `landHit` reports a
 		// death when the throw resolves; with no line saying a body was *tagged*, a throw that tagged
@@ -892,6 +895,33 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	}
 
 	/**
+	 * **Publishes the tag list as a name list**, which is the only form another service can read.
+	 *
+	 * **Why the list is published at all, when nothing on this side reads it.** A ball's tags are the record of
+	 * which bodies this throw has already struck, and one reader needs exactly that question answered about a
+	 * *particular* body: `DodgeService.watchForPerfectDodge`, which reports a near miss as a perfect dodge and
+	 * must not report one for a body this ball already hit. That watch opens when a dash starts, so a ball that
+	 * tagged the body a moment *before* that instant is invisible to every geometric test it can run afterwards
+	 * — the body has dashed away, and the ball is several studs from where it stood. The log that proves it:
+	 * tagged at `20:15:30.512`, `perfect dodge` reported against the same body at `20:15:30.793`.
+	 *
+	 * **Called beside every mutation of {@link hitModels}**, so the attribute and the list are one fact and
+	 * cannot drift. The team attribute is written at the same moments for the same reason; see
+	 * `BALL_TAGGED_BODIES_ATTRIBUTE`, which is where the two questions are told apart.
+	 *
+	 * **`|`-joined**, the shape `OWNED_ITEMS_ATTRIBUTE` already uses for "a set in one string", because an
+	 * attribute cannot carry a table. Empty rather than removed when the list is empty, on the same
+	 * one-empty-value convention as every other attribute here.
+	 */
+	private publishTaggedBodies(): void {
+		const names = new Array<string>();
+
+		for (const entry of this.hitModels) names.push(entry[0].Name);
+
+		this.instance.SetAttribute(BALL_TAGGED_BODIES_ATTRIBUTE, names.join("|"));
+	}
+
+	/**
 	 * Takes a tagged character out, and prints which part decided that.
 	 *
 	 * **Called at the ball's death, not at the hit.** A hit only tags; the death happens when the
@@ -974,6 +1004,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// to it is `Armed = false` on the line below the caller. Clearing here as well as on the re-arm is what
 		// keeps the property honest between those two moments, when the ball is still in the world for a frame.
 		this.instance.SetAttribute(BALL_TAGGED_TEAM_ATTRIBUTE, "");
+		this.publishTaggedBodies();
 
 		return hitAny;
 	}
@@ -1019,6 +1050,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// would be advertising a catch that has just been made, to a side whose teammate may now be holding the
 		// ball. Both writes are one statement of state — see `BALL_TAGGED_TEAM_ATTRIBUTE`.
 		this.instance.SetAttribute(BALL_TAGGED_TEAM_ATTRIBUTE, "");
+		this.publishTaggedBodies();
 
 		const token = typeIs(throwerId, "string") ? throwerId : "";
 		if (token !== "") this.rounds.resolveCaughtThrower(token, catcher);

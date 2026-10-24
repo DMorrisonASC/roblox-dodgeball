@@ -347,6 +347,15 @@ export function missedPoint(root: BasePart, aimPoint: Vector3, miss: Miss): Vect
  * would be a line per throw attempt for the whole of a freeze, describing throws that never happened. The
  * caller logs, once, and only for a throw that went. See the throw site.
  *
+ * **Called exactly once per throw attempt, and that is a rule rather than a convention.** The only caller is
+ * `createWindupTracker.beginWindup`, which runs on the turn a rig commits — reachable only from a behaviour's
+ * decide branch, and only while no windup is live. So a rig decides *hit or miss* once, per throw, and nothing
+ * downstream draws again: the release re-applies the offset this returned through `missedPoint`, and every turn
+ * of the hold does the same. **A per-tick roll would be a body changing its mind during its own hold**, which
+ * would make the telegraph a lie — the rig would be aimed one way and then throw another; a per-second roll
+ * would be that same fault on a clock. If this function is ever called from anywhere else, it has stopped being
+ * one decision per throw.
+ *
  * **The common case returns nothing**, so a rig that is not missing this time is throwing exactly what it
  * threw before any of this existed.
  */

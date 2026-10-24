@@ -2,10 +2,11 @@ import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { startAfterimage, stopAfterimage } from "shared/afterimage";
 import { ACTION_CONFIG } from "shared/config/action.config";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { CATCH_READY_AT, DODGE_DIRECTION_ATTRIBUTE, DODGE_READY_AT, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { CATCH_READY_AT, BALL_SIZE, BALL_TAGGED_BODIES_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, DODGE_READY_AT, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { canDodge, dodgeDirectionOf, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { DodgeDirection } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
@@ -18,6 +19,7 @@ import { extendReadyAt, publishReadyAt } from "./readyAt";
 import { emitSound } from "../ball/SoundEmitter";
 import { insideZone } from "../zone/PracticeZoneService";
 import { BadgeService } from "../badges/BadgeService";
+import { BallService } from "../ball/BallService";
 
 /** Prints what every dodge request did, and why it did nothing. */
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
@@ -44,6 +46,41 @@ const DODGE_EMITTER_NAME = "DodgeEmitter";
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. A word between two files. */
 const PLAYING = "Playing";
+
+/*
+ * **`BODY_CONTACT_RADIUS` is gone, and the note is here rather than beside a declaration because there is no
+ * declaration any more.** It asked "was the ball at this body" from one point at the body's centre, and the ball
+ * can now answer that question exactly: `BallComponent` publishes the bodies a throw has tagged, and a tag *is*
+ * a contact with a part of the rig. The two things that made the radius wrong are worth recording, because they
+ * are the two ways a proximity test of this kind fails:
+ *
+ * - **It measured the wrong place.** The root sits at the hips; a ball into the chest, the head or an arm was
+ *   several studs from it, so the radius had to be generous — generous enough to swallow a real near miss.
+ * - **It measured the wrong *time*.** The watch opens when the dash starts, and a ball that struck the body
+ *   *before* that instant is already past it — a proximity test run a frame later cannot see a contact that has
+ *   already happened. That is the log this was found from: a body tagged at `20:15:30.512` and reported as a
+ *   "perfect dodge" against the same body at `20:15:30.793`, 281 ms later.
+ *
+ * A `GetBoundingBox()` volume was the other candidate and is rejected for a reason the constant list cannot
+ * show: **a held ball is a child of the character** (`BallService.attachToHand` parents it to the model), so the
+ * character's own bounding box includes it — which would push the contact volume about three studs out on the
+ * side the hand is on, past `PERFECT_DISTANCE`, and silently swallow every dodge made by a body carrying a ball.
+ * See `watchForPerfectDodge` for what replaced both.
+ */
+
+/**
+ * How near a body a ball has to be *predicted* to arrive for the dodge that avoided it to be disqualified, in
+ * studs — **the radius {@link stillOnCourse} uses, and the one place a radius is still the right instrument.**
+ *
+ * `BALL_SIZE / 2` is the ball and the other `1.5` is a body: an R15 torso is two studs wide and an arm hangs a
+ * little beyond that.
+ *
+ * **This is not the retired contact test, though it looks like it.** That test asked "is the ball at the body
+ * *now*" and was replaced by the ball's own tag list, because a tag is exact and a sphere is not. This one asks
+ * "will the ball be at the body *later*", which no tag can answer — the contact has not happened yet — so a
+ * prediction is the only available instrument and a radius is what a prediction is made of.
+ */
+const PREDICTED_HIT_RADIUS = BALL_SIZE / 2 + 1.5;
 
 /**
  * A dash in flight, and the one way to end it early.
@@ -135,6 +172,21 @@ export class DodgeService implements OnStart {
 	private readonly lastDodgeEndAt = new Map<Model, number>();
 
 	/**
+	 * The watch each model's **most recent** dodge owns, so a newer dodge silences an older one's window.
+	 *
+	 * **The dashes table cannot answer this one**, and the difference is the whole reason this exists: a dash
+	 * is over after {@link DODGE_CONFIG.DURATION} (0.2 s) while the perfect-dodge window outlives it by design
+	 * ({@link DODGE_CONFIG.PERFECT_WINDOW_SECONDS}, 0.6 s), so "is this still my dash" is false for most of the
+	 * window it is supposed to be measuring. What has to be compared instead is *which dodge opened the watch*,
+	 * and the token is that question. It only matters for a dev with `NoCooldown`, who can dodge again inside
+	 * the window — for everybody else the cooldown is longer than the window and there is never a second one.
+	 *
+	 * An entry per model that is replaced rather than pruned, exactly like {@link lastDodgeAt}: they are one
+	 * table reference each, and pruning would need a `Destroying` subscription per body.
+	 */
+	private readonly perfectWatches = new Map<Model, object>();
+
+	/**
 	 * The catch window, as answered by the service that owns it.
 	 *
 	 * Handed over rather than injected: the two services are gated on each other, and
@@ -162,6 +214,19 @@ export class DodgeService implements OnStart {
 		private readonly dev: DevService,
 		private readonly freezes: FreezeService,
 		private readonly badges: BadgeService,
+		/**
+		 * **The balls, and the one thing this service needs from that domain: what is in flight.**
+		 *
+		 * The perfect dodge is the only part of a dodge that has to look at the world — a dash is a velocity and
+		 * needs nothing else — and what it has to look at is a ball's *position*, which is the ball domain's to
+		 * report rather than this service's to enumerate. See `BallService.armedBalls` for the query and why
+		 * `Armed` is the definition of "still a throw".
+		 *
+		 * **Injected rather than handed over**, unlike {@link catchState} and {@link duckState} above: those
+		 * are the *other* direction of a pair of services that have to see each other, and a handover is how a
+		 * cycle is broken. `BallService` does not reach back into this one, so there is nothing to break.
+		 */
+		private readonly balls: BallService,
 	) {}
 
 	/**
@@ -667,6 +732,14 @@ export class DodgeService implements OnStart {
 
 		this.dashes.set(model, record);
 
+		// **And the perfect-dodge watch opens with the window it measures**, which is the same instant and for
+		// the same reason the trail below does: the dashes table *is* the window, so a watch started anywhere
+		// else would be measuring a dodge that was not in flight. `start` is the body's position before this
+		// method moved it — the value the travelled-distance line at the end of `finish` measures from — and it
+		// is the point the ball is measured against, so the two uses are one read rather than two that could
+		// disagree about where the dash began.
+		this.watchForPerfectDodge(model, root, humanoid, start);
+
 		// **Restored, and the history matters because it went round a full turn.** This line was removed on
 		// request — a ghost trail on a dash was read as visual noise rather than as motion — and the catch's
 		// trail was left standing in its place. That reading was then reversed in the other direction: the
@@ -776,4 +849,310 @@ export class DodgeService implements OnStart {
 
 		record.finish();
 	}
+
+	/**
+	 * **Watches the balls for the length of one dodge, and says `perfect` if one passes close enough to the
+	 * place the body left — and never close enough to the place the body went.**
+	 *
+	 * **Why this exists at all: a dodge leaves no trace for the hit path to read.** The dash is a velocity, and
+	 * the mechanics that make it work are purely geometric — the body is simply no longer where the ball was
+	 * going — so by the time a ball would have touched somebody it touches nothing, and `Touched` is not called
+	 * at all. `isDodging` is asked by everything that *uses* a dodge (a catch, a duck, a pickup, the action
+	 * lock), and by nothing that *measures* one, because there is nothing to measure at the moment of contact.
+	 * So the miss has to be observed while it is happening, and this is the only thing in the game that
+	 * observes it.
+	 *
+	 * **The distance is measured to `origin` — where the body was standing when it dodged — and not to where
+	 * the dash takes it.** That is the whole of "the ball would have hit me": the ball is not aimed at a body,
+	 * it is aimed at a patch of floor, and the patch it passes through on the way is the patch the body was
+	 * standing on. Measuring against the *live* position instead would count a dash that carried a body *into*
+	 * a ball it was never in the way of, which is the opposite of a perfect dodge, and it would also make the
+	 * figure depend on which way the dash went.
+	 *
+	 * **The second half of the rule is "was this body hit", and it is answered by the ball rather than by a
+	 * radius.** A ball can pass within a ball's width of where a body *was* and still have hit it — a dash a step
+	 * blocked, or one taken straight into the throw — and the near miss is real in both cases while "perfect
+	 * dodge" is not. `BallComponent` publishes the bodies a throw has tagged, so this asks that list about this
+	 * body on every frame and **ends the whole watch the moment this body appears in it**: a body that has been
+	 * struck has not dodged, whatever else is in the air, and there is no caption to draw.
+	 *
+	 * **That check replaced a radius around the root, and it replaced it because the radius was wrong twice.**
+	 * See the note where `BODY_CONTACT_RADIUS` used to be declared: a root-centred sphere misses the chest, the
+	 * head and the arms, and — the fault a Studio log actually found — it cannot see a contact that happened
+	 * *before the watch opened*, which is the ordinary case for a dodge taken after a hit. **281 ms**, not a
+	 * frame: a body tagged at `20:15:30.512` and reported as a perfect dodge against the same body at
+	 * `20:15:30.793`, because the ball had hit it, flown on, and the watch that opened afterwards could only see
+	 * a ball leaving. A tag is the exact record of that contact and it survives the ball flying on, which is why
+	 * the answer is the tag list and not a bigger sphere.
+	 *
+	 * **What the tag check does not cover, stated rather than left to be found.** A contact that produces no tag
+	 * is not a contact to this test: a same-side ball (friendly fire is vetoed before any tag is written) and a
+	 * ball into a practice-zone player (a practice player is not a body to a ball at all). In both cases the game
+	 * itself says the ball did nothing to the body, so a pass close enough to be a near miss is a near miss —
+	 * the caption can appear for a teammate's throw that goes past you. **Making that exact is a side comparison
+	 * and not a geometry change**, and it is written up in `HANDOFF.md` §15 rather than done here.
+	 *
+	 * **And a dead body cannot have dodged anything, so the humanoid is asked every tick.** A tagged body is not
+	 * killed at the tag — the tags resolve when the ball dies, and the throw can take up to a second to land — so
+	 * between the two moments the body is alive, hittable and already doomed. The tag check above ends the watch
+	 * for that body; this one is the backstop for every other way a body dies mid-dash (another throw, a reset, a
+	 * freeze falling off a ledge), and both are needed because they answer different questions.
+	 *
+	 * **Per frame, and against the segment the ball travelled rather than its position.** A thrown ball does
+	 * `THROW_MAX_SPEED` studs a second, which is over three studs between two frames; sampling positions alone
+	 * would leave gaps wider than the threshold and miss the passes this exists to reward. The start of each
+	 * segment is the ball's position on the previous turn, so the distance tested is
+	 * `distance(point, segment)` — the closest the ball actually came, not the closest it was ever sampled at.
+	 * The first turn seeds that map and tests nothing; the segment from the dash's own instant to it is the one
+	 * frame of path this does not see, and it is skipped rather than guessed from a velocity, because a
+	 * velocity's extrapolation is a *prediction* and this measurement is deliberately an observation.
+	 *
+	 * **The caption waits for the pass rather than for the approach, and the difference is the number in the
+	 * log.** A ball inside the radius gets a *candidate* record and the watch keeps following it until the
+	 * distance stops falling — that instant is the closest approach, which is the figure worth reporting:
+	 * firing on the frame a ball *enters* a four-stud radius would always print something just under four,
+	 * because a ball covers three studs a frame, and a tuning note that reads `3.3` for a pass that went
+	 * straight through the body is worse than no note at all. It also delays the caption by a frame or two,
+	 * which is the beat the ball has finished going past — the moment the player saw it.
+	 *
+	 * **The contact test runs over the whole window and not just the moment of the miss**, and that is a
+	 * correction a simulation made rather than a guess: a ball can hit the body *on its way to* the point the
+	 * body left — a dash toward an incoming throw — so a test restricted to the frames the candidate was being
+	 * followed would see a clean pass and call a hit a perfect dodge. The tag check runs on every frame, for
+	 * every armed ball, whether or not it is the candidate.
+	 * **The candidate is the first ball to come inside the radius**, and it has the measurement to itself until
+	 * it has passed. A MultiBall throw is three paths on the same schedule and they are the same dodge, so there
+	 * is nothing to gain from measuring all of them — and a ball that missed perfectly is the one worth saying.
+	 *
+	 * **A loop rather than a `Heartbeat` connection**, like every other long-lived loop in this project: it runs
+	 * for one dodge's worth of frames and then ends, and a connection that had to be hung up per body would be
+	 * the same lifetime with an unsubscribe to forget. The cost is one `armedBalls()` per frame per body mid
+	 * dash, which is a handful of balls and at most a few bodies.
+	 *
+	 * **Not `DodgeBehavior.threatAgainst`, which looks similar and answers a different question.** That test
+	 * predicts, from a ball's current velocity alone, whether it *will* arrive inside a hit radius — it is a
+	 * decision about whether to dodge, taken before the fact, and it solves in the plane because gravity has no
+	 * horizontal component. This is an observation after it: the actual path, in three dimensions, against a
+	 * point the body has already left. Sharing them would mean a function that had to be told which of the two
+	 * it was answering.
+	 */
+	private watchForPerfectDodge(model: Model, root: BasePart, humanoid: Humanoid | undefined, origin: Vector3): void {
+		/** This watch's identity — see {@link perfectWatches}, which is what a newer dodge replaces. */
+		const watch = {};
+
+		this.perfectWatches.set(model, watch);
+
+		/** The last position seen for each ball, so each turn tests a path rather than a point. */
+		const observed = new Map<BasePart, Vector3>();
+
+		/**
+		 * The ball being measured, from the frame it came inside {@link DODGE_CONFIG.PERFECT_DISTANCE} until the
+		 * frame it starts leaving again, with the closest it has come so far.
+		 */
+		let candidate: { ball: BasePart; closest: number } | undefined;
+
+		const deadline = os.clock() + DODGE_CONFIG.PERFECT_WINDOW_SECONDS;
+
+		/** The miss is over and measured: say it, unless the ball is still coming for the body. */
+		const settle = (ball: BasePart, closest: number) => {
+			// **The window closing is not a reason to skip the death check.** The loop asks it every tick, but a
+			// miss settled on the *last* tick leaves the loop and comes here, so the same question is asked once
+			// more rather than assumed — a body that died with the pass is a body that did not dodge it.
+			if (humanoid !== undefined && humanoid.Health <= 0) return;
+
+			// **Still on course for the body it just missed** — see `stillOnCourse`, and note that the horizon is
+			// what is left of the window rather than an arbitrary look-ahead: a ball that will be at the body
+			// before this dodge stops being responsible for it was not dodged by it, and one that would arrive
+			// after that is a different throw's problem.
+			if (stillOnCourse(ball, root.Position, deadline - os.clock())) return;
+
+			this.announcePerfectDodge(model, closest);
+		};
+
+		task.spawn(() => {
+			while (os.clock() < deadline && this.perfectWatches.get(model) === watch) {
+				// A body that has left the world has no place to have dodged from, and its window is over.
+				if (root.Parent === undefined) return;
+
+				// **A dead body has not dodged anything.** Checked every tick rather than once, because the death
+				// can arrive at any point in the window and the whole feature is a claim about something that has
+				// not happened to the body — a hit that did not land. See this method's note.
+				if (humanoid !== undefined && humanoid.Health <= 0) return;
+
+				for (const ball of this.balls.armedBalls()) {
+					// **Struck by this ball, so this was not a dodge** — and the whole watch ends, not just this
+					// ball's candidacy: the body is hit, whatever else is still in the air. This is the test a
+					// radius could not make, because the contact may have happened before the dash began. See
+					// `BALL_TAGGED_BODIES_ATTRIBUTE`.
+					if (hasTagged(ball, model.Name)) return;
+
+					const now = ball.Position;
+					const before = observed.get(ball);
+
+					observed.set(ball, now);
+
+					// The seeding turn: this ball's first sighting has no path behind it yet.
+					if (before === undefined) continue;
+
+					const missedBy = distanceToSegment(origin, before, now);
+
+					if (candidate !== undefined && candidate.ball === ball) {
+						// Still closing on the point it was aimed at: keep the best figure and keep watching.
+						if (missedBy <= candidate.closest) {
+							candidate.closest = missedBy;
+
+							continue;
+						}
+
+						// Moving away — that was the pass, and this is the closest it came.
+						const passed = candidate;
+						candidate = undefined;
+
+						settle(passed.ball, passed.closest);
+
+						return;
+					}
+
+					if (candidate === undefined && missedBy <= DODGE_CONFIG.PERFECT_DISTANCE) {
+						candidate = { ball, closest: missedBy };
+					}
+				}
+
+				task.wait();
+			}
+
+			// **The window closed with the ball still coming** — a pass at the very end of it, a ball caught or
+			// destroyed mid-flight, or one that landed inside the radius. Whatever the reason, the figure held is
+			// the closest this watch managed to see, and a near miss it did see is worth saying.
+			if (candidate !== undefined) settle(candidate.ball, candidate.closest);
+		});
+	}
+
+	/**
+	 * **Says a perfect dodge happened** — to the player's own screen, and to the output for either kind of body.
+	 *
+	 * **The event is sent to the player and to nobody else**, on `teamWipe`'s arrangement: the caption is on the
+	 * dodger's own screen, and the near miss is not news to anybody else in the arena. The name travels anyway
+	 * so the receiving client makes the same `Players.LocalPlayer.Name` comparison it makes for every other
+	 * event rather than trusting the addressing — see `networking.ts` on `perfectDodge`.
+	 *
+	 * **A rig is measured and printed and nothing more, and that is not an omission.** The rule is uniform —
+	 * a rig dodges by the same code and its misses are the same fact about the same geometry — but a rig has no
+	 * screen to draw on, and the one client that could draw it (the owner of the camera watching that rig) has
+	 * no business being told about a near miss it was not part of. **`DodgeBehavior` needs no message either**:
+	 * its dodges are decided by its own threat solve, and nothing in its AI reads a caption.
+	 *
+	 * **The print is unconditional for both kinds of body**, which is unusual in a file where almost everything
+	 * is behind `DEBUG`. The reason is that this is the feature's *only* observable evidence: whether the
+	 * threshold is right is a question only a session can answer, and a line per perfect dodge — at most one
+	 * per cooldown per body — is what a run in Studio reads. The distance is in the line rather than only in
+	 * the fact, because "it worked" and "it fired for a ball three studs past my shoulder" are the two
+	 * findings this needs to be told apart by.
+	 */
+	private announcePerfectDodge(model: Model, missedBy: number): void {
+		const distance = string.format("%.1f", missedBy);
+		const player = Players.GetPlayerFromCharacter(model);
+
+		if (player !== undefined) {
+			events.Server.Get("perfectDodge").SendToPlayer(player, player.Name);
+
+			print(`[Dodge] ${model.Name}: perfect dodge — the ball missed by ${distance} studs`);
+
+			return;
+		}
+
+		print(`[Dodge] ${model.Name}: perfect dodge — the ball missed by ${distance} studs (a rig, so nothing is drawn)`);
+	}
+}
+
+/**
+ * How far `point` is from the segment `from`→`to` — **the closest a ball came, not the closest it was sampled
+ * at.**
+ *
+ * A ball moves over three studs between two frames at the game's fastest throw, so the distance to a *position*
+ * can be larger than {@link DODGE_CONFIG.PERFECT_DISTANCE} for a pass that went straight through it. Projecting
+ * the point onto the segment and clamping to its ends is the same arithmetic a closest-approach solve does,
+ * without the assumption that the thing being measured is still coming: the clamp is what makes a point beside
+ * the segment's end read as "past it" rather than "on the line behind it".
+ *
+ * A zero-length segment is a ball that did not move — a frame of rest, or a repeat — and it is answered as a
+ * distance to the point rather than by dividing by zero.
+ */
+function distanceToSegment(point: Vector3, from: Vector3, to: Vector3): number {
+	const travel = to.sub(from);
+	const lengthSquared = travel.Dot(travel);
+
+	if (lengthSquared < 1e-6) return point.sub(to).Magnitude;
+
+	const along = math.clamp(point.sub(from).Dot(travel) / lengthSquared, 0, 1);
+
+	return point.sub(from.add(travel.mul(along))).Magnitude;
+}
+
+/**
+ * Whether `ball` has already tagged the body named `body` — **the exact "was this body hit" question, asked of
+ * the ball's own published record.**
+ *
+ * `BallComponent.publishTaggedBodies` writes the tagged models' names `|`-joined, so this is a substring test
+ * on a string that is empty unless a tag is owed. The name is the identity every cross-service fact about a body
+ * uses (`hitImpact`, `teamWipe`, `LAST_HIT_BY_*`), and a model name is the player's name for a character and the
+ * rig's own for a rig, so one string answers for both kinds of body.
+ *
+ * **Paired with separators on purpose.** A plain `find` would let `Rig1` match `Rig10`, so the attribute is
+ * wrapped in `|` before the search and the needle is wrapped to match — the same shape `OWNED_ITEMS_ATTRIBUTE`'s
+ * readers use to avoid a prefix collision between two ids in one string.
+ *
+ * **Absent reads as "no tags"**, which is the truth for a ball that has never hit anybody and is the right answer
+ * for a ball whose attribute has not replicated yet.
+ */
+function hasTagged(ball: BasePart, body: string): boolean {
+	const tagged = ball.GetAttribute(BALL_TAGGED_BODIES_ATTRIBUTE);
+
+	if (!typeIs(tagged, "string") || tagged === "") return false;
+
+	return string.find(`|${tagged}|`, `|${body}|`, 1, true)[0] !== undefined;
+}
+
+/**
+ * **Whether `ball` is still on course to be at a body standing at `body` within `horizon` seconds** — the veto a
+ * near miss has to survive before it is called a dodge.
+ *
+ * **The one prediction in this file, and it exists because a measurement alone cannot tell a dodge from a
+ * failure.** A ball can pass within a ball's width of where a body stood and then simply keep going into the
+ * body it dodged away from — a backward dash is *along* the throw, and the ball is faster than the dash, so the
+ * player sees the ball go by and then gets hit by it. That pass is real and the dodge is not, so the question
+ * has to be asked after it: is that ball *going to be here*?
+ *
+ * **The arithmetic is `DodgeBehavior.threatAgainst`'s** — the instant of closest approach is
+ * `t = dot(toBody, v) / |v|²`, positive while the ball is closing — with the two differences the question
+ * needs. It is solved in **three dimensions**, because the body's height is the thing that decides whether a
+ * throw goes over it, and it is evaluated with the ball's **gravity** applied at that instant, because a
+ * quarter-second of fall is two studs and two studs is the whole radius being judged.
+ *
+ * **What it gets wrong, in `threatAgainst`'s own words**: a ball that is about to hit the floor short of the
+ * body is predicted to reach it, and one curved by a super or about to bounce is predicted from its current
+ * motion alone. Both are wrong in the harmless direction for a *reward* — they cost a caption rather than
+ * printing one that should not exist — and the horizon is short enough (what is left of a 0.6-second window)
+ * that neither has much room to develop.
+ */
+function stillOnCourse(ball: BasePart, body: Vector3, horizon: number): boolean {
+	if (horizon <= 0) return false;
+
+	const velocity = ball.AssemblyLinearVelocity;
+	const speedSquared = velocity.Dot(velocity);
+
+	if (speedSquared < 1e-6) return false;
+
+	const toBody = body.sub(ball.Position);
+	const time = toBody.Dot(velocity) / speedSquared;
+
+	// Already past, or not due to arrive inside the window this dodge is responsible for.
+	if (time <= 0 || time > horizon) return false;
+
+	// Where it will actually be, gravity included: the straight-line solve names the instant, and the fall is
+	// what decides whether "at the body" is true when it gets there.
+	const fall = 0.5 * BALL_CONFIG.BALL_GRAVITY * time * time;
+	const arrived = ball.Position.add(velocity.mul(time)).sub(new Vector3(0, fall, 0));
+
+	return arrived.sub(body).Magnitude <= PREDICTED_HIT_RADIUS;
 }
