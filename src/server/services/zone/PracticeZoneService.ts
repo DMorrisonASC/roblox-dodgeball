@@ -5,7 +5,7 @@ import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { setPracticePlayer } from "../../collision/CollisionGroups";
 
 /** Prints each player's transitions in and out of a zone. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+const DEBUG = true; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How often every player is tested against the zone, in seconds.

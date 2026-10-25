@@ -22,7 +22,7 @@ import type { HudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 
 /** Prints the open, the answer and any refusal. Off for frame time — see `shared/config/debug.config.ts`. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+const DEBUG = true; // ON for the empty-board diagnosis — see `reportGeometry`. Turn back off with the prints.
 
 /** The typed client side of the remote, named the way `ShopController` names its own. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -76,6 +76,51 @@ const NOBODY_TEXT = "Nobody is on a side yet.";
 
 /** How tall one side's heading is, in pixels. **Placeholder.** */
 const SIDE_HEADING_HEIGHT = 22;
+
+/**
+ * **Three 4-pixel bars in primary colours, one inside each frame the board can disappear in, and their whole
+ * purpose is to be found or not found by a person looking at the screen.**
+ *
+ * A number in the output cannot answer "is this drawn where you are looking" — the session that produced
+ * `panel 664×398, content 664×314, rows frame 644×270 (visible yes)` and `drew 8 of 8` had every size it needed
+ * and no way to know whether those pixels were on the player's screen, behind another `ScreenGui`, or under an
+ * opaque sibling. **Red at the top of the panel, green at the top of the content band, blue at the top of the
+ * scrolling area** is a question a person can answer by looking, and the answer says which depth is wrong:
+ *
+ * - **none of them** — the panel is not on screen at all, and the `geometry` line's `AbsolutePosition`, parent
+ *   class and `DisplayOrder` say why;
+ * - **red only** — the panel draws and the content band inside it does not;
+ * - **red and green, no blue** — the rows frame specifically is the one with nothing in it;
+ * - **all three, no rows** — the rows exist and their ink or their height does not;
+ * - **all three and rows** — the board was never broken and every report was about the moment before an answer.
+ *
+ * **`LayoutOrder = -1`, so each bar is the first thing its layout stacks** — the frames they live in are all
+ * managed by a `UIListLayout`, which *positions* its children and overrides `Position`. First is the top, which
+ * is where a 4-pixel marker is least in the way and most visible. `ZIndex = 100` puts each above the panel's own
+ * furniture (`PANEL_Z_INDEX` is 10), so nothing a panel draws can hide it.
+ *
+ * **Diagnostic, and to be deleted with the rest of this pass's lines.** See `renderBody`, which spares them from
+ * the clearing loop that empties the scrolling area on every press.
+ */
+const MARKER_PANEL = "_MarkerPanel";
+const MARKER_CONTENT = "_MarkerContent";
+const MARKER_ROWS = "_MarkerRows";
+const MARKER_HEIGHT = 4;
+const MARKER_Z_INDEX = 100;
+
+/**
+ * **Whether the three bars are drawn at all — one switch, because the answer has been obtained and the bars are
+ * now the only ugly thing left.**
+ *
+ * The session that settled it saw **all three**: the red bar under the title, the green bar under the column
+ * headings, and the blue bar across the top of the white area — with nothing between the blue bar and the
+ * footer. That is the one answer of the five that means *the frames are all real and the rows' pixels are not
+ * where they should be*, and it led straight to `ZIndex` (see {@link addRow}). **Left on for one more session**
+ * so the fix can be confirmed with the instrument that found it: if the rows appear and the bars are still
+ * there, the diagnosis was right; if the rows appear and the bars have gone, someone flipped this to `false`
+ * before testing. Set it to `false` and the panel is exactly what it was written to be.
+ */
+const SHOW_MARKERS = true;
 
 /** The sides, in the order they are drawn — the same `A` then `B` order every other list uses. */
 const SIDES: ReadonlyArray<string> = ["A", "B"];
@@ -164,6 +209,166 @@ export class MatchStatsController implements OnStart {
 	/** The last answer, so a re-open draws instantly rather than emptying while the round trip runs. */
 	private last: ReadonlyArray<MatchStatsRow> = [];
 
+	/** The panel and its content band, held **only so a diagnostic can print their sizes** — see {@link probe}. */
+	private panel?: Frame;
+	private content?: Frame;
+
+	/**
+	 * The request whose answer has not arrived, as the `os.clock()` it was sent at, or `0` for none — **the
+	 * stamp that lets {@link refresh}'s timer tell a late answer from a lost one, and one press from the next.**
+	 */
+	private awaitingSince = 0;
+
+	/** Whether {@link probeRow} has said where the first row landed. **Once per session** — it is a rectangle. */
+	private rowProbed = false;
+
+	/**
+	 * **One line, once, a second after mount, saying where every frame between the screen and a row actually
+	 * is** — position as well as size, which is what the first version of this probe was missing.
+	 *
+	 * The board can be invisible at exactly five depths and they are indistinguishable from a screenshot: the
+	 * **panel** not on screen or behind another `ScreenGui`, the **content band** with no height, the **rows
+	 * frame** with no height, the **rows** with no height or no ink, and the **empty label** with no height —
+	 * which the session that produced `empty 0×0` proved is a real state. `AbsoluteSize` is read rather than
+	 * `Size` because every one of those but the panel is a scale of its parent: the declared sizes are all
+	 * plausible and only the resolved pixels say whether anything is there.
+	 *
+	 * **`AbsolutePosition` is the number that was never in a log, and without it "the panel is empty" cannot be
+	 * told from "the panel is off the right edge of the screen."** A size of `664×398` says the layout ran; it
+	 * says nothing about whether those pixels are on a screen the player is looking at. So this prints the
+	 * panel's corner, and its parent's class, name, `Enabled` and `DisplayOrder`: a `ScreenGui` that is
+	 * disabled, or one rung below another full-screen GUI, draws nothing whatever its children say.
+	 *
+	 * **A second after mount rather than on the spot**, because the panel is parented at the end of `mount` and
+	 * a layout pass has not run on the frame it arrives on — read there, every number would be the one from
+	 * before the tree existed, which is the direction that lies.
+	 *
+	 * **Deliberately unconditional and deliberately not behind `DEBUG`.** It is a handful of numbers once per
+	 * session, and the entire cost of the five sessions before this one was that the numbers were not in the
+	 * output.
+	 */
+	private probe(): void {
+		task.spawn(() => {
+			task.wait(1);
+
+			const panel = this.panel;
+			const content = this.content;
+			const list = this.rows;
+			const empty = this.empty;
+
+			// **The parent chain, read as facts rather than assumed.** `getHudScreenGui` returns `HudGui`, whose
+			// `DisplayOrder` is the engine default of `0` — the rung every other HUD and the shop panel share —
+			// so a panel "behind something" is not a `ZIndex` story unless a sibling inside that GUI outranks
+			// it. Printing both halves is what tells those apart.
+			const parent = panel?.Parent;
+			const parentIsGui = parent !== undefined && parent.IsA("ScreenGui");
+
+			print(
+				`[Stats] geometry — panel at ${this.px(panel?.AbsolutePosition.X)}` +
+					`,${this.px(panel?.AbsolutePosition.Y)} size ${this.px(panel?.AbsoluteSize.X)}` +
+					`×${this.px(panel?.AbsoluteSize.Y)}, visible ${panel?.Visible === true ? "yes" : "no"}` +
+					`, ZIndex ${panel?.ZIndex ?? -1}` +
+					`, parent ${parent?.ClassName ?? "none"} "${parent?.Name ?? "-"}"` +
+					(parent !== undefined && parent.IsA("ScreenGui")
+						? ` enabled ${parent.Enabled ? "yes" : "no"} DisplayOrder ${parent.DisplayOrder}`
+						: "") +
+					`, content at ${this.px(content?.AbsolutePosition.X)},${this.px(content?.AbsolutePosition.Y)}` +
+					` size ${this.px(content?.AbsoluteSize.X)}×${this.px(content?.AbsoluteSize.Y)}` +
+					`, rows frame at ${this.px(list?.AbsolutePosition.X)},${this.px(list?.AbsolutePosition.Y)}` +
+					` size ${this.px(list?.AbsoluteSize.X)}×${this.px(list?.AbsoluteSize.Y)}` +
+					` (declared ${list?.Size.Y.Scale ?? -1} scale ${list?.Size.Y.Offset ?? 0} px, visible ` +
+					`${list?.Visible === true ? "yes" : "no"})` +
+					`, empty at ${this.px(empty?.AbsolutePosition.X)},${this.px(empty?.AbsolutePosition.Y)}` +
+					` size ${this.px(empty?.AbsoluteSize.X)}×${this.px(empty?.AbsoluteSize.Y)}` +
+					` (visible ${empty?.Visible === true ? "yes" : "no"}, text "${empty?.Text ?? ""}")`,
+			);
+
+			// **And the first row, which is the one thing the sizes above cannot speak for.** No row exists
+			// until a press, so this half prints on the first press's answer rather than here — see
+			// {@link probeRow}, called from `renderBody`.
+			this.probeRow();
+
+			// **The parent's `ScreenInsets` is the other way a tree can be laid out and never seen.** On a
+			// desktop client it is the screen's own origin; on a phone it is the safe region, and a panel
+			// centred in a region narrower than the device is a panel the player may not be looking at.
+			if (parentIsGui) {
+				const gui = parent as ScreenGui;
+				print(
+					`[Stats] screen gui — ${gui.Name}: ScreenInsets ${tostring(gui.ScreenInsets)}` +
+						`, AbsoluteSize ${gui.AbsoluteSize.X}×${gui.AbsoluteSize.Y}` +
+						`, children ${gui.GetChildren().size()}`,
+				);
+			}
+		});
+	}
+
+	/** Rounds for the log: a resolved pixel read six times to five decimal places is unreadable. */
+	private px(value: number | undefined): string {
+		return string.format("%.0f", value ?? -1);
+	}
+
+	/**
+	 * **One coloured bar, at the top of the frame it marks.** `LayoutOrder = -1` and `ZIndex = 100` — see
+	 * {@link MARKER_PANEL} for why both, and for what a person looking at the screen is being asked.
+	 */
+	private addMarker(frame: Instance | undefined, name: string, colour: Color3): void {
+		if (!SHOW_MARKERS) return;
+		if (frame === undefined) return;
+
+		const marker = new Instance("Frame");
+		marker.Name = name;
+		marker.Size = new UDim2(1, 0, 0, MARKER_HEIGHT);
+		marker.Position = UDim2.fromOffset(0, 0);
+		marker.BackgroundColor3 = colour;
+		marker.BackgroundTransparency = 0;
+		marker.BorderSizePixel = 0;
+		marker.LayoutOrder = -1;
+		marker.ZIndex = MARKER_Z_INDEX;
+		marker.Visible = true;
+		marker.Parent = frame;
+	}
+
+	/**
+	 * **The first row's resolved rectangle and its ink, printed once per session on the first press that has
+	 * rows.** A row is a `Frame` of six `TextLabel`s, so both halves matter: a frame at `0×0` is a layout fault
+	 * and a frame of the right size whose labels are transparent or `#FFFFFF` on a white panel is an ink fault,
+	 * and they look identical from the seat.
+	 */
+	private probeRow(): void {
+		if (this.rowProbed) return;
+
+		const list = this.rows;
+		if (list === undefined) return;
+
+		for (const child of list.GetChildren()) {
+			if (!child.IsA("Frame") || child.Name === MARKER_ROWS) continue;
+
+			this.rowProbed = true;
+
+			let cellReport = "no cell";
+
+			for (const cell of child.GetChildren()) {
+				if (!cell.IsA("TextLabel")) continue;
+
+				cellReport =
+					`cell "${cell.Name}" at ${this.px(cell.AbsolutePosition.X)},${this.px(cell.AbsolutePosition.Y)}` +
+					` size ${this.px(cell.AbsoluteSize.X)}×${this.px(cell.AbsoluteSize.Y)}` +
+					` text "${cell.Text}" ink ${tostring(cell.TextColor3)} alpha ${cell.TextTransparency}`;
+
+				break;
+			}
+
+			print(
+				`[Stats] first row — "${child.Name}" at ${this.px(child.AbsolutePosition.X)}` +
+					`,${this.px(child.AbsolutePosition.Y)} size ${this.px(child.AbsoluteSize.X)}` +
+					`×${this.px(child.AbsoluteSize.Y)}, visible ${child.Visible ? "yes" : "no"}` +
+					`, ZIndex ${child.ZIndex} (parent ZIndex ${list.ZIndex}); ${cellReport}`,
+			);
+
+			return;
+		}
+	}
+
 	/**
 	 * Whether the one-line layout report has been printed — **once per session, and it is the line this panel has
 	 * been missing for three sessions.**
@@ -220,10 +425,23 @@ export class MatchStatsController implements OnStart {
 		this.rows = this.addRowList(content);
 		this.empty = this.addEmptyState(theme, content);
 
+		// **Held for the geometry probe and for nothing else.** The two frames a board can vanish inside are the
+		// panel and the content band: the first decides how much room there is, the second is what the rows
+		// frame's own height is a fraction of, and *neither size has ever been in a log*. See {@link probe}.
+		this.panel = panel;
+		this.content = content;
+
 		this.addFooter(theme, panel);
 
 		raiseZIndex(panel, PANEL_Z_INDEX);
 
+		// **The three markers go in last, one per frame, before anything is parented to the screen.** See
+		// {@link MARKER_PANEL} for what each colour asks and for the five answers. They are added here rather
+		// than by `addPanelFrame` or `addContentBand` because this file may not change `panelChrome` — and
+		// because a diagnostic that a shared helper knows about is a diagnostic that outlives its session.
+		this.addMarker(panel, MARKER_PANEL, Color3.fromRGB(255, 0, 0));
+		this.addMarker(content, MARKER_CONTENT, Color3.fromRGB(0, 255, 0));
+		this.addMarker(this.rows, MARKER_ROWS, Color3.fromRGB(0, 0, 255));
 		// **`wrapLabels` is deliberately not called here, and it is the one departure from the Shop's mount.**
 		// That helper turns wrapping on for every label that is neither `TITLE_NAME` nor `TextScaled` nor inside
 		// an auto-sizing parent — right for a panel of sentences, wrong for a table. A row cell is a *column*:
@@ -244,6 +462,7 @@ export class MatchStatsController implements OnStart {
 		this.answer.Connect((rows) => this.receive(rows));
 
 		this.bindKey();
+		this.probe();
 	}
 
 	/**
@@ -306,7 +525,41 @@ export class MatchStatsController implements OnStart {
 	private refresh(): void {
 		this.render(this.last);
 
-		this.request?.SendToServer();
+		// **Said unconditionally, and it names whether there is a remote to send on.** The two ways this press
+		// does nothing visible are "the panel never asked" and "the panel asked and nothing came back", and
+		// until this line existed neither was in the output. `undefined` here is a mount that did not finish —
+		// the remote is resolved before the key is bound — so it is worth a line of its own rather than a
+		// silent no-op.
+		if (this.request === undefined) {
+			warn("[Stats] press ignored — the request remote was never resolved (mount did not finish)");
+
+			return;
+		}
+
+		print(`[Stats] asking — ${this.last.size()} row(s) remembered from the last answer`);
+
+		// **And a press that is never answered says so in two seconds.** Without this the panel's "waiting" line
+		// is indistinguishable from a board that is broken: a request that never arrives, an answer that is never
+		// delivered and a listener that was never connected all leave the same sentence on screen forever. The
+		// stamp is the guard — an answer clears it, so a later press cannot be judged late by this one's timer,
+		// and a superseded press cannot clear a live one's.
+		const stamp = os.clock();
+		this.awaitingSince = stamp;
+
+		task.delay(2, () => {
+			if (this.awaitingSince !== stamp) return;
+
+			this.awaitingSince = 0;
+
+			warn(
+				"[Stats] no answer within 2s — the request did not reach MatchStatsService, or its answer did " +
+					"not reach this client; see the server's '[Stats] sending …' line",
+			);
+
+			this.say("No answer from the server — see the output window.");
+		});
+
+		this.request.SendToServer();
 	}
 
 	/**
@@ -323,7 +576,28 @@ export class MatchStatsController implements OnStart {
 	 * whether anybody is looking.
 	 */
 	private receive(rows: ReadonlyArray<MatchStatsRow>): void {
+		// **The one line that was always missing from this hop.** The server's line says what it *sent*, and
+		// this says what arrived — and "sent 8, arrived none" and "sent 8, arrived 8" are a transport fault and
+		// a drawing fault respectively. Unconditional rather than `DEBUG`, because the four sessions this
+		// panel has cost were all spent unable to tell those two apart.
+		//
+		// **The first row is on the line**, because the other thing that can empty a board is a payload whose
+		// shape is not what the drawing code reads: a `side` that is not `"A"`/`"B"`, or a `points` that is not
+		// a number, drops every row into a branch that draws nothing and says nothing.
+		if (typeIs(rows, "table")) {
+			const first = rows[0];
+			const shape =
+				first === undefined
+					? "none"
+					: `name=${tostring(first.name)} side=${tostring(first.side)} points=${tostring(first.points)}`;
+
+			print(`[Stats] received — ${rows.size()} row(s); first { ${shape} }`);
+		} else {
+			warn(`[Stats] received — not a table but a ${typeOf(rows)}; drawing the empty state`);
+		}
+
 		this.answered = true;
+		this.awaitingSince = 0;
 		this.last = typeIs(rows, "table") ? rows : [];
 
 		if (Fusion.peek(this.open)) this.render(this.last);
@@ -421,6 +695,17 @@ export class MatchStatsController implements OnStart {
 		list.ElasticBehavior = Enum.ElasticBehavior.Never;
 		list.Parent = content;
 
+		// **A flex fill on it as well, and the pair is deliberate rather than belt-and-braces for its own
+		// sake.** `addShelf` gives a `ScrollingFrame` a zero size and a `UIFlexItem{FlexMode = Fill}` and the
+		// shop's grid fills its pane, which is the working proof in this codebase that a `ScrollingFrame` *is*
+		// resized by a flex item — so the arithmetic above assumes a height that the layout would have supplied
+		// anyway. **What makes both worth having is the direction each one fails in**: if the flex applies, it
+		// wins and the frame is exactly the band's leftover; if it does not, the frame keeps its declared
+		// arithmetic, which is the leftover less the padding. Neither answer is nought, which is the only
+		// outcome this panel cannot survive — and nought is what a *scale* of a zero-height band would produce
+		// on its own, because `1, -44` of nothing is a negative number that Roblox clamps up to nothing.
+		Fusion.New(this.scope, "UIFlexItem")({ Parent: list, FlexMode: Enum.UIFlexMode.Fill });
+
 		const layout = new Instance("UIListLayout");
 		layout.Name = "RowLayout";
 		layout.FillDirection = Enum.FillDirection.Vertical;
@@ -449,8 +734,13 @@ export class MatchStatsController implements OnStart {
 	private addEmptyState(theme: HudTheme, content: Frame): TextLabel {
 		const message = new Instance("TextLabel");
 		message.Name = "Empty";
+		// **A fixed height, and `AutomaticSize.Y` was removed because a live log proved it resolves to `0×0`.**
+		// The geometry line printed `empty 0×0 (visible no)` on a label declared `(1, 0, 0, 52)` and set to
+		// `AutomaticSize.Y`, which is the one state this label exists to avoid: it is the *only* thing on the
+		// panel that has something to say when the board has nothing to show, and it was measuring itself at
+		// nothing. The wrapped-sentence argument above is still true and still costs nothing here — the panel is
+		// this wide whatever the text does, and two row-heights is room for three lines of it.
 		message.Size = new UDim2(1, 0, 0, ROW_HEIGHT * 2);
-		message.AutomaticSize = Enum.AutomaticSize.Y;
 		message.BackgroundTransparency = 1;
 		message.Font = theme.typography.body.font;
 		message.TextSize = theme.typography.body.size;
@@ -507,13 +797,58 @@ export class MatchStatsController implements OnStart {
 	 * to be a row like any other, appended to the scrolling frame, and a frame that has no height of its own
 	 * cannot show a label inside it. `drawn === 0` now hides the list and shows the label — which is also the
 	 * arrangement that makes the two mutually exclusive by construction rather than by convention.
+	 *
+	 * **Everything in here runs inside a `pcall`, and a thrown row no longer takes the board with it.** An
+	 * error raised in this method used to abort the rest of the loop *and* skip the two `Visible` writes at the
+	 * end, which is the worst possible combination: half a table, no sentence, and nothing in the output except
+	 * a traceback that never mentions the board. Now a failed row is warned about by name and skipped, and a
+	 * failure of the geometry itself puts a sentence on screen instead of leaving the panel blank. **A blank
+	 * panel and a broken panel have to look different**, or every report of one is answered as the other.
+	 *
+	 * **The sides are read from the payload rather than assumed to be `A` and `B`.** `SIDES` is still the order
+	 * they are drawn in, but a row whose `side` is anything else — `""` for a body nobody has sided, or a mode
+	 * that names its own — used to fall through both filters and be dropped without a word. That is a board
+	 * that renders nothing while holding eight rows, which is the report this method keeps getting.
 	 */
 	private render(rows: ReadonlyArray<MatchStatsRow>): void {
+		const [ok, failure] = pcall(() => this.renderBody(rows));
+
+		if (!ok) {
+			warn(`[Stats] render failed — ${tostring(failure)}`);
+
+			this.say("Match stats could not be drawn — see the output window.");
+
+			return;
+		}
+	}
+
+	/**
+	 * **Says one sentence in the panel's empty-state label and takes the list out of the way**, which is the only
+	 * thing on this panel guaranteed to be visible when the rest of it is not. Used by {@link render}'s failure
+	 * path; the ordinary empty and populated states are written by {@link renderBody}.
+	 */
+	private say(text: string): void {
+		const list = this.rows;
+		if (list !== undefined) list.Visible = false;
+
+		const empty = this.empty;
+		if (empty !== undefined) {
+			empty.Text = text;
+			empty.Visible = true;
+		}
+	}
+
+	/** The body of {@link render}, split off **only** so the `pcall` above can wrap all of it. */
+	private renderBody(rows: ReadonlyArray<MatchStatsRow>): void {
 		const list = this.rows;
 		if (!list) return;
 
 		for (const child of list.GetChildren()) {
 			if (child.IsA("UIListLayout") || child.IsA("UIFlexItem")) continue;
+
+			// **The blue marker is not a row and is spared**, because this loop runs on every press and a marker
+			// destroyed by the first one is a marker nobody ever sees. See {@link MARKER_PANEL}.
+			if (child.Name === MARKER_ROWS) continue;
 
 			child.Destroy();
 		}
@@ -523,7 +858,28 @@ export class MatchStatsController implements OnStart {
 		let order = 0;
 		let drawn = 0;
 
-		for (const side of SIDES) {
+		// **`SIDES` first, then any side the payload invents, in the order the payload first mentions it.** The
+		// filter below used to be `SIDES` alone, so a row with `side === ""` — which the type documents as one
+		// of the three legal values — matched neither pass and vanished, and the board drew nothing while the
+		// server had numbered eight rows.
+		const groups = new Array<string>();
+
+		for (const side of SIDES) groups.push(side);
+
+		for (const row of rows) {
+			let known = false;
+
+			for (const side of groups) {
+				if (side === row.side) {
+					known = true;
+					break;
+				}
+			}
+
+			if (!known) groups.push(row.side);
+		}
+
+		for (const side of groups) {
 			const onSide = rows.filter((row) => row.side === side);
 			if (onSide.size() === 0) continue;
 
@@ -538,20 +894,33 @@ export class MatchStatsController implements OnStart {
 			heading.Name = `Side-${side}`;
 			heading.Size = new UDim2(1, 0, 0, SIDE_HEADING_HEIGHT);
 			heading.BackgroundTransparency = 1;
+			// **`ZIndex` written by hand, because this label is created on a *press* and `raiseZIndex` only ever
+			// ran once at mount.** See {@link addRow} for the whole of it — the same fault, three lines apart.
+			heading.ZIndex = list.ZIndex;
 			heading.Font = theme.typography.body.font;
 			heading.TextSize = theme.typography.body.size;
 			// **The team's colour, from the one table that holds them** — the same call `HitLogController`
-			// makes about a feed's two names, so a side is one colour everywhere on screen.
+			// makes about a feed's two names, so a side is one colour everywhere on screen. A side the table
+			// has never heard of takes the primary ink rather than throwing, which is the same "fall back
+			// rather than error" `sideNameOf` applies to its own unknown labels.
 			heading.TextColor3 = teamColourOf(side) ?? theme.colors.textPrimary;
 			heading.TextXAlignment = Enum.TextXAlignment.Left;
-			heading.Text = sideNameOf(mode, side);
+			heading.Text = side === "" ? "No side yet" : sideNameOf(mode, side);
 			heading.LayoutOrder = order;
 			heading.Parent = list;
 
 			order += 1;
 
 			for (const row of ranked) {
-				this.addRow(list, theme, row, order);
+				// **One row at a time, so the failure names the body it happened on.** A row is six labels and
+				// a layout; the only way it can throw is a field that is not the type the payload promised, and
+				// "which body" is the whole of the fix when that happens.
+				const [rowOk, rowFailure] = pcall(() => this.addRow(list, theme, row, order));
+
+				if (!rowOk) {
+					warn(`[Stats] row for ${tostring(row.name)} could not be drawn — ${tostring(rowFailure)}`);
+					continue;
+				}
 
 				order += 1;
 				drawn += 1;
@@ -574,7 +943,20 @@ export class MatchStatsController implements OnStart {
 			empty.Visible = drawn === 0;
 		}
 
-		if (DEBUG) print(`[Stats] board drew — ${drawn} row(s)`);
+		// **The numbers, every press, not once per session.** `reportOnce` prints the resolved pixels the first
+		// time an answer lands; this prints what the *drawing* decided, on every hold, because a board that is
+		// correct once and empty afterwards is a different fault from one that has never worked. It names the
+		// payload's own shape as well — `in` beside `drawn` is what says "eight arrived and none matched a
+		// side", which no other line in this project can say.
+		print(
+			`[Stats] drew ${drawn} of ${rows.size()} row(s) into ${list.AbsoluteSize.X}×${list.AbsoluteSize.Y} px` +
+				` (list ${list.Visible ? "shown" : "hidden"}, empty ` +
+				`${empty !== undefined && empty.Visible ? "shown" : "hidden"})`,
+		);
+
+		// **And where the first row actually landed**, once per session. A count of eight rows says the loop
+		// ran; it says nothing about a rectangle on screen. See {@link probeRow}.
+		this.probeRow();
 	}
 
 	/**
@@ -588,12 +970,30 @@ export class MatchStatsController implements OnStart {
 	 * have to answer "what is this?" for a name that is not there, and the answer would be a column of blank
 	 * heads for the eight bodies that actually played. The name is the identity the server chose, and the
 	 * card's job is to print it.
+	 *
+	 * **`ZIndex` is copied from the container, and that one line is the whole of a board that drew eight rows
+	 * and showed none of them.** `mount` calls `raiseZIndex(panel, PANEL_Z_INDEX)` — which flattens *every
+	 * descendant that exists at that moment* to `10`, including the headings strip, the content band and the
+	 * scrolling frame — and that call is over before the first press. A row created afterwards kept the
+	 * `ZIndex` default of `1`, and `ZIndex` is compared **flattened across the whole `ScreenGui`** rather than
+	 * against a sibling: a child below its parent's number is drawn *behind* the parent, and the panel's
+	 * background is opaque white. So the rows were in the tree, at the right size, at the right position,
+	 * reporting `Visible = true` — and painted underneath the paper they were meant to be written on. The
+	 * column headings were visible because they were built at mount; the coloured markers were visible because
+	 * they are set to `100`; **everything built on a press was invisible, which is exactly the screenshot.**
+	 *
+	 * **Copied from the parent rather than a constant**, because the number that matters is "whatever level
+	 * `raiseZIndex` put this panel's furniture on" — a literal here would be a second authority on the panel's
+	 * depth, and the two would disagree the first time `PANEL_Z_INDEX` moved. At equal `ZIndex` the tree order
+	 * decides, and a child after its parent's background draws on top of it.
 	 */
 	private addRow(parent: ScrollingFrame, theme: HudTheme, row: MatchStatsRow, order: number): void {
 		const line = new Instance("Frame");
 		line.Name = row.name;
 		line.Size = new UDim2(1, 0, 0, ROW_HEIGHT);
 		line.BackgroundTransparency = 1;
+		// **Set before the cells are built**, because `fillCells` copies it onto each of them.
+		line.ZIndex = parent.ZIndex;
 		line.LayoutOrder = order;
 		line.Parent = parent;
 
@@ -645,6 +1045,10 @@ export class MatchStatsController implements OnStart {
 			cell.Name = column.heading;
 			cell.Size = new UDim2(widthOf(index), 0, 1, 0);
 			cell.BackgroundTransparency = 1;
+			// **The row's own level, and this is the line that decides whether the text is visible at all.** A
+			// label left at the `ZIndex` default is drawn behind the panel's opaque background when its row is
+			// above that background — see {@link addRow}, which is where the whole fault is written down.
+			cell.ZIndex = row.ZIndex;
 			cell.Font = heading ? theme.typography.caption.font : theme.typography.body.font;
 			cell.TextSize = heading ? theme.typography.caption.size : theme.typography.body.size;
 			cell.TextColor3 = heading ? theme.colors.textSecondary : theme.colors.textPrimary;

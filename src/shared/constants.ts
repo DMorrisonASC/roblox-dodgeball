@@ -684,6 +684,35 @@ export const PRACTICE_ZONE_ATTRIBUTE = "PracticeZone";
 export const RESPAWN_AT_ATTRIBUTE = "RespawnAt";
 
 /**
+ * Attribute on a **body** — a rig, or a character — holding the identity a hit on it travels as.
+ *
+ * **Written by the server the first time that body is hit, and read by `hitVfx` to find the body again.** The
+ * reason is a report of "cloned rig ×7, no hit effect", and the cause was the payload: `hitImpact` carries the
+ * victim's **`Name`**, and a name is not an identity. Seven copies of one model are seven models called `Rig`,
+ * so the client's lookup answered with whichever copy the collection walk offered first — or with nothing at
+ * all, before the walk existed — and the burst either landed on a body nobody had hit or on no body at all.
+ * See `hitVfx.bodyOf`, which resolves this first and the name second.
+ *
+ * **The server keeps the authority, and this attribute is only the client's handle on it.** `registerHit` holds
+ * a `WeakMap` from the body to its id, so the id is a fact about *that instance* even though the attribute can
+ * be copied — a `Model` duplicated in Studio inherits every attribute its source had, which would otherwise
+ * give two bodies one identity. A duplicate is corrected the first time it is hit, because it has no entry in
+ * that map and is issued a fresh id. **The residual case is named rather than hidden**: between the copy being
+ * made and either body being hit again, two live bodies can carry the same value, and the client picks the
+ * first. That can only happen to bodies a person made by hand in Studio, and the two are the same body to
+ * everybody watching.
+ *
+ * **A string rather than an `Instance` on the wire, and not because a reference would not work.** A remote can
+ * carry an instance reference, and it would be exact — but it would also replace the two names `hitImpact`
+ * deliberately sends, which the log is compared against and which `hitConfirm` compares to
+ * `LocalPlayer.Name`. An id beside the name costs one field and changes neither reader.
+ *
+ * **Nothing on the server reads it back except `registerHit`.** It is not a record of a hit and nothing
+ * accumulates from it; a body that is never hit never wears one.
+ */
+export const BODY_ID_ATTRIBUTE = "BodyId";
+
+/**
  * Attribute on a **`Player`** naming the body that landed the latest hit on them — a display name for a
  * player, a rig's own `Name` for a rig — and absent when there is nothing to report.
  *

@@ -1,5 +1,5 @@
 import { CollectionService, Debris, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { NPC_TAG } from "shared/constants";
+import { BODY_ID_ATTRIBUTE, NPC_TAG } from "shared/constants";
 import { events } from "shared/networking";
 
 /** Prints one line per effect played, and one for each template that is not there. */
@@ -148,7 +148,13 @@ export function startHitVfx(): void {
 	// on*, so the victim is the subject of a fact and the thrower is what is said about it. The arrow in the
 	// line below reads the other way round deliberately: `${thrower} → ${victim}` is the sentence a person
 	// says, and the payload's order is the shape of the event rather than of the sentence.
-	events.Client.Get("hitImpact").Connect((victim, thrower) => {
+	events.Client.Get("hitImpact").Connect((victim, thrower, _ability, victimId) => {
+		// **`_ability` is declared and never read, and declaring it is the only way to reach the fourth
+		// field.** The power the throw carried is `hitConfirm`'s business — it escalates the splash — and not
+		// this file's, but a Luau handler reads its arguments by position, so leaving the third out would put
+		// the ability in `victimId`'s place and have this resolve on the word "Freeze". The leading underscore
+		// is the convention for an argument that exists to be stepped over.
+		//
 		// **Not called `local`.** Luau reserves that word, and roblox-ts refuses the *identifier* rather than
 		// the use of it — the same family as `type`, `and`, `nil` and `self`, and a hard compile error rather
 		// than a shadowing warning.
@@ -180,9 +186,9 @@ export function startHitVfx(): void {
 		// client threw that landed on a rig is the commonest hit of a round played against them. See `bodyOf`,
 		// which resolves both.
 		if (thrower === localPlayer.Name) {
-			const body = bodyOf(victim);
+			const body = bodyOf(victim, victimId);
 			if (body === undefined) {
-				warnNoBody("attacker", victim);
+				warnNoBody("attacker", victim, victimId);
 				return;
 			}
 
@@ -227,9 +233,9 @@ export function startHitVfx(): void {
 		// It is the same particle work as before — one burst per hit per client either way — and what changed is
 		// only which template is cloned. If the red ever reads as too loud, the lever is the two `playOn` calls
 		// above and this one: they name the template, and this file decides nothing else about the colour.
-		const body = bodyOf(victim);
+		const body = bodyOf(victim, victimId);
 		if (body === undefined) {
-			warnNoBody("bystander", victim);
+			warnNoBody("bystander", victim, victimId);
 			return;
 		}
 
@@ -271,9 +277,14 @@ export function startHitVfx(): void {
 		// the red is the same red the hit path now draws on everybody: the body that lost its throw, seen by the
 		// people watching it happen. See the module doc for why the two branches agree on the colour and only the
 		// sentence on the wire differs.
-		const body = bodyOf(thrower);
+		//
+		// **`""` for the id, because `caughtThrow` carries none.** That event is older than the field and has
+		// one name in it; a catch is drawn on a thrower the client can find by name, and the bodies a catch
+		// resolves to are the round's rigs and players, which are named uniquely. The duplicate-name case the
+		// id exists for is a body somebody cloned by hand, and a body cloned by hand does not throw.
+		const body = bodyOf(thrower, "");
 		if (body === undefined) {
-			if (DEBUG) print(`[VFX] ${localPlayer.Name}: bystander — but no body for ${thrower}`);
+			warnNoBody("bystander (caught)", thrower, "");
 			return;
 		}
 
@@ -308,17 +319,50 @@ export function startHitVfx(): void {
  * it can be tagged, and a hit on it is a hit worth drawing. So the decoy disappears not because the search got
  * narrower but because the question got asked correctly: *"is there a body by this name"*, rather than *"is
  * there a tagged body by this name"*, which is a different and stricter question that only usually has the same
- * answer. The walk costs a descendant scan of `Workspace` on a hit, which is once per hit per client and not a
- * per-frame cost — the alternative, a name index kept in step with the world, is a service for a lookup that
- * happens a few times a second at most.
+ * answer. The walk costs a descendant scan of `Workspace` — and only for a body that is **not** tagged, since
+ * a rig the lobby spawned is resolved on the id in the tag walk below; a scan of the whole world happens once
+ * per hit on a hand-placed body at most, which is not a per-frame cost. The alternative, a name index kept in
+ * step with the world, is a service for a lookup that happens a few times a second at most.
  *
  * **`Character` and not `FindFirstChild("HumanoidRootPart")`**: whether a body exists is a different
  * question from whether it has a root, and the two are answered in two places on purpose — a character
  * mid-respawn has none at all (here), while a body whose model has not streamed its root is a real fault
  * with a line of its own (in `playOn`). The same split holds for a rig: it comes back from here whether or not
  * it is tagged, and `playOn` is what says whether it has anything to weld to.
+ *
+ * **And the id first, because a name is not an identity.** The report that put this here was a rig cloned
+ * seven times in Studio — seven models called `Rig` — and every arm below answers with *a* body of that name
+ * rather than *the* body the ball hit. `hitImpact` therefore carries `BODY_ID_ATTRIBUTE` as well, and when it
+ * does this resolves on that and never reaches a name at all. See `RoundService.bodyIdOf` for how the id is
+ * minted; it is `""` for a payload from a build that predates the field, and the name arms are what remain for
+ * one of those and for `caughtThrow`, which carries no id of its own.
  */
-function bodyOf(name: string): Model | undefined {
+function bodyOf(name: string, id: string): Model | undefined {
+	if (id !== "") {
+		// **The tag walk first and the workspace walk second**, which is not a fallback but the same order the
+		// name arms below use and for the same reason: most hits are on rigs the lobby spawned, and those are
+		// all tagged. A workspace walk therefore only happens for a body somebody placed by hand — the case
+		// that asked for the id in the first place.
+		for (const tagged of CollectionService.GetTagged(NPC_TAG)) {
+			if (!tagged.IsA("Model")) continue;
+			if (tagged.GetAttribute(BODY_ID_ATTRIBUTE) !== id) continue;
+
+			return tagged;
+		}
+
+		for (const descendant of Workspace.GetDescendants()) {
+			if (!descendant.IsA("Model")) continue;
+			if (descendant.GetAttribute(BODY_ID_ATTRIBUTE) !== id) continue;
+
+			return descendant;
+		}
+
+		// **Then it falls through to the names rather than returning nothing.** An id that matches no body
+		// means the body left the world between the hit and this line — a rig taken out by its own respawn is
+		// the ordinary way — and a burst drawn on the same-named body standing where it was beats silence. The
+		// id is a refinement; it is not allowed to become a new way for the effect to vanish.
+	}
+
 	for (const player of Players.GetPlayers()) {
 		if (player.Name !== name) continue;
 
@@ -849,13 +893,18 @@ const warnedBodies = new Set<string>();
  * is usually a name that will never resolve — and a warning on every hit in a round would be its own kind of
  * silent. `seat` is in the line because it is the cheapest way to see that the *event* arrived at all: a body
  * this client cannot find as the attacker is a different fault from the same body unfound as a bystander.
+ *
+ * **The id is on the line too, and it is what tells the duplicate-name case apart from a missing body.** "No
+ * body by that name" and "seven bodies by that name and the id matched none of them" are different faults with
+ * different fixes — the first is a body this client cannot see, the second is a body that was destroyed between
+ * the hit and this line — and `""` says the payload predated the field at all, which is a third.
  */
-function warnNoBody(seat: string, name: string): void {
+function warnNoBody(seat: string, name: string, id: string): void {
 	if (warnedBodies.has(name)) return;
 
 	warnedBodies.add(name);
 	warn(
 		`[VFX] ${name}: hit seen as the ${seat}, but no body by that name — no player, no ${NPC_TAG} rig, ` +
-			`and nothing carrying a Humanoid in Workspace`,
+			`and nothing carrying a Humanoid in Workspace (id ${id === "" ? "was not sent" : `"${id}"`})`,
 	);
 }

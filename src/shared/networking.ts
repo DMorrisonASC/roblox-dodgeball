@@ -323,8 +323,23 @@ export const events = Net.Definitions.Create({
 	 * **It is not a record and nothing accumulates from it.** `roundHit` and `roundHitLog` remain the round's
 	 * history of a hit between two people; this is the same event told to the clients that have to draw it,
 	 * and `hitVfx` and `hitConfirm` are its readers.
+	 *
+	 * **A fourth field, `victimId` — and it is the fix for a name being asked to do an identity's job.** The
+	 * first field is the victim's `Name`, which is enough for `hitConfirm` (it only ever compares the *thrower*)
+	 * and enough for a rig the lobby spawned, because those are named uniquely from the pool. It is **not**
+	 * enough for a body a person made: a model duplicated seven times in Studio is seven models called `Rig`, so
+	 * a client looking one up by name draws on whichever copy it finds first — or, before `bodyOf` grew its
+	 * walk, on nothing. The report was exactly that, and it is why the id travels beside the name rather than
+	 * instead of it: the names are what the log is read against, and the id is what the client resolves with.
+	 * See `BODY_ID_ATTRIBUTE`, which is where the id lives on the body, and `hitVfx.bodyOf`.
+	 *
+	 * **Appended rather than woven in, and `hitConfirm` proves that is safe.** A Luau handler ignores arguments
+	 * it does not declare, so the splash module's `(victim, thrower, ability)` keeps working untouched — which
+	 * is why the new field went on the end of the tuple rather than beside the field it belongs with.
 	 */
-	hitImpact: Net.Definitions.ServerToClientEvent<[victim: string, thrower: string, ability: string]>(),
+	hitImpact: Net.Definitions.ServerToClientEvent<
+		[victim: string, thrower: string, ability: string, victimId: string]
+	>(),
 
 	/**
 	 * Server → client: **a throw was caught, and the body that has to wear the consequence is the thrower's.**

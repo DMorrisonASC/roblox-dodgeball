@@ -21,7 +21,7 @@ import {
 import { rigsOnASide } from "../../npc/rigs";
 
 /** Prints the mount line, and every grant, spend and forfeit. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+const DEBUG = true; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.

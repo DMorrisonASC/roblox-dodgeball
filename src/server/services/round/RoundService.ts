@@ -14,6 +14,7 @@ import { findFolder } from "shared/find";
 import { events, HitDirection } from "shared/networking";
 import {
     ARMED_ABILITY_ATTRIBUTE,
+    BODY_ID_ATTRIBUTE,
     IN_ROUND_ATTRIBUTE,
     LAST_HIT_BY_ATTRIBUTE,
     LAST_HIT_BY_CAUSE_ATTRIBUTE,
@@ -2375,7 +2376,7 @@ export class RoundService implements OnStart {
         }
 
         if (thrower !== undefined) {
-            events.Server.Get("hitImpact").SendToAllPlayers(victim.Name, thrower.Name, power);
+            events.Server.Get("hitImpact").SendToAllPlayers(victim.Name, thrower.Name, power, bodyIdOf(victim));
         }
 
         if (this.state !== RoundState.Playing) return;
@@ -4332,3 +4333,50 @@ function roundParticipants(): Model[] {
 
     return participants;
 }
+
+/** The ids handed out so far. **Only ever goes up**, so an id is never reused for a second body. */
+let bodyIdCount = 0;
+
+/**
+ * **The identity the body a hit landed on travels as** — minted on its first hit, and the same string on every
+ * later one.
+ *
+ * **This exists because `hitImpact` carried a `Name` and a name is not an identity.** The report was a rig
+ * cloned seven times in Studio: seven models called `Rig` and one payload field that could not say which of
+ * them a ball had hit, so the client's lookup drew on whichever copy it found first — or on nothing. See
+ * `BODY_ID_ATTRIBUTE` for the attribute this writes, `networking.ts` for the field, and `hitVfx.bodyOf` for the
+ * reader. Nothing else in the game reads the id back.
+ *
+ * **The `WeakMap` is the authority and the attribute is the client's handle on it, which is a deliberate
+ * pair.** The client cannot see this map, so it needs something on the instance; but an attribute is
+ * *inherited by a duplicate*, and a `Model` copied in Studio after it has been hit would hand two live bodies
+ * one id. Keying the record by the instance closes that: a duplicate has no entry, so the first hit on it
+ * mints a fresh id and overwrites the copied attribute. The window that leaves is stated rather than hidden —
+ * until one of the two is hit again they both carry the old value, and the client picks the first of them,
+ * which is only reachable for bodies a person made by hand and are the same body to everyone watching.
+ *
+ * **A counter rather than a GUID.** `HttpService:GenerateGUID` would need a service call and an `HttpEnabled`
+ * place for an id that only has to be unique inside one server's session, and the two bodies it distinguishes
+ * are both in that session by definition.
+ *
+ * **Written at the hit rather than at birth**, because most of the world is never hit and because the bodies
+ * this is *for* are the ones nobody built: a rig the lobby spawned is named uniquely from the pool, while a
+ * model dragged into the workspace is called whatever the person left it as. A body that is never hit never
+ * wears it, and that is the intended state rather than a gap.
+ */
+function bodyIdOf(victim: Model): string {
+    const known = bodyIds.get(victim);
+
+    if (known !== undefined) return known;
+
+    bodyIdCount++;
+    const id = `body${bodyIdCount}`;
+
+    bodyIds.set(victim, id);
+    victim.SetAttribute(BODY_ID_ATTRIBUTE, id);
+
+    return id;
+}
+
+/** The body-to-id record behind {@link bodyIdOf}. See there for why it is keyed by instance and not by name. */
+const bodyIds = new WeakMap<Model, string>();

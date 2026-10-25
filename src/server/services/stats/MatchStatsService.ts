@@ -49,7 +49,18 @@ export class MatchStatsService implements OnStart {
 		const answer = events.Server.Get("matchStatsBoard");
 
 		events.Server.OnEvent("matchStats", (player) => {
-			answer.SendToPlayer(player, this.answer(player));
+			// **The row count is printed at the send rather than only inside `answer`**, because the two are
+			// different facts: `answer` says what the board *contained*, and this says that the payload was
+			// handed to the remote. A throw in `SendToPlayer` — a payload the serializer refuses, an event
+			// whose declared type does not match what is being sent — is invisible without this pair, and it
+			// looks from the client exactly like a board that was never asked for.
+			const rows = this.answer(player);
+
+			print(`[Stats] sending ${rows.size()} row(s) to ${player.Name}`);
+
+			const [ok, failure] = pcall(() => answer.SendToPlayer(player, rows));
+
+			if (!ok) warn(`[Stats] the send to ${player.Name} threw — ${tostring(failure)}`);
 		});
 
 		print("[Stats] board up — throws, hits, catches and dodges, read from the badge ledger");

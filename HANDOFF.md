@@ -2464,6 +2464,178 @@ almost no server code; 45 is what it cannot show.**
     comment claiming the poll fills the seat "within a quarter of a second" was true of the poll and false of the
     count it reads.
 
+60. **A hit on a hand-made rig drew its effect on the wrong body, because `hitImpact` carried a `Name` where it
+    needed an identity — seven models called `Rig` is seven answers to "which body".** The report was the practice
+    zone: the burst appeared on the rigs the lobby spawned and never on the seven a person had cloned. **The log
+    shows the server doing its job** — `Rig was tagged by DodgeballBall on LeftUpperArm` followed by
+    `Humanoid was hit by DodgeballBall on LeftUpperArm` — so the tag resolved, `registerHit` ran, and the event
+    went out with `victim = "Rig"`, `thrower = "prospeed1"`. It was the receiving end that could not answer: a
+    name in `Workspace` is not unique, so a lookup by name can only ever return *a* body of that name.
+
+    **The fallback added in item 58 is what turned "nothing" into "the wrong body", and that is worth stating
+    plainly.** Before it, an untagged rig resolved to `undefined` and the effect was silently skipped; after it,
+    the walk found the *first* model called `Rig` and drew there, which from the seat is the same nothing on the
+    rig you hit. The change was right about the cause it was aimed at and wrong about the instrument — a walk
+    that answers "is there a body by this name" cannot answer "which body was hit". What it did buy is the pair
+    of warnings that made the question answerable at all: no `[VFX]` line appears in the log *for those hits*,
+    which says `bodyOf` returned something and `playOn` drew — the effect was going somewhere.
+
+    **The fix is an identity beside the name, not instead of it.** `registerHit` mints `BODY_ID_ATTRIBUTE` — a
+    per-instance id from a `WeakMap` plus a counter, written onto the body the first time it is hit — and sends it
+    as a fourth `hitImpact` field. `hitVfx.bodyOf` resolves on the id first, tag walk then workspace walk, and only
+    falls through to the names if no body carries it. **The names stay** because they are what the log is compared
+    against and what `hitConfirm` tests against `LocalPlayer.Name`, and the field was appended rather than woven
+    in because a Luau handler ignores arguments it does not declare — so `hitConfirm` did not change at all.
+
+    **The `WeakMap` and the attribute are a deliberate pair, and the split is the design.** The client cannot see
+    the map, so it needs something on the instance; but an attribute is inherited by a duplicate, so a model
+    copied after it had been hit would hand two live bodies one id. Keying the record by instance closes that: a
+    duplicate has no entry and gets a fresh id on its first hit. **Two windows are named rather than hidden.** A
+    duplicate made after a hit carries the old value until one of the two is hit again; and a body's *very first*
+    hit relies on the attribute write reaching the client before the remote call does, which is ordering Roblox
+    does not document — a loss there is a fall-through to the name arms, which is the behaviour this item
+    replaced rather than a new failure. Both are only reachable for bodies a person placed by hand.
+
+    **Cheap where it is common and dear only where it is needed.** Every rig the lobby spawns wears `NPC_TAG`, so
+    the id is found in the tag walk and the workspace scan never runs; the scan happens only for an untagged body,
+    which is exactly the hand-placed case that asked for the id. `warnNoBody` now prints the id too, because "no
+    body by that name" and "seven bodies by that name and the id matched none of them" are different faults, and
+    `""` in that field says the payload predated it.
+
+61. **The Match Stats board is still empty, and this pass did not find the cause — it found the reason nobody could.
+    What it did fix is one way for a board holding eight rows to draw none.** Four sessions have now reported
+    "the board is empty" and every one of them ended with a plausible story instead of a number: the server's
+    `[Stats] board for <name> — 8 row(s)` is the *only* line the chain ever produced, and it says nothing about
+    what arrived at the client or what the client did with it. **So this pass is instrumentation first and a fix
+    second, and the two are deliberately separable** — the next session's output names the fault instead of
+    inviting a fifth story.
+
+    **The one provable defect: rows whose `side` is neither `"A"` nor `"B"` were dropped in silence.**
+    `MatchStatsRow.side` is documented as *"the raw `TEAM_ATTRIBUTE` — `"A"`, `"B"` or `""`"*, and `render`
+    filtered against a literal `SIDES = ["A", "B"]`, so a body nobody has sided matched neither pass and vanished —
+    a board that holds eight rows and draws nought, which is exactly the report. `TEAM_A`/`TEAM_B` are `"A"`/`"B"`
+    (`services/round/team.ts`), so this is **not** the cause of this particular report, and it is fixed anyway
+    because it is a live way for the same symptom to arrive from a different place: the sides are now read from
+    the payload, `SIDES` is only the order, and an unknown side draws under its own heading in the primary ink.
+
+    **The four failures the instrumentation separates** — each is a different file, and all four are invisible
+    from the seat:
+
+    | what the output says | what it means |
+    | --- | --- |
+    | `[Stats] asking — …` then nothing from the client, and **no** server line | the request never left |
+    | the server's `[Stats] sending N row(s) to …`, then **no** client `received` line | the answer never arrived — `SendToPlayer`, the listener, or the event pair |
+    | `[Stats] received — 8 row(s); first { … }` with a `side`/`points` that reads wrong | the payload's shape |
+    | `[Stats] drew 8 of 8 … into 612×0 px` | the rows frame has no height |
+
+    **And each of those is now also on screen**, because a sentence beats a blank panel: the geometry line prints
+    the resolved pixels of the panel, the content band, the rows frame and the empty label one second after mount,
+    `render`'s whole body and every single row are wrapped so a throw names the body it happened on and puts a
+    sentence up rather than half a table, and **a press that is not answered in two seconds says so in the output
+    and on the panel** — which is the one case that was previously indistinguishable from a board that works.
+
+    **The rows frame now has both a flex fill and the arithmetic height, and that is the one change made without a
+    proven cause.** `addShelf` gives a `ScrollingFrame` a zero size and `UIFlexItem{FlexMode = Fill}` and the
+    shop's grid fills its pane — so the *claim* recorded in item 54's neighbourhood, that a `ScrollingFrame` is not
+    resized by a flex item, is contradicted by a working panel in the same codebase. Both are now set, and the
+    pair is chosen for the direction each fails in: if the flex applies it wins, and if it does not the frame keeps
+    an explicit height. **Neither answer is nought**, which is the only outcome this panel cannot survive — and
+    nought is what `1, -44` of a zero-height band produces on its own.
+
+    **What the report asked for and does not exist: a `DisplayName`/`UserId` access on a rig.** `MatchStatsRow` is
+    two strings and five numbers, and `addRow`/`fillCells` read nothing else — no `Player`, no avatar, no
+    `PlayerGui`. The rig is not the problem, the *payload* is, and a `pcall` around the row loop was worth adding
+    for the diagnostic rather than for the error.
+
+62. **The board's pipeline is proven end to end and the pixels are still missing — so this pass marks the depths
+    with colour and prints the one number that was never in a log.** The session's output settles everything the
+    previous five passes argued about:
+
+    ```
+    19:25:46.901  [Stats] drew 0 of 0 row(s) … (list hidden, empty shown)
+    19:25:46.914  [Stats] board for prospeed1 — 8 row(s), A 4 / B 4, 4 with points     <- 13 ms after the press
+    19:25:46.930  [Stats] received — 8 row(s); first { name=prospeed1 side=B points=0 }
+    19:25:46.934  [Stats] drew 8 of 8 row(s) into 644×270 px (list shown, empty hidden)
+    19:25:14.550  [Stats] geometry — panel 664×398, content 664×314, rows frame 644×270 (visible yes), empty 0×0
+    ```
+
+    **So: the round trip is 33 ms, the payload is right, eight rows are created, the scrolling frame is 644×270 and
+    reports itself visible.** Every number is consistent — `314 − (26 + 2 + 16) = 270`, `664 × 0.015` of padding
+    gives 644 — which means the layout ran exactly as designed. The remaining question is not "does the code
+    draw" but **"where are those pixels"**, and no log line in this project has ever contained a position.
+
+    **Two things were proven wrong, and both were hypotheses in the request.** There is **no diagnostic label** —
+    every diagnostic this file emits is a `print`/`warn` to the Output window, which is why the player could read
+    them; there was never a white-on-white label. And the rows are not an ink problem either:
+    `lightPanelTheme()` is `textPrimary #141414` on `panel #FFFFFF`, near-black on white.
+
+    **What the log did prove is a real bug of exactly that shape, one frame over: `empty 0×0`.** The empty-state
+    label was declared `(1, 0, 0, 52)` **with `AutomaticSize.Y`**, and it resolved to nothing — so on the press,
+    for the 33 ms before the answer arrived, the panel showed `list hidden, empty shown` and the thing shown was
+    zero pixels tall. `AutomaticSize` is gone and the height is the constant. **That is the state a player is in
+    whenever the payload is empty or slow, and it looked identical to a broken board.**
+
+    **Three 4-pixel bars, one per depth.** `_MarkerPanel` red in the panel, `_MarkerContent` green in the content
+    band, `_MarkerRows` blue in the scrolling area — `LayoutOrder = -1` (each lives in a `UIListLayout`, which
+    positions its children and overrides `Position`) and `ZIndex = 100` (above the panel's own furniture at 10).
+    **The user's answer is the diagnosis**: none → the panel is not on screen; red only → the content band is not;
+    red and green without blue → the scrolling area is not; all three without rows → the rows' ink or height;
+    all three with rows → it was never broken. The blue bar is spared by `renderBody`'s clearing loop, which
+    otherwise destroys it on the first press.
+
+    **And the probe now prints where, not just how big**: the panel's `AbsolutePosition`, its `Visible`, its
+    `ZIndex`, its parent's `ClassName`/`Name`/`Enabled`/`DisplayOrder`/`ScreenInsets`, the content band's and the
+    rows frame's positions, the empty label's position and text, and — on the first press that has rows — the
+    **first row's** resolved rectangle, `Visible`, `ZIndex` and its first cell's `TextColor3` and
+    `TextTransparency`. **The expected panel corner is `≈(204, 77)`**, arithmetic from this log: the panel is
+    `0.62 × 0.72` of the viewport anchored at its centre, so `664/0.62 = 1071` wide and `398/0.72 = 553` tall,
+    and `(1071 − 664)/2 = 203.5`, `(553 − 398)/2 = 77.4`. Anything else on that line is the answer.
+
+63. **The board's rows were drawn underneath the panel. `ZIndex`, and one line of `raiseZIndex` explains all six
+    sessions.** A screenshot settled it in one glance: the title, the column headings, the red bar, the green bar,
+    the blue bar and the footer all visible — and **nothing between the blue bar and the footer**. That is the
+    fourth of the five answers the markers were built to collect, and it points at the one difference between the
+    things that were visible and the things that were not:
+
+    | what | when it was built | `ZIndex` | visible |
+    | --- | --- | --- | --- |
+    | panel background, bands, headings strip, its six cells | at mount | `10` | yes |
+    | the three markers | at mount | `100` | yes |
+    | the empty label | at mount | `10` | yes (when shown) |
+    | **a side heading, a row frame, a row's six cells** | **on a press** | **`1`** | **no** |
+
+    **`raiseZIndex(panel, PANEL_Z_INDEX)` flattens every descendant that exists at the moment it runs to `10`** —
+    `for (const descendant of root.GetDescendants()) … descendant.ZIndex = z`. It is called once, at the end of
+    `mount`, and it is over before the first press. Everything `render` builds afterwards kept the `ZIndex`
+    default of `1`, and `ZIndex` is compared **flattened across the `ScreenGui` rather than against a sibling**:
+    a child whose number is below its parent's is drawn *behind* the parent, and this panel's background is
+    opaque white (`#FFFFFF`). **The rows were in the tree, at the right size, at the right position, reporting
+    `Visible = true`, and painted under the paper.** That is why `drew 8 of 8 row(s) into 644×270 px (list shown)`
+    and a blank panel were both true at once, and why every previous pass could verify the loop and still lose
+    the pixels.
+
+    **The fix is three `ZIndex` writes, all copied from the container rather than from a constant.** `addRow` sets
+    `line.ZIndex = parent.ZIndex`, `fillCells` sets `cell.ZIndex = row.ZIndex` (which covers the row's six labels
+    *and* rebuilds the headings strip correctly), and `renderBody` sets the per-side heading to `list.ZIndex`.
+    **Copied and not written as `10`**, because the number that matters is "whatever level `raiseZIndex` put this
+    panel's furniture on" — a literal would be a second authority on the panel's depth and the two would disagree
+    the first time `PANEL_Z_INDEX` moved. At equal `ZIndex` the tree order decides, and a child draws after its
+    parent's background; the headings strip is the proof, since it is at `10` under a panel at `10` and has always
+    been visible.
+
+    **Two other things this pass proved, both of which were hypotheses and neither of which was true.** There is no
+    diagnostic *label* anywhere in this panel — every diagnostic is a `print`/`warn` to the Output window, which
+    is why the player could read them, so the "white on a light panel" theory had no subject. And the rows are not
+    an ink problem: `lightPanelTheme()` is `textPrimary #141414` on `panel #FFFFFF`.
+
+    **What the previous pass did fix, and it was real:** the empty label's `AutomaticSize.Y` resolved to `0×0` on a
+    live log (`empty 0×0 (visible no)`), so the state a player saw for the 33 ms before an answer — `list hidden,
+    empty shown` — was a zero-height label. That is "an empty box" all by itself, and it is the state a press
+    shorter than the round trip never leaves.
+
+    **`SHOW_MARKERS` is now a single switch** (`MatchStatsController.ts`, top of file) so the three bars can go in
+    one edit. They are left on for one confirming session: rows plus three bars means the diagnosis was right.
+
 ---
 
 ## 16. What a live log has actually confirmed
@@ -2731,7 +2903,7 @@ the client's answer, so the proof for both items 52 and 53 is the user's eyes on
 
 | Document | What it is | State |
 |---|---|---|
-| `HANDOFF.md` | this file | current as of **2026-10-24**, against `6ce8770` plus the uncommitted work from the same day (§15 items 52–59: a rig's walking fact given a real stop edge, a parked rig's speed cleared on its way out of the world and on every placement, a client that had stopped dressing such a rig rather than forgetting it, a Match Stats board given an empty state that can be seen and a server line that says how many rows it answered with, a lobby that draws only the seat deficit instead of a full roster it then parks, the removal of the seat-reservation clock that was putting the eighth rig back five seconds into an intermission, the animation renderer's failure-as-success fixed along with its cancelled-windup speed reset, a hit-VFX pass that found the `victim` branch falling through into the spectator branch, warned about the two silent ways a rig hit draws nothing, and widened the body lookup past `NPC_TAG` alone, and a surrendered player's seat no longer booked back as a lobby reservation — which is why the round they left still had a body missing). **The 2026-10-24 passes touched §15 and §16 only.** **The 2026-10-23 pass** (against `f062372` plus six uncommitted files from the same day — the mobile cluster's glass face and rim glow, the cooldown ring, the caught-throw caption, the round's admission strip, the loading screen's title) brought **§4, §9, §10, §15 and §16** in step: §4's map lost two deleted controllers and gained `MobileControls`, `ui/glow.ts` and `client/enemyView.ts`; §9's inventory table was corrected the same way; §10 gained two stories and a completed list; §15 items 34–37 and §16 a note saying it confirmed nothing. **§5–§8, §11–§14, §17 and §18 stand as their own revisions left them** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted. §5's round lifecycle and §17's walk-speed table are the two most likely to have drifted since, because both describe code the later items changed |
+| `HANDOFF.md` | this file | current as of **2026-10-24**, against `6ce8770` plus the uncommitted work from the same day (§15 items 52–59: a rig's walking fact given a real stop edge, a parked rig's speed cleared on its way out of the world and on every placement, a client that had stopped dressing such a rig rather than forgetting it, a Match Stats board given an empty state that can be seen and a server line that says how many rows it answered with, a lobby that draws only the seat deficit instead of a full roster it then parks, the removal of the seat-reservation clock that was putting the eighth rig back five seconds into an intermission, the animation renderer's failure-as-success fixed along with its cancelled-windup speed reset, a hit-VFX pass that found the `victim` branch falling through into the spectator branch, warned about the two silent ways a rig hit draws nothing, and widened the body lookup past `NPC_TAG` alone, and a surrendered player's seat no longer booked back as a lobby reservation — which is why the round they left still had a body missing, and a `hitImpact` that carries an id beside the victim's name, because seven models called `Rig` are seven answers to "which body was hit"). **The 2026-10-24 passes touched §15 and §16 only.** **The 2026-10-23 pass** (against `f062372` plus six uncommitted files from the same day — the mobile cluster's glass face and rim glow, the cooldown ring, the caught-throw caption, the round's admission strip, the loading screen's title) brought **§4, §9, §10, §15 and §16** in step: §4's map lost two deleted controllers and gained `MobileControls`, `ui/glow.ts` and `client/enemyView.ts`; §9's inventory table was corrected the same way; §10 gained two stories and a completed list; §15 items 34–37 and §16 a note saying it confirmed nothing. **§5–§8, §11–§14, §17 and §18 stand as their own revisions left them** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted. §5's round lifecycle and §17's walk-speed table are the two most likely to have drifted since, because both describe code the later items changed |
 | `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of **2026-10-23**, which added one row to its "not tags, but the same trap" table: `"Hit"` / `"Catch"`, the two values of `LAST_HIT_BY_CAUSE_ATTRIBUTE` and the only pair on that list whose disagreement is a wrong *sentence* rather than a wrong lookup. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
 | `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **a record, not a description.** It documents the retired mock (five tabs, a box picture with odds); the panel was rewritten onto the economy and `ui/panelChrome.ts`, and a caveat banner at the top now says so. Kept because **§7's arithmetic still holds** (the panel really does collapse below ~700 px of viewport height) and §8's ruled-out list is still worth not re-treading. §5 and §6 were corrected on 2026-10-16 for the shared GUI's region, which is a *device* decision now (§9) |
 | `README.md` | upstream roblox-ts boilerplate — its entire content is the line `First commit` | says nothing about this project; ignore it |
