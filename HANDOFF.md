@@ -2636,6 +2636,107 @@ almost no server code; 45 is what it cannot show.**
     **`SHOW_MARKERS` is now a single switch** (`MatchStatsController.ts`, top of file) so the three bars can go in
     one edit. They are left on for one confirming session: rows plus three bars means the diagnosis was right.
 
+64. **The board renders, and the dotted background the next request asked for cannot be built without either a
+    texture this repository does not have or a change to a file that request forbade.** The panel now wears a
+    `UIGradient` — a white-to-`card` wash, three stops of its own palette, one instance. **The dots are not here,
+    and the three reasons are worth keeping because they will be asked for again:**
+
+    - **A full-size `GuiObject` child of this panel is eaten by its `UIListLayout`.** The panel stacks its bands
+      with a list layout, and a list layout positions every `GuiObject` child *and reserves its height*. A pattern
+      sized `(1, 1)` would consume the panel's whole height and push the header, content and footer off the bottom.
+      **Not a theory**: item 62's three diagnostic bars are `(1, 0, 0, 4)` children of these same frames, and each
+      shifted its siblings down by four pixels — visible in the screenshot that closed item 63. A *modifier* is not
+      a child: `UIGradient` is a `UIComponent` like the `UIShadow` the panel already wears, it takes part in no
+      layout, and `raiseZIndex` does not see it.
+    - **No dot texture exists** — `assets/` is three ability PNGs, no `ScaleType.Tile` appears anywhere in `src/`, and
+      `IMAGES_CONFIG` is the logo plus three icons. **`rbxassetid://0` renders nothing**, so the request's fallback
+      would satisfy the shape of the change and none of its purpose: the panel would look exactly as bland as it
+      did, and the next reader would have to prove that before believing it.
+    - **A gradient cannot be made into a lattice, checked against the typings rather than remembered.** These
+      typings' `UIGradient` is the modern one — `Type: Linear | Radial | Conical`, `TileMode: Clamp | Repeat |
+      Mirror`, `Scale` — and **every combination repeats in one direction**: `Linear` + `Repeat` is stripes,
+      `Radial` + `Repeat` is concentric rings about the centre, `Conical` + `Repeat` is wedges. A dot *grid* needs
+      two directions, one `UIComponent` has one, and two `UIGradient`s on one object is one `UIGradient`.
+
+    **The procedural grid was rejected on the request's own reasoning and the arithmetic backs it**: a dot every
+    16 px on a 664×398 sheet is 41 × 25 = **1,025 `Frame`s**, built once and never destroyed. This panel rebuilds
+    eight rows of six labels per press and that is affordable at ~50 instances; a thousand is a different decision.
+
+    **The two unlocks, neither taken.** A `pattern?: string` argument on `addPanelFrame` inserting the texture
+    *outside* the band layout is the honest fix and is a change to `panelChrome.ts`. The other is a mirror frame in
+    the HUD `ScreenGui` with the sheet's white moved onto it — which needs a copy of the panel's anchor, size **and**
+    `UISizeConstraint` to stay aligned on every viewport, and leaves the shadow in the wrong place: **two
+    authorities on one rectangle**, which is the shape of every layout bug this panel has had.
+
+    **A texture, when one is drawn, needs alpha-bleed and not just alpha.** `images.config.ts` records that Roblox
+    sets fully transparent pixels to **black** on upload, so a naive dot tile at `ImageTransparency = 0.9` lays a
+    uniform 10% black veil over the sheet — a dirty panel rather than a pattern. 16×16 PNG, dots in `#DCE0E6`,
+    background transparent **and bled**.
+
+65. **A panel is two frames now, and the reason is that a decoration layer cannot be a child of a frame that owns a
+    layout.** `addPanelFrame` builds a **sheet** — the visible rectangle, with the corner, the hairline, the shadow
+    and the viewport constraint — and inside it an optional tiled **`Pattern`** `ImageLabel` and a **`Content`**
+    frame that owns the `UIListLayout`. It returns the content frame, and the bands stack as they always did.
+
+    **The forcing fact was measured two passes ago and misread as a curiosity.** A `GuiObject` child of a frame with
+    a `UIListLayout` is *laid out*: the list positions it **and reserves its height**. Three 4-pixel diagnostic bars
+    each pushed their siblings down by exactly 4 px, which is visible in the screenshot that closed item 63 — so a
+    backdrop sized `(1, 1)` would have consumed the whole panel and pushed every band off the bottom. **That is why
+    the texture was refused in item 64, and it is why the structure had to change rather than the technique.**
+
+    **The request's own version of this change would have hidden all three panels, and that is worth recording.**
+    It asked for `addPanelFrame` to return the content frame *and* for existing callers to keep working unchanged —
+    but every caller ends with `panel.Parent = getHudScreenGui()`, which is the line that puts a panel on screen.
+    With a content frame in hand that line moves **the content out of the sheet and leaves the sheet parentless**: a
+    panel built perfectly and never drawn. So the return stayed the content frame and the parenting became
+    `mountPanel(content, into)`, which resolves the sheet through `panelSheet` — **one line changed in each of
+    three files**, and the structure knowledge stayed in `panelChrome` instead of being copied into three mounts.
+
+    **`paintSheet` moved with it, and it had to.** A `UIGradient` on a frame with `BackgroundTransparency = 1` paints
+    nothing, and the content frame is exactly that — so the gradient goes on the sheet, found by `panelSheet`. Had
+    this been missed the gradient would have silently stopped existing, which is item 65 repeating item 63 one layer
+    up.
+
+    **The stops are a calibration ramp and not a design.** `#FFFFFF → #D8DCE4 → #A8B0BC` — deliberately loud, so
+    "did the build change" is answerable by looking. **Item 64's stops were the real fault**: `#FFFFFF → #F5F5F7 →
+    #E8EBF0` is about one RGB step per ten pixels down a 400-pixel sheet, which is below what a person sees, so
+    *"no visible change"* was a true statement about an invisible gradient rather than about a stale build. **The
+    lesson is the one this file keeps relearning: a change designed to be subtle cannot also be a change used to
+    prove a pipeline is live.** The tasteful version is one edit away and is named in the comment.
+
+    **`pattern?: string` is ready and unused, on purpose.** `PATTERN_TEXTURE` in `MatchStatsController` is
+    `undefined`, so the panel wears the gradient and nothing else; setting it to an uploaded `rbxassetid://…` adds
+    the tiled layer with no other change. **The art's contract is one sentence and it is in both files**: a 16×16
+    PNG, dots on a transparent background, alpha channel kept **and alpha-bled** — Roblox sets fully transparent
+    pixels to black, so an un-bled tile at `ImageTransparency = 0.85` is a 15% black veil over the whole sheet.
+
+66. **Each side's heading now carries that side's score, read from the attributes the round already publishes — and
+    the interesting part is the three-state distinction, not the number.** `headingText` renders
+    `Team B  ·  3`; `scoreOn` answers a `number` or `undefined`, and the heading spends the difference as `—`. **`0`
+    prints as `0`**, because an intermission board is legitimately all noughts and a `—` there would claim ignorance
+    when there was an answer.
+
+    **`undefined` rather than `0` is why this is not `ScoreHudController.scoreOf`.** That helper returns `number`,
+    flooring a missing attribute to nought — right for a HUD bar that always draws a number, wrong for a board that
+    has a state to render for "not yet". Two helpers with the same name and different contracts would be worse than
+    two names, so neither is shared.
+
+    **The score is read at draw time and never travels in the payload.** `MatchStatsRow` is one *body's* line;
+    `ScoreA`/`ScoreB` are the round's own facts and are already on the `RoundStatus` folder where the HUD bar reads
+    them. Adding them to `matchStatsBoard` would be a second copy of a number the client can see — and no
+    subscription either, because `render` runs on the press and on the answer, so the value is sampled exactly when
+    it is drawn.
+
+    **The separator is `·`, not the em-dash the reference used**, and the reason is that `—` is the placeholder: a
+    join of `—` would render an unpublished score as `Team B — —`, which reads as a fault. `·` is already this
+    panel's separator in the footer sentence.
+
+    **The reference's other three features were reported and not built**: a coloured swatch per side (one `Frame` and
+    a `UICorner` per heading, and the side's colour is already available from `teamColourOf`), a grey band per side
+    (the heading label would gain a `BackgroundColor3` and the section a `UIPadding`), and dashed row borders (a
+    `UIStroke` per row, which does not do dashes — it would need a tiled image, the same asset problem item 65
+    records). All three are restyles of proven-working structure and none of them was asked for twice.
+
 ---
 
 ## 16. What a live log has actually confirmed

@@ -45,6 +45,7 @@ import {
 	addTabStrip,
 	addTile,
 	addTrailStrip,
+	mountPanel,
 	PANEL_Z_INDEX,
 	raiseZIndex,
 	wrapLabels,
@@ -396,7 +397,9 @@ export class InventoryController implements OnStart {
 		raiseZIndex(panel, PANEL_Z_INDEX);
 		wrapLabels(panel);
 
-		panel.Parent = getHudScreenGui(); // must stay the LAST statement before the watches
+		// **The sheet, not `panel`, because a panel is two frames now.** See `mountPanel` for why the obvious line
+		// — `panel.Parent = getHudScreenGui()` — would move the content frame out of the panel and hide it.
+		mountPanel(panel, getHudScreenGui());
 
 		this.watchPlayer();
 		this.watchEquip();

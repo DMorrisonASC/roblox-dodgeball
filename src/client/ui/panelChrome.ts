@@ -59,6 +59,31 @@ export const PANEL_Z_INDEX = SHOP_CONFIG.PANEL_Z_INDEX;
 /** The gap between tabs as a fraction of the row. */
 export const TAB_GAP_SCALE = 0.012;
 
+/**
+ * **A panel's corner radius, in pixels, and it is one number with two names only because two frames need it.**
+ *
+ * The sheet wears it, and so does the pattern layer — the sheet does not clip, so a square backdrop under a rounded
+ * panel shows four corners sticking out. It was a literal `10` inside {@link addPanelFrame} until the pattern layer
+ * arrived; the alternative was the same literal twice, which is how the two come to disagree.
+ */
+const PANEL_CORNER_RADIUS = 10;
+
+/**
+ * The name of the frame inside a sheet that the bands are stacked in, and it is exported because a diagnostic
+ * somewhere may want to find it by name rather than by walking parents.
+ */
+export const PANEL_CONTENT_NAME = "Content";
+
+/**
+ * **The size of one tile of a panel's pattern, in pixels — 16, matching the art a caller is expected to supply.**
+ *
+ * `TileSize` is set from this rather than from the image's own dimensions, because a `ScaleType.Tile` image with no
+ * `TileSize` is drawn at its *native* size in pixels, and a 16×16 dot tile at native size is a 16-pixel dot in a
+ * 664-pixel panel — which is right, but only by coincidence. Naming it makes the caller's contract one number: **the
+ * art must be 16×16 or the dots are not square in one direction.**
+ */
+const PATTERN_TILE = 16;
+
 /** A tile's name bar, in pixels — the strip across the bottom of a tile that carries its name. */
 const TILE_NAME_HEIGHT = 30;
 
@@ -235,8 +260,9 @@ export function addPanelFrame(
 	theme: HudTheme,
 	name: string,
 	visible: Fusion.UsedAs<boolean>,
+	pattern?: string,
 ): Frame {
-	const panel = Fusion.New(scope, "Frame")({
+	const sheet = Fusion.New(scope, "Frame")({
 		Name: name,
 		Size: SHOP_CONFIG.PANEL_SIZE,
 		AnchorPoint: new Vector2(0.5, 0.5),
@@ -248,9 +274,9 @@ export function addPanelFrame(
 		ZIndex: SHOP_CONFIG.PANEL_Z_INDEX,
 	});
 
-	Fusion.New(scope, "UICorner")({ Parent: panel, CornerRadius: new UDim(0, 10) });
+	Fusion.New(scope, "UICorner")({ Parent: sheet, CornerRadius: new UDim(0, PANEL_CORNER_RADIUS) });
 	Fusion.New(scope, "UIStroke")({
-		Parent: panel,
+		Parent: sheet,
 		Color: theme.colors.border,
 		Thickness: 1,
 		ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
@@ -266,19 +292,100 @@ export function addPanelFrame(
 	// dozens of instances in a grid, most of them behind a scrolled-out row and all of them in the tree
 	// whether the panel is visible or not. The tiles carry no depth of their own at all — **not even an
 	// outline**, see `addTile` — so this is the only thing raised inside a panel.
-	addElevation(scope, panel, theme, "PANEL");
+	addElevation(scope, sheet, theme, "PANEL");
 
-	addViewportConstraint(scope, panel, { min: PANEL_MIN_PIXELS, max: SHOP_CONFIG.PANEL_MAX_SIZE });
+	addViewportConstraint(scope, sheet, { min: PANEL_MIN_PIXELS, max: SHOP_CONFIG.PANEL_MAX_SIZE });
+
+	// **The decoration layer, and the reason this function builds two frames instead of one.** A
+	// full-rectangle `GuiObject` child of a frame that owns a `UIListLayout` is *laid out*: the list
+	// positions it and reserves its height, so a background sized `(1, 1)` consumes the whole panel and
+	// pushes every band off the bottom. That is measured rather than assumed — three 4-pixel diagnostic
+	// bars in `MatchStatsController` each shifted their siblings down by exactly four pixels — and it is
+	// the reason a panel could not have a tiled backdrop until now.
+	//
+	// **So the fill stays on the sheet, and everything that is *stacked* moves into a `Content` frame.**
+	// The sheet keeps the corner, the hairline, the shadow and the viewport constraint, because those are
+	// properties of the visible rectangle; the list layout moves down one level, where its only children
+	// are the bands. A decorated layer between them is then simply another child of the sheet, which no
+	// layout touches.
+	//
+	// **`pattern` is a texture id and nothing else**, so the shape a caller has to know is one string: a
+	// **16×16 PNG uploaded as a `Decal`/`Image`**, dots on a transparent background. `TileSize` matches
+	// the art so one dot is one dot, and `ImageTransparency` is high because this is a backdrop rather
+	// than something to read. **Transparent pixels are uploaded as black**, so the art needs its alpha
+	// kept *and* an alpha-bleed pass — see `images.config.ts`, which records that the same mistake drew a
+	// white box around every ability icon.
+	if (pattern !== undefined) {
+		const dots = Fusion.New(scope, "ImageLabel")({
+			Name: "Pattern",
+			Parent: sheet,
+			Size: UDim2.fromScale(1, 1),
+			BackgroundTransparency: 1,
+			Image: pattern,
+			ImageTransparency: 0.85,
+			ScaleType: Enum.ScaleType.Tile,
+			TileSize: UDim2.fromOffset(PATTERN_TILE, PATTERN_TILE),
+			// **The same level as the sheet, so the tree decides** — see `panelSheet` for the whole of that
+			// rule. Below `PANEL_Z_INDEX` it would be drawn behind the sheet's own opaque fill and vanish.
+			ZIndex: SHOP_CONFIG.PANEL_Z_INDEX,
+		});
+
+		// Because the sheet does not clip: a rounded panel with a square backdrop would show four corners.
+		Fusion.New(scope, "UICorner")({ Parent: dots, CornerRadius: new UDim(0, PANEL_CORNER_RADIUS) });
+	}
+
+	const content = Fusion.New(scope, "Frame")({
+		Name: PANEL_CONTENT_NAME,
+		Parent: sheet,
+		Size: UDim2.fromScale(1, 1),
+		BackgroundTransparency: 1,
+		ZIndex: SHOP_CONFIG.PANEL_Z_INDEX,
+	});
 
 	Fusion.New(scope, "UIListLayout")({
-		Parent: panel,
+		Parent: content,
 		FillDirection: Enum.FillDirection.Vertical,
 		SortOrder: Enum.SortOrder.LayoutOrder,
 		HorizontalAlignment: Enum.HorizontalAlignment.Center,
 		Padding: new UDim(0, 0),
 	});
 
-	return panel;
+	return content;
+}
+
+/**
+ * **The visible rectangle a panel's content frame belongs to** — the sheet, which is the content's parent.
+ *
+ * A panel is two frames now (see {@link addPanelFrame}), and the two pieces of code that need the outer one are
+ * the two below: `mountPanel`, which has to put the *sheet* on the screen, and a caller that wants to paint the
+ * paper, since a `UIGradient` on a frame with `BackgroundTransparency = 1` paints nothing. **A function rather
+ * than a field on the content frame**, because the content frame is a plain `Frame` that the bands and the
+ * `UIListLayout` both live in, and hanging a back-reference off it would be a second thing holding the tree
+ * together.
+ */
+export function panelSheet(content: Frame): Frame | undefined {
+	const parent = content.Parent;
+
+	return parent !== undefined && parent.IsA("Frame") ? parent : undefined;
+}
+
+/**
+ * **Puts a panel on the screen** — the sheet, given the content frame every band was parented to.
+ *
+ * **This is a helper rather than `panel.Parent = gui` at each call site for one reason: that line stopped being
+ * the right one.** With a single frame, "the thing I hold" and "the thing that becomes a child of the `ScreenGui`"
+ * were the same object; with two, the content frame is what a caller holds and the sheet is what must be
+ * parented. Writing `content.Parent = gui` at three call sites would have *moved the content out of the panel and
+ * left the panel nowhere* — a panel that is built correctly and never appears, which is the worst shape of this
+ * class of bug. See {@link panelSheet}.
+ *
+ * **Still the last statement in each caller's mount**, and `content`'s own children are already complete by the
+ * time it is called, which is the property those comments were protecting.
+ */
+export function mountPanel(content: Frame, into: Instance): void {
+	const sheet = panelSheet(content);
+
+	if (sheet !== undefined) sheet.Parent = into;
 }
 
 /**

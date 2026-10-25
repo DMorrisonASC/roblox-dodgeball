@@ -29,6 +29,7 @@ import {
 	addTabStrip,
 	addTile,
 	addTrailStrip,
+	mountPanel,
 	PANEL_Z_INDEX,
 	raiseZIndex,
 	withCommas,
@@ -243,7 +244,10 @@ export class ShopController implements OnStart {
 		raiseZIndex(panel, PANEL_Z_INDEX);
 		wrapLabels(panel);
 
-		panel.Parent = getHudScreenGui(); // must stay the LAST statement in this method
+		// **The sheet, not `panel`, because a panel is two frames now.** This line used to be
+		// `panel.Parent = getHudScreenGui()`, which with one frame meant the same thing; written that way today it
+		// would move the *content* frame out of the panel and leave the panel nowhere. See `mountPanel`.
+		mountPanel(panel, getHudScreenGui());
 
 		// After the tree, because both of these write into values the tree is already reading. Doing it
 		// first would draw a frame of "no coins, nothing owned" on every mount — a lie the player would

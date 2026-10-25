@@ -1,7 +1,7 @@
 import Fusion from "@rbxts/fusion-3.0";
 import Net from "@rbxts/net";
 import { ContextActionService, ReplicatedStorage } from "@rbxts/services";
-import { ROUND_MODE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { ROUND_MODE_ATTRIBUTE, ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { SHOP_CONFIG } from "shared/config/shop.config";
 import { isGameModeId, sideNameOf, teamColourOf } from "shared/gameMode";
 import type { GameModeId } from "shared/gameMode";
@@ -13,7 +13,9 @@ import {
 	addFooterBand,
 	addHeaderBand,
 	addPanelFrame,
+	mountPanel,
 	PANEL_Z_INDEX,
+	panelSheet,
 	raiseZIndex,
 	withCommas,
 } from "../../ui/panelChrome";
@@ -74,6 +76,18 @@ const ROW_GAP = 2;
 const WAITING_TEXT = "Waiting for players…";
 const NOBODY_TEXT = "Nobody is on a side yet.";
 
+/**
+ * **What a side's heading shows where its score should be, when the round has not published one** — an em-dash,
+ * and it is a third empty state rather than a variant of the other two.
+ *
+ * `WAITING_TEXT` and `NOBODY_TEXT` are about *rows*; this is about one number on a heading that is drawn whether or
+ * not there are rows. The three arrive from different places — a round trip that has not landed, an answer that
+ * says the lobby is empty, and a `RoundStatus` folder whose `ScoreA`/`ScoreB` is absent or not a number — so a
+ * reader who sees one of them knows which file to open. See `headingText`, which is where this is spent, and
+ * `scoreOn`, which is what distinguishes it from a real `0`.
+ */
+const NO_SCORE_TEXT = "—";
+
 /** How tall one side's heading is, in pixels. **Placeholder.** */
 const SIDE_HEADING_HEIGHT = 22;
 
@@ -99,8 +113,10 @@ const SIDE_HEADING_HEIGHT = 22;
  * is where a 4-pixel marker is least in the way and most visible. `ZIndex = 100` puts each above the panel's own
  * furniture (`PANEL_Z_INDEX` is 10), so nothing a panel draws can hide it.
  *
- * **Diagnostic, and to be deleted with the rest of this pass's lines.** See `renderBody`, which spares them from
- * the clearing loop that empties the scrolling area on every press.
+ * **Diagnostic, and switched off — see {@link SHOW_MARKERS} for the answer they produced and for why they are
+ * kept rather than deleted.** They also left one fact behind that outlived them: each bar is a `(1, 0, 0, 4)`
+ * child of a frame with a list layout, and each one shifted its siblings down by four pixels, which is the
+ * working proof that this panel cannot host a full-size decorative child. {@link paintSheet} rests on it.
  */
 const MARKER_PANEL = "_MarkerPanel";
 const MARKER_CONTENT = "_MarkerContent";
@@ -109,18 +125,47 @@ const MARKER_HEIGHT = 4;
 const MARKER_Z_INDEX = 100;
 
 /**
- * **Whether the three bars are drawn at all — one switch, because the answer has been obtained and the bars are
- * now the only ugly thing left.**
+ * **The tiled backdrop for this panel, as an uploaded image id — `undefined` until somebody draws the art.**
  *
- * The session that settled it saw **all three**: the red bar under the title, the green bar under the column
- * headings, and the blue bar across the top of the white area — with nothing between the blue bar and the
- * footer. That is the one answer of the five that means *the frames are all real and the rows' pixels are not
- * where they should be*, and it led straight to `ZIndex` (see {@link addRow}). **Left on for one more session**
- * so the fix can be confirmed with the instrument that found it: if the rows appear and the bars are still
- * there, the diagnosis was right; if the rows appear and the bars have gone, someone flipped this to `false`
- * before testing. Set it to `false` and the panel is exactly what it was written to be.
+ * `addPanelFrame` takes this as its optional `pattern`, and the moment it is a real `rbxassetid://…` the sheet
+ * gains an `ImageLabel` at `ScaleType.Tile`, `TileSize` 16×16, `ImageTransparency = 0.85`, sitting between the
+ * sheet's fill and everything written on it. **`undefined` is a supported state rather than a gap**: the panel
+ * then wears the gradient from {@link paintSheet} and nothing else, which is what it does today.
+ *
+ * **What the art has to be, because getting it wrong is silent.** A **16×16 PNG**, dots on a **transparent
+ * background**, uploaded and referenced by its `rbxassetid://…`. Three traps, all of them measured in this project
+ * already:
+ *
+ * - **Keep the alpha channel.** `images.config.ts` records that a flattened export (`Format24bppRgb`) drew a white
+ *   box around every ability icon on a surface that was otherwise empty; the same export here is a solid white
+ *   tile, i.e. a panel with no pattern at all.
+ * - **Alpha-bleed it.** Roblox sets *fully transparent* pixels to **black** on upload, and this layer is drawn at
+ *   `ImageTransparency = 0.85` — so an un-bled tile lays a uniform 15% black veil over the sheet. A "dirty grey
+ *   panel" is that bug, not a taste verdict.
+ * - **16×16 exactly.** `TileSize` is `PATTERN_TILE` in `panelChrome`, so art of any other size is stretched to the
+ *   tile and the dots come out oval.
+ *
+ * **Deliberately not a constant in `shared/config/images.config.ts`**, where the other ids live: that file's record
+ * is keyed by feature and documents each id's provenance, and this one does not exist yet. It moves there with the
+ * id when it does, beside `LOADING_LOGO`.
  */
-const SHOW_MARKERS = true;
+const PATTERN_TEXTURE: string | undefined = undefined;
+
+/**
+ * **Whether the three bars are drawn at all — and it is `false`, because they have done their job.**
+ *
+ * The session that settled the six-pass bug saw **all three**: the red bar under the title, the green bar under
+ * the column headings, and the blue bar across the top of the white area — with nothing between the blue bar and
+ * the footer. That is the fourth of the five answers these were built to collect, and it led straight to
+ * `ZIndex`: every element `mount` creates is flattened to `10` by `raiseZIndex`, and every element a *press*
+ * creates was left at the default `1` and drawn behind the panel's opaque sheet. See {@link addRow}.
+ *
+ * **Turned off in the session that fixed the background**, because a red, a green and a blue bar across a panel
+ * are exactly what a person cannot look past when the question has become "does this look like it belongs in the
+ * game". The `addMarker` bar it guards is kept — one line to bring back, and the paragraph above is the only
+ * record of what each colour asks — but nothing it draws is in the panel now.
+ */
+const SHOW_MARKERS = false;
 
 /** The sides, in the order they are drawn — the same `A` then `B` order every other list uses. */
 const SIDES: ReadonlyArray<string> = ["A", "B"];
@@ -260,14 +305,20 @@ export class MatchStatsController implements OnStart {
 			// `DisplayOrder` is the engine default of `0` — the rung every other HUD and the shop panel share —
 			// so a panel "behind something" is not a `ZIndex` story unless a sibling inside that GUI outranks
 			// it. Printing both halves is what tells those apart.
-			const parent = panel?.Parent;
+			//
+			// **Two hops now, not one.** `this.panel` is the `Content` frame the bands stack in, so its parent is
+			// the *sheet* — the visible rectangle — and the sheet's parent is the `ScreenGui`. Reading one hop
+			// and stopping would have reported `parent Frame "MatchStatsPanel"` and quietly dropped the
+			// `Enabled`/`DisplayOrder` half of the line, which is the half that answers "is this on screen".
+			const sheet = panel !== undefined ? panelSheet(panel) : undefined;
+			const parent = sheet?.Parent;
 			const parentIsGui = parent !== undefined && parent.IsA("ScreenGui");
 
 			print(
-				`[Stats] geometry — panel at ${this.px(panel?.AbsolutePosition.X)}` +
-					`,${this.px(panel?.AbsolutePosition.Y)} size ${this.px(panel?.AbsoluteSize.X)}` +
-					`×${this.px(panel?.AbsoluteSize.Y)}, visible ${panel?.Visible === true ? "yes" : "no"}` +
-					`, ZIndex ${panel?.ZIndex ?? -1}` +
+				`[Stats] geometry — sheet at ${this.px(sheet?.AbsolutePosition.X)}` +
+					`,${this.px(sheet?.AbsolutePosition.Y)} size ${this.px(sheet?.AbsoluteSize.X)}` +
+					`×${this.px(sheet?.AbsoluteSize.Y)}, visible ${sheet?.Visible === true ? "yes" : "no"}` +
+					`, ZIndex ${sheet?.ZIndex ?? -1}` +
 					`, parent ${parent?.ClassName ?? "none"} "${parent?.Name ?? "-"}"` +
 					(parent !== undefined && parent.IsA("ScreenGui")
 						? ` enabled ${parent.Enabled ? "yes" : "no"} DisplayOrder ${parent.DisplayOrder}`
@@ -308,13 +359,106 @@ export class MatchStatsController implements OnStart {
 	}
 
 	/**
+	 * **The sheet's paper: a soft wash from white at the top to the theme's card tone at the bottom, and the whole
+	 * of why the requested *dotted* pattern is not here.**
+	 *
+	 * The request was a tiled `ImageLabel` — `ScaleType = Tile`, `TileSize` 16×16, a `_DotPattern` inside the
+	 * panel — which is the right technique for a dot grid in Roblox and is also the one this panel cannot take.
+	 * **Three reasons, in the order they matter:**
+	 *
+	 * - **A full-size `GuiObject` child of this panel is eaten by the panel's own `UIListLayout`.** The panel
+	 *   stacks its bands with a list layout, and a list layout positions *every* `GuiObject` child and reserves
+	 *   its height while doing it. A pattern sized `(1, 1)` would therefore consume the panel's entire height and
+	 *   push the header, the content band and the footer off the bottom of the screen. That is not a theory: the
+	 *   three diagnostic bars added in item 62 are `(1, 0, 0, 4)` children of these same frames and each of them
+	 *   shifted the layout down by exactly four pixels, which is visible in the screenshot that closed that bug.
+	 *   **A modifier is not a child** — `UIGradient` is a `UIComponent` like the `UIShadow` the panel already
+	 *   wears, it takes part in no layout, and `raiseZIndex` does not see it.
+	 * - **There is no dot texture in this repository.** `assets/` holds three ability PNGs and nothing else, no
+	 *   `ScaleType.Tile` is used anywhere in `src/`, and `IMAGES_CONFIG` has the logo and the three icons. The
+	 *   request's fallback — `rbxassetid://0`, with a comment saying it is a placeholder — **renders nothing at
+	 *   all**, so shipping it would satisfy the shape of the change and none of its purpose: the panel would look
+	 *   exactly as bland as it does now, and the next reader would have to prove that before believing it.
+	 * - **A gradient cannot be made into a lattice either, and that is now checked against the typings rather than
+	 *   remembered.** These typings' `UIGradient` is the modern one: `Type` is
+	 *   `Linear | Radial | Conical`, `TileMode` is `Clamp | Repeat | Mirror`, and `Scale` multiplies how much of
+	 *   the sequence is visible. **Every combination of those repeats in one direction**: `Linear` + `Repeat`
+	 *   gives stripes, `Radial` + `Repeat` gives concentric rings about the element's centre, `Conical` + `Repeat`
+	 *   gives wedges. A *dot grid* needs two directions at once, and one `UIComponent` has one direction — there is
+	 *   no second gradient to multiply it with, because two `UIGradient`s on one object is one `UIGradient`.
+	 *   So the honest list of ways to a dotted sheet is: a tiled image, a few dozen `Frame`s, or a stripe pattern
+	 *   standing in for dots — and the first is blocked above, the second is refused below, and the third is not
+	 *   what was asked for.
+	 * - **A texture would need art that this project's own notes say is easy to get wrong.** `images.config.ts`
+	 *   records that Roblox sets fully transparent pixels to **black** on upload, so a naive dot tile at
+	 *   `ImageTransparency = 0.9` would lay a uniform 10% black veil over the whole sheet — a dirty grey panel
+	 *   rather than a pattern — unless the source PNG keeps its alpha *and* gets an alpha-bleed pass. That is a
+	 *   drawing job, not a code one, and it should not be disguised as a code change.
+	 *
+	 * **And the procedural grid was rejected on the request's own instruction, which is right.** A dot every 16
+	 * pixels on a 664×398 sheet is 41 × 25 = 1,025 `Frame`s built once and never destroyed, to draw something a
+	 * 16×16 PNG would draw with one instance. The count is what decides it rather than the principle: this panel
+	 * already rebuilds eight rows of six labels on every press and that is affordable because it is ~50
+	 * instances; a thousand is not the same decision.
+	 *
+	 * **What is here instead: three stops of the panel's own palette**, `panel` → `surface` → `card`, top to
+	 * bottom. It is the depth the request's own fallback asked for, it needs no asset, it costs one instance, and
+	 * it cannot move anything on the panel. `Rotation = 90` runs it top-to-bottom; `UIGradient` rotates
+	 * clockwise, so `0` would run left-to-right and `90` is the vertical one.
+	 *
+	 * **`Color` multiplies the frame's `BackgroundColor3`, which is why the numbers read as the palette's.** The
+	 * sheet is pure white (`theme.colors.panel`), so white × any stop is that stop exactly — the gradient is not
+	 * tinting an off-white base into something else, it is the base. And because it applies to the panel's own
+	 * fill rather than to its descendants, the near-black ink of the rows is untouched.
+	 *
+	 * **Two things that would unlock the real thing, both deliberately not done here.** A `pattern?: string`
+	 * argument on `addPanelFrame` that inserts the texture *outside* the band layout would be the honest fix, and
+	 * it is a change to `panelChrome.ts` — which this task forbids. The other is a mirror frame in the HUD
+	 * `ScreenGui` behind the panel, with the sheet's white moved onto it so the pattern shows through; that needs
+	 * a copy of the panel's anchor, size **and** its `UISizeConstraint` to stay aligned on every viewport, and a
+	 * shadow that no longer sits where it was put. **Two authorities on one rectangle**, which is the shape of
+	 * every layout bug this file has already had.
+	 */
+	private paintSheet(panel: Frame): void {
+		// **The gradient goes on the sheet, not on the frame passed in, and that is the two-frame structure
+		// showing through.** `addPanelFrame` returns the `Content` frame the bands stack in, and that frame's
+		// `BackgroundTransparency` is `1` — a `UIGradient` on it would paint a gradient onto nothing. The visible
+		// rectangle is its parent, which is why `panelSheet` exists.
+		const sheet = panelSheet(panel);
+		if (sheet === undefined) return;
+
+		// **These three stops are deliberately loud, and they are the third attempt.** The first pair was
+		// `#FFFFFF → #F5F5F7 → #E8EBF0` — taken from the panel's own palette, on the argument that a wash drawn
+		// from the theme cannot clash with it. **The argument was right and the numbers were useless**: that is a
+		// change of about 1 RGB step per 10 pixels down a 400-pixel sheet, which is below what a person can see on
+		// most displays, so the report that came back was "no visible change" — a true statement about a gradient
+		// that was invisible rather than about a build that was stale.
+		//
+		// **So this is a calibration ramp, not a design.** White at the top, a light blue-grey at the halfway
+		// line, a clearly darker one at the bottom: if the panel does not visibly shade after a clean build, the
+		// gradient is not running and the question becomes the build rather than the colour. **The dial to turn
+		// back is these three lines** — `theme.colors.panel` → `surface` → `card` is the tasteful version, and it
+		// is one edit away, or pick any pair either side of this.
+		const stops = [
+			new ColorSequenceKeypoint(0, Color3.fromRGB(255, 255, 255)),
+			new ColorSequenceKeypoint(0.5, Color3.fromRGB(216, 220, 228)),
+			new ColorSequenceKeypoint(1, Color3.fromRGB(168, 176, 188)),
+		];
+
+		Fusion.New(this.scope, "UIGradient")({
+			Parent: sheet,
+			Color: new ColorSequence(stops),
+			Rotation: 90,
+		});
+	}
+
+	/**
 	 * **One coloured bar, at the top of the frame it marks.** `LayoutOrder = -1` and `ZIndex = 100` — see
 	 * {@link MARKER_PANEL} for why both, and for what a person looking at the screen is being asked.
 	 */
 	private addMarker(frame: Instance | undefined, name: string, colour: Color3): void {
 		if (!SHOW_MARKERS) return;
 		if (frame === undefined) return;
-
 		const marker = new Instance("Frame");
 		marker.Name = name;
 		marker.Size = new UDim2(1, 0, 0, MARKER_HEIGHT);
@@ -402,7 +546,11 @@ export class MatchStatsController implements OnStart {
 
 		print("[Stats] board up — hold Tab to read the round");
 
-		const panel = addPanelFrame(this.scope, theme, "MatchStatsPanel", this.open);
+		const panel = addPanelFrame(this.scope, theme, "MatchStatsPanel", this.open, PATTERN_TEXTURE);
+
+		// **The paper, before anything is written on it.** A modifier rather than an element — see
+		// {@link paintSheet} for why this panel cannot take the tiled texture the request asked for.
+		this.paintSheet(panel);
 
 		addHeaderBand(this.scope, theme, panel, 1, "Match Stats", () => this.open.set(false));
 
@@ -454,7 +602,13 @@ export class MatchStatsController implements OnStart {
 		// that way.** `getHudScreenGui()` is resolved and the panel is parented here, after every band, row and
 		// footer exists — a panel that went up half-built would be a frame that resizes under the player. What
 		// follows touches nothing in that tree: the remote (which yields) and the key binding (which does not).
-		panel.Parent = getHudScreenGui();
+		//
+		// **`mountPanel` and not `panel.Parent = …`, because a panel is two frames since the pattern layer
+		// arrived.** `panel` here is the `Content` frame the bands stack in; the visible rectangle is its parent,
+		// and that is what has to become a child of the screen. The line this replaces would have moved the
+		// content frame out of the panel and left the sheet with no parent at all — a panel built correctly and
+		// never drawn.
+		mountPanel(panel, getHudScreenGui());
 
 		this.request = events.Client.Get("matchStats");
 		this.answer = events.Client.Get("matchStatsBoard");
@@ -905,7 +1059,7 @@ export class MatchStatsController implements OnStart {
 			// rather than error" `sideNameOf` applies to its own unknown labels.
 			heading.TextColor3 = teamColourOf(side) ?? theme.colors.textPrimary;
 			heading.TextXAlignment = Enum.TextXAlignment.Left;
-			heading.Text = side === "" ? "No side yet" : sideNameOf(mode, side);
+			heading.Text = this.headingText(mode, side);
 			heading.LayoutOrder = order;
 			heading.Parent = list;
 
@@ -1079,5 +1233,62 @@ export class MatchStatsController implements OnStart {
 		if (typeIs(value, "string") && isGameModeId(value)) return value;
 
 		return "ScoreRush";
+	}
+
+	/**
+	 * **A side's heading, with its score beside its name — `Team B  ·  3`.**
+	 *
+	 * **The score is read here, at draw time, from the attributes the round already publishes.** It is not on
+	 * `MatchStatsRow` and does not travel in `matchStatsBoard`: a row is one *body's* line for this round, while a
+	 * score is the round's own fact and is already on the `RoundStatus` folder where `ScoreHudController` reads it.
+	 * Putting it in the payload would be a second copy of a number the client can already see, and two copies of a
+	 * number are two numbers waiting to disagree.
+	 *
+	 * **No subscription, because this panel has no life between presses.** `render` runs on the `Tab` press and
+	 * again when an answer lands, so the value is sampled at exactly the moments it is drawn — a changed-signal per
+	 * side would keep two connections alive for a panel that is closed most of the time, and would still not repaint
+	 * a panel that is not on screen. See {@link scoreOn}.
+	 *
+	 * **The separator is `·` rather than the em-dash, and that is a deliberate deviation from the reference.** `—`
+	 * is the *placeholder* for a score that has not replicated, so using it as the join as well would render an
+	 * unknown score as `Team B — —`, which reads as a fault rather than as a placeholder. `·` is already this
+	 * panel's separator — the footer says *"hold Tab · points are earned this round"* — so the choice is consistent
+	 * as well as unambiguous.
+	 *
+	 * **`0` is a real score and prints as `0`.** The distinction this method exists to preserve is between *nought*
+	 * and *nobody has told me yet*: an intermission board is legitimately all noughts, and a board that said `—`
+	 * there would be claiming ignorance when it had an answer.
+	 */
+	private headingText(mode: GameModeId, side: string): string {
+		const name = side === "" ? "No side yet" : sideNameOf(mode, side);
+		const score = this.scoreOn(side);
+
+		return `${name}  ·  ${score === undefined ? NO_SCORE_TEXT : tostring(score)}`;
+	}
+
+	/**
+	 * **One side's score, as a number — or `undefined` when the round has not published it.**
+	 *
+	 * **`undefined` rather than `0`, and that is the whole reason this is not `ScoreHudController.scoreOf`.** The HUD
+	 * bar wants a number to draw and nought is the right stand-in *there*; this board has a second state to render,
+	 * and inflating a missing value into a real one would make "not loaded" and "level pegging" the same pixels.
+	 * {@link headingText} is where the difference is spent.
+	 *
+	 * **`FindFirstChild` on every draw rather than a folder held at mount**, matching `currentMode` next door: this
+	 * panel may mount before the round folder exists, and a captured `Instance` would have to be re-resolved anyway
+	 * if `RoundService` ever rebuilt it. One child lookup and one attribute read, on a key press.
+	 */
+	private scoreOn(side: string): number | undefined {
+		const attribute = side === "A" ? ROUND_SCORE_A_ATTRIBUTE : ROUND_SCORE_B_ATTRIBUTE;
+
+		// A side that is neither `A` nor `B` — the `""` a body nobody has sided carries — has no score to show.
+		if (side !== "A" && side !== "B") return undefined;
+
+		const status = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
+		if (status === undefined) return undefined;
+
+		const value = status.GetAttribute(attribute);
+
+		return typeIs(value, "number") ? value : undefined;
 	}
 }
