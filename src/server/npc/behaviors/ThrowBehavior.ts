@@ -437,11 +437,21 @@ export interface WindupTracker {
 	 *
 	 * **`aimPoint` rather than a charge, and that is what makes one call site impossible to forget.** The roll
 	 * lives behind this signature, so a behaviour that starts a hold gets the error whether or not its author
-	 * remembered one existed — which is how the practice rigs inherit it instead of being a second place the rule
-	 * has to be added. `root` is the body the error is measured sideways from; passing it rather than looking it
+	 * remembered one existed — which is how a behaviour added later inherits it instead of being a second place the
+	 * rule has to be added. `root` is the body the error is measured sideways from; passing it rather than looking it
 	 * up keeps this a pure function of what the caller already resolved.
+	 *
+	 * **`trueAim`, and it is the one exception the paragraph above has to make room for.** A caller that passes it
+	 * `true` suppresses the roll, and **exactly one caller does: `PracticeThrowBehavior`.** The reasoning is the
+	 * distinction `THROW_MISS_CHANCE` was always about — that number is a difficulty dial for an *opponent*, and a
+	 * drill is not one. A drill exists to be practised against: it is aimed at the person in front of it so they can
+	 * work on dodging *that*, and a rig that is trying to miss is a rig you cannot learn from. **The exception is
+	 * opt-in and defaulted off, which is what keeps the paragraph above true** — every existing call site behaves
+	 * exactly as it did, and a new call site that says nothing gets the error. What stops the opt-out spreading is
+	 * that it has to be *argued for at the call site*: a behaviour that wants a true throw has to say so in a comment,
+	 * where the round's rigs silently passing it would be invisible.
 	 */
-	beginWindup: (model: Model, root: BasePart, aimPoint: Vector3, walk: ThrowWalk) => void;
+	beginWindup: (model: Model, root: BasePart, aimPoint: Vector3, walk: ThrowWalk, trueAim?: boolean) => void;
 
 	/** The hold ended by *throwing*: the row and the published charge go, and nothing is printed. */
 	endWindup: (model: Model) => void;
@@ -546,7 +556,7 @@ export function createWindupTracker(): WindupTracker {
 	 * what it buys is that a hold on a wide throw lasts exactly as long as the wide throw it is holding, which is
 	 * the same property the `charge` argument already existed to keep.
 	 */
-	const beginWindup = (model: Model, root: BasePart, aimPoint: Vector3, walk: ThrowWalk): void => {
+	const beginWindup = (model: Model, root: BasePart, aimPoint: Vector3, walk: ThrowWalk, trueAim?: boolean): void => {
 		const now = os.clock();
 
 		// **One roll, on the turn that decides, and nothing downstream rolls again.** `rollMiss` answers either
@@ -554,7 +564,12 @@ export function createWindupTracker(): WindupTracker {
 		// a few studs to one side of the target, which `missedPoint` turns into the point the throw is really for.
 		// The offset is what goes on the row, not the point: the release and every turn of the hold re-apply it to
 		// wherever the target is *then*, so a wide throw still tracks a moving body. See {@link Windup.miss}.
-		const miss = rollMiss(root);
+		//
+		// **`trueAim` skips the roll entirely rather than rolling and discarding it, and the difference is the log.**
+		// A drill that suppressed the error after drawing one would still have a `Windup.miss`-shaped hole to fill;
+		// leaving it `undefined` here is what makes every downstream reader — the release's heading, the throw's line
+		// — say "aimed true" because it *was*, rather than because nobody looked.
+		const miss = trueAim === true ? undefined : rollMiss(root);
 		const point = miss === undefined ? aimPoint : missedPoint(root, aimPoint, miss);
 
 		// The line from the hand to that point, measured the way the release will measure its own — the same

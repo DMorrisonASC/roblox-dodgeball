@@ -2737,6 +2737,331 @@ almost no server code; 45 is what it cannot show.**
     `UIStroke` per row, which does not do dashes — it would need a tiled image, the same asset problem item 65
     records). All three are restyles of proven-working structure and none of them was asked for twice.
 
+72. **`practiceThrow`: a drill rig that throws at the person in its bay, with a `3 2 1` countdown. And first, the
+    state it landed in, because the tree it landed on is not the tree the last handoff described.**
+
+    **The rollback was a hard reset to `dfdb36b` and it took the whole practice feature with it** — not just the
+    source, and that distinction is the useful part:
+
+    | gone | left |
+    | --- | --- |
+    | `server/npc/practiceBay.ts` and `client/practiceCountdown.ts` (both files, entirely) | `AlwaysThrowBehavior.ts`, untouched and working |
+    | `PRACTICE_BAY_TAG`, `NEXT_THROW_AT_ATTRIBUTE`, `THROWN_FROM_BAY_ATTRIBUTE` from `shared/constants.ts` | `CHARGING_ATTRIBUTE` and `THROW_WALK_ATTRIBUTE`, the charge telegraph the drill reuses |
+    | §15 items **67–71**, i.e. the design notes for the bay rule, the footprint fix and the three-state rig→bay rule | §15 items 58–66, so `hitVfx`, the panel chrome and the team-score heading are all still recorded |
+
+    **So "the practiceBay work rolled back" was narrower than it sounds and wider than it sounds at once**: nothing
+    that landed in a commit was touched, and *every* uncommitted practice file and every handoff item describing them
+    went. **A reader who consults items 67–71 will find they do not exist.** That is why this item re-argues the
+    footprint rule from scratch rather than citing them.
+
+    **The feature, in one table.** A rig wears `practiceThrow` (a rig tag, painted, not a `Behavior_*` string) and
+    stands in a `practiceBay` (a part, painted):
+
+    | rig | what it does |
+    | --- | --- |
+    | in a bay, player in that bay | throws at the nearest one; countdown runs |
+    | in a bay, nobody in it | idles; countdown cleared; **the decision deadline is deleted, not just cleared** |
+    | in no bay | idles; countdown cleared; logs `the rig is in no bay` |
+    | not wearing `practiceThrow` | nothing — the behaviour is never entered |
+    | wearing `Behavior_AlwaysThrowing` | **unchanged** — that code stays, and a rig wearing both throws twice |
+
+    **The delete on the second and third rows is not tidiness.** Without it a rig whose player walked out keeps the
+    deadline it banked while they were there, so the turn they step back in it arms and throws — a throw with no
+    countdown at all, which is the one thing a telegraph cannot be.
+
+    **The dispatch answer is that there is no new dispatch.** `NpcService`'s list *is* the dispatch — the loop keys on
+    `behavior.tag` — so a tag that is not `Behavior_*` needs an entry and nothing else. A second pass would have been
+    a second place a rig's tags are read and a second place `onStopped`/`onDied` could be forgotten. **The one
+    consequence is in the MicroProfiler labels**: they dropped a fixed nine-character prefix, which would have turned
+    `practiceThrow` into a band called `Npc.tick.ceThrow`, so that is now `behaviorScopeName` and tests for the
+    prefix.
+
+    **`beginWindup` gained an optional `trueAim`, and it is asked for by exactly one caller.** A drill that rolls
+    `NPC_CONFIG.THROW_MISS_CHANCE` is a drill trying to miss, and a drill exists to be practised against. The flag
+    defaults off, so both existing call sites behave byte for byte as before — **what bounds the exception is that it
+    has to be argued for at the call site**, where a round rig passing it silently would be invisible.
+
+    **A drill's ball dies at the edge of its bay**, by a marker written at the release
+    (`THROWN_FROM_BAY_ATTRIBUTE`, set for a `practiceThrow` thrower and **cleared for anybody else's** so a player who
+    throws a picked-up drill ball does not inherit it) and a branch in the existing `settleLooseBalls` sweep. Route (a)
+    of the two offered: route (b), parenting the ball to the bay, would freeze its ownership and physics for a
+    question about where it is.
+
+    **The countdown publishes a *number*, and not the number a reader might expect.** `NEXT_THROW_AT_ATTRIBUTE` is an
+    **instant** from `Workspace.GetServerTimeNow()`, written at the three moments the deadline moves (arm, commit,
+    release) and **only while the rig has a target** — a rig doing nothing has nothing to telegraph. A duration on the
+    wire is already wrong when it lands by an amount the receiver cannot measure; an instant is one subtraction. **It
+    is a second telegraph beside `CHARGING_ATTRIBUTE`, not a spelling of it** — see §11 — and a rig mid-windup has
+    both set.
+
+    **`client/practiceCountdown.ts` is a plain module started from `main.client.ts`**, not a controller, so
+    `flamework.build` is unchanged: `practiceThrow`'s two tag signals, one `BillboardGui` per rig built on the first
+    frame that has a digit, and a `Heartbeat` doing `ceil(at - GetServerTimeNow())`. **It walks `watched` and not
+    `rows`** — a loop over the rigs that already have a box would never draw the one that was about to arm. **Gated on
+    `practiceThrow` and not on `NPC`**, so no round's rig is ever walked; and every drill is drawn regardless of
+    distance, because a countdown is a telegraph of the rig's own clock rather than of the viewer's neighbourhood.
+
+    **Three of the prompt's own premises were wrong**, recorded because the next spec will make the same assumptions:
+    the tag count was **twenty-four → twenty-six** and not 25 → 26 (two tags, not one — `practiceBay` came back with
+    the feature); §15 items 67–71 **did not exist** to be read as design notes; and `beginWindup` had **no `trueAim`
+    parameter**, nor did `headingToward`, `aimAt` or `moveThenPlant` exist anywhere in the tree — they were part of
+    what the rollback removed. The three constants the prompt wanted in `npc.config.ts` were split instead: the cadence
+    is there, and the two the *rendering* owns are in the client module, because that file's header promises it is
+    read on the server alone.
+
+    **What a drill's ball does not do is hurt anybody inside a `practiceZone`.** `BallComponent.handleTouch` vetoes
+    the contact — *"in a practice zone — carried on past them"* — so a drill throw passes through the person it was
+    aimed at and dies at the bay's edge. That veto is the follow-up's to remove, and removing it without the ragdoll
+    means a drill kills the person practising.
+
+73. **The drill said nothing, ever — and that was the feature's own worst diagnostic.** A live session showed
+    `[Zone] up — practiceZone: 1 tagged part(s)` and a rig printing
+    `[Rig] Behavior_Throwing: throw — charge 0.38 … 11.5 studs to the left (missed on purpose)`, which is
+    `AlwaysThrowBehavior` and not the drill at all — the rig is literally *named* `Behavior_Throwing`. **Not one line
+    from `PracticeThrowBehavior` in the whole session**, and that was the finding rather than the absence of one.
+
+    **Why it was silent, and why that is a defect rather than a quiet design.** The gate stands the rig down with
+    `windups.cancelWindup(model, reason)`, and `cancelWindup` **returns early when there is no hold to cancel** — so a
+    drill with no bay, and a drill with an empty bay, both printed nothing at all, forever. Four different faults
+    produce that one silence: the `practiceThrow` tag missing, no `practiceBay` part in the place, a bay painted on a
+    `Folder` or `Model` (whose *descendant parts* then become separate bays, per `taggedParts`), or simply an empty
+    bay. **A feature whose ordinary failure is indistinguishable from its ordinary success is the exact fault
+    `TAGS.md` opens with**, and this pass is the correction.
+
+    **Two lines, and they answer different questions.** `practiceBay.reportDrills()` runs once from
+    `NpcService.onStart` and prints
+    `[Drill] up — practiceThrow: N rig(s), practiceBay: M tagged thing(s), K usable part(s)` — the *tagged thing*
+    against *usable part* split is `BallSpawnerService.report`'s, and it is what makes "wrong instance class" legible
+    as distinct from "you forgot". It also `warn`s unprompted for the two states that cannot work: drill tags with no
+    bay anywhere, and bays with no drill tag. Then the behaviour prints **edge-triggered** per-rig lines —
+    `[Drill] <rig>: standing down — nobody is in its bay`, and for the place-file fault
+    `[Drill] <rig>: wears practiceThrow but is in no practiceBay — it will not throw. Its position: (…)`, and
+    `[Drill] <rig>: armed — <player> is in its bay`. Edge-triggered because an empty bay is a state that lasts for
+    minutes; the sequence `no bay … empty bay … armed` is a person walking into a bay, and one that stops at `no bay`
+    is a place file to fix.
+
+    **The throw line moved from `[Rig]` to `[Drill]`, and this session is why.** Both other throwing behaviours print
+    `[Rig]`, so `[Rig] Behavior_Throwing: throw` was a line that could not be attributed without knowing the source
+    file. The prefix now says which behaviour spoke.
+
+    **What the same log makes worth stating plainly for the next session.** A rig wearing only
+    `Behavior_AlwaysThrowing` keeps throwing on its timer at `standInPoint` with a deliberate miss no matter what
+    geometry it stands in — that is its contract and it was left alone. **It is not the drill and cannot become one
+    by standing in a bay**; only `practiceThrow` reads `practiceBay`. If a session shows `[Rig]` throw lines and no
+    `[Drill]` ones, the drill tag is not on the rig — and the new boot line now says so in one line rather than
+    leaving it to be inferred.
+
+74. **The diagnostics landed and immediately found the fault — and it was not in the code.** The next session printed
+    `[Drill] up — practiceThrow: 1 rig(s), practiceBay: 1 tagged thing(s), 1 usable part(s)`, so the tag was on the rig
+    and the bay part existed. Then, four seconds apart:
+
+    ```
+    11:32:29.141  [Drill] Behavior_Throwing: standing down — nobody is in its bay      <- bayOf FOUND a bay
+    11:32:33.588  [Drill] Behavior_Throwing: wears practiceThrow but is in no practiceBay … (52, 97, 542)
+    ```
+
+    **Same rig, same session: in its bay at boot, outside it four seconds later.** `bayOf` is a pure function of the
+    rig's `HumanoidRootPart` and the bay's `CFrame`/`Size`, so something *moved* — and the warn could not say which,
+    because it knew the rig's position and nothing about the bay.
+
+    **`describeNearestBay` is the answer to that, and it prints the four numbers that settle it**: the bay's name,
+    its centre, its size, and **the horizontal gap from the rig to the bay's *footprint*** — clamped to the
+    half-extents, so it reads `0.0` inside and the true distance outside, rather than the centre-to-centre figure that
+    would call a rig standing comfortably inside a twenty-stud bay "ten studs away". **`Anchored` travels with it**,
+    because an unanchored bay is a floor slab any body can shove and the tag's own contract never mentioned it.
+
+    **The two candidate causes, and how one run tells them apart.** If the gap is non-zero and `Anchored` reads true,
+    **the rig moved** — and the most likely reason is a movement tag: `Behavior_AlwaysSeeking` and `Behavior_Pickup`
+    walk a rig to loose balls and the practice area stocks them, which is a rig leaving its own bay on purpose. If
+    `Anchored` reads false, the **bay** moved and the fix is to anchor it. **A drill must stand still to stay in a bay**
+    — that is a genuine constraint of the design and it belongs in any future spec for this feature.
+
+    **The fault line is once per rig and the state lines are not**, and the split is deliberate: `reportedStray` holds
+    the rigs already warned, because leaving the bay is a mistake to fix once and a rig that oscillates across its own
+    edge would otherwise warn every second. The `standing down — nobody is in its bay` / `armed — <player> is in its
+    bay` pair keeps every transition, because those two are what a person is actually watching for.
+
+    *(Superseded by item 75 — `describeNearestBay` and `reportedStray` no longer exist. The reading above is what they
+    established, and it is what made the rule change visible.)*
+
+75. **The rule was wrong, and the Studio reading is what proved it: the rig never moved.** The Properties panel showed
+    `Behavior_Throwing` at **`(52.111, 93.825, 541.974)`**, tags `Behavior_Respawn` + `NPC` + `practiceThrow`, pivot
+    offset `(0, −3, 0)`. My own warn had printed its `HumanoidRootPart` at **`(52, 97, 542)`** — the same place, three
+    studs up, exactly as the pivot offset predicts. **So the rig was never outside its bay because it wandered; it was
+    never inside it.** The `standing down — nobody is in its bay` at boot means `bayOf` *did* answer with a bay once,
+    and the honest conclusion is that the answer was never reliable — a part found once and not a second later, with
+    the rig provably stationary in between, is a rule resting on a coincidence.
+
+    **Which half of the rule was strict was the mistake.** The original asked two questions — *am I in a bay* and *is
+    somebody in that bay* — and made both mandatory. **The user's requirement was only ever the second one**: *"they
+    should ONLY throw when the player is in the bay."* The box is what a person painted to practise in; the rig is a
+    fixture beside it, and requiring the two to be co-located made a drill work only in the layouts that happened to
+    line up.
+
+    **`targetFor(rig)` is now the whole gate and the whole aim**, and the rig's own bay is a *preference*:
+
+    | order | rule |
+    | --- | --- |
+    | 1 | the rig's own bay (`bayOf`) — so two drills beside two boxes each take their own |
+    | 2 | otherwise any bay, nearest to the rig first |
+    | 3 | nobody in any bay → idle, countdown cleared, deadline forgotten |
+
+    **Nobody in a bay is still the only thing that silences a drill**, which is the requirement verbatim, and this is
+    *not* the `practiceZone` fallback that was rejected in item 74's neighbourhood — that one armed every drill in the
+    area off one box around the whole floor. A bay is a small painted rectangle and a person outside every one of them
+    is not being thrown at by anything.
+
+    **Removed with the rule**: `describeNearestBay` (it existed to explain a rig being outside its box, which is no
+    longer a fault), the `reportedStray` set (same reason), and `PracticeThrowBehavior`'s `no bay` warn. What is left is
+    one pair of edge-triggered lines — `standing down — nobody is standing in a bay` and
+    `armed — <player> is in <bay>` — plus the throw line, so **a drill that says nothing at all is a drill that never
+    ticked**, which is a much better silence than the four-cause one it replaced.
+
+    **The next session then showed the remaining failure was geometric and unreadable**: `[Drill] up — practiceThrow: 1
+    rig(s), practiceBay: 1 tagged thing(s), 1 usable part(s)`, `[Zone] prospeed1: entered a practiceZone`, and no
+    `armed` line afterwards — the box existed, was a `BasePart`, and **nobody was ever over it**. From the code's point
+    of view that is indistinguishable from an empty bay, a missing tag, or a rig that never ticked, and it cost two
+    sessions. **So the boot line now prints every bay's centre and size**, and the stand-down line prints the
+    measurement itself — `nearestPlayerBayGap`, in `practiceBay.ts` — as
+    *"prospeed1 is 40.2 studs outside "PracticeBay", which is centred at (52.0, 93.5, 542.0) with size 12.0×1.0×12.0;
+    prospeed1 is at (48.0, 96.0, 500.0)"*. **Three pairs of numbers are enough to fix a misplaced box without another
+    round trip**, which is the standard this project's diagnostics should be held to.
+
+    **That line is keyed on the measured gap rather than on the latch**, and the distinction is load-bearing: a pure
+    latch prints once at boot, when the player has no `Character` yet, and then says nothing for the rest of the
+    session. A stud of movement reprints, so the line speaks the moment a body appears and stays quiet while somebody
+    stands still.
+
+    **Resolved 2026-10-26: the bay part was not anchored.** It was found on the first tick and had slid out from under
+    the rig by the fourth, which is exactly the "not `Anchored`" case the diagnostic above was written to expose. No
+    code changed for it — `practiceBay`'s tag contract does not mention anchoring, and it probably should: a bay is a
+    floor slab, and every body that stands on one can move it.
+
+76. **A practice zone is a place to practise catching now, not a place to stand.** The ball no longer passes through a
+    practising player; it contacts them, tags them, plays the impact sound, sends `registerHit`'s `hitImpact` to every
+    client, and can be caught inside the catch window. **The only thing suppressed is the health write**, which is one
+    line at one site — and that single refusal is the whole of "no kills in a practice zone".
+
+    *(The spec for this pass called it item 73. Items 73–75 are the three `practiceThrow` passes and are already
+    written; item 72 is the drill itself. This is 76.)*
+
+    **The veto that came out, and what it cost while it was there.** `BallComponent.handleTouch` refused the contact
+    outright — `in a practice zone — carried on past them` — for a good reason that turned out to be the wrong half of
+    the rule: the collision group stops the *bounce* (`PracticePlayer` against `Ball` does not collide) but a group does
+    not suppress `Touched`, so without a veto a ball would sail through a practice player and *tag* them on the way.
+    **What that made impossible was catching**: `canCatch` is only reachable from that funnel, so the one thing a person
+    in a practice zone might want to work on was the one thing the veto forbade — and with no contact there was no sound
+    and no impact effect either, so there was no evidence a ball had arrived at all.
+
+    **The rule moved from the contact to the damage, and the two are now separate questions.** Everything up to and
+    including the tag happens exactly as it does anywhere else; **a tag is not a death** — that is what this file's
+    deferral is for — so tagging a practice player is simply the truth about a ball that touched them, and a catch can
+    still take it back.
+
+    | site | what it is | gate |
+    | --- | --- | --- |
+    | `BallComponent.landHit` | the ball's damage — the only place throw damage is written | `if (isPractising(character)) return;` before `TakeDamage` |
+    | `RoundService.resolveCaughtThrower` | a **caught throw kills the thrower** — the second kill path, and the one nothing in the spec named | `!isPractising(thrower)` |
+
+    **One helper, `isPractising(body)`, because there are two sites in two services** and a rule written twice is a rule
+    that will disagree with itself the first time one of them changes. It lives in
+    `services/zone/practiceZoneMembership.ts` — **a plain module rather than an export from `PracticeZoneService`,
+    because importing the service file from `RoundService` created a service-to-service module edge that reordered
+    Flamework's generated reflection manifest** without adding an entry to it. A predicate with no state does not need
+    to live behind a decorator, and keeping it out of one keeps a generated file clean. It reads the published
+    `PracticeZone` attribute rather than the geometry — the same trade the dodge gate, the catch prompt and the Freeze
+    splash already make, and the reason it is not a bounds walk on a ball's landing. **It answers `false` for a rig on
+    purpose**: the request was about a person practising, and a zone that silently made every NPC in it immortal would
+    be a second rule nobody asked for. A drill's ball that misses its player and lands on a **rig inside the zone** still
+    kills that rig, and `Behavior_Respawn` rebuilds it.
+
+    **The alternative that was ruled out, recorded so the next session does not re-derive it: do not make the death
+    *safe* — prevent it.** `SetStateEnabled(Enum.HumanoidStateType.Dead, false)`, a direct `Humanoid.Health` write, a
+    `PlatformStand`, or any "safe damage" wrapper would all be a second state machine to debug, and every one of them
+    leaves `Died`, `BreakJointsOnDeath` and the anchored-root anomaly still in play. **The gate stops `TakeDamage` from
+    being called at all, so the victim's `Humanoid` never enters the Dead state** — which is the only reliable way to
+    avoid the death-state bugs. A grep of the whole diff for `SetStateEnabled`, `BreakJointsOnDeath` and `PlatformStand`
+    returns nothing, and the only `Health` mention added anywhere is the pre-existing `humanoid.Health > 0` guard with
+    `&& !isPractising(thrower)` appended.
+
+    **The catch-path gate is technically unreachable today and is still right.** `resolveCaughtThrower` already needs
+    both ends to be in the round, and `teamOf` answers `undefined` for anybody standing in a zone — which is the guard
+    item 75's predecessor records being added after a *"when alwaysCatchNPC catches my ball, I die"* report. What the
+    new gate covers is the case that guard cannot: a player who already has a side **walks into** the zone mid-round
+    and catches there. One attribute read per catch is the whole cost.
+
+    **Freeze was checked and needs nothing.** `FreezeService` writes no health at all — it is a status, not a kill — and
+    `BallComponent.splashSpares` already leaves practice players out of the splash. **Pierce and MultiBall were
+    checked and need nothing** either: a Pierce ball cannot be caught and pierces rather than tags, and MultiBall
+    supplies ordinary balls. `DevService` has no kill override.
+
+    **Two consequences that are *not* fixed here, both verified in source and both reported rather than changed:**
+
+    - **No impact VFX from a drill's throw.** `registerHit` sends `hitImpact` before the round gate, so the cosmetic
+      half reaches a practice zone — but only when the thrower resolves, and `throwerOf`'s rig arm walks
+      `rigsInRound()`, a `Playing`-gated list. A drill throwing during intermission has no resolvable name, so no
+      payload is sent. The **sound** does fire (`playImpactSound` at the contact, ungated). Making the VFX appear means
+      either resolving a rig outside a round or sending a payload with no thrower — both a decision, neither asked for.
+    - **No `CATCH IT!` prompt for a practising player.** `catchPrompt.refresh` shows the word when the ball's
+      `BALL_TAGGED_TEAM_ATTRIBUTE` equals the local player's `Team`, and a practice player has no team, so the tag
+      writes `""` and the prompt's off state is permanent. **The catch itself works** — `canCatch` asks only about the
+      ball's ability and the player's window — but nothing tells them when to press. The drill's `3 2 1` countdown is
+      the timing cue in the meantime.
+
+77. **A drill could not be named, so half of item 76 was invisible and the other half did not fire.** Two symptoms, one
+    cause: `throwerOf` resolved a rig only by walking `rigsInRound()`, which returns `[]` unless a round is `Playing`.
+    A `practiceThrow` drill throws during an intermission, so:
+
+    - `registerHit` sent no `hitImpact` (the send is `if (thrower !== undefined)`), so a drill's hit on a player drew
+      **no VFX** — the tag and the impact *sound* fired, which is why it read as "the hit works but nothing shows";
+    - `resolveCaughtThrower` had nobody to punish, so a caught drill ball **cost the drill nothing**.
+
+    **The identity on the ball is a token, not a name — the spec for this pass said `Name` and that is wrong.**
+    `BallService.throwBall` writes `ThrowerId = tokenOf(model)`, and `tokenOf` returns the model's `THROWER_TOKEN`: a
+    `UserId` as text for a player, a GUID for a rig. So route (a) was taken **but matching on the token**, exactly as the
+    round's own arm already does. Matching on a name would have been a second, weaker identity that a renamed rig or two
+    rigs sharing an alias would get wrong.
+
+    **`drillOf(throwerToken)` is the new arm, and it is deliberately narrow**: `CollectionService.GetTagged(PRACTICE_THROW_TAG)`,
+    filtered to a `Model` in `Workspace`, matched on `THROWER_TOKEN`. **Only a rig wearing the tag** — a plain `NPC` rig
+    must not become the attributed thrower of a ball that hit somebody in the lobby, because `hitVfx` draws per role from
+    the two names and a made-up attacker draws a burst on the wrong body.
+
+    **`throwerOf` now falls through to it, and the breadth of that is bounded by its other callers**, which is worth
+    recording because widening a resolver is the kind of change that bites from the side:
+
+    | caller | what the drill arm changes |
+    | --- | --- |
+    | `registerHit` | **the fix** — `hitImpact` now sends, so the VFX draws |
+    | `resolveCaughtThrower` | nothing on its own; see the ordering note below |
+    | `isFriendlyFire` | nothing — it returns `false` before that unless a round is `Playing`, and a drill has no side |
+    | `BallComponent.score` | nothing — it follows with `isActive`, which is still `rigsInRound`'s question, so a drill's hit records a career hit and **never a run** and never grows the crown |
+
+    **The catch needed the branch placed above the phase guard, and that is the subtle half.** Even with `throwerOf`
+    resolving the drill, `resolveCaughtThrower`'s first line is `if (this.state !== RoundState.Playing) return;` — and a
+    practice catch happens during an intermission, so the rig would still never have died. **`drillOf` is therefore asked
+    before any round guard**, and the drill branch pays the cost and returns: no score, no side, no `LAST_HIT_BY_*` (a rig
+    has no client to read them).
+
+    **`killCaughtDrill` uses `TakeDamage` and nothing else**, on exactly the terms the round's catch death does — `Died`
+    fires, `NpcService` ends the loop and calls `onDied` on every behaviour, and `Behavior_Respawn` rebuilds the body at
+    its post, which is the same door a landed ball sends a rig through. It also sends the **existing** `caughtThrow`
+    event, because `client/hitVfx.ts` already draws red on a thrower's body from it and resolves that body *by name* —
+    its own doc records the rig case as "nearly every catch in a round against rigs". **No client change was needed and
+    none was made.**
+
+    **The practice gate is not asked in the drill branch, deliberately.** `isPractising` spares a *player*; this branch is
+    only ever reached for a rig, which is never practising. A rig caught between rounds dies inside a practice zone or
+    out of it, which is what keeps "no deaths in the zone" a rule about people rather than a haven for every body on the
+    floor.
+
+    **A caught drill ball does not leave a loose ball behind.** `BallService.catchBall` → `attachToHand` welds it to the
+    catcher's hand, so it leaves `Workspace` and `settleLooseBalls` (which only walks balls whose parent *is*
+    `Workspace`) never sees it. Its `THROWN_FROM_BAY_ATTRIBUTE` marker survives the catch, and that is fine in both
+    directions: if the player *drops* it, the ball returns to `Workspace` and the bay-edge rule destroys it as any drill
+    ball; if they *throw* it, `throwBallBody` clears the marker because the thrower does not wear `practiceThrow`. See
+    item 76's ball half.
+
 ---
 
 ## 16. What a live log has actually confirmed

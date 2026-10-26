@@ -12,6 +12,7 @@ import { startCatchPrompt } from "./catchPrompt";
 import { startAfkWatcher } from "./afk";
 import { startPersonalAudio } from "./personalAudio";
 import { startPerfectDodge } from "./perfectDodge";
+import { startPracticeCountdown } from "./practiceCountdown";
 
 print("[client] igniting");
 Flamework.addPaths("src/client/controllers");
@@ -114,3 +115,12 @@ startPersonalAudio();
 // draws a word. See `perfectDodge` for why this is an event rather than an attribute, and for why a rig's
 // perfect dodge exists in the output and never on a screen.
 startPerfectDodge();
+
+// **And the drills' countdown, which is the one client module here that draws over a body rather than over a
+// ball or a screen.** Same plain-module shape for the same reason — one tag's two signals, one attribute read per
+// rig per frame, and nothing to inject. **It is gated on `practiceThrow` and not on `NPC`**, which is what keeps
+// every round's rig out of its loop: a rig with no bay has no countdown to draw, and asking it once a frame to
+// discover that would be asking the whole game's rigs. See `practiceCountdown` for why a frame loop rather than
+// the attribute's change signal (the digits roll *inside* a window that does not move), and for the one
+// subtraction that turns a published instant into `3 2 1`.
+startPracticeCountdown();

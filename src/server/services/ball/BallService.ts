@@ -9,11 +9,15 @@ import {
 	DUCKING_ATTRIBUTE,
 	PICKUP_COUNT_ATTRIBUTE,
 	PICKUP_LOCKED_UNTIL,
+	PRACTICE_THROW_TAG,
 	TEAM_ATTRIBUTE,
+	THROWN_FROM_BAY_ATTRIBUTE,
 	THROWER_TOKEN,
 	THROW_ANIMATION_ATTRIBUTE,
 } from "shared/constants";
 import { NPC_TAG } from "../../npc/Behavior";
+import { insideAnyBay } from "../../npc/practiceBay";
+import { playSpawnPoof } from "../../vfx/spawnPoof";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { throwAnimationWindowSeconds } from "shared/animation";
 import { CATCH_CONFIG } from "shared/config/catch.config";
@@ -1529,6 +1533,24 @@ export class BallService implements OnStart {
 		ball.SetAttribute("Armed", true);
 		ball.SetAttribute("ThrowerId", this.tokenOf(model));
 
+		// **And whether it came out of a practice bay, which decides where it dies.** A drill's ball is destroyed the
+		// first settle turn it is outside every `practiceBay` — see `settleLooseBalls` — and the fact is written here,
+		// at the release, because this is the one line in the game where a ball leaves a hand.
+		//
+		// **Written for *every* throw rather than only for a drill's, and the `else` is the load-bearing half.** A ball
+		// is legitimate property: a player can pick a drill's ball up and throw it, and a marker that was only ever set
+		// would follow that ball out of the bay and kill it in the arena. Clearing it on a throw by a body without the
+		// tag is what makes the fact belong to *this throw* rather than to the ball's history — the same reason
+		// `Armed` and `ThrowerId` are re-stamped two lines up rather than written once at the factory.
+		//
+		// **`true` rather than a bay reference**, because the question the sweep asks is only "is this ball subject to
+		// the bay rule", and `insideAnyBay` answers the rest from the world it can see. Storing which bay it left would
+		// be a second source of truth for geography, free to go stale the moment somebody moves a bay part.
+		if (model.HasTag(PRACTICE_THROW_TAG)) ball.SetAttribute(THROWN_FROM_BAY_ATTRIBUTE, true);
+		else if (ball.GetAttribute(THROWN_FROM_BAY_ATTRIBUTE) !== undefined) {
+			ball.SetAttribute(THROWN_FROM_BAY_ATTRIBUTE, undefined);
+		}
+
 		// **And the body is marked as mid-throw, which is what the throw's own clip is played from.** This is
 		// the moment the file already calls "the release", and it is the only place in the game a ball leaves a
 		// hand — a player's click and a rig's behavior both arrive at this method — so one mark here covers every
@@ -2853,6 +2875,31 @@ export class BallService implements OnStart {
 				// the floor's business. The parent is the same test a catch and a pickup both
 				// use, for the same reason.
 				if (instance.Parent !== Workspace) continue;
+
+				// **A drill's ball dies at the edge of the bay it was thrown in, and this is the only place that
+				// happens.** The sweep is where it belongs rather than a listener on the ball: this loop already walks
+				// every loose ball ten times a second for the rolling resistance below, so the check costs one attribute
+				// read on a loop that exists — and a `Touched`-based version would miss the case that matters most, a
+				// ball that leaves a bay without touching anything.
+				//
+				// **Before the settle, because it is a question about where the ball is rather than about how it is
+				// rolling**, and because a ball about to be destroyed should not be given a frame of deceleration first.
+				//
+				// **`insideAnyBay` answers `true` when no bay exists anywhere**, which is the half that stops this from
+				// eating every ball in a place file that has none — there is nothing for a ball to be out of bounds of.
+				// And it is a *footprint* test, so a ball at head height just after the release still counts as inside;
+				// a three-dimensional test here destroyed balls at the muzzle, which is the bug `npc/practiceBay.ts`
+				// records at length.
+				//
+				// **The poof is the ordinary one, anchored to the ball's own CFrame**, because a ball is a `BasePart`
+				// rather than a `Model` and has no body for `playSpawnPoof` to find a torso on. Without the anchor the
+				// burst would be played at the world origin.
+				if (instance.GetAttribute(THROWN_FROM_BAY_ATTRIBUTE) === true && !insideAnyBay(instance.Position)) {
+					playSpawnPoof(undefined, instance.CFrame);
+					instance.Destroy();
+
+					continue;
+				}
 
 				loose++;
 				this.settleBall(instance, dT);

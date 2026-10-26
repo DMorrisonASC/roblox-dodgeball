@@ -36,6 +36,7 @@ import { ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE } from "shared/constan
 import { MATCH_JOIN_POLL_SECONDS, MATCH_MIN_PLAYERS } from "../../config/match.config";
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
+import { PRACTICE_THROW_TAG } from "shared/constants";
 import { lobbySpawnPartsFor } from "../../npc/lobbySpawns";
 import { rigCounts, rigsOnASide, sideOfRig } from "../../npc/rigs";
 import { playSpawnPoof } from "../../vfx/spawnPoof";
@@ -58,6 +59,7 @@ import { SCORE_RUSH } from "./modes/ScoreRushMode";
 import { roundStatusFolder } from "./roundStatus";
 import { DRAW, RoundOutcome, TEAM_A, TEAM_B, TeamLabel } from "./team";
 import { VoteService } from "./VoteService";
+import { isPractising } from "../zone/practiceZoneMembership";
 
 enum RoundState {
     Intermission,
@@ -2209,14 +2211,19 @@ export class RoundService implements OnStart {
      * where it puts the fact: a side is this service's table plus an attribute, so the stamp would be written
      * by `BallService`, which knows nothing about sides, or by this service at a moment it is not told about.
      *
-     * **Only rigs in the round are considered** — `rigsInRound()`'s `Playing` gate and its side test
-     * together. A rig with no side has no side to be credited, so a token matching one resolves to nothing
-     * and the hit is unattributed, exactly as an unknown token is.
+     * **Only a rig in the round used to be considered, and a drill outside one is the correction.** `rigsInRound()`
+     * carries the `Playing` gate and the side test together, so a rig throwing between rounds resolved to nothing and
+     * the hit was unattributed — which was right while the only rigs that threw were the round's. The practice
+     * `practiceThrow` drill broke that assumption: it throws on a timer during an intermission, at a person standing
+     * in its bay, and both halves of the outcome need this answer — `registerHit` sends no `hitImpact` without it, and
+     * `resolveCaughtThrower` punishes nobody. **So the scan now falls through to the drills**, which is the last arm
+     * below. See {@link drillOf} for why that arm is deliberately narrow.
      *
-     * **Public since a rig's hit began counting toward the crown (2026-10-14).** `BallComponent.score`
-     * asks this to resolve the thrower it is about to credit, so the streak's round-participation gate can
-     * be asked of the resolved body — the same resolution the hit records already use, lent out rather than
-     * copied.
+     * **Public since a rig's hit began counting toward the crown (2026-10-14).** `BallComponent.score` asks this to
+     * resolve the thrower it is about to credit, so the streak's round-participation gate can be asked of the resolved
+     * body — the same resolution the hit records already use, lent out rather than copied. **Widening this arm does not
+     * widen the crown**: `score` follows the answer with `isActive`, which is still `rigsInRound`'s question, so a
+     * drill's hit records a career hit and never a run.
      */
     public throwerOf(throwerToken: string): RoundParticipant | undefined {
         const player = playerFromToken(throwerToken);
@@ -2224,6 +2231,34 @@ export class RoundService implements OnStart {
 
         for (const rig of this.rigsInRound()) {
             if (rig.GetAttribute(THROWER_TOKEN) === throwerToken) return rig;
+        }
+
+        return this.drillOf(throwerToken);
+    }
+
+    /**
+     * **The `practiceThrow` rig a token names, in any phase, or nothing — the identity half of the drill feature.**
+     *
+     * **Deliberately narrower than "any rig": the model must wear `PRACTICE_THROW_TAG`.** A plain `NPC` rig must not
+     * become a thrower just because its token appears on a ball — the round's rigs are resolved by the arm above, and
+     * widening this one to every rig would make a lobby placeholder the attributed thrower of a ball that hit somebody
+     * during an intermission, which is a fact nobody wants and a `hitImpact` drawn with a made-up attacker. The tag is
+     * what says "this rig is allowed to throw outside a round", so the tag is the test.
+     *
+     * **Matched on the token and not on the name**, which is the one thing worth being exact about: `ThrowerId` holds
+     * `BallService.tokenOf(throwing model)`, and that is the model's `THROWER_TOKEN` — a `UserId` as text for a player
+     * and a GUID for a rig. A name match would be a second, weaker identity that a renamed rig or two rigs sharing an
+     * alias would get wrong; the token is the same comparison the round's own arm makes.
+     *
+     * **A scan, priced at the only moment it is asked.** Like `throwerOf`'s round arm this runs once per hit and once
+     * per catch, never per frame, and the tag holds one model per drill in the place file.
+     */
+    private drillOf(throwerToken: string): Model | undefined {
+        if (throwerToken === "") return undefined;
+
+        for (const instance of CollectionService.GetTagged(PRACTICE_THROW_TAG)) {
+            if (!instance.IsA("Model") || !instance.IsDescendantOf(Workspace)) continue;
+            if (instance.GetAttribute(THROWER_TOKEN) === throwerToken) return instance;
         }
 
         return undefined;
@@ -2685,6 +2720,28 @@ export class RoundService implements OnStart {
      * off whenever an NPC was on the field.
      */
     public resolveCaughtThrower(throwerToken: string, catcher: Model): void {
+        // **A drill's throw is answered first, above the round's own guards, and that ordering is the fix.** Every
+        // guard below is about a *round* — no round means no sides and nothing to resolve — but a drill throws on a
+        // timer during an intermission, at whoever is in its bay. So the phase guard would have returned before the
+        // rig was ever looked for, and a caught drill ball would have cost the drill nothing at all, which is the
+        // half of this feature that read as "the catch does not work".
+        //
+        // **The cost of a drill's missed throw is the drill, and nothing else.** No score, no side, no
+        // `LAST_HIT_BY_*` on a rig that has no client to read them — a practice catch is not a round event, and the
+        // round's guards below are still exactly the answer for every throw that *is* one. The rig comes back through
+        // `RespawnBehavior`, which is the same door a ball's damage sends it through.
+        //
+        // **The practice gate is deliberately not asked here.** `isPractising` spares a *player*, and this branch is
+        // only ever reached for a model wearing `PRACTICE_THROW_TAG` — a rig, which is never practising. A rig caught
+        // between rounds dies, inside a practice zone or out of it, which is what keeps "no deaths in the zone" a rule
+        // about people rather than a haven for every body standing on the floor.
+        const drill = this.drillOf(throwerToken);
+        if (drill !== undefined) {
+            this.killCaughtDrill(drill, catcher);
+
+            return;
+        }
+
         // No round, no sides, nothing to resolve: between rounds a catch is just a catch.
         if (this.state !== RoundState.Playing) return;
 
@@ -2779,7 +2836,17 @@ export class RoundService implements OnStart {
             thrower.SetAttribute(LAST_HIT_BY_CAUSE_ATTRIBUTE, "Catch");
         }
 
-        if (humanoid && humanoid.Health > 0) humanoid.TakeDamage(CATCH_DEATH_DAMAGE);
+        // **A practising thrower survives their own caught throw, and this is the second of the two kill paths.** The
+        // first is the ball's own damage in `BallComponent.landHit`; both ask the same question of the same helper, so
+        // "no kills in a practice zone" is one rule with two call sites rather than two rules that happen to agree.
+        //
+        // **Strictly this is unreachable today, and the gate is still right.** Everything above needs both ends to be
+        // in the round (`teamOf` answers `undefined` for a body standing in a zone, which `assignTeams` deliberately
+        // leaves off a side), so a practice catch returns before this line. What the gate covers is the case that
+        // guard cannot: a player who already has a side *walks into* the zone mid-round and catches a throw there —
+        // then `teamOf` answers, the catch resolves, and the thrower would die on ground they are practising on. One
+        // attribute read on a path that runs once per catch is the whole cost of not having to think about it again.
+        if (humanoid && humanoid.Health > 0 && !isPractising(thrower)) humanoid.TakeDamage(CATCH_DEATH_DAMAGE);
 
         if (!this.mode.scores) return;
 
@@ -2788,6 +2855,37 @@ export class RoundService implements OnStart {
 
         this.scores.set(team, (this.scores.get(team) ?? 0) + GAME_MODE_CONFIG.CATCH_POINTS);
         this.publishScores();
+    }
+
+    /**
+     * **Kills a drill whose throw was caught — the whole of what a practice catch costs.**
+     *
+     * **`TakeDamage` and not a state change**, on exactly the terms the round's own catch death uses: the damage fires
+     * `Died`, `NpcService` sees the loop end with no health left and calls `onDied` on every behaviour the rig wears,
+     * and `Behavior_Respawn` rebuilds the body at its post. A drill that is caught therefore stops drilling, falls
+     * over, and comes back — which is the same treatment a rig takes from a landed ball, and the reason nothing here
+     * needed a second mechanism.
+     *
+     * **`caughtThrow` goes out, because it is the existing effect for exactly this fact and the user asked for it.**
+     * `client/hitVfx.ts` draws red on the thrower's body from that event and resolves the body *by name*, which its own
+     * doc records as being for precisely this case — "in a round against rigs is nearly every catch". A drill whose
+     * ball is caught is the same sentence with a different rig, so no client change is needed and none was made.
+     *
+     * **Nothing else is sent.** The three `LAST_HIT_BY_*` attributes and the kill-cam caption are written for a
+     * *player* thrower on the round path because a player has a screen to read them; a rig has no client, so writing
+     * them here would be three attribute writes nobody could ever read.
+     *
+     * **An already-dead rig is left alone**, for `resolveTags`'s reason: a drill killed by another ball while this one
+     * was in the air cannot be killed twice, and `TakeDamage` on a corpse would only re-fire `Died`.
+     */
+    private killCaughtDrill(drill: Model, catcher: Model): void {
+        const humanoid = drill.FindFirstChildWhichIsA("Humanoid");
+        if (humanoid === undefined || humanoid.Health <= 0) return;
+
+        events.Server.Get("caughtThrow").SendToAllPlayers(drill.Name, catcher.Name);
+        humanoid.TakeDamage(CATCH_DEATH_DAMAGE);
+
+        print(`[Round] ${drill.Name}: throw caught by ${catcher.Name} — the drill goes down`);
     }
 
     /**

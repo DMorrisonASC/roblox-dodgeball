@@ -13,6 +13,7 @@ import {
 	THROWER_TOKEN,
 } from "shared/constants";
 import { isDuckExempt } from "shared/duck";
+import { isPractising } from "../services/zone/practiceZoneMembership";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
@@ -335,30 +336,31 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		const character = otherPart.FindFirstAncestorWhichIsA("Model");
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 
-		// **A practice player is not a body to this ball at all, and the throw carries on past them.**
+		// **A practice player is a body to this ball now, and this is where the rule used to veto them.**
 		//
-		// This is the half of the zone's ball rule that no collision group can express. The group stops
-		// the *bounce* — `PracticePlayer` against `Ball` is set not to collide — but a collision group
-		// does not suppress `Touched`, which is the same engine fact that makes `CanTouch` a flag of its
-		// own and that the barrier relies on being true. So without this the ball would sail through
-		// somebody in a practice zone and *tag* them on the way, which is the rule inverted rather than
-		// enforced.
+		// What stood here refused the contact outright — `in a practice zone — carried on past them` — and the
+		// reasoning was sound for what it was for: the collision group stops the *bounce* (`PracticePlayer`
+		// against `Ball` does not collide) but a group does not suppress `Touched`, so without a veto the ball
+		// would sail through somebody in a practice zone and *tag* them on the way, which was the rule inverted
+		// rather than enforced.
 		//
-		// **Answered here rather than where tags resolve**, because this is the single funnel every
-		// ball-versus-body contact passes through, and a veto belongs where the contact is judged — the
-		// same reasoning the friendly-fire veto below it uses. Refusing later, in the round code that
-		// turns a tag into a death, would leave the ball having spent itself on a body it was never
-		// allowed to touch, and the practice player having been bounced off instead of ignored.
+		// **What that cost is the reason it is gone: a practice zone was a place to stand rather than a place to
+		// practise.** A ball that cannot contact a body cannot be caught either — `canCatch` is only ever reached
+		// from this funnel — so the one thing a person standing in a zone might want to work on, catching, was
+		// the one thing the veto made impossible. And with no contact there was no impact sound, no impact
+		// effect, and no evidence at all that a ball had arrived.
 		//
-		// Read from the player's attribute rather than from the zone geometry: `PracticeZoneService` owns
-		// that question on this side and answers it on a tick, so asking it again here would put a bounds
-		// walk on the ball's own hot path. The attribute can be up to one interval stale, which is the
-		// trade the tracker makes for every consumer it has.
-		const player = character ? Players.GetPlayerFromCharacter(character) : undefined;
-		if (player && player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true) {
-			this.noteDecidedNothing(otherPart, "in a practice zone — carried on past them");
-			return;
-		}
+		// **The kill moved instead of the contact, and the two are now separate questions.** Everything up to and
+		// including the tag, the catch window, the sound and the impact effect happens exactly as it does
+		// anywhere else; the health write is the single thing a practice zone suppresses, and it is suppressed
+		// one layer down in `landHit` where `TakeDamage` actually happens. **A tag is not a death** — that is
+		// what the deferral in this file is for — so tagging a practice player is simply the truth about a ball
+		// that touched them, and a catch can still take it back.
+		//
+		// **The freeze that the group applies is unchanged, and it is why this is not a group change.** A
+		// practice player's parts stay in `PracticePlayer` and so keep passing through balls rather than being
+		// knocked about; what changed is only that the contact is now *noticed*. That is the same asymmetry the
+		// duck relies on: the group stops the bounce, and the code decides what the contact means.
 
 		// Not a character — or a ball, which reaches here only when this throw already has somebody on
 		// it, and is then the throw's death like any wall. See the guard above for the whole rule.
@@ -933,12 +935,42 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * The print is the rule made visible: it says which tagged body is being resolved, on which
 	 * part, at the moment it happens. The tag itself was silent, and this line is where the throw's
 	 * outcome becomes a fact instead of a possibility.
+	 *
+	 * ## The practice zone stops here, and this is the only place it can
+	 *
+	 * **A practising player is tagged, reported and then left alive** — the damage is the one line a practice zone
+	 * suppresses, and it is suppressed at the single place the game writes throw damage. That is why the contact
+	 * itself is no longer vetoed in `handleTouch`: a ball that cannot touch a body cannot be caught or heard, so the
+	 * veto was suppressing the wrong half. **Everything above this line has already happened** — the tag, the impact
+	 * sound at the contact, `registerHit`'s `hitImpact` for every client — so the person practising sees and hears the
+	 * hit and simply does not die of it.
+	 *
+	 * **A rig is deliberately not spared**, in a practice zone or anywhere else: `isPractising` answers only for a
+	 * `Player`, because the request was about a person practising and a zone that silently made every NPC in it
+	 * immortal would be a second rule nobody asked for. A drill's ball that misses its player and lands on a rig
+	 * still kills that rig, which is what keeps "no kills in the zone" from meaning "no consequences anywhere".
+	 *
+	 * **The line still prints when the health is spared**, and that is not noise: `was hit by … on …` is the record
+	 * that the contact happened, and a hit that silently did nothing would be indistinguishable from a ball that
+	 * missed. The spare gets its own line beside it, so a reader can tell "no damage because practice" from "no
+	 * damage because the tag never resolved".
 	 */
 	private landHit(character: Model, humanoid: Humanoid, part: BasePart): void {
 		// Gated where the rest of this file's output is not: this is one line per hit, and it is
 		// worth reading only while tuning what a contact is worth.
 		if (DEBUG_CONFIG.VERBOSE_LOGS) print(`[Ball] ${character.Name}: hit on ${part.Name}`);
 		print(humanoid.Name + " was hit by " + this.instance.Name + " on " + part.Name);
+
+		// **The one gate, and it wraps the health write rather than the hit.** `TakeDamage` is what fires `Died`,
+		// which is what reaches `RoundService.handleDeath` — so this single refusal is the whole of "no kills in a
+		// practice zone" on the ball's path, and it sits here rather than earlier because everything before it is
+		// the record of a contact that really did happen.
+		if (isPractising(character)) {
+			print(`[Ball] ${character.Name}: health spared — practising, so this tag does no damage`);
+
+			return;
+		}
+
 		humanoid.TakeDamage(HIT_DAMAGE);
 	}
 

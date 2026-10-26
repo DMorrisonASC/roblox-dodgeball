@@ -1058,4 +1058,28 @@ export const NPC_CONFIG = {
 	 * rare enough to still be a decision.
 	 */
 	PICKUP_BACKPEDAL_CHANCE: 0.4,
+
+	/**
+	 * How often a drill rig in a `practiceBay` **decides** to throw at the person standing in it, in seconds.
+	 * **Placeholder — 5.**
+	 *
+	 * **A drill's cadence, and the whole reason it is a number rather than the tick interval.** The tick is the
+	 * shared windup cadence (`THROW_TICK_SECONDS`, a tenth of a second) because a hold has to be *watched*; the
+	 * pace at which a rig offers a throw is a different fact and this is it. The cycle a player experiences is
+	 * this figure plus the windup it leads into — five seconds of nothing, then `3 2 1`, then a throw at roughly
+	 * `charge × RIG_CHARGE_SECONDS` — so raising this lengthens the wait between drills and changes nothing about
+	 * the throws themselves.
+	 *
+	 * **Five, which is the number `AlwaysThrowBehavior` has always used**, chosen here for the reason that one
+	 * gives: long enough that a person can set their feet and decide what they are practising, short enough that
+	 * a session is not spent waiting. **It is not a difficulty dial** — a rig's `THROW_MISS_CHANCE` belongs to
+	 * the round's rigs and a drill never rolls it, so the only thing this number changes is how often the ball
+	 * comes.
+	 *
+	 * **Deliberately here rather than beside the behaviour**, because it is a pace and this file is where paces
+	 * live. Its two client-side neighbours are **not** here: the countdown's display window and its offset are
+	 * properties of the drawing rather than of the rig, this file's header says it is read on the server alone,
+	 * and a client constant in it would be the first thing to break that promise. See `client/practiceCountdown.ts`.
+	 */
+	PRACTICE_THROW_CADENCE_SECONDS: 5,
 } as const;

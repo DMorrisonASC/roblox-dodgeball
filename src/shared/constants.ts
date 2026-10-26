@@ -124,6 +124,64 @@ export const AIM_IGNORE_TAG = "AimIgnore";
 export const PRACTICE_ZONE_TAG = "practiceZone";
 
 /**
+ * Tag on **one bay of the practice floor** — the box a single drill rig owns, and the whole of what decides
+ * whether that rig throws.
+ *
+ * **A bay is a footprint, not a box, and that distinction cost three rounds before it was written down.** The
+ * first version of this feature asked `Workspace.GetPartBoundsInBox` about the bay's own `CFrame` and `Size`,
+ * which is a *three-dimensional* test — and a bay painted on a floor is a slab an inch thick, so a rig's
+ * `HumanoidRootPart` (about three studs up) **did not intersect it at all**. Three symptoms came out of one
+ * mistake: the rig was not recognised as being in its bay, a player standing in it was not either, and a ball
+ * leaving the hand at head height was "out of bounds" on its first settle turn and destroyed at the muzzle.
+ * **`npc/practiceBay.ts` is where the rule now lives**, as a vertical prism over the part's X/Z footprint with
+ * height ignored entirely — which is what a person painting a box on a floor is drawing anyway.
+ *
+ * **The part's flags are the same contract as a zone's, for the same reasons**: `CanTouch = false` and
+ * `CanQuery = false`, so a bay is somewhere bodies stand rather than a surface — a queryable one would be
+ * something the aim guide's cast stopped on, and a touchable one would hand `Touched` to every ball that
+ * crossed it. **No collision group**, because a bay does not affect anything; it is a place, not a wall.
+ *
+ * **Anywhere in `Workspace` counts and nothing outside it does**, exactly as {@link PRACTICE_ZONE_TAG} argues:
+ * a tagged part still sitting inside an unplaced arena is returned by `GetTagged`, and a box that is not in the
+ * world is not somewhere a player can walk.
+ *
+ * **Placeholder**: rename the string and the place file together. No alias is accepted, and the reason is the
+ * one written out at length on `PRACTICE_ZONE_TAG` — a reader that matched both spellings would keep a
+ * half-repainted place file working for exactly as long as it took somebody to notice.
+ */
+export const PRACTICE_BAY_TAG = "practiceBay";
+
+/**
+ * Tag on a **rig** — the one that makes it a drill: it throws at a player standing in its own
+ * {@link PRACTICE_BAY_TAG} and at nobody else.
+ *
+ * **Deliberately not named `Behavior_*`, and that is cosmetic rather than structural.** The tag *is* the
+ * dispatch key, exactly as `Behavior_AlwaysThrowing` is: `NpcService`'s list of behaviours is keyed on
+ * `behavior.tag`, so this string turns on `PracticeThrowBehavior` in precisely the same way, and the
+ * `[Rig]`/`[NPC]` output cannot tell the two apart. The name says **what the rig is for** rather than which
+ * module runs it, because that is the question a person painting it in Studio is actually asking. See
+ * `PracticeThrowBehavior` for why the drill needs a tag of its own rather than a mode on the always-thrower:
+ * the always-thrower has no target and never had one, and giving it one would have meant a rig that behaves
+ * differently depending on geography it cannot see.
+ *
+ * **It is painted on the rig before `NPC`**, for the rule `NpcService.spawn` writes down — `NPC` is what starts
+ * the rig, so a tag arriving after it is a tag whose behaviour misses the turn it could have run on. Painted by
+ * hand in Studio that ordering is whatever the Tag Editor did, and the cost is one tick: the loop asks
+ * `HasTag` every turn, so a behaviour tag added later starts on the next.
+ *
+ * **`Behavior_AlwaysThrowing` is not retired by this tag existing.** The user stopped painting it on drills
+ * rather than the code being removed, so the two are independent: a rig wearing both runs both, and that is
+ * left alone deliberately — a mutual-exclusion rule is one nobody asked for, and the double throw it produces
+ * is the honest reading of a rig wearing two throwing tags.
+ *
+ * **Read in three places, and they agree because they import this**: `PracticeThrowBehavior` (is this rig a
+ * drill), `BallService.throwBallBody` (mark the ball this rig throws, see
+ * {@link THROWN_FROM_BAY_ATTRIBUTE}), and `client/practiceCountdown.ts` (is this rig one to draw a countdown
+ * over).
+ */
+export const PRACTICE_THROW_TAG = "practiceThrow";
+
+/**
  * Tag marking a place a mystery box appears.
  *
  * **Read by `server/services/mystery/MysteryBoxService.ts` alone**, and it is the second tag in this file
@@ -1435,6 +1493,60 @@ export const CATCHING_ATTRIBUTE = "Catching";
  * state, and it is not this.
  */
 export const CHARGING_ATTRIBUTE = "Charging";
+
+/**
+ * Attribute on a **drill rig's `Model`**: the server time at which its next throw is expected, from
+ * `Workspace.GetServerTimeNow()` — and **absent** when the rig is not armed.
+ *
+ * **A second telegraph, and it is a different question from {@link CHARGING_ATTRIBUTE} rather than a nicer
+ * spelling of it.** The charge answers *"how much of a hold is this body holding"* — it exists for the whole of
+ * a windup and its value is a 0..1 fraction. This answers *"when does the next ball leave"*, and it exists
+ * **before** the hold starts: a drill's cycle is `cadence → windup → throw`, and the only number that can
+ * describe the first third of it is an absolute instant. Both are published for the same reason — a rig's throw
+ * is meant to be dodgeable, and a dodge needs to be seen coming — and neither can be derived from the other,
+ * which is why a rig in the middle of a windup has *both* set at once.
+ *
+ * **A number rather than a countdown**, because a number is what survives the wire. Sending "3 seconds" would
+ * be sending an answer that starts decaying the moment it is sent, on a link whose latency is not measured
+ * here; sending the instant it lands at lets every client do the one subtraction with the clock both machines
+ * share. `GetServerTimeNow` is that clock — `os.clock` is per-machine and `os.time` is whole seconds, and a
+ * countdown rounded to the second would spend most of its life a second out.
+ *
+ * **Cleared rather than set to `0`**, and that is the whole of the client's rule. `0` is a real timestamp that
+ * happened in 1970; "no countdown" is an absence, and a reader that had to test both would be a reader with two
+ * spellings of one state — the argument {@link LAST_HIT_BY_CAUSE_ATTRIBUTE} makes about `nil` versus `""`.
+ *
+ * **Published at the three moments the deadline really moves** — the cycle arming, the windup starting, and the
+ * throw re-arming the cycle — and **only while the rig has somebody to throw at**, which is the correction that
+ * keeps a number off a rig that is doing nothing. See `PracticeThrowBehavior.publishDeadline`, which is the one
+ * writer, and `client/practiceCountdown.ts`, which is the one reader.
+ */
+export const NEXT_THROW_AT_ATTRIBUTE = "NextThrowAt";
+
+/**
+ * Attribute on a **ball**, `true` when it was thrown by a {@link PRACTICE_THROW_TAG} rig — **the marker that
+ * makes a drill's ball die at the edge of its bay.**
+ *
+ * **A marker on the ball rather than a question asked of the thrower on every turn, and the difference is what
+ * a pickup does.** A ball is legitimate property: a player can pick a drill's ball up and throw it, and a rule
+ * that resolved "did this come from a bay" by looking up `ThrowerId` would then have to care who is holding it
+ * and when it changed hands. **The fact is decided once, at the release, and cleared at the next release** —
+ * `BallService.throwBallBody` writes it *and* writes `undefined` for a thrower without the tag, so a player who
+ * throws a ball they picked up out of a bay does not inherit the death sentence with it.
+ *
+ * **Read by one thing**, the settle sweep (`BallService.settleLooseBalls`), which destroys the ball the first
+ * turn it is outside every bay. The sweep is where it belongs because it already walks every loose ball ten
+ * times a second for the rolling resistance, so this costs one attribute read on a loop that exists; a
+ * `Touched`-style edge would need a listener per ball and would miss the case that matters most, a ball that
+ * leaves a bay without touching anything.
+ *
+ * **Why a dead ball is the right answer rather than letting it roll**, stated because it is a choice a reader
+ * would otherwise assume: a drill's ball is thrown by a body that never leaves its bay, so a ball that has left
+ * the bay is a ball that will be fetched from across the practice floor by a rig that is supposed to be standing
+ * still — or, worse, rolled somewhere a person picks it up. `insideAnyBay` is the test, and it answers `true`
+ * when no bay exists anywhere, which is what stops this from destroying every ball in a place file that has none.
+ */
+export const THROWN_FROM_BAY_ATTRIBUTE = "ThrownFromBay";
 
 /**
  * The three shapes a rig's throw can take — **the vocabulary {@link THROW_WALK_ATTRIBUTE} carries.**

@@ -31,6 +31,16 @@ twenty-one" was true for the day the pair landed and before `Behavior_AlwaysSeek
 "twenty-one" is the count as it stood *then*. The register's own line under the table — twenty-four —
 is the count. See the dated notes below for what each addition means.
 
+**Two more have landed since, taking it to twenty-six**: `practiceBay` and `practiceThrow`, the drill
+pair. The register line under the table is the count, as always. **`practiceThrow` is the only string
+here that is a behaviour's dispatch key without being a `Behavior_*` tag, and the difference is in the
+name rather than in the mechanism** — `NpcService`'s list is keyed on `behavior.tag`, so it turns on
+`PracticeThrowBehavior` in exactly the way `Behavior_AlwaysThrowing` turns on its own, and the
+`[NPC] managed — …` line lists the two identically. The name answers the question the person painting it
+is asking (*is this rig a drill?*) rather than the one the source answers (*which module runs it?*). **The
+one consequence worth knowing is in `NpcService`'s MicroProfiler labels**, which used to drop a fixed
+nine-character prefix; see `behaviorScopeName` there for why that stopped being exact.
+
 **Earlier revisions, for the record.** The revision *before* 2026-10-06 was three tags short —
 `MatchJoinA`, `MatchJoinB` and `ShiftLockZone` (now `practiceZone`) — and described `CharacterBarrier`
 and `MatchSpawner` in terms of a map that is no longer cloned. The 2026-10-06 revision (commit
@@ -142,7 +152,9 @@ a place file that no build touches.
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
 | `AimIgnore` | `shared/constants.ts`, `AIM_IGNORE_TAG` | *painted in Studio*, and `CanQuery = false` on the same part is the flag that actually does the work — see the section below | `client/controllers/input/ThrowController` — `refreshAimIgnores` caches it and both of that file's exclusion lists spread the result: the arc's `Trajectory`, and the shared list `aimPoint`'s ray and the assist's sight test cast with. **The only tag in this register with no server reader at all** — physics never needs to know a wall is invisible to the preview |
-| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` / `.insideZoneAt` on the server — the tracker that publishes the attribute; `MysteryBoxService` calls `insideZoneAt` to ask whether a spawn point is on a practice floor; and **`AlwaysSeekingBehavior` reads the tag itself to ask whether a loose ball is inside the zone** — the practice half of the seek split, and the only reader of this tag that is a behaviour. **On the client** the rule is `client/roundZone.ts` (`inTaggedZone`), which the camera (`ShiftLock.checkZone`) and the dodge input (`DodgeController`) both ask — plus `ShiftLock.reportZoneParts`, which reads the tag a second time for its own count. One of the two tags a client reads |
+| `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` / `.insideZoneAt` on the server — the tracker that publishes the attribute; **`isPractising(body)`** (in `services/zone/practiceZoneMembership.ts`, a plain module rather than an export from the service — see that file for why), the predicate both kill paths ask (`BallComponent.landHit` and `RoundService.resolveCaughtThrower`) so a practising player is hit, heard and seen but not killed, while a **rig victim inside the zone is still killed** because the predicate answers only for a `Player`; `MysteryBoxService` calls `insideZoneAt` to ask whether a spawn point is on a practice floor; and **`AlwaysSeekingBehavior` reads the tag itself to ask whether a loose ball is inside the zone** — the practice half of the seek split, and the only reader of this tag that is a behaviour. **On the client** the rule is `client/roundZone.ts` (`inTaggedZone`), which the camera (`ShiftLock.checkZone`) and the dodge input (`DodgeController`) both ask — plus `ShiftLock.reportZoneParts`, which reads the tag a second time for its own count. One of the two tags a client reads |
+| `practiceBay` | `shared/constants.ts`, `PRACTICE_BAY_TAG` | *painted in Studio* — `CanTouch = false`, `CanQuery = false`, no collision group, for `practiceZone`'s reasons | `npc/practiceBay.ts`, and nothing else anywhere: `bayOf` (which box is this rig standing in), `playerInBay` (who is in that box), `insideAnyBay` (has a drill's ball left every box). **The one tag in this register whose meaning is a *footprint* rather than a box**, and that is not a detail: `overFootprint` ignores the part's own thickness, because a bay painted on a floor is a slab an inch thick and a three-dimensional test for it failed three ways at once — a rig's root three studs up was "outside", a player's root was too, and a ball leaving the hand at head height was "out of bounds" and was destroyed at the muzzle. See the section below |
+| `practiceThrow` | `shared/constants.ts`, `PRACTICE_THROW_TAG` | *painted in Studio* — on the **rig**, and before `NPC` (which is what starts the loop) | `NpcService`'s per-behavior gate — the tag **is** the dispatch key — which turns on `PracticeThrowBehavior`; `BallService.throwBallBody`, which marks the ball it throws with `THROWN_FROM_BAY_ATTRIBUTE`; `client/practiceCountdown.ts`, which walks it for the `3 2 1`; and **`RoundService.drillOf`**, which resolves a drill as a *thrower* outside a `Playing` round — the arm behind `hitImpact` firing on a drill's hit and behind a caught drill ball killing the rig. **That last reader is why this tag is not merely a dispatch key**: it is what says "this rig is allowed to throw outside a round", and widening it to any `NPC` would make a lobby placeholder the attacker of a ball it never threw. **A drill throws only at a player standing in a `practiceBay`** — with no bay, or with an empty one, it idles and clears its countdown |
 | `mysterySpawnPrize` | `shared/constants.ts`, `MYSTERY_SPAWN_TAG` | *painted in Studio* | `MysteryBoxService.report`, `.tick` and `forgetLostSpawns`. It also asks `PracticeZoneService.insideZoneAt(spawn.Position)` whether a spawn point is on a practice floor — **a question about the spawn, asked of the zone, not a second reader of this tag** |
 | `MatchJoinA` | `shared/constants.ts`, `MATCH_JOIN_A_TAG` | *painted in Studio* — the part's flags are then forced from code | `MatchService.mountSide` |
 | `MatchJoinB` | `shared/constants.ts`, `MATCH_JOIN_B_TAG` | as above | as above |
@@ -153,7 +165,7 @@ a place file that no build touches.
 | `Behavior_Catching` | `npc/Behavior.ts`, `BEHAVIOR_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted — **plus `LobbyRigService`, which puts it on every lobby placeholder that is holding a side while a round is on** | `NpcService`'s per-behavior gate — and **gated since the catch/throw split**: a per-window 50 % decision, not the always-on window this string used to name. See the section below |
 | `Behavior_AlwaysCatching` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_CATCHING` | `NpcService.spawn` / `RespawnBehavior` / painted — **never the placeholders** | as above — **the always-on catcher, which is the behaviour `Behavior_Catching` used to name** |
 | `Behavior_Throwing` | `npc/Behavior.ts`, `BEHAVIOR_THROWING` | `NpcService.spawn` / `RespawnBehavior` / painted — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate — **gated since the split**: it turns to face an enemy and throws at it, and issues itself no ball. See the section below |
-| `Behavior_AlwaysThrowing` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_THROWING` | `NpcService.spawn` / `RespawnBehavior` / painted — **never the placeholders** | as above — **the always-on thrower, which is the behaviour `Behavior_Throwing` used to name** |
+| `Behavior_AlwaysThrowing` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_THROWING` | `NpcService.spawn` / `RespawnBehavior` / painted — **never the placeholders** | as above — **the always-on thrower, which is the behaviour `Behavior_Throwing` used to name**. **Not retired in code, and no longer painted on drills:** the user retired it by not painting it, in favour of `practiceThrow` below, which has a target and a bay. The two are independent — a rig wearing both runs both behaviours and throws twice, which is left alone deliberately |
 | `Behavior_Pickup` | `npc/Behavior.ts`, `BEHAVIOR_PICKUP` | `NpcService.spawn` / `RespawnBehavior` / painted — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate |
 | `Behavior_Seeking` | `npc/Behavior.ts`, `BEHAVIOR_SEEKING` | as above — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate — and **the *round* seek, which fetches only inside the rig's own side's box since 2026-10-13**: this string used to name a seek that fetched from anywhere in `Workspace`. `createRoundSeekBehavior` in `SeekBehavior.ts` reads `npc/sideZones.fetchRegionFor`, so a rig on A never walks for a ball outside `SideKeepOutA`, whatever room it is standing in |
 | `Behavior_AlwaysSeeking` | `npc/Behavior.ts`, `BEHAVIOR_ALWAYS_SEEKING` | *painted in Studio* — **never the placeholders**, which wear `Behavior_Seeking` while a round is on | `NpcService`'s per-behavior gate — and **the *practice* seek**, `AlwaysSeekingBehavior.ts`, which fetches only inside a `practiceZone`-tagged part and nowhere else. A rig with no side has no half of the court, which is why the practice rigs need a tag of their own. **The name is a Placeholder and the odd one out**: every other `Always*` tag is the ungated twin of a gated one, and seeking has no gate — `Behavior_PracticeSeeking` would say what this is. See the section below |
@@ -162,7 +174,7 @@ a place file that no build touches.
 | `Behavior_Respawn` | `npc/Behavior.ts`, `BEHAVIOR_RESPAWN` | as above — **plus `LobbyRigService`**, for the placeholders (see `Behavior_Catching`) | `NpcService`'s per-behavior gate, which calls `onDied` when a loop ends with no health left |
 | `Behavior_WalkToJoinPad` | `npc/Behavior.ts`, `BEHAVIOR_WALK_TO_JOIN_PAD` | `LobbyRigService`, through `NpcService.spawn` | `NpcService`'s per-behavior gate — and `WalkToJoinPadBehavior` itself, which reads the rig's `WalkToJoinPad` (a `Vector3` destination) and `WalkToJoinPadSide` (the side to take **on arrival**) attributes. **It is the one behaviour tag that writes `Team`**, which is what makes the walker a round participant the moment it stands on the pad |
 
-Twenty-four tags. Of them, **five are the same rule** — a tag that only means something while the part is
+Twenty-six tags. Of them, **five are the same rule** — a tag that only means something while the part is
 in the world — and the rule is now enforced by the reader rather than repeated in each one: see the
 five sections below that say so.
 
@@ -349,7 +361,8 @@ see why: a rig's animation state is published as attributes *on the rig*, so the
 able to find the rigs before there is anything to watch, and the tag is how. On the server
 `PracticeZoneService` owns membership: it runs the same bounds test on a tick, and publishes the answer
 as **`PracticeZone` on the `Player`**. Everything else reads that attribute — the dodge gate, the ball's
-contact handler, the Freeze splash, the dock — so the zone costs **one query per player per tick** no
+**damage** (`isPractising`, which is what makes a practice hit non-lethal — the *contact* itself is no
+longer vetoed anywhere), the Freeze splash, the dock — so the zone costs **one query per player per tick** no
 matter how many rules are asking, and no two rules can come to different answers about the same body.
 The two detections can differ by at most one interval (0.1 s); the client's is kept only because the
 camera needs an answer on its own tick rather than at replication's.
@@ -382,6 +395,54 @@ barrier's reason: the aim guide's spherecast must not stop on a lobby prop.
 
 **No collision group**, unlike the barrier: this part is not meant to affect anything, and a group
 would be a statement that it does.
+
+## `practiceBay` and `practiceThrow` — the drill pair, and the one that is a footprint
+
+**Two tags that only mean something together.** `practiceThrow` goes on a *rig* and says it is a drill;
+`practiceBay` goes on a *part* and says **where a person stands to be thrown at**. Both are painted in Studio and
+neither has a writer in code — there is no service that tags a rig `practiceThrow`, which is deliberate, because
+which rigs are drills is a level-design decision and not something the game should infer.
+
+**The strict half of the rule is the person, and only the person.** A drill throws at whoever is standing in a
+`practiceBay`, and at nobody when every bay is empty. **The rig does not have to be inside the box** — it prefers
+its own bay, which is what keeps two drills beside two boxes apart, but a rig standing next to a box still throws at
+the person in it. That was originally mandatory in both directions and it was wrong: the rig is a fixture beside the
+box, and requiring the two to be co-located meant a drill only worked in layouts where they happened to line up. A
+drill standing on its own feet at one end of the practice floor and a box painted at the other is a perfectly
+ordinary setup, and it now works.
+
+**A bay is a *footprint*, not a box, and this is the tag that cost three rounds.** Everything about a bay is
+asked through one function, `npc/practiceBay.ts`'s `overFootprint`, which does a `PointToObjectSpace` and
+compares **X and Z only** — the part's own thickness is ignored and a bay is as tall as the world. The first
+version of this feature handed the part's `CFrame`/`Size` to `GetPartBoundsInBox`, which is a
+three-dimensional question, and a bay painted on a floor is a slab an inch thick:
+
+| what was seen | why |
+| --- | --- |
+| the rig was not a drill at all | its `HumanoidRootPart` sits about three studs up and **did not intersect the slab** |
+| (and its bay would have been empty anyway) | a player's root did not intersect it either |
+| no ball ever arrived | a ball leaves the hand at head height, so it was "out of bounds" on its first settle turn and `BallService` **destroyed it at the muzzle** |
+
+**All three symptoms, one mistake.** What a bay *means* is the ground area one rig owns, so a vertical prism
+over the part's footprint is the honest shape — and it is what a person painting a box on a floor is drawing
+anyway. A bay is rotated with its part, because the comparison happens in the part's own frame.
+
+**A drill's ball dies when it leaves every bay**, which is the other reader of the tag. It is marked at the
+throw (`THROWN_FROM_BAY_ATTRIBUTE`, written by `BallService.throwBallBody` for a `practiceThrow` thrower and
+**cleared** for anybody else's) and destroyed by the settle sweep the first turn it is outside. The clearing
+is the load-bearing half: a ball is legitimate property, and a player who picks a drill's ball up and throws it
+should not inherit the bay's death sentence with it.
+
+**What a drill's ball does *not* do is hurt anybody, where a bay is inside a `practiceZone`.** The practice
+veto in `BallComponent.handleTouch` skips a player in a zone, so the ball is carried past them. That is the
+existing rule and not this pair's; the follow-up — real collision and hit effects with no kills inside a
+practice area — is what would change it.
+
+**Consequences worth knowing before painting one.** A drill with nobody in any bay stands still and says nothing —
+which is the whole of the rule and is now the *only* silence a drill can produce. `PracticeThrowBehavior` prints
+`standing down — nobody is standing in a bay` and `armed — <player> is in <bay>` on the transitions, so a drill that
+prints neither is a drill that never ticked. **`Behavior_AlwaysThrowing` is still in the code and still works** —
+the user retired it by not painting it — so a rig wearing both throws twice.
 
 ## `MatchJoinA` / `MatchJoinB` — painted, not written, and the code then mutates the part
 
@@ -643,7 +704,9 @@ duplicated — the source of truth is the file named.
 | `"Playing"` / `"Intermission"` | `RoundService` publishes them as the phase name | **server:** `BallSpawnerService`, `MatchService`, `StatsService`, `SuperService`, `OutlineService`, `MysteryBoxService`, `DodgeService`. **client:** `RoundStatusController`, `StatsBillboardController`, `TeamRingController`, `MusicController`, `ShiftLock`, `roundZone.ts`, and `panels.ts` (which spells both and is what `DockController` and `ArenaFreezeCountdownController` read them through). (`RoundResultController` was on this list until it was deleted on 2026-10-19 — see `HANDOFF.md` §9) |
 | `"LobbySpawn"` | `shared/config/arena.config.ts` (`LOBBY_SPAWN_NAME`) | `RoundService`, in the `DescendantRemoving` watcher that traces the part's disappearance. **Nothing reads this name as a spawn any more** — the lobby is a folder of `LobbySpawns` parts — so the only reason the string still exists is that watcher, which is scaffolding worth deleting once the part is traced |
 | `DodgeballBall` | `shared/constants.ts` (`BALL_NAME`) | **imported, not copied** |
-| `THROWER_TOKEN`, `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE`, `TEAM_ATTRIBUTE`, `RESPAWN_AT_ATTRIBUTE`, `COINS_ATTRIBUTE`, `OWNED_ITEMS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE`, `CROWN_ATTRIBUTE`, `STAT_HITS` / `STAT_OUTS` / `STAT_RATIO`, `BALL_ABILITY_ATTRIBUTE`, `ARMED_ABILITY_ATTRIBUTE`, `CHARACTER_BARRIER_TAG`, `MATCH_JOIN_A_TAG` / `MATCH_JOIN_B_TAG`, `MATCH_SPAWNER_TAG`, `PRACTICE_ZONE_TAG` | `shared/constants.ts` | **imported, not copied.** This is the list to check first: every one of them is read by two files or more, and every one of them is a *string* that a typo would silently break |
+| `THROWER_TOKEN`, `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE`, `TEAM_ATTRIBUTE`, `RESPAWN_AT_ATTRIBUTE`, `COINS_ATTRIBUTE`, `OWNED_ITEMS_ATTRIBUTE`, `OWNED_COSMETICS_ATTRIBUTE`, `CROWN_ATTRIBUTE`, `STAT_HITS` / `STAT_OUTS` / `STAT_RATIO`, `BALL_ABILITY_ATTRIBUTE`, `ARMED_ABILITY_ATTRIBUTE`, `CHARACTER_BARRIER_TAG`, `MATCH_JOIN_A_TAG` / `MATCH_JOIN_B_TAG`, `MATCH_SPAWNER_TAG`, `PRACTICE_ZONE_TAG`, `PRACTICE_BAY_TAG`, `PRACTICE_THROW_TAG` | `shared/constants.ts` | **imported, not copied.** This is the list to check first: every one of them is read by two files or more, and every one of them is a *string* that a typo would silently break |
+| `NEXT_THROW_AT_ATTRIBUTE` | `shared/constants.ts` — an **instant** from `Workspace.GetServerTimeNow()`, not a countdown | `PracticeThrowBehavior.publishDeadline` is the only writer; `client/practiceCountdown.ts` is the only reader. **A second telegraph beside `CHARGING_ATTRIBUTE`, not a spelling of it**: the charge says "how much of a hold is this body holding" and exists only for the windup, while this says "when does the next ball leave" and exists *before* the hold starts. A rig mid-windup has both set. **Absent — not `0` — means "not armed"**, because `0` is a real instant in 1970 and a reader testing both would have two spellings of one state |
+| `THROWN_FROM_BAY_ATTRIBUTE` | `shared/constants.ts` — a `boolean` on a **ball** | Written by `BallService.throwBallBody` at the release, **for every throw** (`true` for a `practiceThrow` thrower, `undefined` for anybody else) so a player who throws a picked-up drill ball does not inherit the marker. Read by `BallService.settleLooseBalls`, which destroys the ball the first turn `insideAnyBay` says it has left every bay |
 
 **The distinction that matters:** the tag strings in this file are the ones that *cannot* be imported
 — a Flamework decorator literal, or a string painted on an instance in Studio. Everything in the
@@ -662,7 +725,12 @@ mistake waiting to happen, one `GetAttribute("Typos")` at a time.
 - **Tag constants are `export const`** (`NPC_TAG`, `MATCH_JOIN_A_TAG`, …) **or a module-private
   `const`** (`BALL_TAG`, `ROUND_BALL_TAG`, `DEBOUNCE_TAG`). The private ones are the copies; the
   exported ones are the sources of truth. A grep for `const [A-Z_]*TAG[A-Z_]* = "` finds both.
-- **In the log:** every tag this game prints comes with the instance it was read from, and the four
-  count lines are the ones to grep for when a tag looks dead — `[Spawner] up … N tagged thing(s), M
-  usable part(s)`, `[Match] up — <tag>: N part(s)`, `[ShiftLock] up — N practiceZone part(s)`, and
-  `[Round] cleared N held balls`.
+- **In the log:** every tag this game prints comes with the instance it was read from, and the count
+  lines are the ones to grep for when a tag looks dead — `[Spawner] up … N tagged thing(s), M
+  usable part(s)`, `[Match] up — <tag>: N part(s)`, `[ShiftLock] up — N practiceZone part(s)`,
+  `[Drill] up — practiceThrow: N rig(s), practiceBay: M tagged thing(s), K usable part(s)`, and
+  `[Round] cleared N held balls`. **The `[Drill]` line is the one that distinguishes four silences**:
+  a drill with no bay, a rig without the tag, a bay part of the wrong class, and an empty bay all look
+  identical at runtime — a rig standing still and saying nothing — so the counts say which you have,
+  and the behaviour's own edge-triggered `[Drill] <rig>: standing down — …` / `… : armed — …` pair says
+  when a particular rig changed its mind.

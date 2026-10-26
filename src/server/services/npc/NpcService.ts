@@ -23,6 +23,8 @@ import { createAlwaysThrowBehavior } from "../../npc/behaviors/AlwaysThrowBehavi
 import { createCatchBehavior } from "../../npc/behaviors/CatchBehavior";
 import { createDodgeBehavior } from "../../npc/behaviors/DodgeBehavior";
 import { createPickupBehavior } from "../../npc/behaviors/PickupBehavior";
+import { createPracticeThrowBehavior } from "../../npc/behaviors/PracticeThrowBehavior";
+import { reportDrills } from "../../npc/practiceBay";
 import { createRespawnBehavior } from "../../npc/behaviors/RespawnBehavior";
 import { createRoundSeekBehavior } from "../../npc/behaviors/SeekBehavior";
 import { createThrowBehavior } from "../../npc/behaviors/ThrowBehavior";
@@ -134,6 +136,25 @@ interface NpcLoop {
 }
 
 /**
+ * **The MicroProfiler band name for one behaviour's tick** — `Behavior_Seeking` becomes `Seeking`.
+ *
+ * **A helper rather than a slice at the call site, and it exists because one tag is not prefixed.** Every behaviour
+ * tag has been a `Behavior_*` string since the split, so dropping a fixed nine characters was exact and the comment
+ * at the call site could say so. **`practiceThrow` broke that assumption** — it is a rig tag by design, named for
+ * what a person painting it wants rather than for the module that runs it — and a fixed slice of it would have
+ * produced a band called `Npc.tick.ceThrow`, which is a label a recording reader would have to guess at.
+ *
+ * **A prefix test and not a pattern match.** `string.sub` is used rather than `.replace` for the reason the call site
+ * records — roblox-ts's string shim does not provide a pattern replace — and comparing eleven characters is the same
+ * kind of exactness: any tag without the prefix is used whole, which is a longer band name and never a truncated one.
+ */
+function behaviorScopeName(tag: string): string {
+	const prefix = "Behavior_";
+
+	return string.sub(tag, 1, prefix.size()) === prefix ? string.sub(tag, prefix.size() + 1) : tag;
+}
+
+/**
  * Runs tagged humanoid rigs, so an NPC can do anything a player can.
  *
  * The tag is the whole interface: a model wearing `NPC` is tracked, and each
@@ -202,6 +223,17 @@ export class NpcService implements OnStart {
 			// always-on sibling because the pair are alternatives rather than a sequence; a rig carries
 			// one of the two tags.
 			createThrowBehavior(balls),
+			// **The drill, which is the third throwing behaviour and the only one with a bay.** Listed after both
+			// throwers because it is an alternative to each rather than a step after either: a rig carries
+			// `practiceThrow` *instead of* a throwing tag, and the tag is what decides, exactly as it does for the other
+			// two. `Behavior_AlwaysThrowing` is deliberately still here and still listed above — the user retired the tag
+			// by not painting it, and a rig wearing both runs both.
+			//
+			// **It is registered here rather than in a pass of its own, and that is the whole of the dispatch answer.**
+			// This list *is* the dispatch: the loop below keys on `behavior.tag`, so a tag that is not a `Behavior_*`
+			// string needs no new mechanism — only this entry. A second pass would have meant a second place a rig's
+			// tags are read, and a second place for the `onStopped`/`onDied` bookkeeping below to be forgotten.
+			createPracticeThrowBehavior(balls),
 			createPickupBehavior(pickups, balls),
 			// The pair to the line above, and the difference between a rig that collects and a rig
 			// that only takes what rolls into its reach: this one walks to the nearest loose ball,
@@ -252,6 +284,14 @@ export class NpcService implements OnStart {
 	}
 
 	public onStart() {
+		// **The drill inventory, before the scan below, and it is the one line that can tell four silences apart.**
+		// A `practiceThrow` rig with no bay stands still and says nothing, which is the correct answer for an empty bay
+		// and also what a missing tag, a missing bay part and a bay part of the wrong class all look like. This prints
+		// the counts once so a reader knows which of the four they have; the per-rig version — is *this* rig in a bay —
+		// is the behaviour's, because that is a fact about the world rather than about the place file. See
+		// `practiceBay.reportDrills`.
+		reportDrills();
+
 		// Rigs tagged before this service started — including everything tagged in
 		// Studio before Play — never fire the added-signal, so they are scanned for
 		// rather than waited on.
@@ -782,14 +822,14 @@ export class NpcService implements OnStart {
 
 		// **The MicroProfiler labels for this rig's behaviours, built once per loop rather than per turn.**
 		// A turn is 10 a second per rig, so a label built inside the dispatch below would be an allocation
-		// on the very path it is measuring. `behavior.tag` is the behaviour's own identity, and dropping
-		// its nine-character prefix is what turns `Behavior_Seeking` into a band called `Npc.tick.Seeking`
-		// — a recording read without a legend. `string.sub` rather than `.replace`, which roblox-ts's
-		// string shim does not provide; the prefix is fixed width, so a slice is exact where a pattern is
-		// not. See `DEBUG_CONFIG.PROFILE`, which decides whether any of it is emitted.
+		// on the very path it is measuring. `behavior.tag` is the behaviour's own identity, and it goes
+		// through `behaviorScopeName`, which drops a `Behavior_` prefix where there is one — turning
+		// `Behavior_Seeking` into a band called `Npc.tick.Seeking` and leaving `practiceThrow` whole — so a
+		// recording reads without a legend. See that function for why a fixed slice stopped being enough.
+		// See `DEBUG_CONFIG.PROFILE`, which decides whether any of it is emitted.
 		const profileScopes = new Map<string, string>();
 		for (const behavior of this.behaviors) {
-			profileScopes.set(behavior.tag, `Npc.tick.${string.sub(behavior.tag, 10)}`);
+			profileScopes.set(behavior.tag, `Npc.tick.${behaviorScopeName(behavior.tag)}`);
 		}
 
 		while (!loop.stopped && model.HasTag(NPC_TAG) && model.Parent !== undefined && humanoid.Health > 0) {
