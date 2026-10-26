@@ -11,7 +11,7 @@ import { addViewportConstraint } from "../../ui/viewportConstraint";
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** What the game is called, in the one place the client writes it. */
-const TITLE = "No Headshots";
+const TITLE = "Pure Dodgeball";
 
 /**
  * The splash image: the full-viewport background the title sits on.
@@ -26,7 +26,7 @@ const TITLE = "No Headshots";
  * may still be processing it, and while it is, an `ImageLabel` pointed at it draws nothing and
  * reports nothing. That is why the `PreloadAsync` call below exists.
  */
-const LOADING_BACKGROUND = "rbxassetid://105758313826117";
+const LOADING_BACKGROUND = "rbxassetid://121538411493170";
 
 /**
  * Where the overlay sits in the ZIndex order: **above everything else the game draws.**

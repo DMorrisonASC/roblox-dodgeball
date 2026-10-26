@@ -97,9 +97,14 @@ export const ARENA_CONFIG = {
 	/**
 	 * The folder inside the arena holding one folder of spawn parts per side.
 	 *
-	 * `ArenaV1/ArenaSpawns/A` and `.../B`, each a folder of `BasePart`s — one part per place a player
-	 * on that side may start, put there by hand. Which of them a player gets is picked at random,
-	 * which is what stops a side arriving in a single pile; see `RoundService.getRandomTeamSpawn`.
+	 * `ArenaV1/ArenaSpawns/A` and `.../B`, each a folder of `BasePart`s — one part per place a body
+	 * on that side may start, put there by hand. **Which of them a body gets is not a draw any more**:
+	 * the parts are ordered by how near they sit to a `MatchSpawner`, and each body takes the nearest
+	 * one no other body holds — players and rigs alike, because a rig is a placeholder for a player and
+	 * a side with four of them has the same two problems a side with four people has. So a side is
+	 * strung out from the balls backwards instead of sprinkled across the arena, and no two bodies on a
+	 * side ever share a part. See `services/round/arenaSpawns.ts` for the ordering, the claim and its
+	 * overflow warning.
 	 *
 	 * **Inside the arena rather than at `Workspace` root**, so the arena carries its own spawns and
 	 * nothing about spawning sits outside it to be kept in step with it. The lobby is the exception,
@@ -166,6 +171,38 @@ export const ARENA_CONFIG = {
 	 * of seconds, counted down one at a time.
 	 */
 	ROUND_SECONDS: 150,
+
+	/**
+	 * **How long the arena is left to the players after a round is decided, before the lobby transition.**
+	 *
+	 * The round stops the instant a side is out or the clock runs out, and the transition that follows is a
+	 * cut — the cover goes up and everybody is in the lobby. Ten seconds of that cut arriving immediately is a
+	 * result nobody gets to read: the winner is written to the folder, the coins are paid, and the player is
+	 * moved out from under both. This is the window in which they are allowed to stand in the arena that was
+	 * just won, jump on the spot, and read the `+14 Coins!` the reward toast puts on screen.
+	 *
+	 * **What is open in it and what is shut.** Walking and jumping are untouched — nothing freezes anybody at
+	 * this boundary, and this number adds no freeze. Everything else is shut, and it is shut by publishing
+	 * `"Intermission"` rather than by a new rule: the rigs stop fighting, the ball spawners stop stocking, the
+	 * dodges and the powers refuse, and the outlines come off, because all eight of those readers already ask
+	 * whether a round is *playing* and it is not any more. The three things the phase cannot express — a throw,
+	 * a catch, and a ball doing damage — are what `CELEBRATING_ATTRIBUTE` exists for. See it in
+	 * `shared/constants.ts`.
+	 *
+	 * **Sixty is not on the table and neither is three.** A round is `ROUND_SECONDS` long and the intermission
+	 * is `INTERMISSION_SECONDS`; this comes out of the intermission's budget rather than adding to a wait
+	 * nobody asked for, so it is deliberately shorter than the gap between rounds and cannot become a second
+	 * round. Ten is long enough to read one line of text and short enough that a server cycling matches is
+	 * not spending most of its time celebrating.
+	 *
+	 * **This is where the emote system will live.** The window exists to give players something to do with a
+	 * result; emotes are the obvious next thing, and when they come they belong inside this count rather than
+	 * beside it — the alternative is a second timer that can disagree with the window it is supposed to fill.
+	 * Nothing reads a limit off it today, so the emote work has the whole of it.
+	 *
+	 * **Placeholder.**
+	 */
+	CELEBRATION_SECONDS: 10,
 
 	/**
 	 * How long every player is held still from the moment they are put on their spawn, in seconds.

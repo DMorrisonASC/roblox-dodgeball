@@ -23,6 +23,7 @@ import { emitSound } from "../services/ball/SoundEmitter";
 import { CatchService } from "../services/actions/CatchService";
 import { FreezeService } from "../services/actions/FreezeService";
 import { RoundService } from "../services/round/RoundService";
+import { roundCelebrating } from "../services/round/roundStatus";
 import { StatsService } from "../services/stats/StatsService";
 import { SuperService } from "../services/super/SuperService";
 import { BadgeService } from "../services/badges/BadgeService";
@@ -1029,6 +1030,23 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// the record of a contact that really did happen.
 		if (isPractising(character)) {
 			print(`[Ball] ${character.Name}: health spared — practising, so this tag does no damage`);
+
+			return;
+		}
+
+		// **And a decided round spares everybody, practising or not.** A ball already in the air when the whistle
+		// went can land ten seconds later, and `ARENA_CONFIG.CELEBRATION_SECONDS` is the window in which a
+		// player has been told the result and is being left alone to read it — so a death in it is a death the
+		// round cannot explain and does not count (the phase is `Intermission`, so `handleDeath` returns after
+		// handing the body straight back). Refusing here rather than at the tag is the same choice the practice
+		// zone made and for the same argument: everything above this line already happened, so the contact is
+		// still reported, still sounds, and still draws its impact — the body simply survives it.
+		//
+		// **It sits beside the practice refusal rather than inside it**, because the two are different
+		// exemptions that happen to meet here: one is about *where* a body is, the other about *when*. Folding
+		// them into one test would leave the next reader unable to tell which of the two spared a given hit.
+		if (roundCelebrating()) {
+			print(`[Ball] ${character.Name}: health spared — the round is celebrating`);
 
 			return;
 		}

@@ -46,6 +46,7 @@ import { emitSound } from "./SoundEmitter";
 import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
 import { TEAM_A, TEAM_B, TeamLabel } from "../round/team";
+import { roundCelebrating } from "../round/roundStatus";
 import { EconomyService } from "../economy/EconomyService";
 import { FreezeService } from "../actions/FreezeService";
 import { BadgeService } from "../badges/BadgeService";
@@ -1970,6 +1971,11 @@ export class BallService implements OnStart {
 		// which is `ActionService`'s own note about where a throw gate belongs — so a check in the remote
 		// handler would leave a frozen NPC throwing at whatever it happened to be facing.
 		//
+		// **That is the rule for a refusal that is a fact about a body, and the one exception is a fact about
+		// the round.** The celebration's refusal — a decided round takes no throw from a player — sits on
+		// `throwForPlayer` instead, because the shared path cannot tell an arena NPC from a practice bay's
+		// drill and ten seconds of a stalled drill is not a price an unrelated round should cost. See it there.
+		//
 		// It answers `false`, which is the same answer an empty hand gets. That matters twice: a behavior
 		// asking on a timer does nothing with either, and `throwForPlayer` spends the charge only when a
 		// ball actually left — so a frozen player loses nothing for the throw they could not make.
@@ -2862,6 +2868,25 @@ export class BallService implements OnStart {
 	private throwForPlayer(player: Player, request: ThrowRequest, claimedLaunch?: Vector3) {
 		const character = player.Character;
 		if (!character) return;
+
+		// **A decided round does not take a throw from a player, and this is the only place that can say so
+		// without saying it to a rig.** `ARENA_CONFIG.CELEBRATION_SECONDS` keeps everybody in the arena after
+		// the result — walking and jumping, which is what the window is for — and a ball leaving a hand in it
+		// would be a throw at somebody who has just been told the round is over. Refused here rather than in
+		// `throwBall` for a reason worth stating: that method is the shared path, so a gate there would also
+		// refuse the practice bay's drills, which are rigs in a bay somebody is using and which
+		// `roundCelebrating` cannot tell apart from an arena NPC. The arena's own NPCs need no gate — their
+		// behaviours already stop when the phase stops being `Playing` — so the player's click is the whole of
+		// what is left. See `roundCelebrating` and `CELEBRATING_ATTRIBUTE`.
+		//
+		// **It returns before the charge is even read**, so a throw the window took costs a player nothing and
+		// the ball stays in the hand: the spend below happens only for a throw that actually left, and
+		// `throwBall` is never reached.
+		if (roundCelebrating()) {
+			if (DEBUG) print(`[Ball] ${player.Name}: throw refused — the round is celebrating`);
+
+			return;
+		}
 
 		// **Read before the throw, because the throw empties the hand.** `throwBall` deletes the entry
 		// this asks for, so the marked ball has to be identified while it is still in the hand — and what

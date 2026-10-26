@@ -7,6 +7,7 @@ import {
 	OWNED_COSMETICS_ATTRIBUTE,
 	OWNED_ITEMS_ATTRIBUTE,
 	POWER_POOL_ATTRIBUTE,
+	ROUND_EARNED_COINS_ATTRIBUTE,
 	STAT_HITS,
 } from "shared/constants";
 import {
@@ -235,6 +236,20 @@ export class EconomyService implements OnStart {
 			if (outcome !== DRAW && teams.get(player) === outcome) record.wins += 1;
 
 			this.publish(player);
+
+			// **And what this round was worth to them, published beside the wallet it was added to.** Two
+			// attributes rather than one, because they answer two questions — "what do I have" and "what did
+			// this just pay" — and the second is what the client's reward toast says out loud. Written from
+			// the same local `coins` the balance was just increased by, so the ledger and the line item cannot
+			// disagree about what the round was worth.
+			//
+			// **The client's change signal on this attribute *is* the notification**, which is why it is cleared
+			// ten seconds later by `RoundService.holdCelebration` rather than left standing: a second round
+			// paying the same number would write no change and fire no signal, and a toast that never appeared
+			// would look like a round that never paid. The consequence to know about is that this value is *not*
+			// readable after the celebration, so anything that wants the last round's figure long-term is asking
+			// the wrong attribute. See `ROUND_EARNED_COINS_ATTRIBUTE`.
+			player.SetAttribute(ROUND_EARNED_COINS_ATTRIBUTE, coins);
 
 			if (DEBUG) print(`[Economy] ${player.Name}: +${coins} coins (${record.coins})`);
 

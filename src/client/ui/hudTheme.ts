@@ -246,11 +246,18 @@ export const UI_FONT: Enum.Font = Enum.Font.GothamBlack;
  * Gives `root` and everything under it {@link UI_FONT}.
  *
  * **For the one thing the theme cannot reach.** Nearly every label in the game is built by a component that
- * reads a typography variant, so writing `UI_FONT` into the theme is enough for them. big-ui's `Alert` is
+ * reads a typography variant, so writing `UI_FONT` into the theme is enough for them. big-ui's `Alert` was
  * the exception: it hard-codes `GothamBold` for its title and `Gotham` for its message rather than reading
  * the table (`out/components/Alert.luau`), and it takes no font prop, so the only way to bring it in line
- * is to write the font onto the labels it made. `hudToast.mountToast` is the single call site — every toast
- * in the game, and the hit confirmation with them, goes through that function.
+ * was to write the font onto the labels it made.
+ *
+ * **It has no caller at all now, and that is recorded rather than tidied away.** Its one call site was
+ * `ui/hudToast.ts`'s `mountToast`, which was the last `Alert` in the game and was deleted on 2026-10-26
+ * once the notification stack in `notifications.ts` had replaced it. What is left is a correct answer to a
+ * question nobody is currently asking — kept, not deleted, because it is the only piece of this theme that
+ * documents a *library's* shape and the next component that hard-codes a face will want exactly this. The
+ * day that happens, this doc is right again; the day big-ui lets a component take a font, delete the file's
+ * function with the note below.
  *
  * **A subtree rather than a label, for the same reason the walk has to be written carefully.** big-ui's
  * `Alert` builds those two labels *inside* the frame it returns, so the frame is the thing a caller has;

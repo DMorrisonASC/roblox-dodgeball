@@ -14,6 +14,15 @@ import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { EconomyService } from "../economy/EconomyService";
 import { SuperService } from "../super/SuperService";
 import { insideZoneAt } from "../zone/PracticeZoneService";
+import { playSpawnPoof } from "../../vfx/spawnPoof";
+import {
+	animateMysteryBoxVfx,
+	burstMysteryBoxPrize,
+	burstMysteryBoxSpawn,
+	mountMysteryBoxVfx,
+	recolourMysteryBoxVfx,
+} from "../../vfx/mysteryBoxVfx";
+import type { MysteryBoxVfx } from "../../vfx/mysteryBoxVfx";
 
 /** Prints every box raised, every collection and every sweep. */
 const DEBUG = true; // off for frame time — see shared/config/debug.config.ts
@@ -86,6 +95,15 @@ interface LiveBox {
 	 * {@link collect} for the guard itself.
 	 */
 	refused: Set<Player | Model>;
+
+	/**
+	 * **Everything the box's look is made of, so the two animation loops do not have to find it again.**
+	 *
+	 * Built in `place` and held here rather than in a map of the service's own, for the reason everything else about
+	 * a box lives on this row: the effects are children of the box, so the row and the look have one lifetime. When
+	 * the row goes, the box is either already destroyed or about to be.
+	 */
+	vfx: MysteryBoxVfx;
 }
 
 /**
@@ -160,6 +178,16 @@ interface LiveBox {
  * box with no asset behind it, and {@link MYSTERY_CONFIG.FACE_DECAL_ID} is the seam an artist replaces them
  * through: set it and the text is not built at all. Cell shading needs a texture or a shader, which cannot be
  * approximated by a material and is not pretended here.
+ *
+ * **Five layers of it live in `vfx/mysteryBoxVfx.ts`, and this file only says when they change.** A sparkling
+ * aura, a light pillar rising out of the box, a `PointLight` that breathes with the hue, and a burst on arrival and
+ * on collection — because a floating coloured cube answers *what is that* and not *should I cross the arena for it*,
+ * and a prize nobody notices is a prize nobody collects. **The `Highlight` and the `?` faces stayed here**, in
+ * `place`, because they are built once from this file's own config and never touched again; the five that move were
+ * put in one module so that "which layer broke" is a question with one file as the answer. **A sixth — two crossed
+ * neon bars round the equator — was built and removed on sight**, because a solid ring wider than the box reads as
+ * two sticks poking out of it; see that module's header for why nothing solid belongs there. See it also for what
+ * each remaining layer says and why none of them can be seen by the aim guide.
  *
  * **No `HingeConstraint`, and that is a decision rather than an omission.** It was the tool the old
  * `HOVER_HEIGHT` entry recommended, and it is the right tool for a body that a physical joint should hold
@@ -422,19 +450,25 @@ export class MysteryBoxService implements OnStart {
 	 * being born is the one moment a player has no expectation of where the box should be.
 	 */
 	private place(spawn: BasePart, inZone: boolean): void {
-		const box = new Instance("Part");
-		box.Name = BOX_NAME;
-		box.Shape = Enum.PartType.Block;
-		box.Size = Vector3.one.mul(MYSTERY_CONFIG.SIZE);
-		box.Anchored = true;
-		box.CanCollide = false;
-		box.CanQuery = false;
-		box.CanTouch = true;
-		box.Material = Enum.Material.SmoothPlastic;
-		box.Color = Color3.fromHSV(0, 0.65, 1);
-		const base = spawn.CFrame.add(new Vector3(0, MYSTERY_CONFIG.HOVER_HEIGHT, 0));
-		box.CFrame = base;
-		box.Parent = Workspace;
+			// **The colour the rainbow is on right now, taken before the box exists.** `place` used to hard-code
+			// `HSV(0, …)` — pure red — and leave the cycle to correct it up to a third of a second later, which on the one
+			// frame a player is most likely to be looking at the box reads as a glitch rather than as a colour. See
+			// {@link shadeNow}, which is the cycle's own arithmetic moved out of its loop so the two cannot disagree.
+			const colour = this.shadeNow();
+
+			const box = new Instance("Part");
+			box.Name = BOX_NAME;
+			box.Shape = Enum.PartType.Block;
+			box.Size = Vector3.one.mul(MYSTERY_CONFIG.SIZE);
+			box.Anchored = true;
+			box.CanCollide = false;
+			box.CanQuery = false;
+			box.CanTouch = true;
+			box.Material = Enum.Material.SmoothPlastic;
+			box.Color = colour;
+			const base = spawn.CFrame.add(new Vector3(0, MYSTERY_CONFIG.HOVER_HEIGHT, 0));
+			box.CFrame = base;
+			box.Parent = Workspace;
 
 		const highlight = new Instance("Highlight");
 		highlight.FillTransparency = 1;
@@ -498,14 +532,39 @@ export class MysteryBoxService implements OnStart {
 				glyph.Text = "?";
 				glyph.TextScaled = true;
 				glyph.TextColor3 = Color3.fromRGB(255, 255, 255);
+				// **An outline, and it is a legibility fix rather than decoration.** The box's colour is
+				// `HSV(hue, 0.65, 1)` — bright and fully saturated — so an unbroken white glyph disappears against the
+				// yellows and greens of the wheel. A dark stroke at half transparency holds the `?` off whatever it is
+				// standing on in every hue, which is the one thing the six faces have to do. `TextStrokeTransparency`
+				// is the cheap end of the same idea as a `UIStroke`, and it needs no extra instance per face.
+				glyph.TextStrokeColor3 = Color3.fromRGB(0, 0, 0);
+				glyph.TextStrokeTransparency = 0.5;
 				glyph.Parent = surface;
 			}
 		}
 
-		this.boxes.set(spawn, { spawn, box, inZone, base, refused: new Set() });
+		this.boxes.set(spawn, {
+			spawn,
+			box,
+			inZone,
+			base,
+			refused: new Set(),
+			vfx: mountMysteryBoxVfx(box, colour),
+		});
 
-		// Closed over the spawn point, because the row is keyed by it — see {@link LiveBox}.
+		// **Closed over the spawn point, because the row is keyed by it — see {@link LiveBox}.**
 		box.Touched.Connect((otherPart) => this.collect(spawn, otherPart));
+
+		// **The arrival, and it is two effects at one point.** `playSpawnPoof` is the burst the rest of the game already
+		// uses for a body appearing, so a box arrives with the same vocabulary as a player; the sparkle on top is the
+		// part that says *prize* rather than *someone joined*. Both are anchored at `base` rather than at the box, because
+		// neither can be parented to it — see `burstMysteryBoxSpawn`, which fires and forgets.
+		//
+		// **Before `startMotion`, deliberately.** The poof and the burst are one-shot and independent of the frame loop,
+		// so the order does not matter to them; putting them first means a box that somehow failed to be animatable is
+		// still a box that arrived visibly, which is the half worth keeping.
+		playSpawnPoof(undefined, base);
+		burstMysteryBoxSpawn(base, colour);
 
 		// **The animation starts here, which is the only place a box can appear.** Both of `place`'s callers
 		// — the tick and a zoned restock — are the same event as far as this is concerned, so the check for
@@ -604,6 +663,14 @@ export class MysteryBoxService implements OnStart {
 
 		// **Granted, so the box goes — and the record of refusals goes with the row.** This is the only path
 		// that takes a box, which is the whole of "a box that paid out is spent".
+		//
+		// **The prize's burst is fired at the box's *last* pose, before the box is taken away.** Both effects are
+		// anchored at `live.box.CFrame` and both have to be: a burst parented to the box would be destroyed by the very
+		// next line, and `playSpawnPoof`'s fallback exists for exactly this — see its doc. The order is the whole of
+		// this paragraph, which is why it is a paragraph.
+		playSpawnPoof(undefined, live.box.CFrame);
+		burstMysteryBoxPrize(live.box.CFrame, kind);
+
 		this.remove(spawn);
 
 		// **A practice floor's box comes back when it is *taken*, not when it is *touched*.** Only a
@@ -674,6 +741,13 @@ export class MysteryBoxService implements OnStart {
 		}
 
 		model.SetAttribute(PENDING_ABILITY_ATTRIBUTE, kind);
+
+		// **The same burst a player gets, at the same moment and in the same colour** — a rig collecting a box is the
+		// same event from the prize's point of view, and the one person watching a practice floor is looking at the rig
+		// rather than at a HUD. Before `remove`, for the reason `collect`'s paragraph gives.
+		playSpawnPoof(undefined, live.box.CFrame);
+		burstMysteryBoxPrize(live.box.CFrame, kind);
+
 		this.remove(spawn);
 
 		if (live.inZone) this.scheduleRestock(spawn);
@@ -842,14 +916,36 @@ export class MysteryBoxService implements OnStart {
 
 			if (this.boxes.size() === 0) continue;
 
-			const index = math.floor(os.clock() / step);
-			const hue = (index % MYSTERY_CONFIG.RAINBOW_COLOUR_COUNT) / MYSTERY_CONFIG.RAINBOW_COLOUR_COUNT;
-			const colour = Color3.fromHSV(hue, 0.65, 1);
+			const colour = this.shadeNow();
 
 			this.boxes.forEach((live) => {
 				live.box.Color = colour;
+
+				// **And the three layers that are allowed to take the hue.** The ring, the pillar and the light are the
+				// box's colour or they are decoration that happens to be nearby — a red box with a green halo reads as
+				// two objects. `recolourMysteryBoxVfx` says which three and why the aura is not one of them.
+				recolourMysteryBoxVfx(live.vfx, colour);
 			});
 		}
+	}
+
+	/**
+	 * **The colour the rainbow is on at this instant** — the cycle's arithmetic, out of its loop.
+	 *
+	 * **One function with two callers, and the second is why it exists.** {@link cycleColours} steps it three times a
+	 * second, and {@link place} needs the same number for the box it is about to build so the first frame is not a stale
+	 * red. Two copies of these four lines would drift the day one of them changed; this is the same reason
+	 * `getRandomTeamSpawn` and the lobby's draw are allowed their own copies while a *rule* is not.
+	 *
+	 * **Computed from `os.clock()` rather than accumulated**, so a long frame cannot put the cycle permanently out of
+	 * step with itself — see `cycleColours` for the whole of that argument.
+	 */
+	private shadeNow(): Color3 {
+		const step = MYSTERY_CONFIG.RAINBOW_PERIOD / MYSTERY_CONFIG.RAINBOW_COLOUR_COUNT;
+		const index = math.floor(os.clock() / step);
+		const hue = (index % MYSTERY_CONFIG.RAINBOW_COLOUR_COUNT) / MYSTERY_CONFIG.RAINBOW_COLOUR_COUNT;
+
+		return Color3.fromHSV(hue, 0.65, 1);
 	}
 
 	/**
@@ -932,6 +1028,11 @@ export class MysteryBoxService implements OnStart {
 			}
 
 			live.box.CFrame = live.base.mul(CFrame.Angles(0, angle, 0)).add(new Vector3(0, float, 0));
+
+			// **And the layer that moves inside the box's own pose.** The light breathes; everything else in the look is a
+			// child of the box and was carried by the write above. `clock` is passed rather than re-read so one frame is
+			// one instant — see `animateMysteryBoxVfx`.
+			animateMysteryBoxVfx(live.vfx, clock);
 		});
 
 		// **The loop stops itself when there is nothing left to move.** A `Heartbeat` connection that returns

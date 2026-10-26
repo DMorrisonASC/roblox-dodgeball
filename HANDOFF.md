@@ -453,7 +453,7 @@ src/client/
                                  which one a thing belongs in — HudGui, FullScreenGui, SplashGui,
                                  TransitionGui, ScreenSpaceGui, StickGui, **plus `getHudColumn()`**, the
                                  one frame the score plate and the clock share; **see §9 before moving
-                                 anything visual**), hudTheme.ts, viewportConstraint.ts, hudToast.ts,
+                                 anything visual**), hudTheme.ts, viewportConstraint.ts,
                                  **actionSplash.ts** (the `HIT!` look and its one pop, extracted so a
                                  second caller can share it — `styleSplashText` styles any `TextLabel`
                                  and never animates; `createActionSplash` adds the frame and an opt-in
@@ -475,7 +475,8 @@ src/client/
                                  item 43).
                                  **`CooldownHud` and `ThrowStateToast` stood in this list and are
                                  deleted** — nothing in `src/` names either any more, and the second
-                                 one took `ui/hudToast.ts`'s only caller with it (§9, §15 item 36)
+                                 one took `ui/hudToast.ts`'s only caller with it (§9, §15 items 36
+                                 and 97 — the toast module itself has since been deleted too)
   controllers/input/             Action, Catch, Dodge, Throw, AimTarget, SuperAbility,
                                  AlternativeMovement, Sprint, **TouchJoystickController** — the ring,
                                  its thumb and the movement pad, touch clients only
@@ -560,7 +561,7 @@ wins, because the settle branch is only reachable while `pendingMatch` is unset.
    this.pendingMatch = undefined;` comes first.
 5. **The arena guard.** `const arena = findArena(); const problem = arenaProblem(arena);` — on
    failure, `print("[Round] cannot start — … Waiting for another match.")` and `continue`. This
-   exists because of the `async` footgun in §3: `getRandomTeamSpawn` raises when a side's spawn
+   exists because of the `async` footgun in §3: `requiredTeamSpawns` raises when a side's spawn
    folder is missing, and a throw inside this loop stops the loop for the life of the server.
 6. `applyBarrierGroups()` — **every round**, idempotent, by tag. `MapService.placeCurrent` used to do
    this as a side effect of placing the clone; with nothing placed, the pass has to be called, and
@@ -871,7 +872,7 @@ that file and is worth reading rather than paraphrasing:
 
 | GUI | Region | Its tenants |
 |---|---|---|
-| `HudGui` — `getHudScreenGui()` | **gated**: safe on mobile, screen origin on desktop | every HUD panel, `ui/hudToast.ts`, the shop and inventory panels |
+| `HudGui` — `getHudScreenGui()` | **gated**: safe on mobile, screen origin on desktop | every HUD panel, `client/notifications.ts`, the shop and inventory panels |
 | `FullScreenGui` — `getFullScreenGui()` | `None` on both, and at `DisplayOrder -1` so the HUD's own panels cover it | the round's readout column (`getHudColumn()` — the score plate and the clock), which is the one HUD pair pinned to the **top edge of the screen** rather than to a corner of the safe region |
 | `StickGui` — `getStickScreenGui()` | **gated** (mobile in practice: nothing calls it on a desktop) | the joystick's ring, thumb and movement pad |
 | `ScreenSpaceGui` — `getScreenSpaceGui()` | `None` on both | the aim sight, the mobile button cluster — both placed with screen numbers |
@@ -937,10 +938,16 @@ toast) are **deleted**: neither name appears anywhere in `src/` any more, and th
 `ui/hudToast.ts`'s only caller with it (§15 item 36). The first deletion is *why* the cluster's rings
 became the only cooldown readout on a phone — see the ring story in §10.
 
-Three shared pieces worth knowing about: `ui/hudToast.ts` (the bottom-centre toast column — **with no
-caller at all as of 2026-10-23**: its one consumer was `ThrowStateToastController`, which is gone, and §15
-item 36 is what that left behind), `ui/actionSplash.ts` (the `HIT!` look and its one pop — **the style and
-the animation are separate calls on purpose**, see below) and the small module-scoped Fusion values
+**`ui/hudToast.ts` itself is gone as of 2026-10-26 (§15 item 97), and it is worth being clear that it was
+never the notification HUD.** It built a big-ui `Alert` into a bottom-centre column, and after item 36 took
+its last consumer it had a live competitor and no callers: `client/notifications.ts`, a plain module whose
+`pushNotification(text, holdSeconds?)` draws the HUD's one-line messages and is what the AFK prompt, the
+camera unlock, the return-to-lobby card and the round's reward all use. Delivered as dead code it would have
+been a second toast system beside the working one; deleted, the two numbers it owned — the column's offset
+and the toast height — are nobody's, and `notifications.ts` owns the stack's.
+
+Two shared pieces worth knowing about: `ui/actionSplash.ts` (the `HIT!` look and its one pop — **the style
+and the animation are separate calls on purpose**, see below) and the small module-scoped Fusion values
 (`aiming.ts`, `sprinting.ts`, `throwing.ts`, `cameraShake.ts`) that carry one fact between two controllers
 without either depending on the other.
 
@@ -968,8 +975,9 @@ event.
 ### The `async` game-loop death (still the most important story)
 
 Symptom: HUD frozen at `Intermission — 0s`, for ever, with nothing after one rejection in the output.
-Cause: `getRandomTeamSpawn` called `error()` inside `gameLoop`, which is `async` → the throw rejected a
-promise nobody handled → **the loop stopped permanently**. The throw fired *before*
+Cause: the team-spawn lookup (then `getRandomTeamSpawn`, now `requiredTeamSpawns`) called `error()` inside
+`gameLoop`, which is `async` → the throw rejected a promise nobody handled → **the loop stopped permanently**.
+The throw fired *before*
 `ROUND_STATE_ATTRIBUTE` was set to `"Playing"`, which is why the HUD looked stale rather than broken.
 Fix: the `arenaProblem()` guard at the round boundary, before anything is half-started.
 
@@ -1669,7 +1677,8 @@ Carried over from the previous handoff where still live, plus what this revision
       plus `ui/hudToast.ts` and this file's own `getHudColumn()` — thirteen call sites, not the fourteen
       the previous pass recorded. *(As of 2026-10-19 the total is still thirteen but the members changed:
       `getHudColumn()` parents into `getFullScreenGui()` and `DockController` moved onto
-      `getHudScreenGui()` — §9.)*
+      `getHudScreenGui()` — §9. **And as of 2026-10-26 it is twelve**, `ui/hudToast.ts` having been
+      deleted — §15 item 97 — with `client/notifications.ts` its live replacement.)*
     - **`src/client/ui/panelChrome.ts`** — "there are nine builders that each do exactly what the shop's
       own private method did before". The file exports about twenty builders.
     - **`src/shared/config/economy.config.ts`** — "The launch milestone table — six achievements,
@@ -1866,6 +1875,11 @@ family.**
     with it. `mountToast` is exported and called by nothing; `ui/hudTheme.ts` still says *"`hudToast.mountToast`
     is the single call site"*. **A whole module and a comment that describes a subscriber** — the module
     either wants deleting or wants a caller, and that is a decision rather than a typo.
+
+    **Settled on 2026-10-26: deleted, and the caller it was offered was the wrong one.** Item 96 briefly
+    proposed reviving it for the round's reward toast — that would have made it a second toast system beside
+    the working `client/notifications.ts`, and the toast went to `pushNotification` instead. With no `Alert`
+    left in the game the module had nothing to build for, so it went with its geometry; see item 97.
 37. **A caught-throw death can still be captioned with the wrong killer, and the new attribute inherits
     the existing gap rather than closing it.** `enemyView.showEnemyView` reads
     `LAST_HIT_BY_CAUSE_ATTRIBUTE` **once and deliberately not live**, on the argument that the four
@@ -3863,6 +3877,396 @@ almost no server code; 45 is what it cannot show.**
     **Unverified**: which of the two remaining causes it was. A log from the next session answers it in one pass —
     a `corrected CanCollide` warning names the first, a `studs thick` warning names the second, and no warning at all
     with the ball still crossing would mean something neither this pass nor the last one has found.
+
+94. **Four players on one side were landing on four spawns drawn at random, which meant two could share a part and
+    the closest spot to the balls went to whoever rolled it.** `RoundService.arenaSpawnFor` is now the *claim and
+    order* funnel: a player takes the nearest spawn part still unclaimed, and no two players on a side share one.
+
+    **The reconnaissance, because the shape of the fix was decided by it.** `arenaSpawnFor` was already the single
+    funnel — `admitWithCover` (mid-round admission), the `CharacterAdded` handler (respawn), `teleportTeamsToArena`
+    (the round start) and the same loop's rig pass all reached it — so the claim and the sort went there and nothing
+    else had to change. **No claim system existed**; `getRandomTeamSpawn` drew `math.random` over the team folder's
+    direct `BasePart` children and was the only picker.
+
+    **The one thing the brief had wrong, and it would have failed silently.** One of the three *player* call sites
+    passes an `Instance` that is not a `Player`: `admitWithCover` does `character.PivotTo(this.arenaSpawnFor(character))`
+    because the character is what it holds. A `participant.IsA("Player")` test would therefore have classified every
+    mid-round admission as a rig — no claim, random draw — and the only evidence would have been two players sharing a
+    spawn part in a case nobody was testing. The question is asked with `Players.GetPlayerFromCharacter` instead,
+    which is the call `teamOf` already makes one line above for exactly this reason.
+
+    **The sort is a minimum distance to *any* `MatchSpawner`, not an average of them all.** A part is good if it is
+    near *at least one* place balls appear; an average ranks a spot halfway between two spawners above one standing
+    beside a third, which is the opposite of "near the action" whenever a spawner has no balls beside it. It is also
+    the question a player asks — how far do I walk for a ball. `spawnsNearestFirst` reads the spawners through
+    `taggedPartsInWorkspace(MATCH_SPAWNER_TAG)` per call and caches nothing, so a spawner moved in Studio moves the
+    ordering with it. **An arena with no `MatchSpawner` at all is not an error**: the folder's own order comes back
+    untouched, and the claim still runs, so uniqueness survives and only the preference does not.
+
+    **The registry is `Map<Player, BasePart>` rather than the brief's `Map<TeamLabel, Set<BasePart>>`**, and the
+    direction is the reason. Every question this is asked is player-side — *free this one's spot* — and that is
+    `delete` when the key is the player. A per-team set answers the part-side question with `has` and then needs a
+    second map to answer the release, which is two records to keep in step for one fact. The part-side question is
+    answered by reading the values once into a `Set` per spawn, which is a handful of comparisons against a side of
+    at most a few parts.
+
+    **Three release points, and each is a different way a body leaves a reservation behind:**
+
+    | where | which departure | what it would otherwise cost |
+    | --- | --- | --- |
+    | `eliminate` | a hit, a surrender, an AFK return — all three arrive here | a mid-round admission finds the side's best spots reserved for players watching from the lobby |
+    | `Players.PlayerRemoving` | a leaver, who is neither an elimination nor a round end | a part a side can never use again — a slow leak towards a shortage that does not exist |
+    | `finishRound` | the round itself, on the same reasoning as `surrendered` | an intermission that never ends carries the finished round's reservations into the next one |
+
+    **A player releases their old claim inside `arenaSpawnFor`, before taking a new one.** A Dodge-and-Seek death is
+    the case: that mode converts its dead rather than eliminating them, so the same player comes back through the
+    funnel and would otherwise hold two parts. **They do not get their old spot back** — they take the nearest free
+    one, so the front row stays occupied by whoever is alive rather than being parked for a corpse.
+
+    **More players than parts is a warning and a placement, not an `error()`.** Two bodies on one spawn part push
+    apart on the first tick; a round that raised instead is four players waiting for somebody to add a part. The line
+    is `[Round] team A: 4 spawn part(s) for 5 player(s) — X has no free one and is sharing a spot`, and **the extra
+    body claims nothing**, because a part two people are standing on is not a reservation and recording one would let
+    whichever of them leaves first free a spot the other is still on.
+
+    **Two module helpers came out of it and one of them was already overdue.** `getRandomTeamSpawn` split into
+    `requiredTeamSpawns` (the lookup and its two errors) and `randomSpawn` (the draw), so "raise" and "pick" are no
+    longer one function that does both. `liftOf` is the three-stud spawn lift, which was inline at three sites in this
+    file and is now written once — the rig side wrote its own at the time, on the argument that folding it in would
+    make this file own a number `npc/arenaSpawns.ts` exists to keep its distance from.
+
+    **Withdrawn by item 95: the exclusion of rigs, and the reason given for it.** This pass claimed for players only,
+    on the argument that a rig is a body the server placed whose spot means nothing to it. Item 95 is the correction:
+    a rig *is* a placeholder for a player, so four of them on a side is four bodies arriving in one pile, and a rig
+    drawing its own part put every rig wherever the dice said while the players filled the front row. The registry is
+    keyed on the body now, both kinds claim, and the whole rule lives in `services/round/arenaSpawns.ts` so that
+    `RespawnBehavior` reaches the same claim instead of a second copy of it.
+
+    **Not changed**: how players are assigned to sides, `LobbyRigService`'s lobby draw, the drill, the bay, the catch
+    and the pull. The trajectory preview and `CHARGING_ATTRIBUTE` were untouched — no throw, aim or charge code was
+    read except `arena.config.ts`'s spawn note.
+
+    **Unverified**: the ordering, the uniqueness and the warning are all readings of the code. A round log proves the
+    first two cheaply — `[Round] arena move — N player(s) and M rig(s) to their side's spawn` lands right after the
+    claims are made, so the acceptance test is four bodies on one side and two of them standing on the same part,
+    which would print the `sharing a spot` line.
+
+95. **Rigs claim arena spawns exactly as players do, and item 94's "a rig reserves nothing" was wrong about what a
+    rig is.** A rig is a placeholder for a player, so four of them on a side is four bodies arriving in one pile —
+    the fault the claims exist for — and a rig drawing its own part opened a round with every rig where the dice put
+    it while the players filled the front row. Both kinds now claim, both are sorted nearest-the-balls first, and the
+    whole rule is one module: `services/round/arenaSpawns.ts`.
+
+    **The reconnaissance is what made this more than a type change, and it found a second entry point.** A rig reaches
+    the arena by two different roads. `teleportTeamsToArena` sends it through `arenaSpawnFor` like a player — but a rig
+    that *dies mid-round* is rebuilt by `RespawnBehavior` and placed by `arenaSpawnForRig` in `npc/arenaSpawns.ts`,
+    which was a **second copy of the spawn rule**: its own walk of the same `ArenaSpawns/<side>` folders and a
+    `math.random` at the end. So changing the map's key alone would have left the important case — the rig that dies
+    and comes back — still drawing at random and claiming nothing. `npc/arenaSpawns.ts` is **deleted**; the rig path
+    resolves its parts and then calls the same `claimArenaSpawn` the round calls.
+
+    **That second road is also why the registry could not stay in `RoundService`.** `RespawnBehavior` has no service to
+    call: it is constructed by `NpcService`, and `RoundService` is the service that injects `NpcService`, so reaching
+    back would be a cycle at run time — the exact constraint `npc/arenaSpawns.ts` was written to work around. The claim
+    map therefore moved to a leaf module both can import, and `npc/arenaSpawns.ts`'s whole reason to exist went with
+    the duplicate. It is not a Flamework service (a map, no injected state, nothing to start), so `flamework.build` is
+    untouched — the `SpawnShield.ts` precedent.
+
+    **The map is `Map<Model, BasePart>` and the key is the body**, which is the change the old key made impossible: a
+    rig has no `Player` at all, so a player-keyed registry could only ever describe half the arena. A character is a
+    `Model` and a rig is a `Model`, so one key type serves both forms the round is handed — and it is handed both:
+    `admitWithCover` passes a *character*, while the round start and the respawn pass a `Player`. **There is now no
+    `Players.GetPlayerFromCharacter` in the spawn path at all**, which also removes item 94's own special case; both
+    of the tests that suggest themselves (`GetPlayerFromCharacter`, `IsA("Player")`) answer "nobody" for a real body.
+
+    **A claim dies with its body, and that is the price of keying on it.** A rig is destroyed and re-cloned on death,
+    so the replacement is a new key; a Dodge-and-Seek player comes back on a new character, likewise. Five release
+    sites, one per way a body stops being a body:
+
+    | where | which body | why there |
+    | --- | --- | --- |
+    | `handleDeath` | a player's, on the death edge | covers every player death, including the mode that converts instead of eliminating — the old character's part would otherwise be reserved for the round with no instance left to name it by |
+    | `eliminate` | a player's, on surrender and AFK | the two exits that are not deaths; a death has already released, so the second delete is a no-op |
+    | `Players.PlayerRemoving` | a player's | a leaver is neither an elimination nor a round end |
+    | `RespawnBehavior.onDied` | a rig's, **on the death edge, not in the rebuild** | the rebuild runs two seconds later and only if there is a template to copy, so a rig killed with no template would have leaked its part for the round |
+    | `finishRound` | all of them | the backstop, on the same reasoning as `surrendered` |
+
+    **Nothing prunes the map**, deliberately: a live-parent scan would be right about the common case and wrong about
+    the rebuild that claims for a rig *before* parenting it, so the release is explicit at each body's death and
+    `clearArenaSpawns` is what catches anything else.
+
+    **The overflow warning says `body(s)` now**, because it is not four players it is short of: `[Round] team A: 4
+    spawn part(s) for 5 body(s) — X has no free one and is sharing a spot`. The extra body still claims nothing, for
+    the reason item 94 gives.
+
+    **Not changed**: how teams are assigned, `LobbyRigService`'s lobby draw (a lobby is where people wait, not where a
+    round starts, so it keeps the plain draw and claims nothing), the map geometry, and a rig's visual and physical
+    properties. The trajectory preview and `CHARGING_ATTRIBUTE` are untouched — no throw, aim or charge code was read.
+
+    **Unverified**: everything below is a reading of the code, and the emitted Luau confirms the wiring rather than the
+    behaviour. Four rigs on a side landing on four different parts, the parts filling from the ball spawners
+    outwards, and the `sharing a spot` line on overflow are all Studio answers. **The log line to watch is
+    `RespawnBehavior`'s own `[NPC] <name>: back — …`**, which prints the position the rebuild placed the rig at; two
+    rigs rebuilt in the same round printing the same coordinates is the failure, and the flag that turns that line on
+    is `DEBUG = false` at the top of `RespawnBehavior.ts`.
+
+96. **A round's result was wiped out from under it: ten seconds now stand between the whistle and the lobby, and the
+    coins it paid are read out in the notification stack.** The window is `ARENA_CONFIG.CELEBRATION_SECONDS`, and
+    the toast is `+14 Coins!` held for the same ten seconds.
+
+    **The brief had the timing wrong in one place that mattered.** `finishRound` does **not** call
+    `transitionAround` — it is synchronous and reaches nothing but the folder, the economy, the stats and the badges.
+    The transition is `gameLoop`'s, at the top of the *intermission* turn, and the countdown loop leaves for it by
+    `break`ing on `this.finished`. So the hold is a `holdCelebration()` awaited there, guarded on `this.finished` —
+    which is what stops a server's very first intermission celebrating a round that never happened.
+
+    **`finished` could not be the lock, and neither could the phase.** At the instant `finishRound` runs the phase is
+    *still* `"Playing"`, so everything gated on it — throws, catches, damage, rig targets, spawners, dodges, powers —
+    is still live; and at the instant the celebration starts the phase is `"Intermission"`, which is a state the
+    ordinary intermission also has. What the phase buys is free and complete: by publishing `"Intermission"` *before*
+    the hold, all eight of its `=== "Playing"` readers close at once and nothing new is needed for the rigs, the
+    spawners or the powers. What it cannot express is the three refusals the accept criteria name — **there is no phase
+    gate on a throw, a catch or a hit anywhere in this codebase today** — so those three get one new attribute,
+    `CELEBRATING_ATTRIBUTE`, and `roundCelebrating()` in `roundStatus.ts` as their single reader.
+
+    | refusal | where | why there |
+    | --- | --- | --- |
+    | a player's throw | `BallService.throwForPlayer` | **not** `throwBallBody`, which is the shared path: a gate there would refuse the practice bay's drills for ten seconds every time an unrelated match ended. The arena's own NPCs need nothing — `detect.ts` already answers "not playing" and they stop with no target |
+    | a catch | `CatchService.blocksCatch` | beside the frozen check, because both are a state the body is in rather than a clock like the dodge pair |
+    | a ball doing damage | `BallComponent.landHit` | beside the practice zone's refusal and deliberately not folded into it: a ball already in the air when the whistle went can land ten seconds later, and the practice exemption is about *where* a body is while this one is about *when* |
+
+    **Movement is untouched, and that is a fact rather than a decision to re-take.** Nothing freezes at this boundary
+    — `transitionAround`'s `holdEveryoneFor` is used only at the round's *start* — so walking and jumping in the
+    window cost no code at all. It is the three refusals above that had to be written.
+
+    **The coin delta is an attribute, not a return value.** `EconomyService.onRoundEnded` already computes `coins`
+    per player and publishes the wallet on the next line, so `ROUND_EARNED_COINS_ATTRIBUTE` is written from the same
+    local number — the ledger and the line item cannot disagree. A return value was the obvious shape and it does not
+    survive the caller: `finishRound` would be holding a per-player clipboard for ten seconds on behalf of a toast.
+
+    **The change signal *is* the notification, which is why the value is cleared** — in `holdCelebration`, at the end
+    of the window, not at the next round's start. Two rounds paying the same amount is ordinary, an attribute written
+    to the value it already holds fires no signal, and the symptom would be a toast that appeared every *other* round,
+    which the player would read as the economy failing. `CurrencyHudController` does the listening, because it is
+    already the wallet's readout and already holds the local player, its scope and an attribute subscription.
+
+    **`hudToast.ts` is not the notification HUD and was not used.** That brief was wrong in a way worth recording: the
+    file builds a big-ui `Alert` for a bottom-centre column and has had **no caller at all** since `hitConfirm`'s toast
+    was deleted (`hitConfirm.ts:97`) — it is dead code, and reviving it would have put a second toast system beside
+    the live one. The live one is `client/notifications.ts`: `pushNotification(text)`, a plain module, already used by
+    the AFK prompt, the camera unlock and the return-to-lobby card. It gained one optional argument —
+    `pushNotification(text, holdSeconds = HOLD_SECONDS)` — so the round's reward is readable for the window it exists
+    in while every other notification keeps its three-second glance. **That file's `HOLD_SECONDS` doc now says it is
+    the default rather than the rule.**
+
+    **The wording is `+14 Coins!`, with a singular guard** (`+1 Coin!`), and a nought is not announced at all — a
+    surrendered player's halved payout can round to zero and `+0 Coins!` reads as a bug.
+
+    **Not changed**: how the economy computes a payout, the wipe, the transition's timing, `hudToast.ts` (left dead
+    rather than quietly deleted — that is a separate call, **taken in item 97**).
+
+    **Two side effects of publishing `"Intermission"` ten seconds earlier than the move, both cosmetic and both
+    named rather than hidden.** `LobbyRigService.watchPhase` reacts to the phase change by handing its work to its own
+    thread, so the lobby's rigs begin refilling during the celebration rather than a tick before the transition — from
+    the seats that is rigs walking out while the players stay. And a practice-zone player's *catch* is refused for the
+    ten seconds, because `blocksCatch` and `landHit` have no way to tell a bay from the arena; their *throw* is not,
+    which is the one that would have been noticed.
+
+    **Unverified**: the ten seconds feeling right, the toast appearing at all, and the winner's banner still being
+    legible behind it. All three are Studio answers. The log line that says the machinery ran is
+    `Intermission started`, which now prints before the hold instead of a tick before the transition — so a session
+    where it prints and the wipe arrives ten seconds later is the whole of the server-side proof.
+
+97. **`ui/hudToast.ts` is deleted, and the celebration has rigs in it now — two things that turned out to be the
+    same problem.** The deletion was the easy half. The wander was not: **the seek behaviour is not running during
+    the celebration at all**, so putting the stroll in `SeekBehavior.tick` alone would have done nothing at all.
+
+    **The finding that changed the shape of this pass.** The prompt's premise was that the rigs stand still during
+    the hold because `detectEnemy` returns nobody and no balls are loose. Both of those are true, and neither is why
+    they do not move: on the phase edge to `"Intermission"`, `LobbyRigService.watchPhase` calls
+    `setGameplayBehaviors(false)`, which **strips `BEHAVIOR_SEEKING` off every rig holding a side** — so the behaviour
+    is never ticked, and the body has no walk to keep or lose. That same thread also queues
+    `sendRigsToTheirPads` a cover's length later, which is what item 96 recorded as rigs walking out while the
+    players stay. One `awaitCelebration()` at the top of that thread fixes both, and it is the whole of why the
+    wander is visible.
+
+    **The wait is a poll of the attribute, not a sleep on the constant.** `CELEBRATING_ATTRIBUTE` is written and
+    cleared by the round, so reading it ends the rig side of the boundary when the window really ends rather than
+    when a second copy of `CELEBRATION_SECONDS` thinks it should. A tenth of a second at a time, only in the one
+    window per round where the flag is up, and a missing folder returns at once — which is every ordinary
+    intermission and the first one of a server's life.
+
+    **The wander lives in `SeekBehavior`, as one branch at the top of `tick`.** The recommendation was right for the
+    reason it gave — that file already owns every `MoveTo` and the speed sums — and the placement has a second
+    argument: it goes *above* the held-ball branch, because `pickupWalk` is the other thing that moves a body and a
+    rig that ends the round carrying a ball reaches that branch first. A wander placed with the ball search would
+    have left exactly the most visible rigs standing about. `return`, not a fall-through, is what makes "no chasing,
+    no fetching, no throwing" true by construction.
+
+    | the number | value | what it is for |
+    | --- | --- | --- |
+    | `WANDER_EVERY_SECONDS` | 2 | how often a new point is picked — about five moves in the window |
+    | `WANDER_RADIUS_STUDS` | 20 | how far from where it stands; a stroll, not a lap |
+    | `WANDER_ARRIVED_STUDS` | 3 | close enough to call it arrived and pick again |
+    | `WANDER_STUCK_STUDS` | 2 | less than this travelled since the last pick and the body hops |
+    | `WANDER_PROBE_UP_STUDS` / `_DOWN_STUDS` | 6 / 12 | the downward ray's span at the candidate |
+    | `WANDER_MAX_STEP_STUDS` | 4 | how far the surface found may be from the rig's own feet |
+    | `WANDER_TRIES` | 6 | candidates before the turn gives up |
+
+    All **Placeholder.**, and every one of them is a *tuning* number rather than a rule — the only invariant in the
+    set is `WANDER_MAX_STEP_STUDS`, which is what stops a rig walking at a wall: a probe that only asked "is there a
+    surface here" would happily accept the top of a barrier or a platform nobody can climb to.
+
+    **The point is uniform over the disc rather than uniform in two axes.** Drawing X and Z and rejecting what falls
+    outside would bias every rig towards the corners of its own square; the angle plus a `sqrt`-scaled radius puts as
+    many picks in the outer ring as in the middle. Invisible in one turn, obvious over ten seconds.
+
+    **A stuck body hops, and only a stuck body.** `Jump` is a request rather than a velocity, so a rig under a roof
+    simply stays down; setting it on every pick would be a field of bouncing bodies. In practice the re-pick is what
+    unsticks a rig — a body against a wall never arrives, so it is offered a new point every two seconds — and the
+    hop is for the case a wall is low enough to get over.
+
+    **The stroll ends where it stands.** The first turn after `roundCelebrating()` answers `false` clears the walk
+    and issues `MoveTo` at the rig's own position — the same stop `stand` uses — so a rig is never left walking to a
+    point it was given as a party trick, and the ordinary round pays one comparison for it.
+
+    **The deletion.** `mountToast`, `toastOffset` and `ToastOptions` had no importers; the module's only remaining
+    mentions were six comments naming it as the owner of a fact, all corrected in this pass —
+    `panels.ts`, `HitLogController.ts` (two), `SuperHudController.ts`, `panelChrome.ts` and `hitConfirm.ts`, which now
+    point at `notifications.ts` and `SuperHudController` instead. §4's source map, §9's GUI table and §9's cluster
+    inventory were updated, and item 36 — which left this decision open — is answered there. **`ui/hudTheme.ts`'s
+    `applyUiFont` is now dead**, and kept: it documents a *library's* shape rather than the game's, and its doc now
+    says plainly that it has no caller and why it is still here.
+
+    **Not changed**: the duration, anything a player sees or may do in the window, `pushNotification`,
+    `pickupWalk` and every other walk, and the lobby's own behaviour — which is only *delayed* by the celebration,
+    never skipped.
+
+    **Unverified**: whether the rigs read as "running around" or as "milling about", whether any of them spend the
+    window pressed against a wall, and whether twenty studs is the right reach. The log lines that say the machinery
+    ran are `Intermission started` followed ten seconds later by a wall of `[Rig] <name>: standing down — behaviours
+    off` — and the absence of that wall during the hold is the deferral working.
+
+98. **The ball still crossed the barrier, and the log the user sent saying so was the fix describing itself.** Nothing was
+    broken, and **nothing was broken by the two deletions** — `ui/hudToast.ts` and `npc/arenaSpawns.ts` are client UI and a
+    relocated server module, neither of which collision code has ever imported, `out/` holds no orphaned `.luau` for
+    either, and the build was green throughout. The five lines were the item-93 diagnostics reporting in full:
+    `BallWall/Ball collides — service true, world true`, all ten groups registered, `was not set up as a ball wall —
+    corrected CanCollide, CanTouch, CanQuery` (**the flags had been wrong, and that is now fixed**), and then
+
+    > `ball wall "…Zones.BallBarrier" is 2.00 studs thick on its thinnest axis, and a ball at THROW_MAX_SPEED covers
+    > 3.33 studs a frame — a fast throw can pass through it without ever overlapping.`
+
+    **That last line was the whole fault, and the previous pass had decided to report it rather than fix it.** Item 93's
+    argument was that growing the part "would be inventing geometry" and that a thicker part was the user's job. What it
+    actually did was put a number in the output and ask a web developer to leave Studio, find a part in the Explorer,
+    read `5.0` off a `warn`, and type it into a size field — and the same fault came back. **`thickenBallWall` now does
+    it**: the part's thinnest axis is grown to `ceil(THROW_MAX_SPEED / 60) + 1` — five today — symmetrically about the
+    centre it already had, with a warning naming both numbers and the per-face intrusion (1.50 studs a side for the
+    2 → 5 correction the log reported).
+
+    **The tag now owns five properties rather than four, and the fifth is the same kind of thing as the other four:** a
+    silent, one-property failure whose fix is mechanical, on a part whose tag already says what it is for. **The number
+    is derived rather than tunable on purpose** — raise `THROW_MAX_SPEED` and the wall follows, with no second constant
+    to keep in step. It is idempotent: a wall already thick enough returns in silence, so the boot pass and every round
+    boundary after it say nothing.
+
+    **Both halves of the pair were re-verified rather than assumed.** A thrown ball is `CanCollide = true`
+    (`BallService:2332`, and `dropBall`'s `:1030` for a ball put down), so with the wall's flags forced the group row is
+    now a rule about two solid parts. The held-ball half never depended on any of this — `pumpBallWalls` asks where the
+    ball is, and that is why item 92's two mechanisms stay two.
+
+    **What the log did *not* contain, said plainly so the next report is cheaper**: no error, no stack trace, no
+    missing-group line, and no `[Round]`/`[Rig]` output. If something *other* than the barrier is also wrong, that
+    session's log is the thing to send — these five lines only ever described one part.
+
+    **Unverified**: whether the ball now bounces. Five studs against a 3.33-stud step guarantees an overlapping frame,
+    which is as far as reasoning goes — the bounce itself is the engine's and the user's eyes are the only proof. A
+    session that prints `Grown to 5.0 studs on that axis` at boot and then holds a full-charge throw at the wall is the
+    whole of the test.
+
+99. **The mystery box is a prize now: five visual layers instead of a coloured cube, in `vfx/mysteryBoxVfx.ts`.** The
+    brief asked for five and there were six, because the `Highlight` already existed and counts as one — **and then the
+    ring was removed, which brings it back to five in the module plus the `Highlight` and the `?` faces in `place`.** See
+    the end of this item for why the ring went.
+
+    | layer | what it is | what it says | lifetime |
+    | --- | --- | --- | --- |
+    | aura | `ParticleEmitter` on an `Attachment` at the box's centre, 6/s, warm white sparkles | *this is alive* | the box's |
+    | pillar | `Beam` from the box's top face, 12 studs up, opening 0.9 → 2.2 | *over here*, across the arena | the box's |
+    | light | `PointLight`, range 12, brightness pulsing 0.45–1.9 | *it is glowing, not painted* | the box's |
+    | spawn burst | `playSpawnPoof` **plus** `Emit(26)` in the box's colour | *it just arrived* | `Debris` |
+    | prize burst | `Emit(32)`, coloured by `AbilityKind` | *you got the Freeze one* | `Debris` |
+
+    **The brief was wrong about where the animations live and about the ring, and both corrections are the interesting
+    part.** It wanted `stepMotion` extended and a `Beam` ring "between two attachments on opposite sides" — a `Beam`
+    between two points is a straight ribbon, so that construction draws a bar *through* the box, not a ring round it. A
+    real torus is a mesh, and the brief's own rule forbids new assets; the answer is two crossed bars, which read as an
+    orbital band from any angle a player can stand at and need no upload. And the animation went into `stepMotion` as
+    asked — **no `TweenService` anywhere**, and no second loop: `stepMotion` already owns the clock and already runs
+    once a frame while a box is out, so it hands `animateMysteryBoxVfx` its `time()` reading rather than letting a
+    second module take a third one.
+
+    **The one design decision worth arguing: the ring bars are *not* children of the box, and everything else is.** A
+    part's children are destroyed with it, so the aura, the pillar and the light need no teardown at all —
+    `remove`, `sweepField` and `forgetLostSpawns` are unchanged in that respect. The bars could have had the same deal,
+    except that a `BasePart`'s `CFrame` is unambiguously **world space** under `Workspace` and *not* unambiguously world
+    space when its parent is another `BasePart`. Betting on that reading would have put the ring at twice its offset and
+    rotated it about the wrong origin if the bet was wrong, and nothing in this repo settles the question. So the bars
+    live in `Workspace`, are placed each frame from the pose `stepMotion` has just written, and `disposeMysteryBoxVfx`
+    exists — called from all three teardown paths, idempotent, and named for the fact that it is the one leak this
+    otherwise-all-children design could have.
+
+    **Two smaller things the pass fixed on the way.** `place` hard-coded `Color3.fromHSV(0, …)` — pure red — and let the
+    rainbow correct it up to a third of a second later, which is a glitch on the one frame a player is most likely to
+    be looking at the box: `shadeNow()` is now the cycle's arithmetic out of its loop, called by both `place` and
+    `cycleColours` so the two cannot disagree. And the six `?` glyphs got `TextStrokeColor3` /
+    `TextStrokeTransparency = 0.5`, because the box is `HSV(hue, 0.65, 1)` and an unbroken white glyph vanishes against
+    the yellows and greens of the wheel — a legibility fix, not decoration. **The `?` faces were kept**, as the brief
+    asked: `FACE_DECAL_ID` is still `""` and the text branch is still the stand-in that an uploaded texture replaces.
+
+    **The aim guide cannot see any of it, and that was checked rather than assumed.** All four ring/burst holder parts
+    are `CanQuery = false`, and `Beam`, `ParticleEmitter`, `Attachment` and `PointLight` all extend `Instance` — not
+    `BasePart` — so they are invisible to every raycast in the game. The bars are also untagged, so `looseBalls` (which
+    filters on the `Ball` tag) cannot mistake them for a ball a rig should fetch. **No risk to the trajectory preview or
+    `CHARGING_ATTRIBUTE`**: no throw, aim or charge code was read.
+
+    **`mystery.config.ts` is untouched.** `HOVER_*`, `RAINBOW_*` and `FACE_DECAL_ID` are all still read by the motion and
+    colour loops, so nothing became irrelevant as the brief suspected. The new numbers live in the VFX module as
+    **Placeholder.** constants, on the argument that a purely visual tuning number belongs beside the code that spends
+    it — the same split `notifications.ts` makes for the toast stack's geometry.
+
+    **Cost, since it was asked for.** Three boxes at `MAX_TOTAL`, plus the practice floor's unbounded ones: one emitter
+    at 6/s and one at nothing (the bursts are manual), two 12-triangle bars, one beam with ten segments, one light. Per
+    box, per frame: two `CFrame` writes for the bars plus one `Brightness` write. Per box, per colour step (3/s): two
+    `Color3` writes and one `ColorSequence` allocation.
+
+    **Unverified**: every pixel of it. Whether the pillar reads as a beacon or as a smoky column at `PILLAR_ALPHA_BASE`
+    (0.55), whether 32 sparkles is a pop or a fog, and whether `rbxasset://textures/particles/sparkles_main.dds`
+    resolves on this client — that last one is the only *functional* unknown, and the fallback is deleted-line simple:
+    no `Texture` draws a soft square that still reads as a mote.
+
+    **The ring was wrong, and the report was four words: *"remove the sticks poking out"*.** The two crossed `Neon` bars
+    were the one layer built from a guess rather than from a measurement, and the guess was that they would read as an
+    orbital band. They read as sticks, for a reason that should have been obvious before the first line was written: **a
+    solid ring round a box has to be wider than the box, so its silhouette from any angle a player can stand at is two
+    nubs — and two *straight* bars are the worst version of that, because they end abruptly in mid-air with nothing
+    connecting them.** A ring that reads as a ring is a torus, a torus is a mesh, and a mesh is an upload the brief
+    forbade. **The equator is simply unmarked now, and that is the honest answer rather than a smaller ring.**
+
+    **Removing it made the module strictly better, which is the part worth recording.** The bars were the only layer
+    that was not a child of the box — they lived in `Workspace` because a `BasePart`'s `CFrame` is unambiguously world
+    space under `Workspace` and *not* unambiguously so under another `BasePart` — so they needed
+    `disposeMysteryBoxVfx` and a call in all three teardown paths, and `stepMotion` needed a `pose` local to hand the
+    animation. **All three of those are gone.** Every layer that is left is a child of the box, the three teardown paths
+    are byte-for-byte what they were before this pass, `stepMotion` is back to its original one-line `CFrame` write plus
+    one `Brightness` call, and `animateMysteryBoxVfx` lost its third argument. The look is now aura, pillar, light and
+    two bursts, and **nothing in it is a `BasePart`** — which is a second, unplanned win: `Attachment`, `Beam`,
+    `ParticleEmitter` and `PointLight` all extend `Instance`, so the aim guide cannot see any of the layer by
+    construction rather than by a `CanQuery` flag somebody has to remember.
+
+    **Not changed**: the aura, the pillar, the light, both bursts, the two `?` faces, the `Highlight`, and every
+    constant that survives. `mystery.config.ts` is still untouched.
 
 ---
 

@@ -160,9 +160,9 @@ const EDGE_INSET = 12;
  * exactly the corner this element wants. 96 clears it by ten pixels. **That order is the corner's own
  * convention rather than a preference**: the coin readout is up for the whole session and this is only up
  * during a round, so the permanent thing owns the top of the column and the transient one stacks under it —
- * the arrangement `hudToast.ts` describes for the bottom of the screen, where the permanent Super HUD owns
- * the edge and the alerts stack above it. Nothing else is drawn in this corner; see the class doc for what
- * was checked.
+ * the arrangement `notifications.ts` and `SuperHudController` describe for the bottom of the screen, where
+ * the permanent power column owns the edge and the notifications stack above it. Nothing else is drawn in
+ * this corner; see the class doc for what was checked.
  */
 const TOP_INSET = 96;
 
@@ -351,9 +351,9 @@ interface HitCard {
  * **What was checked in that corner, since a collision was suspected.** The coin readout is at `(12, 64)`
  * and is the only neighbour; nothing else is near it. The score bar and the round-status line are both *top
  * centre* (`AnchorPoint` `(0.5, 0)`, insets `4` and `44`), the dock is bottom centre, the cooldown card is
- * bottom left and the Super HUD and the toasts own the bottom centre — see `hudToast.ts`, whose geometry is
- * all about the bottom of the screen. `TOP_INSET` is written as the coin readout's bottom edge plus a gap
- * rather than as a number of its own.
+ * bottom left and the power column and the notifications own the bottom centre — see `notifications.ts`,
+ * whose geometry is all about the bottom of the screen. `TOP_INSET` is written as the coin readout's bottom
+ * edge plus a gap rather than as a number of its own.
  */
 @Controller()
 export class HitLogController implements OnStart {

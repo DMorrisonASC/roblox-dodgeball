@@ -13,6 +13,7 @@ import { extendReadyAt, publishReadyAt } from "./readyAt";
 import { BallService } from "../ball/BallService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
 import { DodgeService } from "./DodgeService";
+import { roundCelebrating } from "../round/roundStatus";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
@@ -570,6 +571,18 @@ export class CatchService implements OnStart {	/**
 		// out. A frozen body hears that it is frozen rather than that its dodge ended a moment ago.
 		if (this.freezes.isFrozen(model)) {
 			if (DEBUG) print(`[Catch] ${model.Name}: refused — frozen`);
+
+			return true;
+		}
+
+		// **And nobody catches a round that is over.** Same window as the throw's refusal and the same argument
+		// from the other side — see `ARENA_CONFIG.CELEBRATION_SECONDS` and `roundCelebrating` — and it is placed
+		// beside the frozen check because that check is the same kind of thing: a state the body is in, not a
+		// clock that expires on its own like the dodge pair below. A ceiling catch in the last second of a round
+		// would otherwise open a window ten seconds into a result nobody is playing for, and hand the catcher a
+		// ball they cannot throw (`BallService.throwBallBody` refuses it for exactly this long).
+		if (roundCelebrating()) {
+			if (DEBUG) print(`[Catch] ${model.Name}: refused — the round is celebrating`);
 
 			return true;
 		}

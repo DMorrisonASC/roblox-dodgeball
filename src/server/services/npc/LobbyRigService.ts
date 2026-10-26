@@ -1,6 +1,7 @@
 import { OnStart, Service } from "@flamework/core";
 import { CollectionService, Players, ReplicatedStorage, ServerStorage, Workspace } from "@rbxts/services";
 import {
+	CELEBRATING_ATTRIBUTE,
 	MATCH_JOIN_A_TAG,
 	MATCH_JOIN_B_TAG,
 	ROUND_STATE_ATTRIBUTE,
@@ -2092,6 +2093,24 @@ export class LobbyRigService implements OnStart {
 				task.spawn(() => this.refillAtRoundStart());
 			} else {
 				task.spawn(() => {
+					// **The celebration first, and everything below it happens on the far side of the window.**
+					//
+					// A round that has just been decided holds the arena for `ARENA_CONFIG.CELEBRATION_SECONDS` —
+					// players walking about and reading a reward, rigs milling about on the floor they played on
+					// (`SeekBehavior`'s `wander`). None of the intermission's rig work belongs inside that: standing
+					// a rig down strips `BEHAVIOR_SEEKING` off it, which is the behaviour the wander lives in, and
+					// the pad walk below sends it out of the arena on a straight line at a cover that has not gone
+					// up yet. Both of those were happening *during* the celebration when this branch ran on the
+					// phase edge, which is what a player watching from the lobby saw as the rigs leaving while the
+					// players stayed.
+					//
+					// **The wait is on the attribute rather than on a copy of the number**, and the difference is
+					// the whole reason it is a loop: `CELEBRATING_ATTRIBUTE` is cleared by the round that set it,
+					// so this ends when that ends rather than when a second reading of one constant says it should.
+					// The period is short enough to be invisible and long enough that the poll is nothing — and it
+					// only runs at all in the one window per round where the flag is up.
+					this.awaitCelebration();
+
 					this.setGameplayBehaviors(false);
 
 					// **The roster first, when it has already been cleared.** `MatchService.clear` runs on
@@ -2115,6 +2134,34 @@ export class LobbyRigService implements OnStart {
 				});
 			}
 		});
+	}
+
+	/**
+	 * **Blocks until the round that has just been decided is done celebrating.**
+	 *
+	 * One caller — the intermission edge of `watchPhase` — and one job: to keep the rig side of the boundary off the
+	 * arena while the players are still on it. See that call site for what goes wrong without it; the short version
+	 * is that the stand-down strips `BEHAVIOR_SEEKING`, which is the behaviour the celebration's wander lives in.
+	 *
+	 * **A poll of the round's own attribute rather than a wait on `ARENA_CONFIG.CELEBRATION_SECONDS`**, and the
+	 * difference is which of the two is the authority. The flag is written and cleared by the round, so reading it
+	 * ends this at the moment the window really ends — a copy of the constant would end it at the moment this file
+	 * thinks it should, and the two would drift the first time anything changed the sequence. `task.wait` is the
+	 * only thing that yields here, so a synchronous attribute write is never interleaved with this loop.
+	 *
+	 * **A missing folder or a flag that was never set returns at once**, which is every ordinary turn of the
+	 * boundary and the first intermission of a server's life — the loop simply does not run.
+	 *
+	 * **This deliberately cannot hang a round.** The only writer is `RoundService.holdCelebration`, which clears the
+	 * flag on a timer it has already started; if that ever stopped, rounds would stop reaching the lobby, which is
+	 * loud rather than quiet. The alternative — a timeout — would be this file second-guessing a round it cannot
+	 * see, and would put the rig side of the boundary back in the arena mid-celebration on a slow server.
+	 */
+	private awaitCelebration(): void {
+		const folder = this.statusFolder;
+		if (folder === undefined) return;
+
+		while (folder.GetAttribute(CELEBRATING_ATTRIBUTE) === true) task.wait(0.1);
 	}
 
 	/**

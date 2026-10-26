@@ -2,6 +2,7 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import { Workspace } from "@rbxts/services";
 import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, THROW_WALK_ATTRIBUTE } from "shared/constants";
 import type { ThrowWalk } from "shared/constants";
 import { pendingAbilityOn } from "shared/ability";
@@ -9,6 +10,7 @@ import { resolveDodgeable } from "shared/dodge";
 import { claim, claimedBy, release } from "../ballClaims";
 import { detectEnemy } from "../detect";
 import { fetchRegionFor, insideZone } from "../sideZones";
+import { roundCelebrating } from "../../services/round/roundStatus";
 import { BEHAVIOR_SEEKING, NpcBehavior } from "../Behavior";
 import type { BallPickupService } from "../../services/ball/BallPickupService";
 import type { BallService } from "../../services/ball/BallService";
@@ -69,6 +71,71 @@ const SEEK_BALL_MOVED_STUDS = 4;
  * **Placeholder.**
  */
 const SEEK_STALL_TICKS = 3;
+
+/**
+ * **How often a celebrating rig picks a new place to stand, in seconds.**
+ *
+ * The celebration is `ARENA_CONFIG.CELEBRATION_SECONDS` long, so at this period a rig makes about five moves in it
+ * — enough that the arena reads as busy from the lobby, few enough that no rig is zig-zagging. It is also longer
+ * than the walk itself, which is what makes a rig arrive and stand for a moment before setting off again rather
+ * than turning on the spot every turn: at a walking speed of `NPC_CONFIG.WALK_TO_PAD_SPEED` a body covers about
+ * thirty studs in this long and the reach is {@link WANDER_RADIUS_STUDS}, so most picks end in an arrival.
+ *
+ * **Nothing else reads it**, and nothing should: this is the celebration's number, not the round's — see
+ * {@link WANDER_RADIUS_STUDS} for the whole of what this stroll is for.
+ *
+ * **Placeholder.**
+ */
+const WANDER_EVERY_SECONDS = 2;
+
+/**
+ * **How far from where it is standing a celebrating rig may pick, in studs.**
+ *
+ * Twenty is a few body-lengths of the arena and comfortably inside it, which is the point: a wander is a stroll
+ * around where the rig finished the round, not a lap of the pitch. A radius large enough to cross the arena would
+ * send rigs through the middle of everybody else, and one small enough to keep them still would be the standing
+ * still this exists to replace.
+ *
+ * **Placeholder.**
+ */
+const WANDER_RADIUS_STUDS = 20;
+
+/** Close enough to the picked point to call it arrived and pick another, in studs. **Placeholder.** */
+const WANDER_ARRIVED_STUDS = 3;
+
+/**
+ * **How little a rig has to have moved since its last pick to be judged stuck**, in studs.
+ *
+ * The jump in {@link wander} hangs off this: a body that picked a point two seconds ago and has covered less than
+ * this is against something — a wall, another rig, the lip of a platform — and a hop is the cheapest way to find
+ * out whether it can get over it. The arena's geometry cannot be asked about directly; see the file comment on
+ * `SEEK_STALL_TICKS` for the same reasoning applied to a ball.
+ *
+ * **Placeholder.**
+ */
+const WANDER_STUCK_STUDS = 2;
+
+/** How high above a candidate point the floor probe starts, in studs. **Placeholder.** */
+const WANDER_PROBE_UP_STUDS = 6;
+
+/** How far below it the probe reaches, in studs. **Placeholder.** */
+const WANDER_PROBE_DOWN_STUDS = 12;
+
+/**
+ * How much higher or lower than the rig's own feet a candidate point may be, in studs.
+ *
+ * **This is what stops a rig walking at a wall.** A probe that only asked "is there a surface here" would accept
+ * the top of a barrier, the roof of the lobby, or a platform a body cannot climb to — all of which are places with
+ * floor on them and none of which are places a walking rig can reach. Comparing the surface it finds against the
+ * one the rig is standing on is the cheap way to say "the same level", and it is the only test that generalises
+ * over every piece of geometry in the arena without this file knowing any of it.
+ *
+ * **Placeholder.**
+ */
+const WANDER_MAX_STEP_STUDS = 4;
+
+/** How many candidates one pick may try before giving up for the turn, in candidates. **Placeholder.** */
+const WANDER_TRIES = 6;
 
 /**
  * The contribution a rig's sprint is added under, **deliberately the same word a player's sprint uses.**
@@ -259,6 +326,37 @@ interface Seek {
 
 	/** `os.clock` at which {@link pickupWalk} is over. Only meaningful while there is one. */
 	pickupWalkUntil: number;
+
+	/**
+	 * **The point this rig is strolling to while the round it just played is being celebrated**, or `undefined`
+	 * when it is not strolling.
+	 *
+	 * **A third "somewhere this body is walking to", and the only one that is not about a ball.** `ball` is a fetch,
+	 * `pickupWalk` is a carry-through, `sidestep` is a bluff, and this is a body with nothing to do being given
+	 * something to do — see {@link wander} for why the celebration has rigs in it at all. It lives here for the
+	 * reason every other field does: a behaviour is one object shared by every rig that wears its tag, so a rig's
+	 * own progress can only live in a map keyed by its model.
+	 *
+	 * **`undefined` is "not strolling", which is what the celebration's end sets it back to**, and that is the
+	 * whole of how the two modes stay apart: the tick asks the round whether it is celebrating, and a rig holding a
+	 * stale point would keep walking to it after the whistle. See the exit branch at the top of `tick`.
+	 */
+	wanderTo?: Vector3;
+
+	/** `os.clock` when {@link wanderTo} was issued. `0` is "never", which is what every rig starts at. */
+	wanderAt: number;
+
+	/**
+	 * **Where this rig was standing when {@link wanderTo} was issued**, kept so the next pick can tell a walk from a
+	 * body that cannot move.
+	 *
+	 * **A position rather than a tick count, for `SEEK_STALL_TICKS`'s reason from the other side.** That number
+	 * counts turns because `NpcService` skips a frozen rig's turns and a clock would charge it for the time it spent
+	 * not moving. This one *is* a distance, deliberately: a rig pinned against a wall is one that has not gone
+	 * anywhere in two seconds, and the distance it has covered is the honest measure of that — a turn count would be
+	 * fooled by a rig shoved about by a ball.
+	 */
+	wanderFrom?: Vector3;
 }
 
 /**
@@ -417,6 +515,7 @@ export function createSeekBehavior(
 				panic: false,
 				shuffleUntil: 0,
 				pickupWalkUntil: 0,
+				wanderAt: 0,
 			};
 			walking.set(model, seek);
 		}
@@ -1136,6 +1235,114 @@ export function createSeekBehavior(
 		humanoid.MoveTo(seek.pickupWalk);
 	};
 
+	/**
+	 * **A place within {@link WANDER_RADIUS_STUDS} of `from` that a rig could actually stand on, or `undefined`.**
+	 *
+	 * **The probe is a downward ray at the candidate's own XZ, and the three tests it applies are the whole of how
+	 * this avoids walls.** A ray finds nothing where a wall is taller than the pick — there is no floor under it at
+	 * the rig's level, only the wall's side, which a downward ray from above the wall would miss — finds a surface
+	 * whose normal is not up where it clips a slope or the edge of a wedge, and finds a surface at a different
+	 * height where the candidate is on a ledge, a roof, or the arena floor beyond a drop. What is left is a point on
+	 * the same level as the rig is standing on, which is the most this file can know about a map it has never been
+	 * told the shape of. See {@link WANDER_MAX_STEP_STUDS} for why the height test is the one that matters.
+	 *
+	 * **Uniform over the disc rather than uniform in the two axes.** Drawing X and Z independently and rejecting
+	 * what falls outside the circle would bias a rig towards the corners of its own square; drawing the angle and a
+	 * radius scaled by `sqrt` puts as many picks in the outer ring as in the middle, which is what "somewhere over
+	 * there" means. The difference is invisible in one turn and obvious over a ten-second window.
+	 *
+	 * **`ExcludeInstances`, not the deprecated `FilterType` pair** — every ray in this project is written that way;
+	 * see `shared/throw.ts` for the argument. `RespectCanCollide` is on, so the probe hits the floor a body can
+	 * stand on rather than the decorations and markers with `CanCollide` off that cover it.
+	 *
+	 * `undefined` when every candidate was rejected, which is a rig in a corner with nowhere to go. It answers with
+	 * nothing rather than a made-up point for the reason the arena's own spawn lookup does: a body walked at a place
+	 * it cannot occupy is a body pressed into a wall, which is worse than a body that stays where it is.
+	 */
+	const wanderPoint = (model: Model, from: Vector3): Vector3 | undefined => {
+		const params = new RaycastParams();
+		params.ExcludeInstances = [model];
+		params.IgnoreWater = true;
+		params.RespectCanCollide = true;
+
+		for (let attempt = 0; attempt < WANDER_TRIES; attempt++) {
+			const angle = math.random() * math.pi * 2;
+			const distance = WANDER_RADIUS_STUDS * math.sqrt(math.random());
+
+			const at = new Vector3(
+				from.X + math.cos(angle) * distance,
+				from.Y,
+				from.Z + math.sin(angle) * distance,
+			);
+
+			const hit = Workspace.Raycast(
+				at.add(new Vector3(0, WANDER_PROBE_UP_STUDS, 0)),
+				new Vector3(0, -(WANDER_PROBE_UP_STUDS + WANDER_PROBE_DOWN_STUDS), 0),
+				params,
+			);
+
+			if (hit === undefined) continue;
+			if (hit.Normal.Y < 0.7) continue;
+			if (math.abs(hit.Position.Y - from.Y) > WANDER_MAX_STEP_STUDS) continue;
+
+			return hit.Position;
+		}
+
+		return undefined;
+	};
+
+	/**
+	 * **What a rig does while the round it just played is being celebrated: it mills about.**
+	 *
+	 * **Why this exists.** A round ends, the arena is held for `ARENA_CONFIG.CELEBRATION_SECONDS` so the players can
+	 * read a result and a reward, and every rig on the field stands exactly where the last turn left it — because
+	 * the only thing this behaviour ever walks a rig *to* is a loose ball, and the spawners stopped stocking the
+	 * floor the moment the phase left `Playing`. Ten seconds of a dozen bodies frozen mid-stride reads as the game
+	 * having crashed rather than as a round having ended. This gives them somewhere to go.
+	 *
+	 * **It is temporary and it is conditional, and both halves are worth saying.** *Temporary*: nothing here
+	 * outlives the window — no tag, no state on the body, no standing order — and the first turn after
+	 * `roundCelebrating` answers `false` clears the walk and hands the rig back to the rule below. *Conditional*:
+	 * this branch sits above *everything*, including the held-ball branch, so a rig that ends the round with a ball
+	 * in its hand strolls rather than ambling off in the carry-through direction `pickupWalk` would have drawn. That
+	 * ordering is the reason it goes at the top of `tick` rather than beside the ball search: during a celebration
+	 * there is no ball search to skip past.
+	 *
+	 * **What it deliberately cannot do.** It cannot throw — the arena's own `detectEnemy` answers "nobody" outside a
+	 * `Playing` phase, so `ThrowBehavior` has no target — it cannot chase a ball (this branch returns before the
+	 * search), and it cannot leave the level the rig is standing on. What it *can* do is bump into another rig or a
+	 * wall, which is why a pick that follows a body that has not moved hops; see {@link WANDER_STUCK_STUDS}.
+	 *
+	 * **The three ways a pick happens are all "the last one is finished"**, and they are one condition rather than
+	 * three: the rig arrived, or the point has had {@link WANDER_EVERY_SECONDS} and the rig has not, or there is no
+	 * point at all. A rig that is neither there nor out of time keeps walking, and nothing is re-issued — the same
+	 * "asking for one point twice is the same walk asked for twice" the whole retarget interval is built on.
+	 */
+	const wander = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek, now: number): void => {
+		const arrived =
+			seek.wanderTo !== undefined && root.Position.sub(seek.wanderTo).Magnitude <= WANDER_ARRIVED_STUDS;
+		const expired = seek.wanderAt > 0 && now - seek.wanderAt >= WANDER_EVERY_SECONDS;
+
+		if (seek.wanderTo !== undefined && !arrived && !expired) return;
+
+		const from = root.Position;
+		const stuck = seek.wanderFrom !== undefined && from.sub(seek.wanderFrom).Magnitude < WANDER_STUCK_STUDS;
+
+		const point = wanderPoint(model, from);
+		if (point === undefined) return;
+
+		seek.wanderTo = point;
+		seek.wanderAt = now;
+		seek.wanderFrom = from;
+
+		humanoid.MoveTo(point);
+
+		// **A hop out of a corner, and only out of a corner.** `Jump` is a request rather than a velocity, so a rig
+		// with nothing above it simply does not leave the ground; setting it on every pick would be a field of
+		// bouncing bodies, which is a different celebration from the one asked for.
+		if (stuck) humanoid.Jump = true;
+	};
+
 	return {
 		// **The variant's tag, and the only thing here besides the region that is not shared.** Both seek
 		// behaviours are this object; what tells them apart is this string and the region the factory was
@@ -1190,6 +1397,43 @@ export function createSeekBehavior(
 			// instants pretending to be one. `NpcService` takes its own for the turn it is running — this is the
 			// behaviour's, and it is the only clock a behaviour can have.
 			const now = os.clock();
+
+			// **The celebration, and it comes before everything — the held ball included.** A round that has just
+			// been decided holds the arena for `ARENA_CONFIG.CELEBRATION_SECONDS`, and the rigs on it have nothing
+			// to fetch because the spawners stopped stocking the floor when the phase left `Playing`. Standing
+			// still for that window is what a crash looks like; `wander` gives them somewhere to go.
+			//
+			// **Why here rather than beside the ball search.** Two reasons and the second is the load-bearing one.
+			// The search is not the only thing that moves a rig — `pickupWalk` is, and a rig that ended the round
+			// with a ball in its hand reaches that branch first — so a wander placed with the ball logic would
+			// leave exactly the rigs that are most visible standing about. And a return this early cannot leave
+			// anything half-done: nothing above it has touched a claim, a curve or a sprint, because those live
+			// below.
+			//
+			// **`return`, not a fall-through**, which is what makes "no chasing, no fetching, no throwing" true by
+			// construction rather than by a series of guards: the rest of this method is the round's business and
+			// the round is over.
+			if (roundCelebrating()) {
+				wander(model, humanoid, root, seek, now);
+
+				return;
+			}
+
+			// **And the stroll ends with the window.** The walk is cleared on the first turn that is not
+			// celebrating, and the body is stopped where it stands rather than left walking to a point it was given
+			// as a party trick — a rig that arrived after the whistle would keep going for up to
+			// `WANDER_RADIUS_STUDS` with nothing to say why. `MoveTo` at the rig's own position is the stop; see
+			// `stand`.
+			//
+			// **Only for a rig that was actually strolling**, so the ordinary turn pays one comparison and this
+			// costs nothing at all in a round that never celebrated.
+			if (seek.wanderTo !== undefined) {
+				seek.wanderTo = undefined;
+				seek.wanderAt = 0;
+				seek.wanderFrom = undefined;
+
+				humanoid.MoveTo(root.Position);
+			}
 
 			// **Stop conditions, before anything is asked or moved.** The first is a ball in hand: there is nothing
 			// to fetch, and this is the state a throwing rig spends most of its time in. Asked of `BallService`

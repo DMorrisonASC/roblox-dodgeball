@@ -2,7 +2,9 @@ import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
-import { COINS_ATTRIBUTE } from "shared/constants";
+import { ARENA_CONFIG } from "shared/config/arena.config";
+import { COINS_ATTRIBUTE, ROUND_EARNED_COINS_ATTRIBUTE } from "shared/constants";
+import { pushNotification } from "../../notifications";
 import { killCamActive } from "../../panels";
 import { applyGlow } from "../../ui/glow";
 import { PREMIUM } from "../../ui/premiumTheme";
@@ -91,6 +93,41 @@ export class CurrencyHudController implements OnStart {
 
 		scope.push(player.GetAttributeChangedSignal(COINS_ATTRIBUTE).Connect(refresh));
 		refresh();
+
+		// **And what the round just paid, said out loud once per round — the reward toast.**
+		//
+		// **The attribute's change signal *is* the notification.** `EconomyService.onRoundEnded` writes
+		// `ROUND_EARNED_COINS_ATTRIBUTE` in the same pass that raises the balance, and `RoundService` clears it
+		// when the celebration ends — so "the value moved to a number" is exactly "this player was paid for the
+		// round that just finished", with no remote, no round-state subscription and nothing to keep in step.
+		// That is why the readout above and this sit in the same controller: both are the wallet speaking.
+		//
+		// **The clear is what makes the second round work.** An attribute written to the value it already holds
+		// fires no signal, so two rounds paying fourteen coins would produce one toast and then a silence that
+		// looked like the economy failing. `RoundService.holdCelebration` clears it for that reason; the
+		// `typeIs` guard below is the other half, because the clear itself arrives here as a change to
+		// `undefined`.
+		//
+		// **Held for the celebration rather than for the default three seconds**, and this is the one caller of
+		// `pushNotification` that passes a duration: the toast is the reason the window exists, and a line that
+		// faded while the arena was still being held would be the feature deciding it was not worth reading.
+		// Both numbers are the same config value, so the toast cannot outlive the hold by accident — see
+		// `ARENA_CONFIG.CELEBRATION_SECONDS`.
+		scope.push(
+			player.GetAttributeChangedSignal(ROUND_EARNED_COINS_ATTRIBUTE).Connect(() => {
+				const earned = player.GetAttribute(ROUND_EARNED_COINS_ATTRIBUTE);
+				if (!typeIs(earned, "number")) return;
+
+				// **Nothing to say about a nought**, which is reachable: a surrender pays `math.floor` of a
+				// halved payout, and a round with the base at nought would too. A `+0 Coins!` is worse than the
+				// silence — it reads as a bug rather than as a small round. Guarded on the *rounded* figure
+				// because that is the number the line would print.
+				const coins = math.floor(earned);
+				if (coins <= 0) return;
+
+				pushNotification(`+${coins} Coin${coins === 1 ? "" : "s"}!`, ARENA_CONFIG.CELEBRATION_SECONDS);
+			}),
+		);
 
 		label.Parent = wrapper;
 		wrapper.Parent = getHudScreenGui();

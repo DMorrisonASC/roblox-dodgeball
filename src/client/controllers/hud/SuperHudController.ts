@@ -33,9 +33,10 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  *
  * **This number used to be derived from the toast column, and the direction has reversed.** The stack was
  * lifted clear of the toasts, which put it most of the way up the screen — the wrong place for a readout a
- * player looks at continuously. The permanent thing owns the bottom edge and the transient alerts stack
- * above it, so the number that moved is the *toasts'*, in `hudToast.ts`, whose doc now carries the
- * arithmetic. **If the icon's slot grows, that number is what has to be re-read** — this constant stays 12.
+ * player looks at continuously. The permanent thing owns the bottom edge and the transient notifications
+ * stack above it, so the number that moved is the *stack's*, in `notifications.ts` — whose `placeAbove` reads
+ * this element's geometry and whose `STACK_BOTTOM_GAP` carries the arithmetic. **If the icon's slot grows,
+ * that number is what has to be re-read** — this constant stays 12.
  *
  * **The one thing it used to share a band with was the spectator label**, anchored at the same bottom centre
  * 12px in — and the two could not be up at once, because the label showed while spectating and this stack

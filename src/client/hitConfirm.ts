@@ -94,9 +94,9 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  *   generation token that makes an interrupted sequence stop rather than hide the splash that replaced it.
  *   **Hits within one throw are not replaced at all: they are summed** — see the aggregation section above for
  *   the window and the token.
- * - **Not a toast any more.** `mountToast`, its column slot and the two-second hold are all gone with the
- *   `Alert`; what replaces them are the splash's own five steps, in `ui/actionSplash.ts`, and a hold short
- *   enough to be a beat rather than a message.
+ * - **Not a toast any more.** The `Alert`-based toast, its column slot and the two-second hold are all gone —
+ *   `ui/hudToast.ts` went with the last of them and has since been deleted; what replaces them are the splash's
+ *   own five steps, in `ui/actionSplash.ts`, and a hold short enough to be a beat rather than a message.
  * - **Not a scoreboard.** The caption says *how big the throw was*, once, and then it is gone — nothing here
  *   totals a match, remembers a best, or reports anything to the server. A count that is still on screen when
  *   the next throw lands has already been replaced.

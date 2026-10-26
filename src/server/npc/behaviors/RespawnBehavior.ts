@@ -9,7 +9,7 @@ import {
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { TEAM_A, TEAM_B } from "../../services/round/team";
-import { arenaSpawnForRig } from "../arenaSpawns";
+import { arenaSpawnForRig, releaseArenaSpawn } from "../../services/round/arenaSpawns";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
 import { ragdoll } from "../ragdoll";
 import {
@@ -237,6 +237,17 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 		},
 
 		onDied(model) {
+			// **The arena spot goes here, synchronously, and not in the rebuild below.** A claim is keyed on
+			// the *body*, so the instance that frees it is `model` and nothing else — and the rebuild runs two
+			// seconds later, from a template, only if there is a template to rebuild from. Releasing there
+			// would have meant a rig killed with no template to copy kept its part claimed for the rest of the
+			// round, with no instance left to name it by once the corpse went. Here the release happens on the
+			// frame of the death, for every rig that dies, and the round's `handleDeath` releases a player's
+			// on the same edge — a dead body holds nothing a round wants. **It is ahead of the ragdoll** so a
+			// part is free before anything else on this frame can ask for one. See
+			// `services/round/arenaSpawns.ts` for the claim itself.
+			releaseArenaSpawn(model);
+
 			// **The corpse goes limp here, synchronously, and the rebuild does not wait for it.** The conversion
 			// has to happen on the frame of the death: a rig whose joints are still driving it for the
 			// three-second delay would stand in its death pose until it was replaced, and the sockets would then
@@ -375,16 +386,23 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				//
 				// **If the round is playing and the corpse had a side, the arena's own spawn for that side is
 				// the answer**, and it is a fresh read of the place file rather than a remembered point — see
-				// `npc/arenaSpawns.ts` for why the lookup lives beside the behaviours rather than being asked
-				// of the round, which does not construct them. Everything else keeps the home: a rig with no
-				// side is a lobby walker between rounds, a practice dummy, or a body nobody has painted, and
-				// for all three the place it was put is the place it belongs.
+				// `services/round/arenaSpawns.ts` for why the lookup lives in a module a behaviour may import
+				// rather than being asked of the round, which does not construct behaviours. Everything else
+				// keeps the home: a rig with no side is a lobby walker between rounds, a practice dummy, or a
+				// body nobody has painted, and for all three the place it was put is the place it belongs.
+				//
+				// **And it is a *claim* now, for the rebuilt rig itself.** The rig below is a clone rather than
+				// the corpse brought back, so it is a new body with no claim of its own; passing `rig` here is
+				// what gives it one, on the same terms `teleportTeamsToArena` gave the body that just died —
+				// nearest free part to the ball spawners. Before this, a rebuilt rig drew at random from a
+				// second copy of the spawn rule living beside the behaviours, which is how a rig came back on
+				// a part another body was standing on.
 				//
 				// **The chosen point becomes the home**, so the next death decides from the same rule rather
 				// than from a stale one, and the movers that follow — `returnRigsToLobby` at the round's end,
 				// `teleportTeamsToArena` at the next whistle — go on overwriting it as they always did.
 				const destination = (team !== undefined && roundIsPlaying()
-					? arenaSpawnForRig(team)
+					? arenaSpawnForRig(rig, team)
 					: undefined) ?? home;
 
 				// **Placed by its root part, not by `PivotTo`.** A model pivot has no orientation of

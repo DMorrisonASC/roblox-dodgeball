@@ -142,8 +142,8 @@ export const killCamActive = Fusion.Value(scope, false);
  *
  * **One expression, in one place, because four elements have to agree about it.** The Super HUD, its
  * stamina segments and the cooldown readout hide and show together, and a copy of this rule in each of
- * them is how they would come to disagree — the same argument `hudToast.ts` makes for owning the toast
- * column's numbers.
+ * them is how they would come to disagree — the same argument `notifications.ts` makes for owning the
+ * number two of its own toasts share.
  *
  * **Both halves are about the *player*, and the phase is deliberately not one of them.** A round running
  * somewhere is not a reason to put a player's ability readouts on their screen: a spectator in the lobby

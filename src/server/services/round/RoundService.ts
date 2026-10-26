@@ -15,12 +15,14 @@ import { events, HitDirection } from "shared/networking";
 import {
     ARMED_ABILITY_ATTRIBUTE,
     BODY_ID_ATTRIBUTE,
+    CELEBRATING_ATTRIBUTE,
     IN_ROUND_ATTRIBUTE,
     LAST_HIT_BY_ATTRIBUTE,
     LAST_HIT_BY_CAUSE_ATTRIBUTE,
     LAST_HIT_BY_POSITION_ATTRIBUTE,
     LAST_HIT_BY_TOKEN_ATTRIBUTE,
     PRACTICE_ZONE_ATTRIBUTE,
+    ROUND_EARNED_COINS_ATTRIBUTE,
     ROUND_MODE_ATTRIBUTE,
     ROUND_STATE_ATTRIBUTE,
     ROUND_TIME_ATTRIBUTE,
@@ -30,7 +32,7 @@ import {
     THROWER_TOKEN,
 } from "shared/constants";
 // A second import from the same module rather than folding these into the block above, which is what the
-// next tidy-up should do: the block is long and alphabetically grouped, and adding two names to it means
+// next tidy-up should do: the block is long and alphabetically grouped, and adding a name to it means
 // re-reading it to find the right slot. Flagged rather than left silent.
 import { ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE } from "shared/constants";
 import { MATCH_JOIN_POLL_SECONDS, MATCH_MIN_PLAYERS } from "../../config/match.config";
@@ -60,6 +62,7 @@ import { roundStatusFolder } from "./roundStatus";
 import { DRAW, RoundOutcome, TEAM_A, TEAM_B, TeamLabel } from "./team";
 import { VoteService } from "./VoteService";
 import { isPractising } from "../zone/practiceZoneMembership";
+import { claimArenaSpawn, clearArenaSpawns, liftOf, randomSpawn, releaseArenaSpawn } from "./arenaSpawns";
 
 enum RoundState {
     Intermission,
@@ -476,6 +479,14 @@ export class RoundService implements OnStart {
         Players.PlayerRemoving.Connect((player) => {
             this.activePlayers.delete(player);
             this.teams.delete(player);
+
+            // **And the spawn part they claimed, which nothing else would ever free.** A leaver is not an
+            // elimination and not a round end, so neither of the other two release points runs for them —
+            // and a part reserved for somebody who has left the game is a part a side can never use again
+            // this round, which is a slow leak towards the "no free spawn" warning for a shortage that
+            // does not exist. The body is the key, so it is the character that goes.
+            const leaving = player.Character;
+            if (leaving) releaseArenaSpawn(leaving);
 
             // **A leaver can end the round, and does it here rather than a tick later.** Taking
             // somebody out of a side can empty it, and an empty side is a decided round in every
@@ -1248,6 +1259,17 @@ export class RoundService implements OnStart {
         // `events.roundResult` sets out.
         this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, outcome);
 
+        // **And the arena is held, from this instant rather than from the loop's next turn.** The flag is what
+        // shuts the three things the phase cannot: a throw, a catch, and a ball doing damage. It is written here
+        // — with the winner, on the same line as the payout that pays for it — because the round is decided on
+        // this line and everything after it is ceremony; see `ARENA_CONFIG.CELEBRATION_SECONDS` for the ten
+        // seconds it is on for and for why the phase alone was not enough.
+        //
+        // **Cleared by `holdCelebration`, which cannot be reached from here.** This method is synchronous and
+        // must stay so — it is called from `PlayerRemoving` as well as from the loop — so the timer lives in
+        // `gameLoop`, which is the only place that knows the intermission has actually begun.
+        this.statusFolder.SetAttribute(CELEBRATING_ATTRIBUTE, true);
+
         // **The result panel used to be sent from here, and it is gone with its controller.** `sendResult` —
         // the per-player rows, the sort, the `roundResult` event — was deleted rather than kept, because the
         // only reader was `RoundResultController` and both went together. The end of a round is a *ceremony*
@@ -1278,6 +1300,16 @@ export class RoundService implements OnStart {
         // Nothing between rounds adds to it, so clearing at the end is the same set as clearing at the start,
         // with no window in which it means the wrong round.
         this.surrendered.clear();
+
+        // **And every spawn claim, on the same reasoning one line up and on the same line as the record it
+        // mirrors.** A claim is a fact about *this* round's arrivals, so next round starts with the whole
+        // side available again; cleared here rather than where the next round is assembled, because an
+        // intermission that never ends would otherwise carry the finished round's reservations into
+        // whenever it did end — and every body would be told their side had run out of spawns. Every body
+        // that ends releases its own claim on the way out; this is what catches whatever does not (a rig
+        // whose death nothing reported, a corpse that outlived the round). See
+        // `services/round/arenaSpawns.ts`.
+        clearArenaSpawns();
 
         // **And the lifetime figures are written now, because this is the instant they stop moving.** A
         // hit and an out are only counted while the phase is `Playing`, so a round end is the boundary a
@@ -1331,6 +1363,47 @@ export class RoundService implements OnStart {
         this.publishScores();
 
         print(`[Round] ${result}`);
+    }
+
+    /**
+     * **The ten seconds the arena is left to the players, and the two things that end it.**
+     *
+     * Awaited by `gameLoop` between the round and the lobby transition, and the only asynchronous part of a
+     * round's tail — `finishRound` is deliberately synchronous and says so. What runs here is the *timer*; what
+     * the window *is* was decided in `finishRound` when it published `CELEBRATING_ATTRIBUTE`, and what the
+     * window is worth was paid by `EconomyService.onRoundEnded` a moment before that. This is the count, and
+     * then the two clears.
+     *
+     * **Both clears happen here rather than at the next round boundary, and they are two different
+     * attributes for two different reasons:**
+     *
+     * - `CELEBRATING_ATTRIBUTE` is the arena's lock, so it has to come off before the move rather than after
+     *   it — a flag left standing would still be refusing throws and sparing health through the intermission
+     *   and the round after it. This is the *only* clear for it, and it is why `finishRound` cannot be the
+     *   one that stops it: a synchronous method cannot wait.
+     * - `ROUND_EARNED_COINS_ATTRIBUTE` is the client's one-shot notification, so the clear is what makes the
+     *   *next* round's payout a change. Two rounds paying the same number is ordinary, an attribute written
+     *   to the value it already holds fires no signal, and the symptom would be a reward toast that appears
+     *   after one round and not the next — which reads as the economy failing rather than as an attribute
+     *   that did not move.
+     *
+     * **The toast outlives the clear, and it should.** The client holds it for `CELEBRATION_SECONDS` of its
+     * own, from the change signal; thirty seconds of countdown honesty would have been gained by publishing
+     * the number at the *end* of the window instead, and what that costs is the thing the window exists for —
+     * a player reading their reward while it is still the round's news.
+     *
+     * **Nothing here freezes, teleports or damages anybody**, which is the acceptance test in one sentence:
+     * movement is untouched by this boundary and always has been, and the three things that are not movement
+     * are refused by the attribute this clears.
+     */
+    private async holdCelebration(): Promise<void> {
+        task.wait(ARENA_CONFIG.CELEBRATION_SECONDS);
+
+        this.statusFolder.SetAttribute(CELEBRATING_ATTRIBUTE, undefined);
+
+        for (const player of Players.GetPlayers()) {
+            player.SetAttribute(ROUND_EARNED_COINS_ATTRIBUTE, undefined);
+        }
     }
 
     /**
@@ -1913,6 +1986,17 @@ export class RoundService implements OnStart {
         const dying = player.Character;
         if (dying) this.freezes.unfreeze(dying);
 
+        // **And the arena spot that body claimed, because a claim is keyed on the body and this body is
+        // finished.** It sits beside the unfreeze for the same reason: both are about the model on the
+        // stack rather than about the round, and both would be reached too late if they waited for the
+        // mode's decision. That is what makes this the release that covers every death — an elimination
+        // (which releases again through `eliminate`, harmlessly) and, the case that needs it, a mode that
+        // *converts* its dead instead: Dodge and Seek brings the player back on a **new character**, so
+        // without this line the old character's part stays reserved for the rest of the round with no
+        // instance left to name it by. Above the guards deliberately — a dead body holds nothing a round
+        // wants, in a round or not. See `services/round/arenaSpawns.ts`.
+        if (dying) releaseArenaSpawn(dying);
+
         // A death in the lobby is not an elimination, so nothing is written outside a round — **but a body is
         // still owed, and it used to be the engine's.** With `CharacterAutoLoads` off (see `main.server.ts`)
         // nothing brings one back but this project, so the load happens before the return rather than not at
@@ -2099,6 +2183,14 @@ export class RoundService implements OnStart {
      */
     private eliminate(player: Player): void {
         this.activePlayers.delete(player);
+
+        // **And the arena spot they were given, on the same line as the membership**, because the two are
+        // one fact: a claim is a reservation for a body in the round, so a body out of the round holds a
+        // part nobody else can use. This is the release for the two exits that are not deaths — a
+        // surrender and an AFK return — and a death inside a round has already released in `handleDeath`,
+        // where the body is unambiguous; deleting a second time is a no-op rather than a second fact.
+        const leaving = player.Character;
+        if (leaving) releaseArenaSpawn(leaving);
 
         // **The client's copy of the same fact, cleared at the one place a live round loses a body.**
         // `TEAM_ATTRIBUTE` deliberately stays — `teams` keeps the entry so `rosterOutcome` still counts a
@@ -2894,9 +2986,17 @@ export class RoundService implements OnStart {
      *
      * **The lobby is a folder of parts inside the arena now, which is the shape a side's spawns already
      * had.** `LobbySpawns` is looked for with `findFolder` rather than pinned by name, only direct
-     * `BasePart` children count, and the pick is `math.random` over however many there are — exactly
-     * `getRandomTeamSpawn`, one level simpler because a lobby has no sides. It used to find a single part
-     * called `LobbySpawn` anywhere in `Workspace`, which was one place to stand for a whole lobby.
+     * `BasePart` children count, and the pick is `randomSpawn` over however many there are — exactly what
+     * a *rig* gets from `arenaSpawnFor`, one level simpler because a lobby has no sides and claims
+     * nothing. It used to find a single part called `LobbySpawn` anywhere in `Workspace`, which was one
+     * place to stand for a whole lobby.
+     *
+     * **The lobby draw did not gain the arena's ordering, and that is not an oversight.** A side's spawns
+     * are sorted towards the ball spawners because where a round *starts* decides how much of it a player
+     * spends walking; a lobby is where people wait, and the intermission's length is the same wherever
+     * they are standing. Nor does a lobby spawn claim anything: everybody is moved to the lobby together
+     * and walks apart on their own, so two bodies sharing a spot there is not the fault the arena's
+     * claims exist for.
      *
      * **What the old version taught is why the new one is shaped this way, and both lessons still
      * apply.** A lookup by name alone answers with the first instance *of that name whatever it is*, so
@@ -2911,7 +3011,7 @@ export class RoundService implements OnStart {
      * intermission while the answer is no, and {@link describeLobbyCandidates} is the one place that says
      * which of the three it was — so there is no second copy of that sentence to keep in step.
      *
-     * **Nothing is cached and the draw is per call**, for the reason `getRandomTeamSpawn` gives: the parts
+     * **Nothing is cached and the draw is per call**, for the reason `requiredTeamSpawns` gives: the parts
      * are one Studio edit away from being replaced, so a list held here would be the last intermission's,
      * and two players moved in the same frame should not land on each other.
      *
@@ -2933,10 +3033,9 @@ export class RoundService implements OnStart {
             print(`[Round] lobby spawns resolved — ${folder.GetFullName()}, ${parts.size()} candidates`);
         }
 
-        // The same lift `getRandomTeamSpawn` uses, and for the same reason: a body pivoted onto the floor
-        // it is standing on arrives half inside it, so every spawn is a place to stand rather than a place
-        // to intersect.
-        return parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
+        // The same lift everything else uses — see `liftOf`, which is where the three studs and the reason
+        // are written.
+        return randomSpawn(parts);
     }
 
     /**
@@ -2967,9 +3066,8 @@ export class RoundService implements OnStart {
         const parts = lobbySpawnPartsFor(arena, team);
         if (parts.size() === 0) return this.lobbySpawn();
 
-        // The same three-stud lift `lobbySpawn` and `getRandomTeamSpawn` use, and for the same reason:
-        // a body placed at the `CFrame` of the floor it stands on arrives half inside it.
-        return parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
+        // The same `randomSpawn` `lobbySpawn` ends with — one lift, one draw, one place each is written.
+        return randomSpawn(parts);
     }
 
     /**
@@ -3057,10 +3155,12 @@ export class RoundService implements OnStart {
     }
 
     /**
-     * The arena spawn for `participant`'s side — one of that side's spawn parts, picked at random.
+     * The arena spawn for `participant`'s side: **the nearest part to the balls that no other body holds,
+     * for a player and a rig alike.** See {@link teleportTeamsToArena} for what the caller then does with
+     * the answer — a character is moved by `PivotTo`, a rig by its root part.
      *
-     * **The one place the side-to-spawn mapping lives**, so a round's opening teleport and a
-     * respawn mid-round cannot send the same player to different ends of the arena. A participant
+     * **The one place the side-to-spawn mapping lives**, so a round's opening teleport, a mid-round
+     * admission and a respawn cannot send the same body to different ends of the arena. A participant
      * with no side — a player who joined while a round was already under way — is treated as
      * A's, here and at the round start alike; for a player that is not in `activePlayers`, so this is
      * the only moment it ever matters for them, and for a rig the case cannot arise at all: holding a
@@ -3069,37 +3169,76 @@ export class RoundService implements OnStart {
      * **It takes a participant rather than a player, and that is the whole of how a rig is spawned.**
      * The side comes from {@link teamOf}, which answers for both kinds of body, so one rule serves the
      * opening teleport, a player's respawn and a rig's placement — and a rig and a player on the same
-     * side land among the same parts by construction rather than by two lookups that agree. What the
-     * caller then does with the answer differs, and that difference stays in the caller: a character is
-     * moved by `PivotTo`, a rig by its root part. See {@link teleportTeamsToArena}.
+     * side land among the same parts by construction rather than by two lookups that agree.
      *
-     * **The pick is made here rather than at either call site**, which is what makes a respawn land
-     * as spread out as the opening whistle: both go through this method, so there is no second place
-     * for the two to disagree — the same reason the side mapping is here. It follows that the draw
-     * is per *call*, so a returning player is not sent back to the spot they died on.
+     * **A participant is not a player, and one of the three player call sites proves it.**
+     * `admitWithCover` hands this a *character* rather than the `Player` behind it, because a character
+     * is what it has in hand and what it pivots; the round start and the respawn hand it the `Player`.
+     * Resolving both forms to one thing is what the *body* is for: a character is a `Model`, a rig is a
+     * `Model`, and {@link claimArenaSpawn} is keyed on exactly that — so no form needs a lookup back to a
+     * `Player`, and a rig needs no special case at all. Both of the tests that suggest themselves here
+     * are wrong in the same direction: `Players.GetPlayerFromCharacter` answers `undefined` for a rig,
+     * and `participant.IsA("Player")` answers false for a character, so either one would send a real body
+     * down a "nobody" path. There is no test, deliberately — **the body is the unit.**
+     *
+     * **A rig claims a spot exactly as a player does, and that is a correction of the first version.**
+     * That version claimed for players only, on the argument that a rig is a body the server placed and
+     * its spot means nothing to it. The argument is wrong about what a rig *is*: it is a placeholder for a
+     * player, so four of them on one side are four bodies arriving in one pile — the exact fault the
+     * claims exist for, and just as visible as it is with four people. A rig that draws its own part also
+     * fills the arena from the ball spawners outwards, which is the point of the ordering; the first
+     * version's rigs landed wherever the dice said, so a round could open with every rig in the corners
+     * and every player in the middle.
+     *
+     * **A body's old claim is released before a new one is taken**, inside `claimArenaSpawn`. A
+     * Dodge-and-Seek death is the case that makes it necessary: that mode converts its dead and puts them
+     * back into the round, so the same *player* comes through here twice — but on a **new character**, so
+     * the two claims are two keys and the second can never be found by the first's identity. The round's
+     * release in `handleDeath` is the other half of that; `services/round/arenaSpawns.ts` names all three
+     * release sites in one place.
+     *
+     * **No reclaim of the old spot, which is a decision rather than an omission.** A returning body takes
+     * the nearest spot still free, so the places closest to the balls keep being held by whatever is
+     * alive: parking a corpse's part until the corpse comes back would leave the front row half empty for
+     * the length of the respawn delay, and the body it was held for would arrive to find the fight had
+     * moved on.
+     *
+     * **The pick is made here rather than at any call site**, which is what makes a respawn land on the
+     * same terms as the opening whistle: every one of them goes through this method, so there is no
+     * second place for the two to disagree — the same reason the side mapping is here. `RespawnBehavior`
+     * is the one mover that cannot reach this method, and it reaches the same claim through
+     * `arenaSpawnForRig` rather than through a second copy of the rule.
      */
     private arenaSpawnFor(participant: RoundParticipant): CFrame {
-        const team = this.teamOf(participant);
+        const team = this.teamOf(participant) === TEAM_B ? TEAM_B : TEAM_A;
+        const parts = this.requiredTeamSpawns(findArena(), team);
 
-        return this.getRandomTeamSpawn(findArena(), team === TEAM_B ? TEAM_B : TEAM_A);
+        // **The body, which is the thing that holds a claim**: a character for a player — whether this was
+        // handed the `Player` or the character itself — and the rig itself for a rig. A player with no
+        // character yet is the one case with no body to key on, and it draws rather than reserving a part
+        // for a `Model` that does not exist.
+        const body = participant.IsA("Player") ? participant.Character : participant;
+        if (body === undefined) return randomSpawn(parts);
+
+        return claimArenaSpawn(body, team, parts);
     }
 
     /**
-     * One of `team`'s spawn parts, picked uniformly at random.
+     * `team`'s spawn parts, or an error. **The lookup and its enforcement; the choice is the caller's.**
      *
      * **A folder of parts inside the permanent arena**, one per place a player may stand, rather than
      * a spread around a point. A spread could not know how big the platform underneath it was, so it
      * could walk people off the edge — and the answer to that would have been a radius small enough
      * to defeat the point. A part is a spot somebody has looked at and decided is a fine place to
-     * begin; the randomness is then only *which* of those spots, a choice with no geometry in it.
+     * begin; what is then chosen from them is a question about people, which is {@link arenaSpawnFor}'s.
      *
      * **The arena is asked for its spawns at the moment they are needed, and the answer is not kept.**
      * Nothing caches the parts or the folder: the arena is a permanent part of the world, so a
      * reference into it would not go stale the way one into a destroyed map would — but the parts
      * inside it are one Studio edit away from being replaced, and a cached list would be the last
      * round's spawns. It is also why the arena arrives as an argument rather than being looked up
-     * here: this is reached both by a respawn and by the opening teleport, and both want the arena as
-     * it is *now*.
+     * here: this is reached by an admission, a respawn and the opening teleport alike, and all three
+     * want the arena as it is *now*.
      *
      * **Every failure here is an error, and that is the enforcement.** These are only reachable if the
      * round boundary's own check was skipped — no arena at all, or an arena with no spawns on a side —
@@ -3110,8 +3249,17 @@ export class RoundService implements OnStart {
      * Only **direct** `BasePart` children count. A `Model` full of parts is not a spawn and is
      * skipped rather than searched, so there is one rule about what a spawn is and the errors above
      * describe it exactly.
+     *
+     * **What this no longer does is draw.** It was `getRandomTeamSpawn` and ended in a `math.random`
+     * over the parts; the choice now lives in `services/round/arenaSpawns.ts`, which is where the
+     * ordering and the claim are — `claimArenaSpawn` takes these parts and answers with a `CFrame`. It
+     * moved out of this class because `RespawnBehavior` rebuilds a dead rig and cannot reach a service
+     * (see that module's doc), and a rule with one caller in the round and one outside it belongs where
+     * both can reach it. **The two errors stay here**, because they are the round's enforcement and they
+     * are the same two questions for every caller: this is what turns "the arena is half built" into a
+     * sentence before a round opens, which is not a rig's business to know.
      */
-    private getRandomTeamSpawn(arena: Instance | undefined, team: TeamLabel): CFrame {
+    private requiredTeamSpawns(arena: Instance | undefined, team: TeamLabel): BasePart[] {
         if (arena === undefined) {
             error(`[Round] no "${ARENA_CONFIG.ARENA_NAME}" in Workspace — cannot resolve team ${team} spawns`);
         }
@@ -3126,7 +3274,7 @@ export class RoundService implements OnStart {
             error(`[Round] no spawn parts at ${arena.Name}.${ARENA_CONFIG.ARENA_SPAWNS_FOLDER}.${teamFolderName(team)}`);
         }
 
-        return parts[math.random(0, parts.size() - 1)].CFrame.add(new Vector3(0, 3, 0));
+        return parts;
     }
 
     /**
@@ -3565,6 +3713,20 @@ export class RoundService implements OnStart {
             // and the two halves want opposite things: the wait can hold for as long as the lobby is
             // missing, so it has to happen with the screens clear, while the move has to happen with them
             // covered. Finding the lobby first gives both. See `transitionAround`.
+            // **The celebration, before the lobby is even looked for.** The order is the whole point: this is
+            // the only window in which the players are still standing in the arena they just played in, so it
+            // has to happen before the move — and before `waitForLobby` rather than after it, because that can
+            // hold indefinitely and a celebration on the far side of it would be ten seconds spent looking at
+            // a round result that the missing lobby has nothing to do with.
+            //
+            // **`finished` is the test, and it is what distinguishes this intermission from the first one.** A
+            // server's very first turn of this loop is an intermission with no round behind it, which
+            // `finishRound` never ran for — so without this guard every server boot would celebrate nothing for
+            // ten seconds before its first match. The flag is exactly "a round finished since the last round
+            // started": set in `finishRound`, cleared at the round boundary below, which is the lifetime its own
+            // comment claims for it.
+            if (this.finished) await this.holdCelebration();
+
             const lobby = await this.waitForLobby();
 
             // **No hold at this boundary**, and the absence is the point: the round is over, so there is
@@ -3872,7 +4034,7 @@ export class RoundService implements OnStart {
             // **A round whose arena cannot host it does not start.**
             //
             // This check exists because of what happens without it, which is worth spelling out
-            // because it is not obvious from the code below: `getRandomTeamSpawn` raises when there is
+            // because it is not obvious from the code below: `requiredTeamSpawns` raises when there is
             // no arena, or when a side's spawn folder is missing or empty, which is the right thing for
             // *it* to do — but it is called from inside this loop, and `gameLoop` is an `async`
             // function. roblox-ts turns that into a promise, and a throw inside it rejects the promise
@@ -4105,6 +4267,14 @@ export class RoundService implements OnStart {
             // what that round decided, so clearing at the intermission's own start would wipe
             // every winner a frame after it was set.
             this.statusFolder.SetAttribute(ROUND_WINNER_ATTRIBUTE, "");
+
+            // **And the celebration's own lock, cleared here as the backstop rather than as the rule.** The rule
+            // is `holdCelebration`, which clears it when the ten seconds are up; this line covers the round that
+            // was never celebrated — a loop restarted by a dev command, a server that came back to `Playing`
+            // without passing through an intermission — so that no path into a `Playing` phase can leave a throw
+            // refused by a window nobody is inside. It is the same belt the winner's clear above is, one line
+            // above it, for the same reason.
+            this.statusFolder.SetAttribute(CELEBRATING_ATTRIBUTE, undefined);
 
             // **The move goes inside the transition, and the hold begins where the players land.** The phase
             // and its clock are published first — that is what the HUD reads, and it is what names the round —

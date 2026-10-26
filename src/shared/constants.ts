@@ -67,10 +67,13 @@ export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
  * itself through the wall would be the lie `CHARACTER_BARRIER_TAG` exists to prevent in the other direction. That is
  * the opposite of the midline wall's `CanQuery = false`, and correct for the opposite reason.
  *
- * **A wall thinner than a fast ball's travel per frame cannot stop it, and that is the one limit the tag cannot
- * lift.** Roblox does not sweep a collision between frames: at `THROW_MAX_SPEED` a ball covers ~3.3 studs per frame,
- * so a 1-stud wall is passed through without the two ever overlapping. `dressBallWall` warns with the thickness it
- * recommends; **the fix is a thicker part, not a smarter script.**
+ * **A wall thinner than a fast ball's travel per frame cannot stop it, and the tag now lifts that limit instead of
+ * reporting it.** Roblox does not sweep a collision between frames: at `THROW_MAX_SPEED` a ball covers ~3.3 studs per
+ * frame, so a 1- or 2-stud wall is passed through without the two ever overlapping. `CollisionGroups.thickenBallWall`
+ * grows the part along its thinnest axis to `ceil(THROW_MAX_SPEED / 60) + 1` studs — five today — centred where the
+ * part already was, and warns naming both numbers. **A thicker part is still the fix; the difference is that the tag
+ * makes it rather than asking.** It was a warning for one pass, and that pass cost a round-trip: the user was told to
+ * go and edit a size in Studio and reported the same fault back.
  *
  * **It is not `CanCollide = true` alone that keeps a player out, and the collision group is what does it.** The
  * wall is `CanCollide = true` and yet a body walks through, because `collision/CollisionGroups.ts` puts these
@@ -83,7 +86,10 @@ export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
  * pair with this wall is non-collidable by group, so no contact happens at all — the first version hung the rule on
  * the wall's `Touched` and that is why *"nothing happens when I tag a part"* was reported. `BallService.pumpBallWalls`
  * asks where the ball is instead. **Two mechanisms because a loose ball is a body and a held ball is not**: a query
- * cannot catch a ball crossing a thin wall between frames, and a solver cannot see a welded one.
+ * cannot catch a ball crossing a thin wall between frames, and a solver cannot see a welded one. **That is why the
+ * thickness matters and the sweep is not a substitute for it** — the sweep answers "is a held ball inside the wall",
+ * which is a question about a body that is always somewhere; the bounce is the engine's and the engine needs the two
+ * to actually overlap.
  */
 export const BALL_BARRIER_TAG = "BallBarrier";
 
@@ -603,6 +609,25 @@ export const ROUND_TIME_ATTRIBUTE = "TimeRemaining";
 export const ROUND_WINNER_ATTRIBUTE = "Winner";
 
 /**
+ * Attribute on {@link ROUND_STATUS_FOLDER}: **the round is over and its result is being held for a moment.**
+ *
+ * A boolean, written by `RoundService.finishRound` and cleared when `ARENA_CONFIG.CELEBRATION_SECONDS` has
+ * elapsed. Between the two, players are still standing in the arena and can walk and jump — and nothing else
+ * is allowed to happen: no throw leaves a hand, no catch opens, and a ball that lands does no damage. See
+ * `roundCelebrating` in `server/services/round/roundStatus.ts`, which is the one reader, and
+ * `ARENA_CONFIG.CELEBRATION_SECONDS` for why the window exists at all.
+ *
+ * **A separate attribute rather than a fourth phase name**, which is the shape this was first written as and
+ * the one that costs more than it buys. The phase already says `Intermission` while this is true — which is
+ * what stops the rigs fighting, the spawners stocking and the powers arming, all without a line of code —
+ * so a `Celebrating` phase would have had to be taught to every one of those eight `=== "Playing"` readers as
+ * a second accepted value, and a phase the rest of the game has never heard of is a word that means nothing
+ * to anybody who reads it. What this adds is the three refusals the phase cannot express, and it adds them
+ * only where they belong.
+ */
+export const CELEBRATING_ATTRIBUTE = "Celebrating";
+
+/**
  * Attributes on the **`RoundStatus` folder** holding each side's points, as numbers.
  *
  * **The one thing about a Score Rush round the client was never told.** `RoundService.scores` has been a
@@ -1108,6 +1133,26 @@ export const BADGES_ATTRIBUTE = "Badges";
  * the raw value cannot draw a debt that does not exist.
  */
 export const COINS_ATTRIBUTE = "Coins";
+
+/**
+ * Attribute on a **`Player`** holding how many coins the round that has just ended paid *them*, as a number.
+ *
+ * **The delta, not the balance** — `COINS_ATTRIBUTE` is the ledger and this is one round's line in it.
+ * `EconomyService.onRoundEnded` writes both from the same local `coins` value, so the two cannot disagree
+ * about what was earned; nothing else writes this, and nothing reads `COINS_ATTRIBUTE` to derive it (a
+ * difference of two balances would also swallow every purchase made between rounds).
+ *
+ * **An attribute rather than a return value or a remote**, for `COINS_ATTRIBUTE`'s reason: it replicates on
+ * its own, so the client's reward toast needs nothing to ask and nothing to wait for. A return from
+ * `onRoundEnded` was the obvious alternative and it does not survive the caller — `RoundService.finishRound`
+ * has no clipboard and no business holding one per player for ten seconds while a toast draws.
+ *
+ * **The change signal *is* the "you were paid" edge**, which is why the value is cleared at the end of
+ * `ARENA_CONFIG.CELEBRATION_SECONDS` rather than left standing. Two rounds paying the same amount is an
+ * ordinary Tuesday, and an attribute written to the value it already holds fires no signal — so without the
+ * clear the second toast would simply not exist, and the bug would look like the *round* failing to pay.
+ */
+export const ROUND_EARNED_COINS_ATTRIBUTE = "RoundEarnedCoins";
 
 /**
  * Attribute on a **`Player`** holding everything they own that affects gameplay, as one `|`-joined string.

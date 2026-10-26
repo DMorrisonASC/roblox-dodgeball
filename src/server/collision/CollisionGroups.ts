@@ -743,10 +743,15 @@ function assignBallWall(part: BasePart): void {
  *   one.
  * - **`CanQuery = true`** — the aim arc stops at a wall a throw would bounce off. That is the wall's contract, and a
  *   `CanQuery = false` barrier draws a preview that lies.
+ * - **And `Size`, on the thinnest axis** — see {@link thickenBallWall}, which is the fifth and the one this function
+ *   used to refuse. A wall thinner than a ball's own step is a wall the engine never sees the ball touch, and the
+ *   refusal to grow it cost a round-trip: the warning below told the user to go and edit a part in Studio, twice,
+ *   which is the answer this project keeps rejecting for everything else. The tag owns the flags; it may as well own
+ *   the one number that makes them mean anything.
  *
- * **What is deliberately not forced: `Size`.** A wall's dimensions are geometry and a script has no business
- * changing them — see {@link reportBallWallThickness} for the one number that *does* matter, which is reported
- * rather than corrected because the correction would be inventing a wall.
+ * **Every correction is reported and none is silent**, which is the whole of why five forced properties are
+ * acceptable where one would not be: a part that was set up right says nothing, and a part that was not says exactly
+ * what was wrong with it. Nobody is left wondering why their wall is not the size they painted.
  */
 function dressBallWall(part: BasePart): void {
 	const corrected = new Array<string>();
@@ -770,39 +775,68 @@ function dressBallWall(part: BasePart): void {
 		);
 	}
 
-	reportBallWallThickness(part);
+	thickenBallWall(part);
 }
 
 /**
- * **Warns when a ball wall is thin enough for a fast throw to pass through it in a single frame — which is the other
- * half of "I can still throw across it", and the half no script can fix.**
+ * **Grows a ball wall along its thinnest axis until a ball cannot step over it, and says so when it had to.**
  *
  * **Roblox does not sweep a part's collision between frames.** A ball moves `speed / 60` studs every frame, and if
  * that is longer than the wall is thick the ball is on one side and then the other with no overlap in between — the
  * engine never sees them touch, so nothing bounces. At `THROW_MAX_SPEED` (200) that is **3.3 studs per frame**, and a
- * wall painted 1 stud thick is a wall a full-charge throw goes straight through while a lob bounces off it, which
- * reads as the wall being unreliable rather than as it being thin.
+ * wall painted 1 or 2 studs thick is a wall a full-charge throw goes straight through while a lob bounces off it,
+ * which reads as the wall being unreliable rather than as it being thin.
  *
- * **Reported rather than corrected, because the correction would be inventing geometry.** Growing the part to a
- * safe thickness would move its faces into the room it was placed to seal, and the same number would be wrong for a
- * wall somebody *wanted* thin because it only has to stop a lob. **A thicker wall is the fix**, and the number is in
- * the line so the decision can be made in one pass instead of three.
+ * **This used to be a warning and nothing more, and that was the wrong call.** The argument was that growing the part
+ * "would be inventing a wall" — the same argument that says a script should not move a face a person placed. What it
+ * actually did was leave the *reported* fix in Studio, where the user had to find a part, read a number out of the
+ * output and type it in, twice, on a wall that was otherwise configured correctly. **The tag now owns the size for
+ * exactly the reason it owns the four flags**: it is a silent, one-property failure with a mechanical fix, and the
+ * person who tagged the part has already said what they wanted it to do.
  *
- * **The smallest dimension, and the diagonal is deliberately not the unit.** A ball crossing a wall at an angle
- * travels a little further inside it, but the useful figure is the one a builder can act on — *make it thicker than
- * this* — and the thinnest axis is what a throw aimed squarely at the wall has to cross.
+ * **The number is derived rather than tunable, and that is deliberate.** It is
+ * `ceil(THROW_MAX_SPEED / 60) + 1` — one whole frame of travel, rounded up, plus a stud of margin — so raising the
+ * throw speed raises this with it and there is no second constant to keep in step. A literal here would be a number
+ * that silently stops being safe the day somebody tunes a throw.
+ *
+ * **Symmetric about the centre, because there is no honest way to grow it asymmetrically.** "Outward" would mean
+ * knowing which side of the wall is the room it was placed to seal, and nothing on a tagged part says that. Growing
+ * both faces by the same amount keeps the part exactly where it was put and states the cost: half the added thickness
+ * on each side, which for the two-to-five correction the log reported is a stud and a half per face.
+ *
+ * **The thinnest axis, and the diagonal is deliberately not the unit.** A ball crossing at an angle travels a little
+ * further inside the wall, but the axis a throw aimed squarely at it has to cross is the thinnest one, and that is
+ * the figure that decides whether the collision is ever registered.
+ *
+ * **The floors and ceilings of it, named.** A barrier someone paints flat — thin in `Y` — gets thicker *upwards and
+ * downwards* rather than wider, which is what its own geometry says it is; a wall that has to stop a ball is still a
+ * wall that has to be thicker than a ball's step, and no axis is a special case. Nothing here moves the part, changes
+ * its orientation, or touches an axis that is already thick enough.
  */
-function reportBallWallThickness(part: BasePart): void {
-	const perFrame = BALL_CONFIG.THROW_MAX_SPEED / 60;
-	const thinnest = math.min(part.Size.X, math.min(part.Size.Y, part.Size.Z));
+function thickenBallWall(part: BasePart): void {
+	const safe = math.ceil(BALL_CONFIG.THROW_MAX_SPEED / 60) + 1;
+	const size = part.Size;
 
-	if (thinnest >= perFrame) return;
+	const thinnest = math.min(size.X, math.min(size.Y, size.Z));
+	if (thinnest >= safe) return;
+
+	// One axis grows and the other two are written back untouched, which is cheaper to read than a branch per axis.
+	const grown =
+		size.X === thinnest
+			? new Vector3(safe, size.Y, size.Z)
+			: size.Y === thinnest
+				? new Vector3(size.X, safe, size.Z)
+				: new Vector3(size.X, size.Y, safe);
+
+	part.Size = grown;
+
+	const perFace = (safe - thinnest) / 2;
 
 	warn(
-		`[Collision] ball wall "${part.GetFullName()}" is ${string.format("%.2f", thinnest)} studs thick on its ` +
-			`thinnest axis, and a ball at THROW_MAX_SPEED covers ${string.format("%.2f", perFrame)} studs a frame — ` +
-			`a fast throw can pass through it without ever overlapping. Make the part at least ` +
-			`${string.format("%.1f", math.ceil(perFrame) + 1)} studs thick on that axis; no rule here can make the ` +
-			`engine sweep a collision it never sees.`,
+		`[Collision] ball wall "${part.GetFullName()}" was ${string.format("%.2f", thinnest)} studs thick on its ` +
+			`thinnest axis — thinner than a ball's own step, so a fast throw passed through it without ever ` +
+			`overlapping. Grown to ${string.format("%.1f", safe)} studs on that axis: ` +
+			`${string.format("%.2f", perFace)} studs into each face, centred where the part already was. ` +
+			`The tag owns this; see BALL_BARRIER_TAG.`,
 	);
 }

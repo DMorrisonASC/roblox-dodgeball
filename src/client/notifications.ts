@@ -47,7 +47,16 @@ const TOAST_GAP = 4;
 /** **How many toasts may be up at once.** The fourth push destroys the oldest rather than growing the stack. */
 const MAX_VISIBLE = 3;
 
-/** How long a toast is readable before it starts to go, in seconds. */
+/**
+ * How long a toast is readable before it starts to go, in seconds — **the default, not the rule.**
+ *
+ * A notification is an aside: the camera was unlocked, the player walked off to answer the door. Three seconds
+ * is a glance. **A toast whose whole purpose is to be *read* says so and passes its own hold** — the round's
+ * reward is the one that does, because it is the only toast that lands in a window built for reading it
+ * (`ARENA_CONFIG.CELEBRATION_SECONDS`, which the caller is the one that knows). The alternative was a second
+ * constant here for a duration this file has no opinion about, and two numbers to keep in step with a config
+ * value neither of them owns.
+ */
 const HOLD_SECONDS = 3;
 
 /** How long the fade in and the fade out each take, in seconds. */
@@ -85,14 +94,21 @@ const showing = new Array<Toast>();
 let nextOrder = 1;
 
 /**
- * **Pushes one message onto the stack.** The whole API: text in, a toast appears, and three seconds later it takes
- * itself away.
+ * **Pushes one message onto the stack.** The whole API: text in, a toast appears, and {@link HOLD_SECONDS} later it
+ * takes itself away — or after `holdSeconds`, for the caller that has a window of its own to fill.
  *
  * **Called by whoever has something to say, and it decides nothing for them.** There is no queue, no priority and no
  * dedupe: a caller that pushes the same sentence twice gets two toasts, because "the camera was unlocked" is a thing
  * that can happen twice and the player's evidence for it is two separate arrivals.
+ *
+ * **`holdSeconds` is a parameter at all because of one caller and one reason worth writing down.** The round's reward
+ * lands in `ARENA_CONFIG.CELEBRATION_SECONDS` of held arena with nothing being thrown at anybody — a window that
+ * exists to be read — while every other notification in the game is a glance at something that already happened.
+ * Encoding "ten seconds" here would be this file owning half of a round constant, so the caller that knows the window
+ * passes it and this file keeps a default for the glances. `MAX_VISIBLE` still trims from the oldest end, so a
+ * long-held toast can be pushed off by three quick ones; that is the cap doing its job rather than a case to defend.
  */
-export function pushNotification(text: string): void {
+export function pushNotification(text: string, holdSeconds: number = HOLD_SECONDS): void {
 	const frame = ensureStack();
 	if (frame === undefined) return;
 
@@ -131,7 +147,7 @@ export function pushNotification(text: string): void {
 
 	fade(toast, 0, glowTransparency, FADE_SECONDS);
 
-	task.delay(HOLD_SECONDS, () => retire(toast));
+	task.delay(holdSeconds, () => retire(toast));
 }
 
 /**

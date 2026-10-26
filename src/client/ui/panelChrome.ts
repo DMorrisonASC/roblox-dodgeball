@@ -14,9 +14,9 @@ import { addViewportConstraint } from "./viewportConstraint";
  * and the inventory are the same panel with different contents, and every number that makes them the
  * same — the corner radius, how far a band insets its contents, how tall a name bar is, how a grid
  * derives its cell size — has to be *the same number* in both or the two drift. That is the argument
- * `hudToast.ts` already makes for the numbers two toasts share ("One owner for the numbers two toasts
- * have to agree on. Kept here so that changing the width moves both"), and this is the same case one
- * level up.
+ * `notifications.ts` makes for the width, the gap and the cap its stack shares ("one owner for the numbers
+ * two toasts have to agree on"), and `screenGui.ts` makes for the GUI every HUD hangs from, and this is the
+ * same case one level up.
  *
  * **What this deliberately is not: a panel framework.** There is no panel type, no options object, no
  * registry and no interface with one implementation — there are nine builders that each do exactly
