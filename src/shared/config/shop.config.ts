@@ -180,6 +180,18 @@ export const SHOP_CONFIG = {
     PANEL_SIZE: UDim2.fromScale(0.62, 0.72),
     PANEL_Z_INDEX: 10,
 
+    /**
+     * **The confirmation dialog's rung, one step above the panel it covers.**
+     *
+     * `ZIndex` is compared flattened across the `ScreenGui`, so this only has to beat `PANEL_Z_INDEX` — but it has to
+     * beat it *by being a different number*, because the two are siblings in `HudGui` and siblings at the same `ZIndex`
+     * draw in hierarchy order, which is an accident of who mounted first rather than a rule. Twenty leaves room for one
+     * more layer between them (a toast, a second dialog) without renumbering.
+     *
+     * **Placeholder** — the ladder is `PANEL_Z_INDEX`, this, and nothing else so far.
+     */
+    MODAL_Z_INDEX: 20,
+
     /** `min-width` / `max-width`: a floor so it stays usable on a phone, a ceiling so it stops
      * stretching on an ultrawide. */
     PANEL_MIN_SIZE: new Vector2(520, 360),

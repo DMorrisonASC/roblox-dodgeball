@@ -1,5 +1,5 @@
 import { OnStart, Service } from "@flamework/core";
-import { Players } from "@rbxts/services";
+import { Players, RunService } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { CATCH_CONFIG } from "shared/config/catch.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
@@ -16,6 +16,20 @@ import { DodgeService } from "./DodgeService";
 
 /** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+
+/**
+ * TEMPORARY — **the input half of the catch trace.** Set to `false`, or delete this block and its call sites, once the
+ * log has been read. See `BallComponent`'s `TRACE_CATCH` for the ball half.
+ *
+ * **Two flags rather than one shared constant**, and the reason is that the two files answer different questions: this
+ * one says whether the *press* was accepted and a window opened, that one says whether the *ball* was eligible at all.
+ * A single flag would still work — but a shared module for a temporary diagnostic is more to remove than two booleans.
+ *
+ * **What it proves, on this side.** `attemptCatch` already prints at `DEBUG` for most of its refusals, but `DEBUG` is
+ * off in every shipped file, so a real session shows nothing at all. This prints on the outcome that matters — window
+ * opened, or refused and why — so the log can be read against the ball's side without turning on a per-refresh line.
+ */
+const TRACE_CATCH = true;
 
 /**
  * How long a catch keeps the pair busy: the window, plus the lockout a dodge is refused for after
@@ -61,8 +75,7 @@ interface CatchWindow {
 }
 
 @Service()
-export class CatchService implements OnStart {
-	/**
+export class CatchService implements OnStart {	/**
 	 * Every open window, keyed on the model that is catching.
 	 *
 	 * An entry only exists while a window is open: it is spent by a catch, dropped
@@ -152,10 +165,13 @@ export class CatchService implements OnStart {
 			const character = player.Character;
 			if (!character) {
 				if (DEBUG) print(`[Catch] ${player.Name}: no character to catch with`);
+				if (TRACE_CATCH) print(`[Catch] ${player.Name}: REFUSED — no character yet`);
 				return;
 			}
 
-			this.attemptCatch(character);
+			if (!this.attemptCatch(character) && TRACE_CATCH) {
+				print(`[Catch] ${player.Name}: REFUSED — see the line above for why`);
+			}
 		});
 
 		// A window that outlives its catcher would be a catch waiting to happen on a
@@ -163,6 +179,40 @@ export class CatchService implements OnStart {
 		Players.PlayerRemoving.Connect((player) => {
 			const character = player.Character;
 			if (character) this.forget(character);
+		});
+
+		// **The eight-stud radius, and it costs one map-size check on the frames where nobody is catching.**
+		//
+		// **A single connection for the whole service rather than a loop per window.** A `task.spawn` per press would be
+		// one thread per catcher per press, each with its own `task.wait` and its own cancellation problem — and a
+		// window can be *extended* rather than reopened (`attemptCatch`'s extension branch), so a per-press loop would
+		// have to know whether it was still the live one. This loop asks the table instead: `windows` is the record of
+		// which windows are open, so an empty table is the whole of "nobody is catching" and the early return below is
+		// the entire idle cost.
+		//
+		// **It iterates the open windows rather than `Players`**, so the work scales with how many people are pressing
+		// catch rather than with how many are on the server — and it is keyed by the *model*, which is what the radius
+		// needs anyway.
+		//
+		// **The window is not closed here.** A proximity catch goes through `BallComponent.tryCatch` → `consume`, which
+		// is the same call a `Touched` catch makes, so "one ball per window" is one rule rather than two that have to
+		// agree. This loop only asks; the ball's own resolution does the rest.
+		RunService.Heartbeat.Connect(() => {
+			if (this.windows.size() === 0) return;
+
+			for (const [model] of this.windows) {
+				const root = model.FindFirstChild("HumanoidRootPart");
+				if (root === undefined || !root.IsA("BasePart")) continue;
+
+				if (this.balls.catchByProximity(model, root.Position, CATCH_CONFIG.CATCH_RADIUS_STUDS)) {
+					// TEMPORARY — remove with `TRACE_CATCH`. **Distinguishes a radius catch from a `Touched` one**, which
+					// is the question this feature will be judged on: if this never prints, the ball is not passing within
+					// eight studs and the radius is not the reason a catch did or did not happen.
+					if (TRACE_CATCH) {
+						print(`[Catch] ${model.Name}: caught by PROXIMITY — within ${CATCH_CONFIG.CATCH_RADIUS_STUDS} studs`);
+					}
+				}
+			}
 		});
 	}
 
@@ -181,6 +231,9 @@ export class CatchService implements OnStart {
 		const humanoid = resolveDodgeable(model)?.humanoid;
 		if (!humanoid || humanoid.Health <= 0) {
 			if (DEBUG) print(`[Catch] ${model.Name}: no living humanoid to catch with`);
+			// TEMPORARY — remove with `TRACE_CATCH`.
+			if (TRACE_CATCH) print(`[Catch] ${model.Name}: REFUSED — no living humanoid`);
+
 			return false;
 		}
 
@@ -222,6 +275,13 @@ export class CatchService implements OnStart {
 				);
 			}
 
+			// TEMPORARY — remove with `TRACE_CATCH`. **The most likely refusal on the input side for a player who
+			// has just picked a ball up**: a hand that already holds one cannot catch another, because a catch
+			// replaces the ball in the hand rather than joining it.
+			if (TRACE_CATCH) {
+				print(`[Catch] ${model.Name}: REFUSED — a ball is already in hand (${held.Name})`);
+			}
+
 			return false;
 		}
 
@@ -229,7 +289,14 @@ export class CatchService implements OnStart {
 		// into catching, so it holds for a dev exactly as it holds for anybody else — the dev
 		// flags move each action's own clock, and this is not one of those. See
 		// {@link lockoutElapsed}.
-		if (this.blocksCatch(model)) return false;
+		if (this.blocksCatch(model)) {
+			// TEMPORARY — remove with `TRACE_CATCH`. `blocksCatch` prints its own reason at `DEBUG`, which is off in a
+			// shipped session; this line is what makes the refusal visible. A frozen catcher, a dodge in flight and a
+			// dodge that ended a moment ago are the three ways in.
+			if (TRACE_CATCH) print(`[Catch] ${model.Name}: REFUSED — catch blocked (frozen, dodging, or just dodged)`);
+
+			return false;
+		}
 
 		// A dev testing a catch does not need good timing: with the flag on, one press
 		// is a window that stays open until a ball arrives.
@@ -250,6 +317,18 @@ export class CatchService implements OnStart {
 			const readyAt = this.catchReadyAt.get(model);
 			if (readyAt !== undefined && now < readyAt) {
 				if (DEBUG) print(`[Catch] ${model.Name}: still in the catch cycle`);
+
+				// TEMPORARY — remove with `TRACE_CATCH`. **A press inside the cycle does nothing at all**, so a player
+				// mashing catch after a bounce lands every press but the first in here and sees no window open. The
+				// remaining wait is printed because it is the number that distinguishes "just missed" from "the cycle
+				// never reset".
+				if (TRACE_CATCH) {
+					print(
+						`[Catch] ${model.Name}: REFUSED — still in the catch cycle, ` +
+							`${string.format("%.2f", readyAt - now)}s to go`,
+					);
+				}
+
 				return false;
 			}
 
@@ -308,6 +387,16 @@ export class CatchService implements OnStart {
 		};
 
 		this.windows.set(model, window);
+
+		// TEMPORARY — remove with `TRACE_CATCH`. **The line that says the input was accepted.** If this prints and the
+		// ball never follows with its own line, the window opened and no eligible ball arrived inside it — so look at
+		// what the ball was doing (`Armed`, `not in the world`, `no catch window open`) rather than at the press.
+		if (TRACE_CATCH) {
+			print(
+				`[Catch] ${model.Name}: window OPENED for ${string.format("%.2f", CATCH_CONFIG.WINDOW_SECONDS)}s` +
+					` — waiting for a ball to touch`,
+			);
+		}
 
 		// **And the window itself is published, which is what the two visible halves of a catch are read from.**
 		// `CATCHING_ATTRIBUTE` is a *state* rather than an event: it is up for as long as a window is open,

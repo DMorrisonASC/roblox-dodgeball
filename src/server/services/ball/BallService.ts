@@ -17,6 +17,7 @@ import {
 } from "shared/constants";
 import { NPC_TAG } from "../../npc/Behavior";
 import { insideAnyBay } from "../../npc/practiceBay";
+import { NPC_CONFIG } from "shared/config/npc.config";
 import { playSpawnPoof } from "../../vfx/spawnPoof";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { throwAnimationWindowSeconds } from "shared/animation";
@@ -50,6 +51,12 @@ import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
 
 const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+
+/**
+ * TEMPORARY — **the bay-despawn half of the catch trace**, kept as its own flag so it can be turned off without
+ * touching `BallComponent`'s or `CatchService`'s. Set to `false` once the log has been read.
+ */
+const TRACE_BAY_DESPAWN = true;
 
 /**
  * **The throw and catch clips are no longer played here, and this note is what stands in for the three
@@ -411,6 +418,38 @@ export class BallService implements OnStart {
 	 * the newest catch deletes its own entry when its timer fires.
 	 */
 	private readonly catchMarks = new Map<Model, number>();
+
+	/**
+	 * **How to catch each live ball, keyed on the ball — the table the eight-stud radius searches.**
+	 *
+	 * **A callback per ball rather than a lookup through Flamework.** Everything a catch needs in order to be decided
+	 * and resolved lives on `BallComponent` — whether the ball is armed, whether it is in a hand, which ability it
+	 * carries, and how to release its tags when it is taken. A `CatchService` proximity pass therefore has to reach *the
+	 * component on this ball*, and the two ways to do that are to ask Flamework for it (an instance-to-component lookup
+	 * from outside, which the project does nowhere and which ties this feature to a framework API for a table it could
+	 * own) or to let the component put its own closure here. This is the second, and it is the cheaper of the two in
+	 * every sense: `CatchService` never learns what a component is.
+	 *
+	 * **Registered in `BallComponent.onStart` and forgotten in its `Destroying` hook**, both unconditionally. The map is
+	 * keyed on the instance, so an entry left behind pins a destroyed ball in memory for the session — which is why the
+	 * forget happens before the diagnostic early-returns in that hook rather than after them.
+	 */
+	private readonly catchHandlers = new Map<BasePart, (catcher: Model) => boolean>();
+
+	/**
+	 * The server clock at which each ball was first seen outside every practice bay, for the despawn grace period.
+	 *
+	 * **A `Map` rather than an attribute on the ball, and that is the whole of the choice.** An attribute replicates to
+	 * every client, and how long a ball has been outside a bay is a fact about a rule the client does not run — the
+	 * death is the server's, and a client given a number it never reads is a number being paid for in bandwidth ten
+	 * times a second. Nothing here is observable; the ball vanishing is the only thing a player sees.
+	 *
+	 * **`os.clock` and not `Workspace:GetServerTimeNow`**, which is the one place this deliberately differs from the
+	 * idea that produced the feature. `GetServerTimeNow` exists because a deadline crossing the wire needs a clock both
+	 * machines share; this deadline never leaves the server, and the sweep it lives in already runs on `os.clock`. Two
+	 * clocks in one function is how one of them ends up compared against the other.
+	 */
+	private readonly leftBayAt = new Map<BasePart, number>();
 
 	constructor(
 		private readonly factory: BallFactory,
@@ -2650,6 +2689,54 @@ export class BallService implements OnStart {
 	}
 
 	/**
+	 * **Puts a live ball into the table the proximity catch searches.** Called by `BallComponent.onStart`, which is
+	 * the only thing that knows how to decide and resolve a catch for this ball. See {@link catchHandlers}.
+	 */
+	public registerCatchHandler(ball: BasePart, handler: (catcher: Model) => boolean): void {
+		this.catchHandlers.set(ball, handler);
+	}
+
+	/** Takes a destroyed ball out of that table. Called from `BallComponent`'s `Destroying` hook, unconditionally. */
+	public forgetCatchHandler(ball: BasePart): void {
+		this.catchHandlers.delete(ball);
+	}
+
+	/**
+	 * **Catches the nearest catchable ball within `maxStuds` of `centre`, and answers whether one was taken.**
+	 *
+	 * **The second way to catch, and it is additive rather than a replacement.** Touching the ball still catches it,
+	 * through `handleTouch`; this is for the ball that passes close without quite reaching the body — the common shape
+	 * of a rebound coming back at the thrower. See `CATCH_CONFIG.CATCH_RADIUS_STUDS` for the distance and why it exists.
+	 *
+	 * **The filter is distance first and eligibility second, and the order is the cost.** `Magnitude` on a `Vector3` is
+	 * cheap and deciding a catch is not — it reads an attribute, asks three services and can attach a ball. So a ball
+	 * outside the radius is rejected before anything asks whether it *could* be caught.
+	 *
+	 * **Every candidate goes through the component's own handler**, so nothing here can widen what is catchable: a
+	 * Pierce ball, a Freeze ball, a ball in a hand and a ball that is not armed are all refused at eight studs exactly
+	 * as they are at zero. And a handler that refuses **changes nothing** — that contract is what makes it safe to try
+	 * each ball in turn until one is taken.
+	 *
+	 * **The loop stops at the first catch, and `consume` has already closed the window by then**, so "one ball per
+	 * window" holds across both doors: a proximity catch cannot be followed by a `Touched` catch in the same second,
+	 * because the window is gone.
+	 *
+	 * **No sort, and the first match wins.** A catcher with two balls inside eight studs takes whichever the map
+	 * reaches first, which is insertion order — the older ball. Ordering by distance would be a second comparison per
+	 * ball to choose between two catches that are both legitimate and both equally "the ball that happened to be there".
+	 */
+	public catchByProximity(character: Model, centre: Vector3, maxStuds: number): boolean {
+		for (const [ball, handler] of this.catchHandlers) {
+			if (!ball.IsDescendantOf(Workspace)) continue;
+			if (ball.Position.sub(centre).Magnitude > maxStuds) continue;
+
+			if (handler(character)) return true;
+		}
+
+		return false;
+	}
+
+	/**
 	 * **Tells `SuperService` what power the body is holding, so the HUD's `READY` text follows the ball.**
 	 *
 	 * This service owns hands and the ball owns the mark, so this is the side of the line that can answer
@@ -2874,7 +2961,14 @@ export class BallService implements OnStart {
 				// Held, being carried, or out of the world: all still somebody's, none of them
 				// the floor's business. The parent is the same test a catch and a pickup both
 				// use, for the same reason.
-				if (instance.Parent !== Workspace) continue;
+				if (instance.Parent !== Workspace) {
+					// **And a ball that has left the world has left the bay timer behind** — caught, put in a hand, or
+					// parked. The map is keyed on the instance and would otherwise pin it, and a ball that comes back
+					// out of a hand starts its next flight with a fresh deadline rather than the last one's.
+					this.leftBayAt.delete(instance);
+
+					continue;
+				}
 
 				// **A drill's ball dies at the edge of the bay it was thrown in, and this is the only place that
 				// happens.** The sweep is where it belongs rather than a listener on the ball: this loop already walks
@@ -2894,11 +2988,39 @@ export class BallService implements OnStart {
 				// **The poof is the ordinary one, anchored to the ball's own CFrame**, because a ball is a `BasePart`
 				// rather than a `Model` and has no body for `playSpawnPoof` to find a torso on. Without the anchor the
 				// burst would be played at the world origin.
-				if (instance.GetAttribute(THROWN_FROM_BAY_ATTRIBUTE) === true && !insideAnyBay(instance.Position)) {
-					playSpawnPoof(undefined, instance.CFrame);
-					instance.Destroy();
+				if (instance.GetAttribute(THROWN_FROM_BAY_ATTRIBUTE) === true) {
+					// **Inside a bay the deadline is cleared, so re-entry really does save the ball.** Writing this before
+					// the destroy check rather than only where the ball is outside is what makes it a deadline rather
+					// than a lifetime: a ball that comes back and leaves again starts the five seconds over.
+					if (insideAnyBay(instance.Position)) {
+						this.leftBayAt.delete(instance);
+					} else {
+						// **The grace period, and it is here because item 76 made a drill's ball catchable.** The rule
+						// used to destroy the ball the instant it crossed the bay edge — the same tenth of a second in
+						// which a player might have been reaching for it. See `NPC_CONFIG.BAY_DESPAWN_GRACE_SECONDS`
+						// for why five seconds and `leftBayAt` for why a map rather than an attribute.
+						const leftAt = this.leftBayAt.get(instance);
 
-					continue;
+						if (leftAt === undefined) {
+							this.leftBayAt.set(instance, now);
+						} else if (now - leftAt >= NPC_CONFIG.BAY_DESPAWN_GRACE_SECONDS) {
+							// TEMPORARY — remove with `practiceBay`'s trace once the log has been read. **Still the line
+							// that proves a ball was destroyed mid-air**, now with the wait that preceded it.
+							if (TRACE_BAY_DESPAWN) {
+								print(
+									`[Catch] ${instance.Name}: DESTROYED ${string.format("%.1f", now - leftAt)}s after ` +
+										`leaving the bay — Armed ${tostring(instance.GetAttribute("Armed"))}, ` +
+										`${string.format("%.0f", instance.AssemblyLinearVelocity.Magnitude)} studs/s`,
+								);
+							}
+
+							this.leftBayAt.delete(instance);
+							playSpawnPoof(undefined, instance.CFrame);
+							instance.Destroy();
+						}
+
+						continue;
+					}
 				}
 
 				loose++;

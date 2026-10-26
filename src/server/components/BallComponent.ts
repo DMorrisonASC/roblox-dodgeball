@@ -40,6 +40,21 @@ import { BadgeService } from "../services/badges/BadgeService";
 const BALL_TAG = "Ball";
 
 /**
+ * TEMPORARY — **the catch trace, and this constant is the whole of its removal.**
+ *
+ * Set to `false`, or delete this block and its four call sites, once the log has been read. **A flag of its own
+ * rather than `DEBUG_CONFIG.VERBOSE_LOGS`**, because that switch also turns on a per-frame aim report; this prints
+ * only when a ball is refused, which is what a catch report needs to see and nothing else.
+ *
+ * **What it exists to separate.** A ball nobody could catch has four possible reasons, and from a log they are
+ * indistinguishable: the throw was already over (`Armed` not true — the ball touched something that is not a body,
+ * and the world branch disarms it), **it was the thrower's own ball**, the ball was not in the air, or nobody's
+ * catch window was open when it arrived. The first two are by design, the others are timing, and the fix is
+ * different in each case.
+ */
+const TRACE_CATCH = true;
+
+/**
  * Whether `instance` is a dodgeball.
  *
  * **Both the tag and the name, because each answers a question the other cannot.** The tag is what
@@ -191,6 +206,16 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			this.handleTouch(otherPart);
 		});
 
+		// **This ball joins the registry the eight-stud radius searches**, on `BallService`'s own table so a
+		// `CatchService` proximity pass can find it without reaching for a Flamework component from outside. The
+		// handler closes over this component, which is the only thing that knows whether this ball can be caught and
+		// how to resolve the throw if it is. See `BallService.registerCatchHandler`.
+		//
+		// **Registered here and forgotten in the `Destroying` hook below**, because a destroyed ball must not stay in
+		// the table: the map is keyed on the instance, and an instance held by a map is an instance that cannot be
+		// collected — a leak that would grow for the whole session.
+		this.balls.registerCatchHandler(this.instance, (catcher) => this.tryCatch(catcher, this.instance));
+
 		// **The one case this file is otherwise silent about: a ball destroyed while it still owes a
 		// death.** A ball that tags a body and never touches the world — wedged on something, or
 		// simply never coming down — is destroyed with its tags unresolved, and until this line there
@@ -208,6 +233,11 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// Ungated, unlike almost everything else here: it fires at most once per ball, and it firing
 		// at all is the finding.
 		this.instance.Destroying.Connect(() => {
+			// **Out of the catch registry first, and unconditionally** — that map is keyed on the instance, so an entry
+			// left behind holds a destroyed ball for the session. This runs before the early returns below because it is
+			// cleanup rather than a diagnostic.
+			this.balls.forgetCatchHandler(this.instance);
+
 			if (this.instance.GetAttribute("Armed") !== true) return;
 			if (this.hitModels.size() === 0) return;
 
@@ -297,7 +327,24 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	private handleTouch(otherPart: BasePart): void {
 		// Spent already: a landing or a wall has taken this ball out of play — its tags were
 		// resolved there, or there were none — and nothing below can put it back.
-		if (this.instance.GetAttribute("Armed") !== true) return;
+		if (this.instance.GetAttribute("Armed") !== true) {
+			// TEMPORARY — remove with `TRACE_CATCH` once the log has been read. **This is the line that proves
+			// whether a bounced ball is even eligible to be caught**, which is the whole question: a non-body
+			// contact disarms the ball at the bottom of the world branch, and every later touch returns here, so
+			// the catch branch below is unreachable. If this prints for a ball somebody was reaching for, the
+			// answer is "the throw was already over" and nothing in the catch path is at fault.
+			if (TRACE_CATCH) {
+				const body = otherPart.FindFirstAncestorWhichIsA("Model");
+				const what =
+					body !== undefined && body.FindFirstChildWhichIsA("Humanoid") !== undefined
+						? `a body (${body.Name})`
+						: otherPart.Name;
+
+				print(`[Catch] ${this.instance.Name}: NOT catchable — out of play (Armed not true), touch on ${what}`);
+			}
+
+			return;
+		}
 
 		// **Another dodgeball is the world only when this throw already owes somebody a death — and
 		// that condition is the third version of this rule, reached by finding out what the first two
@@ -497,7 +544,36 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// leave an NPC free to hit itself with its own throw.
 		const throwerId = this.instance.GetAttribute("ThrowerId");
 		const token = character.GetAttribute(THROWER_TOKEN);
-		if (typeIs(throwerId, "string") && throwerId !== "" && throwerId === token) return;
+		const ownThrow = typeIs(throwerId, "string") && throwerId !== "" && throwerId === token;
+
+		// **A body cannot hurt itself with its own ball, and it *can* catch it — the two halves are now separate.**
+		//
+		// **What this line used to do, and why it changed.** It was one `return`, and its comment argued the case:
+		// *"Nobody is hurt by their own ball, and nobody catches it either — including off the rebound."* That was
+		// coherent when a rebound was only ever an accident. A playtest says otherwise: throwing at a rig and taking
+		// your own ball back out of the air is the most satisfying thing the throw can do, and refusing it made the
+		// bounce read as the game snatching the ball away. **So the rule is split rather than deleted** — the catch is
+		// offered first and the damage is refused below, which is exactly the pair of sentences that were always meant.
+		//
+		// **The ordering is load-bearing.** `canCatch` is asked *before* anything else about this contact, so a thrower
+		// with an open window takes the ball; a thrower without one falls through to the `return` and the ball passes
+		// through them as it always did — no tag, no damage, no bounce. Falling through into the tag branch instead
+		// would let a player kill themselves with the one ball the game promised they could not.
+		//
+		// **It also cannot be used as a shield.** A self-catch spends the window through `tryCatch` → `consume`, exactly
+		// as any other catch does, so it costs the same second and catches the same one ball. See `CATCH_CONFIG`.
+		if (ownThrow) {
+			if (this.tryCatch(character, struck)) return;
+
+			// TEMPORARY — remove with `TRACE_CATCH`. **The honest line for this branch now**: the ball came back to
+			// its own thrower and nothing happened, because the window was not open. Before the split this was the
+			// whole outcome and printed as a refusal; now it is only the case where the catch was not available.
+			if (TRACE_CATCH) {
+				print(`[Catch] ${this.instance.Name}: own throw reached ${character.Name} — no window, no damage`);
+			}
+
+			return;
+		}
 
 		// **The catch comes first, and above the "already tagged" guard on purpose.** That guard is what makes
 		// the first body part final for a throw; leaving it above this branch is what made a *tagged* body
@@ -515,32 +591,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// **A body can therefore catch a ball that has already tagged it, and that is the feature rather than a
 		// loophole**: the throw is still in the air, the tag is still owed, and catching it is the save. See
 		// `canCatch` for the refusals that remain — a Pierce ball, a Freeze ball, and a ball already in a hand.
-		if (this.canCatch(struck, character)) {
-			// Spent before the ball is handed over, so one attempt catches one ball
-			// even if two arrive together.
-			this.catches.consume(character);
-
-			// Read before the ball changes hands: `catchBall` makes the ball inert, which clears
-			// `ThrowerId`, and the catch resolution below is about the thrower the ball *arrived*
-			// with rather than whoever is holding it next.
-			const throwerId = this.instance.GetAttribute("ThrowerId");
-
-			// A catch that cannot attach (no right hand) is not a catch: `attachToHand` destroys the
-			// ball in that case, and nothing below should resolve a throw that is no longer in the
-			// air.
-			if (this.balls.catchBall(character, this.instance)) {
-				// **The round's badge count, and it goes here rather than in `CatchService.consume`.** That
-				// method is the *close* of a window and not the catch of a ball — it runs for an expiry, a
-				// death, a departure and a spent attempt alike — so counting it would hand `wall` and
-				// `safeHands` to anybody who merely pressed the key. This line is the one place a ball has
-				// actually been caught, and it is inside the `catchBall` answer for the same reason: a catch
-				// that could not attach a ball is not a catch.
-				this.badges.recordCatch(character);
-
-				this.resolveCatch(character, throwerId);
-			}
-			return;
-		}
+		if (this.tryCatch(character, struck)) return;
 
 		// **Decided already — or decided by an earlier part of this same arrival.** Either way
 		// this body's turn has been taken and the ball passes through it.
@@ -1181,9 +1232,92 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 
 		// Only a ball in flight can be caught. One welded into somebody's hand is
 		// already held, and taking it would leave a ball with two welds on it.
-		if (this.instance.Parent !== Workspace) return false;
+		//
+		// **`Armed` belongs here, beside the parent test, and it is not redundant with `handleTouch`'s own guard.**
+		// The `Touched` door is behind that guard already, so asking again costs one attribute read on a path that
+		// runs once per contact. **The proximity door is not behind it** — `BallService.catchByProximity` calls
+		// `tryCatch` directly — and without this line an eight-stud radius would sweep up any spent ball lying on the
+		// floor beside a catcher, which is a player picking a ball off the ground by pressing catch while looking at
+		// the sky. "A live throw" is the rule, so it is stated where both doors pass.
+		if (this.instance.GetAttribute("Armed") !== true) {
+			// TEMPORARY — remove with `TRACE_CATCH`. **The one refusal that is neither timing nor ability**: the ball is
+			// no longer a throw, so nothing could catch it at any distance.
+			if (TRACE_CATCH) {
+				print(`[Catch] ${this.instance.Name}: refused for ${character.Name} — not armed (the throw is over)`);
+			}
 
-		return this.catches.isCatching(character);
+			return false;
+		}
+
+		if (this.instance.Parent !== Workspace) {
+			// TEMPORARY — remove with `TRACE_CATCH`. **Proves the other half of the question**: the ball IS still
+			// armed and reached this method, so the throw is live — but it is not in `Workspace`, which means it is
+			// in somebody's hand (or being carried) rather than in the air.
+			if (TRACE_CATCH) {
+				print(
+					`[Catch] ${this.instance.Name}: refused for ${character.Name} — not in the world ` +
+						`(parent ${this.instance.Parent?.Name ?? "nil"})`,
+				);
+			}
+
+			return false;
+		}
+
+		const open = this.catches.isCatching(character);
+
+		// TEMPORARY — remove with `TRACE_CATCH`. **The last silent refusal in this file.** If this prints, the ball
+		// was armed, in the world, and the right ability — so the only thing missing was the *window*, and the fault
+		// is on the input side (or the ball arrived outside it) rather than in the ball's state.
+		if (!open && TRACE_CATCH) {
+			print(`[Catch] ${this.instance.Name}: refused for ${character.Name} — no catch window open`);
+		}
+
+		return open;
+	}
+
+	/**
+	 * **One catch, in one place, because there are now two ways to attempt one.**
+	 *
+	 * **Touching the ball and being near it are two doors to the same room**, and both have to spend the window,
+	 * attach the ball, credit the badge and resolve the thrower in that order — so the body is written once here and
+	 * `handleTouch` calls it. The alternative was a second copy inside `CatchService`'s proximity loop, which is
+	 * exactly the pairing this project has already paid for once (`isFriendlyFire` written twice would have drifted).
+	 *
+	 * **Returns whether a ball was caught, which is what lets the proximity loop stop.** A `false` means the window
+	 * was not open, or the ball was not catchable, or the hand could not take it — and in every one of those cases
+	 * **nothing was spent and nothing changed**, so `tryCatch` is safe to call as a probe while looking for a ball.
+	 * That property is the whole reason the radius can afford to ask every neighbouring ball in turn.
+	 *
+	 * **`part` is the contact, and the proximity path passes the catcher's own root.** `canCatch` no longer tests the
+	 * part for anything — "every limb can catch" is answered a frame earlier by `struckBodyPart` — so the two callers
+	 * passing different parts of the same body changes no answer. It is kept in the signature because the *contract*
+	 * is still "this contact, with this part", and a future part rule should have somewhere to live.
+	 */
+	public tryCatch(character: Model, part: BasePart): boolean {
+		if (!this.canCatch(part, character)) return false;
+
+		// **Spent before the ball is handed over**, so one attempt catches one ball even if two arrive together —
+		// and so a proximity catch closes the window before the loop can consider a second ball.
+		this.catches.consume(character);
+
+		// Read before the ball changes hands: `catchBall` makes the ball inert, which clears `ThrowerId`, and the
+		// resolution below is about the thrower the ball *arrived* with rather than whoever is holding it next.
+		const throwerId = this.instance.GetAttribute("ThrowerId");
+
+		// A catch that cannot attach (no right hand) is not a catch: `attachToHand` destroys the ball in that case,
+		// and nothing below should resolve a throw that is no longer in the air.
+		if (!this.balls.catchBall(character, this.instance)) return false;
+
+		// **The round's badge count, and it goes here rather than in `CatchService.consume`.** That method is the
+		// *close* of a window and not the catch of a ball — it runs for an expiry, a death, a departure and a spent
+		// attempt alike — so counting it would hand `wall` and `safeHands` to anybody who merely pressed the key.
+		// This is the one place a ball has actually been caught, and it is inside the `catchBall` answer for the same
+		// reason: a catch that could not attach a ball is not a catch.
+		this.badges.recordCatch(character);
+
+		this.resolveCatch(character, throwerId);
+
+		return true;
 	}
 
 	/**

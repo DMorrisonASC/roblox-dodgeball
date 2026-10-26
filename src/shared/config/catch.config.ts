@@ -35,6 +35,28 @@ export const CATCH_CONFIG = {
 	WINDOW_SECONDS: 1,
 
 	/**
+	 * **How close a ball has to pass to an open catch window to be caught, in studs — `8`.**
+	 *
+	 * **A second way to catch, additive to touching the ball.** Until this, catching was a `Touched` event and
+	 * nothing else: the ball had to physically reach the body. That is exact, and it is also unforgiving — a ball
+	 * that passes a hand's width away is a miss, and a rebound that comes back near the thrower but not *into* them
+	 * is a ball nobody could have taken. This is the grace that makes a catch feel like a catch rather than like a
+	 * collision.
+	 *
+	 * **Eight studs is a little over one body width plus an arm**, which is the physical reading: a person reaching
+	 * for a ball can take one that is not quite touching them, and cannot take one across the room. It is measured
+	 * from the catcher's `HumanoidRootPart` — the body's own centre, the same part every other body-relative
+	 * question in this project asks about — so it is a sphere rather than a box around the feet.
+	 *
+	 * **The radius cannot widen what is catchable, only where it is caught.** Every proximity catch goes through
+	 * `BallComponent.canCatch`, so a Pierce ball, a Freeze ball, a ball already in a hand and a ball that is not
+	 * armed are all refused at eight studs exactly as they are at zero. See `CatchService`'s proximity loop.
+	 *
+	 * **Placeholder.**
+	 */
+	CATCH_RADIUS_STUDS: 8,
+
+	/**
 	 * How long a body stays marked as **mid-catch** after the ball arrives in its hand, in seconds.
 	 * **Placeholder — 0.6.**
 	 *

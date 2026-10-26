@@ -78,9 +78,31 @@ interface NpcLoop {
 	 * clip.** This field says what the last *change* of speed was. It says nothing about a body that stopped
 	 * without the engine publishing another change, and three of the ways a rig in this game stops are
 	 * exactly that — see {@link moveToFinished}, which is the field's second writer and the one that ends
-	 * the walk.
+	 * the walk. **A physics shove is a fourth, and it is the one no edge can cover**: nothing was asked to walk, so
+	 * nothing can finish, which is what {@link stillTurns} and `watchForStaleWalk` exist for.
 	 */
 	runningSpeed: number;
+
+	/**
+	 * **How many consecutive turns the body has been physically still while `runningSpeed` still said it was
+	 * walking** — the debounce behind the shove watchdog, and the fourth writer of the fact
+	 * {@link runningSpeed} holds.
+	 *
+	 * **The bug it exists for, in the user's words: a rig hit by a ball keeps walking on the spot.** A physics shove
+	 * is not a walk, so nothing in this file ever hears about it ending: `Humanoid.Running` fires on a *change of
+	 * speed* and a shoved body does change speed, but `Humanoid.MoveToFinished` fires only for a body that was
+	 * *asked* to walk. So a stationary rig — a `practiceThrow` drill is the one that showed it, since a drill is
+	 * planted by definition and never issues a `MoveTo` at all — gets a walking speed recorded by the shove and keeps
+	 * it for the rest of its life. Every client then draws it walking where it stands.
+	 *
+	 * **Counted rather than cleared on the first quiet turn**, for the reason `NPC_CONFIG.RIG_STALE_WALK_TURNS`
+	 * gives: the engine accelerates a real walk from a standstill, so one turn of low travel is the ordinary top of
+	 * every walk rather than evidence of anything.
+	 *
+	 * **Reset to nought the moment the body is travelling again**, so the count is consecutive by construction and a
+	 * rig that is repeatedly nudged cannot accumulate its way to a false stop.
+	 */
+	stillTurns: number;
 
 	/**
 	 * The `Running` subscription, **held so {@link forget} can drop it with the loop**.
@@ -608,7 +630,7 @@ export class NpcService implements OnStart {
 		// turn fell while the rig was parked again, another five. Seeded with nought, the first turn the rig
 		// spends in the world claims it, which is the same promise `ensureToken` keeps one line up: the first
 		// turn in the world is when a rig's setup is settled.
-		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: 0, runningSpeed: 0, staleReported: false };
+		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: 0, runningSpeed: 0, stillTurns: 0, staleReported: false };
 		this.loops.set(model, loop);
 
 		task.spawn(() => this.run(model, loop));
@@ -1047,20 +1069,26 @@ export class NpcService implements OnStart {
 	 *
 	 * **The cost, named, and this is the reversal: the rig's half of this fact is now a measurement, and it is
 	 * measured in the wrong direction on purpose.** `Running` reports the speed the engine saw the body move at,
-	 * so a rig leaning on a wall it cannot pass keeps publishing *moving* for as long as the engine still counts
-	 * it as trying — up to `MoveToFinished`'s give-up, which is the same allowance a person pressing into a wall
-	 * gets from Roblox's own script and reads as "pushing". A rig shoved by another body publishes *moving* too,
-	 * where a shoved player publishes a clip from its keys. Both were accepted because the only request-shaped
-	 * alternative is worse. **`WalkToPoint` against the root's position was the other candidate and is refused**:
-	 * before the first `MoveTo` that property holds no position at all, so a rig nobody has ever asked to walk is
-	 * indistinguishable from one asked to walk three hundred studs away — and a rig teleported into the arena with
-	 * a stale target would publish *walking* through the opening freeze, exactly while the rigs are being watched
-	 * line up. The size of the threshold is what makes the measurement survivable: the fault this replaced was a
-	 * **five-stud** floor that published creeping rigs as standing, and `0.01` from an edge-fired source cannot
-	 * reproduce it. **The failure this pair of edges can still have is the benign one** — if `Running` fires
-	 * nothing at all for our rigs the flag stays at the `0` it was seeded with and a walking rig wears its idle
-	 * clip, which is a rig standing still that looks like a rig standing still rather than a lobby of bodies
-	 * walking on the spot.
+	 * so a rig leaning on a wall it cannot pass publishes *moving* for as long as the engine still counts it as
+	 * trying. A rig shoved by another body publishes *moving* too, where a shoved player publishes a clip from its
+	 * keys. **`WalkToPoint` against the root's position was the other candidate and is refused**: before the first
+	 * `MoveTo` that property holds no position at all, so a rig nobody has ever asked to walk is indistinguishable
+	 * from one asked to walk three hundred studs away — and a rig teleported into the arena with a stale target would
+	 * publish *walking* through the opening freeze, exactly while the rigs are being watched line up. The size of the
+	 * threshold is what makes the measurement survivable: the fault this replaced was a **five-stud** floor that
+	 * published creeping rigs as standing, and `0.01` from an edge-fired source cannot reproduce it. **The failure
+	 * this pair of edges can still have is the benign one** — if `Running` fires nothing at all for our rigs the flag
+	 * stays at the `0` it was seeded with and a walking rig wears its idle clip, which is a rig standing still that
+	 * looks like a rig standing still rather than a lobby of bodies walking on the spot.
+	 *
+	 * **Both of those "accepted costs" are now bounded by {@link watchForStaleWalk}, and the paragraph above is kept
+	 * because it is why the *source* is still an edge rather than a per-turn sample.** A rig shoved by a ball is
+	 * published walking for as long as its body is actually travelling and then corrected; a rig pressed into a wall
+	 * is corrected after `RIG_STALE_WALK_TURNS` too, which is a **reversal of what this paragraph used to defend** —
+	 * "pushing" read as a walk is the same visual fault as a shove read as one, a body animating travel through
+	 * ground it is not moving across. What survives from the old reading is the direction of the error: a rig that is
+	 * genuinely walking is never *published* as walking by the watchdog, and a wrong answer from it always errs
+	 * toward standing.
 	 *
 	 * **Ownership is re-asserted from here, on a throttle**, because this is the one function that
 	 * already runs per rig on a clock. See `NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS` for what the
@@ -1094,6 +1122,13 @@ export class NpcService implements OnStart {
 		// **Read once and shared, because the grounded line below asks about it.** Whether a rig was asked to move
 		// is what separates a body leaving the floor on purpose from one leaving it while standing still, so the
 		// two reads have to be the same sample of the same turn.
+		//
+		// **And the shove watchdog runs first, because it can change the answer.** A rig hit by a ball is given a
+		// walking speed by the physics and no edge ever takes it back — see `watchForStaleWalk`, which is the only
+		// thing that can, and which has to run before this read so the corrected value is the one this turn publishes
+		// rather than the one after it.
+		this.watchForStaleWalk(model, humanoid, loop);
+
 		const moving = loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED;
 
 		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, moving);
@@ -1191,7 +1226,7 @@ export class NpcService implements OnStart {
 	 * is what makes the fact true, and it has to be reachable from every way a rig can stop — not only from
 	 * the end of a walk.
 	 *
-	 * **Three callers, and they are the three ways a rig can be standing with an old speed still recorded.**
+	 * **Four callers, and they are the four ways a rig can be standing with an old speed still recorded.**
 	 *
 	 * 1. **The walk ended** — `MoveToFinished`, on arrival or on the engine's eight-second give-up.
 	 * 2. **Taken out of the world** — the gate at the top of {@link run}. A body in `ServerStorage` is not
@@ -1204,6 +1239,9 @@ export class NpcService implements OnStart {
 	 *    says where the body stands, and the walk it was on is over by definition. `Running`
 	 *    re-asserts if the body genuinely walks again, so this cannot suppress real motion for longer than
 	 *    the next change of speed — which is the same guarantee the other two have.
+	 * 4. **The body stopped travelling** — {@link watchForStaleWalk}. The fourth and the only one that is not an
+	 *    event: a rig shoved by a ball has a speed and no walk, so no edge exists to fire and the clear has to be
+	 *    read off the body's own velocity. See that method for the report that found it.
 	 *
 	 * **The line is the evidence, it names which caller found it, and it prints at most once per rig.** It
 	 * fires only when the speed being cleared was still a walking one, which is the exact state that leaves a
@@ -1223,6 +1261,82 @@ export class NpcService implements OnStart {
 		}
 
 		loop.runningSpeed = 0;
+	}
+
+	/**
+	 * **The shove watchdog: a rig whose body has stopped travelling is not walking, whatever `Humanoid.Running` last
+	 * said.**
+	 *
+	 * ## The bug, and why neither existing edge can see it
+	 *
+	 * `Humanoid.Running` is an edge on a *speed*, and `MoveToFinished` is an edge on a *walk*. **A physics shove is
+	 * neither.** A ball hitting a planted rig moves it a little, the engine reports a change of speed, and there is
+	 * nothing afterwards: no walk was issued, so no walk can finish, so nothing in this file is ever told the body
+	 * has come to rest. The rig keeps its walking speed for the rest of its life and every client draws it walking
+	 * where it stands.
+	 *
+	 * **The `practiceThrow` drill is what surfaced it, and it is the shape of body the two edges can never cover.** A
+	 * drill is planted by definition — it issues no `MoveTo` at all — so `MoveToFinished` cannot fire for it however
+	 * long it lives, and {@link clearWalk}'s other two callers (leaving the world, being placed by a mover) are things
+	 * that happen to a rig rather than to its velocity. The older walking rigs masked the fault because they walk
+	 * constantly and every walk ends on an edge that also happens to clear it.
+	 *
+	 * ## What it measures, and why the whole velocity rather than the horizontal part
+	 *
+	 * **`AssemblyLinearVelocity` and not `Humanoid.MoveDirection`.** `MoveDirection` is the property `Humanoid:Move()`
+	 * writes and reads zero for every rig in this game — that is `publishAnimation`'s own recorded finding, and the
+	 * reason the walk was never readable as a request in the first place. It is also the wrong *kind* of fact here: a
+	 * body being shoved has no intent to move, and the shove is exactly what the intent would fail to report.
+	 *
+	 * **The whole vector rather than its horizontal part**, which is the one non-obvious choice in this method. A rig
+	 * knocked into the air has almost no horizontal travel for the whole of its arc, so a horizontal test would call it
+	 * stationary mid-flight — and the state that produces is worse than the bug: `publishAnimation` reads "measured
+	 * still" as *standing*, and a rig that is standing while `FloorMaterial` is `Air` prints its
+	 * `off the floor while standing` line and dresses as a body falling to its feet. Measuring the whole vector means a
+	 * rig in the air is moving, which it is.
+	 *
+	 * ## What it costs, and when it costs it
+	 *
+	 * **Nothing at all for a rig that is not already published as walking.** The first branch returns before any
+	 * velocity read, so the ordinary standing rig — which is most of them, most of the time — pays one number
+	 * comparison per turn. A walking rig pays one `AssemblyLinearVelocity` read, and a rig that has just been shoved
+	 * pays that until the debounce expires.
+	 *
+	 * **It is called from `publishAnimationBody` and not from a loop of its own**, because that function already runs
+	 * once per rig per turn on the shared cadence and already holds the humanoid. A `Heartbeat` watchdog would be the
+	 * per-frame cost this project has refused twice for exactly this class of question.
+	 *
+	 * ## What it deliberately does not do
+	 *
+	 * **It does not unsubscribe from `Running`,** and it must not: a body genuinely setting off again re-asserts
+	 * through that edge on the next change of speed, and the debounce means the watchdog has already called it standing
+	 * by then. The two are complementary — the engine says when a speed changed, this says whether the body is
+	 * travelling — and the pair can only ever be wrong in the safe direction, publishing a moving rig as standing.
+	 */
+	private watchForStaleWalk(model: Model, humanoid: Humanoid, loop: NpcLoop): void {
+		// Not published as walking: there is no lie to correct, and the count restarts so a stale reading cannot
+		// survive a gap.
+		if (loop.runningSpeed <= NPC_CONFIG.RIG_MOVING_SPEED) {
+			loop.stillTurns = 0;
+
+			return;
+		}
+
+		const root = humanoid.RootPart;
+		if (root !== undefined && root.AssemblyLinearVelocity.Magnitude >= NPC_CONFIG.RIG_STALE_WALK_SPEED) {
+			loop.stillTurns = 0;
+
+			return;
+		}
+
+		loop.stillTurns += 1;
+		if (loop.stillTurns < NPC_CONFIG.RIG_STALE_WALK_TURNS) return;
+
+		loop.stillTurns = 0;
+
+		// **The existing statement, with a reason of its own** — so the log distinguishes a walk that ended from a
+		// body that was never walking, which is the difference between a behaviour's bug and a physics one.
+		this.clearWalk(model, loop, "the body had stopped travelling");
 	}
 
 	/**

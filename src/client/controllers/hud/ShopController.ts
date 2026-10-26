@@ -13,6 +13,8 @@ import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
 import { participating, shopOpen } from "../../panels";
 import { lightPanelTheme } from "../../ui/lightPanelTheme";
+import { createConfirmModal } from "../../ui/confirmModal";
+import type { ConfirmModal } from "../../ui/confirmModal";
 import type { HudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import {
@@ -30,6 +32,7 @@ import {
 	addTile,
 	addTrailStrip,
 	mountPanel,
+	MODAL_Z_INDEX,
 	PANEL_Z_INDEX,
 	raiseZIndex,
 	withCommas,
@@ -172,6 +175,28 @@ export class ShopController implements OnStart {
 	private chestReason = Fusion.Value(this.scope, "");
 
 	/**
+	 * The confirmation dialog, built once at mount and reused for every purchase — **see the `shop` module's
+	 * `pendingPurchase`, which is what it is asking about.**
+	 *
+	 * `undefined` until `mount` has run, which is why every use of it is optional-chained: a purchase cannot be
+	 * requested before the button that requests it exists.
+	 */
+	private modal?: ConfirmModal;
+
+	/**
+	 * **What the dialog is currently asking about**, or `undefined` when it is not asking.
+	 *
+	 * A discriminated union rather than two fields, because the two purchases carry different payloads and only one of
+	 * them can be pending: a cosmetic needs its `CosmeticDef` to name the item and its id to send, and a chest needs
+	 * nothing at all. Two nullable fields would be two things that can both be set and neither of which says which is
+	 * live — the classic shape of a bug where a stale cosmetic id is sent after a chest was confirmed.
+	 *
+	 * **Cleared on both exits**, so a cancelled question cannot be confirmed later by a press on a dialog that has
+	 * moved on to the next one.
+	 */
+	private pending?: { kind: "chest"; cost: number } | { kind: "cosmetic"; def: CosmeticDef };
+
+	/**
 	 * The chest request, resolved once at mount.
 	 *
 	 * `Get` **yields** until the server's remote exists, so it is resolved from `watchChest` — which
@@ -248,6 +273,12 @@ export class ShopController implements OnStart {
 		// `panel.Parent = getHudScreenGui()`, which with one frame meant the same thing; written that way today it
 		// would move the *content* frame out of the panel and leave the panel nowhere. See `mountPanel`.
 		mountPanel(panel, getHudScreenGui());
+
+		// **The confirmation dialog, a sibling of the panel rather than a child.** A child would be clipped by the
+		// panel's content band (`ClipsDescendants`) and could not dim the panel it is drawn inside — see
+		// `createConfirmModal` for the whole argument, and for why its `ZIndex` has to be above `PANEL_Z_INDEX` rather
+		// than equal to it.
+		this.modal = createConfirmModal(this.scope, theme, getHudScreenGui(), MODAL_Z_INDEX);
 
 		// After the tree, because both of these write into values the tree is already reading. Doing it
 		// first would draw a frame of "no coins, nothing owned" on every mount — a lie the player would
@@ -368,7 +399,9 @@ export class ShopController implements OnStart {
 		for (const def of PURCHASE_COSMETICS) {
 			// The coin shelf, first — the things the panel can actually act on, in the same spirit the opening
 			// tab puts the chest up: the clickable half comes before the one that is only there to be looked at.
-			const tile = addTile(this.scope, grid, theme, def.name, order, true, () => this.requestPurchase(def));
+			const tile = addTile(this.scope, grid, theme, def.name, order, true, () =>
+				this.ask({ kind: "cosmetic", def: def }),
+			);
 			order += 1;
 			this.addStrip(tile, def);
 
@@ -522,7 +555,7 @@ export class ShopController implements OnStart {
 			size: "large",
 			fullWidth: true,
 			layoutOrder: 3,
-			onActivate: () => this.requestChest(),
+			onActivate: () => this.ask({ kind: "chest", cost: ECONOMY_CONFIG.CHEST_COST }),
 		});
 		open.Name = "OpenChestButton";
 		open.Parent = footer;
@@ -537,6 +570,45 @@ export class ShopController implements OnStart {
 	}
 
 	// ---------- server contact ----------
+
+	/**
+	 * **Asks the player whether they meant it — the whole of what a shop button does now.**
+	 *
+	 * **The send moved one method down, and that is the entire feature.** A purchase used to fire the moment a tile or
+	 * the chest button was activated, which is how a tester bought something by accident; the button now arms this
+	 * dialog instead, and only {@link confirm} reaches the server.
+	 *
+	 * **The payload is captured here and dispatched there**, rather than re-derived from the current tab when the
+	 * dialog is confirmed. The player can switch tabs behind a modal on a client that has not yet been told the modal is
+	 * up, and a confirm that asked "which tab am I on" would then buy something they were not looking at when they
+	 * pressed the button.
+	 */
+	private ask(pending: { kind: "chest"; cost: number } | { kind: "cosmetic"; def: CosmeticDef }): void {
+		this.pending = pending;
+
+		const question =
+			pending.kind === "chest"
+				? `Open a Power Chest for ${withCommas(pending.cost)} coins?`
+				: `Buy ${pending.def.name} for ${withCommas(pending.def.coinPrice ?? 0)} coins?`;
+
+		this.modal?.ask(question, () => this.confirm());
+	}
+
+	/**
+	 * **The confirmed action — the only place in this panel that talks to the server about money.**
+	 *
+	 * **The pending action is taken and cleared before the send**, on the dialog's own rule: a second call cannot spend
+	 * twice, and the modal has already latched its button by the time this runs.
+	 */
+	private confirm(): void {
+		const pending = this.pending;
+		this.pending = undefined;
+
+		if (pending === undefined) return;
+
+		if (pending.kind === "chest") this.requestChest();
+		else this.requestPurchase(pending.def);
+	}
 
 	/** Asks for a chest. The whole of what this panel can ask the server to do. */
 	private requestChest(): void {

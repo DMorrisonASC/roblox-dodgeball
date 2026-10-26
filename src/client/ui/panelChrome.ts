@@ -56,6 +56,14 @@ export const PANEL_MIN_PIXELS = new Vector2(280, 260);
  */
 export const PANEL_Z_INDEX = SHOP_CONFIG.PANEL_Z_INDEX;
 
+/**
+ * The confirmation dialog's rung — see {@link SHOP_CONFIG.MODAL_Z_INDEX} for why it is a rung of its own.
+ *
+ * Re-exported beside the panel's for the reason `PANEL_Z_INDEX` is: a caller that mounts over the panel should not have
+ * to reach into the config for the number, and the two being neighbours here is what makes the ladder visible.
+ */
+export const MODAL_Z_INDEX = SHOP_CONFIG.MODAL_Z_INDEX;
+
 /** The gap between tabs as a fraction of the row. */
 export const TAB_GAP_SCALE = 0.012;
 

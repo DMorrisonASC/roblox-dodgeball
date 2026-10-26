@@ -2130,7 +2130,7 @@ almost no server code; 45 is what it cannot show.**
     half of the same allowance: it keeps publishing *moving* until `MoveToFinished`'s eight-second give-up,
     which is what Roblox's own script gives a player pushing a wall. Both are the benign direction — a body
     that is trying to move — and both would show in the same log line if they ever fired for a body that was
-    not.
+    not. **Both are closed by item 79**, which is the watchdog this note asked for.
     **Also corrected here, because they were argued from the same fact**: the essay in
     `publishAnimation` that claimed `Running` "fires `0` when the body stops", the note that called a blocked
     rig "not moving" where a player reports a walk (a measured world speed reports the shove and the push, so
@@ -3061,6 +3061,256 @@ almost no server code; 45 is what it cannot show.**
     directions: if the player *drops* it, the ball returns to `Workspace` and the bay-edge rule destroys it as any drill
     ball; if they *throw* it, `throwBallBody` clears the marker because the thrower does not wear `practiceThrow`. See
     item 76's ball half.
+
+78. **Every shop purchase is behind an "are you sure?", and the send is now unreachable without one.** A tester bought
+    something by accident: pressing a tile or the chest button fired `purchaseCosmetic` / `openPowerChest` on the *single*
+    click, and there is no refund path. So the button now arms a dialog and only `ShopController.confirm` reaches the
+    server.
+
+    *(The spec called this item 77; 77 is the drill-identity pass and 76 the practice zone. This is 78.)*
+
+    **Two call sites, both moved, and the payloads are unchanged.** `requestChest` still sends `SendToServer()` and
+    `requestPurchase` still sends `SendToServer(def.id)` — the emitted Luau is checked for exactly those two lines and for
+    the fact that neither is reachable except through `confirm`. **The pending action is a discriminated union**
+    (`{ kind: "chest"; cost } | { kind: "cosmetic"; def }`) captured at the press, **not re-derived from the current tab**
+    when the dialog is confirmed: the player can switch tabs behind a modal, and a confirm that asked "which tab am I on"
+    would buy something they were not looking at.
+
+    **The dialog is a sibling of the panel in `HudGui`, not a child of it**, and that is the load-bearing choice. A child
+    would be clipped by the content band's `ClipsDescendants` and could not dim the panel it was drawn inside. It is built
+    once at mount and toggled with `Visible`, and it lives in `ui/confirmModal.ts` rather than in
+    `ShopController` — see the forward note below for why that address is the right one.
+
+    **`MODAL_Z_INDEX = 20` is a rung of its own, and §15 item 63 is why that is written down.** `ZIndex` is compared
+    flattened across the `ScreenGui`, so the overlay only has to beat `PANEL_Z_INDEX` (10) — but `raiseZIndex(overlay, 20)`
+    is called **after the whole tree is built**, because a child below its parent's number draws *behind* it. That is
+    exactly the stats board's bug one generation on, and the reason nothing in this dialog is created after that call: the
+    title and the message are `Text` labels whose *text* changes reactively and whose instances never do.
+
+    **`addPanelFrame` was the wrong builder and the reason is its size** — it hardcodes `SHOP_CONFIG.PANEL_SIZE`, 62 % by
+    72 % of the screen, because it exists to be *the* panel. A confirmation at two thirds of the screen reads as a second
+    shop. What is reused is everything that is not the size: `addElevation` for the shadow, `raiseZIndex` for the layering,
+    `SHOP_CONFIG`'s padding and gap, and the same `lightPanelTheme`.
+
+    **The backdrop is a `TextButton`, and so is the dialog, and both are deliberate.** Only a `GuiButton` *consumes* input
+    — a `Frame` lets the click fall through to the shop's tiles underneath while the player believes the dialog is
+    blocking them. The dialog is a `TextButton` with `AutoButtonColor = false` and no action for the same reason read the
+    other way: a `Frame` would let a click on the dialog's own face reach the backdrop and cancel the question the player
+    was in the middle of reading.
+
+    **Confirm is the palette's `success` green and Cancel its `error` red**, and neither needed a `**Placeholder.**` colour:
+    `lightPanelTheme` already carries both, and the shop already uses `error` for its close button and `success` for a won
+    item. Blue was refused — it is the panel's *selected* state, so a blue Confirm would read as "this tab is open".
+
+    **Double-click protection is big-ui's own `loading` prop**, which is documented as showing a spinner *and blocking
+    activations*, and is `UsedAs<boolean>` so it can react. It is raised the instant Confirm is pressed and cleared in
+    `ask` rather than on a reply — so the answer to "when does this re-arm" is "when there is a new question", not
+    "sometime after a reply that may never arrive". A `disabled` prop would not have worked at all: big-ui reads its props
+    at construction.
+
+    **What was checked and left alone.** The inventory's two remotes are `equipRemote` (wearing a cosmetic) and
+    `poolRemote` (a chest-pool toggle) — **neither spends anything**, so neither gained a dialog. No server file, no
+    economy config and no remote changed.
+
+79. **A rig hit by a ball kept walking on the spot, and it is the mechanism §15 item 52 named and left standing.**
+    `Humanoid.Running` is an edge on a *speed*; `Humanoid.MoveToFinished` is an edge on a *walk*. **A physics shove is
+    neither** — a ball moves a planted rig, the engine reports a change of speed, and nothing follows, because no walk
+    was issued and so no walk can finish. The rig keeps that speed for the rest of its life and every client draws it
+    walking where it stands.
+
+    **The `practiceThrow` drill is what surfaced it.** A drill issues no `MoveTo` at all, so `MoveToFinished` can never
+    fire for it however long it lives; the older rigs masked the fault because they walk constantly and every walk ends
+    on an edge that also clears it. Item 52 predicted the failure and item 53 fixed the parts of it that had an edge;
+    this closes the part that has none.
+
+    **`watchForStaleWalk` runs from `publishAnimationBody`**, which is the per-rig turn the loop already takes at
+    `THROW_TICK_SECONDS` (0.1 s) — no new loop, no `Heartbeat`. It compares the body's **`AssemblyLinearVelocity`**
+    against `NPC_CONFIG.RIG_STALE_WALK_SPEED` and calls the existing `clearWalk` once the body has been still for
+    `RIG_STALE_WALK_TURNS` in a row.
+
+    | decision | value | why |
+    | --- | --- | --- |
+    | which velocity | `AssemblyLinearVelocity` | `Humanoid.MoveDirection` is the property `Humanoid:Move()` writes and reads **zero** for every rig here — item 52's own recorded finding — and it is the wrong kind of fact anyway: a shoved body has no intent to move |
+    | horizontal or whole vector | **whole** | a rig knocked into the air has near-zero horizontal travel for its entire arc, and "measured still" is read by the publisher as *standing*, which would fire the `off the floor while standing` line and dress a falling body as standing on its feet |
+    | threshold | `1` stud/s | `**Placeholder.**` Below every walk in the game (`WALK_TO_PAD_SPEED` is 16) and above every decay curve's tail |
+    | debounce | `3` turns = 0.3 s | `**Placeholder.**` The engine accelerates a real walk from a standstill, so the first turn of one legitimately reads near-zero; without the debounce the watchdog would flicker `AnimMoving` at the top of every walk |
+
+    **`stillTurns` is reset the moment the body travels again**, so the count is consecutive by construction and a rig
+    nudged repeatedly cannot accumulate its way to a false stop. **The `Running` subscription is untouched** — the pair
+    is complementary, and a body setting off again re-asserts through that edge.
+
+    **It costs a standing rig nothing**: the first branch returns before any velocity read, so the ordinary rig pays one
+    number comparison per turn, and only a rig already published as walking pays the `AssemblyLinearVelocity` read.
+
+    **One behaviour is deliberately changed, and it is the other half of item 52's note: a rig pressed into a wall now
+    stops animating after 0.3 s instead of walking on the spot until `MoveToFinished`'s eight-second give-up.** Item 52
+    defended the old reading as "the allowance Roblox's own script gives a player pushing a wall"; the honest reading is
+    that a body animating travel through ground it is not moving across is the same fault as a shove read as a walk.
+    The essay in `publishAnimation` that argued for it is corrected rather than deleted, and the direction of the error
+    is unchanged — the watchdog can only ever publish a moving rig as standing, never the reverse.
+
+    **New line, once per rig** through `clearWalk`'s existing once-only print:
+    `[NPC] <name>: the body had stopped travelling with the speed still N.NN studs/s — published as standing from
+    here`. The `why` is its own phrase so a log distinguishes a walk that ended from a body that was never walking —
+    a behaviour's bug from a physics one.
+
+    **Unverified**: that a shoved drill really does get a `Running` edge. Nothing in a server log shows the
+    `AnimMoving` attribute itself, so the proof is the user's eyes plus that line appearing once per rig after a hit.
+
+80. **Why a bounced ball cannot be caught: `Armed` goes false on the first non-body contact, and `handleTouch` returns
+    on it before the catch branch is ever consulted.** The report was *"it bounces off the rig but has not hit the
+    ground, and the catch never works"*. The answer is **Hypothesis A, in a stronger form than the hypothesis states** —
+    the tag is not merely *cleared* making `canCatch` false; the ball is **taken out of play**, and the guard that does
+    it is the first line of the method.
+
+    | where | what it is |
+    | --- | --- |
+    | `BallComponent.handleTouch:300` | `if (instance.GetAttribute("Armed") !== true) return;` — **the whole method**, including the catch branch, is behind this |
+    | `:454` | `this.instance.SetAttribute("Armed", false)` — the last line of the world branch, after `resolveTags` |
+    | `:426` | `resolveTags(throwerId)` — the world branch is where every tag becomes a death |
+    | `:779` | `this.bounceOff(struck)` — **the bounce off a body, which does *not* disarm** |
+
+    **So the two bounces are not the same event, and that distinction is the whole diagnosis.** A ball that touches a
+    **body** is tagged and deflected and stays armed — it is still catchable. A ball that touches **anything else** — the
+    floor, a wall, a prop, another ball once it owes a tag — runs the world branch, resolves its tags and disarms, and
+    from that instant no `Touched` can reach `canCatch`. That is by design (`handleTouch`'s own doc: *"It is the next
+    contact that is not a body that ends the throw"*), so a "bounced ball" is catchable **only if it bounced off a body
+    and has touched nothing else**.
+
+    **Hypotheses B and C are false, and both are verifiable rather than argued.**
+    - **B — the window closes on a bounce.** The window is `CatchService`'s own `os.clock()` expiry keyed on the
+      *character*, opened by `attemptCatch` and read by `isCatching`. Nothing on the ball's path writes it, so a bounce
+      cannot shorten it.
+    - **C — the practice zone or a team check refuses.** `CatchService` contains **no reference** to `isPractising`,
+      `PRACTICE_ZONE_ATTRIBUTE`, `TEAM_ATTRIBUTE` or `isFriendlyFire`. `BallComponent.canCatch` reads the ball's
+      ability, its parent and the window — no team, no zone. The one `TEAM_ATTRIBUTE` read in the file (`:657`) *writes*
+      `BALL_TAGGED_TEAM_ATTRIBUTE` for the client's `CATCH IT!` prompt; it is display and never a gate.
+
+    **The prompt's own warning is the other live candidate and is now traceable**: a `practiceThrow` ball carries
+    `THROWN_FROM_BAY_ATTRIBUTE`, and `settleLooseBalls` destroys it the first tenth of a second it is outside every bay —
+    **airborne or not**. If that is what is happening, the fix is in the despawn timing and not in the catch path at all.
+
+    **The trace, which is the deliverable and not the fix.** Two `TRACE_CATCH` constants — one in `BallComponent`, one in
+    `CatchService`, both `true`, both marked TEMPORARY — plus one line in `BallService.settleLooseBalls`. Every early
+    return on both sides now names itself:
+
+    ```
+    [Catch] <ball>: NOT catchable — out of play (Armed not true), touch on a body (X)     ← hypothesis A, ball side
+    [Catch] <ball>: refused for X — not in the world (parent …)                          ← in somebody's hand
+    [Catch] <ball>: refused for X — no catch window open                                 ← timing
+    [Catch] X: REFUSED — a ball is already in hand (…)                                   ← a full hand cannot catch
+    [Catch] X: REFUSED — still in the catch cycle, 0.62s to go                           ← a second press does nothing
+    [Catch] X: REFUSED — catch blocked (frozen, dodging, or just dodged)
+    [Catch] X: window OPENED for 0.60s — waiting for a ball to touch                     ← the input was accepted
+    [Catch] <ball>: DESTROYED mid-air at the bay edge — Armed true, 22 studs/s           ← the despawn suspect
+    ```
+
+    **Read the pair together**: `window OPENED` with no ball line means the input was fine and no eligible ball arrived
+    inside the window; `NOT catchable` means the ball was already spent. **Removal is one boolean per file.**
+
+    **Diagnosis pending a live log.** Nothing here is confirmed in Studio.
+
+81. **"Can I catch my own ball after it bounces off a rig?" — no. `BallComponent.handleTouch:531` refuses it, and the
+    code says why in the comment above that line. The bounce physics, on the other hand, do allow the ball to come
+    back.**
+
+    **The rule is the thrower-token comparison, and it sits one branch above the catch:**
+
+    ```
+    :513  const struck = this.struckBodyPart(humanoid, otherPart);
+    :529  const throwerId = this.instance.GetAttribute("ThrowerId");
+    :530  const token = character.GetAttribute(THROWER_TOKEN);
+    :531  if (typeIs(throwerId, "string") && throwerId !== "" && throwerId === token) return;   ← the block
+    :549  if (this.canCatch(struck, character)) { … }                                          ← never reached
+    ```
+
+    **It returns silently, above `canCatch` — so a self-catch is not "refused with a reason", it is unreachable.** And
+    the comment at `:522` shows this exact scenario was considered when it was written: *"Nobody is hurt by their own
+    ball, and nobody catches it either — **including off the rebound**, which is the case that matters now that balls
+    come off people."*
+
+    **Nothing else blocks it, and each was checked rather than assumed:**
+
+    | rule | verdict |
+    | --- | --- |
+    | `CatchService.attemptCatch` | **no thrower check at all** — living humanoid, free hand, `blocksCatch`, cycle, then open. It never sees a ball |
+    | `isFriendlyFire` | irrelevant — it is at `:602`, *after* both `:531` and `canCatch`, so a self-contact never reaches it |
+    | `PICKUP_LOCKED_UNTIL` (2.0 s, `DROP_PICKUP_LOCKOUT`) | **not a catch rule.** Stamped by `makeInert` on a *dropped* ball and read by `BallPickupService`; the catch path does not read it |
+
+    **The physics do return the ball.** `bounceOff` reflects the velocity about the unit vector from the **part's centre
+    to the ball** — a deflection rather than a surface mirror — and multiplies by `BOUNCE_FACTOR = 0.7`. A ball arriving
+    at a rig's front face has its `separation` pointing back at the thrower, so the reflection sends it back along its
+    approach at 70 % of the incoming speed. **It does not drop.** Two gates and gravity limit it: `BOUNCE_MIN_SPEED`
+    and `BOUNCE_MIN_SEPARATION` both return *without* bouncing, and at the 46 studs the drill throws from, a ball at
+    0.7 × speed is very likely to meet the floor first — which disarms it anyway (item 80).
+
+    **So the answer is a rule, not a physics limit — and at drill range the physics would usually have decided it too.**
+    This is recorded as a decision rather than a bug: `:522`'s comment already argues it, and the argument holds (a
+    player who can catch their own throw has a free re-arm). **The prompt's premise that catching has an 8-stud radius
+    is false**: there is no radius anywhere in the catch path — `CATCH_CONFIG` carries only `WINDOW_SECONDS` (1) and
+    `CATCH_ANIMATION_SECONDS`, catching is `Touched`-only, and no client assist measures distance.
+
+    **One trace line added, because item 80's trace was blind to this guard**: `:531` is a bare `return`, so the whole
+    scenario produced no output at all — indistinguishable from a ball that never came back. It now prints
+    `[Catch] <ball>: refused for <name> — it is their own throw`, under the same `TRACE_CATCH` flag.
+
+82. **Item 81's answer was a rule, and the rule is now split: you can catch your own rebound and still cannot hurt
+    yourself with it. Plus an eight-stud catch radius, and five seconds of grace before a drill's ball dies.**
+
+    **1 — the self-catch split.** The thrower-token comparison is no longer a `return`; it is a flag, and the thrower's
+    contact now offers the catch before refusing everything else:
+
+    ```
+    if ownThrow then
+        if self:tryCatch(character, struck) then return end   -- the catch
+        return                                                -- no damage, no tag, no bounce
+    end
+    ```
+
+    **The ordering is the whole of it.** A thrower with an open window takes the ball; one without falls through to the
+    `return` and the ball passes through them exactly as before — no tag, no damage, no bounce. **Falling through into
+    the tag branch instead would let a player kill themselves with the one ball the game promised they could not.** The
+    old comment argued *"nobody catches it either — including off the rebound"*, and that half is now wrong; it is
+    rewritten rather than deleted, with the playtest reason in it (a rebound you can take back is the best thing the
+    throw does; refusing it reads as the game snatching the ball away).
+
+    **Cannot be a shield**: a self-catch spends the window through `tryCatch` → `consume`, so it costs the same second
+    and takes the same one ball.
+
+    **2 — the eight-stud radius.** `CATCH_CONFIG.CATCH_RADIUS_STUDS = 8` (**Placeholder.**), searched by
+    `CatchService`'s one `RunService.Heartbeat` and executed by `BallService.catchByProximity`.
+
+    | decision | choice | why |
+    | --- | --- | --- |
+    | where the loop lives | `CatchService`, **one connection for the service** | a `task.spawn` per press is a thread per catcher per press with its own cancellation problem, and a window can be *extended* rather than reopened — the loop asks `this.windows` instead, so `size() === 0` is the entire idle cost |
+    | what it iterates | the open **windows**, not `Players` | work scales with how many people are pressing catch |
+    | where the handler lives | `BallService.catchHandlers`, registered by `BallComponent` | resolution needs the *component*; asking Flamework for it from a service is an instance→component lookup this project uses nowhere and which would tie a table it could own to a framework API |
+    | how the catch executes | `BallComponent.tryCatch` — **one method, both doors** | the `Touched` branch and the radius branch must spend the window, attach, credit the badge and resolve the thrower in one order; a second copy in `CatchService` is the pairing this project has already paid for once |
+
+    **`canCatch` gained an `Armed` test, and it is not redundant.** The `Touched` door is behind `handleTouch`'s own
+    `Armed` guard; **the proximity door is not**, so without it an eight-stud radius would sweep up any spent ball lying
+    on the floor beside a catcher — a player picking a ball up off the ground by pressing catch while looking at the sky.
+    `canCatch` is where both doors pass, so the rule is stated there.
+
+    **3 — the bay despawn grace.** `NPC_CONFIG.BAY_DESPAWN_GRACE_SECONDS = 5` (**Placeholder.**) and a
+    `BallService.leftBayAt` map. The ball is stamped the first sweep it is seen outside every bay; the entry is deleted
+    the moment it is back inside one or the moment it leaves `Workspace` (caught, held, parked), and the destroy fires
+    once the deadline passes. **Not an attribute**: how long a ball has been outside a bay is a rule the client does not
+    run, and an attribute would replicate a number nobody reads. **`os.clock` and not `GetServerTimeNow`**, the one
+    deviation from the idea that produced it — that clock exists for deadlines crossing the wire, this one never leaves
+    the server, and the sweep it lives in already runs on `os.clock`.
+
+    **The three interact by design rather than by luck.** The grace period is what makes the radius able to catch a drill
+    ball at all (before it, the ball died a tenth of a second after crossing the bay edge); the radius is what makes the
+    self-catch reachable (a rebound that comes back near the thrower but not into them); and the self-catch is reachable
+    at zero studs as well, through `Touched`, because the token guard no longer returns before `canCatch`.
+
+    **Trace**: `[Catch] <name>: caught by PROXIMITY — within 8 studs`, `[Catch] <ball>: refused for <name> — not armed
+    (the throw is over)`, `[Catch] <ball>: own throw reached <name> — no window, no damage`, and
+    `[Catch] <ball>: DESTROYED N.Ns after leaving the bay`. The bay line has its own flag (`TRACE_BAY_DESPAWN`) so the
+    settle loop can be silenced without touching the other two.
+
+    **Unverified**: that eight studs feels right, and that a proximity catch reads as a catch rather than a vacuum.
 
 ---
 

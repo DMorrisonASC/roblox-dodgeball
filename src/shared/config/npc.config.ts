@@ -79,6 +79,59 @@ export const NPC_CONFIG = {
 	RIG_MOVING_SPEED: 0.01,
 
 	/**
+	 * **The physical travel below which a rig is not really moving, in studs per second — `1`.**
+	 *
+	 * **A second threshold rather than a bigger {@link RIG_MOVING_SPEED}, because the two measure different
+	 * things.** `RIG_MOVING_SPEED` is compared against *what the engine last reported*, and it is `0.01` so that any
+	 * reported motion at all counts. This is compared against **where the body actually is** — its
+	 * `AssemblyLinearVelocity` — and asks a much cruder question: is anything moving this rig through space.
+	 *
+	 * **Placeholder, and the ordering is the argument for the value.** A rig that is genuinely walking travels at
+	 * `WALK_TO_PAD_SPEED` (16) or a seek run, so anything near this number is either a body being nudged or one that
+	 * has already stopped; a shove from a thrown ball decays through it in a few tenths of a second. Putting it at
+	 * `0.01` would make the watchdog fire on a body that is barely creeping, and putting it at 4 would catch a rig
+	 * mid-stride on its first frame. One is below every walk in the game and above every decay curve's tail.
+	 *
+	 * **Measured on the whole velocity and not its horizontal part** — see `NpcService.watchForStaleWalk`, which
+	 * argues why a falling rig must not be read as standing.
+	 */
+	RIG_STALE_WALK_SPEED: 1,
+
+	/**
+	 * **How many turns in a row a rig must be physically still before its walk is called stale — `3`.**
+	 *
+	 * **A debounce rather than an immediate clear, and the case it protects is the first frame of a real walk.** The
+	 * engine accelerates a `MoveTo` body from a standstill, so the turn a walk is issued on — or the one after it —
+	 * can legitimately read near-zero travel while the body is already on its way. The threshold alone cannot tell
+	 * that apart from a body that has come to rest, and a watchdog that fired on one quiet turn would flicker
+	 * `AnimMoving` false and true at the top of every walk, which is two attribute writes and a visible clip stutter.
+	 *
+	 * **Three turns is 0.3 s at the tenth-of-a-second tick** `NpcService.run` runs at, which is longer than a humanoid
+	 * needs to reach walking speed and far shorter than anybody would notice a shove's animation outlasting the shove.
+	 *
+	 * **Placeholder.**
+	 */
+	RIG_STALE_WALK_TURNS: 3,
+
+	/**
+	 * **How long a drill's ball survives outside its bay before it is destroyed, in seconds — `5`.**
+	 *
+	 * **A grace period rather than the instant death this used to be, and the reason is that a catch needs the ball to
+	 * still exist.** The rule was written when a drill's ball was only ever a thing that flew away and became litter;
+	 * item 76 then made a practising player able to *catch* one, and item 82 gave the catch an eight-stud radius. A ball
+	 * destroyed the tenth of a second it crossed the bay edge is a ball that cannot be caught however close it passes,
+	 * so the despawn now waits.
+	 *
+	 * **Five seconds is longer than any throw's flight and shorter than a session's patience.** A ball that leaves the
+	 * bay and is coming back re-enters well inside it; one that has genuinely gone is gone, and a stray ball lying on
+	 * the arena floor for five seconds is not litter anybody notices. The timer is cleared the moment the ball is back
+	 * inside a bay or is caught — see `BallService.settleLooseBalls` — so this is a deadline and not a lifetime.
+	 *
+	 * **Placeholder.**
+	 */
+	BAY_DESPAWN_GRACE_SECONDS: 5,
+
+	/**
 	 * The chance that a gated catcher decides it *is* a catcher for one decision.
 	 *
 	 * **Read once per decision, not once per tick, and that is the whole point of it.** A 50 % roll at

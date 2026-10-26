@@ -1194,7 +1194,7 @@ export const SUPER_MULTI_BALL_COUNT_ATTRIBUTE = "SuperMultiBallCount";
 export const POWER_READY_ATTRIBUTE = "PowerReady";
 
 /** Diameter of the ball, in studs. */
-export const BALL_SIZE = 2;
+export const BALL_SIZE = 2.5;
 
 /**
  * Attribute on a **character `Model`** saying that the server has a dodge window open on it.
