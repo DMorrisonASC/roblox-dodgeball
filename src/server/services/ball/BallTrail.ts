@@ -1,3 +1,5 @@
+import { Debris, Workspace } from "@rbxts/services";
+
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { BALL_SIZE } from "shared/constants";
 
@@ -24,6 +26,29 @@ const HALO_NAME = "FlightHalo";
  * same guard as "no stray wisps while idle".
  */
 const MIN_SEGMENT = 0.1;
+
+/**
+ * What the invisible part holding a caught ball's trail is called.
+ *
+ * **Named at all because it outlives the frame that made it, and a leftover has to be findable.** It is the same
+ * rule `BallService.CATCH_EMITTER_NAME` and `BallComponent`'s impact emitter follow: a part parked in `Workspace`
+ * with no owner is identifiable in the Explorer only by its name, so "no frozen trails remain" is a statement
+ * somebody can actually check.
+ */
+const FROZEN_HOLDER_NAME = "FrozenTrail";
+
+/**
+ * How long a frozen trail's holder outlives the last of its segments, in seconds.
+ *
+ * **Measured from the ribbons rather than assumed**, so the only job this number has is the slack: a `Trail`'s
+ * segments are gone `Lifetime` seconds after they were recorded, and the holder must not be destroyed while one is
+ * still drawing. Half a second is generous against a lifetime measured in tenths, and the failure it prevents is a
+ * trail disappearing one segment early — a visible snap at the *end* of a fade, which is the same artefact as the one
+ * this whole mechanism exists to remove.
+ *
+ * Not in config: it is not a look, and nobody is going to want it tuned.
+ */
+const FROZEN_TRAIL_GRACE = 0.5;
 
 /**
  * How much the ribbons glow, from `0` (a solid strip, blended normally) to `1` (fully
@@ -144,9 +169,11 @@ const DEFAULT_CORE_COLORS: CoreColors = {
  * caller wants to say that in one word — see {@link setArmed}. Everything else here is
  * construction.
  *
- * There is nothing to clean up. The ribbons and their attachments are children of the ball,
- * so they are destroyed with it, and there is no frame loop anywhere: a `Trail` is driven by
- * the engine recording where its attachments have been.
+ * **Almost nothing to clean up, and the exception is the caught ball.** While a ball is wearing its ribbons they
+ * are children of the ball, so they are destroyed with it, and there is no frame loop anywhere: a `Trail` is
+ * driven by the engine recording where its attachments have been. The one set that leaves is the trail a caught
+ * ball flew in on, which is moved to a holder of its own so it can fade where it was caught — and that holder is
+ * `Debris`'s, on a timer. See {@link freeze}.
  */
 export class BallTrail {
 	/**
@@ -197,14 +224,82 @@ export class BallTrail {
 	 * Every ribbon this ball is wearing, from both layers, which is the whole reason the returned object
 	 * exists rather than the caller walking the ball's children.
 	 *
-	 * Disabling is also what clears the trail when a ball is caught. Existing segments are
-	 * not dropped, they are left to expire on their own lifetime — so the trail the ball
-	 * arrived on fades out where the ball was caught, over each layer's own lifetime rather than over
-	 * one shared figure, which is what makes the haze outlive the streak here exactly as it does in the
-	 * air — with nothing having to be cleared by hand.
+	 * **Disabling is not a fade, and this comment used to say it was.** It claimed existing segments "are
+	 * left to expire on their own lifetime", so a caught ball's trail would fade out where it was caught.
+	 * `Trail.Enabled` is documented as *whether the trail will be drawn* and that is exactly what it does:
+	 * off is off, immediately, with the recorded path left in the instance and unrendered. A ball that flies
+	 * in and is caught therefore lost its trail in one frame, mid-air — the cut-out — and the trail that it
+	 * appeared to keep was the *next* throw's. **A fade needs the trail to stay enabled and stop moving**,
+	 * which is what {@link BallTrail.freeze} does, and this method's job is only the held-ball case: a ball
+	 * in a hand must not draw at all.
 	 */
 	public setArmed(armed: boolean): void {
 		for (const ribbon of this.ribbons) ribbon.Enabled = armed;
+	}
+
+	/**
+	 * **Stops `ball`'s trail where it is and lets it fade out, instead of cutting it off.** Called on the frame a
+	 * ball is caught, before anything moves it.
+	 *
+	 * **What went wrong without it.** A caught ball's trail was disarmed by `attachToHand` — see {@link setArmed} —
+	 * and disarming is a cut, not a fade: the arc the ball flew in vanished in one frame, mid-air, at the exact
+	 * moment the player had just done something they were pleased with. The ball arriving in the hand then had no
+	 * trail either (it must not), so the throw's whole visible history was gone at once.
+	 *
+	 * **Why the ribbons are *moved* rather than a copy left behind, which is the decision worth reading.** A
+	 * `Trail` draws from a path it recorded itself, and that path belongs to the instance — cloning a `Trail` copies
+	 * its eight properties and none of its history, so the obvious "clone the trail onto a ghost part" produces
+	 * nothing at all on screen. The only thing that can keep drawing the arc is the ribbon that drew it, so the
+	 * ribbons are re-parented, with their own attachments, onto a stationary part posing where the ball was. Left
+	 * **enabled**: new samples all land on one point, `MinLength` refuses to record a segment between identical
+	 * ones, and the segments already recorded age out over each layer's own `Lifetime` — the core in
+	 * `TRAIL_LIFETIME`, the haze in `TRAIL_HALO_LIFETIME`, so the haze outlives the streak here exactly as it does
+	 * in the air.
+	 *
+	 * **The attachments go with them and are not duplicated**, which is the part that is easy to get wrong: the
+	 * next hand to hold this ball builds a fresh set of ribbons under the same names, and leaving the old
+	 * attachments behind would put two `FlightTrailA0`s on every ball that had ever been caught.
+	 *
+	 * **Nothing is left in `Workspace`.** The holder is a transparent, anchored, non-colliding, non-querying part
+	 * that owes nothing to the ball it came from, and `Debris` destroys it once the longest ribbon's lifetime has
+	 * passed plus {@link FROZEN_TRAIL_GRACE}. A trail with no ball to belong to must have a death of its own, or the
+	 * catch is a leak of one part per throw.
+	 *
+	 * **Nothing happens when the ball is wearing no ribbons**, which covers three ordinary cases at once: the trail
+	 * is switched off in config, the ball has just been built, and the ball has already been frozen once.
+	 */
+	public static freeze(ball: BasePart): void {
+		const ribbons = ribbonsOf(ball);
+		if (ribbons.size() === 0) return;
+
+		const holder = new Instance("Part");
+		holder.Name = FROZEN_HOLDER_NAME;
+		holder.Size = new Vector3(BALL_SIZE, BALL_SIZE, BALL_SIZE);
+		holder.CFrame = ball.CFrame;
+		holder.Anchored = true;
+		holder.CanCollide = false;
+		holder.CanQuery = false;
+		holder.CanTouch = false;
+		holder.Transparency = 1;
+
+		// The pose first, the parenting second: an `Attachment`'s `Position` is relative to its parent, so moving it
+		// to a part at the ball's own `CFrame` leaves every one of them exactly where it was in the world.
+		let hold = 0;
+
+		for (const ribbon of ribbons) {
+			hold = math.max(hold, ribbon.Lifetime);
+
+			// Both ends, each moved only if it exists — `Attachment0`/`Attachment1` are optional in the typings and a
+			// ribbon with one end is a ribbon that draws nothing, which is not this function's business to fix.
+			if (ribbon.Attachment0 !== undefined) ribbon.Attachment0.Parent = holder;
+			if (ribbon.Attachment1 !== undefined) ribbon.Attachment1.Parent = holder;
+
+			ribbon.Parent = holder;
+		}
+
+		holder.Parent = Workspace;
+
+		Debris.AddItem(holder, hold + FROZEN_TRAIL_GRACE);
 	}
 
 	/**

@@ -57,7 +57,7 @@ import { DUCK_CONFIG } from "./duck.config";
  *
  * **`throw`, `catch` and the four dodges are events**, not conditions: facts written at the moment they happen
  * and cleared shortly after, so a one-shot clip has a window to play in. The throw's mark is written by
- * `BallService.throwBall` and the catch's by `BallService.catchBall` — each the single funnel a player's
+ * `BallService.throwBall` and the catch's by `BallService.markCatchAnimation` — each the single funnel a player's
  * remote and a rig's behaviour both arrive through, so each is written **for every body that throws or
  * catches**. A dash publishes its direction for its own length (`DodgeService`), which is the same shape with
  * a direction in it.

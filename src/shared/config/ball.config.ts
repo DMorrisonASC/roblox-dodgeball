@@ -811,6 +811,105 @@ export const BALL_CONFIG = {
 	 */
 	BOUNCE_FACTOR: 0.7,
 
+	// -------------------------------------------------------------- the catch pull
+
+	/**
+	 * **How close a ball has to get to the hand before the pull gives up and welds it, in studs — `1.5`.**
+	 *
+	 * **The pull is a physics approximation and the weld is exact, so the hand-off has to be short.** A ball within
+	 * a stud and a half of the grip is visually *at* the hand; the snap `attachToHand` performs from there is under a
+	 * body width and reads as the ball settling rather than as it jumping. Tightening it makes the pull take longer to
+	 * finish; loosening it makes the last frame visible again, which is the artefact this exists to remove.
+	 *
+	 * **Placeholder.**
+	 */
+	PULL_ARRIVAL_STUDS: 1.5,
+
+	/**
+	 * **A catch closer than this does not travel at all — the ball is welded where it is, in studs — `3`.**
+	 *
+	 * **The fix for the case that made the pull look worse than the snap it replaced.** A ball that is *already* at the
+	 * catcher has no journey to show, and animating one frame of it is what produced the yo-yo: the pull released the
+	 * ball's collision (`CanCollide = false`) and then spent a couple of frames beating its momentum, so a ball caught
+	 * on the body carried *through* the catcher and was dragged back out from behind them. The contact path is the
+	 * worst case of this and is not pulled at all — `BallComponent.tryCatch` passes `instant` — but a proximity catch
+	 * at six studs is nearly as bad, and this is where that stops.
+	 *
+	 * **Three studs is a body's width.** Below it the ball is somewhere on the catcher already, and a weld from there
+	 * is not a teleport but a ball settling into the hand it was about to be pulled into. Above it there is real
+	 * travel to draw.
+	 *
+	 * **Placeholder.**
+	 */
+	PULL_INSTANT_STUDS: 3,
+
+	/**
+	 * **How long a pull may run before the ball is welded wherever it is, in seconds — `0.5`.**
+	 *
+	 * **The fail-safe, and without it a ball caught through a wall is a ball that never arrives.** `AlignPosition`
+	 * applies a force; a ball behind geometry, wedged under an anchored part, or pulled by something heavier can spend
+	 * the whole pull not moving. The timeout ends it and hands the ball to `attachToHand` anyway, which is the right
+	 * failure: a caught ball appears in the hand rather than hovering in the world forever.
+	 *
+	 * **Much longer than the 0.2 s a pull takes when nothing is in the way**, so an ordinary catch never reaches it —
+	 * this is a stuck filter and not a duration.
+	 *
+	 * **The number is set from below by `PULL_MAX_VELOCITY`, and that is the relationship to keep.** A pull from the
+	 * far edge of the eight-stud radius at 45 studs/s is 0.18 s, so half a second is nearly three times the worst
+	 * honest journey: long enough that a ball genuinely caught on geometry still gets its chance, short enough that a
+	 * stuck ball does not visibly *drift* before snapping, which reads as the game changing its mind.
+	 *
+	 * **Placeholder.**
+	 */
+	PULL_TIMEOUT_SECONDS: 0.5,
+
+	/**
+	 * **The speed ceiling `AlignPosition` is allowed to move the ball at during a pull, in studs per second — `45`.**
+	 *
+	 * **The number that decides whether the pull looks like a pull or like a snap.** With `RigidityEnabled = false` the
+	 * constraint is a *force* rather than a teleport, and this caps how fast it may drag: a ball eight studs away takes
+	 * roughly a fifth of a second at 45, which is the visible travel the whole feature exists for. Much higher and it
+	 * arrives inside a frame, which is the artefact; much lower and a catch from the far edge of the radius feels
+	 * like the ball is stuck in syrup.
+	 *
+	 * **Cut from 60 after a playtest that called the pull *floaty*, and the shape of the fix is the reason.** The ball
+	 * starts from rest now (see `BallService.beginPull`), so a high ceiling is a speed the constraint reaches almost at
+	 * once and then holds — a constant drift rather than a pull. Lower and slower is the visual the feature wants: a
+	 * ball that is *yanked* covers the same eight studs, but it accelerates into it.
+	 *
+	 * **Placeholder.**
+	 */
+	PULL_MAX_VELOCITY: 45,
+
+	/**
+	 * **How hard the pull corrects toward the hand, in the engine's own responsiveness units — `20`.**
+	 *
+	 * **The snappiness**, and it is the counterpart of the velocity cap: this is how aggressively the constraint
+	 * closes the remaining distance once it is moving. Twenty is brisk enough that a caught ball curves into the hand
+	 * rather than drifting, and soft enough that it does not overshoot and oscillate, which at a higher value reads as
+	 * the ball vibrating in the air.
+	 *
+	 * **Cut from 30 with the velocity cap**, and the two cannot be tuned apart: they multiply, so a ball dragged fast
+	 * *and* corrected hard arrives in two frames and the travel is not visible at all. Neither number alone is the fix;
+	 * the ratio between them is what the eye reads.
+	 *
+	 * **Placeholder.**
+	 */
+	PULL_RESPONSIVENESS: 20,
+
+	/**
+	 * **The force ceiling of the pull, in the engine's force units — `5000`.**
+	 *
+	 * **High enough to beat gravity, low enough to lose to a wall.** A ball's own momentum is no longer part of this
+	 * sum: the pull stops the ball dead before the constraint takes over (see `BallService.beginPull`), which is what
+	 * removed the need for the ten thousand the first version carried. What is left to beat is the ball's weight and
+	 * the gravity it is falling under, and half an order of magnitude above that is ample — the rest of the headroom
+	 * was force the constraint could spend on *snatching*, which is the snap again wearing a different name. It still
+	 * cannot drag a ball through an anchored part, which is what the timeout above is the answer to.
+	 *
+	 * **Placeholder.**
+	 */
+	PULL_MAX_FORCE: 5000,
 
 	// -------------------------------------------------------------------- drop
 

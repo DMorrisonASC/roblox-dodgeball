@@ -17,6 +17,11 @@ import { taggedPartsInWorkspace } from "shared/taggedParts";
  * practice zone, not in the lobby — and a second copy of a rule about *where you are allowed to act* is a
  * second answer to it, which is the one thing that rule cannot survive.
  *
+ * **The dodge has since narrowed its half of it and the camera has not**, which is why {@link inRoundOrZone} and
+ * {@link isParticipant} are both here and both used. The camera wants "the game is being played around me", which is
+ * the phase; the dodge wants "I am in this round", which is the phase *and* the round's own membership attribute. See
+ * {@link inRoundOrZone} for the report that separated them.
+ *
  * **Nothing here caches, and every caller decides how often to ask.** The camera asks on its own tick,
  * because it needs the answer on a clock; the dodge input asks on the press that completes a dodge — a
  * movement key plus the dodge button — because a press is not a frame. That is deliberately the shape
@@ -202,28 +207,36 @@ export function inTaggedZone(character: Model | undefined): boolean {
 }
 
 /**
- * The rule both features are asking about: **a round is being played, or the body is in a tagged zone.**
+ * The rule the dodge asks: **this player is in the round being played, or the body is in a tagged zone.**
  *
- * **A note that used to sit here named the spectator attribute as an open question, and the question has
- * been closed by removing the state rather than by answering it.** The practice-zone task described this
- * rule as "in a round (not spectating) or in a practice zone", and nothing in this codebase ever consulted
- * spectating for either feature — the camera holds on the phase alone, and the dodge's other checks already
- * require a living humanoid. So there was never a line here to delete rather than keep: the open question
- * was whether to *add* one, and there is nothing left to add, because a player who is out of a round is a
- * player the client cannot tell apart from one standing in the lobby. That is the same trade
- * `panels.ts`'s `sessionHudVisible` made for the readouts, and the fact behind it — `activePlayers`, inside
- * `RoundService` — has never been replicated to a client and is not going to be.
+ * **It used to be `inRound() || inTaggedZone(character)`, and that was wrong in exactly one way: a round being
+ * played is true for every spectator in the lobby.** The report was *"when the round starts I can dodge in the lobby
+ * even though I am not in the match"* — and that is what the old line said, literally: the phase is a fact about the
+ * *server*, not about this body, so a player who opted out, or who never joined, or who surrendered and walked back
+ * to the lobby, got the whole mechanic for the length of somebody else's round.
  *
- * **That last clause aged out on 2026-10-20, and the reason it was true is worth keeping.** `RoundService` now
- * publishes `IN_ROUND_ATTRIBUTE`: membership of `activePlayers`, written where a player is admitted to a round
- * and cleared in `eliminate`, which is the one method a live round loses a body through. So a client *can* tell
- * somebody who is out of a round — surrendered, eliminated — from a spectator who was never in it.
+ * **So the first half is {@link isParticipant}, which is the round's own statement that it has this player** — the
+ * phase *and* `IN_ROUND_ATTRIBUTE`, both of them, the same predicate the camera's shift-lock already uses. One rule,
+ * two readers, rather than a second definition of "in the round" that could drift from the first.
  *
- * **It is deliberately not folded into this function.** The camera and the dodge ask "is the game being played
- * around me", which the phase answers; the team ring and the surrender prompt ask "am I still in it", which is
- * the new attribute. Two questions, two predicates, and neither answers the other's — the ring's rule is written
- * once, in `TeamRingController.ringFor`.
+ * **The comment that used to stand here argued the opposite, and its argument was about a state that no longer
+ * exists.** It said the two questions were deliberately kept apart — the camera and the dodge asking *"is the game
+ * being played around me"*, the team ring and the surrender prompt asking *"am I still in it"* — on the grounds that
+ * `activePlayers` had never been replicated and was not going to be. `IN_ROUND_ATTRIBUTE` is that fact, published
+ * since 2026-10-20, so the distinction the paragraph was protecting is no longer a distinction between a *replicated*
+ * fact and an unreplicated one: both halves are readable here now. What the dodge actually wants is the second
+ * question, and the first was standing in for it because the second could not be asked.
+ *
+ * **`character` and not a `Player`**, because the zone half is about the body: a player standing on a practice floor
+ * is inside a box their `Player` knows nothing about. The player is resolved from the body for the round half, which
+ * is the same call `sideOfBody` makes for the same reason — the attribute lives on the `Player` and the box test
+ * needs the model.
+ *
+ * **A body with no player behind it** — a rig — is not a participant, so this answers `inTaggedZone` for it. That is
+ * correct rather than incidental: a rig's dodge is gated on the server by the phase, which is its membership.
  */
 export function inRoundOrZone(character: Model | undefined): boolean {
-	return inRound() || inTaggedZone(character);
+	const player = character !== undefined ? Players.GetPlayerFromCharacter(character) : undefined;
+
+	return (player !== undefined && isParticipant(player)) || inTaggedZone(character);
 }

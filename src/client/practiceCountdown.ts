@@ -201,9 +201,10 @@ export function startPracticeCountdown(): void {
 	/**
 	 * **The whole of the drawing decision, for one rig, on one frame** — and the only place a box is shown or hidden.
 	 *
-	 * Every trigger ends here: the tag arriving, a frame passing, and the anchor being replaced. There is deliberately
-	 * no second path that hides a number, which is what makes "the digits went away" and "the attribute was cleared"
-	 * the same sentence.
+	 * Every trigger ends here: the tag arriving, a frame passing, and the anchor being replaced. **Two ways to hide and
+	 * one way to show, all of them here** — "not armed" and "outside the window or past the deadline" — which is what
+	 * keeps every one of them the same sentence: a reason, then `Enabled = false`. What there must never be is a
+	 * *second place* that hides a number.
 	 */
 	const draw = (rig: Model): void => {
 		const value = rig.GetAttribute(NEXT_THROW_AT_ATTRIBUTE);
@@ -218,6 +219,15 @@ export function startPracticeCountdown(): void {
 			return;
 		}
 
+		// **And the digits keep counting while the rig winds up, which is the point of the countdown being honest.**
+		// This module briefly hid the board the moment `CHARGING_ATTRIBUTE` went up, because the server was publishing
+		// the *hold* as a second deadline and a sub-second deadline can only round up to `1` — so every cycle drew
+		// `3 2 1` and then a second `1`. That was the right answer to a server that was counting the wrong thing.
+		// **The server counts the throw now** (`PracticeThrowBehavior`'s `nextThrowAt` is the release, and the windup is
+		// started a hold early so that the hold *ends* on it), so the `1` on the board is the second the rig spends
+		// winding up and the board goes on the frame the ball leaves. Hiding it would now remove the best part: the
+		// number and the lit hand saying the same thing.
+
 		// **The one subtraction.** `GetServerTimeNow` is the only clock both machines share — `os.clock` is per-machine
 		// and `os.time` is whole seconds, and a countdown rounded to the second would spend most of its life a second
 		// out. Read once per rig per frame rather than hoisted, because the figure is the same for all of them and
@@ -225,8 +235,10 @@ export function startPracticeCountdown(): void {
 		const remaining = value - Workspace.GetServerTimeNow();
 
 		// **`ceil`, so the digits read `3 2 1` rather than `2 1 0`.** A deadline 2.7 seconds away rounds up to `3`,
-		// which is the number a person would say; the last fraction of a second is `1` and then the box goes, on the
-		// same frame the server is releasing the throw.
+		// which is the number a person would say, and each of `3`, `2` and `1` therefore gets a full second — so the
+		// count runs `N … 2 1` every cycle and never starts partway, because the server publishes a whole `cadence`
+		// the turn a rig arms. The `1` is the second the rig spends winding up, and the board goes on the frame the
+		// ball leaves: the deadline *is* the release. See `PracticeThrowBehavior.nextThrowAt`.
 		//
 		// **Outside the window, or past the deadline, there is nothing to say** — the first because the wait is too long
 		// to count (see `MAX_COUNTDOWN_SECONDS`), the second because the ball has already gone and the server clears the

@@ -41,6 +41,10 @@ is asking (*is this rig a drill?*) rather than the one the source answers (*whic
 one consequence worth knowing is in `NpcService`'s MicroProfiler labels**, which used to drop a fixed
 nine-character prefix; see `behaviorScopeName` there for why that stopped being exact.
 
+**And one more since, taking it to twenty-seven**: `BallBarrier`, the wall that stops balls and lets bodies through.
+**The count in the header blocks above is now history rather than a claim** — the number that matters is the register's
+own row count, and this paragraph is the note of what moved it last.
+
 **Earlier revisions, for the record.** The revision *before* 2026-10-06 was three tags short —
 `MatchJoinA`, `MatchJoinB` and `ShiftLockZone` (now `practiceZone`) — and described `CharacterBarrier`
 and `MatchSpawner` in terms of a map that is no longer cloned. The 2026-10-06 revision (commit
@@ -151,6 +155,7 @@ a place file that no build touches.
 | `RoundBall` | `BallSpawnerService`, `ROUND_BALL_TAG` | `BallSpawnerService.spawn` | `BallSpawnerService.roundBallCount` (the budget). **`cleanupRoundBalls` no longer reads it** — see below |
 | `MatchSpawner` | `shared/constants.ts`, `MATCH_SPAWNER_TAG` | *painted in Studio* | `BallSpawnerService.report` and `.tick` |
 | `CharacterBarrier` | `shared/constants.ts`, `CHARACTER_BARRIER_TAG` | *painted in Studio* | `CollisionGroups.applyBarrierGroups`, called by `RoundService` at **every round boundary** |
+| `BallBarrier` | `shared/constants.ts`, `BALL_BARRIER_TAG` | *painted in Studio* — `CanCollide`, `CanTouch` and `CanQuery` all **true**, and `Anchored` | Three server readers, and the first two are the two halves of the feature: `CollisionGroups.applyBallWallGroups` puts the part in the `BallWall` group — at **boot**, on the tag's **added-signal** (which is what a mid-session tag needs, and what the first version was missing), and again at every round boundary with the sibling wall; and `BallService.pumpBallWalls`, one `Heartbeat` over a registry of walls, which asks `GetPartBoundsInBox` for bodies standing inside one and destroys the ball in a hand. **The third is `BallService.watchBallWalls`**, which keeps that registry in step with the tag's two signals. **The sibling of `CharacterBarrier` and its opposite on every axis**: that one is solid to bodies and transparent to balls, this one is solid to balls and transparent to bodies. See the section below |
 | `AimIgnore` | `shared/constants.ts`, `AIM_IGNORE_TAG` | *painted in Studio*, and `CanQuery = false` on the same part is the flag that actually does the work — see the section below | `client/controllers/input/ThrowController` — `refreshAimIgnores` caches it and both of that file's exclusion lists spread the result: the arc's `Trajectory`, and the shared list `aimPoint`'s ray and the assist's sight test cast with. **The only tag in this register with no server reader at all** — physics never needs to know a wall is invisible to the preview |
 | `practiceZone` | `shared/constants.ts`, `PRACTICE_ZONE_TAG` | *painted in Studio* | `PracticeZoneService.insideZone` / `.insideZoneAt` on the server — the tracker that publishes the attribute; **`isPractising(body)`** (in `services/zone/practiceZoneMembership.ts`, a plain module rather than an export from the service — see that file for why), the predicate both kill paths ask (`BallComponent.landHit` and `RoundService.resolveCaughtThrower`) so a practising player is hit, heard and seen but not killed, while a **rig victim inside the zone is still killed** because the predicate answers only for a `Player`; `MysteryBoxService` calls `insideZoneAt` to ask whether a spawn point is on a practice floor; and **`AlwaysSeekingBehavior` reads the tag itself to ask whether a loose ball is inside the zone** — the practice half of the seek split, and the only reader of this tag that is a behaviour. **On the client** the rule is `client/roundZone.ts` (`inTaggedZone`), which the camera (`ShiftLock.checkZone`) and the dodge input (`DodgeController`) both ask — plus `ShiftLock.reportZoneParts`, which reads the tag a second time for its own count. One of the two tags a client reads |
 | `practiceBay` | `shared/constants.ts`, `PRACTICE_BAY_TAG` | *painted in Studio* — `CanTouch = false`, `CanQuery = false`, no collision group, for `practiceZone`'s reasons | `npc/practiceBay.ts`, and nothing else anywhere: `bayOf` (which box is this rig standing in), `playerInBay` (who is in that box), `insideAnyBay` (has a drill's ball left every box). **The one tag in this register whose meaning is a *footprint* rather than a box**, and that is not a detail: `overFootprint` ignores the part's own thickness, because a bay painted on a floor is a slab an inch thick and a three-dimensional test for it failed three ways at once — a rig's root three studs up was "outside", a player's root was too, and a ball leaving the hand at head height was "out of bounds" and was destroyed at the muzzle. See the section below |
@@ -305,6 +310,41 @@ cross it and balls bounce off it, which is the exact symptom pair described in
 `CanTouch` and `CanQuery` true and **no tag at all**, which is what stopping characters *and* balls
 means. Tagging one would invite a reader to route it through this wall's code and silently take the
 balls out of it.
+
+## `BallBarrier` — the same wall, the other way round
+
+Marks a wall that **stops dodgeballs and lets every body walk through it**. Two mechanisms, because a loose ball and
+a held ball are not the same kind of thing:
+
+- **A loose ball is a physics body.** `CollisionGroups` leaves `BallWall` collidable against `Ball` — *written out
+  explicitly rather than left to the engine default* — so the engine bounces it. **There is no code for the
+  loose-ball case**, and there must not be: a query would miss a ball crossing a thin wall between frames in exactly
+  the way a solver cannot.
+- **A held ball is not a body at all.** Welded into a hand, `CanCollide = false`, and its pair with the wall is
+  non-collidable by group. `BallService.pumpBallWalls` is one `Heartbeat` over a registry of walls, and asks
+  `GetPartBoundsInBox` whether a body carrying a ball is standing inside one. On a hit:
+  `playSpawnPoof(undefined, ball.CFrame)` then `removeBall`.
+
+**`Touched` was tried first and is withdrawn.** The first version connected each wall's `Touched` and read the body
+off the contact, on the argument that a collision group suppresses collision rather than contact. Whatever the
+engine's truth there, **a wall deliberately made non-collidable with every body is the worst possible place to build
+a rule on a contact event** — and the report, *"nothing happens when I tag a part"*, is what a contact that never
+fires looks like.
+
+**The group is applied at boot, on the tag's added-signal, and again at every round boundary.** The last of the three
+is all the sibling wall gets, and it was the bug here: the first version grouped the part only at a round boundary, so
+a wall tagged mid-session — or on a server nobody had started a round on — stayed in `Default`, which collides with
+every character **and stops bouncing balls**, since the row that matters is `BallWall` against `Ball`. A wall in the
+wrong group is therefore wrong in both directions at once, and nothing said so.
+
+**The group is where "stops balls, not bodies" lives.** `BallWall` is non-collidable against `Character`,
+`PracticePlayer`, `DUCK_GROUP`, `Default`, `Barrier` and itself; the three character rows are three rather than one
+because a body can be in any of the three, and missing one would be a wall that only stops players while they are
+ducking.
+
+**A ball can squeak past a corner or a gap, and that is a geometry fact rather than a fault.** The wall stops balls
+where somebody painted it. The fix is a wider wall, never a larger box in the script — an inflated box would destroy
+balls that bounced off the visible edge and never crossed anything.
 
 ## `AimIgnore` — painted, and the only tag here with no server reader
 

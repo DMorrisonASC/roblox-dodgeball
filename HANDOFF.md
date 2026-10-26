@@ -3312,6 +3312,558 @@ almost no server code; 45 is what it cannot show.**
 
     **Unverified**: that eight studs feels right, and that a proximity catch reads as a catch rather than a vacuum.
 
+83. **A catch no longer teleports the ball into the hand. It is pulled there, and the weld happens on arrival.**
+    The report was *"when I catch or pick up a ball it snaps to my hand in one frame — it looks like a teleport"*.
+    `attachToHand` wrote the ball's `CFrame` to the grip and welded it, both in the frame the catch was decided, so
+    the ball was in two places in two frames with nothing in between. It is now **three phases — decide, pull,
+    weld** — and only the middle one is new.
+
+    **Phase 1, decide, is unchanged and still authoritative.** `BallComponent.tryCatch` spends the window, calls
+    `BallService.catchBall`, credits the badge and resolves the thrower, all on the frame of the contact.
+    `catchBall` answers `true` for "a ball has been caught", which is what it answered before; the only refusal that
+    still answers `false` is a body with no right hand, because that one falls straight through `beginPull` into
+    `attachToHand` and is refused there. **Nothing about a catch waits for the ball to arrive** — a drill still dies
+    on the decide frame, and a catch that resolved on the weld would let it live another fifth of a second and make
+    the outcome depend on geometry the decision had already stopped caring about.
+
+    **Phase 2, pull, is one `AlignPosition` and one map.** `BallService.pulling` is a `Map<BasePart, Pull>`;
+    `beginPull` creates an `Attachment` on the ball (at `Vector3.zero`) and an `AlignPosition` beside it, puts the
+    ball in the map, and returns. A single `RunService.Heartbeat` — `pumpPulls` — walks the map every frame.
+
+    | decision | choice | why |
+    | --- | --- | --- |
+    | `AlignPosition` mode | `OneAttachment`, target written into `Position` | `TwoAttachment` needs a second `Attachment` parented to a **body part that can be destroyed mid-pull** — a catcher dying during a catch is exactly the leak this feature has to avoid — and buys nothing, because the arrival test already reads the hand's position every frame. One instance, on the ball, dying with the ball |
+    | the loop | **one `Heartbeat` over the map** | a `task.spawn` per catch is a thread per catch with its own cancellation problem; `pulling.size() === 0` is the entire idle cost of having none in flight |
+    | arrival | **distance *and* timeout** | `PULL_ARRIVAL_STUDS` 1.5 ends an ordinary pull; `PULL_TIMEOUT_SECONDS` 1.5 is the fail-safe, because `AlignPosition` applies a *force* and a ball behind geometry would otherwise never arrive. A caught ball hovering in the world forever is worse than a snap |
+    | target freshness | rewritten every frame | a catcher walking, or one whose idle animation moves the arm, is a target that moves under a constraint told where to aim once |
+    | the pull's numbers | `MaxVelocity` 60, `Responsiveness` 30, `MaxForce` 10000, `RigidityEnabled = false` — all **Placeholder.** | 60 studs/s is the visible travel (eight studs in about an eighth of a second); 30 closes the remaining distance briskly without overshooting into a visible vibration; 10 000 beats gravity and a ball's own momentum but still loses to an anchored wall, which is what the timeout answers. `RigidityEnabled` would make it a teleport with extra steps |
+
+    **Phase 3, weld, is the old path untouched.** `completePull` destroys the constraint and the attachment *first*
+    (so nothing is left on a ball that is about to be re-parented into a hand) and then calls `attachToHand`, which is
+    still the only way into a hand: grip offset, `WeldConstraint` named `DodgeballGrip`, `Massless`, no query, ability
+    cleared, `heldBalls` entry. **The pull changed where the ball is when that runs, and nothing else about it.**
+
+    **The one behaviour that moved, and it should be watched.** The catch *sound* and the `AnimCatch` mark used to be
+    published on the decide frame; they are now published on the weld frame, because the sound is the ball *landing* in
+    a hand and a reach that started at the decision would be a body grabbing at something already in its hand. The
+    delay is the pull, at most a fifth of a second, and reads as the reach following the ball in. `PICKUP_COUNT_ATTRIBUTE`
+    moved with them, for a harder reason: a count of balls *in a hand* must not be moved by one still in the air.
+    **Item 84 reverses the sound and keeps the mark**: heard in the game, "the ball landing" reads as a delay between
+    pressing and hearing, so the sound is emitted on the decide frame again and only the reach still waits for the
+    arrival it is a picture of.
+
+    **A ball mid-pull is not a loose ball, and that is two skips rather than one.** `settleLooseBalls` skips it (the
+    bay grace would otherwise destroy it mid-flight, and the rolling resistance would fight the constraint for the same
+    body), and `catchByProximity` skips it. **The second is not redundant with `canCatch`'s `Armed` test**: the window
+    is spent for the *original* catcher, but a **second** player with an open window would otherwise be able to take a
+    ball already travelling to somebody else's hand. `Armed` going false at the start of the pull closes both doors;
+    the skip is the cheap half, one map lookup before the distance sum on a loop that runs every frame.
+
+    **The leak, named, because it is the classic "invisible force" bug.** An `AlignPosition` on a re-parented or
+    destroyed ball keeps dragging it toward a hand that no longer exists. **An entry's lifetime is exactly its
+    constraint's**: `clearPull` is the single teardown and both exits call it, `pumpPulls` checks `ball` and
+    `pull.hand` for `IsDescendantOf(Workspace)` every frame and *abandons* rather than completes, and `beginPull`
+    refuses a ball already in the map so no second constraint can be made. An abandoned ball is left loose, unarmed,
+    collidable — a ball somebody can pick up again — rather than destroyed, because nothing about the failure is the
+    ball's fault.
+
+    **Nothing here touches the trajectory preview or `CHARGING_ATTRIBUTE`.** The preview solves `shared/throw.ts` from
+    the thrower's hand at the moment of a throw; a pull moves a ball toward a hand *after* a catch, when there is no
+    charge and no aim to disagree with.
+
+    **Comments corrected in the same pass, because they argued for the old shape**: `BallComponent.canCatch`'s *"the
+    refusal has to sit above the weld"* (now above the *pull*, and the weld's ability clear is a fifth of a second
+    later), `BallComponent.resolveCatch`'s *"after `catchBall` has taken the ball into the catcher's hand"*,
+    `CATCH_ANIMATION_ATTRIBUTE`'s list of callers, `SOUND_CONFIG.CATCH`'s *"where exactly"*, and
+    `BallService.catchBall`'s whole essay about being the confirmation site — which is now `completePull`'s.
+
+    **Unverified**: whether the pull *feels* right, whether the ball arrives at the hand or overshoots it, and whether
+    a fast catch (a ball at 90 studs/s, turned around by `MaxForce` 10 000) still reads as a pull rather than a snap.
+    The numbers are the ones to move if it does not.
+
+84. **The pull was fighting the wrong thing. A caught ball now stops dead, a ball caught on the body is welded on the
+    spot, the numbers came down, and the catch sound moved back to the frame the catch is decided.**
+    The report was *"the ball bounces off the rig and the radius yanks it back — like a yo-yo"*, plus *"floaty when far
+    away"* and *"the sound plays late"*.
+
+    **The prompt's diagnosis was wrong, and the correction is the whole pass.** It said physics pushed the ball away
+    and the constraint reeled it back. `bounceOff` never runs on a catch: the catch branch sits **above** the tag branch
+    in `handleTouch` (`BallComponent:594` vs `bounceOff` at `:830`), so a caught ball is never bounced. What actually
+    happened is the opposite — the pull sets `CanCollide = false` and then asked an `AlignPosition` *force* to beat the
+    ball's own momentum. **A force cannot arrest ninety studs a second inside one frame**, so the ball carried straight
+    *through* the catcher and was dragged back out from behind them. That is the yo-yo, and no amount of gain fixes it.
+
+    **1 — the ball stops dead before the constraint takes over.** `beginPull` now writes
+    `AssemblyLinearVelocity`/`AssemblyAngularVelocity` to zero alongside `CanCollide = false`. The honest statement:
+    the ball has been caught, so it is not travelling anywhere. Every pull is then the same shape — a ball at rest,
+    dragged to a hand — and this is why `PULL_MAX_FORCE` could be halved rather than raised.
+
+    **2 — a catch with no journey to draw is welded where it is.** Two conditions, one branch, because they are one
+    rule:
+
+    | condition | why |
+    | --- | --- |
+    | `instant` — `tryCatch`'s `contact === "touch"` | the ball is *on* the catcher; there is nothing to animate, and this is the case that produced the yo-yo at zero studs |
+    | `≤ PULL_INSTANT_STUDS` (3) from the hand | a proximity catch at six studs is nearly as bad and the contact door cannot have caught it. Three studs is a body's width: below it a weld is a ball settling, above it there is real travel |
+
+    `tryCatch` gained `contact: "touch" | "proximity"` — **which door**, which is the one thing the two callers know and
+    the ball does not. The word is translated to `instant` exactly once, at the `catchBall` boundary, where "how it
+    arrived" stops mattering and "must not travel" starts.
+
+    **3 — the numbers came down, and the ratios are the point.** `PULL_MAX_VELOCITY` 60 → **45**,
+    `PULL_RESPONSIVENESS` 30 → **20**, `PULL_MAX_FORCE` 10 000 → **5 000**, `PULL_TIMEOUT_SECONDS` → **0.5**
+    (**Placeholder.** at each). Velocity and responsiveness multiply, so a ball dragged fast *and* corrected hard
+    arrived in two frames and the travel was invisible — "floaty" was a ball that reached its ceiling immediately and
+    then drifted. The timeout is set from below by the velocity: 45 studs/s over eight studs is 0.18 s, so half a second
+    is nearly three times the worst honest journey and still a *filter* rather than a duration.
+
+    **4 — the catch sound moved to the decide frame.** It was emitted in `completePull`, on the argument that the sound
+    is the ball landing in a hand. In the game that reads as a delay between pressing and hearing. It is now emitted by
+    `tryCatch` immediately after `catchBall` answers, at **the ball's position** — for a proximity catch up to eight
+    studs from the hand — through `BallService.emitCatchSound`, a one-line command that keeps `CATCH_EMITTER_NAME`
+    beside the sound it names. **`markCatchAnimation` deliberately stays on the weld**, because the reach is a picture
+    of the ball arriving, not of the press.
+
+    **5 — the trace found the log, and that was the other finding of the pass.** `[Catch] … NOT catchable — out of
+    play (Armed not true), touch on …` printed on **every touch of every spent ball** — a ball rolling through a crowd
+    of rigs is several lines a frame, forty a second, forever. The pass's own log is roughly nine hundred of those to
+    thirty useful lines. **It now prints only when the body it touched has an open catch window**, which is exactly the
+    case worth asking about: a spent ball touching somebody who is *trying* to catch it. `TRACE_CATCH` still gates it,
+    and the other two catch lines are untouched.
+
+    **Nothing here touches the trajectory preview, `CHARGING_ATTRIBUTE`, the bay grace, or the catch decision's timing.**
+    The drill still dies on the decide frame; `catchByProximity` and `settleLooseBalls` still skip a ball in `pulling`.
+
+    **Unverified**: whether 45/20/5 000 reads as *snappy but visible* rather than as a small teleport; whether a
+    three-stud instant weld is invisible in play; and whether the sound now arriving on the press makes the weld look
+    late instead of the sound — the two cannot both be early, and only a player can say which one they notice.
+
+85. **A caught ball's trail now stops where it was caught and fades out, instead of vanishing in one frame.**
+    The report was *"the trail cuts out mid-air when I catch"*.
+
+    **The cause was one word in a comment, and the comment was wrong.** `BallTrail.setArmed`'s doc said disabling a
+    trail leaves its existing segments "to expire on their own lifetime", so a caught ball's trail *faded* where it was
+    caught. `Trail.Enabled` is documented as *whether the trail will be drawn* and that is the whole of it: off is
+    off, immediately. So the arc the ball flew in on disappeared on the frame the catch was decided, and the ball that
+    arrived in the hand had no trail either — a throw's entire visible history gone at once, at the moment the player
+    had just done something they liked.
+
+    **The prompt's recommended shape — clone the trail onto a ghost part — cannot work, and the reason is worth
+    keeping.** A `Trail` draws the path *it* recorded, and that path is engine state belonging to the instance.
+    `Clone()` copies the eight properties and none of the history, so a cloned trail on a fresh part draws nothing at
+    all. **The only thing that can go on drawing an arc is the ribbon that drew it**, which is why the ribbons are
+    *moved*.
+
+    | decision | choice | why |
+    | --- | --- | --- |
+    | what is frozen | the ball's own ribbons, with their own attachments, re-parented to an invisible part posing at the ball's `CFrame` | a clone has no history; a move keeps the instance that owns the arc |
+    | enabled or disabled on the ghost | **enabled** | a stationary enabled trail records only zero-length samples, which `MinLength` refuses, so nothing new is drawn and the recorded segments age out over each layer's own `Lifetime` — core in `TRAIL_LIFETIME`, haze in `TRAIL_HALO_LIFETIME`, so the haze outlives the streak exactly as it does in the air. Disabling is the cut this pass exists to remove |
+    | where it is called | `BallService.beginPull`, `kind === "catch"` | the single funnel both catch doors pass through, **and the last frame before anything moves the ball**: an instant weld teleports it on that same frame, a pull starts dragging it on the next. A trail still on the ball would draw the journey into the hand and then be cut by the weld |
+    | pickups | not frozen | a ball off the floor has been lying still with its ribbons disarmed since it landed — there is no arc to preserve, and a holder would be a part parked to draw nothing |
+    | cleanup | `Debris.AddItem(holder, longestLifetime + 0.5)` | the holder outlives every segment by half a second, so the fade is never cut off at its tail. `FROZEN_TRAIL_GRACE` is a module const and not config: it is not a look |
+    | naming | `FrozenTrail`, a part in `Workspace` | the house rule from `CATCH_EMITTER_NAME`: a part parked with no owner is findable in the Explorer only by its name, so "no frozen trails remain" is checkable |
+
+    **The attachments move with the ribbons and are not copied, which is the detail that keeps a ball clean.** The next
+    hand to hold the ball builds a fresh set of ribbons under the same names, so leaving the old attachments behind
+    would put a second `FlightTrailA0` on every ball that had ever been caught. Moving them instead means the ball is
+    left with nothing, and `ribbonsOf` answering "empty" is what lets `BallTrail.attach` build rather than adopt.
+
+    **This also fixes the pull's other half.** During a pull the ball used to carry its armed trail into the hand, so a
+    caught ball drew a second arc — the catch itself — before the weld cut it. Now the ball is bare for the journey
+    (it is not a throw any more) and the arc it *was* stays where it was caught.
+
+    **Comments corrected in the same pass, because they argued for the old behaviour**: `setArmed`'s "left to expire on
+    their own lifetime" (now says plainly that disabling is a cut, and points at `freeze`), the class doc's "there is
+    nothing to clean up" (one set now leaves the ball, and it is `Debris`'s), and §7's pointer to the class doc stands.
+
+    **Unverified, and it is the risk to name**: whether a `Trail`'s recorded history survives a re-parent with its
+    `Attachment0`/`Attachment1` re-homed. Nothing about that is in the typings — the typings say only that `Enabled`
+    is a boolean and `Lifetime` a number — and the engine's own behaviour is the only authority. If the history does
+    **not** survive, the frozen holder draws nothing and the result is exactly today's behaviour plus one invisible
+    part for a second; if it does, the arc stays and fades. **`BallTrail.freeze` is the one line to delete if the
+    playtest shows no change**, and its call site in `beginPull` with it.
+
+86. **The drill's `charge 0.00` was not a broken calculation — it was a *correct* calculation for a bad aim point.
+    The drill now aims at hand height on the body, and 39.5 studs costs `~0.50`.**
+    The report was *"the drill throws with minimum charge, so the ball falls short and bounces"*, and the spec named
+    `trueAim` as the suspect.
+
+    **`trueAim` is innocent, and so is the distance.** `beginWindup` computes
+    `chargeForRange(distance, point.Y − muzzle.Y)` on every call — `trueAim` only decides whether `point` is the aim
+    point or a `rollMiss` offset of it. The distance in the log (`39.5`) is the flat muzzle-to-aim distance, measured
+    the same way the release measures it. What was wrong is the **third** argument to that solve: the height.
+
+    **The arithmetic reproduces both log lines to two decimals, which is how this stopped being a guess.** With
+    `BALL_GRAVITY` 50, `CHARGE_PEAK_HEIGHT` 0.5 and `THROW_MUZZLE_HEIGHT` 2.5, a muzzle 2.5 studs *above* the aim point
+    gives a flight of 0.488 s, and the minimum speed of 80 studs/s covers **41 studs** in it:
+
+    | range | rise −2.5 (what it did) | rise 0 (what it does) |
+    | --- | --- | --- |
+    | 32.0 | **charge 0.00**, 66 studs/s | charge 0.28, 113 studs/s |
+    | 39.5 | **charge 0.01**, 81 studs/s | charge 0.50, 140 studs/s |
+    | 50.0 | charge 0.19 | charge 0.81 |
+    | 59.4 | charge 0.35 | **charge 1.00** (capped, wants 210) |
+
+    **And the ball was already reaching the player, which the spec's premise denies.** In the same log, the throw at
+    `15:25:01.413` is followed by `prospeed1 was tagged by DodgeballBall on LowerTorso` at `15:25:01.891` — **478 ms
+    later, against a solved flight of 488 ms.** That is a direct hit in the air on the point it was aimed at, followed
+    by a catch at `15:25:02.172`. Nothing bounced. **A drill aimed at a root and a ball that reaches a root are the
+    same event**, and the "short ball rolling into me" was a spent ball from an earlier throw.
+
+    **The cause is a decision the charged throw invalidated, and two comments still argued for it.**
+    `ThrowBehavior`'s `ThrowLine` doc says *"a rig aims downhill… `sighting.aimPoint` is a body's root — about two and
+    a half studs lower"*, and `playerInBay` said the root is *"what a ball leaving at head height arrives **down**
+    onto"*. Both were true of the **lob** this game threw before `CHARGE_PEAK_HEIGHT` came down to half a stud. A
+    charged throw is flat, so "arrive down onto" is no longer a thing it does: aiming 2.5 studs low now means *solve
+    for the slowest ball that still drops 2.5 studs over this distance*, and below 41 studs that answer is the floor —
+    which is also why the drill's windup was 12 ms and it had no telegraph at all.
+
+    **The fix is one function and one paragraph.** `playerInBay` answers `at` as `root + THROW_MUZZLE_HEIGHT` — the
+    height a ball leaves a hand, applied to the body it is aimed at — so on level ground the rise is **zero** and the
+    charge describes the *distance* rather than the *drop*. Both comments are rewritten rather than deleted.
+
+    **Two costs, stated because they are the trade rather than an oversight.** The aim point is now at head height on
+    a standing body (the muzzle is `root + 2.5`, and so is the target), so a drill throw arrives at the upper body
+    rather than at the hip; and the flat solve caps at **~57 studs**, so the far corner of a 55×56 bay is `charge 1.0`
+    and a couple of studs short. Both are one edit to set back.
+
+    **The windup follows the charge, confirmed in source rather than assumed.** `createWindupTracker` writes
+    `until: now + charge × RIG_CHARGE_SECONDS` and the tick releases when `now >= windup.until`, so 0.01 → 0.50 turns
+    a 12 ms hold into **0.63 s** — a drill that finally telegraphs. The release re-reads `windup.charge` and passes it
+    to `throwBall` unchanged, so the solved charge is the thrown charge.
+
+    **Left alone, and recorded**: round rigs still aim at a root through `detectEnemy`, so they still bottom out below
+    ~41 studs — a rig that closes to 30 studs throws the softest ball in the game. That is the same defect in a
+    different caller, out of scope here, and it is the next item for whoever wants it. **Also drifted, not fixed**:
+    `planChargedThrow`'s doc still claims a full hold reaches 150 studs and quotes `CHARGE_MIN_SPEED = 45` and a
+    `THROW_MAX_SPEED` of 336, while the config says 80 and 200 — at which a full hold with the drop reaches ~97 studs,
+    which the round-rig line `charge 0.90 at 91.6 studs` corroborates.
+
+    **Unverified**: that the `3 2 1` countdown followed by a 0.63 s hold reads as one telegraph rather than two, and
+    that a head-height ball is what a player practising a catch actually wants.
+
+87. **The drill's countdown drew `3 2 1` and then a second `1` — item 86 made the hold long enough to be visible, and
+    the digits were counting it.** The report was *"why is it skipping 3 to 1 sometimes? It will often just show 1
+    while in the bay."*
+
+    **The digits were right and the span they were drawn over was wrong.** `NEXT_THROW_AT_ATTRIBUTE` is republished
+    when a windup opens, because the next throw *is* the release then rather than the decision — and a hold is
+    `charge × RIG_CHARGE_SECONDS`. Item 86 took the drill's charge from `0.01` to `0.50`–`0.63` (the new log's
+    `charge 0.63 at 44.5 studs` is that pass landing), so the hold went from **12 ms to 0.79 s**. The client rounds
+    the remaining time up, so a 0.79 s deadline can only ever be `1`: every cycle drew `3 2 1` → `1`, the last number
+    repeated, and the ball arrived while the board still claimed a second to go.
+
+    **Nothing was skipping.** The server publishes a whole `cadence` (5 s) on the turn a rig arms and stands down by
+    clearing both the deadline and the decision time, so a player walking into a bay always gets a full wait and each
+    of `3`, `2`, `1` gets a full second. What reads as `3 → 1` is the phantom `1` after it.
+
+    **The fix is a hide, not a clamp, because the hold already has a telegraph and it is not this one.**
+    `client/practiceCountdown` now hides the board the moment `CHARGING_ATTRIBUTE` is a number:
+    `client/chargeEffect.ts` draws that charge on the rig's *hand*, over every `NPC_TAG` body, so a drill's windup is
+    the hand lighting up for 0.79 s before the ball. **That is the module's own doc, which has said all along**: *"a
+    person watching a drill sees a number counting down, then a hand lighting up, then a ball."* The republished
+    deadline quietly contradicted it, and this is the reconciliation.
+
+    **THE HIDE IS GONE AGAIN — item 88.** It was the right answer to a server counting the wrong thing, and item 88
+    moved the count onto the throw itself: the deadline is now the release and the windup is started a hold early, so
+    the `1` on the board is the second the rig spends winding up and hiding it would remove the best part. Its
+    comment in `practiceCountdown` says so rather than being deleted, because "why did this come and go" is the
+    question the next reader will have.
+
+    **Two comments argued for the old behaviour and are rewritten.** `publishDeadline`'s *"the cycle a client draws is
+    therefore `cadence → 3 2 1 → hold → throw`"* — which was describing the bug as a feature — and `draw`'s *"there is
+    deliberately no second path that hides a number"*. Both are rewritten again by item 88 for the shape that survived.
+
+    **Unverified**: whether `3 2 1` followed by a board that vanishes and a hand that lights reads as one countdown or
+    as a countdown that ended early. **Item 88 answered it the other way**: the digits count through the windup and end
+    on the ball, so the question is moot.
+
+88. **The drill's countdown now counts the *throw*: the windup is started one hold early so it plays during the `1` and
+    the ball leaves on `0`.** The report was *"the windup has to happen during the last second"*, after item 87.
+
+    **What was wrong was one number's meaning.** `NEXT_THROW_AT_ATTRIBUTE` said *when the ball comes* and the drill was
+    publishing *when the windup starts*, then republishing the hold's length on top of it. So the board drew
+    `3 2 1` → `1` and the ball arrived after the number had already promised it. The fix is not a display fix: it is to
+    make the published instant the release and to schedule everything else backwards from it.
+
+    | before | after |
+    | --- | --- |
+    | `nextDecisionAt` = when to start winding up | **`nextThrowAt`** = when the ball leaves |
+    | windup started at `due` | windup started at **`due − hold`** |
+    | released at `windup.until` | released at **`due`** |
+    | three `publishDeadline` sites, one of them the hold | **two**: the arming turn and the release that re-arms |
+
+    **The hold is asked for rather than predicted, which is the part worth reading.** `createWindupTracker` grew
+    `holdFor(model, aimPoint)`, and `beginWindup`'s own four lines of solve became a shared `holdOf` returning
+    `{ charge, distance, duration }` that both call. So the drill starts its windup on the last turn before
+    `due − hold`, using *the same arithmetic the windup is about to run* on the same muzzle and the same point — the
+    two cannot disagree, which they would if this file had its own copy of `chargeForRange(distance, rise) ×
+    RIG_CHARGE_SECONDS`. It is asked every turn rather than stored when the cycle armed, because the answer depends on
+    where the player is standing and that plan would be five seconds stale.
+
+    **The deadline wins over the hold when they disagree, deliberately.** A target that walks during the hold makes
+    `beginWindup`'s solve differ from the `holdFor` that scheduled it, so `windup.until` lands a few hundredths either
+    side of `due`. The release reads `due` (`windup.until` is only the fallback for a hold with no deadline behind it),
+    because the number a player has been watching is worth more than a hold of exactly `charge × RIG_CHARGE_SECONDS`.
+    The cost of the disagreement is that a hold can be cut short or held a fraction long — invisible, and the fireball
+    effect is driven by the charge rather than by the hold's length.
+
+    **The cycle is now `cadence`, not `cadence + hold`.** `PRACTICE_THROW_CADENCE_SECONDS` (5) was the wait *before*
+    the windup; it is now the interval between balls, so a drill throws every 5 s instead of every 5.79 s. Recorded
+    because it is a real change in pace, small enough that it needs no separate number.
+
+    **Item 87's client-side hide is reverted**, and its comment says why in the file rather than being deleted: the
+    digits must run *through* the windup for "the windup happens during the `1`" to be true, and hiding the board on
+    `CHARGING_ATTRIBUTE` would remove exactly the second the player wants to see counted. What is left in
+    `practiceCountdown` is the arithmetic it always had — `ceil(at − GetServerTimeNow())` — reading an attribute that
+    finally means what the module's doc says it means.
+
+    **One edge, stated**: a rig whose windup is cancelled mid-hold (frozen, ball stolen, player left) keeps its stale
+    `nextThrowAt` — the retry semantics are `ThrowBehavior`'s and unchanged, so a cancelled hold costs one decision
+    rather than a whole interval — which means the next windup starts on the next tick and the ball can arrive up to one
+    tick (0.1 s) after its own deadline. That cycle also draws no digits, because the cancellation clears the deadline
+    and only a release republishes one. Both are the price of not throwing from a cancelled hold.
+
+    **Unverified**: that the `1` and the lit hand line up frame for frame, and that a 5 s cycle feels right now that it
+    excludes the hold.
+
+89. **Two drills threw at the same player because `targetFor`'s fallback handed a rig *anybody's* bay. A rig is now
+    bound to one bay and only that bay arms it.** The report was *"both throwing NPCs are throwing at me; a rig is only
+    supposed to throw at a player if they are in the rig's zone, and rigs don't share zones"*.
+
+    **The log is unambiguous and it was not an AI problem.** Every line is `(x2)` — two rigs printing the same
+    stand-down, the same `armed`, the same bay — and `15:59:02.981`/`.982` are **two throws in the same millisecond**
+    at the same player, `64.5` studs with heading `(-1.00, 0, -0.07)` and `39.6` studs with `(1.00, 0, 0.02)`. Two rigs
+    on opposite sides of one person, from two bays at `X = 130.5` and `X = 75.0`.
+
+    **What did it, in three lines of the old `targetFor`.** The rule was three passes: the rig's own bay; then a bay
+    overlapping it; then **every other bay, nearest to the rig**. The third pass was added when this place file had
+    *one* bay and *one* rig that was not standing on it — a rule that could never otherwise fire. **With two bays it
+    fires wrongly**: the rig beside box B has an empty own bay, so pass three hands it whoever is in box A, and both
+    drills shoot at the same person. A fallback that lets a rig throw into another rig's box is not a fallback.
+
+    | | before | after |
+    | --- | --- | --- |
+    | which bay a rig may use | its own, **else any occupied one** | its own, **else the nearest** — decided by geography, never by who is available |
+    | what silences a rig | nobody in *any* bay | nobody in **its** bay |
+    | a rig with no bay at all | threw at whoever was nearest | silent, and says so |
+
+    **The concession to the old layout survives, in a form that cannot cross zones.** `bayOf(rig) ?? nearestBayTo(rig)`:
+    a rig planted *beside* its box is still bound to that box, because it is the closest one — but which box that is
+    never depends on where a player happens to be standing. **The cost is stated in the function's own doc**: a drill
+    whose bay was deleted or which was moved away from every box goes quiet instead of shooting at whoever is nearest.
+    That is a *diagnosable* silence, which the old behaviour was not.
+
+    **The diagnostic was lying too, for the same reason, and is fixed with it.** `nearestPlayerBayGap()` measured the
+    player against whichever bay was nearest *to the player* — so with two bays it printed the box they were standing
+    in and called them `0.9 studs outside`, while the rig printing the line was bound to the other one. That is why
+    both rigs looked identical in the log. It is now **`rigBayGap(rig)`**: the same binding `targetFor` uses, the
+    player's distance from *that* bay, and a distinct sentence for a rig bound to no bay (`and this rig is not standing
+    on or near any of the 2 bay(s) … move it over a bay`). A diagnostic that names a bay the rig cannot use is worse
+    than none.
+
+    **Unverified**: that both rigs in this place file really are on (or nearest) their own box. The fix depends on it,
+    and if one goes quiet the new stand-down line names the bay it chose and where the person is relative to it — which
+    is the reading that settles whether the box or the rig needs moving.
+
+90. **The dodge's round half was the *phase*, not membership, so a lobby spectator could dodge for the length of
+    somebody else's round.** The report was *"when the round starts I can dodge in the lobby even though I am not in
+    the match"* — asking for the rule to be *in a practice area, **or** in the round being played*.
+
+    **Both ends of the rule were already written; one of them was the wrong fact.** `DodgeService.requestDodge` gated
+    on `ROUND_STATE_ATTRIBUTE === PLAYING` — a fact about the *server*, true for everybody — or the practice-zone
+    attribute. The client's `roundZone.inRoundOrZone` asked the identical phase. So opting out, never joining, or
+    surrendering out of a round all still bought the mechanic, and the only thing that could silence a dodge in the
+    lobby was being outside a zone that is not the lobby.
+
+    **The missing half is `IN_ROUND_ATTRIBUTE`** — the round's own statement that it has *this player* in it, published
+    since 2026-10-20 at the four places membership changes and cleared in `eliminate`. A dodge now needs the phase
+    **and** that attribute, or a zone.
+
+    | | before | after |
+    | --- | --- | --- |
+    | server gate | `phase === Playing` \|\| zone | `(phase === Playing && player.InRound)` \|\| zone |
+    | client gate | `inRound()` \|\| zone | `isParticipant(player)` \|\| zone |
+    | a rig | phase (no player to ask) | **unchanged** — phase, because a rig has no membership |
+
+    **The client now asks `isParticipant`, which is the predicate the camera's shift-lock, the aim assist, the dock,
+    the `afk` rule and `killCam` all already use.** One rule, six readers, rather than a seventh copy of "in the
+    round". The server cannot call a `client/` helper, so it asks the two facts itself — **the same two**, which is what
+    keeps a press from being allowed locally and refused on the wire.
+
+    **A consequence worth naming**: a player eliminated mid-round loses the dodge with `IN_ROUND_ATTRIBUTE`. That is
+    the rule as stated — out of the round is out — and it closes the case the item was reported for, where a spectator
+    wandered the lobby dodging during a live match. A dev testing in the lobby needs a practice zone, which is what
+    the zone was built for.
+
+    **A comment argued for the old shape and is rewritten, at length.** `roundZone.inRoundOrZone`'s doc said the two
+    questions were *deliberately* kept apart — the camera and the dodge asking "is the game being played around me",
+    the team ring and the surrender prompt asking "am I still in it" — on the grounds that `activePlayers` had never
+    been replicated and was not going to be. It is replicated; the paragraph now says so, and says that the dodge was
+    asking the first question because the second could not be asked, not because it was the right one. The `roundZone`
+    header's claim that "the camera and the dodge want the same rule" is corrected the same way: they no longer do.
+
+    **Untouched deliberately**: `SuperService.inRoundOrZone`, which gates a super ability's catch and throw on the
+    phase or a zone and is `BallService`'s borrowed copy of the same idea. It is the same defect in a different
+    mechanic and it wants its own decision — a power is bought and carried, where a dodge is not — so it is recorded
+    here rather than changed silently.
+
+    **Unverified**: that the *feel* is right, which for this one is really a question about the lobby. A player waiting
+    for a round now has no dodge at all; if that reads as the mechanic being broken rather than as the lobby being a
+    lobby, the answer is a zone on the waiting floor and not a looser rule.
+
+91. **A wall that stops dodgeballs and lets everybody walk through it: `BallBarrier`.** A loose ball bounces off
+    it, and a body that walks into it carrying a ball loses the ball, with a spawn poof.
+
+    **The group is the whole of "stops balls, not bodies".** A new `BallWall` group, left collidable against `Ball`
+    — so a loose ball bounces, by the engine, with no code of ours — and registered non-collidable against
+    `Character`, `PracticePlayer`, `DUCK_GROUP`, `Default`, `Barrier` and itself. Assigned by
+    `CollisionGroups.applyBallWallGroupsBody`, called from `applyBarrierGroups` so both walls are one pass at every
+    round boundary. **Three character rows rather than one** because a body can be in any of the three, and missing
+    one would be a wall that only stops players mid-duck.
+
+    **The trigger is the *barrier's* `Touched`, and the spec's two recommendations were both wrong about that.**
+
+    | the spec said | what the source says |
+    | --- | --- |
+    | check it in `BallComponent.handleTouch` | that method's **first line** returns for a ball whose `Armed` is not `true`, and a held ball is never armed — `attachToHand` runs `makeInert`. A barrier branch there would have to sit *above* the guard that stops spent balls doing anything at all |
+    | held balls have `CanCollide = false`, so maybe `Touched` won't fire | true of the **ball**, which is why it is not what is listened to. The **character** is `CanCollide = true`, its pair with the wall is non-colliding **by group**, and a group suppresses collision rather than `Touched` — the fact the duck's head and the midline wall both already design around. A body interpenetrates the wall and the wall still hears it arrive |
+
+    So `BallService.watchBallBarriers` connects each tagged part's `Touched` — the walk at boot plus the tag's
+    added-signal, so a wall tagged mid-session works — and `ballMetWall` resolves the contact to a body (`Model`
+    ancestor **with a `Humanoid`**, which is what stops a loose ball resting against the wall resolving to the arena
+    folder), looks it up in `heldBalls`, and calls `playSpawnPoof(undefined, ball.CFrame)` then `removeBall(body)`.
+    **`removeBall` is the whole teardown**: map entry, the ball and everything parented to it, and the holder's
+    armed power.
+
+    **The poof is anchored at the ball's `CFrame`, not at the body.** `playSpawnPoof` takes a `Model` and a ball is
+    a `BasePart`, so the body would be the only thing it could take — and `anchorOf` would then put the burst at the
+    chest, a body-length from the hand that actually vanished.
+
+    **Destroyed rather than dropped**, deliberately: a dropped ball lands on the far side of the wall, gets picked
+    up, and is carried straight back in — and the wall would become a way to hand a ball to somebody behind it.
+
+    **Flags, and they are the mirror of `CharacterBarrier`'s.** `CanCollide` true (the bounce), `CanTouch` true (**the
+    ball-losing rule runs on it**; a `CanTouch = false` wall is one a player carries a ball through with nothing
+    happening), `CanQuery` true (a throw will bounce off it, so the aim arc should stop there — where the midline is
+    `CanQuery = false` because a ball crosses *it*).
+
+    **A loose ball is not this rule's business and the code says so**: the handler finds a body, does not find one
+    for a ball parented to `Workspace`, and returns. The bounce is the physics engine's, which is why there is no
+    line of code in the game that bounces a ball off this wall.
+
+    **Untouched**: `CharacterBarrier`, the throw, the catch, the pull, the trail, `CHARGING_ATTRIBUTE` and the
+    trajectory preview. The new group adds no row to any existing pair.
+
+    **Unverified, and both need Studio**: that a character's `Touched` really does fire against a wall whose group
+    is non-collidable with it — the duck precedent is a *colliding* pair in non-colliding groups, so the mechanism is
+    the same but this exact configuration has not been watched — and that the poof reads as the ball vanishing rather
+    than as the player being hit. If the contact does not fire, the fallback is the barrier running
+    `GetPartBoundsInBox` for bodies on a tick, which is the option that was rejected for touching more systems.
+
+    **THE CONTACT DID NOT FIRE — item 92 replaced the whole detection half.** The `Touched` version is withdrawn and
+    the `GetPartBoundsInBox` fallback named above is what shipped.
+
+92. **`BallBarrier` did nothing when tagged: the group was only ever assigned at a round boundary, and the held-ball rule
+    was hung on a `Touched` that never fires.** Both halves replaced. The report was *"nothing happens when I tag a
+    part"* — loose balls sailed through and players walked through carrying a ball.
+
+    **Two faults, and item 91 introduced both.**
+
+    | fault | what it was | what it is |
+    | --- | --- | --- |
+    | the group | assigned only by `applyBarrierGroups`, which `RoundService` calls at a **round boundary** — so a wall tagged mid-session, or on a server nobody started a round on, stayed in `Default` | assigned at **boot**, on the **tag's added-signal**, *and* at the boundary |
+    | the detection | the wall's own `Touched`, on the claim that a collision group suppresses collision rather than contact | `GetPartBoundsInBox` on one `Heartbeat`, over a registry of walls |
+
+    **The group fault explains both reported symptoms at once, and neither of them is the one item 91 predicted.** A
+    part still in `Default` collides with `Default` — so it stops the player and passes the ball, which is exactly
+    backwards. Item 91's failure mode was written as "a part that reads `Default` … collides with the character", and
+    that half was right; what it did not say is that the same part also stops bouncing a ball, because `Default` is
+    not `Ball` and the row that matters is `BallWall` ↔ `Ball`.
+
+    **The `Touched` claim is withdrawn rather than re-argued.** Item 91 said a collision group suppresses collision
+    rather than contact, citing the duck's head — and this time the measurement is the user's report. Whatever the
+    engine's truth is, **a wall deliberately made non-collidable with every body is the worst possible place to build
+    a rule on a contact event**, and the comment in `CollisionGroups` now says so in those words rather than
+    defending the old reading.
+
+    **Two mechanisms because a loose ball and a held ball are not the same kind of thing**, and this is the shape
+    worth keeping:
+
+    - **loose → physics.** `BallWall` ↔ `Ball` is **collidable**, written out explicitly rather than left to the
+      engine default (item 91 relied on the default, which left the feature's one load-bearing row invisible in the
+      file). The engine bounces the ball and **there is no code for it** — a query would miss a ball crossing a thin
+      wall between frames in exactly the way a solver cannot.
+    - **held → geometry.** A welded ball is `CanCollide = false` and its pair with the wall is non-collidable, so
+      nothing the engine does could notice it. `pumpBallWalls` asks `GetPartBoundsInBox` instead.
+
+    **The reverse of either would break the pair**, which is why they are not "one rule written twice": a physics
+    held ball needs `CanCollide = true` on a welded part, which is the held-ball shove bug `attachToHand` exists to
+    prevent; a queried loose ball stops bouncing on the frame the query misses.
+
+    **`isHeld` takes a ball, not a character** — the prompt asked for that to be checked, and it is `isHeld(ball:
+    BasePart)` walking the whole map. The sweep has a *character*, so it uses `heldBalls.has(character)`, which is the
+    right question and the cheaper one. `isHeld` is unchanged for `cleanupRoundBalls`, which genuinely has a ball.
+
+    **One `Heartbeat` over a registry, not a connection or a query per wall.** `wallOverlap` is one `OverlapParams`
+    built on the instance rather than per call. The registry is kept by the tag's two signals plus a boot walk, and a
+    wall that has left the world is dropped on the frame the sweep notices rather than queried for ever.
+
+    **Cost, stated**: with no `BALL_BARRIER_TAG` part anywhere the loop is a set-size check and returns — a place file
+    that never paints one pays nothing. With one wall it is one bounds query per frame; with N walls, N. That is the
+    number to watch if somebody ever paints a hundred.
+
+    **A ball can squeak past a corner or a gap**, and that is geometry rather than a fault: the wall stops balls where
+    somebody painted it. The fix is a wider wall, never a larger box — an inflated box would destroy balls that
+    bounced off the visible edge and never crossed anything.
+
+    **`CharacterBarrier` and `BallBarrier` stay two tags**, and collapsing them into one part with a `Side` attribute
+    is the wrong default even though they are siblings: they are opposites on every axis (`CanTouch`, `CanQuery`, and
+    which group is collidable), so one part carrying both would need an attribute that switches all three — and the
+    two walls are *never* in the same place, which is the whole reason one stops bodies at the midline and the other
+    stops balls at a practice-area entrance.
+
+    **Unverified**: that the ball bounces at all — the group row is now explicit and the contact-half of the theory is
+    withdrawn, so this is the one thing the pass cannot claim. Emitted Luau shows
+    `Workspace:CollisionGroupSetCollidable(BALL_WALL_GROUP, BALL_GROUP, true)` and
+    `[Collision] ball barrier tagged — <name> = BallWall` on the tag, which is the evidence that the group took.
+
+93. **The wall was in the right group and the ball still went through: a collision group says which pairs the engine
+    *considers*, and `CanCollide` is the switch that makes it consider them.** The report was *"I can still throw the
+    ball across past the wall"*, with a log proving `BallBarrier = BallWall` and `BallWall` in `Workspace`'s group
+    list.
+
+    **So the group half of item 92 was right and the log was the thing that said so** — which is why the fault had to
+    be in the part's own flags or in the physics. `dressBallWall` now forces the four properties the tag owns and
+    **warns naming any it had to correct**, in `MatchService.prepare`'s shape:
+
+    | property | what it is for | what breaks without it |
+    | --- | --- | --- |
+    | `Anchored = true` | stays where it was painted | it falls out of the world and the engine deletes it at `FallenPartsDestroyHeight` — a wall that is gone looks exactly like a wall nothing collides with |
+    | `CanCollide = true` | **the bounce** | the group row is a rule about a part that is solid to nothing. **This is the likely cause of the report**: an invisible marker is usually painted with `CanCollide = false` |
+    | `CanTouch = true` | reports contacts at all | inert to every contact rule — and the first version of this feature *was* a contact rule |
+    | `CanQuery = true` | the aim arc stops here | a preview that draws itself through a wall a throw would bounce off |
+
+    **The second limit is geometry and no rule can lift it, so it is reported rather than hidden.** Roblox does not
+    sweep a collision between frames: at `THROW_MAX_SPEED` (200) a ball covers **3.3 studs a frame**, so a wall one
+    stud thick is passed through without the two ever overlapping — a full-charge throw goes through while a lob
+    bounces, which reads as the wall being unreliable rather than thin. `reportBallWallThickness` warns with the
+    number to build to. **The fix is a thicker part, not a smarter script**: growing the part from code would move
+    its faces into the room it was placed to seal, and a query-based backstop is the thing this feature already
+    refused once for the loose-ball case.
+
+    **One line of evidence was missing and is now printed.** The boot read-back named `Barrier`/`Default` and
+    `Character`/`Character` but not the row the ball wall actually lives on, so a log could say which group every part
+    was in and not whether the row took. `[Collision] BallWall/Ball collides — service true, world true` is now
+    printed beside them, and it is the one number that separates "the matrix is wrong" from "the matrix is right and
+    something else is".
+
+    **Not changed**: the matrix, the sweep, the tag, `CharacterBarrier`. Item 92's two mechanisms stand.
+
+    **Unverified**: which of the two remaining causes it was. A log from the next session answers it in one pass —
+    a `corrected CanCollide` warning names the first, a `studs thick` warning names the second, and no warning at all
+    with the ball still crossing would mean something neither this pass nor the last one has found.
+
 ---
 
 ## 16. What a live log has actually confirmed

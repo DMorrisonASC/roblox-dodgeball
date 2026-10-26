@@ -150,8 +150,9 @@ export function clipIdFor(state: AnimationState, isR15: boolean): string {
  * One of the actions a body can be **in the middle of** — an event rather than a condition.
  *
  * Both are written by `BallService` at the moment they happen, on **every** body they happen to, and cleared
- * a moment later: the throw at `throwBall` (where a ball leaves a hand) and the catch at `catchBall` (where
- * one arrives in it). Neither is a state a body is *in* for a while, which is why they are not conditions
+ * a moment later: the throw at `throwBall` (where a ball leaves a hand) and the catch at `completePull` (where
+ * one arrives in it, a fraction of a second after the catch was decided). Neither is a state a body is *in* for
+ * a while, which is why they are not conditions
  * with attributes republished on change (that is what `NPC_ANIM_*` is for) and why they have to be read as
  * "is this happening right now".
  *
@@ -291,7 +292,7 @@ export const RESTING_STATE: AnimationState = "idle";
  *
  * **The two events are ranked, because a body can hold both marks at once.** A rig that throws and then
  * catches a second ball inside the throw's own window has both; the throw wins here because it outranks the
- * catch — see `BallService.catchBall`, which drops a standing throw mark the moment a catch is confirmed, so
+ * catch — see `BallService.markCatchAnimation`, which drops a standing throw mark the moment a catch is published, so
  * that the *newer* action is the one that owns the limbs in the case that can actually be arranged.
  *
  * **`undefined` is a real answer, and it means "play nothing".** It is the *caller's* answer rather than this

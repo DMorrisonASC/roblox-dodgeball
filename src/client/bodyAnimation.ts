@@ -543,8 +543,8 @@ function publishedDodge(body: Model): DodgeDirection | undefined {
  * **Two marks, ranked, because a body can hold both at once** — the throw's own window is open for a fraction
  * of a second after a throw, and a second ball caught inside it is an ordinary catch. The throw is asked first,
  * and that is not a preference: it is the newer event in the case where both are up and the one that took the
- * limbs, which is what `BallService.catchBall` arranges from its end by dropping a standing throw mark when a
- * catch is confirmed.
+ * limbs, which is what `BallService.markCatchAnimation` arranges from its end by dropping a standing throw mark
+ * when a catch is published.
  */
 function publishedAction(body: Model): BodyAction | undefined {
 	if (body.GetAttribute(THROW_ANIMATION_ATTRIBUTE) === true) return "throw";

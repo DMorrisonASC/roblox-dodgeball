@@ -6,7 +6,7 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { CATCH_READY_AT, BALL_SIZE, BALL_TAGGED_BODIES_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, DODGE_READY_AT, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { CATCH_READY_AT, BALL_SIZE, BALL_TAGGED_BODIES_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, DODGE_READY_AT, IN_ROUND_ATTRIBUTE, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { canDodge, dodgeDirectionOf, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { DodgeDirection } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
@@ -296,7 +296,7 @@ export class DodgeService implements OnStart {
 		// actions rather than a clock of either one. Turn the flag off to test it.
 		if (this.blocksDodge(model)) return false;
 
-		// **The state gate: a round has to be being played, or this body has to be in a practice zone.**
+		// **The state gate: this player has to be in the round being played, or the body has to be in a practice zone.**
 		//
 		// **This supersedes "round only", and the reason it was round-only is the reason it changed.** The
 		// earlier argument was cost: a zone half here would have been a `GetPartBoundsInBox` walk over
@@ -307,20 +307,28 @@ export class DodgeService implements OnStart {
 		// an attribute read, and the cost that ruled it out is the thing that has gone. The decision
 		// changed because its reason did, which is the only good reason to change one.
 		//
+		// **And the round half is `IN_ROUND_ATTRIBUTE` as well as the phase, which is the correction a report
+		// bought.** The half used to be the phase alone — *a round is being played* — and that is a fact about the
+		// **server**, not about this body: it is true for every player watching from the lobby. So a player who
+		// opted out of the round, or who surrendered out of it, could dodge for the whole length of somebody else's
+		// match. The phase says the game is on; the attribute says the round has *this player* in it; a dodge needs
+		// both, and the client's half (`roundZone.inRoundOrZone`) asks the identical pair so a press is not refused
+		// a round trip later. See `IN_ROUND_ATTRIBUTE`, which is written where a player is admitted and cleared in
+		// `eliminate`.
+		//
 		// **Placed here, before the cooldown is read or charged**, which is the position `blocksDodge`
 		// occupies and for the reason that method gives: a dodge that was never allowed has not happened, so
 		// it must not be charged for one. `blocksDodge` keeps the first word of the two — a freeze is a
 		// state about the *body*, and this one is about where the body is and what the round is doing.
 		//
-		// The two halves come from different places on purpose. The round is read from the round folder,
-		// which is how every other reader on this side gets at it, and it is the *same* source the client's
-		// half reads — so the two sides cannot disagree about what the round is doing. The zone is read from
-		// the player, which is how every other consumer gets at *that*, and it is likewise the client's
-		// source once the tracker's fact has replicated. A folder that is not there yet reads as "no round"
-		// and a player who has never been in a zone carries no attribute; both are the right answer while
-		// the server is still igniting.
+		// The round is read from the round folder, which is how every other reader on this side gets at it,
+		// and it is the *same* source the client's half reads — so the two sides cannot disagree about what
+		// the round is doing. Membership and the zone are read from the player, which is how every other
+		// consumer gets at *that*, and it is likewise the client's source once the attributes have
+		// replicated. A folder that is not there yet reads as "no round" and a player who has never been in a
+		// zone carries no attribute; both are the right answer while the server is still igniting.
 		//
-		// **A rig is the one body that still asks the question, because a rig cannot be asked anything
+		// **A rig is the one body that still asks the phase alone, because a rig cannot be asked anything
 		// else, and this paragraph is the exception to the rule above.** The attribute is written on the
 		// *player* — `PracticeZoneService.tick` takes a `Player`, one per body — so `GetPlayerFromCharacter`
 		// answers `nil` for an NPC rig and the attribute half of this gate would answer `false` for it for
@@ -339,19 +347,23 @@ export class DodgeService implements OnStart {
 		const status = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
 		const playing = status?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
 
-		if (!playing) {
+		const player = Players.GetPlayerFromCharacter(model);
+
+		// A rig has no membership to ask about, so the phase is its whole answer — see the paragraph above.
+		const inRound = player !== undefined ? playing && player.GetAttribute(IN_ROUND_ATTRIBUTE) === true : playing;
+
+		if (!inRound) {
 			// **The player's arm of this line is unchanged, character for character**, which is the whole
-			// of what this change promised: the same single attribute read, compared the same way. The
+			// of what the zone change promised: the same single attribute read, compared the same way. The
 			// query arm is the new one, and it is only reachable by a model the engine does not consider a
 			// character.
-			const player = Players.GetPlayerFromCharacter(model);
 			const inZone =
 				player !== undefined
 					? player.GetAttribute(PRACTICE_ZONE_ATTRIBUTE) === true
 					: insideZone(model);
 
 			if (!inZone) {
-				if (DEBUG) print(`[Dodge] ${model.Name}: refused — no round, and not in a practice zone`);
+				if (DEBUG) print(`[Dodge] ${model.Name}: refused — not in the round, and not in a practice zone`);
 
 				return false;
 			}

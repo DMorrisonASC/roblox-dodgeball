@@ -1,4 +1,5 @@
 ﻿import { CollectionService, Players, Workspace } from "@rbxts/services";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { PRACTICE_BAY_TAG, PRACTICE_THROW_TAG } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 
@@ -75,6 +76,7 @@ export function bayOf(rig: Model): BasePart | undefined {
 /** What a drill is aiming at: the person, where to aim, and the bay they are standing in. */
 export interface DrillTarget {
 	readonly player: Player;
+	/** **Hand height on the body, not the root** — see {@link playerInBay} for the charge this used to cost. */
 	readonly at: Vector3;
 	readonly bay: BasePart;
 }
@@ -83,73 +85,76 @@ export interface DrillTarget {
  * **The person a drill should throw at, or `undefined` when nobody is in a bay — the whole of the gate and the aim,
  * in one call.**
  *
- * ## The rule this answers, and the one it deliberately stopped asking
+ * ## The rule: **one bay per rig, and only that bay arms it**
  *
- * **The requirement is "a player standing in a bay, and nobody else".** The first version of this feature also
- * required **the rig** to be standing in that same bay, and a live session proved that rule can never fire in this
- * place file: the rig sits at `(52.1, 93.8, 542.0)` — verified in Studio — and was inside its bay's footprint on the
- * first tick and outside it four seconds later with the rig provably having not moved. **A rule that depends on the
- * rig and the box being co-located is a rule that depends on a coincidence**, and it was the wrong half to make
- * strict: the *box* is what a person painted to practise in, and the rig is a fixture beside it.
+ * **A drill's zone is a bay, and each drill owns exactly one.** The player has to be standing in *that* bay; a player
+ * in somebody else's box is not this rig's business, and a report of two drills throwing at one person from opposite
+ * sides of the practice floor is exactly what the rule this replaced produced.
  *
- * So the strict test is on the **player**, which is exactly what was asked for, and the rig's own bay is a
- * **preference rather than a requirement**:
+ * **What that rule was, and why it is gone.** The version before this had three passes — the rig's own bay, then an
+ * overlapping one, then **every other bay by distance** — with the last of the three there because the feature's first
+ * place file had one bay and one rig that was not standing on it. That made the rule fire in a layout where it could
+ * otherwise never fire, and it was the right answer to that layout. **With two bays and two rigs it is the wrong
+ * answer**: the rig beside box B has an empty own bay, so the third pass hands it whoever is standing in box A, and
+ * both drills fire at the same person. A fallback that lets a rig shoot into another rig's box is not a fallback, it
+ * is a second rule with a worse name.
  *
- * 1. **the rig's own bay first** (`bayOf`), so a layout that does co-locate them scopes each drill to its own box —
- *    two drills, two boxes, two people, and each rig takes its own;
- * 2. **then every other bay**, so a rig standing beside the box rather than in it still works. This is what makes this
- *    place file work, and it is the difference between a feature and a puzzle;
- * 3. **nobody in any bay, nothing happens** — which is the whole of the requirement and is now the only thing that can
- *    silence a drill.
+ * **So a rig is bound to one bay, and which one is decided by geography rather than by who is available:**
  *
- * **What this is not is the fallback that was rejected before.** That one armed a rig on the *`practiceZone`* — one box
- * around the entire practice floor — so every drill in the area fired at whoever was anywhere on it. A bay is a small
- * painted rectangle; a person outside every one of them is not being thrown at by anything.
+ * 1. **the bay it is standing in** (`bayOf`), which is the ordinary case and the one a person painting a box around a
+ *    drill is describing;
+ * 2. **the bay nearest it**, for a rig planted *beside* its box rather than on it. This is the concession that keeps
+ *    the old layout working, and it cannot cross into somebody else's zone the way the old third pass could — a rig
+ *    beside box B is nearest box B whoever happens to be standing where;
+ * 3. **no bay at all means no throws.** A drill with no ground of its own has nothing to defend, and the stand-down
+ *    line says so in as many words.
  *
- * **Order, not distance, for the preference.** A rig in its own bay aims at the person in *that* bay even when a
- * different bay is closer, because the pair of tags is a statement about which ground belongs to which rig. Only the
- * second sweep is about the person, and there the nearest bay to the rig wins so that a row of drills beside one box
- * does not all pick it by list order.
+ * **The cost of (3) is stated rather than hidden**: a drill whose bay was deleted, or which was moved away from every
+ * box, goes quiet instead of shooting at whoever is nearest. That is a *diagnosable* silence — `rigBayGap` prints the
+ * bay it is bound to and where the person is — where the old rule's failure was two rigs firing at one player for no
+ * visible reason. A misplaced rig wants moving, not a licence to shoot into somebody else's box.
  */
 export function targetFor(rig: Model): DrillTarget | undefined {
+	const own = bayOf(rig) ?? nearestBayTo(rig);
+
+	// **No bay anywhere, or none this rig can be bound to**, which is the same answer and the same silence. See this
+	// function's own note on (3): it is a fixture with nowhere to practise in front of it, not an error.
+	if (own === undefined) return undefined;
+
+	const occupant = playerInBay(own);
+
+	return occupant === undefined ? undefined : { ...occupant, bay: own };
+}
+
+/**
+ * **The bay whose footprint is nearest `rig`'s root, or `undefined` when there are no bays or the rig has no body.**
+ *
+ * **The half of {@link targetFor}'s binding that has nothing to do with players.** Measuring to the *footprint* rather
+ * than the centre is what makes "beside the box" and "over the box" the same answer wherever the box is wide — see
+ * {@link gapToFootprint} for why a centre-to-centre figure is actively misleading at this size. A rig standing over a
+ * bay never reaches this: `bayOf` has already answered for it, and this is the fallback for a fixture planted off the
+ * edge.
+ *
+ * **A tie goes to whichever the tag lists first**, which is not meaningful order and is stated rather than fixed: two
+ * drills equidistant from two boxes is a layout nobody can paint by accident, and a claim system for it would be a
+ * service for a case this project does not have.
+ */
+function nearestBayTo(rig: Model): BasePart | undefined {
 	const bays = taggedPartsInWorkspace(PRACTICE_BAY_TAG);
 	if (bays.size() === 0) return undefined;
 
-	const own = bayOf(rig);
+	const root = rig.FindFirstChild("HumanoidRootPart");
+	if (root === undefined || !root.IsA("BasePart")) return undefined;
 
-	// **Three passes, cheapest first, and the first that finds anybody wins.** The rig's own bay; then a bay overlapping
-	// it (an overlapping pair is their union, see `bayOf`); then the rest by distance from the rig.
-	if (own !== undefined) {
-		const occupant = playerInBay(own);
-		if (occupant !== undefined) return { ...occupant, bay: own };
-	}
+	let best: BasePart | undefined;
+	let bestGap = math.huge;
 
-	const reach = rig.FindFirstChild("HumanoidRootPart");
-	const origin = reach !== undefined && reach.IsA("BasePart") ? reach.Position : undefined;
+	for (const bay of bays) {
+		const gap = gapToFootprint(bay, root.Position);
+		if (gap >= bestGap) continue;
 
-	const rest = bays.filter((bay) => bay !== own);
-	if (origin === undefined) {
-		for (const bay of rest) {
-			const occupant = playerInBay(bay);
-			if (occupant !== undefined) return { ...occupant, bay: bay };
-		}
-
-		return undefined;
-	}
-
-	let best: DrillTarget | undefined;
-	let bestDistance = math.huge;
-
-	for (const bay of rest) {
-		const occupant = playerInBay(bay);
-		if (occupant === undefined) continue;
-
-		const flat = new Vector3(occupant.at.X - origin.X, 0, occupant.at.Z - origin.Z);
-		const distance = flat.Magnitude;
-		if (distance >= bestDistance) continue;
-
-		best = { ...occupant, bay: bay };
-		bestDistance = distance;
+		best = bay;
+		bestGap = gap;
 	}
 
 	return best;
@@ -178,9 +183,20 @@ export function targetFor(rig: Model): DrillTarget | undefined {
  * beside the rig rather than below it, and a vertical component would make the same spot on the floor arm or
  * disarm depending on the geometry underneath.
  *
- * **The point to aim at is the player's `HumanoidRootPart`, not their head** — the root is the body's own centre,
- * which is what `ThrowBehavior` measures its sighting from and what a ball leaving at head height arrives *down*
- * onto. Aiming at the head would put every drill throw high on a body that is crouching or falling.
+ * **The point to aim at is the body's own root *raised to the height a ball leaves a hand* — and the raise is the
+ * whole of a bug this comment used to argue for.** It said the root, "which is what a ball leaving at head height
+ * arrives *down* onto", and that was true of the lob this game threw before the charged throw. A charged throw is
+ * flat — `CHARGE_PEAK_HEIGHT` is half a stud, so the arc peaks where it started and every stud of range is bought
+ * with speed rather than with hang time — and a flat throw aimed two and a half studs *below* its own muzzle is
+ * solved as *the slowest ball that still drops that far over that distance*. Under 41 studs that answer is the
+ * minimum speed in the game, so every drill throw inside its bay came out at `charge 0.00–0.01`: the softest ball
+ * the mechanic has, a windup of twelve milliseconds, and a log line that reads like a broken calculation. See
+ * `chargeForRange`, whose rise argument is exactly this quantity, and `BALL_CONFIG.THROW_MUZZLE_HEIGHT`, which is
+ * the height `getThrowMuzzle` adds to a root — so on level ground the rise here is now **zero**, which is what a
+ * flat throw wants: `chargeForRange` then asks for the speed that covers the distance and nothing else.
+ *
+ * **It also stays a point on the *body* rather than a direction**, which is what `Windup.miss` needs: the offset is
+ * re-applied to whatever this answers on the release turn, so a drill still tracks a walking player exactly as it did.
  */
 export function playerInBay(bay: BasePart): { player: Player; at: Vector3 } | undefined {
 	const anchor = bay.CFrame.Position;
@@ -204,11 +220,24 @@ export function playerInBay(bay: BasePart): { player: Player; at: Vector3 } | un
 		const distance = flat.Magnitude;
 		if (distance >= bestDistance) continue;
 
-		best = { player: player, at: root.Position };
+		best = { player: player, at: aimHeightOf(root.Position) };
 		bestDistance = distance;
 	}
 
 	return best;
+}
+
+/**
+ * **Where a drill aims on a body: the point a ball would meet it at if thrown flat from a hand.**
+ *
+ * A one-line helper rather than an expression at the call site because the figure is `THROW_MUZZLE_HEIGHT` — the same
+ * constant `getThrowMuzzle` adds to a thrower's root — and stating it as "the target's root, raised by the height the
+ * throw leaves from" is the only way this reads as a rule rather than as a magic 2.5. On level ground the rise a
+ * `chargeForRange` solve then sees is exactly zero, which is what makes the charge describe the *distance* instead of
+ * the *drop*. See {@link playerInBay} for the bug that was.
+ */
+function aimHeightOf(rootAt: Vector3): Vector3 {
+	return rootAt.add(new Vector3(0, BALL_CONFIG.THROW_MUZZLE_HEIGHT, 0));
 }
 
 /**
@@ -266,28 +295,48 @@ export interface BayGap {
 }
 
 /**
- * **The nearest player's distance from the nearest bay, in words — the one line that answers "why is nothing
+ * **The nearest player's distance from *the bay this rig owns*, in words — the one line that answers "why is nothing
  * happening".**
  *
  * **This exists because a bay is a place, and a place is invisible in a log.** The feature's hard requirement is "a
- * player standing in a bay", so its ordinary failure is a *geometric miss*: the box was painted somewhere the person
- * does not stand, or is a size that does not reach them. From the code's point of view that is indistinguishable from
- * an empty bay, from a missing tag, and from a rig that never ticked — and two live sessions were spent on that
+ * player standing in the rig's bay", so its ordinary failure is a *geometric miss*: the box was painted somewhere the
+ * person does not stand, or is a size that does not reach them. From the code's point of view that is indistinguishable
+ * from an empty bay, from a missing tag, and from a rig that never ticked — and two live sessions were spent on that
  * ambiguity. **So the answer is stated as three pairs of numbers: where the bay is, how big it is, and where the
  * person is.** Those three are enough to fix it without another round trip.
  *
- * **The nearest player, not the local one**, because this runs on the server and "the person who is trying" is the
- * one closest to a box. With one player — the usual case while building a drill — the distinction does not arise.
+ * **`rig` and not "the nearest bay", which is the correction two drills bought.** This used to measure the person
+ * against whichever bay was closest *to them*, so with two bays it printed the box they were standing in and called
+ * them zero studs outside — while the rig printing the line was bound to the other one. **A diagnostic that names a
+ * bay the rig cannot use is worse than no diagnostic**, so it now names the bay `targetFor` will actually consult and
+ * measures against that one: a player in the wrong box then reads as a real distance from the right box, which is the
+ * whole answer.
+ *
+ * **The nearest player, not the local one**, because this runs on the server and "the person who is trying" is the one
+ * closest to a box. With one player — the usual case while building a drill — the distinction does not arise.
  *
  * **`math.huge` rather than a large number** when nothing can be measured, so the caller can tell "no reading" from
- * "a very long way" and print a different sentence. An absent character and an absent bay are both real states during
- * boot and must not read as "you are 1e308 studs away".
+ * "a very long way" and print a different sentence. An absent character, an absent bay and a rig bound to no bay are
+ * all real states during boot and must not read as "you are 1e308 studs away". The last of the three has its own
+ * sentence, because a rig with no ground of its own will never throw and that is worth saying out loud.
  */
-export function nearestPlayerBayGap(): BayGap {
+export function rigBayGap(rig: Model): BayGap {
 	const bays = taggedPartsInWorkspace(PRACTICE_BAY_TAG);
 	if (bays.size() === 0) return { gap: math.huge, text: "and there is no practiceBay part in the world at all" };
 
-	let best: BayGap = { gap: math.huge, text: "and no player has a body to measure" };
+	// **The same binding the throwing rule uses**, asked here rather than derived from the player, so this line can
+	// never describe a bay the rig would not throw into. See `targetFor`.
+	const own = bayOf(rig) ?? nearestBayTo(rig);
+	if (own === undefined) {
+		return {
+			gap: math.huge,
+			text:
+				`and this rig is not standing on or near any of the ${bays.size()} bay(s), so it has no zone to ` +
+				`defend — move it over a bay`,
+		};
+	}
+
+	let best: BayGap = { gap: math.huge, text: `and no player has a body to measure against "${own.Name}"` };
 
 	for (const player of Players.GetPlayers()) {
 		const character = player.Character;
@@ -296,21 +345,19 @@ export function nearestPlayerBayGap(): BayGap {
 		const root = character.FindFirstChild("HumanoidRootPart");
 		if (root === undefined || !root.IsA("BasePart")) continue;
 
-		for (const bay of bays) {
-			const gap = gapToFootprint(bay, root.Position);
-			if (gap >= best.gap) continue;
+		const gap = gapToFootprint(own, root.Position);
+		if (gap >= best.gap) continue;
 
-			best = {
-				gap: gap,
-				text:
-					`${player.Name} is ${string.format("%.1f", gap)} studs outside "${bay.Name}", which is centred at ` +
-					`(${string.format("%.1f", bay.Position.X)}, ${string.format("%.1f", bay.Position.Y)}, ` +
-					`${string.format("%.1f", bay.Position.Z)}) with size ${string.format("%.1f", bay.Size.X)}×` +
-					`${string.format("%.1f", bay.Size.Y)}×${string.format("%.1f", bay.Size.Z)}; ${player.Name} ` +
-					`is at (${string.format("%.1f", root.Position.X)}, ${string.format("%.1f", root.Position.Y)}, ` +
-					`${string.format("%.1f", root.Position.Z)})`,
-			};
-		}
+		best = {
+			gap: gap,
+			text:
+				`${player.Name} is ${string.format("%.1f", gap)} studs outside this rig's bay "${own.Name}", which is ` +
+				`centred at (${string.format("%.1f", own.Position.X)}, ${string.format("%.1f", own.Position.Y)}, ` +
+				`${string.format("%.1f", own.Position.Z)}) with size ${string.format("%.1f", own.Size.X)}×` +
+				`${string.format("%.1f", own.Size.Y)}×${string.format("%.1f", own.Size.Z)}; ${player.Name} ` +
+				`is at (${string.format("%.1f", root.Position.X)}, ${string.format("%.1f", root.Position.Y)}, ` +
+				`${string.format("%.1f", root.Position.Z)})`,
+		};
 	}
 
 	return best;

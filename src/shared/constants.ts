@@ -49,6 +49,45 @@ export const BALL_NAME = "DodgeballBall";
 export const CHARACTER_BARRIER_TAG = "CharacterBarrier";
 
 /**
+ * Tag marking a part as a wall that stops **dodgeballs** and lets every body walk through it.
+ *
+ * **The sibling of {@link CHARACTER_BARRIER_TAG} and the opposite wall on both axes it can differ on.** That one
+ * is solid to bodies and transparent to balls; this one is solid to balls and transparent to bodies. A pair of
+ * walls with one job each, rather than one wall with a mode — which is why there are two tags and not an attribute
+ * on one tag.
+ *
+ * **`CanCollide`, `CanTouch` and `CanQuery` are all true, and the collision/group assignment forces them.** They are
+ * not left to the place file, because a wall painted as an invisible marker usually has `CanCollide = false` and then
+ * the group row is a rule about a part that is solid to nothing — **the reported symptom was a ball thrown straight
+ * through a wall whose log said `BallBarrier = BallWall`, which is correct and useless on its own.**
+ * `CollisionGroups.dressBallWall` sets `Anchored`, `CanCollide`, `CanTouch` and `CanQuery` and warns naming any it had
+ * to correct, in `MatchService.prepare`'s shape.
+ *
+ * **`CanQuery` is true so the aim guide's spherecast stops here**: if a throw will bounce off a wall, an arc that drew
+ * itself through the wall would be the lie `CHARACTER_BARRIER_TAG` exists to prevent in the other direction. That is
+ * the opposite of the midline wall's `CanQuery = false`, and correct for the opposite reason.
+ *
+ * **A wall thinner than a fast ball's travel per frame cannot stop it, and that is the one limit the tag cannot
+ * lift.** Roblox does not sweep a collision between frames: at `THROW_MAX_SPEED` a ball covers ~3.3 studs per frame,
+ * so a 1-stud wall is passed through without the two ever overlapping. `dressBallWall` warns with the thickness it
+ * recommends; **the fix is a thicker part, not a smarter script.**
+ *
+ * **It is not `CanCollide = true` alone that keeps a player out, and the collision group is what does it.** The
+ * wall is `CanCollide = true` and yet a body walks through, because `collision/CollisionGroups.ts` puts these
+ * parts in a group that does not collide with any character group. A reader who finds the wall solid in Studio and
+ * "fixes" it by turning `CanCollide` off takes the ball's bounce with it, and one who removes the tag takes the
+ * group away — leaving a wall that collides with `Default` and therefore with the character too. **The tag is the
+ * group**; see `applyBallWallGroups`.
+ *
+ * **The ball in a hand is a different mechanism, and it is geometric.** A welded ball is `CanCollide = false` and its
+ * pair with this wall is non-collidable by group, so no contact happens at all — the first version hung the rule on
+ * the wall's `Touched` and that is why *"nothing happens when I tag a part"* was reported. `BallService.pumpBallWalls`
+ * asks where the ball is instead. **Two mechanisms because a loose ball is a body and a held ball is not**: a query
+ * cannot catch a ball crossing a thin wall between frames, and a solver cannot see a welded one.
+ */
+export const BALL_BARRIER_TAG = "BallBarrier";
+
+/**
  * Tag marking a part the **aim preview** passes through and the **physics** does not.
  *
  * **A label somebody paints on a part in the place file**, exactly like {@link CHARACTER_BARRIER_TAG}
@@ -892,7 +931,7 @@ export const PICKUP_LOCKED_UNTIL = "PickupLockedUntil";
 /**
  * Attribute on a **character** counting the balls it has collected off the floor.
  *
- * Written by `BallService.pickupBall` — the one method in the game that is *only* a pickup — and read by
+ * Written by `BallService.pickupBall` — the one entry point in the game that is *only* a pickup — and read by
  * one thing: `client/personalAudio`, which plays the pickup sound when the number goes up.
  *
  * **The whole reason it exists is that a client cannot otherwise tell a pickup from a catch.** A ball
@@ -1386,11 +1425,13 @@ export const THROW_ANIMATION_ATTRIBUTE = "AnimThrow";
  * - **`"attempt"`** — written by `CatchService` when a catch *window* opens, at both of its sites: the ordinary
  *   new-window branch and the endless window a dev holds open. A press that catches nothing is still a body
  *   reaching, and the clip is the only feedback a press has.
- * - **`"catch"`** — written by `BallService.catchBall`, the one place a ball ends up in a hand whoever caught
- *   it, once the ball has actually arrived.
+ * - **`"catch"`** — written by `BallService.completePull`, which is where a caught ball reaches the hand, once it
+ *   has actually arrived. The *decision* to catch it is taken earlier (`BallService.catchBall`, on the frame the
+ *   contact is resolved) so that the throw is resolved without waiting for the ball; the mark waits, because it is
+ *   a picture of the ball arriving.
  *
  * A catch landing inside an earlier mark's window restarts this clock rather than stacking a second mark — see
- * `BallService.catchBall`, which owns both ends — so **`"catch"` written over an `"attempt"` is the ordinary
+ * `BallService.markCatchAnimation`, which owns both ends — so **`"catch"` written over an `"attempt"` is the ordinary
  * sequence rather than an edge case**: a body reaches on the press and is told it succeeded a fraction of a
  * second later.
  *

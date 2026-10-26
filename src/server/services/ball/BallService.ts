@@ -3,6 +3,7 @@ import { CollectionService, Players, ReplicatedStorage, RunService, Workspace } 
 import {
 	ARMED_ABILITY_ATTRIBUTE,
 	BALL_ABILITY_ATTRIBUTE,
+	BALL_BARRIER_TAG,
 	BALL_SIZE,
 	CATCH_ANIMATION_ATTRIBUTE,
 	CatchCause,
@@ -29,6 +30,7 @@ import { CollisionIgnore } from "shared/CollisionIgnore";
 import { findTemplate } from "shared/find";
 import { resolveDodgeable } from "shared/dodge";
 import { REMOTES } from "shared/remotes";
+import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { events } from "shared/networking";
 import {
 	describeMuzzle,
@@ -98,6 +100,42 @@ const GRIP_OFFSET = new CFrame();
 
 /** Name of the weld that holds a ball in a hand, so it can be found again. */
 const GRIP_NAME = "DodgeballGrip";
+
+/**
+ * **What the constraint that pulls a caught ball into a hand is called, and what its attachment is called.**
+ *
+ * Named for the same reason {@link GRIP_NAME} and `CATCH_EMITTER_NAME` are: these are the only handles a leftover
+ * check has, and one name per job is what makes "no pull constraints remain" a statement about pulls. Both are
+ * parented to the **ball**, so a ball's destruction takes them with it — which is the property that makes the whole
+ * mechanism safe, and the reason the entry in `pulling` is only ever a bookkeeping concern rather than a lifetime one.
+ */
+const PULL_ALIGN_NAME = "DodgeballPull";
+const PULL_ATTACHMENT_NAME = "DodgeballPullAt";
+
+/**
+ * **One ball on its way into a hand** — the record {@link BallService.pumping} keeps while the constraint is alive.
+ *
+ * **`kind` rather than a callback**, because the two routes differ only in what they say *after* the weld: a catch
+ * prints, plays a sound and marks the animation, and a pickup prints and moves a counter. A stored closure would be
+ * the same information with a lifetime of its own to get wrong.
+ */
+/**
+ * **One ball's journey into a hand**, from the frame the catch is decided to the frame it is welded.
+ *
+ * The fields are exactly the two things a pull has to be able to finish or abandon itself with: the constraint and its
+ * attachment, so they can be *destroyed* rather than orphaned, and the hand, so the target and the arrival test have an
+ * answer every frame. `catcher` and `kind` are what the report after the weld needs — a catch prints a sound and a
+ * reach, a pickup moves a counter — and `startedAt` is the timeout that keeps a ball stuck on geometry from pulling
+ * forever. See {@link BallService.pulling} for the whole of why this exists.
+ */
+interface Pull {
+	readonly kind: "catch" | "pickup";
+	readonly catcher: Model;
+	readonly hand: BasePart;
+	readonly align: AlignPosition;
+	readonly attachment: Attachment;
+	readonly startedAt: number;
+}
 
 /**
  * The tag every ball carries.
@@ -451,6 +489,50 @@ export class BallService implements OnStart {
 	 */
 	private readonly leftBayAt = new Map<BasePart, number>();
 
+	/**
+	 * **Balls currently being pulled into a hand, keyed on the ball.**
+	 *
+	 * **Why a ball is not welded the instant it is caught, which is the whole of this field.** `attachToHand` writes
+	 * the ball's `CFrame` to the grip and welds it there, so a catch used to move the ball from wherever it was to the
+	 * catcher's hand in a single frame — from the player's seat, a ball that vanished and reappeared. The pull replaces
+	 * that with a short physics journey and welds on arrival; the weld is still the only way into a hand.
+	 *
+	 * **The decision does not wait for the journey.** Everything authoritative happens on the frame the catch is
+	 * decided — the window is spent, the tags are released, the thrower dies — because those are facts about the
+	 * *throw*, and a pull is a presentation of the ball. A catch that resolved when the ball physically arrived would
+	 * let a drill live for another fifth of a second, and would make the outcome depend on geometry the decision had
+	 * already stopped caring about.
+	 *
+	 * **A map rather than a set, because a pull has to be finished or abandoned and both need to know what it was
+	 * for.** The entry carries the constraint and its attachment (so they can be destroyed rather than orphaned), the
+	 * hand (so the target and the arrival test have an answer), the start time (the timeout) and which of the two
+	 * routes — catch or pickup — owns the report that follows the weld.
+	 *
+	 * **Entry lifetime is exactly the constraint's**, and the one place that can go wrong is a pull whose ball or hand
+	 * leaves the world: both are checked every frame by {@link pumpPulls}, which abandons rather than completing in
+	 * that case. An orphaned `AlignPosition` on a re-parented ball is the classic "invisible force" bug — the ball
+	 * dragged by nothing toward a hand that no longer exists.
+	 */
+	private readonly pulling = new Map<BasePart, Pull>();
+
+	/**
+	 * **Every ball wall in the world, which is the whole of what the per-frame check walks.**
+	 *
+	 * **A registry rather than a tag walk per frame, and rather than a `Heartbeat` per wall.** Both of the
+	 * alternatives are worse in a way this file has already argued about once: `pumpPulls` is one loop over a map
+	 * because a thread per catch is a thread with its own cancellation problem, and the same reasoning says a
+	 * connection per wall is a connection per wall. The tag walk is the other extreme — `taggedPartsInWorkspace`
+	 * allocates an array every call, and sixty of those a second to find the same two parts is the kind of cost that
+	 * never appears in a profile until there are a hundred walls.
+	 *
+	 * **Kept in step by the tag's own two signals**, so a wall painted mid-session is swept on the next frame and a
+	 * destroyed one costs nothing. Rebuilt with those signals rather than by walking the tag on a tick.
+	 */
+	private readonly ballWalls = new Set<BasePart>();
+
+	/** The overlap query's parameters, **made once because a fresh `OverlapParams` per wall per frame is garbage**. */
+	private readonly wallOverlap = new OverlapParams();
+
 	constructor(
 		private readonly factory: BallFactory,
 		private readonly dev: DevService,
@@ -571,6 +653,150 @@ export class BallService implements OnStart {
 		// condition: it looks at the world rather than at this service's lists, so a ball
 		// left on the floor in Studio is covered by the same loop as a thrown one.
 		task.spawn(() => this.settleLooseBalls());
+
+		// **The pull loop, started with the settle loop and for its reason.** It has no starting condition either —
+		// `pumpPulls` looks at its own map rather than at anything in the world, so an empty map is the whole of the
+		// idle cost and a pull that began on any frame is picked up on the next. See `pulling`.
+		RunService.Heartbeat.Connect(() => this.pumpPulls());
+
+		// **And the ball walls, on the same clock and for the same reason.** One loop over a registry rather than a
+		// connection per wall; see {@link ballWalls}.
+		this.watchBallWalls();
+		RunService.Heartbeat.Connect(() => this.pumpBallWalls());
+	}
+
+	/**
+	 * **Keeps {@link ballWalls} in step with the tag, so the per-frame check walks a small set rather than the world.**
+	 *
+	 * **Three sources, and each covers a way a wall can arrive or leave.** The boot walk catches a wall painted into
+	 * the place file — it is already tagged by the time this service starts, and the added-signal for it fired before
+	 * anything was listening. The added-signal catches a wall tagged while the server runs, which is the case a
+	 * person testing this feature produces: tag a part in Studio's Tag Editor and walk into it. The removed-signal,
+	 * and a re-parent out of `Workspace`, catch the wall going away again.
+	 *
+	 * **`IsDescendantOf(Workspace)`, so a wall parked in `ServerStorage` is not a wall** — the same rule
+	 * `taggedPartsInWorkspace` applies to every other tag in this project, and the reason a template cannot be
+	 * swept.
+	 *
+	 * **Nothing here reads the world per frame.** The `removed` signal is not the only cleanup: `pumpBallWalls`
+	 * skips a wall that has left the world and forgets it, so a wall destroyed without the signal cannot make the
+	 * loop query a dead part for ever.
+	 */
+	private watchBallWalls(): void {
+		for (const part of taggedPartsInWorkspace(BALL_BARRIER_TAG)) this.ballWalls.add(part);
+
+		CollectionService.GetInstanceAddedSignal(BALL_BARRIER_TAG).Connect((instance) => {
+			if (instance.IsA("BasePart") && instance.IsDescendantOf(Workspace)) this.ballWalls.add(instance);
+		});
+
+		CollectionService.GetInstanceRemovedSignal(BALL_BARRIER_TAG).Connect((instance) => {
+			if (instance.IsA("BasePart")) this.ballWalls.delete(instance);
+		});
+	}
+
+	/**
+	 * **The held-ball half of a ball wall: a body inside one loses the ball in its hand, with the poof.**
+	 *
+	 * ## Why there are two mechanisms for one wall, and what breaks if either replaces the other
+	 *
+	 * **A loose ball and a held ball are not the same kind of thing, so they cannot be caught the same way.**
+	 *
+	 * - **A loose ball is a physics body**, and the wall collides with it: `CollisionGroups` leaves `BallWall`
+	 *   against `Ball` collidable, so the engine bounces it. **That is the whole of the loose-ball rule and there is
+	 *   no code for it**, which is why this method does not look for loose balls at all — a spatial check here would
+	 *   be a second answer to a question the solver has already answered, and the day the two disagreed the ball
+	 *   would either bounce twice or vanish on a bounce that should have been a bounce.
+	 * - **A held ball is not a physics body at all.** It is welded into a hand, `CanCollide = false`, and its pair
+	 *   with the wall is non-collidable by group — so no contact happens, no event fires, and nothing the engine does
+	 *   could notice it. Only geometry can: *is this ball inside that box.*
+	 *
+	 * **The reverse would break both.** Make the loose ball a query and it stops bouncing on the frame the query
+	 * misses — a ball crossing a thin wall in one frame is exactly what a query cannot see and a solver cannot miss.
+	 * Make the held ball a physics matter and it needs `CanCollide = true` on a welded ball, which is the held-ball
+	 * shove bug `attachToHand` exists to prevent.
+	 *
+	 * **`Touched` was tried first and is withdrawn, and the reason is worth keeping written down.** The first version
+	 * connected each wall's `Touched` and read the body off the contact, on the argument that a collision group
+	 * suppresses *collision* rather than contact. Whatever the engine's truth is there, **a wall deliberately made
+	 * non-collidable with every body is the worst possible place to build a rule on a contact event**, and the report
+	 * — *"nothing happens when I tag a part"* — is what a contact that never fires looks like. Geometry does not
+	 * depend on that question having an answer.
+	 *
+	 * ## The query
+	 *
+	 * **One `GetPartBoundsInBox` per wall per frame, against a registry that is normally empty.** With no
+	 * `BALL_BARRIER_TAG` part in the world the whole loop is `size === 0` and returns, so a place file that never
+	 * paints one pays nothing for the feature existing. `OverlapParams` is built once on the instance rather than per
+	 * call, because one table per wall per frame is garbage for a result that is the same shape every time.
+	 *
+	 * **A `Humanoid` test rather than an `isHeld`-on-every-hit test, and the order matters.** The box returns every
+	 * part of every body standing in it — a dozen per character — so the cheap question is asked first: resolve the
+	 * ancestor `Model`, drop anything without a `Humanoid`, and only then ask whether this service knows it holds a
+	 * ball. A body with no ball is the ordinary case and costs one map miss.
+	 *
+	 * **`heldBalls.has` rather than `isHeld`, which is the decision the prompt asked about.** `isHeld` takes a
+	 * **ball** and walks the whole map looking for it; this has a *character* and wants the entry — so the keyed
+	 * lookup is both the right question and the cheaper one. `isHeld` stays as it is for `cleanupRoundBalls`, which
+	 * genuinely has a ball.
+	 *
+	 * ## The destruction
+	 *
+	 * **The poof is anchored at the ball**, through `playSpawnPoof`'s position argument: the ball vanishing is the
+	 * event, and that function's first parameter is a `Model | undefined` whose anchor it finds by walking for a
+	 * torso — a ball is a `BasePart` and has neither, so `undefined` plus the ball's own `CFrame` is the only shape
+	 * that puts the burst where the thing disappeared.
+	 *
+	 * **`removeBall` is the whole of the removal**: the map entry, the ball and everything parented to it — the grip
+	 * weld, the trail, any `CollisionIgnore` — and the holder's armed power. A second teardown here would be a second
+	 * answer to "what does a hand losing its ball mean".
+	 *
+	 * **Destroyed rather than dropped**, deliberately. A dropped ball would land on the far side of the wall, be
+	 * picked up, and be carried straight back in — and the wall would become a way to hand a ball to somebody
+	 * standing behind it.
+	 *
+	 * ## What this deliberately cannot do
+	 *
+	 * **A ball can squeak past a corner or a gap**, because the wall is only where somebody painted it. That is a
+	 * geometry fact rather than a fault in this loop: a wall with a hole in it lets balls through the hole. The fix
+	 * is a wider wall, never a bigger box here — a box inflated past the part would destroy balls that bounced off
+	 * the visible edge and never crossed anything.
+	 */
+	private pumpBallWalls(): void {
+		if (this.ballWalls.size() === 0) return;
+
+		// **Collected before anything is removed**, because `removeBall` deletes from the map this is iterating. The
+		// same shape `pumpPulls` uses, and for the same reason: Lua permits deleting the current key during `pairs`
+		// and this project has been bitten by assuming more than that.
+		const caught = new Array<[Model, BasePart, BasePart]>();
+
+		for (const wall of this.ballWalls) {
+			// **A wall that left the world is forgotten rather than queried.** A destroyed part answers a bounds
+			// query with nothing, so this would be harmless for one frame — but "harmless for one frame" per wall per
+			// frame is a query that never stops, so the entry goes the moment it is not a wall any more.
+			if (!wall.IsDescendantOf(Workspace)) {
+				this.ballWalls.delete(wall);
+
+				continue;
+			}
+
+			for (const part of Workspace.GetPartBoundsInBox(wall.CFrame, wall.Size, this.wallOverlap)) {
+				const body = part.FindFirstAncestorWhichIsA("Model");
+				if (body === undefined) continue;
+				if (body.FindFirstChildWhichIsA("Humanoid") === undefined) continue;
+
+				const held = this.heldBalls.get(body);
+				if (held === undefined) continue;
+
+				caught.push([body, held.ball, wall]);
+			}
+		}
+
+		for (const [body, ball, wall] of caught) {
+			playSpawnPoof(undefined, ball.CFrame);
+			this.removeBall(body);
+
+			if (DEBUG) print(`[Ball] ${body.Name}: ball lost to the wall "${wall.Name}"`);
+		}
 	}
 
 	/**
@@ -615,7 +841,7 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * Welds `ball` into `model`'s hand as a **catch**: a ball taken out of the air.
+	 * Pulls `ball` into `model`'s hand as a **catch**: a ball taken out of the air.
 	 *
 	 * Named for the intent rather than the mechanism, which is
 	 * {@link attachToHand}'s. The two are one line apart today and are kept apart
@@ -623,38 +849,247 @@ export class BallService implements OnStart {
 	 * animation, a grace frame, its own telemetry — the seam is already there, and
 	 * until then it costs nothing.
 	 *
-	 * **This is where a catch is confirmed, and it is worth being exact about why, because both
-	 * neighbouring candidates are wrong.** `attachToHand` is the wider door: the pickup off the floor
-	 * and a rig's hand-out come through it too, and it has no idea which of the four it was called
-	 * for, so a sound there would play on every ball collected and every ball a rig takes up. And a
-	 * catch is not
-	 * confirmed anywhere in `CatchService` — `attemptCatch` opens a window that most attempts never
-	 * spend, and `consume`, the other plausible hook, is *also* how a window is dropped on expiry, on
-	 * death and on a dev's flag going off. Neither of those is a catch.
+	 * **The answer is "a ball has been caught", and it is given on the frame of the decision rather than on the frame
+	 * of the weld.** That is the whole contract `BallComponent.tryCatch` depends on: it spends the catch window,
+	 * credits the badge and resolves the thrower behind this `true`, and every one of those is a fact about the
+	 * *throw*. Waiting for the ball to arrive would let a drill live for another fifth of a second and would make an
+	 * outcome depend on geometry the decision had already stopped caring about. The one case that does not return
+	 * here is a catcher with no right hand, which falls straight through to `attachToHand`, is refused there, and
+	 * answers `false` — so "refused" still means "nothing happened", exactly as before.
 	 *
-	 * What makes this the site is the return below: everything after it is reached only when the weld
-	 * succeeded, so it runs exactly once per ball that really did end up in a hand. A catch refused for
-	 * a missing right hand returns before the sound, which is the behaviour worth having — the sound is
-	 * a report, and there is nothing to report.
+	 * **`instant` is "this catch must not travel"**, and it is passed by the *contact* door rather than derived here:
+	 * `BallComponent.tryCatch` knows which door it came through and this does not. A ball caught on the body has no
+	 * journey to show and a pull from zero studs is the yo-yo in its purest form — see {@link beginPull}.
 	 */
-	public catchBall(model: Model, ball: BasePart): boolean {
-		if (!this.attachToHand(model, ball)) return false;
+	public catchBall(model: Model, ball: BasePart, instant: boolean): boolean {
+		return this.beginPull(model, ball, "catch", instant);
+	}
 
-		print(`[Ball] ${model.Name} caught a dodgeball`);
+	/**
+	 * **Starts the journey of a ball into a hand, and answers whether one has begun.**
+	 *
+	 * This is phase two of three: the catch has already been *decided* by the caller (`BallComponent.tryCatch` spends
+	 * the window, releases the tags and resolves the thrower before this returns), and the *weld* is phase three, in
+	 * {@link completePull}. See {@link pulling} for why the three are separated.
+	 *
+	 * **A body with no right hand falls straight through to `attachToHand`**, which warns and destroys the ball and
+	 * answers `false`. That is the pre-existing refusal and it is kept exact rather than re-implemented: the caller's
+	 * contract is "did a catch happen", and a hand-less catch has never been one. It also means the deferred path only
+	 * ever runs when there is a hand to reach, so the weld cannot fail after the catch has already been reported.
+	 *
+	 * **Two ways in weld on the spot instead: `instant`, and a ball already inside `PULL_INSTANT_STUDS` of the hand.**
+	 * They are one branch because they are one rule — *there is no journey here to draw* — and the distance half is
+	 * not redundant, because a proximity catch at six studs is close enough to look wrong and too far for the contact
+	 * door to have refused it. `PULL_INSTANT_STUDS` is where the whole of that argument lives.
+	 *
+	 * **The ball is stopped dead before the constraint takes over, and that is the fix for the yo-yo rather than a
+	 * tidy-up.** The first version let the ball keep its velocity and asked a force to beat it, which cannot be done
+	 * inside a frame: the pull sets `CanCollide = false`, so a ball caught at ninety studs a second carried straight
+	 * *through* the catcher and was then reeled back out from behind them. Zeroing the velocity is the honest
+	 * statement — the ball has been caught, so it is not travelling anywhere — and it makes the pull identical from
+	 * every catch: a ball at rest, dragged to the hand. It is also why `PULL_MAX_FORCE` could come down by half.
+	 *
+	 * **`Armed` goes off here, at the start of the pull**, and that is what stops the ball being caught twice. The
+	 * window has been spent for the catcher, but a *second* player with an open window could otherwise take a ball that
+	 * is already on its way into somebody's hand — `canCatch` asks `Armed`, so clearing it closes both doors at once
+	 * rather than adding a rule to each. It also means the ball stops tagging people while it travels, which is the
+	 * only sensible reading of a ball that has been caught.
+	 */
+	private beginPull(
+		model: Model,
+		ball: BasePart,
+		kind: "catch" | "pickup",
+		instant: boolean,
+	): boolean {
+		// A ball already on its way somewhere else is not available — the same answer `attachToHand` gives a hand that
+		// is already full. Asked before the hand is looked up, so a second request for a ball mid-flight cannot fall
+		// through the refusal below into a synchronous attach.
+		if (this.pulling.has(ball)) return false;
 
-		// The ball's own position, which is the catcher's hand by now: `attachToHand` has just placed
-		// it at the grip and welded it there. Asked of the ball rather than looked up from the hand,
-		// because the ball is the instance this method already holds — no second lookup, and no way
-		// for the two to be talking about different places.
-		emitSound(ball.CFrame, model.Name, SOUND_CONFIG.CATCH, CATCH_EMITTER_NAME);
+		const hand = this.factory.getRightHand(model);
+		if (hand === undefined) return this.attachToHand(model, ball);
 
-		// **And the body is marked as mid-catch, which is what the catch's own clip is played from.** The mark
-		// is shared with the *attempt*: `CatchService` calls the same method when a window opens, so a body that
-		// reached for a ball and did not get one is drawn reaching exactly like a body that did. See
-		// {@link markCatchAnimation}, which owns the mark and is the only thing that writes it.
-		this.markCatchAnimation(model, "catch");
+		// **The trail the ball flew in on stops where it was caught, and this is the frame that has to happen on.**
+		// One line here rather than one at the catch site because this is the single funnel both catch doors pass
+		// through *and* the last moment before anything moves the ball — an instant weld teleports it on this very
+		// frame, and a pull starts dragging it on the next. A trail still on the ball would draw that journey, so the
+		// arc into the hand would appear and then vanish when `attachToHand` disarmed the ribbon. See
+		// `BallTrail.freeze`, which is also where the argument for moving the ribbons rather than copying them lives.
+		//
+		// **Not for a pickup**, and that is the difference between the two kinds rather than an omission: a ball taken
+		// off the floor has been lying still with its ribbons disarmed since it landed, so there is no arc to preserve
+		// and freezing one would park a part in `Workspace` to draw nothing.
+		if (kind === "catch") BallTrail.freeze(ball);
+
+		// The target, refreshed every frame while the pull lasts. See `pumpPulls`.
+		const target = hand.CFrame.mul(GRIP_OFFSET).Position;
+
+		if (instant || ball.Position.sub(target).Magnitude <= BALL_CONFIG.PULL_INSTANT_STUDS) {
+			return this.attachToHand(model, ball);
+		}
+
+		// **An `Attachment` at the ball's own origin, created here and destroyed with the pull.** A ball is a sphere, so
+		// its origin is near enough its centre of mass that a force applied there moves it without spinning it — and
+		// zero means the constraint's target and the arrival test below are both about `ball.Position`, one number
+		// rather than two that could disagree by the length of an offset.
+		const attachment = new Instance("Attachment");
+		attachment.Name = PULL_ATTACHMENT_NAME;
+		attachment.Position = Vector3.zero;
+		attachment.Parent = ball;
+
+		// **`OneAttachment` with a written `Position`, not `TwoAttachment` with one on the hand.** The second shape
+		// needs a second instance parented to a body part that can be destroyed mid-pull — a character dying during a
+		// catch is exactly the leak this feature has to avoid — and it buys nothing, because the arrival test already
+		// needs the hand's position every frame. One instance on the ball, dying with the ball.
+		const align = new Instance("AlignPosition");
+		align.Name = PULL_ALIGN_NAME;
+		align.Mode = Enum.PositionAlignmentMode.OneAttachment;
+		align.Attachment0 = attachment;
+		align.Position = target;
+		// A force rather than a teleport, which is the entire difference between a pull and the snap it replaces.
+		align.RigidityEnabled = false;
+		align.MaxVelocity = BALL_CONFIG.PULL_MAX_VELOCITY;
+		align.Responsiveness = BALL_CONFIG.PULL_RESPONSIVENESS;
+		align.MaxForce = BALL_CONFIG.PULL_MAX_FORCE;
+		align.Parent = ball;
+
+		// **The ball stops being scenery on the way in.** A ball that collided with its own catcher during the pull
+		// would bounce off the body it is being pulled into, and the constraint would spend the pull fighting the
+		// contact solver. The two flags are put back by `attachToHand`'s own configuration one frame later, and by
+		// `dropBall`/`throwBall` for any ball that ends up loose.
+		ball.CanCollide = false;
+		ball.SetAttribute("Armed", false);
+
+		// **And it stops dead, which is the half that fixes the yo-yo.** See this method's own note: a force cannot
+		// arrest a ball at ninety studs a second inside a frame, and a non-colliding ball would carry through the
+		// catcher and be dragged back out from behind them. Starting from rest makes every pull the same shape.
+		ball.AssemblyLinearVelocity = Vector3.zero;
+		ball.AssemblyAngularVelocity = Vector3.zero;
+
+		this.pulling.set(ball, { kind, catcher: model, hand, align, attachment, startedAt: os.clock() });
 
 		return true;
+	}
+
+	/**
+	 * **Phase three: the ball has arrived, or has run out of time — weld it and say what happened.**
+	 *
+	 * **`attachToHand` is still the only way into a hand**, so everything a held ball means — the weld, the grip offset,
+	 * massless, no queries, the cleared ability — arrives exactly as it did before this feature. The pull has only
+	 * changed *where the ball is when that runs*.
+	 */
+	private completePull(ball: BasePart, pull: Pull): void {
+		this.clearPull(ball, pull);
+
+		if (!this.attachToHand(pull.catcher, ball)) return;
+
+		if (pull.kind === "catch") {
+			print(`[Ball] ${pull.catcher.Name} caught a dodgeball`);
+
+			// **The sound is not here, and it moved for a playtest reason.** It used to be emitted at this moment —
+			// the frame the ball reaches the hand — on the argument that the sound *is* the ball landing. Standing in
+			// the game, that reads as a delay: the catch is decided when the ball is taken out of the air, and a
+			// catcher who hears it a fraction later hears it *after* the thing they did. It is now emitted by
+			// `BallComponent.tryCatch` on the decide frame, at the ball's position where the catch actually happened.
+			// See {@link emitCatchSound}.
+
+			// **The body is marked as mid-catch, and this is now slightly late rather than early.** The mark drives the
+			// reach, and a reach that began when the ball arrived would be a body grabbing at something already in its
+			// hand. It is left here rather than moved to `beginPull` because this is the frame the ball is *held*, which
+			// is what the clip is of; the delay is the pull, which is at most a fifth of a second and reads as the
+			// reach following the ball in.
+			this.markCatchAnimation(pull.catcher, "catch");
+
+			return;
+		}
+
+		print(`[Ball] ${pull.catcher.Name} picked up a dodgeball`);
+
+		// **Written only on a pickup that happened.** `attachToHand` above is the refusal, and a refused pickup is
+		// nothing to announce, so the count cannot be moved by an attempt. See {@link PICKUP_COUNT_ATTRIBUTE}.
+		const collected = pull.catcher.GetAttribute(PICKUP_COUNT_ATTRIBUTE);
+		const previous = typeIs(collected, "number") ? collected : 0;
+
+		pull.catcher.SetAttribute(PICKUP_COUNT_ATTRIBUTE, previous + 1);
+	}
+
+	/**
+	 * **Gives up on a pull without welding: the ball stays in the world, and the constraint goes.**
+	 *
+	 * The two ways in are a ball that left the world and a hand that did. **The ball is not destroyed**, because nothing
+	 * about the failure is the ball's fault — it is left loose where it is, unarmed, which is a ball somebody can pick
+	 * up again. What must not be left behind is the constraint: an `AlignPosition` is parented to the ball and would
+	 * survive a re-parent, dragging it toward a hand that no longer exists.
+	 */
+	private abandonPull(ball: BasePart, pull: Pull, why: string): void {
+		this.clearPull(ball, pull);
+
+		if (!ball.IsDescendantOf(Workspace)) return;
+
+		ball.CanCollide = true;
+		ball.CanQuery = true;
+
+		print(`[Ball] ${pull.catcher.Name}: pull abandoned — ${why}`);
+	}
+
+	/** Destroys the constraint and its attachment and forgets the entry. The one teardown, shared by both exits. */
+	private clearPull(ball: BasePart, pull: Pull): void {
+		this.pulling.delete(ball);
+		pull.align.Destroy();
+		pull.attachment.Destroy();
+	}
+
+	/**
+	 * **The one loop that drives every pull — arrival, timeout, and the two ways it can go wrong.**
+	 *
+	 * **One `Heartbeat` over the map rather than a `task.spawn` per catch**, for `CatchService`'s proximity loop's
+	 * reason: a thread per catch is a thread per catch with its own cancellation problem, and the empty-map check is
+	 * the entire cost of having no pulls in flight.
+	 *
+	 * **Completions are collected and applied after the iteration**, because both exits delete from the map being
+	 * walked. Lua permits deleting the current key during a `pairs` loop and this project has been bitten by assuming
+	 * more than that, so the safe shape is used rather than the clever one.
+	 *
+	 * **The order of the checks is the order of likelihood**: a pull ends by arriving, and every other exit is a fault.
+	 */
+	private pumpPulls(): void {
+		if (this.pulling.size() === 0) return;
+
+		const now = os.clock();
+		const arrived = new Array<[BasePart, Pull]>();
+		const abandoned = new Array<[BasePart, Pull, string]>();
+
+		for (const [ball, pull] of this.pulling) {
+			// **The ball leaving the world ends the pull silently.** It was destroyed, or caught by something else, or
+			// parked — and its constraints went with it, so there is nothing to destroy.
+			if (!ball.IsDescendantOf(Workspace)) {
+				abandoned.push([ball, pull, "the ball left the world"]);
+
+				continue;
+			}
+
+			// **A hand that has left the world is a catcer who died mid-pull**, and it is the leak this feature has to
+			// survive: the constraint would otherwise drag the ball toward a part nobody can see.
+			if (!pull.hand.IsDescendantOf(Workspace)) {
+				abandoned.push([ball, pull, "the hand is gone"]);
+
+				continue;
+			}
+
+			const target = pull.hand.CFrame.mul(GRIP_OFFSET).Position;
+
+			// **Rewritten every frame, because the hand moves.** A catcher walking, or one whose idle animation moves
+			// the arm, is a target that shifts under a constraint that was told where to aim once.
+			pull.align.Position = target;
+
+			const close = ball.Position.sub(target).Magnitude <= BALL_CONFIG.PULL_ARRIVAL_STUDS;
+			const late = now - pull.startedAt >= BALL_CONFIG.PULL_TIMEOUT_SECONDS;
+
+			if (close || late) arrived.push([ball, pull]);
+		}
+
+		for (const [ball, pull, why] of abandoned) this.abandonPull(ball, pull, why);
+		for (const [ball, pull] of arrived) this.completePull(ball, pull);
 	}
 
 	/**
@@ -743,19 +1178,24 @@ export class BallService implements OnStart {
 	}
 
 	/**
-	 * Welds `ball` into `model`'s hand as a **pickup**: a ball collected off the
+	 * Pulls `ball` into `model`'s hand as a **pickup**: a ball collected off the
 	 * ground.
 	 *
 	 * The same hand either way, which is the point: a picked-up ball is thrown by
 	 * the same call as a caught one, because by the time it is in the hand there is
 	 * nothing left to tell the two apart.
 	 *
-	 * **And it is the one method in the game that is *only* a pickup**, which is what makes it the place to
+	 * **It begins a pull rather than welding** ({@link beginPull}), so the answer means "a journey into the hand has
+	 * started". That is still the fact the caller needs — the ball is spoken for the instant this returns `true` — and
+	 * the pickup count below is written when the ball actually arrives, because a count of things in a hand should not
+	 * be moved by one that is still in the air.
+	 *
+	 * **And it is the one entry point in the game that is *only* a pickup**, which is what makes it the place to
 	 * publish that fact. Four routes put a ball in a hand — this one, a catch, a round's hand-out and a
 	 * MultiBall refill — and all four end in `attachToHand`, so `attachToHand` knows everything a held ball
 	 * needs and nothing about which route it took. Nothing downstream needs to know either, *except* the
 	 * picker's own client, which plays a sound for a pickup and must stay silent for the other three. It
-	 * cannot tell them apart by watching the ball arrive, so this line is the answer it cannot work out for
+	 * cannot tell them apart by watching the ball arrive, so this call is the answer it cannot work out for
 	 * itself. See {@link PICKUP_COUNT_ATTRIBUTE} for why it is a counter rather than a flag, and
 	 * `client/personalAudio` for the reader.
 	 *
@@ -765,21 +1205,26 @@ export class BallService implements OnStart {
 	 * right thing.
 	 */
 	public pickupBall(model: Model, ball: BasePart): boolean {
-		if (!this.attachToHand(model, ball)) return false;
+		return this.beginPull(model, ball, "pickup", false);
+	}
 
-		print(`[Ball] ${model.Name} picked up a dodgeball`);
-
-		// **Written only on a pickup that happened.** `attachToHand` above is the refusal — a hand that
-		// filled between the search and this line — and a refused pickup is nothing to announce, so the
-		// count cannot be moved by an attempt. The read is validated rather than trusted, the way every
-		// other attribute reader in this project is: a fresh body has no attribute at all, and a value this
-		// build did not write reads as nought rather than poisoning the tally forever.
-		const collected = model.GetAttribute(PICKUP_COUNT_ATTRIBUTE);
-		const previous = typeIs(collected, "number") ? collected : 0;
-
-		model.SetAttribute(PICKUP_COUNT_ATTRIBUTE, previous + 1);
-
-		return true;
+	/**
+	 * **Plays the catch sound where the catch was decided, which is the frame the catcher pressed and the place the ball
+	 * was taken out of the air.**
+	 *
+	 * **A one-line method rather than an `emitSound` call at the catch site, and the reason is the emitter's name.** The
+	 * catch is reported from the ball — `BallComponent.tryCatch`, which is the one place both catch doors meet — and the
+	 * emitter name that makes "no catch emitters remain" a statement about catches lives here, beside the sound it names.
+	 * A public command with an intent-shaped name keeps that pairing in one file without exporting the constant to a
+	 * component that has no other business with it.
+	 *
+	 * **The position is the ball's, not the hand's, and that is the difference between this and where it used to be.**
+	 * A catch can happen up to eight studs from the catcher — a proximity catch at the edge of the radius is a ball
+	 * nowhere near a hand — and a sound emitted at the hand would be a sound from a place where nothing happened. This is
+	 * the same reasoning `BallComponent` already applies to an impact: the noise belongs where the ball was.
+	 */
+	public emitCatchSound(model: Model, at: CFrame): void {
+		emitSound(at, model.Name, SOUND_CONFIG.CATCH, CATCH_EMITTER_NAME);
 	}
 
 	/**
@@ -2728,6 +3173,14 @@ export class BallService implements OnStart {
 	public catchByProximity(character: Model, centre: Vector3, maxStuds: number): boolean {
 		for (const [ball, handler] of this.catchHandlers) {
 			if (!ball.IsDescendantOf(Workspace)) continue;
+
+			// **A ball already on its way into somebody's hand is not available**, and this is not redundant with
+			// `canCatch`'s `Armed` test: the window has been spent for the *catcher*, but a second player with an open
+			// window would otherwise be able to take a ball that is already travelling toward the first. `Armed` going
+			// off at the start of a pull closes that too, so this is the cheap half of the same rule — one map lookup
+			// before the distance sum, on the loop that runs every frame.
+			if (this.pulling.has(ball)) continue;
+
 			if (ball.Position.sub(centre).Magnitude > maxStuds) continue;
 
 			if (handler(character)) return true;
@@ -2969,6 +3422,11 @@ export class BallService implements OnStart {
 
 					continue;
 				}
+
+				// **A ball being pulled into a hand is not a loose ball.** It has a destination, so none of this
+				// applies: the bay rule would destroy it mid-flight, and the rolling resistance below would fight the
+				// constraint for the same body. See `pulling`.
+				if (this.pulling.has(instance)) continue;
 
 				// **A drill's ball dies at the edge of the bay it was thrown in, and this is the only place that
 				// happens.** The sweep is where it belongs rather than a listener on the ball: this loop already walks

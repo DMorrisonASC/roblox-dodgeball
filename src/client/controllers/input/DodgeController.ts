@@ -386,11 +386,16 @@ export class DodgeController implements OnStart {
 	 * coming back a refusal a round trip later. Then the body, then the camera — all three of which the caller
 	 * has usually already read, and none of which is worth a parameter that says so.
 	 *
+	 * **"In a round" there means *this player is in this round*, not "a round is on"** — the phase alone let a
+	 * lobby spectator dodge for the length of somebody else's match. See `roundZone.inRoundOrZone`, whose comment
+	 * carries the report and the correction, and `DodgeService`, which asks the identical pair on the server so the
+	 * two sides cannot disagree about whether a press was allowed.
+	 *
 	 * Returns whether the request went out.
 	 */
 	private requestDodge(label: string, direction: Vector3, forward: Vector3): boolean {
 		if (!inRoundOrZone(this.player.Character)) {
-			if (DEBUG) print(`[Dodge] ${label} + the button outside a round and outside a zone`);
+			if (DEBUG) print(`[Dodge] ${label} + the button outside this round and outside a zone`);
 
 			return false;
 		}

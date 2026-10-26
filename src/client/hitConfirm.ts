@@ -54,10 +54,10 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  * punished — it goes out from `RoundService.resolveCaughtThrower`, past guards that drop a friendly catch and
  * a catch between rounds, so a client listening to it would splash for enemy catches only and stay silent for
  * a ball taken out of the air in the lobby. What *every* catch publishes is `CATCH_ANIMATION_ATTRIBUTE` on the
- * body that caught, set to `"catch"` by `BallService.catchBall` — the one place a ball ends up in a hand,
- * whoever caught it. **So the local character's own attribute is the signal**, watched per character because a
- * new body is a new attribute holder. The cost is stated at the listener: two catches inside one mark's window
- * are one attribute *value*, so the second writes nothing and this module hears nothing.
+ * body that caught, set to `"catch"` by `BallService.completePull` when the ball reaches the hand — the one place
+ * a ball ends up in a hand, whoever caught it. **So the local character's own attribute is the signal**, watched
+ * per character because a new body is a new attribute holder. The cost is stated at the listener: two catches
+ * inside one mark's window are one attribute *value*, so the second writes nothing and this module hears nothing.
  *
  * ## How one throw becomes one caption
  *

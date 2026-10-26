@@ -74,9 +74,10 @@ export const SOUND_CONFIG = {
 	 * seat — the ball simply stops, and an unfired throw looks much the same.
 	 *
 	 * It is played on the server, at the catcher, from the same emitter as an impact — see
-	 * `SoundEmitter.emitSound`. Where exactly is the ball's position at the moment the catch is
-	 * confirmed, which is the hand: see `BallService.catchBall` for why that is the honest point
-	 * rather than a convenience.
+	 * `SoundEmitter.emitSound`. Where exactly is the ball's position on the frame the catch is **decided**, which is
+	 * where the ball was taken out of the air: see `BallService.emitCatchSound`. It was briefly emitted at the weld
+	 * instead, on the argument that the sound is the ball landing, and a playtest found that reads as a delay between
+	 * pressing and hearing — §15 item 84.
 	 *
 	 * **A rig catching plays it too, and that is the default rather than an oversight.** A catch is a
 	 * catch whoever made it, and `CatchBehavior` asks through the same gate a player does, so the

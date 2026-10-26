@@ -54,7 +54,7 @@ export const CATCH_CONFIG = {
 	 *
 	 * **Placeholder.**
 	 */
-	CATCH_RADIUS_STUDS: 8,
+	CATCH_RADIUS_STUDS: 6,
 
 	/**
 	 * How long a body stays marked as **mid-catch** after the ball arrives in its hand, in seconds.

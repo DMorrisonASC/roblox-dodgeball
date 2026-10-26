@@ -214,7 +214,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// **Registered here and forgotten in the `Destroying` hook below**, because a destroyed ball must not stay in
 		// the table: the map is keyed on the instance, and an instance held by a map is an instance that cannot be
 		// collected — a leak that would grow for the whole session.
-		this.balls.registerCatchHandler(this.instance, (catcher) => this.tryCatch(catcher, this.instance));
+		this.balls.registerCatchHandler(this.instance, (catcher) => this.tryCatch(catcher, this.instance, "proximity"));
 
 		// **The one case this file is otherwise silent about: a ball destroyed while it still owes a
 		// death.** A ball that tags a body and never touches the world — wedged on something, or
@@ -333,14 +333,25 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// contact disarms the ball at the bottom of the world branch, and every later touch returns here, so
 			// the catch branch below is unreachable. If this prints for a ball somebody was reaching for, the
 			// answer is "the throw was already over" and nothing in the catch path is at fault.
+			//
+			// **And it only prints for somebody who was reaching, which is the second pass at it.** Ungated it was the
+			// loudest line in the game by an order of magnitude — a spent ball rolling through a crowd of rigs prints
+			// once per part per frame, forty lines a second forever — and a diagnostic that buries every other line is
+			// answering a question nobody can now read the answer to. A spent ball touching somebody with *no* window
+			// open is the ordinary case and says nothing; a spent ball touching somebody who is trying to catch it is
+			// exactly the case worth printing.
 			if (TRACE_CATCH) {
 				const body = otherPart.FindFirstAncestorWhichIsA("Model");
-				const what =
-					body !== undefined && body.FindFirstChildWhichIsA("Humanoid") !== undefined
-						? `a body (${body.Name})`
-						: otherPart.Name;
 
-				print(`[Catch] ${this.instance.Name}: NOT catchable — out of play (Armed not true), touch on ${what}`);
+				if (body !== undefined && this.catches.isCatching(body)) {
+					const what =
+						body.FindFirstChildWhichIsA("Humanoid") !== undefined ? `a body (${body.Name})` : otherPart.Name;
+
+					print(
+						`[Catch] ${this.instance.Name}: NOT catchable — out of play (Armed not true), ` +
+							`touch on ${what}`,
+					);
+				}
 			}
 
 			return;
@@ -563,7 +574,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// **It also cannot be used as a shield.** A self-catch spends the window through `tryCatch` → `consume`, exactly
 		// as any other catch does, so it costs the same second and catches the same one ball. See `CATCH_CONFIG`.
 		if (ownThrow) {
-			if (this.tryCatch(character, struck)) return;
+			if (this.tryCatch(character, struck, "touch")) return;
 
 			// TEMPORARY — remove with `TRACE_CATCH`. **The honest line for this branch now**: the ball came back to
 			// its own thrower and nothing happened, because the window was not open. Before the split this was the
@@ -591,7 +602,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// **A body can therefore catch a ball that has already tagged it, and that is the feature rather than a
 		// loophole**: the throw is still in the air, the tag is still owed, and catching it is the save. See
 		// `canCatch` for the refusals that remain — a Pierce ball, a Freeze ball, and a ball already in a hand.
-		if (this.tryCatch(character, struck)) return;
+		if (this.tryCatch(character, struck, "touch")) return;
 
 		// **Decided already — or decided by an earlier part of this same arrival.** Either way
 		// this body's turn has been taken and the ball passes through it.
@@ -1110,7 +1121,9 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * report and nothing replaced it. See `BallComponent.score` for the other end of the same removal.
 	 *
 	 * **A catch that cannot be made never reaches here.** `handleTouch` only calls this after
-	 * `catchBall` has taken the ball into the catcher's hand, so the save below is a fact and not a
+	 * `catchBall` has accepted the catch — which since the pull means "the ball is on its way into
+	 * the catcher's hand or is already in it", because the only refusal that answers `false` is a
+	 * body with no right hand. Either way the decision behind the save below is a fact and not a
 	 * hope.
 	 */
 	private resolveCatch(catcher: Model, throwerId: unknown): void {
@@ -1164,11 +1177,13 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * is unblockable by them. That is the intent — the answer to a super is to move, not to stand there
 	 * with your hands out.
 	 *
-	 * **The refusal has to sit above the weld rather than after it**, and that is not just tidiness:
-	 * `catchBall` runs `attachToHand`, which *clears* the ball's ability so that a ball arriving in a
-	 * hand is an ordinary ball again. A catch allowed as far as the hand would therefore erase the very
-	 * marker that made it illegal, and the ball would leave the catcher's hand a normal ball — the
-	 * ability would have been cancelled by the thing it was supposed to defeat.
+	 * **The refusal has to sit above the pull rather than after it**, and that is not just tidiness:
+	 * the weld at the end of a pull runs `attachToHand`, which *clears* the ball's ability so that a ball
+	 * arriving in a hand is an ordinary ball again. A catch allowed as far as the hand would therefore erase
+	 * the very marker that made it illegal, and the ball would leave the catcher's hand a normal ball — the
+	 * ability would have been cancelled by the thing it was supposed to defeat. Now that the ball spends a
+	 * moment in flight before the weld, the same argument says the refusal must be decided on the contact
+	 * rather than watched for during the pull: a ball already travelling to a hand has been promised it.
 	 *
 	 * **What is not done on the refusing path is `catches.consume(character)`**, which the catch branch
 	 * would have done. That is deliberate: a catcher's window is an attempt, and an attempt that was
@@ -1292,21 +1307,38 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	 * part for anything — "every limb can catch" is answered a frame earlier by `struckBodyPart` — so the two callers
 	 * passing different parts of the same body changes no answer. It is kept in the signature because the *contract*
 	 * is still "this contact, with this part", and a future part rule should have somewhere to live.
+	 *
+	 * **`contact` is which door this came through, and it is the one thing the two callers know that this cannot
+	 * derive.** A ball taken on the body has no journey into the hand to animate, and pulling it is what produced the
+	 * yo-yo — the ball carried through the catcher on its own momentum and was dragged back out from behind them. So the
+	 * contact door says so, and `beginPull` welds on the spot; a proximity catch keeps its pull. Note that this is
+	 * *not* the same question as "how far away was it", which `beginPull` also asks — see `PULL_INSTANT_STUDS`.
 	 */
-	public tryCatch(character: Model, part: BasePart): boolean {
+	public tryCatch(character: Model, part: BasePart, contact: "touch" | "proximity"): boolean {
 		if (!this.canCatch(part, character)) return false;
 
 		// **Spent before the ball is handed over**, so one attempt catches one ball even if two arrive together —
 		// and so a proximity catch closes the window before the loop can consider a second ball.
 		this.catches.consume(character);
 
-		// Read before the ball changes hands: `catchBall` makes the ball inert, which clears `ThrowerId`, and the
-		// resolution below is about the thrower the ball *arrived* with rather than whoever is holding it next.
+		// Read before the ball changes hands: the weld in `attachToHand` makes the ball inert, which clears
+		// `ThrowerId`, and the resolution below is about the thrower the ball *arrived* with rather than
+		// whoever is holding it next. Read here rather than in `catchBall`'s callback because the pull means
+		// the weld is a fifth of a second away and this frame is the last one guaranteed to be before it.
 		const throwerId = this.instance.GetAttribute("ThrowerId");
 
 		// A catch that cannot attach (no right hand) is not a catch: `attachToHand` destroys the ball in that case,
-		// and nothing below should resolve a throw that is no longer in the air.
-		if (!this.balls.catchBall(character, this.instance)) return false;
+		// and nothing below should resolve a throw that is no longer in the air. That refusal is the only route
+		// through `catchBall` that answers `false` — every other answer means a ball is on its way into the hand or
+		// already in it.
+		if (!this.balls.catchBall(character, this.instance, contact === "touch")) return false;
+
+		// **The sound belongs to the catch and not to the weld**, so it is emitted here, on the frame the ball is taken
+		// out of the air, at the ball's own position — which for a proximity catch is up to eight studs from the hand
+		// it is about to be pulled into. It used to be emitted at the weld, on the argument that the sound is the ball
+		// *landing*; a playtest says that reads as a delay between pressing and hearing, and the press is the event the
+		// player is asking about. See `BallService.emitCatchSound`.
+		this.balls.emitCatchSound(character, this.instance.CFrame);
 
 		// **The round's badge count, and it goes here rather than in `CatchService.consume`.** That method is the
 		// *close* of a window and not the catch of a ball — it runs for an expiry, a death, a departure and a spent

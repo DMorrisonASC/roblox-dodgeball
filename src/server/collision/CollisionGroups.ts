@@ -1,5 +1,6 @@
 import { CollectionService, PhysicsService, Players, Workspace } from "@rbxts/services";
-import { CHARACTER_BARRIER_TAG } from "shared/constants";
+import { BALL_BARRIER_TAG, CHARACTER_BARRIER_TAG } from "shared/constants";
+import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { DUCK_GROUP } from "shared/duck";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
@@ -10,6 +11,20 @@ const CHARACTER_GROUP = "Character";
 
 /** The group a midline wall belongs to. Assigned by {@link applyBarrierGroups}, at every round boundary, and never to anything else. */
 const BARRIER_GROUP = "Barrier";
+
+/**
+ * The group a **ball** wall belongs to — the sibling of {@link BARRIER_GROUP} and its opposite.
+ *
+ * **A group of its own rather than a flag on `Barrier`, because the two walls want opposite rows.** `Barrier`
+ * collides with every character group and not with `Ball`; this one collides with `Ball` and with no character
+ * group at all. Writing both rules into one group would need a boolean per pair, which is what a group already is.
+ *
+ * **What makes the ball's half work is that the ball is already somewhere of its own.** A wall that collides with
+ * `Default` collides with the floor, the props and the character parts — so a wall that stops *only* balls has to
+ * be told which parts are balls, and `BALL_GROUP` is that fact. This row could not have been written before the
+ * ball had a group, which is why the wall arrived after it.
+ */
+const BALL_WALL_GROUP = "BallWall";
 
 /**
  * The group every ball belongs to. Assigned by {@link assignPart}, and by nothing else.
@@ -108,6 +123,21 @@ export function startCollisionGroups(): void {
 
 	registerGroups();
 	followCharacters();
+
+	// **The ball walls, grouped now and grouped again every time one is tagged — which is the whole of what was
+	// missing.** The sibling wall is assigned by `applyBarrierGroups`, which `RoundService` calls at a round
+	// boundary: that is fine for a wall that only matters while a round is being played, and it is **wrong for this
+	// one**, because a ball wall is a thing somebody tags and then walks into with a ball to see what happens. With
+	// no round started, nothing had ever assigned the group, so the part stayed `Default` — and the reported
+	// symptom (*"nothing happens when I tag a part"*) is exactly that: a wall that is in the wrong group.
+	//
+	// **A boot pass as well as the signal**, because a wall painted into the place file is already tagged by the
+	// time this runs and would otherwise wait for the signal that will never re-fire. The boundary pass is kept as
+	// well, since the same part can be re-created by a round's clean-up in a place file that still clones geometry.
+	applyBallWallGroups();
+	CollectionService.GetInstanceAddedSignal(BALL_BARRIER_TAG).Connect((instance) => {
+		if (instance.IsA("BasePart")) assignBallWall(instance);
+	});
 }
 
 /**
@@ -165,6 +195,14 @@ function registerGroups(): void {
 
 	if (!Workspace.IsCollisionGroupRegistered(PRACTICE_GROUP)) {
 		Workspace.RegisterCollisionGroup(PRACTICE_GROUP);
+	}
+
+	if (!PhysicsService.IsCollisionGroupRegistered(BALL_WALL_GROUP)) {
+		PhysicsService.RegisterCollisionGroup(BALL_WALL_GROUP);
+	}
+
+	if (!Workspace.IsCollisionGroupRegistered(BALL_WALL_GROUP)) {
+		Workspace.RegisterCollisionGroup(BALL_WALL_GROUP);
 	}
 
 	// **`DUCK_GROUP` is registered here, with the other groups, rather than down beside the duck's own
@@ -241,6 +279,49 @@ function registerGroups(): void {
 	Workspace.CollisionGroupSetCollidable(BARRIER_GROUP, BALL_GROUP, false);
 	Workspace.CollisionGroupSetCollidable(BALL_GROUP, PRACTICE_GROUP, false);
 
+	// ------------------------------------------------------------- the ball wall
+	//
+	// **The other wall, row for row the opposite of the one above.** `BallWall` against `Ball` is colliding, so a
+	// loose ball *bounces*; every other row here is turned off, which is the whole of what "it only stops balls"
+	// means. `Default` is off even though the midline's row against `Default` is off for the opposite reason: that
+	// one lets *props* through a wall that stops bodies, and this one lets props through a wall that stops balls.
+	// Nothing but a ball touches it either way.
+	//
+	// **The character rows are why a player walks through, and they are three rather than one** because a body can
+	// be in any of three groups — `Character`, `PracticePlayer` (standing in a zone) or `DUCK_GROUP` (the head and
+	// arms, mid-duck). Missing one would be a wall that stops a player only while they are ducking, which is the
+	// kind of fault that reads as the wall being intermittent.
+	//
+	// **The `Ball` row is written out rather than left to the engine's default, which is a reversal.** The default
+	// is collidable and the first version relied on it, on the argument that "the rows that are not defaults are
+	// stated as the exceptions they are". That reads well and it left the one row the feature exists for *invisible
+	// in this file* — so when a ball sailed through a wall, nothing here could say whether the row was on, and the
+	// answer had to be found by testing. A feature's load-bearing row is worth a line that can be read and one that
+	// would break if somebody ever wrote a `false` here by accident.
+	//
+	// **Nothing here is about `Touched`, and the first version's claim that it was is withdrawn.** That comment said
+	// a group suppresses collision rather than contact, and the ball-losing rule was hung off the barrier's own
+	// `Touched` on the strength of it. The report that closed this — *"nothing happens when I tag a part"* — is what
+	// a contact that never fires looks like, and the rule now runs off geometry instead: see
+	// `BallService.pumpBallWalls`, which asks where the ball *is* rather than waiting to be told it touched
+	// something. **A wall that is deliberately non-collidable with every body is the worst possible place to rely on
+	// a contact event**, and that is worth remembering the next time a rule wants one.
+	PhysicsService.CollisionGroupSetCollidable(BALL_WALL_GROUP, BALL_GROUP, true);
+	PhysicsService.CollisionGroupSetCollidable(BALL_WALL_GROUP, CHARACTER_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(BALL_WALL_GROUP, PRACTICE_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(BALL_WALL_GROUP, DUCK_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(BALL_WALL_GROUP, DEFAULT_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(BALL_WALL_GROUP, BARRIER_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(BALL_WALL_GROUP, BALL_WALL_GROUP, false);
+
+	Workspace.CollisionGroupSetCollidable(BALL_WALL_GROUP, BALL_GROUP, true);
+	Workspace.CollisionGroupSetCollidable(BALL_WALL_GROUP, CHARACTER_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(BALL_WALL_GROUP, PRACTICE_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(BALL_WALL_GROUP, DUCK_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(BALL_WALL_GROUP, DEFAULT_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(BALL_WALL_GROUP, BARRIER_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(BALL_WALL_GROUP, BALL_WALL_GROUP, false);
+
 	// ---------------------------------------------------------------- the duck
 	//
 	// **The duck's one row, and it is the whole of what a duck changes about physics.** A ducking body's
@@ -298,6 +379,17 @@ function registerGroups(): void {
 	print(
 		`[Collision] ${BARRIER_GROUP} registered — service ${PhysicsService.IsCollisionGroupRegistered(BARRIER_GROUP)}, ` +
 			`world ${Workspace.IsCollisionGroupRegistered(BARRIER_GROUP)}`,
+	);
+
+	// **And the row the ball wall lives on, read back from both — because that line was the missing evidence for a
+	// whole session.** `BallWall`/`Ball` is the *entire* loose-ball rule: `true` is a ball bouncing and `false` is a
+	// ball thrown straight through, and when the report came in the log could say which group every part was in but
+	// not whether the row had taken. It is the one number that separates "the matrix is wrong" from "the matrix is
+	// right and something else is", and it costs one line at boot.
+	print(
+		`[Collision] ${BALL_WALL_GROUP}/${BALL_GROUP} collides — service ` +
+			`${PhysicsService.CollisionGroupsAreCollidable(BALL_WALL_GROUP, BALL_GROUP)}, ` +
+			`world ${Workspace.CollisionGroupsAreCollidable(BALL_WALL_GROUP, BALL_GROUP)}`,
 	);
 
 	// The row the ball's half depends on, read back from both: `false` is the answer that lets a
@@ -564,4 +656,153 @@ function applyBarrierGroupsBody(): void {
 	const suffix = report === "" ? "" : `: ${report}`;
 
 	print(`[Collision] ${assigned} barrier part(s) in ${Workspace.Name}${suffix}`);
+
+	applyBallWallGroups();
+}
+
+/**
+ * **The ball wall's half of the barrier pass: every `BALL_BARRIER_TAG` part goes into {@link BALL_WALL_GROUP}.**
+ *
+ * **Called from two places, and the second is the fix this feature needed.** `applyBarrierGroups` runs at every
+ * round boundary and calls this, so the walls are re-asserted once a round like their sibling. But **a ball wall is
+ * a thing somebody tags and then walks into with a ball to see what happens**, and a round boundary can be minutes
+ * away — or never, on a server nobody has started a game on. With no pass run at all the part stayed in `Default`,
+ * which collides with every character and with `Default`, and the reported symptom (*"nothing happens when I tag a
+ * part"*) is exactly that. So `startCollisionGroups` calls {@link applyBallWallGroups} at boot and groups each part
+ * again the moment the tag arrives.
+ *
+ * **A second count and a second line rather than one combined report**, because the two numbers answer different
+ * questions. `0 barrier part(s)` is a midline nobody has built; `0 ball barrier part(s)` is a practice floor with no
+ * backstop. One number could not say which wall is missing, and the whole point of these two prints is that a rule
+ * that is *silently* absent looks exactly like a rule that is working.
+ *
+ * **The read-back earns its place here for a sharper reason than on the other wall.** That one's failure is a body
+ * walking through the centre line; this one's is a ball sailing through a wall the builder expected it to bounce off
+ * *and* a body being stopped dead by a wall that was supposed to be a ghost. A part that reads `Default` after this
+ * ran is the second of those — `Default` collides with the character — so the name and the group beside it are the
+ * evidence that the wall is a ghost rather than a wall.
+ */
+export function applyBallWallGroups(): void {
+	let assigned = 0;
+	let report = "";
+
+	for (const part of taggedPartsInWorkspace(BALL_BARRIER_TAG)) {
+		dressBallWall(part);
+		assigned++;
+
+		// Built as a local rather than nested inside the print's own template: roblox-ts compiles each template
+		// literal to a Luau interpolated string, so nesting one puts backticks inside backticks — which parses, and
+		// quietly renders as nothing.
+		const described = `${part.Name} = ${part.CollisionGroup}`;
+		report = report === "" ? described : `${report}, ${described}`;
+	}
+
+	const suffix = report === "" ? "" : `: ${report}`;
+
+	print(`[Collision] ${assigned} ball barrier part(s) in ${Workspace.Name}${suffix}`);
+}
+
+/**
+ * **One part into the ball wall's group, the moment its tag arrives** — see {@link applyBallWallGroups} for why the
+ * boundary pass alone was not enough.
+ *
+ * Separated from the walk because the two callers have different inputs: a pass has a list, the added-signal has one
+ * instance. The alternative — the signal calling the walk — would re-report every wall in the world every time one
+ * was tagged, which buries the line that matters (this part, this group) in a list of the others.
+ */
+function assignBallWall(part: BasePart): void {
+	if (!part.IsDescendantOf(Workspace)) return;
+
+	dressBallWall(part);
+
+	print(`[Collision] ball barrier tagged — ${part.Name} = ${part.CollisionGroup}`);
+}
+
+/**
+ * **Every property a ball wall needs, forced on it, with anything it had to correct said out loud.**
+ *
+ * **This is the fix for *"I can still throw the ball across past the wall"*, and the group was not the fault.** The
+ * log said `BallBarrier = BallWall` — the right group, correctly applied — and the ball still crossed, because a
+ * **collision group says which pairs the engine will *consider* and `CanCollide` is the switch that makes it
+ * consider them at all.** A part painted as an invisible wall very often has `CanCollide = false`, since that is
+ * what an invisible marker usually wants to be, and then the correct group row is a rule about a part that is not
+ * solid to anything. **Two switches, one rule, and the log only ever showed one of them.**
+ *
+ * **So the tag owns the flags, exactly as `MatchService.prepare` owns a join part's four.** That function's argument
+ * is this one's: the fault is silent and the fix is one property, so a part that was not set up right is worth a
+ * line, and the line names which property it was. Four properties, and each one is a way for the wall to be invisible
+ * in a different sense:
+ *
+ * - **`Anchored = true`** — an unanchored barrier falls out of the world and is destroyed at
+ *   `FallenPartsDestroyHeight`, which looks exactly like a wall nothing collides with. The same trap the old lobby
+ *   spawn fell into; see `MatchService.prepare`.
+ * - **`CanCollide = true`** — the bounce. Without it the group row is decoration.
+ * - **`CanTouch = true`** — not needed by either rule as they are written (the held-ball case is geometric), but a
+ *   part that cannot be touched is a part that reports nothing to every contact rule in the game, and the first
+ *   version of this feature *was* a contact rule. Cheap insurance against the wall being silently inert to a future
+ *   one.
+ * - **`CanQuery = true`** — the aim arc stops at a wall a throw would bounce off. That is the wall's contract, and a
+ *   `CanQuery = false` barrier draws a preview that lies.
+ *
+ * **What is deliberately not forced: `Size`.** A wall's dimensions are geometry and a script has no business
+ * changing them — see {@link reportBallWallThickness} for the one number that *does* matter, which is reported
+ * rather than corrected because the correction would be inventing a wall.
+ */
+function dressBallWall(part: BasePart): void {
+	const corrected = new Array<string>();
+
+	if (!part.Anchored) corrected.push("Anchored");
+	if (!part.CanCollide) corrected.push("CanCollide");
+	if (!part.CanTouch) corrected.push("CanTouch");
+	if (!part.CanQuery) corrected.push("CanQuery");
+
+	part.Anchored = true;
+	part.CanCollide = true;
+	part.CanTouch = true;
+	part.CanQuery = true;
+
+	part.CollisionGroup = BALL_WALL_GROUP;
+
+	if (corrected.size() > 0) {
+		warn(
+			`[Collision] "${part.GetFullName()}" was not set up as a ball wall — corrected ${corrected.join(", ")}. ` +
+				`The tag owns these flags; see BALL_BARRIER_TAG.`,
+		);
+	}
+
+	reportBallWallThickness(part);
+}
+
+/**
+ * **Warns when a ball wall is thin enough for a fast throw to pass through it in a single frame — which is the other
+ * half of "I can still throw across it", and the half no script can fix.**
+ *
+ * **Roblox does not sweep a part's collision between frames.** A ball moves `speed / 60` studs every frame, and if
+ * that is longer than the wall is thick the ball is on one side and then the other with no overlap in between — the
+ * engine never sees them touch, so nothing bounces. At `THROW_MAX_SPEED` (200) that is **3.3 studs per frame**, and a
+ * wall painted 1 stud thick is a wall a full-charge throw goes straight through while a lob bounces off it, which
+ * reads as the wall being unreliable rather than as it being thin.
+ *
+ * **Reported rather than corrected, because the correction would be inventing geometry.** Growing the part to a
+ * safe thickness would move its faces into the room it was placed to seal, and the same number would be wrong for a
+ * wall somebody *wanted* thin because it only has to stop a lob. **A thicker wall is the fix**, and the number is in
+ * the line so the decision can be made in one pass instead of three.
+ *
+ * **The smallest dimension, and the diagonal is deliberately not the unit.** A ball crossing a wall at an angle
+ * travels a little further inside it, but the useful figure is the one a builder can act on — *make it thicker than
+ * this* — and the thinnest axis is what a throw aimed squarely at the wall has to cross.
+ */
+function reportBallWallThickness(part: BasePart): void {
+	const perFrame = BALL_CONFIG.THROW_MAX_SPEED / 60;
+	const thinnest = math.min(part.Size.X, math.min(part.Size.Y, part.Size.Z));
+
+	if (thinnest >= perFrame) return;
+
+	warn(
+		`[Collision] ball wall "${part.GetFullName()}" is ${string.format("%.2f", thinnest)} studs thick on its ` +
+			`thinnest axis, and a ball at THROW_MAX_SPEED covers ${string.format("%.2f", perFrame)} studs a frame — ` +
+			`a fast throw can pass through it without ever overlapping. Make the part at least ` +
+			`${string.format("%.1f", math.ceil(perFrame) + 1)} studs thick on that axis; no rule here can make the ` +
+			`engine sweep a collision it never sees.`,
+	);
 }

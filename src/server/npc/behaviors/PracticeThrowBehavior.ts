@@ -3,7 +3,7 @@ import { pendingAbilityOn } from "shared/ability";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { NEXT_THROW_AT_ATTRIBUTE, PENDING_ABILITY_ATTRIBUTE, PRACTICE_THROW_TAG } from "shared/constants";
 import { NpcBehavior } from "../Behavior";
-import { nearestPlayerBayGap, targetFor } from "../practiceBay";
+import { rigBayGap, targetFor } from "../practiceBay";
 import { THROW_TICK_SECONDS, WINDUP_GAP_TURNS, createWindupTracker } from "./ThrowBehavior";
 import type { BallService } from "../../services/ball/BallService";
 
@@ -127,13 +127,20 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 	const windups = createWindupTracker();
 
 	/**
-	 * When each rig is next allowed to decide to throw, in `os.clock` seconds.
+	 * **When each rig's next ball leaves its hand**, in `os.clock` seconds.
 	 *
-	 * A row is made the first time a rig is seen armed and re-armed at every release, so the interval is measured from
-	 * one throw to the next decision. **Deleted, not merely cleared, whenever the rig stands down** — see this file's
-	 * header for the throw-with-no-countdown that a banked deadline produces.
+	 * **The release, not the decision, and that is the correction that made the countdown honest.** This used to be
+	 * the instant the rig *started winding up*, with the hold's own length published afterwards as a second deadline —
+	 * so the digits ran `3 2 1`, then a fresh `1` for the hold, and the ball arrived after the number had already
+	 * promised it. A countdown has one job and it is to name the throw, so the map holds the throw and the hold is
+	 * scheduled backwards from it: see the tick, which starts a windup `charge × RIG_CHARGE_SECONDS` before this
+	 * instant so the hold *ends* on it.
+	 *
+	 * A row is made the first time a rig is seen armed and re-armed at every release, so `PRACTICE_THROW_CADENCE_SECONDS`
+	 * is now the whole cycle rather than the wait plus the hold. **Deleted, not merely cleared, whenever the rig stands
+	 * down** — see this file's header for the throw-with-no-countdown that a banked deadline produces.
 	 */
-	const nextDecisionAt = new Map<Model, number>();
+	const nextThrowAt = new Map<Model, number>();
 
 	/**
 	 * **Whether each rig is standing down, so the line is printed when the answer *changes* and not once a tick.**
@@ -158,10 +165,12 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 	/**
 	 * **Writes this rig's next-throw deadline, or clears it — the one place `NEXT_THROW_AT_ATTRIBUTE` is set.**
 	 *
-	 * **Three call sites, and they are the three moments the deadline really moves**: the cycle arming, the windup
-	 * starting (the deadline becomes the *release*, which is a different instant and a much shorter wait), and the
-	 * throw re-arming the cycle. The cycle a client draws is therefore `cadence → 3 2 1 → hold → throw`, every cycle,
-	 * and it comes off this pair of facts rather than off a number chosen by the renderer.
+	 * **Two call sites now, and both name a *throw*.** The turn a rig arms, and the release that re-arms it — nothing
+	 * else sets a deadline. **The windup starting used to be a third**, publishing the hold's own length, and that was
+	 * the bug: it turned a countdown to a ball into `3 2 1` followed by a second `1`, because a hold is
+	 * `charge × RIG_CHARGE_SECONDS` and a sub-second instant can only round up to the same number again. The attribute
+	 * is read as *when does the ball come*, so that is what it now holds — see `nextThrowAt`, which is the release, and
+	 * the tick, which starts the windup a hold early so the hold finishes on it.
 	 *
 	 * **`undefined` clears, and that is the only spelling of "not armed".** See the attribute's own doc for why an
 	 * absence rather than a `0`. **A rig with no target is cleared, not left standing** — which is the same correction
@@ -248,7 +257,7 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 				// existed and nobody ever standing on it. Keying the line on the *gap* means it speaks the moment a
 				// body appears and again if that body walks from one side of the box to the other, and stays quiet
 				// while a person stands still.
-				const measured = nearestPlayerBayGap();
+				const measured = rigBayGap(model);
 				const previous = lastGap.get(model);
 				const moved =
 					previous === undefined ||
@@ -260,14 +269,14 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 					lastGap.set(model, measured.gap);
 
 					print(
-						`[Drill] ${model.Name}: standing down — nobody is standing in a bay. ` +
+						`[Drill] ${model.Name}: standing down — nobody is standing in this rig's bay. ` +
 							`${measured.text}. The bay is a footprint: height is ignored, so this is a flat distance.`,
 					);
 				}
 
-				windups.cancelWindup(model, "nobody is standing in a bay");
+				windups.cancelWindup(model, "nobody is standing in this rig's bay");
 				publishDeadline(model, undefined);
-				nextDecisionAt.delete(model);
+				nextThrowAt.delete(model);
 
 				return;
 			}
@@ -282,6 +291,14 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 			}
 
 			const windup = windups.get(model);
+
+			// **The instant the ball leaves, read before anything else this turn does with the hold.** It is the deadline
+			// the client is counting down to, so it — and not the hold's own end — is what the release waits for. The two
+			// agree whenever the target has not moved; where they disagree, the published number is the one a player has
+			// been watching, and a ball that arrives when the countdown said zero is worth more than a hold of exactly
+			// `charge × RIG_CHARGE_SECONDS`. `windup.until` is the fallback for a hold with no deadline behind it, which
+			// no path should produce.
+			const due = nextThrowAt.get(model);
 
 			if (windup !== undefined) {
 				// **The freeze, seen the way the other two throwers see it** — as turns that did not happen. A rig frozen
@@ -298,7 +315,7 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 				windup.lastTurnAt = now;
 
 				// Still holding: the release is a later turn, and that is the whole of the hold.
-				if (now < windup.until) return;
+				if (now < (due ?? windup.until)) return;
 
 				windups.endWindup(model);
 
@@ -336,11 +353,13 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 
 				// Re-armed on every release rather than on every decision, so a hold that was cancelled or expired costs
 				// the rig a decision rather than a whole interval of standing still with a ball in hand.
-				nextDecisionAt.set(model, now + cadence);
+				nextThrowAt.set(model, now + cadence);
 
-				// **And the countdown restarts with it** — the third of the three writes. Without it the attribute keeps
-				// the hold's own deadline, which is an instant already in the past: the digits vanish for a whole cadence
-				// and only reappear as the next `3`. The cycle is `cadence → 3 2 1 → throw`, every cycle.
+				// **And the countdown restarts with it — the *same* instant, not a second one.** The attribute is
+				// `NEXT_THROW_AT_ATTRIBUTE`, which is a countdown to a ball; writing the hold's length here used to make it
+				// a countdown to a windup, and the digits restarted at `1` for every cycle and lied about when the ball
+				// would come. There are now exactly two writes that set a deadline — this one, and the one the turn a rig
+				// arms makes — and both of them name a throw.
 				publishDeadline(model, cadence);
 
 				// **Logged once per throw, under a `[Drill]` prefix rather than `[Rig]`, and that is not vanity.** The
@@ -363,19 +382,20 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 				return;
 			}
 
-			// **Not holding: is it time to decide?** The first answer is *made* rather than read, so a rig whose player
-			// has just walked in waits one cadence before its first throw instead of throwing on the turn they arrived.
-			// That is what makes the countdown mean something: `3 2 1` is the last three seconds of a wait the player
-			// can see the beginning of.
-			const due = nextDecisionAt.get(model);
+			// **Not holding: is the next throw's instant known?** The first answer is *made* rather than read, so a rig
+			// whose player has just walked in waits one cadence before its first throw instead of throwing on the turn
+			// they arrived. That is what makes the countdown mean something: `3 2 1` is the last three seconds of a wait
+			// the player can see the beginning of.
+			//
+			// **A whole `cadence`, and it is the instant of the *release*.** Everything after this line is scheduled
+			// backwards from it: the windup below starts a hold early so that the hold *ends* on this number, which is
+			// what makes the digits the truth about the ball rather than about the windup.
 			if (due === undefined) {
-				nextDecisionAt.set(model, now + cadence);
+				nextThrowAt.set(model, now + cadence);
 				publishDeadline(model, cadence);
 
 				return;
 			}
-
-			if (now < due) return;
 
 			// **`plantNow` — a drill never throws on the move**, and that is a fact about its walk rather than a choice
 			// about its throw. `NPC_CONFIG.THROW_MOVE_AND_AIM_CHANCE` is for a rig with a carry-through to keep alive,
@@ -388,14 +408,24 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 			// chance is a difficulty dial for an opponent, and a drill is not an opponent — it is aimed at the person in
 			// front of it so they can practise dodging *that*. A rig trying to miss is a rig you cannot learn from. See
 			// `beginWindup`'s own doc for why the exception is opt-in rather than a change of default.
-			windups.beginWindup(model, root, target.at, "plantNow", true);
+			//
+			// **It skips the miss roll and nothing else — the charge is still solved from the point handed here.** That
+			// distinction had to be checked against the source rather than assumed: a spec once read this flag as the
+			// reason a drill threw with `charge 0.00`, and it is not. `beginWindup` computes
+			// `chargeForRange(distance, point.Y − muzzle.Y)` whether or not the roll happened; what made the charge
+			// bottom out was the *height* of `target.at`, which is why that point is now raised to hand height. See
+			// `playerInBay`.
+			//
+			// **The windup starts a hold before the deadline, and that offset is the whole of this pass.** The hold is
+			// `charge × RIG_CHARGE_SECONDS` — up to a second and a quarter — so a windup started *at* the deadline puts
+			// the ball that much past every number the client drew. `holdFor` is the same arithmetic `beginWindup` is
+			// about to run, asked a turn early, so the start is exactly one hold before the throw and the `1` on the board
+			// is the second the rig spends winding up. **Asked every turn rather than stored at the arm**, because the
+			// answer depends on where the player is standing and a plan made five seconds ago is a plan for a body that
+			// has since moved: this is the last turn before the hold, so it is the freshest answer there is.
+			if (now < due - windups.holdFor(model, target.at)) return;
 
-			// **And the countdown becomes the hold's own length** — the second of the three writes — because from this
-			// turn the ball leaves at the end of the hold rather than at the end of the decision wait. Read back off the
-			// row `beginWindup` just wrote, so the number a client counts is `charge × RIG_CHARGE_SECONDS`, solved a line
-			// ago, rather than a figure copied here that could disagree with it.
-			const opened = windups.get(model);
-			if (opened !== undefined) publishDeadline(model, opened.until - os.clock());
+			windups.beginWindup(model, root, target.at, "plantNow", true);
 		},
 
 		// **A hold dies with the rig holding it.** A corpse is not winding up a throw, the charge has to come off the
@@ -425,7 +455,7 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 		onStopped(model) {
 			windups.cancelWindup(model, "the rig stopped being a drill");
 			publishDeadline(model, undefined);
-			nextDecisionAt.delete(model);
+			nextThrowAt.delete(model);
 
 			// **And the stand-down latch, so a rig re-tagged later reports its next refusal afresh** rather than being
 			// silent because it was already standing down for the same reason when the tag came off.

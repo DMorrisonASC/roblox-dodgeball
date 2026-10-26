@@ -322,6 +322,37 @@ export function missedPoint(root: BasePart, aimPoint: Vector3, miss: Miss): Vect
 }
 
 /**
+ * **The charge a throw at `aimPoint` needs, the horizontal range that charge was solved from, and the hold it buys —
+ * the three numbers a windup is, worked out in one place.**
+ *
+ * **Why this is a function and not four lines inside `beginWindup`, which is what it used to be.** A drill now has to
+ * know how long its own windup will last *before* it starts one: it publishes a countdown to the release and starts the
+ * hold early enough that the hold finishes on that instant. So two callers ask the same question a fraction of a second
+ * apart — `beginWindup` because it is about to hold, and `PracticeThrowBehavior` because it is deciding when to — and
+ * two copies of `chargeForRange(distance, rise) × RIG_CHARGE_SECONDS` would be free to disagree the first time either
+ * was touched. The symptom of that disagreement is subtle and nasty: a hold that starts a beat late, a countdown that
+ * reaches zero before the ball, and nothing anywhere saying which number was wrong.
+ *
+ * **The distance is from the muzzle and is flattened**, and the rise is the target's height less the muzzle's — the
+ * same three figures `ThrowLine` documents at length, measured the way the solve at the release will measure them.
+ *
+ * **`distance` comes back with the charge** because a rig's log line prints *charge at distance* and the two are only
+ * comparable while they describe one throw: see {@link Windup.distance}.
+ */
+function holdOf(model: Model, aimPoint: Vector3): { charge: number; distance: number; duration: number } {
+	const muzzle = getThrowMuzzle(model);
+	const flat = new Vector3(aimPoint.X - muzzle.X, 0, aimPoint.Z - muzzle.Z);
+	const distance = flat.Magnitude;
+	const charge = chargeForRange(distance, aimPoint.Y - muzzle.Y);
+
+	// **The rig's own figure, and not the player's.** The two were one constant until a mobile complaint about how
+	// long a hold takes; they are separate now because a player's hold is a decision and a rig's is a telegraph, and
+	// shortening this one would make every rig harder to dodge. See `BALL_CONFIG.RIG_CHARGE_SECONDS`, which is the
+	// value this line held before the split and still does.
+	return { charge, distance, duration: charge * BALL_CONFIG.RIG_CHARGE_SECONDS };
+}
+
+/**
  * Rolls this throw's error: nothing at all when it is aimed true, or a few studs to one side of the target.
  *
  * **A rig is fallible on purpose, and the error is in the *aim* rather than in the charge.** A miss that lowered
@@ -453,6 +484,24 @@ export interface WindupTracker {
 	 */
 	beginWindup: (model: Model, root: BasePart, aimPoint: Vector3, walk: ThrowWalk, trueAim?: boolean) => void;
 
+	/**
+	 * **How long a hold aimed at `aimPoint` would last, in seconds — the arithmetic {@link beginWindup} is about to
+	 * run, asked a fraction of a second earlier.**
+	 *
+	 * **One caller, and it is a scheduling question rather than a throwing one.** `PracticeThrowBehavior` publishes a
+	 * countdown to the *release* and must start its windup early enough that the hold ends on that instant, so it needs
+	 * the hold's length before there is a hold. Asking this rather than solving the charge itself is what keeps one
+	 * answer to "how long is a hold": two copies of `chargeForRange(distance, rise) × RIG_CHARGE_SECONDS` would be free
+	 * to disagree the first time either moved, and the symptom would be a windup that starts a beat late and a ball
+	 * that leaves a beat after the countdown said zero.
+	 *
+	 * **It answers for a *true* aim only, and that is honest rather than lazy.** `beginWindup` applies the rolled miss
+	 * to the point before solving; this cannot, because the roll is its own draw and happens there. The one caller is
+	 * the drill, which passes `trueAim` and so has no miss to apply — a caller that rolled an error would get the
+	 * unlucky-throw length here and the real one from `beginWindup`, by however many studs the error was worth.
+	 */
+	holdFor: (model: Model, aimPoint: Vector3) => number;
+
 	/** The hold ended by *throwing*: the row and the published charge go, and nothing is printed. */
 	endWindup: (model: Model) => void;
 
@@ -572,19 +621,16 @@ export function createWindupTracker(): WindupTracker {
 		const miss = trueAim === true ? undefined : rollMiss(root);
 		const point = miss === undefined ? aimPoint : missedPoint(root, aimPoint, miss);
 
-		// The line from the hand to that point, measured the way the release will measure its own — the same
-		// flattening, the same rise, for the reason {@link ThrowLine} gives. This is the *only* place the decision
-		// turn measures a throw now; the release has its own `aimOf` because its hand and its target have moved.
-		const muzzle = getThrowMuzzle(model);
-		const flat = new Vector3(point.X - muzzle.X, 0, point.Z - muzzle.Z);
-		const distance = flat.Magnitude;
-		const charge = chargeForRange(distance, point.Y - muzzle.Y);
-
-		// **The rig's own figure, and not the player's.** The two were one constant until a mobile complaint
-		// about how long a hold takes; they are separate now because a player's hold is a decision and a rig's
-		// is a telegraph, and shortening this one would make every rig harder to dodge. See
-		// `BALL_CONFIG.RIG_CHARGE_SECONDS`, which is the value this line held before the split and still does.
-		const duration = charge * BALL_CONFIG.RIG_CHARGE_SECONDS;
+		/*
+		 * The line from the hand to that point, measured the way the release will measure its own — the same
+		 * flattening, the same rise, for the reason {@link ThrowLine} gives. This is the *only* place the decision
+		 * turn measures a throw now; the release has its own `aimOf` because its hand and its target have moved.
+		 *
+		 * **And the duration it produces is now read from {@link holdOf} like this line's own distance**, so that the
+		 * hold a caller scheduled and the hold this starts are one arithmetic rather than two that agree today. See
+		 * `holdFor`, which is that same call asked a turn early.
+		 */
+		const { charge, distance, duration } = holdOf(model, point);
 
 		nextWindupToken += 1;
 		const token = nextWindupToken;
@@ -629,6 +675,7 @@ export function createWindupTracker(): WindupTracker {
 	return {
 		get: (model) => windups.get(model),
 		beginWindup,
+		holdFor: (model, aimPoint) => holdOf(model, aimPoint).duration,
 		endWindup,
 		cancelWindup,
 	};
