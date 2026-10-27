@@ -18,7 +18,6 @@
 		"roblox-dodgeball:out/client/controllers/hud/DockController@DockController": "client/controllers/hud/DockController@DockController",
 		"roblox-dodgeball:out/client/controllers/hud/HitLogController@HitLogController": "client/controllers/hud/HitLogController@HitLogController",
 		"roblox-dodgeball:out/client/controllers/hud/InventoryController@InventoryController": "client/controllers/hud/InventoryController@InventoryController",
-		"roblox-dodgeball:out/client/controllers/hud/LoadingScreenController@LoadingScreenController": "client/controllers/hud/LoadingScreenController@LoadingScreenController",
 		"roblox-dodgeball:out/client/controllers/hud/MatchStatsController@MatchStatsController": "client/controllers/hud/MatchStatsController@MatchStatsController",
 		"roblox-dodgeball:out/client/controllers/input/ActionController@ActionController": "client/controllers/input/ActionController@ActionController",
 		"roblox-dodgeball:out/client/controllers/input/CatchController@CatchController": "client/controllers/input/CatchController@CatchController",

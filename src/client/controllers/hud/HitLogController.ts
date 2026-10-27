@@ -325,9 +325,8 @@ interface HitCard {
  *
  * **The clock is measured by adding up what `task.wait` returned, not by reading one**, and that is the
  * house rule rather than a preference: `os.clock` reports *CPU* time in this engine — a trap this codebase
- * has been caught by once, written up in `ThrowProbe.ts` and worked around in `LoadingScreenController` —
- * and the value `task.wait` returns *is* the elapsed time, so there is nothing a clock would tell us more
- * accurately. Each entry therefore carries its own `age` and the sweep adds the real wait to all of them, so
+ * has been caught by once, written up in `ThrowProbe.ts` — and the value `task.wait` returns *is* the
+ * elapsed time, so there is nothing a clock would tell us more accurately. Each entry therefore carries its own `age` and the sweep adds the real wait to all of them, so
  * a frame that ran long ages every row by what it actually took rather than by the interval that was asked
  * for.
  *

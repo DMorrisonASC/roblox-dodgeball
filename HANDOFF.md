@@ -3,8 +3,9 @@
 A guide for a fresh session. Written 2026-09-28 against a green build (`npm run build` → exit 0);
 **brought up to date 2026-10-23** against `f062372` **plus six uncommitted files from the same day** —
 `controllers/hud/MobileControlsController.ts`, `ui/glow.ts`, `client/enemyView.ts`,
-`services/round/RoundService.ts`, `shared/constants.ts` and `controllers/hud/LoadingScreenController.ts`
-(§9, §10, §15). Earlier revisions: 2026-10-19 at `efcbc37` plus the readout column moved to
+`services/round/RoundService.ts` and `shared/constants.ts` (§9, §10, §15) — and **§15 items 96–100 are later than
+that**, covering the celebration hold, two deleted modules and the mystery box's look. Earlier revisions: 2026-10-19
+at `efcbc37` plus the readout column moved to
 `getFullScreenGui()` — **that change is committed now, in `f062372`**; 2026-10-17 at `a73c0a7` (the
 persistence pass, **since committed as `008963b`** — the paragraph below used to call it uncommitted),
 2026-10-16 at `196a5b3` with the mobile input surface and the GUI region rule, 2026-10-14 at `9b47369`,
@@ -449,8 +450,15 @@ src/client/
                                  restarted on each caption. Another plain module started
                                  from `main.client.ts`; one event in, one splash and one sound out, and the
                                  measurement is entirely `DodgeService`'s (§15 item 38)
+  celebration.ts                 `startCelebration()` — the `VICTORY` / `DEFEAT` / `DRAW` word, centred, shown
+                                 for the length of `ARENA_CONFIG.CELEBRATION_SECONDS` and hidden when it ends.
+                                 **The only plain client module that draws on a *phase* rather than on an event
+                                 or a body**: it reads `CELEBRATING_ATTRIBUTE` for when, `ROUND_WINNER_ATTRIBUTE`
+                                 for what, and the local player's `TEAM_ATTRIBUTE` for whether that is good news.
+                                 Styled by `ui/actionSplash.ts`'s `styleSplashText`, so it looks like the `HIT!`
+                                 splash rather than like a second look (§15 item 100)
   ui/                            screenGui.ts (every `ScreenGui` in the client and the written rule for
-                                 which one a thing belongs in — HudGui, FullScreenGui, SplashGui,
+                                 which one a thing belongs in — HudGui, FullScreenGui,
                                  TransitionGui, ScreenSpaceGui, StickGui, **plus `getHudColumn()`**, the
                                  one frame the score plate and the clock share; **see §9 before moving
                                  anything visual**), hudTheme.ts, viewportConstraint.ts,
@@ -465,7 +473,7 @@ src/client/
                                  `false`, because a shadow inks the shape's interior and its face is
                                  transparent — §10)
   controllers/                   CoreGuiController.ts (shared core-GUI wiring)
-  controllers/hud/               RoundStatus, RoundTransition, LoadingScreen,
+  controllers/hud/               RoundStatus, RoundTransition,
                                  RespawnHud, CurrencyHud, SuperHud, StatsBillboard, ScoreHud,
                                  ControlsLegend, MobileControls (the six-button cluster — packed by
                                  `pack()`, glass face, a cooldown ring per control with a clock; §9,
@@ -914,7 +922,6 @@ wrong:
 |---|---|---|
 | `RoundStatusController` | phase, clock, mode name, player count | `ROUND_STATE_ATTRIBUTE`, `ROUND_TIME_ATTRIBUTE`, `ROUND_MODE_ATTRIBUTE` |
 | `RoundTransitionController` | the grid wipe | `ROUND_TRANSITION_ATTRIBUTE` |
-| `LoadingScreenController` | the join overlay | no attribute — three runtime signals |
 | `RespawnHudController` | **two lines** above centre (`0.44` down): the tenths countdown as `h4` seconds + dimmer `subtitle1` tenths, and beneath it `Hit by <name>` — the splash's own styling (`ui/actionSplash.ts`) rather than a copy of it | `RESPAWN_AT_ATTRIBUTE`, `LAST_HIT_BY_ATTRIBUTE` |
 | `CurrencyHudController` | `Coins: N`, under the shop button | `COINS_ATTRIBUTE` |
 | `SuperHudController` | streak / charge / armed ability / MultiBall window | the four `SUPER_*` attributes + the held ball's mark |
@@ -4268,6 +4275,187 @@ almost no server code; 45 is what it cannot show.**
     **Not changed**: the aura, the pillar, the light, both bursts, the two `?` faces, the `Highlight`, and every
     constant that survives. `mystery.config.ts` is still untouched.
 
+100. **The celebration now says whether you won, and the loading screen is gone.** The word is `VICTORY`, `DEFEAT` or
+     `DRAW` in the middle of the screen for the length of `ARENA_CONFIG.CELEBRATION_SECONDS`; the join overlay was
+     deleted along with its `ScreenGui` and both of its doc references.
+
+     **Three attributes are read, and each answers a question the other two cannot.** `CELEBRATING_ATTRIBUTE` is
+     *when* — the hold is the only window this word belongs in. `ROUND_WINNER_ATTRIBUTE` is *what* — and it cannot
+     carry the window on its own, because it is written when the round is decided and cleared only at the **next
+     round's start**, so a word drawn off it alone would still be on screen through the lobby transition. The local
+     player's `TEAM_ATTRIBUTE` is *whether it is good news*, which is a fact about this player rather than about the
+     round: the same winner is a victory for one side and a defeat for the other.
+
+     **Two derivation rules are load-bearing and both are commented in the module.** The **draw is tested first** —
+     `"draw"` equals neither side's label, so a "does the winner match my side" check written first would tell *both*
+     teams they lost a drawn round. And **an empty winner is "no result", not a loss**: the attribute is cleared to `""`
+     at every round start, so a client that mounts mid-round or reads a stale window would otherwise get `DEFEAT` over
+     a round it is still playing. A player with **no side at all sees nothing** — a spectator is not a loser.
+
+     **A plain module, not a controller, and the brief asked for a controller.** `main.client.ts` is a list of
+     `startX()` calls for exactly this kind of thing — `perfectDodge`, `catchPrompt`, `returnToLobby`, `hitConfirm`,
+     `enemyView` — and the file's own note says why: **Flamework records an exported class in `flamework.build` whether
+     or not it is decorated**, so a class here would buy a manifest entry and nothing else. There is no lifecycle to own,
+     nothing to inject, and one pair of subscriptions.
+
+     **The letters are the theme's ink, not green and gold, and the reason is in the code rather than in taste.**
+     `actionSplash.ts` argues at length that the colour carries no meaning on purpose — the *word* is the message — and
+     more concretely **this game already spends red on team A** (`TEAM_COLORS`, `PREMIUM.sideA`), so a red `DEFEAT`
+     would collide with the scoreboard's own vocabulary and a green `VICTORY` would be a colour the Premium Sports
+     palette does not have. `PREMIUM.gold` is cyan. **The style is `styleSplashText` unchanged**, with
+     `strokeThickness: 6` rather than the action splash's `4` because this box is 240 pixels tall against the splash's
+     150 — the same relative weight, which is the rule that file already applies to the catch prompt.
+
+     **The box is sized in `Scale` rather than in pixels plus a `UISizeConstraint`**, which is the opposite of every
+     other fixed-pixel HUD in this client and is right here: those take pixels because a big-ui panel needs a definite
+     width and then cap themselves against the viewport, while a centred line of `TextScaled` text needs no definite
+     width at all. 86% across leaves room for the outline, which is drawn *outside* the glyphs.
+
+     **The loading screen went with it, and the prompt's instructions for it were wrong in two places.** There was no
+     `startLoadingScreen()` call to remove — `LoadingScreenController` was a `@Controller` and Flamework loaded it from
+     `Flamework.addPaths("src/client/controllers")`. And `SplashGui` was not shared with the wipe: `getSplashScreenGui`
+     had exactly one caller, so the accessor, `SPLASH_GUI_NAME` and `SPLASH_DISPLAY_ORDER` all went, and
+     **`TRANSITION_DISPLAY_ORDER` moved from `2` to `1`** because a rung held empty under a component that has to beat
+     exactly one other is a number that lies about what it is for. Seventeen doc passages in `screenGui.ts` asserted a
+     join splash existed and were rewritten; `HitLogController` and `RoundService` each cited the controller as the
+     worked example of the `task.wait`-accumulation rule and now cite the rule instead.
+
+     **`git diff --stat flamework.build` is not silent, and it cannot be: it is one line, the deleted controller.**
+     That is the change the constraint was meant to catch if it were accidental — a deliberate deletion is exactly what
+     it should show, and the *absence* of a second line is the evidence that the overlay did not need a controller.
+
+     **Not changed**: the hold's duration, the coin toast, the transition wipe, and the server — every attribute read
+     here was already published.
+
+     **Unverified**: whether the word is legible against a bright court at 86% width, whether 240 pixels of box is
+     "large" or "too large" on a phone in portrait, and **whether the game looks right with no join cover at all** —
+     that last one is the real risk of this pass and it is a first-impression question rather than a logic one. A client
+     now sees the lobby, the HUD and its own body appear as they replicate, which is what the overlay was hiding.
+
+101. **Score Rush has a mercy rule at 20 and a warning at 15.** A lead of `MERCY_RULE_LEAD` ends the round on the
+     spot; five points earlier the losing side is told, once, in the notification stack.
+
+     **The config file is `shared/config/gameMode.config.ts`**, inside `GAME_MODE_CONFIG` beside `SCORE_RUSH_TARGET`
+     (30) — not `arena.config.ts`. **Both numbers are below the target**, and that is the point rather than a
+     coincidence: the rule only ever earns its keep if it fires before the target does, and a lead of twenty is
+     already a rout.
+
+     **`outcome` cannot print, so the log line is the round's.** `ScoreRushMode.outcome` is a *query* the loop makes
+     once a second, so a mode that printed would print a line per tick — and `finishRound` is the only thing that
+     knows a decision has become final. The two therefore have to agree about *when* the mercy rule fired, and the
+     way they agree is **one exported function, `mercyWinner(scores)`, called by both**: the mode returns its answer
+     and `finishRound` prints `[Round] Team A won by mercy rule (20-point lead)` from the same comparison. Written
+     twice, a change to one would leave the log describing a rout the other did not end on; `RoundService` already
+     imports from that module, so the shared helper costs no new dependency. **Nothing is added to the `GameMode`
+     interface** — a `why` on `outcome` would be ceremony for one line, and only one of the three modes scores.
+
+     **The warning is a plain client module, not a method on `ScoreHudController`.** The bar's own doc is emphatic
+     that it reads "the pair the round publishes and nothing else" — no phase, no mode — and a warning needs all
+     three. Two subscribers to one fact is the shape `main.client.ts` already documents for `hitVfx` and `hitConfirm`
+     ("neither should have to know the other exists"), so `client/mercyWarning.ts` is started from the boot beside
+     `celebration.ts` and the bar's doc stays true.
+
+     **The reset hangs off `ROUND_STATE_ATTRIBUTE`, not off the scores falling to nought, and the reason is a real
+     replication hazard.** The server clears both score attributes as a round ends and the two writes replicate
+     *separately*, so a client can legitimately observe `A = 0` beside a stale `B = 15` and compute a fifteen-point
+     lead out of a round that is already over — a spurious warning arriving exactly as the round ends. **The phase is
+     written once per boundary and cannot be seen half-applied**, so `hasWarned` is cleared on the `Playing` edge and
+     the warning is only evaluated while the phase is `Playing`. That also means the flag cannot be reset by anything
+     but a new round.
+
+     **The window is `[MERCY_WARNING_LEAD, MERCY_RULE_LEAD)`** — at or above 15, below 20. The upper bound is not
+     decoration: a lead that has already reached 20 is a round ending in the same second, and "the round is nearly
+     over" printed *as* it ends is worse than silence. Both bounds are the shared config, so the warning cannot drift
+     from the rule it warns about.
+
+     **Every client draws it, so both sides see it.** The losing side is who it informs, but the leader is about to
+     be handed a win it should be able to anticipate; publishing it from the server would be a remote and a second
+     copy of a rule for a sentence the client derives from two numbers it already has. The leading side is **named**
+     — `Warning: Team A is 15 points ahead!` — via `sideNameOf` with the published mode id, so a mode with different
+     side names is still right.
+
+     **Not changed**: how points are scored, the target, the celebration hold, and `notifications.ts` — the toast it
+     already offered took no change.
+
+     **Two testing supports came with it, because neither threshold is reachable by playing.** `!dev score <a|b>
+     <points> [<other>]` (`RoundService.devSetScore`) sets a side's points outright — the shape `!dev setMoney` uses,
+     and for its reason: the *value* is what is under test and no sequence of hits reliably lands on 15-and-not-16. It
+     takes a side and a value both, refuses four ways with a message naming what was wrong (missing argument, not a
+     side, not a whole number, a mode that keeps no score), and **refuses outside a playing round** — `scores` is
+     cleared at both ends of a round's life, so a value set in an intermission would be wiped before it could be read,
+     and saying so is better than letting the next tick silently erase it. It deliberately does **not** end the round
+     itself: setting 20 lets the loop's own `roundOutcome` fire `finishRound` through exactly the path a real rout
+     takes.
+
+     **The optional third argument and the confirmation line both exist because of one misread test.** The first pass
+     printed `score set — A 15, B 5 (lead 10)` and that was read as a warning that had failed to appear: the rule is
+     about the *lead*, and `A 15` with `B` on 5 is a lead of ten, so nothing was broken and the message did not say so.
+     Two changes: `!dev score a 15 0` sets both sides **in one write, published once**, so the state the warning wants
+     is one command rather than two calls that also flash an intermediate pair past the client; and the confirmation
+     names the band the lead landed in — `below the 15-point warning`, `the 15-point warning fires on the client`, `the
+     20-point mercy rule fires on the next tick` — through `RoundService.thresholdOf`. Both bands read the same two
+     config constants the rule and the client use, so the line cannot drift from them.
+
+     **The warning has a sound** — `AUDIO_CONFIG.MERCY_WARNING` (`rbxassetid://118488367803012`) at
+     `MERCY_WARNING_VOLUME` 0.8, played by `client/mercyWarning.ts` on the same frame as the toast. It is the one clip
+     in `AUDIO_CONFIG` that is a *goad* rather than a reward: a five-point notice is useless to somebody watching the
+     ball, so it has to beat the round's music (0.3) rather than sit with the cues a player is already looking at. The
+     `Sound` is made once at boot in `SoundService` and `PreloadAsync`'d by name, because a warning whose clip is still
+     downloading has warned nobody. **It is a fifth copy of `perfectDodge`'s six-line `makeSound`**, which that file
+     already names as the place a consolidation pass should start from.
+
+     **Unverified**: the clip's *character* — whether it reads as an alarm beside the round music and is distinct from
+     `PERFECT_DODGE`. The three to listen to together are this, `PERFECT_DODGE` and `COUNTDOWN_BEEP`: the things that
+     play *at* a player rather than with them.
+
+     **Unverified**: whether 20/15 is the right pair — both are **Placeholder.**, and the ratio to a 30-point target
+     is the thing to play rather than reason about. Whether a round can *reach* 15 cleanly in a normal match is the
+     same question from the other end: if most rounds end 6–4 on the clock, this rule and its warning will never
+     appear at all, and the numbers to move are the two in `gameMode.config.ts`.
+
+102. **The mercy warning is a standing line in the round-status band now, not only a toast.** A toast fades; the
+     state it describes does not. The lead that triggers it stands for as long as the opponent fails to close it, so a
+     player who looked away for the two seconds the toast was up had no way back to the fact — and the band is the one
+     element on screen for the whole of a round that is already about the round's state.
+
+     **The rule was extracted rather than copied.** `mercyWarningFor(scoreA, scoreB)` is now an export of
+     `client/mercyWarning.ts` returning `{ leading, lead }` when the lead is inside `[MERCY_WARNING_LEAD,
+     MERCY_RULE_LEAD)`, and **both readers ask it** — the toast and sound from that file, the band line from
+     `RoundStatusController`. Two copies of the window would be two things to keep in step, and the whole point of the
+     band is that it says the same thing the toast said. A plain export rather than a service, because it is four
+     lines and has no state; the argument for the window lives at the function and the two former copies of it now
+     point there.
+
+     **The figure is the lead that is standing, not the threshold.** Both readers used to print `MERCY_WARNING_LEAD`
+     verbatim, so a catch that carried the lead from 13 to 18 announced "15 points ahead" beside a scoreboard reading
+     18–0. `mercyWarningFor` returns the number it judged, and both use it.
+
+     **Two `Computed`s and a `Hydrate`, and each part is load-bearing.** `warningLine` turns phase + both scores +
+     the mode id into `Team A +15` (or `""`), reading every value before any branch for the reason the clock's own
+     `Computed` gives; `warningVisible` exists only because `Hydrate` takes `UsedAs<boolean>` rather than a callback;
+     and `Hydrate` is what makes `Visible` and `TextColor3` tracked at all, since `Text` takes its props at
+     construction. **`Visible` doubles as the space**: `Card`'s own `UIListLayout` charges its 8px `childGap` between
+     *placed* children, so a zero-height label left visible would hold a gap open under the clock for the whole match,
+     and an invisible child is not laid out.
+
+     **The band gates on the phase as well as the window**, which the toast does not need to: the scores outlive the
+     round that set them by however long the server takes to clear the pair, so a band reading only the lead could sit
+     on `Team A +15` through an intermission describing a round nobody is in.
+
+     **The colour is the leading side's** (`PREMIUM.sideA` / `sideB`), not a new "warning" colour: `premiumTheme`
+     refuses a success/warning/error trio on purpose, and the one thing the line is about is a side the palette
+     already has a colour for — the score plate a few pixels above says the same name in the same colour. The line is
+     `overline` (11px) under the clock's 14px, which is both the hierarchy the fact has and the width budget: the band
+     is 100px, and the same words at 14px would wrap to two lines and grow the card mid-round.
+
+     **Also corrected in passing**: the comment at `addViewportConstraint` in that file argued about `HUD_WIDTH` as a
+     "fixed 360px". The value is `100` and has been; the paragraph had outlived it, which is the drift this file keeps
+     warning about.
+
+     **Unverified, and two distinct claims**: that `UIListLayout` skips invisible children (taken from the engine's
+     documented behaviour and the reason the card does not grow, but not seen), and that `Team A +15` fits one line at
+     11px in 92px of usable width (arithmetic, not a measurement). Nothing here has been looked at in Studio.
+
 ---
 
 ## 16. What a live log has actually confirmed
@@ -4535,7 +4723,7 @@ the client's answer, so the proof for both items 52 and 53 is the user's eyes on
 
 | Document | What it is | State |
 |---|---|---|
-| `HANDOFF.md` | this file | current as of **2026-10-24**, against `6ce8770` plus the uncommitted work from the same day (§15 items 52–59: a rig's walking fact given a real stop edge, a parked rig's speed cleared on its way out of the world and on every placement, a client that had stopped dressing such a rig rather than forgetting it, a Match Stats board given an empty state that can be seen and a server line that says how many rows it answered with, a lobby that draws only the seat deficit instead of a full roster it then parks, the removal of the seat-reservation clock that was putting the eighth rig back five seconds into an intermission, the animation renderer's failure-as-success fixed along with its cancelled-windup speed reset, a hit-VFX pass that found the `victim` branch falling through into the spectator branch, warned about the two silent ways a rig hit draws nothing, and widened the body lookup past `NPC_TAG` alone, and a surrendered player's seat no longer booked back as a lobby reservation — which is why the round they left still had a body missing, and a `hitImpact` that carries an id beside the victim's name, because seven models called `Rig` are seven answers to "which body was hit"). **The 2026-10-24 passes touched §15 and §16 only.** **The 2026-10-23 pass** (against `f062372` plus six uncommitted files from the same day — the mobile cluster's glass face and rim glow, the cooldown ring, the caught-throw caption, the round's admission strip, the loading screen's title) brought **§4, §9, §10, §15 and §16** in step: §4's map lost two deleted controllers and gained `MobileControls`, `ui/glow.ts` and `client/enemyView.ts`; §9's inventory table was corrected the same way; §10 gained two stories and a completed list; §15 items 34–37 and §16 a note saying it confirmed nothing. **§5–§8, §11–§14, §17 and §18 stand as their own revisions left them** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted. §5's round lifecycle and §17's walk-speed table are the two most likely to have drifted since, because both describe code the later items changed |
+| `HANDOFF.md` | this file | current as of **2026-10-24**, against `6ce8770` plus the uncommitted work from the same day (§15 items 52–59: a rig's walking fact given a real stop edge, a parked rig's speed cleared on its way out of the world and on every placement, a client that had stopped dressing such a rig rather than forgetting it, a Match Stats board given an empty state that can be seen and a server line that says how many rows it answered with, a lobby that draws only the seat deficit instead of a full roster it then parks, the removal of the seat-reservation clock that was putting the eighth rig back five seconds into an intermission, the animation renderer's failure-as-success fixed along with its cancelled-windup speed reset, a hit-VFX pass that found the `victim` branch falling through into the spectator branch, warned about the two silent ways a rig hit draws nothing, and widened the body lookup past `NPC_TAG` alone, and a surrendered player's seat no longer booked back as a lobby reservation — which is why the round they left still had a body missing, and a `hitImpact` that carries an id beside the victim's name, because seven models called `Rig` are seven answers to "which body was hit"). **The 2026-10-24 passes touched §15 and §16 only.** **The 2026-10-23 pass** (against `f062372` plus six uncommitted files from the same day — the mobile cluster's glass face and rim glow, the cooldown ring, the caught-throw caption, the round's admission strip, the loading screen's title) brought **§4, §9, §10, §15 and §16** in step: §4's map lost two deleted controllers and gained `MobileControls`, `ui/glow.ts` and `client/enemyView.ts`; §9's inventory table was corrected the same way; §10 gained two stories and a completed list; §15 items 34–37 and §16 a note saying it confirmed nothing. **§5–§8, §11–§14, §17 and §18 stand as their own revisions left them** — §11's power-slot paragraph in particular predates the 2026-10-19 shuffle (`f699436`) and should be read against the code before it is trusted. §5's round lifecycle and §17's walk-speed table are the two most likely to have drifted since, because both describe code the later items changed. **§15 has since run on to item 102 (2026-10-26), and the map above has not followed it**: three files exist that §4 does not list (`server/vfx/mysteryBoxVfx.ts`, `client/celebration.ts`, `client/mercyWarning.ts`), `client/controllers/hud/LoadingScreenController.ts` and `client/ui/hudToast.ts` no longer exist, and `client/controllers/hud/RoundStatusController.ts` has grown a mercy line and two score subscriptions §4 knows nothing about. **Check §4 against the tree before trusting it**, and take §15 items 94–102 as the account of what moved |
 | `TAGS.md` | the register of every `CollectionService` tag (its table *is* the count), with why the strings cannot be imported from each other | current as of **2026-10-23**, which added one row to its "not tags, but the same trap" table: `"Hit"` / `"Catch"`, the two values of `LAST_HIT_BY_CAUSE_ATTRIBUTE` and the only pair on that list whose disagreement is a wrong *sentence* rather than a wrong lookup. Its "why there are copies" section is the thing to read before touching the `Ball` tag |
 | `SHOP-PANEL-BRIEFING.md` | a briefing for a visual-capable model debugging the shop panel rendering almost empty, with exact colours and the layout tree | **a record, not a description.** It documents the retired mock (five tabs, a box picture with odds); the panel was rewritten onto the economy and `ui/panelChrome.ts`, and a caveat banner at the top now says so. Kept because **§7's arithmetic still holds** (the panel really does collapse below ~700 px of viewport height) and §8's ruled-out list is still worth not re-treading. §5 and §6 were corrected on 2026-10-16 for the shared GUI's region, which is a *device* decision now (§9) |
 | `README.md` | upstream roblox-ts boilerplate — its entire content is the line `First commit` | says nothing about this project; ignore it |

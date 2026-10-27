@@ -58,7 +58,7 @@ import type { BadgeSubject } from "../badges/BadgeService";
 import { GameMode, RoundParticipant, RoundView } from "./modes/GameMode";
 import { DEFAULT_MODE } from "./modes/registry";
 import { SCORE_RUSH } from "./modes/ScoreRushMode";
-import { roundStatusFolder } from "./roundStatus";
+import { mercyWinner } from "./modes/ScoreRushMode";import { roundStatusFolder } from "./roundStatus";
 import { DRAW, RoundOutcome, TEAM_A, TEAM_B, TeamLabel } from "./team";
 import { VoteService } from "./VoteService";
 import { isPractising } from "../zone/practiceZoneMembership";
@@ -585,6 +585,11 @@ export class RoundService implements OnStart {
         // hold both would make its dependency on this file a cycle. See `DevService.onCommand`.
         this.dev.onCommand("match", (player) => this.requestMatch(player));
 
+        // **And the command that makes the mercy rule testable at all.** Same reason for living here: the score map
+        // is this service's, `publishScores` is its one writer, and a handler in `DevService` would need both. See
+        // {@link devSetScore} for the argument and for why the phase is one of its refusals.
+        this.dev.onCommand("score", (asker, args) => this.devSetScore(asker, args));
+
         task.spawn(() => this.gameLoop());
     }
 
@@ -652,6 +657,118 @@ export class RoundService implements OnStart {
         }
 
         this.startMatch(SCORE_RUSH);
+    }
+
+    /**
+     * **`!dev score <a|b> <points>` — a side's points set outright, which is the only way to reach the mercy rule on
+     * purpose.**
+     *
+     * **Why it exists.** `GAME_MODE_CONFIG.MERCY_RULE_LEAD` fires at a twenty-point lead and warns at fifteen, and
+     * neither is reachable by playing quickly: a test round would have to land twenty scoring hits on one side while
+     * the other lands none, then do it again at a different threshold to see the warning and the ending as separate
+     * events. This sets the number the way `EconomyService.setCoins` sets a wallet — outright rather than by a delta —
+     * because the *value* is what is under test, and no sequence of hits reliably reaches 15-and-not-16.
+     *
+     * **A side and a value, both required, and neither guessed.** `!dev score` with one argument could mean either
+     * "set whichever side is behind" or "set both", and a command whose meaning has to be explained is worse than a
+     * command that refuses. The side arrives lower-cased because `DevService.handleChat` lower-cases the whole line —
+     * see `onCommand`, which is the one place that shape is decided.
+     *
+     * **Four refusals, each naming the thing that was wrong**, on `devSetMoney`'s argument that a dev command's answer
+     * belongs in the output beside the line showing it arriving: a missing argument, a side that is not `a` or `b`, a
+     * value that is not a whole number of points, and — the two that are about this service rather than about the
+     * typing — a mode that keeps no score, and no round being played.
+     *
+     * **The phase refusal is the one that matters, and it is a courtesy rather than a guard.** `scores` is cleared at
+     * both ends of a round's life — as it finishes and as the next one opens — so a value set during an intermission
+     * would be wiped by the boundary before a round could act on it. Refusing says so; setting it silently and letting
+     * the next tick erase it would look like the command not working. A **decided** round is refused for a smaller
+     * reason: `finished` is still true until the next boundary, so nothing would read the new number.
+     *
+     * **The confirmation prints the lead as well as the pair, and says which threshold it reached** — because the
+     * lead is the number under test, and a line that only printed the pair left the obvious mistake invisible. A dev
+     * who sets `A 15` and leaves `B` at 5 has a lead of ten, no warning, and no way to tell from the output whether
+     * the warning is broken or the test was wrong. It now reads `lead 10, below the 15-point warning`, which is the
+     * whole diagnosis in the line itself.
+     *
+     * **`[<other>]` is optional and sets the other side in the same write**, which is the third way the same mistake
+     * is prevented: `!dev score a 15 0` is one command that produces the state the warning is looking for, where
+     * `!dev score a 15` plus a second call is two chances to get the difference wrong — and the two calls would leave
+     * the game sitting in an intermediate state between them, which a warning can fire on.
+     *
+     * **Both sides are written to the map before `publishScores`, and that ordering is the whole guarantee.** The
+     * server's mercy rule reads this map, never the attributes, so a single publish after both writes means the loop
+     * can only ever see the pair the command asked for — an intermediate is not merely unlikely, it does not exist in
+     * the state the rule is decided on. **The attributes are a different matter**: they replicate one at a time, so a
+     * client can observe the pair half-applied. That is `client/mercyWarning.ts`'s problem and it is handled there, by
+     * deferring its read by one resumption point; the note here exists so the two halves of the argument stay in one
+     * place rather than one file claiming an atomicity the engine does not offer.
+     *
+     * **What this deliberately does not do is end the round itself.** `finishRound` is reached by the loop asking
+     * `roundOutcome`, which is the same path a played round takes — so a dev setting 20 watches the mercy rule fire
+     * through exactly the code a real rout would, which is the whole point of testing it here.
+     */
+    private devSetScore(asker: Player, args: readonly string[]): void {
+        const side = args[0];
+        const raw = args[1];
+
+        if (side === undefined || raw === undefined) {
+            print(`[Round] ${asker.Name}: score needs a side and a value — !dev score <a|b> <points> [<other>]`);
+
+            return;
+        }
+
+        const team = side === "a" ? TEAM_A : side === "b" ? TEAM_B : undefined;
+
+        if (team === undefined) {
+            print(`[Round] ${asker.Name}: score refused — "${side}" is not a side; use a or b`);
+
+            return;
+        }
+
+        const points = pointsOf(raw);
+
+        if (points === undefined) {
+            print(`[Round] ${asker.Name}: score refused — "${raw}" is not a whole number of points`);
+
+            return;
+        }
+
+        const otherRaw = args[2];
+        const otherPoints = otherRaw === undefined ? undefined : pointsOf(otherRaw);
+
+        if (otherRaw !== undefined && otherPoints === undefined) {
+            print(`[Round] ${asker.Name}: score refused — "${otherRaw}" is not a whole number of points`);
+
+            return;
+        }
+
+        if (!this.mode.scores) {
+            print(`[Round] ${asker.Name}: score refused — ${GAME_MODE_NAMES[this.mode.id]} keeps no score`);
+
+            return;
+        }
+
+        if (this.state !== RoundState.Playing || this.finished) {
+            print(`[Round] ${asker.Name}: score refused — no round is being played; scores are cleared at every boundary`);
+
+            return;
+        }
+
+        this.scores.set(team, points);
+        if (otherPoints !== undefined) this.scores.set(team === TEAM_A ? TEAM_B : TEAM_A, otherPoints);
+
+        // **Both sides in one publish**, so the pair is never observable with one of the two writes applied.
+        this.publishScores();
+
+        const pointsA = this.scores.get(TEAM_A) ?? 0;
+        const pointsB = this.scores.get(TEAM_B) ?? 0;
+        const lead = math.abs(pointsA - pointsB);
+
+        print(
+            `[Round] ${asker.Name}: score set — A ${pointsA}, B ${pointsB} ` +
+                `(lead ${lead}, ${thresholdOf(lead)})`,
+        );
     }
 
     // ---- Internals ----
@@ -1242,11 +1359,27 @@ export class RoundService implements OnStart {
         // The score, for a mode that keeps one. Printed here rather than at every point that
         // changes it: a line per hit would bury the round's own output, and the number only means
         // anything next to who won.
+        //
+        // **And the mercy rule's own line, beside the score it was decided on.** `mercyWinner` is the same function
+        // `ScoreRushMode.outcome` used to reach the decision, so the log cannot claim a rout the round did not end
+        // on — and a lead this large cannot survive to the clock in the first place, because `outcome` is asked every
+        // second and checks this before it checks the timer. Printed here rather than in the mode because `outcome`
+        // is a *query* the loop makes once a second and a mode that printed would print a line per tick; the round is
+        // the thing that knows a decision has become final, which is what `finishRound` is.
         if (this.mode.scores) {
             const pointsA = this.scores.get(TEAM_A) ?? 0;
             const pointsB = this.scores.get(TEAM_B) ?? 0;
 
             print(`[Round] score — A ${pointsA}, B ${pointsB}`);
+
+            const mercy = mercyWinner(this.scores);
+
+            if (mercy !== undefined) {
+                print(
+                    `[Round] ${sideNameOf(this.mode.id, mercy)} won by mercy rule ` +
+                        `(${GAME_MODE_CONFIG.MERCY_RULE_LEAD}-point lead)`,
+                );
+            }
         }
 
         // The same word the message uses, and the vocabulary the HUD expects: a team's label, or
@@ -1669,9 +1802,10 @@ export class RoundService implements OnStart {
         // method's doc for what that costs and why it is the right way round.
         //
         // The figure is accumulated from what `task.wait` returned rather than read from a clock, which is the
-        // shape `LoadingScreenController` uses and for its reason: the number in the release line is what
-        // actually happened, so a frame that ran long is visible in the log rather than rounded away. The loop
-        // is for the residual — one `task.wait` on a healthy server returns the whole duration.
+        // house shape for measuring a duration by hand — `ThrowProbe.ts` records the trap that taught it. The
+        // number in the release line is then what actually happened, so a frame that ran long is visible in the
+        // log rather than rounded away. The loop is for the residual — one `task.wait` on a healthy server
+        // returns the whole duration.
         let frozen = 0;
         while (frozen < holdFor) frozen += task.wait(holdFor - frozen);
 
@@ -4342,6 +4476,47 @@ export class RoundService implements OnStart {
             await this.waitWhilePaused();
         }
     }
+}
+
+/**
+ * **A whole number of points from what a dev typed, or `undefined` if it is not one.**
+ *
+ * One test for the three ways a number is not a number of points, the shape `devSetMoney` uses and for its reason:
+ * `tonumber` answers `undefined` for a word, `!(value >= 0)` catches the negative *and* the `NaN` a comparison would
+ * otherwise let through, `>= math.huge` is the infinities, and the floor test is the fraction. **Nought is allowed**
+ * where `setMoney` refuses it — a score of nought is a legitimate thing to set, and setting one side to nought is how
+ * a two-sided state is arranged from a standing start.
+ */
+function pointsOf(raw: string): number | undefined {
+	const value = tonumber(raw);
+
+	if (value === undefined || !(value >= 0) || value >= math.huge || math.floor(value) !== value) return undefined;
+
+	return value;
+}
+
+/**
+ * **Which of the mercy rule's two thresholds `lead` has reached, as a phrase a log line can carry.**
+ *
+ * **This exists because the mistake it prevents is the one that was actually made.** `!dev score a 15` with the other
+ * side on 5 is a lead of ten, and a confirmation that printed only `A 15, B 5` left the reader to do the subtraction
+ * and then wonder whether the client's warning was broken. The three bands are the three states the client can be in,
+ * so the line answers "should that have fired?" without anybody reading the config: the rule ends the round on its
+ * next tick, the warning reaches the client on the next attribute write, or neither does.
+ *
+ * The mercy rule is tested first, because a lead of twenty is *also* at or above the warning threshold and the ending
+ * is the more useful fact.
+ */
+function thresholdOf(lead: number): string {
+	if (lead >= GAME_MODE_CONFIG.MERCY_RULE_LEAD) {
+		return `the ${GAME_MODE_CONFIG.MERCY_RULE_LEAD}-point mercy rule fires on the next tick`;
+	}
+
+	if (lead >= GAME_MODE_CONFIG.MERCY_WARNING_LEAD) {
+		return `the ${GAME_MODE_CONFIG.MERCY_WARNING_LEAD}-point warning fires on the client`;
+	}
+
+	return `below the ${GAME_MODE_CONFIG.MERCY_WARNING_LEAD}-point warning`;
 }
 
 /**

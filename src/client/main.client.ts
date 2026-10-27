@@ -13,6 +13,8 @@ import { startAfkWatcher } from "./afk";
 import { startPersonalAudio } from "./personalAudio";
 import { startPerfectDodge } from "./perfectDodge";
 import { startPracticeCountdown } from "./practiceCountdown";
+import { startCelebration } from "./celebration";
+import { startMercyWarning } from "./mercyWarning";
 
 print("[client] igniting");
 Flamework.addPaths("src/client/controllers");
@@ -124,3 +126,18 @@ startPerfectDodge();
 // the attribute's change signal (the digits roll *inside* a window that does not move), and for the one
 // subtraction that turns a published instant into `3 2 1`.
 startPracticeCountdown();
+
+// **And the result of the round that just ended, which is the only module here that draws on the *phase* rather than
+// on an event or a body.** It watches `CELEBRATING_ATTRIBUTE` to know when, `ROUND_WINNER_ATTRIBUTE` to know what, and
+// the local player's own `TEAM_ATTRIBUTE` to know whether *what* is good news — three reads, because the round's
+// outcome and this player's share of it are two different facts. Same plain-module shape for the same reason: two
+// subscriptions and one word. See `celebration` for why the draw is tested before the comparison, and for why a
+// spectator is shown nothing rather than a defeat.
+startCelebration();
+
+// **And the one line that says a Score Rush round is about to be taken away from somebody.** Separate from the score
+// bar for the reason `hitConfirm` is separate from `hitVfx`: the same fact, a different sentence. It reads the two
+// scores, the phase (for the once-per-round edge) and the mode (to name the side) — and `GAME_MODE_CONFIG`'s
+// `MERCY_RULE_LEAD`, so the warning and the rule it warns about are the same number. See `mercyWarning` for why the
+// reset hangs off the phase rather than off the scores falling to nought.
+startMercyWarning();

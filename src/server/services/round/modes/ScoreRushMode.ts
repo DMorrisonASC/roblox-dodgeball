@@ -63,11 +63,15 @@ class ScoreRushMode implements GameMode {
 	}
 
 	/**
-	 * The target, then the clock, and nothing else.
+	 * The target, then the mercy rule, then the clock, and nothing else.
 	 *
 	 * Reaching the target wins **immediately**, whatever the clock says — that is what makes it a
 	 * target rather than a tiebreak, and it is checked before the clock so a round that hits it on
 	 * its last second is a win rather than a draw.
+	 *
+	 * **The mercy rule sits between the two**, and it is the newer half: a lead of `MERCY_RULE_LEAD` ends the round
+	 * on the spot, because a rout that is played out to the clock is a rout the losing side leaves first. See that
+	 * constant for the argument and for why it is checked before the clock rather than after it.
 	 *
 	 * **Nobody left at all is a draw**, matching Team Elimination's answer to the same case and for
 	 * the same reason: an empty server must not sit inside a round until the clock runs out. Note
@@ -83,6 +87,14 @@ class ScoreRushMode implements GameMode {
 		if (pointsA >= GAME_MODE_CONFIG.SCORE_RUSH_TARGET) return TEAM_A;
 		if (pointsB >= GAME_MODE_CONFIG.SCORE_RUSH_TARGET) return TEAM_B;
 
+		// **The mercy rule, ahead of the clock.** A lead of `MERCY_RULE_LEAD` is the result, so the round is decided
+		// here rather than running out a minute nobody is playing for — see that constant for why a rout needs its own
+		// rule at all. **Before the clock rather than after it**, on the target's own argument: a round that reaches
+		// the lead on its last second is a win by this rule rather than a win on time, and the answer is the same
+		// either way, so the ordering only decides which sentence `RoundService` prints.
+		const mercy = mercyWinner(view.scores);
+		if (mercy !== undefined) return mercy;
+
 		if (view.getTimeRemaining() > 0) return undefined;
 
 		if (pointsA > pointsB) return TEAM_A;
@@ -92,5 +104,27 @@ class ScoreRushMode implements GameMode {
 	}
 }
 
-/** The one instance. See `TeamEliminationMode` for why a mode is a singleton. */
-export const SCORE_RUSH: GameMode = new ScoreRushMode();
+/**
+ * **The side that leads by at least `MERCY_RULE_LEAD`, or `undefined` if neither does.**
+ *
+ * **Exported, and the export is the whole point.** Two places have to agree about when the mercy rule fired: the
+ * mode, which *decides* the round, and `RoundService.finishRound`, which has to say in the output **why** it was
+ * decided — `[Round] Team A won by mercy rule (20-point lead)` is the line a reader uses to tell a rout from a
+ * target, and it cannot be derived from the outcome alone because the winning side is the same either way. Written
+ * once, both callers cannot disagree about the comparison; written twice, a change to one would leave the log lying
+ * about rounds the other ended.
+ *
+ * **A map in and a label out, rather than a `RoundView`**, so `RoundService` can ask with the map it already holds
+ * without building a view. It also keeps this a plain function of numbers, which is what makes the "no side leads by
+ * that much" answer a value rather than a branch.
+ */
+export function mercyWinner(scores: ReadonlyMap<TeamLabel, number>): TeamLabel | undefined {
+	const pointsA = scores.get(TEAM_A) ?? 0;
+	const pointsB = scores.get(TEAM_B) ?? 0;
+
+	if (math.abs(pointsA - pointsB) < GAME_MODE_CONFIG.MERCY_RULE_LEAD) return undefined;
+
+	return pointsA > pointsB ? TEAM_A : TEAM_B;
+}
+
+/** The one instance. See `TeamEliminationMode` for why a mode is a singleton. */export const SCORE_RUSH: GameMode = new ScoreRushMode();

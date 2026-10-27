@@ -67,6 +67,40 @@ export const GAME_MODE_CONFIG = {
 	SCORE_RUSH_TARGET: 30,
 
 	/**
+	 * **The lead, in points, at which a Score Rush round is decided on the spot — the mercy rule.**
+	 *
+	 * **It exists because a losing side leaves before it loses.** A target of `SCORE_RUSH_TARGET` is a race, and a
+	 * race that is obviously lost stops being played: the side that is twenty behind does not need the clock to tell
+	 * it what happened, and what it does instead is quit, which costs the winning side an opponent and the server a
+	 * body it has to refill. A lead this large *is* the result, so the round says so and moves on — the alternative
+	 * is playing out the last minute of a match nobody believes in.
+	 *
+	 * **Below the target, deliberately.** At 20 this can fire while the leader is on 20 and the target is 30, so the
+	 * rule decides rounds the target never gets to. That is the point rather than a coincidence: a lead of twenty is
+	 * already a rout, and a rule that only fired at the target would never fire at all.
+	 *
+	 * **It is checked before the clock, not after it**, so a round that reaches the lead on its last second is a
+	 * win by this rule rather than a win on time — the same ordering argument the target makes in
+	 * `ScoreRushMode.outcome`, and for the same reason: `outcome`'s first answer is the one that reads as true.
+	 *
+	 * Read by `ScoreRushMode` (to decide the round) and by `client/mercyWarning.ts` (to stay silent once the round
+	 * is about to end), so the two cannot disagree about where the line is. **Placeholder.**
+	 */
+	MERCY_RULE_LEAD: 20,
+
+	/**
+	 * **The lead at which the losing side is warned that the round is nearly over.**
+	 *
+	 * Five points before {@link MERCY_RULE_LEAD}, which is a few exchanges of play — enough to try something without
+	 * the warning arriving as news that the game has already ended. **A warning rather than a second rule**: nothing
+	 * here ends anything, and the notification is the client's own (see `client/mercyWarning.ts`), so this number
+	 * only ever decides when one line of text appears.
+	 *
+	 * **Placeholder.**
+	 */
+	MERCY_WARNING_LEAD: 15,
+
+	/**
 	 * What a caught throw is worth to the catching team, in a mode that keeps score.
 	 *
 	 * **Placeholder — untuned.** The rule it serves is fixed — a caught throw puts the thrower out

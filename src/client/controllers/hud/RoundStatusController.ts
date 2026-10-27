@@ -2,8 +2,16 @@ import { Controller, OnStart } from "@flamework/core";
 import { Card, Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { ReplicatedStorage } from "@rbxts/services";
-import { ROUND_MODE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
-import { GAME_MODE_NAMES, isGameModeId } from "shared/gameMode";
+import {
+	ROUND_MODE_ATTRIBUTE,
+	ROUND_SCORE_A_ATTRIBUTE,
+	ROUND_SCORE_B_ATTRIBUTE,
+	ROUND_STATE_ATTRIBUTE,
+	ROUND_STATUS_FOLDER,
+	ROUND_TIME_ATTRIBUTE,
+} from "shared/constants";
+import { GAME_MODE_NAMES, isGameModeId, sideNameOf } from "shared/gameMode";
+import { mercyWarningFor } from "../../mercyWarning";
 import { PLAYING } from "../../panels";
 import { applyGlow, applyTextGlow } from "../../ui/glow";
 import { PREMIUM } from "../../ui/premiumTheme";
@@ -103,6 +111,8 @@ export class RoundStatusController implements OnStart {
 		const state = Fusion.Value(scope, "Intermission");
 		const time = Fusion.Value(scope, 0);
 		const mode = Fusion.Value(scope, "");
+		const scoreA = Fusion.Value(scope, 0);
+		const scoreB = Fusion.Value(scope, 0);
 
 		// Subscribed *before* seeding, so a change landing between the two is not lost — the seed
 		// then reads the newer value and wins, which is the order that cannot go wrong either way.
@@ -130,6 +140,29 @@ export class RoundStatusController implements OnStart {
 			}),
 		);
 
+		// **The two scores, read for the mercy line and for nothing else.** The clock and the mode would be the whole
+		// of this controller's business if the warning were only a toast — but the lead that triggers it *stands*, and
+		// a faded toast leaves a player no way back to the fact. See {@link mercyWarningFor}, which owns when that
+		// warning is standing so that this line and the toast cannot disagree.
+		//
+		// **These are the same two attributes `ScoreHudController` reads, and that is the accepted shape rather than a
+		// leak.** `mercyWarning.ts` argues it at its own length against the boot's note on `hitVfx` and `hitConfirm`:
+		// two subscribers to one fact, neither knowing the other exists. What is *not* copied is the rule — the band
+		// asks the same function the toast asks.
+		scope.push(
+			status.GetAttributeChangedSignal(ROUND_SCORE_A_ATTRIBUTE).Connect(() => {
+				const value = status.GetAttribute(ROUND_SCORE_A_ATTRIBUTE);
+				if (typeIs(value, "number")) scoreA.set(value);
+			}),
+		);
+
+		scope.push(
+			status.GetAttributeChangedSignal(ROUND_SCORE_B_ATTRIBUTE).Connect(() => {
+				const value = status.GetAttribute(ROUND_SCORE_B_ATTRIBUTE);
+				if (typeIs(value, "number")) scoreB.set(value);
+			}),
+		);
+
 		// Seeded from what the server has already said, because the folder exists before this
 		// runs: without it the HUD would sit on its defaults until the next change, and on a
 		// countdown that is a whole second of a number nobody set.
@@ -145,7 +178,13 @@ export class RoundStatusController implements OnStart {
 		const initialMode = status.GetAttribute(ROUND_MODE_ATTRIBUTE);
 		if (typeIs(initialMode, "string")) mode.set(initialMode);
 
-		// The HUD's entire content, derived rather than assembled: it re-reads all three values
+		const initialScoreA = status.GetAttribute(ROUND_SCORE_A_ATTRIBUTE);
+		if (typeIs(initialScoreA, "number")) scoreA.set(initialScoreA);
+
+		const initialScoreB = status.GetAttribute(ROUND_SCORE_B_ATTRIBUTE);
+		if (typeIs(initialScoreB, "number")) scoreB.set(initialScoreB);
+
+		// The HUD's entire content, derived rather than assembled: it re-reads every value it needs
 		// whenever any of them changes, and never has to be told that it should.
 		//
 		// **The wording is built here, on the client.** The server publishes a phase, a clock and a
@@ -189,7 +228,8 @@ export class RoundStatusController implements OnStart {
 			// than about this line, and it is recorded at the attribute's own declaration.
 			const known = isGameModeId(modeId);
 
-			if (known) line = `${line} | ${GAME_MODE_NAMES[modeId]}`;
+			if (known) line = `${line}`;
+			// if (known) line = `${line} | ${GAME_MODE_NAMES[modeId]}`;
 
 			// **The winner used to be appended right here, and the rule it was appended under is the
 			// part worth keeping.** What belongs on this line is the round's *state*: the phase, the
@@ -198,6 +238,81 @@ export class RoundStatusController implements OnStart {
 			// room for. It has a panel of its own now, and this line went back to being about the
 			// round that has not started yet.
 			return line;
+		});
+
+		/**
+		 * **The mercy warning as a line that stands until the lead is closed — the toast's fact, without the fade.**
+		 *
+		 * **Why a second line rather than a bigger word on the first one.** The clock is the figure a player watches to
+		 * know how long a rout has to be survived, so replacing it at the exact moment the round becomes a rout is the
+		 * one thing this must not do. The card already sizes itself to its content — see the note on the missing
+		 * `size` at its construction — so a second line costs nothing but the pixels it occupies while it exists.
+		 *
+		 * **Empty rather than absent, and hidden rather than empty.** The label's text is `""` when there is nothing
+		 * standing, and its `Visible` follows that — because `Card`'s own `UIListLayout` charges its `childGap` (8px)
+		 * between *placed* children, so a zero-height label left visible would hold open a gap under the clock for the
+		 * whole match. Invisible children are not laid out, so the band is exactly the height the clock needs whenever
+		 * the warning is not standing.
+		 *
+		 * **The lead is the standing figure, not the threshold.** `mercyWarningFor` returns the number it judged, so a
+		 * lead that crossed fifteen on a catch reads `+18` rather than `+15` — the score plate a few pixels above is
+		 * the thing this must not contradict.
+		 *
+		 * **Every value is read before any branching**, for the reason the clock's own `Computed` gives: Fusion takes a
+		 * `Computed`'s dependency set from the `use` calls that actually ran, so a read inside an `if` is a
+		 * subscription that only exists while that branch is taken.
+		 */
+		const warningLine = Fusion.Computed(scope, (use) => {
+			const phase = use(state);
+			const pointsA = use(scoreA);
+			const pointsB = use(scoreB);
+			const modeId = use(mode);
+
+			// **The phase is checked rather than the scores alone**, because the scores outlive the round that set
+			// them by however long the server takes to clear the pair — and a band left reading `Team A +15` through
+			// an intermission would be describing a round nobody is in. `mercyWarningFor` owns the window; this owns
+			// whether there is a round for the window to be about.
+			if (phase !== PLAYING) return "";
+
+			const warning = mercyWarningFor(pointsA, pointsB);
+			if (warning === undefined) return "";
+
+			const name = isGameModeId(modeId) ? sideNameOf(modeId, warning.leading) : `Team ${warning.leading}`;
+
+			return `${name} +${warning.lead}`;
+		});
+
+		/**
+		 * **Whether there is anything to say, as its own `Computed` rather than a function at the `Hydrate`.**
+		 *
+		 * `Hydrate` takes a `UsedAs<boolean>` — a value, a `Value` or a `Computed` — and not a callback, so the
+		 * question "is the line non-empty" has to be a graph object in its own right. That is the better shape anyway:
+		 * it is read by the label's `Visible` and could be read by anything else that wanted to know, and its
+		 * dependency is `warningLine`'s rather than a second subscription to the four attributes.
+		 */
+		const warningVisible = Fusion.Computed(scope, (use) => use(warningLine) !== "");
+
+		/**
+		 * **The line's colour is the leading side's, and that is meaning rather than decoration.**
+		 *
+		 * `premiumTheme` refuses a `warning` colour on purpose — its doc says there is no success/warning/error trio
+		 * because every element the game has is one of five — and inventing one here would be a ninth colour on a
+		 * palette that argues for its count. The one thing this line is *about* is a side, and the palette already has
+		 * that side's colour for the score plate above, so the band and the plate say "Team A" in the same colour
+		 * without a word of explanation.
+		 *
+		 * **No glow.** The clock's cyan halo is the sign-like treatment this direction reserves for the thing to look
+		 * at; a second glowing label under it would be two things shouting. This is white-adjacent ink in the team's
+		 * hue, subordinate by size.
+		 */
+		const warningColour = Fusion.Computed(scope, (use) => {
+			const phase = use(state);
+			const pointsA = use(scoreA);
+			const pointsB = use(scoreB);
+
+			const warning = phase === PLAYING ? mercyWarningFor(pointsA, pointsB) : undefined;
+
+			return warning?.leading === "B" ? PREMIUM.sideB : PREMIUM.sideA;
 		});
 
 		const wrapper = Fusion.New(scope, "Frame")({
@@ -216,10 +331,12 @@ export class RoundStatusController implements OnStart {
 			BackgroundTransparency: 1,
 		});
 
-		// `HUD_WIDTH` is a fixed 360px, which is right for a desktop and wider than the whole screen
-		// on a narrow phone — and because this HUD is centred, an overflow costs it *both* edges at
-		// once rather than one. The cap is what makes the fixed width safe: above the fraction the
-		// card behaves exactly as it did, and below it the card gives way instead of leaving.
+		// `HUD_WIDTH` is a fixed 100px, which is the width this band has worn since the clock became the whole line
+		// and is what the phase names were measured to fit — `Intermission` at the clock's 14px is the longest string
+		// it ever has to hold. **This paragraph said 360 for a while after the value stopped being 360**, which is the
+		// drift worth naming: the number moved and the argument for it did not. The cap below still matters for the
+		// reason it always did — the band is centred, so an overflow would cost it *both* edges at once rather than
+		// one, and a window dragged narrower than the band has to make the band give way rather than leave.
 		addViewportConstraint(scope, wrapper);
 
 		// **No `size` on the card, and that is the whole trick.** big-ui's `Card` auto-sizes its
@@ -227,18 +344,40 @@ export class RoundStatusController implements OnStart {
 		// off, which is what a second line of text then falls out of. So the card is as tall as its
 		// line, and the wrapper follows it, and no amount of text can be clipped by a box that was
 		// sized before the text existed.
-		// **The line is built before the card so it can be repainted afterwards**, which is the one thing about this
-		// construction that is not big-ui's: `Card` takes instances rather than props, so a `Text` handed to it is an
-		// instance this file still holds — and the colour and the face live on that instance rather than on the card.
+		// **Both lines are built before the card so they can be repainted afterwards**, which is the one thing about
+		// this construction that is not big-ui's: `Card` takes instances rather than props, so a `Text` handed to it is
+		// an instance this file still holds — and the colour and the face live on that instance rather than on the
+		// card. That is what lets the clock be gold with a halo and the mercy line be the leading side's colour
+		// without either being rebuilt.
 		const clock = Text(scope, {
 			text,
 			variant: "button",
 			align: Enum.TextXAlignment.Center,
 		});
 
+		/**
+		 * **The mercy line, built out of the library's smallest face rather than the clock's.** `overline` is 11px
+		 * GothamBold against the clock's 14 — subordinate by size, which is the ordering the fact has: the clock is
+		 * the round, this is a warning about how the round is going. **The size is also the width budget**: the band is
+		 * `HUD_WIDTH` pixels wide and a longer string wraps, so `Team A +15` at 11px sits on one line where the same
+		 * words at 14px would take two and grow the card under the clock mid-round.
+		 *
+		 * **Created through `Text` and then driven by `Hydrate`, and both halves are necessary.** `Text` is what gives
+		 * this label big-ui's typography and the theme's own `UIStroke`-free ink; but it takes props at construction,
+		 * so `Visible` and `TextColor3` — the two things that change — cannot be handed to it as reactive values.
+		 * `Hydrate` is what makes them tracked, which is the rule `panelChrome.ts` states at its length and
+		 * `ArenaFreezeCountdownController` uses for its card.
+		 */
+		const warning = Text(scope, {
+			text: warningLine,
+			variant: "overline",
+			align: Enum.TextXAlignment.Center,
+			layoutOrder: 1,
+		});
+
 		const card = Card(scope, {
 			padding: 4,
-			children: [clock],
+			children: [clock, warning],
 		});
 
 		/**
@@ -272,6 +411,20 @@ export class RoundStatusController implements OnStart {
 		// **And the clock is the one label in the game that gets the full neon treatment** — cyan ink with a cyan halo,
 		// which is the sign-like pair this direction exists for. See `ui/glow.ts`'s text helper.
 		applyTextGlow(clock);
+
+		// **The mercy line's three changing properties, and nothing else.** `Visible` and `TextColor3` come from the
+		// two `Computed`s above and the transparency from the theme, so this is the whole of what makes the line
+		// appear, name a side in that side's colour, and go away again — no connection here, no re-render, no state.
+		// The same four attributes that feed the clock feed this, through the one rule in `mercyWarning.ts`.
+		//
+		// **`Visible` doubles as the space.** See the note at its construction: an empty label left visible would hold
+		// `Card`'s 8px `childGap` open under the clock for the whole match, and an invisible one is not laid out at
+		// all, so the band is exactly as tall as the clock whenever there is nothing to warn about.
+		Fusion.Hydrate(scope, warning)({
+			Visible: warningVisible,
+			TextColor3: warningColour,
+			TextTransparency: PREMIUM.textTransparency,
+		});
 
 		card.Parent = wrapper;
 

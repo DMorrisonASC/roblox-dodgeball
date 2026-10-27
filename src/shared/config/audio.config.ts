@@ -392,4 +392,35 @@ export const AUDIO_CONFIG = {
 	 * and should settle as one family.
 	 */
 	PERFECT_DODGE_VOLUME: 0.6,
+
+	/**
+	 * **The Score Rush mercy warning: what plays on every client the moment the round is five points from ending.**
+	 *
+	 * **This is the one clip in the file that is a *goad* rather than a reward or a confirmation**, and that is the
+	 * reason it exists at all. `GAME_MODE_CONFIG.MERCY_RULE_LEAD` ends a round at a twenty-point lead, and a side that
+	 * discovers that from the scoreboard alone discovers it too late to do anything; the warning is five points of
+	 * notice, and a warning nobody looks up for is not a warning. The `Alert`-tier sound is what makes a player who is
+	 * watching the ball rather than the scoreboard lift their eyes.
+	 *
+	 * **Every client plays it, both sides included** — `client/mercyWarning.ts` derives the warning from two
+	 * attributes rather than being told, so there is no addressing to do and no remote. A player on the leading side
+	 * hears the same cue as the one being warned, which is right: the round is about to end for both of them.
+	 *
+	 * **Not a `Placeholder.` in the sense of being invented** — the id was supplied. What is unverified is its
+	 * *character*: whether it reads as an alarm beside the round's own music, and whether it is distinct enough from
+	 * `PERFECT_DODGE` that the two are not confused. That is a pair of ears' question, and the pair to listen to
+	 * together are this, `PERFECT_DODGE` and `COUNTDOWN_BEEP` — the three things that play at a player rather than
+	 * with them.
+	 */
+	MERCY_WARNING: "rbxassetid://118488367803012",
+
+	/**
+	 * **Placeholder.** The mercy warning's level.
+	 *
+	 * **Set above `PERFECT_DODGE_VOLUME` (0.6) rather than beside it**, on the argument that a cue a player must
+	 * *notice without looking* has to beat a cue they are already looking at. It is a rare sound — at most once in a
+	 * round, and only in a round that has stopped being close — so loud is not the same as frequent here. Tune by ear
+	 * against the round's music (`ROUND_MUSIC_VOLUME`, 0.3), because that is what it has to be heard over.
+	 */
+	MERCY_WARNING_VOLUME: 0.8,
 } as const;
