@@ -1,5 +1,6 @@
 import { Players } from "@rbxts/services";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 
 /**
  * Spawn protection: one `ForceField` on every new player body, gone after a second.
@@ -32,9 +33,6 @@ import { CHARACTER_CONFIG } from "shared/config/character.config";
  * Started from `main.server.ts`. Unlike the collision groups next door it has no ordering constraint
  * with `Flamework.ignite()`: nothing reads a `ForceField` while services are starting.
  */
-
-/** Prints one line per spawned body, saying what was removed and what was applied. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Arms spawn protection for everybody, now and for the rest of the session.
@@ -110,11 +108,11 @@ export function shieldCharacter(character: Model): void {
         if (!descendant.IsA("ForceField")) return;
 
         descendant.Destroy();
-        if (DEBUG) print(`[Shield] ${character.Name}: a late forcefield arrived and was removed`);
+        logDebug(`[Shield] ${character.Name}: a late forcefield arrived and was removed`);
     });
 
-    if (DEBUG) {
-        print(
+    if (DEBUG_LOGGING) {
+        logInfo(
             `[Shield] ${character.Name}: ${stripped} removed, ` +
                 `${CHARACTER_CONFIG.SPAWN_SHIELD_SECONDS}s applied`,
         );

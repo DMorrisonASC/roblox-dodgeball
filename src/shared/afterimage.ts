@@ -66,9 +66,7 @@
 import { Players, RunService, TweenService, Workspace } from "@rbxts/services";
 import { ACTION_CONFIG } from "shared/config/action.config";
 import { AFTERIMAGE_SOURCE_ATTRIBUTE, AFTERIMAGE_WINDOW_ATTRIBUTE } from "shared/constants";
-
-/** Prints one line per trail, saying what a ghost of this body cost. Nothing else. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 
 /**
  * Which side this copy of the module is on.
@@ -479,13 +477,13 @@ function spawnGhost(model: Model): void {
 		return;
 	}
 
-	if (DEBUG) {
+	if (DEBUG_LOGGING) {
 		// Once per ghost at 40 Hz would be a wall of output, so this is the *first* ghost of a trail and no
 		// more: what it is for is the one number nothing else in this file can know — how many parts a body in
 		// *this* place actually has, accessories and all.
 		if (!counted) {
 			counted = true;
-			print(
+			logInfo(
 				`[Afterimage] a ghost is ${ghost.GetChildren().size()} part(s), up to ` +
 					`${ACTION_CONFIG.AFTERIMAGE_MAX_GHOSTS} alive in the world`,
 			);

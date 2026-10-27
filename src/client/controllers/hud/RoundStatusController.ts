@@ -11,15 +11,13 @@ import {
 	ROUND_TIME_ATTRIBUTE,
 } from "shared/constants";
 import { GAME_MODE_NAMES, isGameModeId, sideNameOf } from "shared/gameMode";
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 import { mercyWarningFor } from "../../mercyWarning";
 import { PLAYING } from "../../panels";
 import { applyGlow, applyTextGlow } from "../../ui/glow";
 import { PREMIUM } from "../../ui/premiumTheme";
 import { getHudColumn } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
-
-/** Prints once, when the HUD is up — the line that says the controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /*
  * **The band does not position itself any more, and the number that used to say where it went is gone with the
@@ -468,8 +466,8 @@ export class RoundStatusController implements OnStart {
 		// `ScreenInsets` chooses the region a GUI draws in, and only an offset moves something within it.
 		wrapper.Parent = getHudColumn();
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[HUD] round status up — in the shared readout column, ` +
 					`reading ${ROUND_STATUS_FOLDER} in ReplicatedStorage`,
 			);

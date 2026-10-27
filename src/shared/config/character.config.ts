@@ -160,7 +160,7 @@ export const CHARACTER_CONFIG = {
      * and an emote is not a clip that can be loaded as one, so an R15 body was left with two claimed
      * sets whose clips could never arrive: a character that moved with no animation at all, because
      * a claimed set is no longer falling back to Roblox's own. The controller probes every id on the
-     * body that will wear it for exactly that reason, and its `DEBUG` output names the rig it read.
+     * body that will wear it for exactly that reason, and its `DEBUG_LOGGING` output names the rig it read.
      *
      * **Quoted with the `rbxassetid://` prefix and never as a bare number.** The loader treats a
      * bare number as a name and finds nothing, which is the trap the dodge ids record at length.

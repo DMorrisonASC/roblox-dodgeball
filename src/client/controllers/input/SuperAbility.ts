@@ -5,10 +5,8 @@ import { AbilityKind, ABILITY_NAMES } from "shared/ability";
 import { IS_DEV_ATTRIBUTE } from "shared/constants";
 import { POWER_ROSTER } from "shared/config/economy.config";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { playSelectTone } from "../../ui/elevation";
-
-/** Prints the binds once, every press that went out, and nothing else. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The key that uses whatever power a mystery box gave you. **`3`, and nothing else in the game binds it.**
@@ -163,7 +161,7 @@ export class SuperAbility implements OnStart {
 			// the two requests this press goes to — and the server's router asks the same question about
 			// the same word when a box is paying.
 			if (test === "MultiBall") {
-				if (DEBUG) print(`[Super] ${key.Name} — asking to buy a ${ABILITY_NAMES.MultiBall} window`);
+				logDebug(`[Super] ${key.Name} — asking to buy a ${ABILITY_NAMES.MultiBall} window`);
 
 				this.getMultiBallRemote().SendToServer();
 
@@ -174,7 +172,7 @@ export class SuperAbility implements OnStart {
 			// them.** `"Pierce"` and `"Freeze"` are both abilities a *ball* can carry, and the server
 			// checks that the word names one rather than trusting it — see `isBallAbility`, which is also
 			// what refuses the word for a player-level buff arriving at this same remote.
-			if (DEBUG) print(`[Super] ${key.Name} — asking to mark the held ball as ${ABILITY_NAMES[test]}`);
+			logDebug(`[Super] ${key.Name} — asking to mark the held ball as ${ABILITY_NAMES[test]}`);
 
 			this.getMarkRemote().SendToServer(test);
 		});
@@ -197,8 +195,8 @@ export class SuperAbility implements OnStart {
 		// Printed once at startup, for the reason every other input controller prints its binds: "the
 		// key does nothing" has two completely different causes — the bind never happened, or the press
 		// never arrived — and this is the line that tells them apart.
-		if (DEBUG) {
-			print(`[Super] ${POWER_KEY.Name} bound — uses whatever power the mystery box gave`);
+		if (DEBUG_LOGGING) {
+			logInfo(`[Super] ${POWER_KEY.Name} bound — uses whatever power the mystery box gave`);
 
 			// **The dev binds are printed only for a dev, because for anybody else they are not bound** —
 			// and a startup line naming keys that do nothing is worse than no line at all. Read here rather
@@ -211,7 +209,7 @@ export class SuperAbility implements OnStart {
 							? `buys a ${ABILITY_NAMES[kind]} window`
 							: `marks the held ball as ${ABILITY_NAMES[kind]}`;
 
-					print(`[Super] ${TEST_KEYS[kind].Name} bound (dev) — ${what}`);
+					logInfo(`[Super] ${TEST_KEYS[kind].Name} bound (dev) — ${what}`);
 				}
 			}
 		}
@@ -233,7 +231,7 @@ export class SuperAbility implements OnStart {
 	 * away, which is the honest sign that something happened rather than the sign that somebody pressed.
 	 */
 	public usePower(): void {
-		if (DEBUG) print(`[Super] ${POWER_KEY.Name} — asking to use the mystery box's power`);
+		logDebug(`[Super] ${POWER_KEY.Name} — asking to use the mystery box's power`);
 
 		// **The interface's own select tone — the one a shop or inventory button makes.** Spending a power is
 		// the same kind of act as spending coins: the player asking the machine to do something. It is fired

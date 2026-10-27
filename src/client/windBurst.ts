@@ -1,7 +1,5 @@
 import { Debris, ReplicatedStorage, Workspace } from "@rbxts/services";
-
-/** Prints one line per release, and one per template that is not there. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { logDebug, logWarn } from "shared/logger";
 
 /**
  * The template's name in `ReplicatedStorage`, and **the whole of the contract with it.**
@@ -127,7 +125,7 @@ export function playWindBurst(body: Model): void {
 	// the body instead of riding a leg. A body with nothing to weld to is reported and skipped.
 	const anchor = anchorOf(body);
 	if (anchor === undefined) {
-		if (DEBUG) print(`[VFX] ${body.Name}: wind burst wanted, but no ${FALLBACK_PART} to weld it to`);
+		logDebug(`[VFX] ${body.Name}: wind burst wanted, but no ${FALLBACK_PART} to weld it to`);
 
 		return;
 	}
@@ -136,14 +134,14 @@ export function playWindBurst(body: Model): void {
 	if (template === undefined) {
 		if (!warnedTemplates.has(TEMPLATE_NAME)) {
 			warnedTemplates.add(TEMPLATE_NAME);
-			warn(`[VFX] no ${TEMPLATE_NAME} in ReplicatedStorage — the wind burst will not play`);
+			logWarn(`[VFX] no ${TEMPLATE_NAME} in ReplicatedStorage — the wind burst will not play`);
 
 			// **And then what it can see**, because "no template" is the half of the answer nobody can act on:
 			// not there, and there under another name in another container, look identical from one line.
-			for (const line of nearMissReport()) warn(`[VFX] ${line}`);
+			for (const line of nearMissReport()) logWarn(`[VFX] ${line}`);
 		}
 
-		if (DEBUG) print(`[VFX] ${body.Name}: wind burst wanted, but no ${TEMPLATE_NAME} template to clone`);
+		logDebug(`[VFX] ${body.Name}: wind burst wanted, but no ${TEMPLATE_NAME} template to clone`);
 		return;
 	}
 
@@ -171,7 +169,7 @@ export function playWindBurst(body: Model): void {
 	const declared = clone.IsA("Model") ? clone.PrimaryPart : undefined;
 	const carrier = declared ?? first;
 	if (carrier === undefined) {
-		if (DEBUG) print(`[VFX] ${body.Name}: the ${TEMPLATE_NAME} template has no parts to weld`);
+		logDebug(`[VFX] ${body.Name}: the ${TEMPLATE_NAME} template has no parts to weld`);
 		return;
 	}
 
@@ -219,7 +217,7 @@ export function playWindBurst(body: Model): void {
 	// a rig type read wrong, one foot missing, no foot at all so the root took over — look identical on screen. A
 	// line naming the feet the position came from, and the part that holds it, turns the next report into a
 	// diagnosis instead of a second guess.
-	if (DEBUG) print(`[VFX] ${body.Name}: wind burst on release — ${anchor.label}, welded to ${anchor.weld.Name}`);
+	logDebug(`[VFX] ${body.Name}: wind burst on release — ${anchor.label}, welded to ${anchor.weld.Name}`);
 }
 
 /**

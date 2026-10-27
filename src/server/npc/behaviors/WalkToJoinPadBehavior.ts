@@ -3,6 +3,7 @@ import { resolveDodgeable } from "shared/dodge";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { TEAM_ATTRIBUTE } from "shared/constants";
+import { logInfo, logWarn } from "shared/logger";
 // **A type-only import, because a behaviour must not require the service it is handed.** `SeekBehavior`
 // imports its own speed service the same way and for the same reason: the value arrives as a parameter
 // from `NpcService`, which already holds it, so nothing here needs the module at runtime — and a real
@@ -647,7 +648,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 			if (walk.runToken !== token) return;
 
 			endRun(model, walk);
-			print(`[Rig] ${model.Name}: run ended — the walk it was for stopped being ticked`);
+			logInfo(`[Rig] ${model.Name}: run ended — the walk it was for stopped being ticked`);
 		});
 
 		if (walk.running) return;
@@ -750,7 +751,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 			if (walk.lookToken !== token) return;
 
 			clearLook(model, walk);
-			print(`[Rig] ${model.Name}: look cancelled — the walk it was for stopped being ticked`);
+			logInfo(`[Rig] ${model.Name}: look cancelled — the walk it was for stopped being ticked`);
 		});
 	};
 
@@ -841,7 +842,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				if (!walk.reported) {
 					walk.reported = true;
 
-					warn(
+					logWarn(
 						`[NPC] ${model.Name} wears ${BEHAVIOR_WALK_TO_JOIN_PAD} but has no ` +
 							`${WALK_TO_JOIN_PAD_ATTRIBUTE} — it will stand where it is`,
 					);
@@ -947,7 +948,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 
 				const routed = new Vector3(aim.X - target.X, 0, aim.Z - target.Z).Magnitude > LOOK_FLAT_EPSILON;
 
-				print(
+				logInfo(
 					`[Rig] ${model.Name}: pad walk — waited ${string.format("%.1f", waited)}s, ` +
 						`${walk.run ? "running" : "walking"}, ` +
 						`${walk.look ? "looking around on the way" : "straight to the pad"}, ` +
@@ -1016,12 +1017,12 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 					model.SetAttribute(TEAM_ATTRIBUTE, side);
 
 					if (side !== wanted) {
-						print(`[Rig] ${model.Name}: side ${wanted} was full — took ${side} instead`);
+						logInfo(`[Rig] ${model.Name}: side ${wanted} was full — took ${side} instead`);
 					}
 				} else if (!walk.reported) {
 					walk.reported = true;
 
-					warn(
+					logWarn(
 						`[NPC] ${model.Name} reached its pad but has no ${WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE} — ` +
 							`it is standing on a sign and on no side`,
 					);
@@ -1084,7 +1085,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 					walk.stageUntil = now + NPC_CONFIG.WALK_TO_PAD_LOOK_DWELL_SECONDS;
 					armLookWatchdog(model, walk);
 
-					print(`[Rig] ${model.Name}: looking back at its own pad`);
+					logInfo(`[Rig] ${model.Name}: looking back at its own pad`);
 
 					return;
 				}
@@ -1097,7 +1098,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				walk.look = false;
 				walk.stage = "approach";
 
-				print(`[Rig] ${model.Name}: look over — carrying on to the pad`);
+				logInfo(`[Rig] ${model.Name}: look over — carrying on to the pad`);
 			}
 
 			// **The stop short, taken once per walk.** `look` is the "still to do" flag rather than a
@@ -1119,7 +1120,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 					walk.stageUntil = now + NPC_CONFIG.WALK_TO_PAD_LOOK_DWELL_SECONDS;
 					armLookWatchdog(model, walk);
 
-					print(`[Rig] ${model.Name}: stopped short and turned to the other side`);
+					logInfo(`[Rig] ${model.Name}: stopped short and turned to the other side`);
 
 					return;
 				}
@@ -1133,7 +1134,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				if (!walk.reported) {
 					walk.reported = true;
 
-					warn(
+					logWarn(
 						`[NPC] ${model.Name} has no ${WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE} — ` +
 							`its look-around route is a straight walk`,
 					);

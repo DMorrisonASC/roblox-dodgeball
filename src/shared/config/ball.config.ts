@@ -648,7 +648,7 @@ export const BALL_CONFIG = {
 	 * A consistent residual at this setting is evidence about the *shape* of the loss — read it
 	 * before turning this dial, because turning it hides the evidence without explaining it.
 	 *
-	 * **Tune it against the ball, not with arithmetic.** `BallService`'s DEBUG print shows the
+	 * **Tune it against the ball, not with arithmetic.** `BallService`'s `DEBUG_LOGGING` print shows the
 	 * commanded velocity, both halves of the correction it applied and the rate it read, and
 	 * `ThrowProbe` reports how far the ball drifts from the plan's own curve — that drift is the
 	 * number to drive to zero.

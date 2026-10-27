@@ -2,6 +2,7 @@
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { PRACTICE_BAY_TAG, PRACTICE_THROW_TAG } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { logInfo, logWarn } from "shared/logger";
 
 /**
  * **A practice bay: which box a rig owns, and who is standing in it.**
@@ -394,7 +395,7 @@ export function reportDrills(): void {
 		(instance) => instance.IsA("Model") && instance.IsDescendantOf(Workspace),
 	).size();
 
-	print(
+	logInfo(
 		`[Drill] up — ${PRACTICE_THROW_TAG}: ${drills} rig(s), ${PRACTICE_BAY_TAG}: ${bayThings} tagged thing(s), ` +
 			`${bays} usable part(s)`,
 	);
@@ -404,7 +405,7 @@ export function reportDrills(): void {
 	// stood — and nothing in the output could distinguish that from an empty box. The centre and size are the two
 	// figures a person needs to compare against where they stand.
 	for (const bay of taggedPartsInWorkspace(PRACTICE_BAY_TAG)) {
-		print(
+		logInfo(
 			`[Drill]   ${PRACTICE_BAY_TAG} "${bay.Name}" at (${string.format("%.1f", bay.Position.X)}, ` +
 				`${string.format("%.1f", bay.Position.Y)}, ${string.format("%.1f", bay.Position.Z)}), ` +
 				`size ${string.format("%.1f", bay.Size.X)}×${string.format("%.1f", bay.Size.Y)}×` +
@@ -417,12 +418,12 @@ export function reportDrills(): void {
 	// from the other end. Both are silent at runtime — the rig simply never fires — so this is the only moment anything
 	// can say so.
 	if (drills > 0 && bays === 0) {
-		warn(
+		logWarn(
 			`[Drill] ${drills} rig(s) wear ${PRACTICE_THROW_TAG} and no usable ${PRACTICE_BAY_TAG} part exists — ` +
 				`every one of them will stand still. Paint the tag on the floor box each drill owns.`,
 		);
 	} else if (bays > 0 && drills === 0) {
-		warn(
+		logWarn(
 			`[Drill] ${bays} ${PRACTICE_BAY_TAG} part(s) exist and no rig wears ${PRACTICE_THROW_TAG} — nothing will ` +
 				`throw at anybody. Paint ${PRACTICE_THROW_TAG} on the rig.`,
 		);

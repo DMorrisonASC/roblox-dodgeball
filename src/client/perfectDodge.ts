@@ -2,11 +2,9 @@ import Fusion from "@rbxts/fusion-3.0";
 import { ContentProvider, Players, SoundService } from "@rbxts/services";
 import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { events } from "shared/networking";
+import { logDebug, logWarn } from "shared/logger";
 import { createActionSplash, SPLASH_TOP_FRACTION } from "./ui/actionSplash";
 import { getHudScreenGui } from "./ui/screenGui";
-
-/** Prints one line per caption. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * # The perfect dodge — a ball that missed by a ball's width, said and heard
@@ -63,7 +61,7 @@ export function startPerfectDodge(): void {
 	// **Said at boot**, for the reason `hitConfirm` says its own: a module with a subscription and no Flamework
 	// controller around it is started by hand from `main.client.ts`, and a caption that never fires and one
 	// that was never wired print the same nothing.
-	if (DEBUG) print(`[HUD] perfect dodge up — "${PERFECT_TEXT}" and one clip on a ball that missed me by a ball's width`);
+	logDebug(`[HUD] perfect dodge up — "${PERFECT_TEXT}" and one clip on a ball that missed me by a ball's width`);
 
 	const scope = Fusion.scoped();
 
@@ -92,7 +90,7 @@ export function startPerfectDodge(): void {
 	// heard as silence.
 	ContentProvider.PreloadAsync([sound], (contentId, fetchStatus) => {
 		if (fetchStatus !== Enum.AssetFetchStatus.Success) {
-			warn(`[Audio] perfect dodge sound did not load — ${contentId} (${fetchStatus.Name})`);
+			logWarn(`[Audio] perfect dodge sound did not load — ${contentId} (${fetchStatus.Name})`);
 		}
 	});
 
@@ -112,7 +110,7 @@ export function startPerfectDodge(): void {
 		splash.pop(PERFECT_TEXT);
 		play(sound);
 
-		if (DEBUG) print(`[HUD] splash — ${PERFECT_TEXT}`);
+		logDebug(`[HUD] splash — ${PERFECT_TEXT}`);
 	});
 }
 

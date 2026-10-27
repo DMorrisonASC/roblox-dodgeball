@@ -2,10 +2,8 @@ import { OnStart, Service } from "@flamework/core";
 import { Players, Workspace } from "@rbxts/services";
 import { PRACTICE_ZONE_ATTRIBUTE, PRACTICE_ZONE_TAG } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { LOGGING_ENABLED, logInfo, logWarn } from "shared/logger";
 import { setPracticePlayer } from "../../collision/CollisionGroups";
-
-/** Prints each player's transitions in and out of a zone. */
-const DEBUG = true; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How often every player is tested against the zone, in seconds.
@@ -173,11 +171,11 @@ export class PracticeZoneService implements OnStart {
 	private report(): void {
 		const zones = taggedPartsInWorkspace(PRACTICE_ZONE_TAG);
 
-		print(`[Zone] up — ${PRACTICE_ZONE_TAG}: ${zones.size()} tagged part(s)`);
+		logInfo(`[Zone] up — ${PRACTICE_ZONE_TAG}: ${zones.size()} tagged part(s)`);
 
 		const queryable = zones.filter((zone) => zone.CanQuery);
 		if (!queryable.isEmpty()) {
-			warn(
+			logWarn(
 				`[Zone] ${queryable.size()} ${PRACTICE_ZONE_TAG} part(s) are CanQuery — every cast inside them ` +
 					`stops at an invisible wall: ${queryable.map((zone) => zone.GetFullName()).join(", ")}`,
 			);
@@ -234,8 +232,8 @@ export class PracticeZoneService implements OnStart {
 
 		if (inside === wasInside) return;
 
-		if (DEBUG) {
-			print(`[Zone] ${player.Name}: ${inside ? "entered" : "left"} a ${PRACTICE_ZONE_TAG}`);
+		if (LOGGING_ENABLED) {
+			logInfo(`[Zone] ${player.Name}: ${inside ? "entered" : "left"} a ${PRACTICE_ZONE_TAG}`);
 		}
 
 		player.SetAttribute(PRACTICE_ZONE_ATTRIBUTE, inside);

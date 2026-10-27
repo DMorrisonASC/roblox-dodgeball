@@ -1,11 +1,9 @@
 import { Controller, OnStart } from "@flamework/core";
 import { GuiService, Players, RunService, UserInputService, Workspace } from "@rbxts/services";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { isMobile } from "../../platform";
 import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { getStickScreenGui } from "../../ui/screenGui";
-
-/** Prints the mount line, the engine-stick probe, and one line per grab and per release. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The mobile joystick: a ring this project draws, over the engine's own stick rather than instead of it.**
@@ -156,7 +154,7 @@ export class TouchJoystickController implements OnStart {
 		// `TouchEnabled && !KeyboardEnabled`, so a touchscreen laptop with a keyboard in front of it keeps the
 		// engine's controls and the keyboard, and nothing here runs.
 		if (!isMobile()) {
-			if (DEBUG) print("[Joystick] not a touch client — the engine's own controls are left alone");
+			logDebug("[Joystick] not a touch client — the engine's own controls are left alone");
 
 			return;
 		}
@@ -188,7 +186,7 @@ export class TouchJoystickController implements OnStart {
 		 */
 		const engineMode = player.DevTouchMovementMode;
 
-		if (DEBUG) print(`[Joystick] engine touch movement: ${engineMode.Name}${modeNote(engineMode)}`);
+		logDebug(`[Joystick] engine touch movement: ${engineMode.Name}${modeNote(engineMode)}`);
 
 		/**
 		 * **And the property is watched rather than read once, because the server's write may arrive a frame after
@@ -204,9 +202,9 @@ export class TouchJoystickController implements OnStart {
 		 * {@link hideEngineStick}, and it reacts to the *first* read rather than to this signal — a mode changed
 		 * mid-session is a server decision, and re-laying anything out for it is not this file's business.
 		 */
-		if (DEBUG) {
+		if (DEBUG_LOGGING) {
 			player.GetPropertyChangedSignal("DevTouchMovementMode").Connect(() => {
-				print(`[Joystick] engine touch movement changed to ${player.DevTouchMovementMode.Name}`);
+				logInfo(`[Joystick] engine touch movement changed to ${player.DevTouchMovementMode.Name}`);
 			});
 		}
 
@@ -443,8 +441,8 @@ export class TouchJoystickController implements OnStart {
 				insetNear = new Vector2();
 				insetFar = new Vector2();
 
-				if (DEBUG) {
-					print(
+				if (DEBUG_LOGGING) {
+					logInfo(
 						"[Joystick] GuiService:GetGuiInset refused — assuming no GUI inset, which puts a touch back " +
 							"in the screen's space; the ring will sit a whole inset away from the thumb if that is wrong",
 					);
@@ -550,10 +548,10 @@ export class TouchJoystickController implements OnStart {
 			// **a size is all the mount can be asked about now that the ring is not drawn until a finger is on it**:
 			// "was it drawn" is the grab line's question, not this one's. Once
 			// only, because a rotation re-derives the same number and would otherwise print on every layout pass.
-			if (DEBUG && !sized) {
+			if (DEBUG_LOGGING && !sized) {
 				sized = true;
 
-				print(
+				logInfo(
 					`[Joystick] ring sized — ${string.format("%.0f", diameter)}px from a ${
 						string.format("%.0f", shortAxis)
 					}px short axis (${string.format("%.0f", viewport.X)} x ${string.format("%.0f", viewport.Y)})`,
@@ -571,7 +569,7 @@ export class TouchJoystickController implements OnStart {
 				// one. **A diagnostic that lies once per session is worse than no diagnostic**, and this is the moment
 				// the numbers are both fresh (read at the top of this function) and meaningful (the ring has just been
 				// given the size those fractions are of).
-				print(
+				logInfo(
 					`[Joystick] inset — ${string.format("%.0f", insetNear.X)}, ` +
 						`${string.format("%.0f", insetNear.Y)} in from the top-left and ` +
 						`${string.format("%.0f", insetFar.X)}, ${string.format("%.0f", insetFar.Y)} in from the ` +
@@ -704,7 +702,7 @@ export class TouchJoystickController implements OnStart {
 			rim.Color = on ? PREMIUM.text : theme.colors.accent;
 			rim.Transparency = on ? RING_MAX_RIM_TRANSPARENCY : RING_RIM_TRANSPARENCY;
 
-			if (DEBUG) print(`[Joystick] the ring went ${on ? "white — the thumb is at the rim" : "dark"}`);
+			logDebug(`[Joystick] the ring went ${on ? "white — the thumb is at the rim" : "dark"}`);
 		};
 
 		/**
@@ -871,8 +869,8 @@ export class TouchJoystickController implements OnStart {
 			// makes this free when the state was already dark, which is every release but the ones from a full push.
 			setMaxLook(false);
 
-			if (DEBUG) {
-				print(
+			if (DEBUG_LOGGING) {
+				logInfo(
 					`[Joystick] released — the push peaked at ${string.format("%.2f", peak)} this grab; the base is ` +
 						`back at ${string.format("%.0f", homeX)}, ${string.format("%.0f", homeY)}; the ring is off the ` +
 						`screen again`,
@@ -992,7 +990,7 @@ export class TouchJoystickController implements OnStart {
 			placeBase(input.Position.X, input.Position.Y);
 			track(input.Position);
 
-			if (DEBUG) {
+			if (DEBUG_LOGGING) {
 				// **And the second opinion on where the pointer is, which is a cross-check on the coordinate story
 				// itself rather than a fix for it.** `UserInputService:GetMouseLocation()` is documented as *"the
 				// current screen location of the player's Mouse… relative to the top-left corner of the screen"* —
@@ -1008,7 +1006,7 @@ export class TouchJoystickController implements OnStart {
 					math.abs(dx) < 0.5 && math.abs(dy) < 0.5
 						? "GetMouseLocation agrees with it, so this device's inset is zero"
 						: `GetMouseLocation is ${string.format("%.0f", dx)}, ${string.format("%.0f", dy)} away (the inset should be about that)`;
-				print(
+				logInfo(
 					`[Joystick] grabbed at ${string.format("%.0f", input.Position.X)}, ` +
 						`${string.format("%.0f", input.Position.Y)} — ring ${string.format("%.0f", radius * 2)}px, ` +
 						`base placed there and the ring is up (the touch began ${
@@ -1044,12 +1042,12 @@ export class TouchJoystickController implements OnStart {
 		// that button has been found, so a jump button that went away with the movement mode would take the five
 		// battle buttons with it. One line, after the GUI exists, naming the children of the engine's own control
 		// frame and the button's presence: that is the reading the next session starts from.
-		if (DEBUG) {
+		if (DEBUG_LOGGING) {
 			task.spawn(() => {
 				const touchGui = playerGui.WaitForChild("TouchGui", TOUCH_GUI_WAIT_SECONDS);
 
 				if (touchGui === undefined) {
-					print(
+					logInfo(
 						`[Joystick] no TouchGui after ${TOUCH_GUI_WAIT_SECONDS}s — either this client has no ` +
 							`engine touch controls or the switch took them away`,
 					);
@@ -1077,11 +1075,11 @@ export class TouchJoystickController implements OnStart {
 						? "no JumpButton"
 						: `JumpButton ${jump.Visible ? "visible" : "HIDDEN"}`;
 
-				print(`[Joystick] engine touch GUI — ${names}; ${jumpLine}`);
+				logInfo(`[Joystick] engine touch GUI — ${names}; ${jumpLine}`);
 			});
 		}
 
-		if (DEBUG) {
+		if (DEBUG_LOGGING) {
 			// **The size, or the honest absence of one.** This line runs at the mount, and on a normal client the
 			// mount happens *before* `Workspace.CurrentCamera` exists — so `applyGeometry` has nothing to measure and
 			// leaves the radius at `0`, which the first version of this print reported as `ring 0px`: a number that
@@ -1093,7 +1091,7 @@ export class TouchJoystickController implements OnStart {
 					? `ring ${string.format("%.0f", radius * 2)}px`
 					: "ring not sized yet — no camera at the mount, so it is derived when one arrives";
 
-			print(
+			logInfo(
 				`[Joystick] up — ${size} at ${formatPercent(STICK_DIAMETER_SCALE)} of the short axis, thumb ratio ` +
 					`${formatPercent(THUMB_RADIUS_RATIO)}, deadzone ${formatPercent(DEADZONE)}, inset ` +
 					`${formatPercent(STICK_EDGE_INSET_SCALE)} of each axis nudged ` +
@@ -1136,8 +1134,8 @@ export class TouchJoystickController implements OnStart {
 		const touchGui = playerGui.WaitForChild("TouchGui", TOUCH_GUI_WAIT_SECONDS);
 
 		if (touchGui === undefined) {
-			if (DEBUG) {
-				print(
+			if (DEBUG_LOGGING) {
+				logInfo(
 					`[Joystick] no TouchGui after ${TOUCH_GUI_WAIT_SECONDS}s — there is no engine stick to hide on ` +
 						"this client (which is what a `Scriptable` one looks like), so the ring is the only stick " +
 						"on screen",
@@ -1149,7 +1147,7 @@ export class TouchJoystickController implements OnStart {
 
 		const control = touchGui.FindFirstChild("TouchControlFrame");
 		if (control === undefined) {
-			if (DEBUG) print("[Joystick] the engine's TouchGui holds no TouchControlFrame — nothing to hide");
+			logDebug("[Joystick] the engine's TouchGui holds no TouchControlFrame — nothing to hide");
 
 			return;
 		}
@@ -1199,15 +1197,15 @@ export class TouchJoystickController implements OnStart {
 				reshown++;
 				frame.Visible = false;
 
-				if (DEBUG && reshown <= ENGINE_STICK_REPORT_LIMIT) {
-					print(
+				if (DEBUG_LOGGING && reshown <= ENGINE_STICK_REPORT_LIMIT) {
+					logInfo(
 						`[Joystick] the engine's stick was shown again (${reshown}) — hidden again, so the ring is ` +
 							`still the only stick on screen`,
 					);
 				}
 			});
 
-			if (DEBUG) {
+			if (DEBUG_LOGGING) {
 				// **The children by name, once, because this is the list that says what there was to hide** — and
 				// because a stray one is the one kind of fault this file cannot see from its own side.
 				const children = frame
@@ -1215,7 +1213,7 @@ export class TouchJoystickController implements OnStart {
 					.map((child) => child.Name)
 					.join(", ");
 
-				print(
+				logInfo(
 					`[Joystick] the engine's stick is hidden — ${frame.GetFullName()} at scale ` +
 						`${ENGINE_STICK_SCALE} and \`Visible = false\`, ${frame.GetDescendants().size()} ` +
 						`descendant(s): ${children === "" ? "none" : children}; the ring is the only stick a ` +
@@ -1226,8 +1224,8 @@ export class TouchJoystickController implements OnStart {
 			return;
 		}
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Joystick] no engine stick frame under ${control.GetFullName()} — looked for ` +
 					`${ENGINE_STICK_FRAME_NAMES.join(", ")}, and the ring is on screen beside whatever it drew`,
 			);

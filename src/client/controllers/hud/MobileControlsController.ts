@@ -3,6 +3,7 @@ import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, UserInputService, Workspace } from "@rbxts/services";
 import { CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
+import { LOGGING_ENABLED, logInfo, logWarn } from "shared/logger";
 import { isMobile } from "../../platform";
 import { applyGlow } from "../../ui/glow";
 import { hudTheme } from "../../ui/hudTheme";
@@ -12,9 +13,6 @@ import { ActionController } from "../input/ActionController";
 import { CatchController } from "../input/CatchController";
 import { DodgeController } from "../input/DodgeController";
 import { ThrowController } from "../input/ThrowController";
-
-/** Prints the mount line, every press and every release, and the stick's own resolution. */
-const DEBUG = true; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The hand-move mode: drag anywhere on the cluster and the whole box follows your finger.** **Placeholder —
@@ -1017,7 +1015,7 @@ function beginPress(button: TextButton, control: TouchControl, input: InputObjec
 		// **Printed here rather than at the landing**, which is the correction the log asked for: `[HUD] X down` used
 		// to appear for every finger that touched a button, including the ones this file went on to refuse, so a
 		// swipe and a press looked identical in the output. It now means the action ran.
-		if (DEBUG) print(`[HUD] ${control.label} down — still after ${HOLD_CONFIRM_SECONDS}s`);
+		logInfo(`[HUD] ${control.label} down — still after ${HOLD_CONFIRM_SECONDS}s`);
 	});
 }
 
@@ -1032,7 +1030,7 @@ function cancelPress(press: Press): void {
 
 	press.paint(false);
 
-	if (DEBUG) print(`[HUD] ${press.control.label} press cancelled — a drag, not a tap`);
+	logInfo(`[HUD] ${press.control.label} press cancelled — a drag, not a tap`);
 
 	if (!press.pressed) return;
 
@@ -1101,7 +1099,7 @@ function trackRelease(input: InputObject): void {
 				press.control.down();
 				press.control.up();
 
-				if (DEBUG) print(`[HUD] ${press.control.label} down — a flick, released inside the confirm window`);
+				logInfo(`[HUD] ${press.control.label} down — a flick, released inside the confirm window`);
 
 				press.paint(true);
 				task.delay(TAP_FLASH_SECONDS, () => press.paint(false));
@@ -1115,7 +1113,7 @@ function trackRelease(input: InputObject): void {
 			press.paint(false);
 			press.control.up();
 
-			if (DEBUG) print(`[HUD] ${press.control.label} up`);
+			logInfo(`[HUD] ${press.control.label} up`);
 
 			continue;
 		}
@@ -1126,7 +1124,7 @@ function trackRelease(input: InputObject): void {
 			// different causes — the press never reached this file at all (the finger missed the button, or something
 			// took focus) and the press arrived and was measured as a drag — and only the number in this line tells
 			// them apart. A tap on a 70 px button that travels `14px` is a thumb, not a swipe.
-			if (DEBUG) print(`[HUD] ${press.control.label} tap lost — moved ${string.format("%.0f", moved)}px`);
+			logInfo(`[HUD] ${press.control.label} tap lost — moved ${string.format("%.0f", moved)}px`);
 
 			continue;
 		}
@@ -1135,7 +1133,7 @@ function trackRelease(input: InputObject): void {
 
 		// **And an accepted tap prints how far it moved**, which is the number to compare with {@link DRAG_THRESHOLD}
 		// when a button feels unreliable on one device rather than another.
-		if (DEBUG) print(`[HUD] ${press.control.label} tap — ${string.format("%.0f", moved)}px of travel`);
+		logInfo(`[HUD] ${press.control.label} tap — ${string.format("%.0f", moved)}px of travel`);
 
 		// **The only paint a tap ever gets**, and it arrives after the action rather than before it — see
 		// `TAP_FLASH_SECONDS`. A second tap inside the flash simply restarts it.
@@ -1500,7 +1498,7 @@ function trackCooldowns(): void {
 				ring.container.Visible = false;
 				ring.shrinkGoal.set(1);
 
-				if (DEBUG) print(`[HUD] cooldown finished — ${ring.label}`);
+				logInfo(`[HUD] cooldown finished — ${ring.label}`);
 			}
 
 			continue;
@@ -1519,8 +1517,8 @@ function trackCooldowns(): void {
 			// with no `finished` is a clock that never came back (the attribute stopped being written), and neither
 			// line at all means the button never published — which for Catch and Dodge is a refused press rather than
 			// a broken arc. The seconds are the wait *as the client reads it*, so they are also a check on the clock.
-			if (DEBUG) {
-				print(
+			if (LOGGING_ENABLED) {
+				logInfo(
 					`[HUD] cooldown started — ${ring.label}, ${string.format("%.1f", remaining)}s ` +
 						`(arc ${string.format("%.0f", ring.container.AbsoluteSize.X)}px)`,
 				);
@@ -1826,7 +1824,7 @@ export class MobileControlsController implements OnStart {
 
 		root.AssemblyLinearVelocity = new Vector3(moving.X, speed, moving.Z);
 
-		if (DEBUG) print(`[HUD] jump — the flag was lost; impulse applied at ${string.format("%.1f", speed)}`);
+		logInfo(`[HUD] jump — the flag was lost; impulse applied at ${string.format("%.1f", speed)}`);
 	}
 
 	public onStart(): void {
@@ -1841,7 +1839,7 @@ export class MobileControlsController implements OnStart {
 		// a touchscreen and a keyboard counts as a keyboard. Both controllers ask the same question and exactly
 		// one of them answers yes.
 		if (!isMobile()) {
-			if (DEBUG) print("[HUD] mobile controls skipped — this device has a keyboard");
+			logInfo("[HUD] mobile controls skipped — this device has a keyboard");
 
 			return;
 		}
@@ -2005,7 +2003,7 @@ export class MobileControlsController implements OnStart {
 						// **The number is the deliverable**, so it is printed in the exact form the constant wants:
 						// two numbers and the name to put them under. `%.0f` because a dragged value is a float nobody
 						// wants to read or paste, and a whole reference pixel is finer than a finger has ever been.
-						print(
+						logInfo(
 							`[HUD] the cluster's nudge — BOX_NUDGE = new Vector2(${string.format("%.0f", placed.X)}, ` +
 								`${string.format("%.0f", placed.Y)}) reference px (X right, Y down)`,
 						);
@@ -2156,7 +2154,7 @@ export class MobileControlsController implements OnStart {
 		for (const count of rows) patterned += count;
 
 		if (patterned !== controls.size()) {
-			warn(`[HUD] the pattern ${rows.join("+")} packs ${patterned} cells for ${controls.size()} controls`);
+			logWarn(`[HUD] the pattern ${rows.join("+")} packs ${patterned} cells for ${controls.size()} controls`);
 		}
 
 		// **And the weights, which fail silently in the other direction.** A `BUTTON_WEIGHT` shorter than the cluster
@@ -2164,7 +2162,7 @@ export class MobileControlsController implements OnStart {
 		// as everything else, which is the one thing that array exists to prevent. `pack` cannot tell a short array
 		// from a deliberately plain one, so the count is checked here beside the pattern's.
 		if (BUTTON_WEIGHT.size() !== controls.size()) {
-			warn(`[HUD] ${BUTTON_WEIGHT.size()} button weights for ${controls.size()} controls`);
+			logWarn(`[HUD] ${BUTTON_WEIGHT.size()} button weights for ${controls.size()} controls`);
 		}
 
 		for (let index = 0; index < controls.size(); index++) {
@@ -2173,8 +2171,8 @@ export class MobileControlsController implements OnStart {
 
 		// **The hand-move mode announces itself**, because a cluster that does not answer a tap is otherwise
 		// indistinguishable from a broken one — and the log is where a person looks first. See {@link ARRANGE}.
-		if (DEBUG && ARRANGE) {
-			print("[HUD] arrange mode is on — drag the cluster; the nudge it prints goes into BOX_NUDGE");
+		if (LOGGING_ENABLED && ARRANGE) {
+			logInfo("[HUD] arrange mode is on — drag the cluster; the nudge it prints goes into BOX_NUDGE");
 		}
 
 		/**
@@ -2197,7 +2195,7 @@ export class MobileControlsController implements OnStart {
 		 * one number it exists to report is worse than a short log**, so that figure moved to its own line below,
 		 * printed when the pad exists and the number means something.
 		 */
-		if (DEBUG) {
+		if (LOGGING_ENABLED) {
 			const reference = pack(rows, BUTTON_WEIGHT, BOX_SIZE, BOX_GAP, LABEL_BAND);
 			// **The two indices are read from the fill order, not assumed.** `pack` returns one entry per cell in
 			// order, so `[4]` is Throw — the first primary in `mount`'s list — and `[1]` is Catch, a utility. They
@@ -2206,7 +2204,7 @@ export class MobileControlsController implements OnStart {
 			const primary = reference[4];
 			const utility = reference[1];
 
-			print(
+			logInfo(
 				`[HUD] mobile controls up — the pack: ${controls.size()} buttons, ` +
 					`${string.format("%.0f", utility !== undefined ? utility.size : 0)}px utility / ` +
 					`${string.format("%.0f", primary !== undefined ? primary.size : 0)}px primary at the ` +
@@ -2231,11 +2229,11 @@ export class MobileControlsController implements OnStart {
 		 * design produces at 393 × 852, and this one is what `pack` produced for the viewport in front of you. See
 		 * {@link BOX_FRACTION} and {@link scaleFor}.
 		 */
-		if (DEBUG) {
+		if (LOGGING_ENABLED) {
 			const live = Fusion.peek(cells)[0];
 			const box = Fusion.peek(boxSize);
 
-			print(
+			logInfo(
 				`[HUD] the cluster on this screen — ` +
 					`${string.format("%.0f", live !== undefined ? live.size : 0)}px buttons, ` +
 					`box ${string.format("%.0fx%.0f", box.X, box.Y)}px, ` +
@@ -2253,12 +2251,12 @@ export class MobileControlsController implements OnStart {
 		 * see {@link TouchControl.cooldown} for why each. See {@link trackCooldowns}, which prints the two edges of
 		 * every arc it actually shows.
 		 */
-		if (DEBUG) {
+		if (LOGGING_ENABLED) {
 			const built = new Array<string>();
 
 			for (const ring of cooldowns) built.push(`${ring.label} (${ring.attribute})`);
 
-			print(`[HUD] cooldown arcs — ${built.isEmpty() ? "none" : built.join(", ")}`);
+			logInfo(`[HUD] cooldown arcs — ${built.isEmpty() ? "none" : built.join(", ")}`);
 		}
 	}
 
@@ -2814,13 +2812,13 @@ export class MobileControlsController implements OnStart {
 			// can report a surprise: **this project cannot read the PlayerModule's source**, so what the engine had
 			// set on its own button is the probe — the numbers that say what the module does with it, and whether
 			// the assumptions above (an image, a background colour, a size) are the ones this build ships.
-			if (DEBUG) {
+			if (LOGGING_ENABLED) {
 				const image =
 					button.IsA("ImageButton")
 						? `image "${button.Image}" at ${string.format("%.2f", button.ImageTransparency)}`
 						: `class ${button.ClassName}`;
 
-				print(
+				logInfo(
 					`[HUD] engine jump button — ${button.GetFullName()}, ` +
 						`size ${button.Size}, pos ${button.Position}, anchor ${button.AnchorPoint}, ` +
 						`bg ${button.BackgroundColor3} at ${string.format("%.2f", button.BackgroundTransparency)}, ` +
@@ -2998,11 +2996,11 @@ export class MobileControlsController implements OnStart {
 				// that did it, and the viewport factor inside that scale. Printed on the way in for this codebase's
 				// usual reason — the sizes are the fact being doubted — and guarded on both inputs, so that a
 				// rotation re-reports (it moves the multiplier) while a press does not.
-				if (DEBUG && (engineSize !== reportedEngineSize || multiplier !== reportedMultiplier)) {
+				if (LOGGING_ENABLED && (engineSize !== reportedEngineSize || multiplier !== reportedMultiplier)) {
 					reportedEngineSize = engineSize;
 					reportedMultiplier = multiplier;
 
-					print(
+					logInfo(
 						`[HUD] jump pad — the engine drew ${string.format("%.0f", engineSize)}px, ` +
 							`rendering ${string.format("%.0f", visualSize)}px at scale ` +
 							`${string.format("%.3f", hudScale.Scale)} ` +

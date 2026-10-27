@@ -10,6 +10,7 @@ import {
 	voteCountAttribute,
 } from "shared/constants";
 import { events } from "shared/networking";
+import { logInfo, logWarn } from "shared/logger";
 import { DEFAULT_MODE, isPlayable, playableModes } from "./modes/registry";
 import { roundStatusFolder } from "./roundStatus";
 
@@ -72,7 +73,7 @@ export class VoteService implements OnStart {
 		const wanted = ARENA_CONFIG.INTERMISSION_SECONDS - GAME_MODE_CONFIG.VOTE_CLOSING_BUFFER;
 
 		if (wanted < GAME_MODE_CONFIG.VOTE_MIN_SECONDS) {
-			warn(
+			logWarn(
 				`[Vote] an intermission of ${ARENA_CONFIG.INTERMISSION_SECONDS}s leaves ${wanted}s for the vote — ` +
 					`clamped to ${GAME_MODE_CONFIG.VOTE_SECONDS}s`,
 			);
@@ -114,7 +115,7 @@ export class VoteService implements OnStart {
 		// has to have an opinion about.
 		this.publishCounts();
 
-		print(`[Vote] open for ${GAME_MODE_CONFIG.VOTE_SECONDS}s — ${this.optionNames()}`);
+		logInfo(`[Vote] open for ${GAME_MODE_CONFIG.VOTE_SECONDS}s — ${this.optionNames()}`);
 	}
 
 	/**
@@ -140,13 +141,13 @@ export class VoteService implements OnStart {
 
 		// The count is printed next to the result, so "we voted for Score Rush" and "three people
 		// voted" can be told apart from "one person voted and nobody else knew".
-		print(`[Vote] closed — ${voters} vote(s): ${this.report(counts)}`);
+		logInfo(`[Vote] closed — ${voters} vote(s): ${this.report(counts)}`);
 
 		if (decision.tied.size() > 1) {
-			print(`[Vote] tie between ${this.namesOf(decision.tied)} — picked one at random`);
+			logInfo(`[Vote] tie between ${this.namesOf(decision.tied)} — picked one at random`);
 		}
 
-		print(`[Vote] next round: ${GAME_MODE_NAMES[this.selected]}`);
+		logInfo(`[Vote] next round: ${GAME_MODE_NAMES[this.selected]}`);
 
 		// The **id**, not the display name: it is the key every table about a mode is looked up by, on
 		// both sides of the wire. **`RoundService` is the writer now** — it publishes the mode at the
@@ -176,12 +177,12 @@ export class VoteService implements OnStart {
 	 */
 	private cast(player: Player, mode: string): void {
 		if (!this.windowOpen) {
-			print(`[Vote] ${player.Name}: refused "${tostring(mode)}" — no vote is open`);
+			logInfo(`[Vote] ${player.Name}: refused "${tostring(mode)}" — no vote is open`);
 			return;
 		}
 
 		if (!isGameModeId(mode) || !isPlayable(mode)) {
-			print(`[Vote] ${player.Name}: refused "${tostring(mode)}" — not a mode this build can run`);
+			logInfo(`[Vote] ${player.Name}: refused "${tostring(mode)}" — not a mode this build can run`);
 			return;
 		}
 
@@ -189,7 +190,7 @@ export class VoteService implements OnStart {
 
 		this.publishCounts();
 
-		print(`[Vote] ${player.Name} → ${GAME_MODE_NAMES[mode]}`);
+		logInfo(`[Vote] ${player.Name} → ${GAME_MODE_NAMES[mode]}`);
 	}
 
 	/** How many ballots each option holds. Options nobody voted for are simply absent. */

@@ -13,15 +13,13 @@ import {
 	STAMINA_ATTRIBUTE,
 	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
 } from "shared/constants";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { sessionHudVisible } from "../../panels";
 import { HudTheme, UI_FONT } from "../../ui/hudTheme";
 import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
 import { SuperAbility } from "../input/SuperAbility";
-
-/** Prints once, when the stack is up — the line that says the controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How far up from the bottom of the screen the stack's *bottom edge* sits, in pixels.
@@ -739,8 +737,8 @@ export class SuperHudController implements OnStart {
 
 		column.Parent = getHudScreenGui();
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[HUD] power slot up — ${ARMED_ABILITY_ATTRIBUTE} on the player, ${SEGMENT_COUNT} stamina` +
 					` segments over ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s, shuffle over` +
 					` ${reelFaces.size()} icon(s) x ${SHUFFLE_PASSES} passes`,
@@ -1103,7 +1101,7 @@ export class SuperHudController implements OnStart {
 
 		scope.push(
 			hit.Activated.Connect(() => {
-				if (DEBUG) print("[HUD] power slot tapped — asking to use the power");
+				logDebug("[HUD] power slot tapped — asking to use the power");
 
 				this.abilities.usePower();
 			}),
@@ -1193,7 +1191,7 @@ export class SuperHudController implements OnStart {
 			const landingRow = (SHUFFLE_PASSES - 1) * faceCount + index;
 			const landing = new UDim2(0, 0, 0, -landingRow * ICON_SIZE);
 
-			if (DEBUG) print(`[HUD] shuffle — ${reelFaces[index]} on row ${landingRow} of ${reelRows}`);
+			logDebug(`[HUD] shuffle — ${reelFaces[index]} on row ${landingRow} of ${reelRows}`);
 
 			const tween = TweenService.Create(strip, shuffleInfo, { Position: landing });
 			spinning = tween;

@@ -13,10 +13,8 @@ import {
 } from "shared/constants";
 import { teamColourOf } from "shared/gameMode";
 import { paintHalo, paintRing } from "shared/ringPattern";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { sideOfBody } from "../../roundZone";
-
-/** Prints a line per ring made and per ring taken away, which is how one-per-player is confirmed. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.
@@ -509,10 +507,10 @@ export class TeamRingController implements OnStart {
 
 		// **Once per round, on the first ring of it.** See `logged` for why it is not per ring: the layers are
 		// drawn once for the client and shared, so a line per ring would repeat one answer ten times.
-		if (DEBUG && !this.logged) {
+		if (DEBUG_LOGGING && !this.logged) {
 			this.logged = true;
 
-			print(
+			logInfo(
 				`[Ring] ${body.GetFullName()}: ${ring.label} ${ring.colour.ToHex()} — ${this.describe(layers)} ` +
 					`| ${this.inkSummary()} | ${this.rings.size()} up`,
 			);
@@ -843,7 +841,7 @@ export class TeamRingController implements OnStart {
 		if (!ok || drawn === undefined) {
 			this.drawnFailed = true;
 
-			warn(`[Ring] no pictures — ${tostring(problem)}; rings fall back to a plain neon disc`);
+			logWarn(`[Ring] no pictures — ${tostring(problem)}; rings fall back to a plain neon disc`);
 
 			return undefined;
 		}
@@ -894,7 +892,7 @@ export class TeamRingController implements OnStart {
 
 		for (const plate of layers.plates) plate.Destroy();
 
-		if (DEBUG) print(`[Ring] ${body.GetFullName()}: ring down — ${reason}, ${this.rings.size()} up`);
+		logDebug(`[Ring] ${body.GetFullName()}: ring down — ${reason}, ${this.rings.size()} up`);
 	}
 
 	/**
@@ -928,8 +926,8 @@ export class TeamRingController implements OnStart {
 		// again. Nothing else resets `logged`, which is what keeps the line to one per round.
 		this.logged = false;
 
-		if (DEBUG && tracked + strays.size() > 0) {
-			print(`[Ring] all down — ${tracked + strays.size()} destroyed (${reason})`);
+		if (DEBUG_LOGGING && tracked + strays.size() > 0) {
+			logInfo(`[Ring] all down — ${tracked + strays.size()} destroyed (${reason})`);
 		}
 	}
 
@@ -1037,8 +1035,8 @@ function drawLayers(): RingArtwork {
 	if (bandInk.band === 0) throw "the ring's outline drew no pixels";
 	if (RING_CONFIG.TRIANGLES > 0 && bandInk.triangles === 0) throw "the teeth drew no pixels";
 
-	if (DEBUG) {
-		print(
+	if (DEBUG_LOGGING) {
+		logInfo(
 			`[Ring] pictures drawn — halo ${haloInk} px, outline ${bandInk.band} px, ` +
 				`figure ${bandInk.pattern} px, teeth ${bandInk.triangles} px ` +
 				`of ${size}² in ${math.floor((os.clock() - started) * 1000)}ms (once per client)`,

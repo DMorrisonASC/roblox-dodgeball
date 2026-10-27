@@ -4,6 +4,7 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { DUCK_GROUP } from "shared/duck";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { logInfo, logWarn } from "shared/logger";
 import { NPC_TAG } from "../npc/Behavior";
 
 /** The group characters belong to. Assigned by {@link followCharacters}; nothing else joins it. */
@@ -355,19 +356,19 @@ function registerGroups(): void {
 	// *silently* absent: a ball bouncing off somebody in a practice zone, and two characters who still
 	// stop at each other. Both look like "the collision matrix is half working", which is the hardest
 	// kind of report to act on.
-	print(
+	logInfo(
 		`[Collision] ${BALL_GROUP}/${PRACTICE_GROUP} collides — service ` +
 			`${PhysicsService.CollisionGroupsAreCollidable(BALL_GROUP, PRACTICE_GROUP)}, ` +
 			`world ${Workspace.CollisionGroupsAreCollidable(BALL_GROUP, PRACTICE_GROUP)}`,
 	);
 
-	print(
+	logInfo(
 		`[Collision] ${PRACTICE_GROUP}/${PRACTICE_GROUP} collides — service ` +
 			`${PhysicsService.CollisionGroupsAreCollidable(PRACTICE_GROUP, PRACTICE_GROUP)}, ` +
 			`world ${Workspace.CollisionGroupsAreCollidable(PRACTICE_GROUP, PRACTICE_GROUP)}`,
 	);
 
-	print(
+	logInfo(
 		`[Collision] ${CHARACTER_GROUP}/${CHARACTER_GROUP} collides — service ` +
 			`${PhysicsService.CollisionGroupsAreCollidable(CHARACTER_GROUP, CHARACTER_GROUP)}, ` +
 			`world ${Workspace.CollisionGroupsAreCollidable(CHARACTER_GROUP, CHARACTER_GROUP)}`,
@@ -376,7 +377,7 @@ function registerGroups(): void {
 	// **Both registries, printed rather than assumed.** Two `true`s mean one store behind two sets
 	// of method names and the redundant half above can go; `world false` would mean the two are
 	// separate and `Workspace` is the one that counts. Either way the answer stops being a guess.
-	print(
+	logInfo(
 		`[Collision] ${BARRIER_GROUP} registered — service ${PhysicsService.IsCollisionGroupRegistered(BARRIER_GROUP)}, ` +
 			`world ${Workspace.IsCollisionGroupRegistered(BARRIER_GROUP)}`,
 	);
@@ -386,7 +387,7 @@ function registerGroups(): void {
 	// ball thrown straight through, and when the report came in the log could say which group every part was in but
 	// not whether the row had taken. It is the one number that separates "the matrix is wrong" from "the matrix is
 	// right and something else is", and it costs one line at boot.
-	print(
+	logInfo(
 		`[Collision] ${BALL_WALL_GROUP}/${BALL_GROUP} collides — service ` +
 			`${PhysicsService.CollisionGroupsAreCollidable(BALL_WALL_GROUP, BALL_GROUP)}, ` +
 			`world ${Workspace.CollisionGroupsAreCollidable(BALL_WALL_GROUP, BALL_GROUP)}`,
@@ -394,7 +395,7 @@ function registerGroups(): void {
 
 	// The row the ball's half depends on, read back from both: `false` is the answer that lets a
 	// ball through a wall, and `true` on either side is this feature not working.
-	print(
+	logInfo(
 		`[Collision] ${BARRIER_GROUP}/${DEFAULT_GROUP} collides — service ` +
 			`${PhysicsService.CollisionGroupsAreCollidable(BARRIER_GROUP, DEFAULT_GROUP)}, ` +
 			`world ${Workspace.CollisionGroupsAreCollidable(BARRIER_GROUP, DEFAULT_GROUP)}`,
@@ -414,7 +415,7 @@ function registerGroups(): void {
 		if (typeIs(name, "string")) known.push(name);
 	}
 
-	print(`[Collision] ${Workspace.Name} knows: ${known.join(", ")}`);
+	logInfo(`[Collision] ${Workspace.Name} knows: ${known.join(", ")}`);
 }
 
 /**
@@ -655,7 +656,7 @@ function applyBarrierGroupsBody(): void {
 
 	const suffix = report === "" ? "" : `: ${report}`;
 
-	print(`[Collision] ${assigned} barrier part(s) in ${Workspace.Name}${suffix}`);
+	logInfo(`[Collision] ${assigned} barrier part(s) in ${Workspace.Name}${suffix}`);
 
 	applyBallWallGroups();
 }
@@ -699,7 +700,7 @@ export function applyBallWallGroups(): void {
 
 	const suffix = report === "" ? "" : `: ${report}`;
 
-	print(`[Collision] ${assigned} ball barrier part(s) in ${Workspace.Name}${suffix}`);
+	logInfo(`[Collision] ${assigned} ball barrier part(s) in ${Workspace.Name}${suffix}`);
 }
 
 /**
@@ -715,7 +716,7 @@ function assignBallWall(part: BasePart): void {
 
 	dressBallWall(part);
 
-	print(`[Collision] ball barrier tagged — ${part.Name} = ${part.CollisionGroup}`);
+	logInfo(`[Collision] ball barrier tagged — ${part.Name} = ${part.CollisionGroup}`);
 }
 
 /**
@@ -769,7 +770,7 @@ function dressBallWall(part: BasePart): void {
 	part.CollisionGroup = BALL_WALL_GROUP;
 
 	if (corrected.size() > 0) {
-		warn(
+		logWarn(
 			`[Collision] "${part.GetFullName()}" was not set up as a ball wall — corrected ${corrected.join(", ")}. ` +
 				`The tag owns these flags; see BALL_BARRIER_TAG.`,
 		);
@@ -832,7 +833,7 @@ function thickenBallWall(part: BasePart): void {
 
 	const perFace = (safe - thinnest) / 2;
 
-	warn(
+	logWarn(
 		`[Collision] ball wall "${part.GetFullName()}" was ${string.format("%.2f", thinnest)} studs thick on its ` +
 			`thinnest axis — thinner than a ball's own step, so a fast throw passed through it without ever ` +
 			`overlapping. Grown to ${string.format("%.1f", safe)} studs on that axis: ` +

@@ -8,6 +8,7 @@ import {
 } from "shared/constants";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { TEAM_A, TEAM_B } from "../../services/round/team";
 import { arenaSpawnForRig, releaseArenaSpawn } from "../../services/round/arenaSpawns";
 import { BEHAVIOR_RESPAWN, NPC_TAG, NpcBehavior } from "../Behavior";
@@ -19,8 +20,6 @@ import {
 	WALK_TO_JOIN_PAD_SIDE_ATTRIBUTE,
 } from "./WalkToJoinPadBehavior";
 import type { BallService } from "../../services/ball/BallService";
-
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Respawning, for an NPC.
@@ -229,10 +228,10 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 			// that never came back, and nothing in the output said which room it had been put in until this
 			// line — so the position is the whole of what this print is for. Only the movers reach here, and
 			// only for a rig this behavior knows, so it costs a boundary rather than a turn.
-			if (DEBUG) {
+			if (DEBUG_LOGGING) {
 				const at = root.Position;
 
-				print(`[NPC] ${model.Name}: placed — ${string.format("%.0f, %.0f, %.0f", at.X, at.Y, at.Z)}`);
+				logInfo(`[NPC] ${model.Name}: placed — ${string.format("%.0f, %.0f, %.0f", at.X, at.Y, at.Z)}`);
 			}
 		},
 
@@ -262,7 +261,7 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 			// to convert at all — a welded or static template rather than a jointed one — and without it that
 			// case would look exactly like a ragdoll with bad limits.
 			const joints = ragdoll(model);
-			if (DEBUG) print(`[NPC] ${model.Name}: ragdolled — ${joints} socket(s)`);
+			logDebug(`[NPC] ${model.Name}: ragdolled — ${joints} socket(s)`);
 
 			task.spawn(() => {
 				const name = model.Name;
@@ -283,7 +282,7 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// replace" and "nothing to replace".
 				if (!humanoid || humanoid.Health > 0) return;
 
-				if (DEBUG) print(`[NPC] ${name}: died`);
+				logDebug(`[NPC] ${name}: died`);
 
 				// The ball goes before the corpse does, or it would leave the world welded into a
 				// rig that is about to be destroyed — and the entry saying whose hand it is in
@@ -441,7 +440,7 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 					rig.Parent = filed;
 				} else {
 					if (filed !== undefined) {
-						warn(`[NPC] ${name}: ${filed.Name} is gone — the rig is going to Workspace instead`);
+						logWarn(`[NPC] ${name}: ${filed.Name} is gone — the rig is going to Workspace instead`);
 					}
 
 					rig.Parent = Workspace;
@@ -503,11 +502,11 @@ export function createRespawnBehavior(balls: BallService): NpcBehavior {
 				// identically — and it is the one thing that made a respawn into the lobby look like a rig
 				// that never came back at all. Printed from the point this decided on rather than from the
 				// rig's position a frame later, because that point is what the rebuild placed.
-				if (DEBUG) {
+				if (DEBUG_LOGGING) {
 					const sideLabel = team === undefined ? "no side" : `side ${team}`;
 					const at = destination.Position;
 
-					print(
+					logInfo(
 						`[NPC] ${name}: back — health ${fresh.Health}, state ${fresh.GetState()}, ${sideLabel}, ` +
 							`at ${string.format("%.0f, %.0f, %.0f", at.X, at.Y, at.Z)}`,
 					);

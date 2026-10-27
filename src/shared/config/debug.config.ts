@@ -1,18 +1,28 @@
 /**
- * **Every module's own `DEBUG` const is off as well, and this is where that is written down.**
+ * **This file is the one switch that decides how much the game prints, and the per-file `const DEBUG` flags it used to
+ * share that job with are gone.**
  *
- * Each file that prints diagnostics keeps a `const DEBUG = ...` at the top of it, and on 2026-10-19 they
- * were all set to `false`: the Output panel — and, in a Studio playtest, the replication of the server's
- * lines to every client — was costing frame time on top of everything {@link DEBUG_CONFIG} already
- * describes. **Flipping one file's const back to `true` is how that file's lines come back**, and
- * `grep -rn "const DEBUG = true" src/` is the list of whatever is still talking, so nothing has to be
- * remembered. This is the same trade the two flags below make: a diagnostic that is on is a lie about
- * the frame budget, and the lines worth reading by default are the ones that are *not* behind a flag.
+ * **What used to be here.** Until 2026-10-26 every module that printed diagnostics kept its own `const DEBUG = …` at
+ * the top of it, and on 2026-10-19 all 74 of them were set to `false` by hand: the Output panel — and, in a Studio
+ * playtest, the replication of the server's lines to every client — was costing frame time on top of what
+ * {@link DEBUG_CONFIG.VERBOSE_LOGS} already describes. The mechanism worked, and it had two faults that only showed up
+ * later.
  *
- * What stays on is deliberate and small: the round's boundaries and eliminations, match opt-ins, the
- * lobby rigs' seat arithmetic, the spawner's one line a round, the NPC lifecycle, and dev commands.
- * What went is everything that prints on the cadence of play — throws, catches, dodges, pickups, coins,
- * every HUD mount, every VFX template, and the client's per-frame reports.
+ * **The first fault is that it did nothing for a published game.** Roblox does not strip `print` or `warn` from a
+ * published place: a live server formats and writes every one of them whether or not anybody will read the output, so
+ * 74 flags set to `false` in a *diagnostic* sense were still several hundred `print` calls running on live servers for
+ * an audience of nobody. That is what `shared/logger.ts` fixes, and it fixes it for all of them at once.
+ *
+ * **The second fault is that a per-file switch has to be remembered.** `grep -rn "const DEBUG = true" src/` was the
+ * documented way to find out what was still talking, which works only if somebody remembers to run it —
+ * `VERBOSE_LOGS` below records what forgetting cost: one flag left on for four weeks while the only symptom was frame
+ * time.
+ *
+ * **So there are two tiers now, and no per-file state.** `logInfo` and `logWarn` (in `shared/logger.ts`) are Studio
+ * only; `logError` is the tier that survives production and is used deliberately, for persistence failures. The noisy
+ * per-frame and per-tick measurements — the ones the 74 flags used to hide — are `logDebug`, and `logDebug` asks
+ * {@link DEBUG_CONFIG.VERBOSE_LOGS} below. **Two decisions, in one place, both made before a playtest rather than
+ * during one.**
  */
 
 /**
@@ -35,6 +45,11 @@ export const DEBUG_CONFIG = {
 	 * Every one of them is a *measurement* of something that usually works, printed on a
 	 * cadence rather than on an event. Errors and lifecycle lines are never gated — those are
 	 * what is left when this is off, and they are the ones worth reading by default.
+	 *
+	 * **This is the flag `logDebug` reads**, together with `RunService.IsStudio()`: a verbose
+	 * diagnostic needs both a session where somebody is watching it *and* this switch on. Calls made
+	 * through `logInfo` ignore it entirely, so a lifecycle line does not disappear when this is off —
+	 * which is `debug.config.ts`'s oldest and least negotiable point.
 	 */
 	// **Off, and it was left on for four weeks — 2026-09-30 to 2026-10-17.** It went on for one
 	// diagnostic run of the throw probe (the ball landing short of the aim guide's marker), the numbers

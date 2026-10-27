@@ -1,9 +1,7 @@
 import { Debris, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { findTemplate } from "shared/find";
 import { SPAWN_POOF_CONFIG } from "shared/config/spawnPoof.config";
-
-/** Prints every poof, with the body it was spawned for and where. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 
 /**
  * The name of the authored effect template, and **the whole of the contract with the place file**.
@@ -139,7 +137,7 @@ const reportedRefusals = new Set<string>();
 /**
  * Whether the first successful burst has been reported.
  *
- * **One line per server, and it is deliberately not behind `DEBUG`.** The line names the body, the **part** the
+ * **One line per server, and it is deliberately not behind `DEBUG_LOGGING`.** The line names the body, the **part** the
  * burst was anchored to and the position it landed at, which is what separates "no poof" from "a poof two
  * hundred studs from where anybody was standing" — and it costs one `print` in the life of the server, so there
  * is no reason to make somebody edit a constant to find out whether the effect works at all.
@@ -151,7 +149,7 @@ function reportRefusalOnce(key: string, message: string): void {
 	if (reportedRefusals.has(key)) return;
 
 	reportedRefusals.add(key);
-	warn(message);
+	logWarn(message);
 }
 
 /**
@@ -259,12 +257,12 @@ export function playSpawnPoof(model: Model | undefined, fallbackAt?: CFrame): vo
 		if (!templateWarned) {
 			templateWarned = true;
 
-			warn(`[VFX] no ${TEMPLATE_NAME} in ReplicatedStorage — bodies will appear and vanish without a poof`);
+			logWarn(`[VFX] no ${TEMPLATE_NAME} in ReplicatedStorage — bodies will appear and vanish without a poof`);
 
 			const top: string[] = [];
 			for (const child of ReplicatedStorage.GetChildren()) top.push(`${child.Name} (${child.ClassName})`);
 
-			warn(
+			logWarn(
 				`[VFX] ReplicatedStorage holds: ${top.isEmpty() ? "nothing" : top.join(", ")} — ` +
 					`a poof template is a Model or a BasePart named ${TEMPLATE_NAME}, ` +
 					`and it is found by name wherever it sits.`,
@@ -283,7 +281,7 @@ export function playSpawnPoof(model: Model | undefined, fallbackAt?: CFrame): vo
 		if (!templateWarned) {
 			templateWarned = true;
 
-			warn(
+			logWarn(
 				`[VFX] ${TEMPLATE_NAME} holds no BasePart — bodies will appear and vanish without a poof. ` +
 					"The clone is placed by its part.",
 			);
@@ -386,10 +384,10 @@ export function playSpawnPoof(model: Model | undefined, fallbackAt?: CFrame): vo
 
 		// Printed *after* the overrides, so the numbers in the log are the ones the client will simulate rather
 		// than what Studio holds — the difference is the whole point of this block.
-		if (DEBUG) print(`[VFX] emitter ${descendant.Name}: ${describeEmitter(descendant)}`);
+		logDebug(`[VFX] emitter ${descendant.Name}: ${describeEmitter(descendant)}`);
 	}
 
-	// **The line that says the effect exists at all — once per server, and deliberately not behind `DEBUG`.**
+	// **The line that says the effect exists at all — once per server, and deliberately not behind `DEBUG_LOGGING`.**
 	// It names the body, the part the burst was anchored to, and where that part was: three facts that separate
 	// "nothing played" from "something played somewhere nobody was standing", which are the same sentence from a
 	// seat. It costs one print in the life of the server, so nobody has to edit a constant to find out whether
@@ -397,7 +395,7 @@ export function playSpawnPoof(model: Model | undefined, fallbackAt?: CFrame): vo
 	if (!firstBurstReported) {
 		firstBurstReported = true;
 
-		print(
+		logInfo(
 			`[VFX] ${TEMPLATE_NAME} first burst — ${label} on ` +
 				`${anchor === undefined ? "the position the caller passed" : anchor.Name} at ${at.Position} ` +
 				`(${parts.size()} part(s), ${emitters} emitter(s), texture ${texture ?? "none"})`,
@@ -411,8 +409,8 @@ export function playSpawnPoof(model: Model | undefined, fallbackAt?: CFrame): vo
 	// whose texture is a real image (`rbxassetid://0` draws nothing and raises nothing), if its particle size or
 	// transparency sequence is degenerate, or if it was never fired. The first cannot be checked from here; it
 	// *can* be reported, and one line per spawn turns the next screenshot into a diagnosis rather than a guess.
-	if (DEBUG) {
-		print(
+	if (DEBUG_LOGGING) {
+		logInfo(
 			`[VFX] ${TEMPLATE_NAME} at ${label} — ${at.Position} ` +
 				`(${parts.size()} part(s), ${emitters} emitter(s), ` +
 				`texture ${texture ?? "none"}, ${string.format("%.2f", EFFECT_LIFETIME)}s)`,

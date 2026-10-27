@@ -18,6 +18,7 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
 import { SUPER_CONFIG } from "shared/config/super.config";
+import { logInfo } from "shared/logger";
 import { BallService } from "../services/ball/BallService";
 import { emitSound } from "../services/ball/SoundEmitter";
 import { CatchService } from "../services/actions/CatchService";
@@ -242,7 +243,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			if (this.instance.GetAttribute("Armed") !== true) return;
 			if (this.hitModels.size() === 0) return;
 
-			print(
+			logInfo(
 				`[Ball] ${this.instance.Name} #${this.identity}: destroyed still armed with ` +
 					`${this.hitModels.size()} unresolved tag(s) — nobody was resolved`,
 			);
@@ -274,7 +275,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// `Destroying` hook's terms — it fires only when there is something to report, and it
 			// firing at all is the finding.
 			if (this.hitModels.size() > 0) {
-				print(
+				logInfo(
 					`[Ball] ${this.instance.Name} #${this.identity}: re-armed holding ` +
 						`${this.hitModels.size()} unresolved tag(s) — nobody will be resolved`,
 				);
@@ -348,7 +349,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 					const what =
 						body.FindFirstChildWhichIsA("Humanoid") !== undefined ? `a body (${body.Name})` : otherPart.Name;
 
-					print(
+					logInfo(
 						`[Catch] ${this.instance.Name}: NOT catchable — out of play (Armed not true), ` +
 							`touch on ${what}`,
 					);
@@ -463,7 +464,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			const ability = abilityOn(this.instance);
 			const labelled = ability === undefined ? "" : ` [${ability}]`;
 
-			print(
+			logInfo(
 				`[Ball] ${this.instance.Name} #${this.identity}: ended on ${otherPart.Name} — ` +
 					`${this.hitModels.size()} tag(s)${labelled}`,
 			);
@@ -581,7 +582,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// its own thrower and nothing happened, because the window was not open. Before the split this was the
 			// whole outcome and printed as a refusal; now it is only the case where the catch was not available.
 			if (TRACE_CATCH) {
-				print(`[Catch] ${this.instance.Name}: own throw reached ${character.Name} — no window, no damage`);
+				logInfo(`[Catch] ${this.instance.Name}: own throw reached ${character.Name} — no window, no damage`);
 			}
 
 			return;
@@ -672,7 +673,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// cannot save anybody. **A duck has to be up when the ball arrives.**
 		if (character.GetAttribute(DUCKING_ATTRIBUTE) === true && isDuckExempt(humanoid, struck)) {
 			if (DEBUG_CONFIG.VERBOSE_LOGS) {
-				print(`[Duck] ${character.Name}: ${struck.Name} exempted — the ball passed`);
+				logInfo(`[Duck] ${character.Name}: ${struck.Name} exempted — the ball passed`);
 			}
 
 			return;
@@ -740,7 +741,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		const ability = abilityOn(this.instance);
 		const labelled = ability === undefined ? "" : ` [${ability}]`;
 
-		print(`${character.Name} was tagged by ${this.instance.Name} on ${struck.Name}${labelled}`);
+		logInfo(`${character.Name} was tagged by ${this.instance.Name} on ${struck.Name}${labelled}`);
 
 		// **The splash, and it fires here rather than at the landing — which is the whole of what this
 		// ability is.** The tag above is the direct hit, and it is deliberately nothing special: that body
@@ -1021,15 +1022,15 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	private landHit(character: Model, humanoid: Humanoid, part: BasePart): void {
 		// Gated where the rest of this file's output is not: this is one line per hit, and it is
 		// worth reading only while tuning what a contact is worth.
-		if (DEBUG_CONFIG.VERBOSE_LOGS) print(`[Ball] ${character.Name}: hit on ${part.Name}`);
-		print(humanoid.Name + " was hit by " + this.instance.Name + " on " + part.Name);
+		if (DEBUG_CONFIG.VERBOSE_LOGS) logInfo(`[Ball] ${character.Name}: hit on ${part.Name}`);
+		logInfo(humanoid.Name + " was hit by " + this.instance.Name + " on " + part.Name);
 
 		// **The one gate, and it wraps the health write rather than the hit.** `TakeDamage` is what fires `Died`,
 		// which is what reaches `RoundService.handleDeath` — so this single refusal is the whole of "no kills in a
 		// practice zone" on the ball's path, and it sits here rather than earlier because everything before it is
 		// the record of a contact that really did happen.
 		if (isPractising(character)) {
-			print(`[Ball] ${character.Name}: health spared — practising, so this tag does no damage`);
+			logInfo(`[Ball] ${character.Name}: health spared — practising, so this tag does no damage`);
 
 			return;
 		}
@@ -1046,7 +1047,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// exemptions that happen to meet here: one is about *where* a body is, the other about *when*. Folding
 		// them into one test would leave the next reader unable to tell which of the two spared a given hit.
 		if (roundCelebrating()) {
-			print(`[Ball] ${character.Name}: health spared — the round is celebrating`);
+			logInfo(`[Ball] ${character.Name}: health spared — the round is celebrating`);
 
 			return;
 		}
@@ -1079,7 +1080,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// nothing to do. A throw that resolves nothing prints this and then no `was hit by` lines,
 		// which is a different story from a throw that never reached here.
 		if (DEBUG_CONFIG.VERBOSE_LOGS) {
-			print(
+			logInfo(
 				`[Ball] ${this.instance.Name} #${this.identity}: died on the world — ` +
 					`resolving ${this.hitModels.size()} tag(s)`,
 			);
@@ -1151,7 +1152,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// saves are the ones nothing happens to. Printed before the clear, so the count is the number
 		// of tags actually released rather than the zero it leaves behind.
 		if (DEBUG_CONFIG.VERBOSE_LOGS) {
-			print(
+			logInfo(
 				`[Ball] ${this.instance.Name} #${this.identity}: caught by ${catcher.Name} — ` +
 					`releasing ${this.hitModels.size()} tag(s)`,
 			);
@@ -1276,7 +1277,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// TEMPORARY — remove with `TRACE_CATCH`. **The one refusal that is neither timing nor ability**: the ball is
 			// no longer a throw, so nothing could catch it at any distance.
 			if (TRACE_CATCH) {
-				print(`[Catch] ${this.instance.Name}: refused for ${character.Name} — not armed (the throw is over)`);
+				logInfo(`[Catch] ${this.instance.Name}: refused for ${character.Name} — not armed (the throw is over)`);
 			}
 
 			return false;
@@ -1287,7 +1288,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			// armed and reached this method, so the throw is live — but it is not in `Workspace`, which means it is
 			// in somebody's hand (or being carried) rather than in the air.
 			if (TRACE_CATCH) {
-				print(
+				logInfo(
 					`[Catch] ${this.instance.Name}: refused for ${character.Name} — not in the world ` +
 						`(parent ${this.instance.Parent?.Name ?? "nil"})`,
 				);
@@ -1302,7 +1303,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// was armed, in the world, and the right ability — so the only thing missing was the *window*, and the fault
 		// is on the input side (or the ball arrived outside it) rather than in the ball's state.
 		if (!open && TRACE_CATCH) {
-			print(`[Catch] ${this.instance.Name}: refused for ${character.Name} — no catch window open`);
+			logInfo(`[Catch] ${this.instance.Name}: refused for ${character.Name} — no catch window open`);
 		}
 
 		return open;
@@ -1656,7 +1657,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 				? `${otherPart.Name} of ${character?.Name}`
 				: otherPart.Name;
 
-		print(`${this.instance.Name} #${this.identity} touched ${subject}`);
+		logInfo(`${this.instance.Name} #${this.identity} touched ${subject}`);
 	}
 
 	/**
@@ -1691,7 +1692,7 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		const body = part.FindFirstAncestorWhichIsA("Model");
 		const subject = body ? `${part.Name} of ${body.Name}` : part.Name;
 
-		print(`[Ball] ${this.instance.Name} #${this.identity}: ${subject} — ${reason}`);
+		logInfo(`[Ball] ${this.instance.Name} #${this.identity}: ${subject} — ${reason}`);
 	}
 
 	private isPlayer(otherPart: BasePart): boolean {

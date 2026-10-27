@@ -3,6 +3,7 @@ import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { GAME_MODE_CONFIG } from "shared/config/gameMode.config";
 import { ROUND_MODE_ATTRIBUTE, ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { sideNameOf, isGameModeId } from "shared/gameMode";
+import { logWarn } from "shared/logger";
 import { pushNotification } from "./notifications";
 
 /**
@@ -171,7 +172,7 @@ export function startMercyWarning(): void {
 
 		ContentProvider.PreloadAsync([sound], (contentId, status) => {
 			if (status !== Enum.AssetFetchStatus.Success) {
-				warn(`[Audio] mercy warning did not load — ${contentId} (${status.Name})`);
+				logWarn(`[Audio] mercy warning did not load — ${contentId} (${status.Name})`);
 			}
 		});
 

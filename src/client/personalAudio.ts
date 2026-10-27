@@ -3,6 +3,7 @@ import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { BALL_ABILITY_ATTRIBUTE, BALL_NAME, PICKUP_COUNT_ATTRIBUTE, SUPER_MULTI_BALL_COUNT_ATTRIBUTE } from "shared/constants";
 import { abilityOn } from "shared/ability";
+import { logInfo, logWarn } from "shared/logger";
 
 /**
  * The two sounds a player makes that **only that player hears**: collecting a ball, and spending a power.
@@ -100,7 +101,7 @@ export function startPersonalAudio(): void {
 	// silence.
 	ContentProvider.PreloadAsync([pickup, ability], (contentId, fetchStatus) => {
 		if (fetchStatus !== Enum.AssetFetchStatus.Success) {
-			warn(`[Audio] personal sound did not load — ${contentId} (${fetchStatus.Name})`);
+			logWarn(`[Audio] personal sound did not load — ${contentId} (${fetchStatus.Name})`);
 		}
 	});
 
@@ -203,7 +204,7 @@ function play(sound: Sound | undefined, what: string): void {
 	sound.Stop();
 	sound.Play();
 
-	if (DEBUG_CONFIG.VERBOSE_LOGS) print(`[Audio] ${what} — ${sound.SoundId}`);
+	if (DEBUG_CONFIG.VERBOSE_LOGS) logInfo(`[Audio] ${what} — ${sound.SoundId}`);
 }
 
 /**

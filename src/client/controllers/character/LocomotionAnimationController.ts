@@ -3,12 +3,10 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { AnimationClip, clipIdFor } from "shared/animation";
 import { BALL_CONFIG } from "shared/config/ball.config";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { BodyRender, applyBodyRender, bodyRenderPlays, destroyBodyRender, startBodyRender } from "../../bodyAnimation";
 import { sprinting } from "../../sprinting";
 import { chargeStartedAt, releasedCharge } from "../../throwing";
-
-/** Prints the write once per body, and each body that was left alone and why. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The name of the script that animates every character, and the one this controller edits. */
 const ANIMATE_NAME = "Animate";
@@ -265,7 +263,7 @@ export class LocomotionAnimationController implements OnStart {
 		const [ok, err] = pcall(() => this.dress(character));
 
 		if (!ok) {
-			warn(`[Animate] ${character.Name}: dressing failed — ${err}`);
+			logWarn(`[Animate] ${character.Name}: dressing failed — ${err}`);
 		}
 	}
 
@@ -282,7 +280,7 @@ export class LocomotionAnimationController implements OnStart {
 		// With a timeout, and a miss is reported rather than thrown: see ANIMATE_TIMEOUT_SECONDS.
 		const animate = character.WaitForChild(ANIMATE_NAME, ANIMATE_TIMEOUT_SECONDS);
 		if (!animate) {
-			if (DEBUG) print(`[Animate] ${character.Name}: no ${ANIMATE_NAME} script — left alone`);
+			logDebug(`[Animate] ${character.Name}: no ${ANIMATE_NAME} script — left alone`);
 			return;
 		}
 
@@ -294,7 +292,7 @@ export class LocomotionAnimationController implements OnStart {
 		// alternative, so there is nothing to gain by making one.
 		const animator = humanoid.FindFirstChildOfClass("Animator");
 		if (!animator) {
-			if (DEBUG) print(`[Animate] ${character.Name}: no Animator — left alone`);
+			logDebug(`[Animate] ${character.Name}: no Animator — left alone`);
 			return;
 		}
 
@@ -306,7 +304,7 @@ export class LocomotionAnimationController implements OnStart {
 		// usually a question about this line rather than about the ids: the wrong column read, or a
 		// clip uploaded for the other rig. Named with the body, so a test with two rigs in it can be
 		// read off the output instead of remembered.
-		if (DEBUG) print(`[Animate] ${character.Name}: ${isR15 ? "R15" : "R6"} body`);
+		logDebug(`[Animate] ${character.Name}: ${isR15 ? "R15" : "R6"} body`);
 
 		for (const set of ANIMATED_SETS) {
 			this.claimSet(animate, animator, set, clipIdFor(set, isR15));
@@ -382,7 +380,7 @@ export class LocomotionAnimationController implements OnStart {
 
 			if (!ok && !reported) {
 				reported = true;
-				warn(`[Animate] tick failed — ${err}`);
+				logWarn(`[Animate] tick failed — ${err}`);
 			}
 
 			task.wait(MOVEMENT_TICK_SECONDS);
@@ -440,7 +438,7 @@ export class LocomotionAnimationController implements OnStart {
 
 		if (deferring !== owned.deferring) {
 			owned.deferring = deferring;
-			print(
+			logInfo(
 				`[Animate] ${owned.body.body.Name}: ${deferring ? "deferring to Roblox" : "owning"} — ` +
 					`state ${state.Name}`,
 			);
@@ -549,7 +547,7 @@ export class LocomotionAnimationController implements OnStart {
 		// Roblox made them while an id is empty, because the alternative — a set with no clips in it
 		// — is a character whose legs stop moving rather than one wearing the default animation.
 		if (animationId === "") {
-			if (DEBUG) print(`[Animate] ${name}: no id set — left as Roblox's`);
+			logDebug(`[Animate] ${name}: no id set — left as Roblox's`);
 			return;
 		}
 
@@ -572,9 +570,12 @@ export class LocomotionAnimationController implements OnStart {
 			// rather than about the body, and none of the usual causes — an id that is not an
 			// animation at all, an animation this place does not own, a rig the clip was not
 			// authored for — is visible from inside the game. This line is the only place the id is
-			// said out loud, and it is `warn` rather than a debug print because it is a mistake
-			// rather than a note, and it is on regardless of what DEBUG is set to.
-			warn(`[Animate] ${name}: ${animationId} did not load — Roblox's set left in place`);
+			// said out loud, and it is `logWarn` rather than a debug print because it is a mistake
+			// rather than a note: it ignores `DEBUG_LOGGING` and appears in every playtest, which is
+			// what "loud" means here. Like every other diagnostic it is silent on a live server — the
+			// tier that survives production is `logError`, and a clip that will not load is a content
+			// problem somebody has to see in Studio rather than a data loss to page somebody about.
+			logWarn(`[Animate] ${name}: ${animationId} did not load — Roblox's set left in place`);
 			return;
 		}
 
@@ -594,7 +595,7 @@ export class LocomotionAnimationController implements OnStart {
 		// tree.
 		config.Parent = animate;
 
-		if (DEBUG) print(`[Animate] ${name} -> ${animationId}`);
+		logDebug(`[Animate] ${name} -> ${animationId}`);
 	}
 
 	/**

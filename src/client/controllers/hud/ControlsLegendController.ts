@@ -2,6 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { RunService, UserInputService } from "@rbxts/services";
+import { logDebug } from "shared/logger";
 import { isMobile } from "../../platform";
 import { makePressResponse } from "../../ui/elevation";
 import { HudTheme } from "../../ui/hudTheme";
@@ -10,9 +11,6 @@ import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { killCamActive } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
-
-/** Prints once, when the legend is up — the line that says the controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** How far the legend sits from the right screen edge, and how far apart its rows are. */
 const SCREEN_EDGE_GAP = 12;
@@ -238,7 +236,7 @@ export class ControlsLegendController implements OnStart {
 		// test they share is `isMobile()` — see `client/platform.ts` for the read and for why `KeyboardEnabled`
 		// is half of it.
 		if (isMobile()) {
-			if (DEBUG) print("[HUD] controls legend skipped — no keyboard on this device");
+			logDebug("[HUD] controls legend skipped — no keyboard on this device");
 
 			return;
 		}
@@ -353,7 +351,7 @@ export class ControlsLegendController implements OnStart {
 
 		container.Parent = getHudScreenGui();
 
-		if (DEBUG) print(`[HUD] controls legend up — ${ROWS.size()} rows`);
+		logDebug(`[HUD] controls legend up — ${ROWS.size()} rows`);
 	}
 
 	/**

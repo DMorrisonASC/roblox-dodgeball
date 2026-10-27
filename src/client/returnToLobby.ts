@@ -1,12 +1,10 @@
 import { ContextActionService, Players, ReplicatedStorage, UserInputService } from "@rbxts/services";
 import { IN_ROUND_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { events } from "shared/networking";
+import { logDebug } from "shared/logger";
 import { applyGlow } from "./ui/glow";
 import { PREMIUM } from "./ui/premiumTheme";
 import { getHudScreenGui } from "./ui/screenGui";
-
-/** Prints the mount line and one line per state change. */
-const DEBUG = false;
 
 /** The action name, and also what an `UnbindAction` would be given if this ever unmounted. */
 const ACTION_NAME = "ReturnToLobby";
@@ -91,7 +89,7 @@ export function startReturnToLobbyPrompt(): void {
 	// **A touch-only client has no key to press**, so nothing is built and no binding is made: a hidden frame
 	// and a dead binding would both be state nobody can reach.
 	if (UserInputService.TouchEnabled && !UserInputService.KeyboardEnabled) {
-		if (DEBUG) print("[Surrender] prompt off — a touch-only client has no L key");
+		logDebug("[Surrender] prompt off — a touch-only client has no L key");
 
 		return;
 	}
@@ -136,7 +134,7 @@ export function startReturnToLobbyPrompt(): void {
 
 	refresh();
 
-	if (DEBUG) print("[Surrender] prompt up — L once to arm, again to leave");
+	logDebug("[Surrender] prompt up — L once to arm, again to leave");
 }
 
 /** Builds the pill: a rounded frame, the words, and a box holding the key. */
@@ -295,7 +293,7 @@ function press(): void {
 		// between the press and the handler) puts the pill back on the next state change.
 		if (frame !== undefined) frame.Visible = false;
 
-		if (DEBUG) print("[Surrender] left the round — a rig takes the seat");
+		logDebug("[Surrender] left the round — a rig takes the seat");
 
 		return;
 	}
@@ -309,7 +307,7 @@ function press(): void {
 	// changes what it *says* by changing its surface, not by becoming a different shape.
 	if (frame !== undefined) frame.BackgroundColor3 = PREMIUM.sideA;
 
-	if (DEBUG) print("[Surrender] armed — any other key cancels");
+	logDebug("[Surrender] armed — any other key cancels");
 }
 
 /** Back to the idle state: on the cancel, on a second press, and when the pill goes away. */

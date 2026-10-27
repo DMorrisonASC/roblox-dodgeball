@@ -1,5 +1,6 @@
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, UserInputService, Workspace } from "@rbxts/services";
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 import { killCamActive } from "../panels";
 import { isMobile } from "../platform";
 
@@ -10,8 +11,6 @@ import { isMobile } from "../platform";
  * module can tell a reader: which region each GUI ended up in and what decided it. The one session it earns its
  * keep in is the one where a HUD element is drawn under the topbar.
  */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
-
 /**
  * **Two questions decide which `ScreenGui` a thing mounts into, and they are asked in this order. The first is
  * the rule; the second answers only where the first has nothing to say.**
@@ -111,9 +110,9 @@ function deviceSentence(): string {
  * reads it at the first frame the number is real.
  */
 function reportCreated(gui: ScreenGui, decided: string): void {
-	if (!DEBUG) return;
+	if (!DEBUG_LOGGING) return;
 
-	print(`[screenGui] ${gui.Name} created — ScreenInsets = ${gui.ScreenInsets.Name}; ${decided}`);
+	logInfo(`[screenGui] ${gui.Name} created — ScreenInsets = ${gui.ScreenInsets.Name}; ${decided}`);
 }
 
 /**
@@ -125,9 +124,9 @@ function reportCreated(gui: ScreenGui, decided: string): void {
  * cannot fire in a healthy session: nothing outside this module writes `ScreenInsets` on these GUIs.
  */
 function reportDrift(gui: ScreenGui, insets: Enum.ScreenInsets): void {
-	if (!DEBUG || gui.ScreenInsets === insets) return;
+	if (!DEBUG_LOGGING || gui.ScreenInsets === insets) return;
 
-	print(
+	logInfo(
 		`[screenGui] ${gui.Name} was found with ScreenInsets = ${gui.ScreenInsets.Name} and this client's rule asks ` +
 			`for ${insets.Name} — setting it. Something other than this module wrote the property, or one branch of ` +
 			`the find-or-create has drifted from its pair.`,

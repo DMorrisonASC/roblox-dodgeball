@@ -4456,6 +4456,55 @@ almost no server code; 45 is what it cannot show.**
      documented behaviour and the reason the card does not grow, but not seen), and that `Team A +15` fits one line at
      11px in 92px of usable width (arithmetic, not a measurement). Nothing here has been looked at in Studio.
 
+103. **Every diagnostic in the game goes through `shared/logger.ts`, and the per-file `const DEBUG` flags are gone.**
+     **The premise worth correcting first: this was not a new problem.** `debug.config.ts` records a logging pass on
+     2026-10-19 that set all 74 flags to `false` by hand, for frame time in the Output panel. That mechanism worked, and
+     it had a fault that only matters in a published game: **Roblox does not strip `print` or `warn` from a published
+     place**, so 74 flags set `false` in a *diagnostic* sense still left several hundred `print` calls running on live
+     servers for an audience of nobody. The flags decided Studio verbosity; nothing decided production, and nothing
+     could, because a publish was not a state any of them could see.
+
+     **Four functions, one gate.** `logInfo` and `logWarn` branch on `IS_STUDIO` (read once from `RunService.IsStudio()`)
+     and do nothing else on a server; `logError` always emits, and is the only tier that survives production;
+     `logDebug` emits only when Studio *and* `DEBUG_CONFIG.VERBOSE_LOGS`. That last pairing is what let the 74 flags go:
+     the noisy tier they used to gate is one config value now, so bringing it back is a single edit rather than 74 —
+     and `debug.config.ts`'s complaint about a switch somebody had to remember to flip is answered rather than
+     repeated.
+
+     **`logWarn` is silent in production, deliberately.** A warning reads as "somebody should look at this", and a live
+     server's log stream has no reader, so the decision is not to throw information away but to stop producing
+     information nobody reads. **`logError` is the exception and it is narrow**: 14 call sites, all in `StatsService` and
+     `EconomyService`, all persistence — a store that would not open, a read or write that failed, a record another
+     server had claimed, a shutdown that ran out of time. Those are data loss, they are invisible from inside the game
+     (the player simply plays on blank figures), and silencing them would leave the only record of them in a session
+     that happened to be in Studio. `grep -rn logError src/` is the whole list, by design.
+
+     **The sweep: 596 `print` and 105 `warn` call sites across 98 files**, every one now through the logger, verified by
+     counting raw calls in the emitted Luau — zero outside `logger.luau` itself. 219 single-statement verbose sites
+     became `logDebug`; 178 multi-statement blocks kept a guard, because a block that computes its message (a
+     `string.format`, a `GetFullName`, a packed layout) would otherwise build it on a live server and discard it — those
+     guard on `DEBUG_LOGGING`, and 29 functions whose entire body is a diagnostic early-return on `LOGGING_ENABLED`.
+     **That is the one place this file has a fifth and sixth export**: a function cannot stop its arguments being
+     evaluated, so the flag has to be readable for the sites where the argument is the expensive part.
+
+     **Two behaviour changes, both intended and both narrow.** The 74 `const DEBUG` declarations are deleted along with
+     their one-line doc comments, and `debug.config.ts`'s opening block — which documented the per-file convention — is
+     rewritten to describe what replaced it, since a comment arguing for a decision that no longer exists is the fault
+     this file warns about. And the client and server boots each gain `[Boot] Logging active — running in Studio`, which
+     is a claim about the half that is *meant* to talk and cannot appear on a server.
+
+     **What the prompt got wrong, recorded because two of the three mattered.** It named `RoundService`,
+     `BallComponent` and `NpcService` as files with `const DEBUG = true`; none of them had it — `RoundService` and
+     `BallComponent` had no flag at all, `NpcService` and `BallService` had `false`, and only `MysteryBoxService` of the
+     five was `true`. It asked for `(...args: defined[])` where `print` is declared `(...params: Array<unknown>)` in
+     `@rbxts/types`, so the narrower type would have needed a cast at every site. And it asked for the pass to be
+     recorded as §15 item 100, which already existed — this is item 103.
+
+     **Unverified, and it is the only claim that matters to the person who reported the lag**: whether a published
+     server is now cheaper. Everything above is arithmetic over call sites and a read of the emitted Luau; the frame
+     cost that motivated it is a MicroProfiler reading nobody has taken. `DEBUG_CONFIG.PROFILE` is the switch for that
+     reading, and it is still `false`.
+
 ---
 
 ## 16. What a live log has actually confirmed

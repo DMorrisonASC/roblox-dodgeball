@@ -2,6 +2,7 @@ import { OnStart, Service } from "@flamework/core";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { MATCH_JOIN_A_TAG, MATCH_JOIN_B_TAG, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import {
 	MATCH_MAX_PER_TEAM,
 	MATCH_MIN_PLAYERS,
@@ -14,9 +15,6 @@ import {
 } from "../../config/match.config";
 import { TEAM_A, TEAM_B, TeamLabel } from "../round/team";
 import { rigCounts } from "../../npc/rigs";
-
-/** Prints every opt-in, refusal and opt-out. The sign is player-facing; this is the record. */
-const DEBUG = false;
 
 /** What `ROUND_STATE_ATTRIBUTE` says while a match is being played. A word between two files. */
 const PLAYING = "Playing";
@@ -344,7 +342,7 @@ export class MatchService implements OnStart {
 		// than refusing at the top of the method is the whole of the change: this used to refuse everything
 		// during a round, and it now refuses only the move. See the doc above.
 		if (existing !== undefined && this.phase() === PLAYING) {
-			if (DEBUG) print(`[Match] ${player.Name}: the match has started — sides are locked until it ends`);
+			logDebug(`[Match] ${player.Name}: the match has started — sides are locked until it ends`);
 
 			return undefined;
 		}
@@ -364,10 +362,10 @@ export class MatchService implements OnStart {
 			const left = this.intermissionSecondsLeft();
 
 			if (left !== undefined && left > 0 && left <= MATCH_SIDE_LOCK_SECONDS) {
-				if (DEBUG) {
+				if (DEBUG_LOGGING) {
 					// A tenth, not a whole number: with whole seconds published, the refusal should say the same
 					// figure the HUD is showing rather than a rounded one of its own.
-					print(
+					logInfo(
 						`[Match] ${player.Name}: ${string.format("%.1fs", left)} to the whistle — ` +
 							`sides are locked, ${existing} stands`,
 					);
@@ -392,27 +390,27 @@ export class MatchService implements OnStart {
 			const other = placed === TEAM_A ? TEAM_B : TEAM_A;
 
 			if (!this.hasRoom(other, counts)) {
-				if (DEBUG) print(`[Match] ${player.Name}: both sides are full — nobody else can play`);
+				logDebug(`[Match] ${player.Name}: both sides are full — nobody else can play`);
 
 				return undefined;
 			}
 
 			placed = other;
 
-			if (DEBUG) print(`[Match] ${player.Name}: side ${side} is full — balanced onto ${placed}`);
+			logDebug(`[Match] ${player.Name}: side ${side} is full — balanced onto ${placed}`);
 		}
 
 		this.opted.set(player, placed);
 		this.revision++;
 		this.updateSigns();
 
-		if (DEBUG) {
+		if (DEBUG_LOGGING) {
 			const now = this.describeCounts();
 
 			// Two sentences rather than one, because "in" on a second touch would be a lie: the log is the
 			// record of the roster, and a move is a different fact from an arrival.
-			if (existing === undefined) print(`[Match] ${player.Name}: in — side ${placed}, ${now}`);
-			else print(`[Match] ${player.Name}: moved to side ${placed}, ${now}`);
+			if (existing === undefined) logInfo(`[Match] ${player.Name}: in — side ${placed}, ${now}`);
+			else logInfo(`[Match] ${player.Name}: moved to side ${placed}, ${now}`);
 		}
 
 		return placed;
@@ -434,7 +432,7 @@ export class MatchService implements OnStart {
 		this.revision++;
 		this.updateSigns();
 
-		if (DEBUG) print(`[Match] ${player.Name}: out — ${reason} (${this.describeCounts()})`);
+		logDebug(`[Match] ${player.Name}: out — ${reason} (${this.describeCounts()})`);
 	}
 
 	/**
@@ -452,7 +450,7 @@ export class MatchService implements OnStart {
 		this.revision++;
 		this.updateSigns();
 
-		if (DEBUG) print(`[Match] roster cleared — ${this.describeCounts()}`);
+		logDebug(`[Match] roster cleared — ${this.describeCounts()}`);
 	}
 
 	/**
@@ -494,7 +492,7 @@ export class MatchService implements OnStart {
 		this.revision++;
 		this.updateSigns();
 
-		if (DEBUG) print(`[Match] ${player.Name}: gave up their seat — ${this.describeCounts()}`);
+		logDebug(`[Match] ${player.Name}: gave up their seat — ${this.describeCounts()}`);
 
 		return true;
 	}
@@ -529,7 +527,7 @@ export class MatchService implements OnStart {
 
 		for (const part of parts) this.prepare(part, team);
 
-		if (DEBUG) print(`[Match] up — ${tag}: ${parts.size()} part(s)`);
+		logDebug(`[Match] up — ${tag}: ${parts.size()} part(s)`);
 	}
 
 	/**
@@ -571,7 +569,7 @@ export class MatchService implements OnStart {
 		part.CanQuery = false;
 
 		if (corrected.size() > 0) {
-			warn(`[Match] "${part.GetFullName()}" was not set up as a join part — corrected ${corrected.join(", ")}`);
+			logWarn(`[Match] "${part.GetFullName()}" was not set up as a join part — corrected ${corrected.join(", ")}`);
 		}
 
 		// **The side is bound here, once, rather than looked up per touch.** `Touched` names the part that

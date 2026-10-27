@@ -3,6 +3,7 @@ import { ARENA_CONFIG } from "shared/config/arena.config";
 import { MATCH_SPAWNER_TAG } from "shared/constants";
 import { findFolder } from "shared/find";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { logWarn } from "shared/logger";
 import { TEAM_B, TeamLabel } from "./team";
 
 /**
@@ -202,7 +203,7 @@ export function claimArenaSpawn(body: Model, team: TeamLabel, parts: BasePart[])
 		if (taken.has(part)) claimedHere++;
 	}
 
-	warn(
+	logWarn(
 		`[Round] team ${team}: ${ordered.size()} spawn part(s) for ${claimedHere + 1} body(s) — ` +
 			`${body.Name} has no free one and is sharing a spot`,
 	);

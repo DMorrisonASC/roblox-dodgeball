@@ -1,9 +1,7 @@
 import { CollectionService, Debris, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { BODY_ID_ATTRIBUTE, NPC_TAG } from "shared/constants";
 import { events } from "shared/networking";
-
-/** Prints one line per effect played, and one for each template that is not there. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 
 /**
  * # The hit impact effect: gold for the thrower, red for the body it landed on
@@ -136,8 +134,8 @@ export function startHitVfx(): void {
 	// an effect that was never wired print the same nothing. This is the line `DuckController` writes for its
 	// key binding, for the same reason: a subscription that announces itself turns a silent failure into a
 	// readable one.
-	if (DEBUG) {
-		print(
+	if (DEBUG_LOGGING) {
+		logInfo(
 			`[VFX] hit effects up — ${ATTACKER_TEMPLATE_NAME} when I land one, ` +
 				`${VICTIM_TEMPLATE_NAME} for every hit, mine or anybody else's, ` +
 				`and again on a thrower whose ball I watch get caught`,
@@ -176,7 +174,7 @@ export function startHitVfx(): void {
 					? "victim"
 					: "bystander";
 
-		if (DEBUG) print(`[VFX] hitImpact — ${thrower} → ${victim} (this client is the ${role})`);
+		logDebug(`[VFX] hitImpact — ${thrower} → ${victim} (this client is the ${role})`);
 
 		// **I landed it.** Gold, and on the *victim's* body — a hit is an impact at the body it landed on,
 		// not at the arm that threw it, so the only thing this client draws is the thing the ball hit.
@@ -201,8 +199,8 @@ export function startHitVfx(): void {
 		if (victim === localPlayer.Name) {
 			const own = localPlayer.Character;
 			if (own === undefined) {
-				if (DEBUG) {
-					print(`[VFX] ${localPlayer.Name}: hit by ${thrower} — but no character to put it on`);
+				if (DEBUG_LOGGING) {
+					logInfo(`[VFX] ${localPlayer.Name}: hit by ${thrower} — but no character to put it on`);
 				}
 
 				return;
@@ -250,7 +248,7 @@ export function startHitVfx(): void {
 	// local player is compared against it, while here the body drawn on is the thrower's and the thrower is what
 	// the event leads with. Read the payload as a sentence — "this body's throw was caught by that one" — and
 	// the order is the shape of the fact rather than a preference.
-	if (DEBUG) print(`[VFX] catch effects wired`);
+	logDebug(`[VFX] catch effects wired`);
 
 	events.Client.Get("caughtThrow").Connect((thrower, catcher) => {
 		const localPlayer = Players.LocalPlayer;
@@ -261,8 +259,8 @@ export function startHitVfx(): void {
 		if (thrower === localPlayer.Name) {
 			const own = localPlayer.Character;
 			if (own === undefined) {
-				if (DEBUG) {
-					print(`[VFX] ${localPlayer.Name}: throw caught by ${catcher} — but no character to put it on`);
+				if (DEBUG_LOGGING) {
+					logInfo(`[VFX] ${localPlayer.Name}: throw caught by ${catcher} — but no character to put it on`);
 				}
 
 				return;
@@ -408,14 +406,14 @@ function playOn(templateName: string, body: Model, line: string): void {
 		// fires once and then goes quiet is indistinguishable, from the seat, from code that never ran.
 		if (!warnedTemplates.has(templateName)) {
 			warnedTemplates.add(templateName);
-			warn(`[VFX] no ${templateName} in ReplicatedStorage — that hit effect will not play`);
+			logWarn(`[VFX] no ${templateName} in ReplicatedStorage — that hit effect will not play`);
 
 			// And what the client *can* see instead, because "no template" is true of a name that is absent,
 			// a name that is misspelled and a template in the wrong container — three different fixes.
-			for (const reportLine of nearMissReport()) warn(`[VFX] ${reportLine}`);
+			for (const reportLine of nearMissReport()) logWarn(`[VFX] ${reportLine}`);
 		}
 
-		if (DEBUG) print(`[VFX] ${body.Name}: hit, but no ${templateName} template to clone`);
+		logDebug(`[VFX] ${body.Name}: hit, but no ${templateName} template to clone`);
 		return;
 	}
 
@@ -425,11 +423,11 @@ function playOn(templateName: string, body: Model, line: string): void {
 		// `HumanoidRootPart` is a rig whose model is not what this file assumes, and it is one of the four
 		// ways a hit can draw nothing at all — the other three being an event that never arrived, a name this
 		// client could not resolve and a template that is not there. Those four are indistinguishable from the
-		// seat, and three of them used to be `DEBUG`-only prints in a file whose `DEBUG` is off. Once per body
+		// seat, and three of them used to be `DEBUG_LOGGING`-only prints in a file whose `DEBUG_LOGGING` is off. Once per body
 		// name, like the template warning below, because a rig with no root will never grow one.
 		if (!warnedBodies.has(body.Name)) {
 			warnedBodies.add(body.Name);
-			warn(`[VFX] ${body.Name}: hit, but no ${ANCHOR_PART} to attach it to — nothing will draw there`);
+			logWarn(`[VFX] ${body.Name}: hit, but no ${ANCHOR_PART} to attach it to — nothing will draw there`);
 		}
 
 		return;
@@ -497,9 +495,9 @@ function playOn(templateName: string, body: Model, line: string): void {
 		// and it is worth knowing: the effect works, but the place file is carrying an emitter in a place
 		// that has no part — which is also why the emitters may look anchored at the world origin if this
 		// effect is ever extended by hand.
-		if (DEBUG && !adoptedTemplates.has(templateName)) {
+		if (DEBUG_LOGGING && !adoptedTemplates.has(templateName)) {
 			adoptedTemplates.add(templateName);
-			print(`[VFX] ${templateName}: the template holds no part — carrying it on one this client made`);
+			logInfo(`[VFX] ${templateName}: the template holds no part — carrying it on one this client made`);
 		}
 	}
 
@@ -572,14 +570,14 @@ function playOn(templateName: string, body: Model, line: string): void {
 	// it reports is what the template holds rather than what this file just did to it. `Rate` and `Lifetime`
 	// decide whether anything is emitted at all, `Size` and `Transparency` whether it can be seen, and none
 	// of it is visible from the code.
-	if (DEBUG && !describedTemplates.has(templateName)) {
+	if (DEBUG_LOGGING && !describedTemplates.has(templateName)) {
 		describedTemplates.add(templateName);
 
 		if (emitters.isEmpty()) {
-			print(`[VFX] the ${templateName} template holds no ParticleEmitter — there is nothing to fire`);
+			logInfo(`[VFX] the ${templateName} template holds no ParticleEmitter — there is nothing to fire`);
 		}
 
-		for (const emitter of emitters) print(`[VFX] emitter ${emitter.Name}: ${describeEmitter(emitter)}`);
+		for (const emitter of emitters) logInfo(`[VFX] emitter ${emitter.Name}: ${describeEmitter(emitter)}`);
 	}
 
 	// **And every emitter is locked to the carrier** — the one property in this file set on an emitter rather
@@ -620,7 +618,7 @@ function playOn(templateName: string, body: Model, line: string): void {
 
 	// **The requested line, with the emitter count appended for the sibling's reason**: "found the template
 	// and fired nothing" and "fired a burst that cannot be seen" are the same line without it.
-	if (DEBUG) print(`[VFX] ${line} on ${ANCHOR_PART} — ${emitters.size()} emitter(s) x ${EMIT_COUNT}`);
+	logDebug(`[VFX] ${line} on ${ANCHOR_PART} — ${emitters.size()} emitter(s) x ${EMIT_COUNT}`);
 }
 
 /**
@@ -880,7 +878,7 @@ const warnedBodies = new Set<string>();
 
 /**
  * Says, once per name, that a hit arrived for a body this client could not find. **The single most useful line
- * this file can print, and it was a `DEBUG` trace until it was not.**
+ * this file can print, and it was a `DEBUG_LOGGING` trace until it was not.**
  *
  * The four ways a hit draws nothing are: the event never reached this client; a name that resolves to no body;
  * a body with no `HumanoidRootPart`; and a template missing from `ReplicatedStorage`. **From the seat they are
@@ -903,7 +901,7 @@ function warnNoBody(seat: string, name: string, id: string): void {
 	if (warnedBodies.has(name)) return;
 
 	warnedBodies.add(name);
-	warn(
+	logWarn(
 		`[VFX] ${name}: hit seen as the ${seat}, but no body by that name — no player, no ${NPC_TAG} rig, ` +
 			`and nothing carrying a Humanoid in Workspace (id ${id === "" ? "was not sent" : `"${id}"`})`,
 	);

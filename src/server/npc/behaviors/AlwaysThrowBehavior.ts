@@ -1,5 +1,6 @@
 import { pendingAbilityOn } from "shared/ability";
 import { PENDING_ABILITY_ATTRIBUTE } from "shared/constants";
+import { logInfo } from "shared/logger";
 import { BEHAVIOR_ALWAYS_THROWING, NpcBehavior } from "../Behavior";
 import { THROW_TICK_SECONDS, WINDUP_GAP_TURNS, createWindupTracker, missedPoint } from "./ThrowBehavior";
 import type { Miss } from "./ThrowBehavior";
@@ -274,7 +275,7 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 							: `, ${string.format("%.1f", windup.miss.studs)} studs to the ` +
 								`${windup.miss.side > 0 ? "right" : "left"} (missed on purpose)`;
 
-					print(
+					logInfo(
 						`[Rig] ${model.Name}: throw — charge ${string.format("%.2f", windup.charge)} at ` +
 							`${string.format("%.1f", windup.distance)} studs, heading ` +
 							`(${string.format("%.2f", heading.X)}, ${string.format("%.2f", heading.Y)}, ` +

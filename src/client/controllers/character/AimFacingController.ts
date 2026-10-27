@@ -6,11 +6,9 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { throwAnimationWindowSeconds } from "shared/animation";
 import { AFTERIMAGE_WINDOW_ATTRIBUTE, CATCHING_ATTRIBUTE, THROW_ANIMATION_ATTRIBUTE } from "shared/constants";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { aiming, predictedLanding } from "../../aiming";
 import { isMobile } from "../../platform";
-
-/** Prints that this controller mounted, and (behind the log gate) each time a body starts or stops turning. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How close to the body the aim point has to be before its direction stops being worth using, in studs.
@@ -239,8 +237,8 @@ export class AimFacingController implements OnStart {
 		// one: "nothing happens" has two causes — never started, or started and found nothing to do — and
 		// this is the line that tells them apart. `[Facing]` rather than `[Aim]` so it sits beside
 		// `AimTargetController`'s line in the output and does not read as a duplicate of it.
-		if (DEBUG) {
-			print(`[Facing] up — the body turns onto the aim while a throw is charged, and holds it to the end of the throw`);
+		if (DEBUG_LOGGING) {
+			logInfo(`[Facing] up — the body turns onto the aim while a throw is charged, and holds it to the end of the throw`);
 		}
 	}
 
@@ -343,12 +341,12 @@ export class AimFacingController implements OnStart {
 
 		if (!this.wasHolding) {
 			this.wasHolding = true;
-			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
+			if (DEBUG_LOGGING) {
 				// **Three names for the three reasons, in the order they outrank each other**, so the log says
 				// which one opened the hold rather than only that one did.
 				const reason = aimingNow ? "aim" : catchingNow ? "catch" : "throw";
 
-				print(`[Facing] ${character.Name}: turning onto the ${reason}`);
+				logInfo(`[Facing] ${character.Name}: turning onto the ${reason}`);
 			}
 		}
 	}
@@ -483,7 +481,7 @@ export class AimFacingController implements OnStart {
 		if (this.wasHolding) {
 			this.wasHolding = false;
 			this.snapOntoAim();
-			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Facing] released — back to the movement direction`);
+			logDebug(`[Facing] released — back to the movement direction`);
 		}
 
 		this.lastDirection = undefined;

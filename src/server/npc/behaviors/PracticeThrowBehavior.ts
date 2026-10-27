@@ -2,6 +2,7 @@
 import { pendingAbilityOn } from "shared/ability";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { NEXT_THROW_AT_ATTRIBUTE, PENDING_ABILITY_ATTRIBUTE, PRACTICE_THROW_TAG } from "shared/constants";
+import { logInfo } from "shared/logger";
 import { NpcBehavior } from "../Behavior";
 import { rigBayGap, targetFor } from "../practiceBay";
 import { THROW_TICK_SECONDS, WINDUP_GAP_TURNS, createWindupTracker } from "./ThrowBehavior";
@@ -268,7 +269,7 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 					standingDownBecause.set(model, "empty");
 					lastGap.set(model, measured.gap);
 
-					print(
+					logInfo(
 						`[Drill] ${model.Name}: standing down — nobody is standing in this rig's bay. ` +
 							`${measured.text}. The bay is a footprint: height is ignored, so this is a flat distance.`,
 					);
@@ -287,7 +288,7 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 			if (standingDownBecause.get(model) !== "") {
 				standingDownBecause.set(model, "");
 				lastGap.delete(model);
-				print(`[Drill] ${model.Name}: armed — ${target.player.Name} is in ${target.bay.Name}`);
+				logInfo(`[Drill] ${model.Name}: armed — ${target.player.Name} is in ${target.bay.Name}`);
 			}
 
 			const windup = windups.get(model);
@@ -370,7 +371,7 @@ export function createPracticeThrowBehavior(balls: BallService): NpcBehavior {
 				// comparable. **The miss is absent because there is never one here** — that is what `trueAim` buys — and
 				// printing an empty field would suggest it had been considered and happened to be zero.
 				if (thrown) {
-					print(
+					logInfo(
 						`[Drill] ${model.Name}: throw — charge ${string.format("%.2f", windup.charge)} at ` +
 							`${string.format("%.1f", windup.distance)} studs, at ${target.player.Name} ` +
 							`(${string.format("%.1f", line.Magnitude)} studs), heading ` +

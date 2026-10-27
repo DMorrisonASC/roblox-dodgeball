@@ -1,6 +1,7 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, TextChatService, RunService } from "@rbxts/services";
 import { IS_DEV_ATTRIBUTE } from "shared/constants";
+import { logDebug, logInfo, logWarn } from "shared/logger";
 import { DEV_CONFIG } from "./dev.config";
 
 /**
@@ -55,8 +56,6 @@ const FLAG_ALIASES: Record<string, string> = {
  * logging the raw text is the only way to tell those apart. Turn it off once the
  * commands are trusted.
  */
-const DEBUG = false;
-
 /**
  * The solo-dev testing harness.
  *
@@ -130,7 +129,7 @@ export class DevService implements OnStart {
 		// duplicate they can produce is absorbed by `handleChat`.
 		TextChatService.MessageReceived.Connect((message) => this.handleMessage(message));
 
-		if (DEBUG) print("[Dev] listening for commands on both chat systems");
+		logDebug("[Dev] listening for commands on both chat systems");
 	}
 
 	/** Whether this player was whitelisted and marked. */
@@ -225,7 +224,7 @@ export class DevService implements OnStart {
 			// `pcall` returns the error rather than printing it, so it is put in the warning
 			// by hand — an error swallowed without a word is worse than no protection.
 			const [ok, err] = pcall(() => listener(player, value));
-			if (!ok) warn(`[Dev] a listener for ${flag} failed: ${tostring(err)}`);
+			if (!ok) logWarn(`[Dev] a listener for ${flag} failed: ${tostring(err)}`);
 		}
 	}
 
@@ -249,7 +248,7 @@ export class DevService implements OnStart {
 	private handleMessage(message: TextChatMessage): void {
 		const source = message.TextSource;
 		if (!source) {
-			if (DEBUG) print(`[Dev] TextChatService <${message.Text}> with no sender — ignored`);
+			logDebug(`[Dev] TextChatService <${message.Text}> with no sender — ignored`);
 			return;
 		}
 
@@ -265,7 +264,7 @@ export class DevService implements OnStart {
 			this.setFlag(player, flag, value);
 		}
 
-		print(`[Dev] ${player.Name} is a dev — ${this.describeFlags(player)}`);
+		logInfo(`[Dev] ${player.Name} is a dev — ${this.describeFlags(player)}`);
 	}
 
 	/**
@@ -283,7 +282,7 @@ export class DevService implements OnStart {
 		this.lastCommand.set(player, message);
 		if (previous === message) return;
 
-		if (DEBUG) print(`[Dev] ${via} <${message}> from ${player.Name}`);
+		logDebug(`[Dev] ${via} <${message}> from ${player.Name}`);
 
 		if (!this.isDev(player)) return;
 
@@ -328,7 +327,7 @@ export class DevService implements OnStart {
 			}
 
 			const [ok, err] = pcall(() => handler(player, args));
-			if (!ok) warn(`[Dev] the ${verb} command failed: ${tostring(err)}`);
+			if (!ok) logWarn(`[Dev] the ${verb} command failed: ${tostring(err)}`);
 
 			return;
 		}
@@ -344,7 +343,7 @@ export class DevService implements OnStart {
 		}
 
 		this.setFlag(player, requested, state === "on");
-		print(`[Dev] ${player.Name}: ${requested} ${this.getFlag(player, requested) ? "on" : "off"}`);
+		logInfo(`[Dev] ${player.Name}: ${requested} ${this.getFlag(player, requested) ? "on" : "off"}`);
 	}
 
 	/**
@@ -390,7 +389,7 @@ export class DevService implements OnStart {
 	 * you.
 	 */
 	private printUsage(player: Player): void {
-		print(`[Dev] ${player.Name}: usage is ${PREFIX} <flag> <on|off> — ${this.describeFlags(player)}`);
+		logInfo(`[Dev] ${player.Name}: usage is ${PREFIX} <flag> <on|off> — ${this.describeFlags(player)}`);
 	}
 
 	/** Every flag and where it stands, for the one print a joining dev costs. */

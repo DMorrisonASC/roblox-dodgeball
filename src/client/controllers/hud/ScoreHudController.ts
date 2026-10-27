@@ -4,14 +4,12 @@ import { Text } from "@rbxts/big-ui";
 import { Players, ReplicatedStorage } from "@rbxts/services";
 import { ROUND_SCORE_A_ATTRIBUTE, ROUND_SCORE_B_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { teamColourOf } from "shared/gameMode";
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 import { applyGlow, applyTextGlow } from "../../ui/glow";
 import { PREMIUM } from "../../ui/premiumTheme";
 import { getHudColumn } from "../../ui/screenGui";
 import { raiseZIndex } from "../../ui/panelChrome";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
-
-/** Prints the mount line and each mode change. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The ZIndex of the whole bar, and every descendant of it.
@@ -135,8 +133,8 @@ export class ScoreHudController implements OnStart {
 
 		const bar = this.buildBar(scoreA, scoreB);
 
-		if (DEBUG) {
-			print(`[HUD] score bar up — ${ROUND_SCORE_A_ATTRIBUTE}/${ROUND_SCORE_B_ATTRIBUTE} on RoundStatus, every phase`);
+		if (DEBUG_LOGGING) {
+			logInfo(`[HUD] score bar up — ${ROUND_SCORE_A_ATTRIBUTE}/${ROUND_SCORE_B_ATTRIBUTE} on RoundStatus, every phase`);
 		}
 
 		bar.Parent = getHudColumn(); // must stay the LAST statement

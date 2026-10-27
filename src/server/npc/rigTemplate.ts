@@ -1,6 +1,7 @@
 import { CollectionService, ServerStorage, Workspace } from "@rbxts/services";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { findFolder } from "shared/find";
+import { logInfo, logWarn } from "shared/logger";
 
 /**
  * **What is inside a rig template, said out loud at boot — because nothing else in `src/` can know.**
@@ -443,9 +444,9 @@ export function reportRigTemplateOnce(model: Model, askedBy: string): void {
 		const line = `[RigTemplate] ${askedBy} — ${lineFor(fault)}`;
 
 		if (fault.severity === "note") {
-			print(line);
+			logInfo(line);
 		} else {
-			warn(line);
+			logWarn(line);
 		}
 	}
 }
@@ -493,7 +494,7 @@ export function auditRigTemplates(): void {
 	// (`[Rig] pool — no "NPCs" folder …`) and both are worth having: that one is about a lobby with no bodies,
 	// this one is about an audit with nothing to call used.
 	if (folder === undefined) {
-		warn(
+		logWarn(
 			`[RigTemplate] audit — ServerStorage has no "${NPC_CONFIG.RIG_POOL_FOLDER}" folder, ` +
 				`so nothing in it can be cloned. Every template below is therefore reported as outside it.`,
 		);
@@ -525,7 +526,7 @@ export function auditRigTemplates(): void {
 	}
 
 	if (templates.size() === 0 && shaped.size() === 0) {
-		warn(
+		logWarn(
 			`[RigTemplate] audit — no rig template was found: ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}" ` +
 				`holds no Model child, no direct Model child of ServerStorage has a Humanoid, and nothing ` +
 				`anywhere under ServerStorage is shaped like a rig. Looked for all three — so there is ` +
@@ -535,7 +536,7 @@ export function auditRigTemplates(): void {
 		return;
 	}
 
-	print(
+	logInfo(
 		`[RigTemplate] audit — ${templates.size()} template(s) under ServerStorage` +
 			(shaped.size() > 0 ? `, plus ${shaped.size()} rig-shaped model(s) nothing clones` : "") +
 			`; the draw reads the Model children of ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}"`,
@@ -584,18 +585,18 @@ export function auditRigTemplates(): void {
 		const line = `[RigTemplate] ${verdict} — ${summary}`;
 
 		if (fatal > 0 || warnCount > 0) {
-			warn(line);
+			logWarn(line);
 		} else {
-			print(line);
+			logInfo(line);
 		}
 
 		for (const fault of faults) {
 			const faultLine = `[RigTemplate]   ${lineFor(fault)}`;
 
 			if (fault.severity === "note") {
-				print(faultLine);
+				logInfo(faultLine);
 			} else {
-				warn(faultLine);
+				logWarn(faultLine);
 			}
 		}
 	}
@@ -611,7 +612,7 @@ export function auditRigTemplates(): void {
 	// **direct children only**: a model one level deeper is invisible to the draw whatever folder it sits in,
 	// so the sentence says that instead of naming a nesting level it does not check.
 	for (const model of shaped) {
-		print(
+		logInfo(
 			`[RigTemplate] RIG-SHAPED, NOT A TEMPLATE — ${model.GetFullName()} ` +
 				`(neither a Model child of ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}" nor a Model child ` +
 				`of ServerStorage, so nothing clones it — not validated)`,
@@ -624,7 +625,7 @@ export function auditRigTemplates(): void {
 	// after boot, or one that was never under `ServerStorage` at all (`spawn` is handed a `Model`, not a
 	// path). Seeding it here would silence exactly the two cases the gate exists for, in exchange for saving
 	// one line per faulty template per session.
-	print(
+	logInfo(
 		`[RigTemplate] audit — ${templates.size()} template(s): ${inFolderCount} inside ` +
 			`ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}" (what a draw can clone), ` +
 			`${templates.size() - inFolderCount} elsewhere (nothing clones these), ` +

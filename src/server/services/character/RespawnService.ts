@@ -1,9 +1,7 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, Workspace } from "@rbxts/services";
 import { RESPAWN_AT_ATTRIBUTE } from "shared/constants";
-
-/** Prints one line per load, per schedule and per cancelled wait, naming the reason. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { logDebug } from "shared/logger";
 
 /**
  * Every character this game gives anybody, and the only place `Player.LoadCharacterAsync` is called.
@@ -109,7 +107,7 @@ export class RespawnService implements OnStart {
 		//
 		// **The yield is kept, and it is now the only thing on this side of it:** it is what makes the `loaded`
 		// line below a statement about a body rather than about a request.
-		if (DEBUG) print(`[Respawn] ${player.Name}: loaded — ${reason}`);
+		logDebug(`[Respawn] ${player.Name}: loaded — ${reason}`);
 	}
 
 	/**
@@ -152,7 +150,7 @@ export class RespawnService implements OnStart {
 			}),
 		);
 
-		if (DEBUG) print(`[Respawn] ${player.Name}: respawning in ${seconds}s`);
+		logDebug(`[Respawn] ${player.Name}: respawning in ${seconds}s`);
 	}
 
 	/**
@@ -188,7 +186,7 @@ export class RespawnService implements OnStart {
 		player.SetAttribute(RESPAWN_AT_ATTRIBUTE, 0);
 
 		if (!loadImmediately) {
-			if (DEBUG) print(`[Respawn] ${player.Name}: pending respawn cancelled`);
+			logDebug(`[Respawn] ${player.Name}: pending respawn cancelled`);
 
 			return;
 		}

@@ -8,6 +8,7 @@ import {
 	RESPAWN_AT_ATTRIBUTE,
 	THROWER_TOKEN,
 } from "shared/constants";
+import { logInfo } from "shared/logger";
 import { hideEnemyView, showEnemyView } from "./enemyView";
 import { killCamActive } from "./panels";
 
@@ -259,7 +260,7 @@ function begin(at: number): void {
 	// **Said out loud, and it is the line the acceptance criteria are read from**: two lines per death (this one
 	// and the hand-back's) are how a session answers "did the cam start, on whom, and did it let go" without the
 	// Explorer. The name is the body's own, which for a rig is the alias it wears.
-	print(`[KillCam] up — watching ${body.GetFullName()} for ${string.format("%.2f", at - Workspace.GetServerTimeNow())}s`);
+	logInfo(`[KillCam] up — watching ${body.GetFullName()} for ${string.format("%.2f", at - Workspace.GetServerTimeNow())}s`);
 }
 
 /**
@@ -424,7 +425,7 @@ function release(reason: string): void {
 	returning = undefined;
 	deadline = 0;
 
-	print(`[KillCam] down — ${reason}`);
+	logInfo(`[KillCam] down — ${reason}`);
 }
 
 /**

@@ -1,8 +1,6 @@
 import { Controller, OnStart } from "@flamework/core";
 import { Players, ReplicatedStorage, RunService, UserInputService } from "@rbxts/services";
-
-/** Prints the mount line. The line that says this controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 
 /** The context and the action inside it. Named here because the Explore tree is how this is checked. */
 const CONTEXT_NAME = "AlternativeMovement";
@@ -131,8 +129,8 @@ export class AlternativeMovementController implements OnStart {
 		// completely different causes. One line per change — a press and its release are two — so
 		// pressing `U` and seeing nothing here is the whole diagnosis, and seeing `(0, 1)` here with a
 		// character that does not move means this file is fine and the fault is in the `Move` call.
-		if (DEBUG) {
-			action.StateChanged.Connect((state) => print(`[Move] ${ACTION_NAME} -> ${tostring(state)}`));
+		if (DEBUG_LOGGING) {
+			action.StateChanged.Connect((state) => logInfo(`[Move] ${ACTION_NAME} -> ${tostring(state)}`));
 		}
 
 		// **Scaffolding: what does the *client* see?** The `StateChanged` line above says whether the
@@ -160,11 +158,11 @@ export class AlternativeMovementController implements OnStart {
 		//
 		// **Keyboard only.** `InputBegan` fires for the mouse as well, and every button reports a
 		// `KeyCode` of `Unknown`, which would print a line per click for no reason.
-		if (DEBUG) {
+		if (DEBUG_LOGGING) {
 			UserInputService.InputBegan.Connect((input, gameProcessed) => {
 				if (input.UserInputType !== Enum.UserInputType.Keyboard) return;
 
-				print(`[Move] raw ${input.KeyCode.Name} — gameProcessed ${gameProcessed}`);
+				logInfo(`[Move] raw ${input.KeyCode.Name} — gameProcessed ${gameProcessed}`);
 			});
 		}
 
@@ -186,9 +184,9 @@ export class AlternativeMovementController implements OnStart {
 		// box, an alt-tab, a notification stealing focus, and any future binding on a key the operating
 		// system has an opinion about all produce the same reading, and it is a reading that is
 		// expensive to reconstruct from a log after the fact.
-		if (DEBUG) {
-			UserInputService.WindowFocusReleased.Connect(() => print(`[Move] window focus LOST`));
-			UserInputService.WindowFocused.Connect(() => print(`[Move] window focus back`));
+		if (DEBUG_LOGGING) {
+			UserInputService.WindowFocusReleased.Connect(() => logInfo(`[Move] window focus LOST`));
+			UserInputService.WindowFocused.Connect(() => logInfo(`[Move] window focus back`));
 		}
 
 		// **The humanoid is re-resolved per body; the *connection* is not.** `CharacterAdded` fires
@@ -259,7 +257,7 @@ export class AlternativeMovementController implements OnStart {
 			// again and would read as `0`. `WalkSpeed` and the focused text box ride along because they
 			// are the two legitimate reasons a held key moves nothing — a body that is not allowed to
 			// walk, and a keyboard that is typing rather than playing.
-			if (DEBUG) {
+			if (DEBUG_LOGGING) {
 				const held = MOVEMENT_KEYS.filter((key) => UserInputService.IsKeyDown(key));
 				const asked = humanoid !== undefined && humanoid.MoveDirection.Magnitude > 0;
 
@@ -272,7 +270,7 @@ export class AlternativeMovementController implements OnStart {
 
 					if (line !== lastKeyLine) {
 						lastKeyLine = line;
-						print(`[Move] keys — ${line}`);
+						logInfo(`[Move] keys — ${line}`);
 					}
 				}
 			}
@@ -312,7 +310,7 @@ export class AlternativeMovementController implements OnStart {
 			// **The check below is the point of the line and has to survive.** A line that prints every
 			// frame is not a report of anything, because a reader cannot pick out which of forty
 			// identical-looking lines was the one where something changed.
-			if (DEBUG) {
+			if (DEBUG_LOGGING) {
 				const line =
 					`state ${tostring(state)} (${typeOf(state)}) — humanoid ` +
 					`${humanoid === undefined ? "none" : (humanoid.Parent?.GetFullName() ?? "?")}, ` +
@@ -321,7 +319,7 @@ export class AlternativeMovementController implements OnStart {
 
 				if (line !== lastFrameLine) {
 					lastFrameLine = line;
-					print(`[Move] frame — ${line}`);
+					logInfo(`[Move] frame — ${line}`);
 				}
 			}
 
@@ -371,7 +369,7 @@ export class AlternativeMovementController implements OnStart {
 			// than whether it was asked to move. Once per press — `WalkSpeed` and the state ride along
 			// because they are the other two reasons a direction gets ignored, and they cost nothing
 			// to read here.
-			if (DEBUG && tostring(direction) !== lastCalled) {
+			if (DEBUG_LOGGING && tostring(direction) !== lastCalled) {
 				lastCalled = tostring(direction);
 
 				// Horizontal only: a character standing on the ground still reads a little vertical
@@ -379,7 +377,7 @@ export class AlternativeMovementController implements OnStart {
 				const velocity = humanoid.RootPart?.AssemblyLinearVelocity;
 				const speed = velocity === undefined ? -1 : new Vector3(velocity.X, 0, velocity.Z).Magnitude;
 
-				print(
+				logInfo(
 					`[Move] called ${direction} on ${humanoid.Parent?.Name ?? "?"} — MoveDirection reads ` +
 						`${humanoid.MoveDirection}, WalkSpeed ${humanoid.WalkSpeed}, ` +
 						`state ${humanoid.GetState().Name}, ground speed ${string.format("%.1f", speed)} studs/s`,
@@ -387,8 +385,8 @@ export class AlternativeMovementController implements OnStart {
 			}
 		});
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Move] up — ${CONTEXT_NAME}.${ACTION_NAME}, context priority ${CONTEXT_PRIORITY}, ` +
 					`bound to the render step at ${MOVE_PRIORITY}`,
 			);

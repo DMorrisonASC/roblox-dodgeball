@@ -1,6 +1,7 @@
 import { Flamework } from "@flamework/core";
 import { UserInputService } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
+import { logInfo } from "shared/logger";
 import { startChargeEffects } from "./chargeEffect";
 import { startReturnToLobbyPrompt } from "./returnToLobby";
 import { startKillCam } from "./killCam";
@@ -16,10 +17,18 @@ import { startPracticeCountdown } from "./practiceCountdown";
 import { startCelebration } from "./celebration";
 import { startMercyWarning } from "./mercyWarning";
 
-print("[client] igniting");
+logInfo("[client] igniting");
 Flamework.addPaths("src/client/controllers");
 Flamework.ignite();
-print("[client] ignited");
+logInfo("[client] ignited");
+
+// **The client's half of the logger's own boot check, and it is here rather than beside `[client] igniting` because a
+// line before `ignite` cannot prove much.** The gate lives in `shared/logger.ts`, which every compiled script carries
+// its own copy of — so "the module evaluates, and the flag it read says Studio" is a fact about *this* script's copy.
+// Putting it after the ignite means it also follows a full controller boot, which is the state the diagnostics it
+// guards actually run in. Silent on a live server, by design and not by accident: see the note at the same line in
+// `main.server.ts`.
+logInfo("[Boot] Logging active — running in Studio");
 
 // **The game's mouse sensitivity, written once, here, and nowhere else in the project.** This is a
 // *session* property rather than a saved setting, so "once at client start" is the whole of its lifecycle —
@@ -43,7 +52,7 @@ print("[client] ignited");
 UserInputService.MouseDeltaSensitivity = AIM_CONFIG.MOUSE_SENSITIVITY;
 
 // **Temporary, and the second of the two lines that make the IAS test deletable.** The other is the
-// import above. The file's own `DEBUG` flag is the off switch, so turning the test off does not
+// import above. The file's own `DEBUG_LOGGING` switch is the off switch, so turning the test off does not
 // involve editing the boot — only deleting the test does. See `IasTest` for what it decides.
 startIasTest();
 

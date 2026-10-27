@@ -2,14 +2,12 @@ import { Players, ReplicatedStorage, RunService, TweenService, UserInputService 
 import { AFK_CONFIG } from "shared/config/afk.config";
 import { ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
 import { events } from "shared/networking";
+import { logDebug } from "shared/logger";
 import { isParticipant } from "./roundZone";
 import { placeAbove } from "./ui/aboveStack";
 import { applyGlow } from "./ui/glow";
 import { PREMIUM, premiumHudTheme } from "./ui/premiumTheme";
 import { getHudScreenGui } from "./ui/screenGui";
-
-/** Prints the mount line and one line each time a countdown begins or is called off. */
-const DEBUG = false;
 
 /**
  * The card's width at rest, in pixels. **A fixed size rather than `AutomaticSize`**, because the bounce is a `Size`
@@ -144,7 +142,7 @@ export function startAfkWatcher(): void {
 
 	RunService.Heartbeat.Connect(() => tick());
 
-	if (DEBUG) print("[AFK] watching — a round, a focused window, and twenty seconds of nothing");
+	logDebug("[AFK] watching — a round, a focused window, and twenty seconds of nothing");
 }
 
 /**
@@ -220,7 +218,7 @@ function cancelCountdown(): void {
 
 	if (frame !== undefined) frame.Visible = false;
 
-	if (DEBUG) print("[AFK] countdown cancelled");
+	logDebug("[AFK] countdown cancelled");
 }
 
 /**
@@ -306,7 +304,7 @@ function tick(): void {
 		// the server refused).
 		lastActivityAt = os.clock();
 
-		if (DEBUG) print("[AFK] countdown reached zero — asked the server to return us to the lobby");
+		logDebug("[AFK] countdown reached zero — asked the server to return us to the lobby");
 
 		return;
 	}
@@ -334,7 +332,7 @@ function beginCountdown(now: number): void {
 	// what stops a frame of "...in 5" arriving after a frame of empty card.
 	showSecond(AFK_CONFIG.COUNTDOWN_SECONDS);
 
-	if (DEBUG) print(`[AFK] no input for ${AFK_CONFIG.IDLE_SECONDS}s — counting down`);
+	logDebug(`[AFK] no input for ${AFK_CONFIG.IDLE_SECONDS}s — counting down`);
 }
 
 /** Writes the sentence for one second of the countdown, and bounces the card. */

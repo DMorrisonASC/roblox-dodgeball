@@ -4,12 +4,10 @@ import Net from "@rbxts/net";
 import { ContextActionService, Players } from "@rbxts/services";
 import { BALL_NAME } from "shared/constants";
 import { events } from "shared/networking";
+import { logDebug } from "shared/logger";
 import { chargeStartedAt } from "../../throwing";
 
 const ACTION_NAME = "Catch";
-
-/** Prints each press and whether it went out. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The client half of the catch remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -76,7 +74,7 @@ export class CatchController implements OnStart {
 		// and the second listener cannot tell them apart. A press that reaches here
 		// prints `asking to catch`; one that does not prints nothing, and that is the
 		// whole answer.
-		if (DEBUG) print(`[Catch] E bound`);
+		logDebug(`[Catch] E bound`);
 	}
 
 	/**
@@ -105,7 +103,7 @@ export class CatchController implements OnStart {
 	public press(): boolean {
 		if (Fusion.peek(chargeStartedAt) !== undefined) {
 			chargeStartedAt.set(undefined);
-			if (DEBUG) print("[Catch] press cancelled the throw");
+			logDebug("[Catch] press cancelled the throw");
 			return true;
 		}
 
@@ -122,7 +120,7 @@ export class CatchController implements OnStart {
 		const character = this.player.Character;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		if (!character || !humanoid || humanoid.Health <= 0) {
-			if (DEBUG) print(`[Catch] nothing to catch with`);
+			logDebug(`[Catch] nothing to catch with`);
 			return false;
 		}
 
@@ -135,11 +133,11 @@ export class CatchController implements OnStart {
 		// Asked of the character rather than of any list, because a held ball *is* a child of the
 		// character.
 		if (character.FindFirstChild(BALL_NAME)) {
-			if (DEBUG) print(`[Catch] refused — a ball is already in hand`);
+			logDebug(`[Catch] refused — a ball is already in hand`);
 			return false;
 		}
 
-		if (DEBUG) print(`[Catch] asking to catch`);
+		logDebug(`[Catch] asking to catch`);
 
 		this.getCatchRemote().SendToServer();
 		return true;

@@ -39,6 +39,7 @@ import { MATCH_JOIN_POLL_SECONDS, MATCH_MIN_PLAYERS } from "../../config/match.c
 import { DevService } from "../../dev/DevService";
 import { NPC_TAG } from "../../npc/Behavior";
 import { PRACTICE_THROW_TAG } from "shared/constants";
+import { logInfo, logWarn } from "shared/logger";
 import { lobbySpawnPartsFor } from "../../npc/lobbySpawns";
 import { rigCounts, rigsOnASide, sideOfRig } from "../../npc/rigs";
 import { playSpawnPoof } from "../../vfx/spawnPoof";
@@ -540,7 +541,7 @@ export class RoundService implements OnStart {
             // project destroys exactly two things it did not create, both by tag — `RespawnBehavior`
             // takes the model it manages, and `BallSpawnerService` takes anything wearing the round's
             // ball tag. `carrying no tags` rules both out in the same line.
-            print(
+            logInfo(
                 `[Round] ${ARENA_CONFIG.LOBBY_SPAWN_NAME} (${descendant.ClassName}) was removed from ` +
                     `${parent !== undefined ? parent.GetFullName() : "a parent that was already detached"}` +
                     `${tags.size() > 0 ? `, carrying the tag(s) ${tags.join(", ")}` : ", carrying no tags"}` +
@@ -560,7 +561,7 @@ export class RoundService implements OnStart {
             // ever been authored inside one — and nothing tears anything down per round any more. What
             // is left is this project's two tag-driven destroys, neither of which can reach a part that
             // is not wearing its tag.
-            print(`[Round] ${ARENA_CONFIG.LOBBY_SPAWN_NAME} removal traceback:\n${debug.traceback()}`);
+            logInfo(`[Round] ${ARENA_CONFIG.LOBBY_SPAWN_NAME} removal traceback:\n${debug.traceback()}`);
         });
 
         // Handle players already in game (Studio playtest)
@@ -622,7 +623,7 @@ export class RoundService implements OnStart {
     public startMatch(mode: GameMode): void {
         this.pendingMatch = mode;
 
-        print(`[Round] match requested — ${GAME_MODE_NAMES[mode.id]}`);
+        logInfo(`[Round] match requested — ${GAME_MODE_NAMES[mode.id]}`);
     }
 
     /**
@@ -639,7 +640,7 @@ export class RoundService implements OnStart {
      */
     private requestMatch(player: Player): void {
         if (this.state !== RoundState.Intermission) {
-            print(`[Round] ${player.Name} asked for a match — one is already being played`);
+            logInfo(`[Round] ${player.Name} asked for a match — one is already being played`);
 
             return;
         }
@@ -648,7 +649,7 @@ export class RoundService implements OnStart {
             const counts = this.matches.countsFor();
             const rigs = rigCounts();
 
-            print(
+            logInfo(
                 `[Round] ${player.Name} asked for a match — refused, needs ${MATCH_MIN_PLAYERS} bodies` +
                     ` with one a side (players A ${counts.a}, B ${counts.b}; rigs A ${rigs.a}, B ${rigs.b})`,
             );
@@ -713,7 +714,7 @@ export class RoundService implements OnStart {
         const raw = args[1];
 
         if (side === undefined || raw === undefined) {
-            print(`[Round] ${asker.Name}: score needs a side and a value — !dev score <a|b> <points> [<other>]`);
+            logInfo(`[Round] ${asker.Name}: score needs a side and a value — !dev score <a|b> <points> [<other>]`);
 
             return;
         }
@@ -721,7 +722,7 @@ export class RoundService implements OnStart {
         const team = side === "a" ? TEAM_A : side === "b" ? TEAM_B : undefined;
 
         if (team === undefined) {
-            print(`[Round] ${asker.Name}: score refused — "${side}" is not a side; use a or b`);
+            logInfo(`[Round] ${asker.Name}: score refused — "${side}" is not a side; use a or b`);
 
             return;
         }
@@ -729,7 +730,7 @@ export class RoundService implements OnStart {
         const points = pointsOf(raw);
 
         if (points === undefined) {
-            print(`[Round] ${asker.Name}: score refused — "${raw}" is not a whole number of points`);
+            logInfo(`[Round] ${asker.Name}: score refused — "${raw}" is not a whole number of points`);
 
             return;
         }
@@ -738,19 +739,19 @@ export class RoundService implements OnStart {
         const otherPoints = otherRaw === undefined ? undefined : pointsOf(otherRaw);
 
         if (otherRaw !== undefined && otherPoints === undefined) {
-            print(`[Round] ${asker.Name}: score refused — "${otherRaw}" is not a whole number of points`);
+            logInfo(`[Round] ${asker.Name}: score refused — "${otherRaw}" is not a whole number of points`);
 
             return;
         }
 
         if (!this.mode.scores) {
-            print(`[Round] ${asker.Name}: score refused — ${GAME_MODE_NAMES[this.mode.id]} keeps no score`);
+            logInfo(`[Round] ${asker.Name}: score refused — ${GAME_MODE_NAMES[this.mode.id]} keeps no score`);
 
             return;
         }
 
         if (this.state !== RoundState.Playing || this.finished) {
-            print(`[Round] ${asker.Name}: score refused — no round is being played; scores are cleared at every boundary`);
+            logInfo(`[Round] ${asker.Name}: score refused — no round is being played; scores are cleared at every boundary`);
 
             return;
         }
@@ -765,7 +766,7 @@ export class RoundService implements OnStart {
         const pointsB = this.scores.get(TEAM_B) ?? 0;
         const lead = math.abs(pointsA - pointsB);
 
-        print(
+        logInfo(
             `[Round] ${asker.Name}: score set — A ${pointsA}, B ${pointsB} ` +
                 `(lead ${lead}, ${thresholdOf(lead)})`,
         );
@@ -1187,7 +1188,7 @@ export class RoundService implements OnStart {
         // player and that both halves went. A round full of admissions from the lobby stays quiet, because there was
         // nothing in their hands to begin with.
         if (droppedBall || hadArm) {
-            print(`[Round] ${player.Name}: admitted — held ball and armed power cleared`);
+            logInfo(`[Round] ${player.Name}: admitted — held ball and armed power cleared`);
         }
 
         this.abilities.resetForRound(player);
@@ -1211,7 +1212,7 @@ export class RoundService implements OnStart {
         // arrived and where is the only trace of why the counts moved. It now lands *after* the cover rather
         // than instantly, which is the second thing it records: the gap between this line's timestamp and the
         // wipe's is how a reader tells a covered admission from an uncovered one.
-        print(
+        logInfo(
             `[Round] ${player.Name}: joined mid-round — side ${side}, ` +
                 `${character ? "on the arena spawn" : "their body lands on that side's spawn when it arrives"}`,
         );
@@ -1370,12 +1371,12 @@ export class RoundService implements OnStart {
             const pointsA = this.scores.get(TEAM_A) ?? 0;
             const pointsB = this.scores.get(TEAM_B) ?? 0;
 
-            print(`[Round] score — A ${pointsA}, B ${pointsB}`);
+            logInfo(`[Round] score — A ${pointsA}, B ${pointsB}`);
 
             const mercy = mercyWinner(this.scores);
 
             if (mercy !== undefined) {
-                print(
+                logInfo(
                     `[Round] ${sideNameOf(this.mode.id, mercy)} won by mercy rule ` +
                         `(${GAME_MODE_CONFIG.MERCY_RULE_LEAD}-point lead)`,
                 );
@@ -1495,7 +1496,7 @@ export class RoundService implements OnStart {
         this.scores.clear();
         this.publishScores();
 
-        print(`[Round] ${result}`);
+        logInfo(`[Round] ${result}`);
     }
 
     /**
@@ -1783,7 +1784,7 @@ export class RoundService implements OnStart {
             // `ROUND_TRANSITION_ATTRIBUTE` for why the cue is per player at all.
             for (const player of roster) this.bumpTransition(player);
 
-            print(
+            logInfo(
                 `[Round] transition — cover in ${TRANSITION_COVER_SECONDS}s, then the move, ` +
                     `then ${TRANSITION_OPEN_SECONDS}s to open`,
             );
@@ -1897,7 +1898,7 @@ export class RoundService implements OnStart {
             if (character) this.speeds.addModifier(character, ARENA_FREEZE_KEY, ARENA_FREEZE_SPEED);
         }
 
-        print(
+        logInfo(
             `[Round] arena freeze — ${frozen.size()} player(s) held from the landing, ` +
                 `${ARENA_CONFIG.ARENA_FREEZE_SECONDS}s`,
         );
@@ -1928,7 +1929,7 @@ export class RoundService implements OnStart {
             if (character) this.speeds.removeModifier(character, ARENA_FREEZE_KEY);
         }
 
-        print(
+        logInfo(
             `[Round] arena freeze lifted — held ${string.format("%.2f", held)}s, ` +
                 `${Players.GetPlayers().size()} player(s)`,
         );
@@ -2085,7 +2086,7 @@ export class RoundService implements OnStart {
         // state because those are the two conditions guarding those two returns, so one line
         // separates "never got here" from "got here and stopped" — and which stop it was.
         if (DEBUG_CONFIG.VERBOSE_LOGS) {
-            print(
+            logInfo(
                 `[Round] ${player.Name} died — state ${RoundState[this.state]}, ` +
                     `in the round ${this.activePlayers.has(player)}`,
             );
@@ -2255,7 +2256,7 @@ export class RoundService implements OnStart {
             this.matches.release(player);
             this.eliminate(player);
 
-            print(`[Round] ${player.Name} returned to the lobby — a rig takes their place, rewards halved`);
+            logInfo(`[Round] ${player.Name} returned to the lobby — a rig takes their place, rewards halved`);
         });
     }
 
@@ -2290,7 +2291,7 @@ export class RoundService implements OnStart {
 
         playSpawnPoof(player.Character);
 
-        print(`[AFK] ${player.Name}: returned to lobby after ${AFK_CONFIG.IDLE_SECONDS}s of inactivity`);
+        logInfo(`[AFK] ${player.Name}: returned to lobby after ${AFK_CONFIG.IDLE_SECONDS}s of inactivity`);
 
         this.surrender(player);
     }
@@ -3002,7 +3003,7 @@ export class RoundService implements OnStart {
         // prints as `in a practice zone — carried on past them`.
         if (this.teamOf(thrower) === undefined || this.teamOf(catcher) === undefined) {
             if (DEBUG_CONFIG.VERBOSE_LOGS) {
-                print(`[Round] ${catcher.Name}: catch not resolved — the thrower is not in this round`);
+                logInfo(`[Round] ${catcher.Name}: catch not resolved — the thrower is not in this round`);
             }
 
             return;
@@ -3111,7 +3112,7 @@ export class RoundService implements OnStart {
         events.Server.Get("caughtThrow").SendToAllPlayers(drill.Name, catcher.Name);
         humanoid.TakeDamage(CATCH_DEATH_DAMAGE);
 
-        print(`[Round] ${drill.Name}: throw caught by ${catcher.Name} — the drill goes down`);
+        logInfo(`[Round] ${drill.Name}: throw caught by ${catcher.Name} — the drill goes down`);
     }
 
     /**
@@ -3164,7 +3165,7 @@ export class RoundService implements OnStart {
         if (!this.lobbyLogged) {
             this.lobbyLogged = true;
 
-            print(`[Round] lobby spawns resolved — ${folder.GetFullName()}, ${parts.size()} candidates`);
+            logInfo(`[Round] lobby spawns resolved — ${folder.GetFullName()}, ${parts.size()} candidates`);
         }
 
         // The same lift everything else uses — see `liftOf`, which is where the three studs and the reason
@@ -3269,14 +3270,14 @@ export class RoundService implements OnStart {
             const lobby = this.lobbySpawn();
 
             if (lobby !== undefined) {
-                if (waiting) print(`[Round] ${ARENA_CONFIG.LOBBY_SPAWNS_FOLDER} found — the intermission can run`);
+                if (waiting) logInfo(`[Round] ${ARENA_CONFIG.LOBBY_SPAWNS_FOLDER} found — the intermission can run`);
                 return lobby;
             }
 
             if (!waiting) {
                 waiting = true;
 
-                warn(
+                logWarn(
                     `[Round] no usable lobby in "${ARENA_CONFIG.ARENA_NAME}" — holding the intermission until ` +
                         `there is one. Everybody is standing in the arena, and there is nowhere else to put ` +
                         `them until "${ARENA_CONFIG.LOBBY_SPAWNS_FOLDER}" has parts in it. ` +
@@ -3469,7 +3470,7 @@ export class RoundService implements OnStart {
             // left standing on the court while everybody else is in the lobby is indistinguishable from this
             // line being wrong, so the line says which it was.
             if (!character) {
-                print(`[Round] lobby move — ${player.Name} has no body to move; their next body lands in the lobby`);
+                logInfo(`[Round] lobby move — ${player.Name} has no body to move; their next body lands in the lobby`);
 
                 continue;
             }
@@ -3491,7 +3492,7 @@ export class RoundService implements OnStart {
         // up somewhere else is a different one, and only this line tells the two apart.
         const at = to.Position;
 
-        print(
+        logInfo(
             `[Round] lobby move — ${moved.size()} bod(ies) of ${roster.size()} to ` +
                 `(${string.format("%.1f", at.X)}, ${string.format("%.1f", at.Y)}, ${string.format("%.1f", at.Z)})` +
                 (moved.size() > 0 ? `: ${moved.join(", ")}` : ""),
@@ -3639,7 +3640,7 @@ export class RoundService implements OnStart {
         // boundary moving too early (see `transitionAround` on the promote window), the second is a seat that
         // was never filled. One line per round start, beside `[Rig] up — N placeholder rig(s)` at boot, is what
         // makes a short move visible: a round of eight bodies that reads `6 rig(s)` here is the finding.
-        print(`[Round] arena move — ${movedPlayers} player(s) and ${movedRigs} rig(s) to their side's spawn`);
+        logInfo(`[Round] arena move — ${movedPlayers} player(s) and ${movedRigs} rig(s) to their side's spawn`);
     }
 
     /**
@@ -3745,10 +3746,10 @@ export class RoundService implements OnStart {
         }
 
         // **One line for the whole round, and only when there was something to say.** A ball left in
-        // a hand when the round ends is worth a line, so this is not hidden behind `DEBUG`; an
+        // a hand when the round ends is worth a line, so this is not hidden behind `DEBUG_LOGGING`; an
         // intermission that cleared nothing prints nothing, so the line appearing at all is the
         // evidence that the cleanup had work to do.
-        if (cleared > 0) print(`[Round] cleared ${cleared} held balls`);
+        if (cleared > 0) logInfo(`[Round] cleared ${cleared} held balls`);
     }
 
     private async gameLoop() {
@@ -3794,7 +3795,7 @@ export class RoundService implements OnStart {
                 player.SetAttribute(IN_ROUND_ATTRIBUTE, undefined);
             }
 
-            print("Intermission started");
+            logInfo("Intermission started");
 
             // **The phase goes out here, before anything that can hold, and that is a reversal.**
             //
@@ -4117,7 +4118,7 @@ export class RoundService implements OnStart {
                 // is the derivation a rig-only round starts on. A rig-only start therefore prints two zeroes
                 // under "players" and two under "rigs" — the honest shape of a match with no people in it —
                 // rather than a bare `A: 0, B: 0` that reads as a fault.
-                print(
+                logInfo(
                     `[Round] starting on its own — the ${ARENA_CONFIG.INTERMISSION_SECONDS}s intermission ` +
                         `ran out (players A: ${counts.a}, B: ${counts.b}; rigs A: ${rigs.a}, B: ${rigs.b})`,
                 );
@@ -4200,7 +4201,7 @@ export class RoundService implements OnStart {
             // `problem` is never `undefined` here while the arena is — which means one message and one
             // `continue` cover both halves, and the compiler is told what the reader can already see.
             if (arena === undefined || problem !== undefined) {
-                print(`[Round] cannot start — ${problem}. Waiting for another match.`);
+                logInfo(`[Round] cannot start — ${problem}. Waiting for another match.`);
 
                 continue;
             }
@@ -4259,7 +4260,7 @@ export class RoundService implements OnStart {
             const spawnsA = spawnFolderFor(arena, TEAM_A);
             const spawnsB = spawnFolderFor(arena, TEAM_B);
 
-            print(
+            logInfo(
                 `[Round] arena resolved — ${arena.GetFullName()}; ` +
                     `spawns ${spawnsA !== undefined ? spawnsA.GetFullName() : "missing"} and ` +
                     `${spawnsB !== undefined ? spawnsB.GetFullName() : "missing"}`,
@@ -4391,7 +4392,7 @@ export class RoundService implements OnStart {
             // reset itself does not do this.
             this.abilities.refreshCrowns();
 
-            print(`Round started — ${GAME_MODE_NAMES[this.mode.id]}`);
+            logInfo(`Round started — ${GAME_MODE_NAMES[this.mode.id]}`);
 
             this.timeRemaining = ARENA_CONFIG.ROUND_SECONDS;
             this.statusFolder.SetAttribute(ROUND_STATE_ATTRIBUTE, "Playing");

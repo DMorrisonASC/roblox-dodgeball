@@ -3,10 +3,8 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { AFTERIMAGE_WINDOW_ATTRIBUTE } from "shared/constants";
 import { CAMERA_ZOOM_CONFIG } from "shared/config/cameraZoom.config";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { sprinting } from "../../sprinting";
-
-/** Prints once when the controller is up, and on every change of what the camera is following. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** How close to the target counts as arrived, in degrees. See {@link CameraZoomController.step}. */
 const SETTLED_DEGREES = 0.01;
@@ -86,8 +84,8 @@ export class CameraZoomController implements OnStart {
 		// reach for `os.clock` (CPU time in this engine — a trap `ThrowProbe.ts` records).
 		RunService.RenderStepped.Connect((delta) => this.step(delta));
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[CameraZoom] up — ${CAMERA_ZOOM_CONFIG.SPRINT_DEGREES}° while sprinting,` +
 					` ${CAMERA_ZOOM_CONFIG.DODGE_DEGREES}° while dodging`,
 			);
@@ -137,7 +135,7 @@ export class CameraZoomController implements OnStart {
 
 		this.dodging = open;
 
-		if (DEBUG) print(`[CameraZoom] dodge window ${open ? "open" : "closed"}`);
+		logDebug(`[CameraZoom] dodge window ${open ? "open" : "closed"}`);
 	}
 
 	/**

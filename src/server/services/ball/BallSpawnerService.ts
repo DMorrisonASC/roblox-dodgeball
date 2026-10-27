@@ -4,14 +4,12 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { MATCH_SPAWNER_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { LOGGING_ENABLED, logInfo } from "shared/logger";
 import { MATCH_BALL_COUNT } from "../../config/match.config";
 import { insideZoneAt } from "../zone/PracticeZoneService";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallFactory } from "./BallFactory";
 import { BallService } from "./BallService";
-
-/** Prints a line when the round's balls are cleared, and nothing else. */
-const DEBUG = true;
 
 /**
  * **The tag that marks a ball as one of the match's own** — the spawner's, counted against the budget.
@@ -166,8 +164,8 @@ export class BallSpawnerService implements OnStart {
 		const tagged = CollectionService.GetTagged(MATCH_SPAWNER_TAG);
 		const parts = taggedPartsInWorkspace(MATCH_SPAWNER_TAG);
 
-		if (DEBUG) {
-			print(
+		if (LOGGING_ENABLED) {
+			logInfo(
 				`[Spawner] up — watching ${ROUND_STATUS_FOLDER}.${ROUND_STATE_ATTRIBUTE}, ${MATCH_SPAWNER_TAG}:` +
 					` ${tagged.size()} tagged thing(s), ${parts.size()} usable part(s)`,
 			);
@@ -382,7 +380,7 @@ export class BallSpawnerService implements OnStart {
 			cleared++;
 		}
 
-		if (DEBUG) print(`[Spawner] round over — cleared ${cleared} ball(s)`);
+		logInfo(`[Spawner] round over — cleared ${cleared} ball(s)`);
 	}
 
 	/** The phase the round is in, as `RoundService` last published it. */

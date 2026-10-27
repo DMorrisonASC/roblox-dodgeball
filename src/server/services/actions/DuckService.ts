@@ -5,15 +5,13 @@ import { CATCH_READY_AT, DODGE_READY_AT, DUCKING_ATTRIBUTE, DUCK_READY_AT } from
 import { resolveDodgeable } from "shared/dodge";
 import { DUCK_GROUP, duckExemptParts, setDuckGroup } from "shared/duck";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { lockoutElapsed } from "./actionLock";
 import { extendReadyAt, publishReadyAt } from "./readyAt";
 import type { CatchState } from "./DodgeService";
 import { DodgeService } from "./DodgeService";
 import { FreezeService } from "./FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
-
-/** Prints every duck, every refusal and every exemption. Off never — a duck is a handful of lines a round. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The duck's two numbers, **read from the config that both machines share.**
@@ -227,19 +225,19 @@ export class DuckService implements OnStart, DuckState {
 			// to tell them apart. See `DodgeService.blocksDodge` for the same rule stated from the other
 			// side — *"a refusal that says how far past the action it happened turns 'not allowed' into a
 			// measurement"*.
-			warn(`[Duck] ${model.Name}: refused — no living humanoid`);
+			logWarn(`[Duck] ${model.Name}: refused — no living humanoid`);
 			return false;
 		}
 
 		const now = os.clock();
 
 		if (this.ducks.has(model)) {
-			if (DEBUG) print(`[Duck] ${model.Name}: refused — already ducking`);
+			logDebug(`[Duck] ${model.Name}: refused — already ducking`);
 			return false;
 		}
 
 		if (this.freezes.isFrozen(model)) {
-			if (DEBUG) print(`[Duck] ${model.Name}: refused — frozen`);
+			logDebug(`[Duck] ${model.Name}: refused — frozen`);
 			return false;
 		}
 
@@ -247,12 +245,12 @@ export class DuckService implements OnStart, DuckState {
 		// would be a body anchored part-way through a 15-stud move, which reads as a dodge that stopped;
 		// refusing is also what makes "committed" true in the direction a player will try first.
 		if (this.dodges.isDodging(model)) {
-			if (DEBUG) print(`[Duck] ${model.Name}: refused — mid-dash`);
+			logDebug(`[Duck] ${model.Name}: refused — mid-dash`);
 			return false;
 		}
 
 		if (this.catchState?.isCatching(model) === true) {
-			if (DEBUG) print(`[Duck] ${model.Name}: refused — a catch window is open`);
+			logDebug(`[Duck] ${model.Name}: refused — a catch window is open`);
 			return false;
 		}
 
@@ -265,8 +263,8 @@ export class DuckService implements OnStart, DuckState {
 		// one of them is worth chasing.
 		const sinceDodge = lockoutElapsed(this.dodges.getLastDodgeEndTime(model));
 		if (sinceDodge !== undefined) {
-			if (DEBUG) {
-				print(
+			if (DEBUG_LOGGING) {
+				logInfo(
 					`[Duck] ${model.Name}: refused — the dash ended ` +
 						`${string.format("%.2f", sinceDodge)}s ago`,
 				);
@@ -277,8 +275,8 @@ export class DuckService implements OnStart, DuckState {
 
 		const sinceCatch = lockoutElapsed(this.catchState?.getLastCatchWindowCloseTime(model));
 		if (sinceCatch !== undefined) {
-			if (DEBUG) {
-				print(
+			if (DEBUG_LOGGING) {
+				logInfo(
 					`[Duck] ${model.Name}: refused — the catch window closed ` +
 						`${string.format("%.2f", sinceCatch)}s ago`,
 				);
@@ -289,14 +287,14 @@ export class DuckService implements OnStart, DuckState {
 
 		const last = this.lastDuckAt.get(model);
 		if (last !== undefined && now - last < DUCK_COOLDOWN_SECONDS) {
-			if (DEBUG) print(`[Duck] ${model.Name}: refused — ${string.format("%.2f", DUCK_COOLDOWN_SECONDS - (now - last))}s of cooldown left`);
+			logDebug(`[Duck] ${model.Name}: refused — ${string.format("%.2f", DUCK_COOLDOWN_SECONDS - (now - last))}s of cooldown left`);
 			return false;
 		}
 
 		// The ground, which is `FloorMaterial` rather than a state: a body in the air reports `Air`, and
 		// every state where a body is standing reports what it is standing on.
 		if (humanoid.FloorMaterial === Enum.Material.Air) {
-			if (DEBUG) print(`[Duck] ${model.Name}: refused — not on the ground`);
+			logDebug(`[Duck] ${model.Name}: refused — not on the ground`);
 			return false;
 		}
 
@@ -350,8 +348,8 @@ export class DuckService implements OnStart, DuckState {
 			this.stopDuck(model, "time");
 		});
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Duck] ${model.Name}: ducking for ${string.format("%.2f", DUCK_DURATION_SECONDS)}s ` +
 					`(cooldown ${string.format("%.2f", DUCK_COOLDOWN_SECONDS)}s, ` +
 					`${previousGroups.size()} part(s) out of the way)`,
@@ -392,6 +390,6 @@ export class DuckService implements OnStart, DuckState {
 		// is a different one after a respawn, so the stamp is about the body that ducked and no more.
 		this.lastDuckEndAt.set(model, os.clock());
 
-		if (DEBUG) print(`[Duck] ${model.Name}: duck over — ${reason}`);
+		logDebug(`[Duck] ${model.Name}: duck over — ${reason}`);
 	}
 }

@@ -1,11 +1,28 @@
 import { Flamework } from "@flamework/core";
 import { Players } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
+import { logInfo } from "shared/logger";
 import { startCollisionGroups } from "./collision/CollisionGroups";
 import { auditRigTemplates } from "./npc/rigTemplate";
 import { startSpawnShield } from "./services/character/SpawnShield";
 
-print("[main] igniting");
+logInfo("[main] igniting");
+
+/**
+ * **The one line that says the logger is alive, and it is deliberately the first thing the server prints.**
+ *
+ * Every diagnostic in this game now goes through `shared/logger.ts`, and the failure mode of a logging pass is
+ * silence: if the gate were wrong in the *other* direction — `IS_STUDIO` reading false in a playtest, a bad import, a
+ * typo in the flag — the game would look and play exactly as it should and simply say nothing about it. A player would
+ * not notice, a round would still complete, and the next diagnosis would start from an empty Output panel with no way
+ * to tell "nothing happened" from "nothing is being printed".
+ *
+ * **It says *in Studio* because that is the scope of the claim.** `logInfo` is silent on a live server by design, so
+ * this line cannot appear there — which is the correct behaviour and not a defect. What it confirms is the half that
+ * is meant to talk: the Output panel in a playtest. `logError` is the half that survives production, and its
+ * persistence call sites are what confirm that side.
+ */
+logInfo("[Boot] Logging active — running in Studio");
 
 // **Before `ignite()`, and the ordering is the point rather than the tidiness.** A service's
 // `onStart` runs inside `Flamework.ignite()`, and `RoundService` is one of them — it puts the arena's
@@ -56,7 +73,7 @@ Flamework.ignite();
 // would read as though it did — the delay that matters is the one `RoundService` asks `RespawnService` for.
 Players.CharacterAutoLoads = false;
 
-print(
+logInfo(
 	`[main] respawn — CharacterAutoLoads false,` +
 		` ${ARENA_CONFIG.RESPAWN_DELAY_SECONDS}s in-round delay`,
 );
@@ -113,4 +130,4 @@ print(
 // or predeceasing the round is a fact about bodies, not about rounds.
 startSpawnShield();
 
-print("[main] ignited");
+logInfo("[main] ignited");

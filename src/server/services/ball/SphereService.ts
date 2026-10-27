@@ -2,6 +2,7 @@ import { Service } from "@flamework/core";
 import { MaterialService, Workspace } from "@rbxts/services";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { TrailEffect, TrailOptions } from "shared/TrailEffect";
+import { logWarn } from "shared/logger";
 
 /** Everything you can customise when asking for a sphere. */
 export interface SphereOptions {
@@ -111,7 +112,7 @@ export class SphereService {
                 const names = new Array<string>();
                 for (const child of MaterialService.GetChildren()) names.push(child.Name);
 
-                warn(
+                logWarn(
                     `[Ball] no MaterialVariant named "${wanted}" under MaterialService — the balls fall ` +
                         `back to BALL_CONFIG.BALL_MATERIALS. MaterialService holds: ` +
                         `${names.isEmpty() ? "nothing" : names.join(", ")}`,

@@ -1,9 +1,7 @@
 import { Debris, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { CatchCause } from "shared/constants";
 import { CATCH_CONFIG } from "shared/config/catch.config";
-
-/** Prints one line per effect played, and one per template that is not there. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 
 /**
  * The two template names in `ReplicatedStorage`, and **the whole of the contract with them.**
@@ -159,22 +157,22 @@ export function playCatchShockwave(body: Model, cause: CatchCause | undefined): 
 		// goes quiet is indistinguishable, from the seat, from code that never ran.
 		if (!warnedTemplates.has(templateName)) {
 			warnedTemplates.add(templateName);
-			warn(`[VFX] no ${templateName} in ReplicatedStorage — that catch effect will not play`);
+			logWarn(`[VFX] no ${templateName} in ReplicatedStorage — that catch effect will not play`);
 
 			// **And then what it can see**, because "no template" is the half of the answer nobody can act on: the
 			// two ways to get here — the thing is not there, and the thing is there under another name or in
 			// another container — look identical from one line of prose. The report below distinguishes them, and
 			// it runs once per name, which is what pays for the walk inside it.
-			for (const line of nearMissReport()) warn(`[VFX] ${line}`);
+			for (const line of nearMissReport()) logWarn(`[VFX] ${line}`);
 		}
 
-		if (DEBUG) print(`[VFX] ${body.Name}: ${cause}, but no ${templateName} template to clone`);
+		logDebug(`[VFX] ${body.Name}: ${cause}, but no ${templateName} template to clone`);
 		return;
 	}
 
 	const root = body.FindFirstChild(ANCHOR_PART);
 	if (root === undefined || !root.IsA("BasePart")) {
-		if (DEBUG) print(`[VFX] ${body.Name}: ${cause}, but no ${ANCHOR_PART} to attach it to`);
+		logDebug(`[VFX] ${body.Name}: ${cause}, but no ${ANCHOR_PART} to attach it to`);
 		return;
 	}
 
@@ -233,7 +231,7 @@ export function playCatchShockwave(body: Model, cause: CatchCause | undefined): 
 	const declared = clone.IsA("Model") ? clone.PrimaryPart : undefined;
 	const anchor = declared ?? first;
 	if (anchor === undefined) {
-		if (DEBUG) print(`[VFX] ${body.Name}: the ${templateName} template has no parts to weld`);
+		logDebug(`[VFX] ${body.Name}: the ${templateName} template has no parts to weld`);
 		return;
 	}
 
@@ -275,14 +273,14 @@ export function playCatchShockwave(body: Model, cause: CatchCause | undefined): 
 	// every line above can read as success while the emitter itself is set up in a way that produces no
 	// pixels: `Rate` and `Lifetime` decide whether anything is emitted, `Size` and `Transparency` whether
 	// it can be seen. None of that is visible from the code, and all of it is one print.
-	if (DEBUG && !describedTemplates.has(templateName)) {
+	if (DEBUG_LOGGING && !describedTemplates.has(templateName)) {
 		describedTemplates.add(templateName);
 
 		if (emitters.isEmpty()) {
-			print(`[VFX] the ${templateName} template holds no ParticleEmitter — there is nothing to fire`);
+			logInfo(`[VFX] the ${templateName} template holds no ParticleEmitter — there is nothing to fire`);
 		}
 
-		for (const emitter of emitters) print(`[VFX] emitter ${emitter.Name}: ${describeEmitter(emitter)}`);
+		for (const emitter of emitters) logInfo(`[VFX] emitter ${emitter.Name}: ${describeEmitter(emitter)}`);
 	}
 
 	// **And every emitter is locked to the carrier** — the one property in this file that is set on an emitter
@@ -328,8 +326,8 @@ export function playCatchShockwave(body: Model, cause: CatchCause | undefined): 
 	// seen" arrive as the same line without it. **And the cause and the template are on it because that is the
 	// question this log exists to answer**: two effects fire from one attribute, so a line naming neither would
 	// leave "did the catch draw the green" to be inferred from colours on a screen.
-	if (DEBUG) {
-		print(
+	if (DEBUG_LOGGING) {
+		logInfo(
 			`[VFX] ${body.Name}: ${cause} — ${templateName} on ${ANCHOR_PART} — ` +
 				`${emitters.size()} emitter(s) x ${EMIT_COUNT}`,
 		);

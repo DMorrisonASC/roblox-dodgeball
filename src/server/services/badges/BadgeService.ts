@@ -2,6 +2,7 @@ import { Service } from "@flamework/core";
 import { CollectionService, Players } from "@rbxts/services";
 import { BADGES_ATTRIBUTE, CROWN_ATTRIBUTE, NPC_TAG } from "shared/constants";
 import { Badge, badgeById, encodeBadges } from "shared/badges";
+import { logInfo } from "shared/logger";
 import { DRAW, RoundOutcome, TeamLabel } from "../round/team";
 import type { RoundParticipant } from "../round/modes/GameMode";
 
@@ -342,7 +343,7 @@ export class BadgeService {
 				const ribbed = new Array<string>();
 				for (const award of awards) ribbed.push(award.badge.id);
 
-				print(
+				logInfo(
 					`[Badge] ${subject.name}: nothing shown — ` +
 						`only rib badges (${encodeBadges(ribbed)}), and a rib alone is public shame`,
 				);
@@ -402,7 +403,7 @@ export class BadgeService {
 
 		this.pending = [];
 
-		print(
+		logInfo(
 			`[Badge] published — ${written} bod(ies), ${wearing} wearing something` +
 				(gone > 0 ? `, ${gone} gone before the write` : ""),
 		);
@@ -417,7 +418,7 @@ export class BadgeService {
 		task.delay(BADGE_WINDOW_SECONDS, () => {
 			if (this.sweepToken !== token) return;
 
-			print(`[Badge] window closed — ${BADGE_WINDOW_SECONDS}s`);
+			logInfo(`[Badge] window closed — ${BADGE_WINDOW_SECONDS}s`);
 			this.clearAll();
 		});
 	}
@@ -647,7 +648,7 @@ export class BadgeService {
 	/** One line per badge, which is the whole of how this system is checkable from a log. */
 	private report(subject: BadgeSubject, awards: ReadonlyArray<Award>): void {
 		for (const award of awards) {
-			print(`[Badge] ${subject.name}: ${award.badge.id} — ${award.reason}`);
+			logInfo(`[Badge] ${subject.name}: ${award.badge.id} — ${award.reason}`);
 		}
 	}
 

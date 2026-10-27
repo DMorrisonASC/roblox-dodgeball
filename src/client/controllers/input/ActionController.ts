@@ -2,11 +2,9 @@ import { Controller, OnStart } from "@flamework/core";
 import Net from "@rbxts/net";
 import { ContextActionService } from "@rbxts/services";
 import { events } from "shared/networking";
+import { logDebug } from "shared/logger";
 
 const DROP_ACTION = "DropBall";
-
-/** Prints the bind once, and each press. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The client half of the remote, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -50,7 +48,7 @@ export class ActionController implements OnStart {
 		// "the key does nothing" has two completely different causes — the bind never
 		// happened, or the press never arrived — and this is the line that tells them
 		// apart. If it is missing from the output, nothing below it can be trusted.
-		if (DEBUG) print(`[Action] 1 bound (drop)`);
+		logDebug(`[Action] 1 bound (drop)`);
 	}
 
 	/**
@@ -59,7 +57,7 @@ export class ActionController implements OnStart {
 	 * on the wire are one implementation rather than two that have to agree.
 	 */
 	public drop(): void {
-		if (DEBUG) print(`[Action] asked to drop`);
+		logDebug(`[Action] asked to drop`);
 
 		this.getDropRemote().SendToServer();
 	}

@@ -2,11 +2,9 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { CATCH_ANIMATION_ATTRIBUTE } from "shared/constants";
 import { events } from "shared/networking";
+import { logDebug } from "shared/logger";
 import { createActionSplash } from "./ui/actionSplash";
 import { getHudScreenGui } from "./ui/screenGui";
-
-/** Prints once at boot, and one line per confirmation. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * # The action splash — "HIT!" and "CAUGHT IT!", Wii Sports style
@@ -105,7 +103,7 @@ export function startHitConfirm(): void {
 	// **Said at boot**, for the reason `hitVfx` says its own: a module with a subscription and no Flamework
 	// controller around it is started by hand from `main.client.ts`, and a toast that never fires and one that
 	// was never wired print the same nothing.
-	if (DEBUG) print(`[HUD] splash up — "${HIT_TEXT}" … "${WIPEOUT_TEXT}" on a throw I land, "${CATCH_TEXT}" on every catch`);
+	logDebug(`[HUD] splash up — "${HIT_TEXT}" … "${WIPEOUT_TEXT}" on a throw I land, "${CATCH_TEXT}" on every catch`);
 
 	const scope = Fusion.scoped();
 
@@ -175,7 +173,7 @@ export function startHitConfirm(): void {
 
 			splash.pop(text);
 
-			if (DEBUG) print(`[HUD] splash — ${text} (${count} hit(s)${power ? ", power" : ""})`);
+			logDebug(`[HUD] splash — ${text} (${count} hit(s)${power ? ", power" : ""})`);
 		});
 	});
 
@@ -196,13 +194,13 @@ export function startHitConfirm(): void {
 
 		splash.pop(WIPEOUT_TEXT);
 
-		if (DEBUG) print(`[HUD] splash — ${WIPEOUT_TEXT}`);
+		logDebug(`[HUD] splash — ${WIPEOUT_TEXT}`);
 	});
 
 	watchOwnCatch(() => {
 		splash.pop(CATCH_TEXT);
 
-		if (DEBUG) print(`[HUD] splash — ${CATCH_TEXT}`);
+		logDebug(`[HUD] splash — ${CATCH_TEXT}`);
 	});
 }
 

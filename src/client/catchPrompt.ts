@@ -1,9 +1,7 @@
 import { Players, Workspace } from "@rbxts/services";
 import { BALL_NAME, BALL_TAGGED_TEAM_ATTRIBUTE, TEAM_ATTRIBUTE } from "shared/constants";
+import { logDebug } from "shared/logger";
 import { styleSplashText } from "./ui/actionSplash";
-
-/** Prints that the prompt is up, and every ball it decides about. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** What the prompt is called, on the ball's `BillboardGui` and as the name a stray one is found by. */
 const PROMPT_NAME = "CatchPrompt";
@@ -81,7 +79,7 @@ export function startCatchPrompt(): void {
 	// Said at boot, for `hitVfx`'s reason: a module with a subscription and no controller around it is started by
 	// hand from `main.client.ts`, and a prompt that never appears and one that was never wired print the same
 	// nothing.
-	if (DEBUG) print(`[HUD] catch prompt up — "${PROMPT_TEXT}" over a ball that has tagged my side`);
+	logDebug(`[HUD] catch prompt up — "${PROMPT_TEXT}" over a ball that has tagged my side`);
 
 	/** Every live ball this module has attached a listener to, so a side change can re-answer for all of them. */
 	const watched = new Set<BasePart>();

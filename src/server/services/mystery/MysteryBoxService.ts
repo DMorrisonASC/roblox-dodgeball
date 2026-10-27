@@ -11,6 +11,7 @@ import {
 	ROUND_STATUS_FOLDER,
 } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { LOGGING_ENABLED, logInfo, logWarn } from "shared/logger";
 import { EconomyService } from "../economy/EconomyService";
 import { SuperService } from "../super/SuperService";
 import { insideZoneAt } from "../zone/PracticeZoneService";
@@ -23,9 +24,6 @@ import {
 	recolourMysteryBoxVfx,
 } from "../../vfx/mysteryBoxVfx";
 import type { MysteryBoxVfx } from "../../vfx/mysteryBoxVfx";
-
-/** Prints every box raised, every collection and every sweep. */
-const DEBUG = true; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.
@@ -281,7 +279,7 @@ export class MysteryBoxService implements OnStart {
 		let zoned = 0;
 		for (const spawn of spawns) if (insideZoneAt(spawn.Position)) zoned += 1;
 
-		print(
+		logInfo(
 			`[Mystery] up — watching RoundStatus.State, ${MYSTERY_SPAWN_TAG}: ${spawns.size()} tagged thing(s),` +
 				` ${zoned} on a practice floor`,
 		);
@@ -294,7 +292,7 @@ export class MysteryBoxService implements OnStart {
 		// somebody who did not know they had to change it can find out which part to change.
 		const queryable = spawns.filter((spawn) => spawn.CanQuery);
 		if (!queryable.isEmpty()) {
-			warn(
+			logWarn(
 				`[Mystery] ${queryable.size()} ${MYSTERY_SPAWN_TAG} part(s) still CanQuery — the aim guide will hit them: ` +
 					queryable.map((spawn) => spawn.GetFullName()).join(", "),
 			);
@@ -422,7 +420,7 @@ export class MysteryBoxService implements OnStart {
 			this.boxes.delete(spawn);
 			live.box.Destroy();
 
-			if (DEBUG) print(`[Mystery] a ${MYSTERY_SPAWN_TAG} part left the world — its box went with it`);
+			logInfo(`[Mystery] a ${MYSTERY_SPAWN_TAG} part left the world — its box went with it`);
 		}
 	}
 
@@ -571,8 +569,8 @@ export class MysteryBoxService implements OnStart {
 		// "is the loop already running" belongs in the one function they share rather than at each of them.
 		this.startMotion();
 
-		if (DEBUG) {
-			print(`[Mystery] box up at ${spawn.GetFullName()}${inZone ? " (practice floor)" : ""}`);
+		if (LOGGING_ENABLED) {
+			logInfo(`[Mystery] box up at ${spawn.GetFullName()}${inZone ? " (practice floor)" : ""}`);
 		}
 	}
 
@@ -643,7 +641,7 @@ export class MysteryBoxService implements OnStart {
 		if (kind === undefined) {
 			live.refused.add(player);
 
-			if (DEBUG) print(`[Mystery] ${player.Name}: owns no powers — nothing to grant, box left standing`);
+			logInfo(`[Mystery] ${player.Name}: owns no powers — nothing to grant, box left standing`);
 
 			return;
 		}
@@ -654,8 +652,8 @@ export class MysteryBoxService implements OnStart {
 		if (!this.windows.holdMysteryPrize(player, kind)) {
 			live.refused.add(player);
 
-			if (DEBUG) {
-				print(`[Mystery] ${player.Name}: rolled ${kind} with a prize already held — the box stays`);
+			if (LOGGING_ENABLED) {
+				logInfo(`[Mystery] ${player.Name}: rolled ${kind} with a prize already held — the box stays`);
 			}
 
 			return;
@@ -690,7 +688,7 @@ export class MysteryBoxService implements OnStart {
 		// avoids is a *fast* loop on top of a rule that is already correct at the slow one.
 		if (live.inZone) this.scheduleRestock(spawn);
 
-		if (DEBUG) print(`[Mystery] ${player.Name}: ${kind}, held until the power is used`);
+		logInfo(`[Mystery] ${player.Name}: ${kind}, held until the power is used`);
 	}
 
 	/**
@@ -722,8 +720,8 @@ export class MysteryBoxService implements OnStart {
 		if (pendingAbilityOn(model) !== undefined) {
 			live.refused.add(model);
 
-			if (DEBUG) {
-				print(`[Mystery] ${model.Name}: already holding a pending ability — the box stays`);
+			if (LOGGING_ENABLED) {
+				logInfo(`[Mystery] ${model.Name}: already holding a pending ability — the box stays`);
 			}
 
 			return;
@@ -752,7 +750,7 @@ export class MysteryBoxService implements OnStart {
 
 		if (live.inZone) this.scheduleRestock(spawn);
 
-		if (DEBUG) print(`[Mystery] ${model.Name}: ${kind} — pending, applied to the rig's next throw`);
+		logInfo(`[Mystery] ${model.Name}: ${kind} — pending, applied to the rig's next throw`);
 	}
 
 	/**
@@ -886,7 +884,7 @@ export class MysteryBoxService implements OnStart {
 			live.box.Destroy();
 		}
 
-		if (DEBUG) print(`[Mystery] ${swept.size()} field box(es) swept — ${reason}`);
+		logInfo(`[Mystery] ${swept.size()} field box(es) swept — ${reason}`);
 	}
 
 	/**
@@ -1022,7 +1020,7 @@ export class MysteryBoxService implements OnStart {
 			if (!live.box.IsDescendantOf(Workspace)) {
 				this.boxes.delete(spawn);
 
-				if (DEBUG) print(`[Mystery] a box was removed from the world — its row went with it`);
+				logInfo(`[Mystery] a box was removed from the world — its row went with it`);
 
 				return;
 			}

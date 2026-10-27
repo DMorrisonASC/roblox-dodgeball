@@ -4,14 +4,12 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { ARENA_CONFIG } from "shared/config/arena.config";
 import { COINS_ATTRIBUTE, ROUND_EARNED_COINS_ATTRIBUTE } from "shared/constants";
+import { logDebug } from "shared/logger";
 import { pushNotification } from "../../notifications";
 import { killCamActive } from "../../panels";
 import { applyGlow } from "../../ui/glow";
 import { PREMIUM } from "../../ui/premiumTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
-
-/** Prints once, when the readout is up — the line that says the controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The coin readout: one line under the shop button, showing the wallet the server owns.
@@ -132,6 +130,6 @@ export class CurrencyHudController implements OnStart {
 		label.Parent = wrapper;
 		wrapper.Parent = getHudScreenGui();
 
-		if (DEBUG) print(`[HUD] coin readout up — reading ${COINS_ATTRIBUTE} on the player`);
+		logDebug(`[HUD] coin readout up — reading ${COINS_ATTRIBUTE} on the player`);
 	}
 }

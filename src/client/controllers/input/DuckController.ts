@@ -3,9 +3,7 @@ import Net from "@rbxts/net";
 import { ContextActionService, Players } from "@rbxts/services";
 import { DUCKING_ATTRIBUTE } from "shared/constants";
 import { events } from "shared/networking";
-
-/** Prints the press and whether the request went out. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { logDebug } from "shared/logger";
 
 /**
  * The action name the duck is bound under.
@@ -68,7 +66,7 @@ export class DuckController implements OnStart {
 				// server's, and each of those refuses out loud.
 				const character = this.player.Character;
 				if (!character) {
-					if (DEBUG) print(`[Duck] no character to duck with`);
+					logDebug(`[Duck] no character to duck with`);
 					return Enum.ContextActionResult.Pass;
 				}
 
@@ -78,13 +76,13 @@ export class DuckController implements OnStart {
 				// deliberate swallow prints. The attribute is the authority and this is a read of it, not a
 				// second copy of the state.
 				if (character.GetAttribute(DUCKING_ATTRIBUTE) === true) {
-					if (DEBUG) print(`[Duck] ${this.player.Name}: already ducking — press swallowed`);
+					logDebug(`[Duck] ${this.player.Name}: already ducking — press swallowed`);
 					return Enum.ContextActionResult.Sink;
 				}
 
 				this.getDuckRemote().SendToServer();
 
-				if (DEBUG) print(`[Duck] ${this.player.Name}: asked to duck`);
+				logDebug(`[Duck] ${this.player.Name}: asked to duck`);
 
 				return Enum.ContextActionResult.Sink;
 			},
@@ -100,7 +98,7 @@ export class DuckController implements OnStart {
 		// listener on `Z`: `ContextActionService` marks the inputs it consumes as processed too, so a press
 		// that works and a press the chat ate report the same thing and the second listener cannot tell them
 		// apart.
-		if (DEBUG) print(`[Duck] ${Enum.KeyCode.Z.Name} bound — ${ACTION_NAME}`);
+		logDebug(`[Duck] ${Enum.KeyCode.Z.Name} bound — ${ACTION_NAME}`);
 	}
 
 	/**

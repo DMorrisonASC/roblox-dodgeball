@@ -3,6 +3,7 @@ import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
 import { BALL_NAME } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 import { BEHAVIOR_DODGING, NpcBehavior } from "../Behavior";
 import type { DodgeService } from "../../services/actions/DodgeService";
 import type { BallService } from "../../services/ball/BallService";
@@ -18,8 +19,6 @@ import type { BallService } from "../../services/ball/BallService";
  * aimed at this rig** — see the roll in `tick` for why it is once and not once per turn, which is what
  * this doc used to assume. See `note` for the line itself.
  */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
-
 /**
  * The attribute that makes a ball dangerous, spelled the way its owner spells it.
  *
@@ -458,14 +457,14 @@ export function makeDodgeBehavior(
 	 * is something else entirely.
 	 */
 	const note = (model: Model, root: BasePart, threat: BasePart, what: string): void => {
-		if (!DEBUG) return;
+		if (!DEBUG_LOGGING) return;
 
 		const velocity = threat.AssemblyLinearVelocity;
 		const speed = math.sqrt(velocity.X * velocity.X + velocity.Z * velocity.Z);
 		const distance = root.Position.sub(threat.Position).Magnitude;
 		const where = model.GetFullName();
 
-		print(
+		logInfo(
 			`[Dodge] ${where}: ${what} — ${threat.Name} at ${string.format("%.1f", distance)} studs doing ` +
 				`${string.format("%.1f", speed)} studs/s`,
 		);

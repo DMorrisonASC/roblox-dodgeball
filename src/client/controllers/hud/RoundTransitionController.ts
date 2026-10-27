@@ -3,10 +3,8 @@ import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService } from "@rbxts/services";
 import { TRANSITION_CONFIG } from "shared/config/transition.config";
 import { ROUND_TRANSITION_ATTRIBUTE } from "shared/constants";
+import { logDebug } from "shared/logger";
 import { getTransitionScreenGui } from "../../ui/screenGui";
-
-/** Prints when a wipe starts and when it comes off, which is how a wipe is told from a round without one. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The grid's container, named so a leftover can be found by name in the Explorer. */
 const CONTAINER_NAME = "RoundTransitionGrid";
@@ -180,7 +178,7 @@ export class RoundTransitionController implements OnStart {
 			}),
 		);
 
-		if (DEBUG) print(`[Transition] watching ${ROUND_TRANSITION_ATTRIBUTE} on ${player.Name} — mounted at ${last}`);
+		logDebug(`[Transition] watching ${ROUND_TRANSITION_ATTRIBUTE} on ${player.Name} — mounted at ${last}`);
 	}
 
 	/**
@@ -340,7 +338,7 @@ export class RoundTransitionController implements OnStart {
 
 				stage = "hold";
 
-				if (DEBUG) print(`[Transition] covered — ${elapsed}s`);
+				logDebug(`[Transition] covered — ${elapsed}s`);
 
 				return;
 			}
@@ -353,7 +351,7 @@ export class RoundTransitionController implements OnStart {
 
 				stage = "reveal";
 
-				if (DEBUG) print(`[Transition] revealing — ${elapsed + held}s`);
+				logDebug(`[Transition] revealing — ${elapsed + held}s`);
 
 				return;
 			}
@@ -402,7 +400,7 @@ export class RoundTransitionController implements OnStart {
 
 			this.running = false;
 
-			if (DEBUG) print(`[Transition] revealed — ${elapsed + held + revealElapsed}s`);
+			logDebug(`[Transition] revealed — ${elapsed + held + revealElapsed}s`);
 		});
 	}
 }

@@ -4,15 +4,13 @@ import type { TypographyVariant } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { LAST_HIT_BY_ATTRIBUTE, RESPAWN_AT_ATTRIBUTE } from "shared/constants";
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 import { killCamActive } from "../../panels";
 import { splashStyle, styleSplashText } from "../../ui/actionSplash";
 import type { SplashStyle } from "../../ui/actionSplash";
 import { PREMIUM } from "../../ui/premiumTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
-
-/** Prints once, when the countdown is up — the line that says the controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The element's width, and **the bound the attacker's line is truncated to.**
@@ -402,8 +400,8 @@ export class RespawnHudController implements OnStart {
 			}),
 		);
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[HUD] respawn countdown up — reading ${RESPAWN_AT_ATTRIBUTE} and ${LAST_HIT_BY_ATTRIBUTE} ` +
 					`on the player`,
 			);

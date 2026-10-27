@@ -11,12 +11,10 @@ import {
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
 import { teamColourOf } from "shared/gameMode";
+import { logDebug } from "shared/logger";
 import { OUTLINE_CONFIG } from "../../config/outline.config";
 import { NPC_TAG } from "../../npc/Behavior";
 import { sideOfRig } from "../../npc/rigs";
-
-/** Prints a line as an outline is put on. Silent about the ones that were already there. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What the outline is called, and the whole of how one is recognised again.
@@ -439,7 +437,7 @@ function applyOutline(target: Instance): void {
 	highlight.Adornee = target;
 	highlight.Parent = target;
 
-	if (DEBUG) print(`[Outline] ${target.Name}: outlined`);
+	logDebug(`[Outline] ${target.Name}: outlined`);
 }
 
 /**
@@ -527,7 +525,7 @@ function paintRig(rig: Model, playing: boolean): void {
 
 	highlight.OutlineColor = colour;
 
-	if (DEBUG) print(`[Outline] ${rig.Name}: ${side !== undefined ? `side ${side}` : "no side"}`);
+	logDebug(`[Outline] ${rig.Name}: ${side !== undefined ? `side ${side}` : "no side"}`);
 }
 
 /**

@@ -16,6 +16,7 @@ import { NPC_CONFIG } from "shared/config/npc.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import { findFolder } from "shared/find";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { logInfo, logWarn } from "shared/logger";
 import { MATCH_MAX_PER_TEAM } from "../../config/match.config";
 // The poof helper, called at the six moments this file changes a body's existence: `spawnLobbyRig` and
 // `spawnArenaRig` (a rig appears), `retireRig` (a rig is destroyed), `parkRig` (a rig leaves the field) and
@@ -492,7 +493,7 @@ export class LobbyRigService implements OnStart {
 		if (padsB.size() === 0) missing.push(`a part tagged ${MATCH_JOIN_B_TAG}`);
 
 		if (pool.models.size() === 0 || spawns.size() === 0 || padsA.size() === 0 || padsB.size() === 0) {
-			warn(
+			logWarn(
 				`[Rig] no placeholder rigs — the place is missing ${missing.join(", and ")}. ` +
 					`Nothing is spawned and nothing is retried; add it and restart.`,
 			);
@@ -520,7 +521,7 @@ export class LobbyRigService implements OnStart {
 		// not a rig is never drawn — see `rigPool.ts`'s `usableModels` — so the usable count is how many *faces*
 		// the lobby can show, while the folder's own count is beside it to say how many are being passed over.
 		// A single count here would be the one number a reader could not check the outcome against.
-		print(
+		logInfo(
 			`[Rig] pool — ${poolNames} name(s), ${usableModels} usable model(s) (${pool.models.size()} in ` +
 				`the folder) for ${count} rig(s)`,
 		);
@@ -541,7 +542,7 @@ export class LobbyRigService implements OnStart {
 					? `${pool.models.size()} model(s) available`
 					: `${usableModels} model(s) usable out of ${pool.models.size()} in the folder`;
 
-			warn(
+			logWarn(
 				`[Rig] pool — ${count} seat(s) to fill and ${poolNames} name(s) / ${supplied}: the seats are ` +
 					`filled anyway, so a face is in use twice at once. Add a model to ` +
 					`ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}" to make every placeholder look different.`,
@@ -555,7 +556,7 @@ export class LobbyRigService implements OnStart {
 		// because renaming a place-file model is not something this service can do and guessing which of the two
 		// was meant is not a guess worth making.
 		if (pool.duplicatedNames.size() > 0) {
-			warn(
+			logWarn(
 				`[Rig] pool — ServerStorage."${NPC_CONFIG.RIG_POOL_FOLDER}" holds more than one model named ` +
 					`"${pool.duplicatedNames.join('", "')}"; they share one source model, so the folder holds ` +
 					`fewer distinct faces than its model count says. Rename them.`,
@@ -568,7 +569,7 @@ export class LobbyRigService implements OnStart {
 		// that would ignore a parked model, so a template left in `ServerStorage` can pick up a trail it never
 		// earned — which is why this reports rather than assumes. See `poolModelWarnings`.
 		const inherited = poolModelWarnings(pool.models);
-		if (inherited !== undefined) warn(inherited);
+		if (inherited !== undefined) logWarn(inherited);
 
 		// **The whole lobby is seeded first, and a player already in the server then takes a seat out of it —
 		// which is the seeding rule, in two steps.** The lobby's size is a fact about the *match*, not about the
@@ -625,7 +626,7 @@ export class LobbyRigService implements OnStart {
 		if (zones.b === 0) missingZones.push(SIDE_KEEP_OUT_B_TAG);
 
 		if (missingZones.size() > 0) {
-			warn(
+			logWarn(
 				`[Rig] no part is tagged ${missingZones.join(" or ")} — a rig holding that side fetches ` +
 					`nothing and stands still for the whole round. Tag one box on each side of the court, ` +
 					`covering the floor a rig on that side can walk; the box is where that side may fetch from.`,
@@ -709,7 +710,7 @@ export class LobbyRigService implements OnStart {
 			return;
 		}
 
-		print(
+		logInfo(
 			`[Rig] lobby held — nothing is spawned until somebody joins, and then ` +
 				`${string.format("%.0f", NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS)}s later`,
 		);
@@ -755,7 +756,7 @@ export class LobbyRigService implements OnStart {
 
 		const delay = NPC_CONFIG.INITIAL_SPAWN_DELAY_SECONDS;
 
-		print(`[Rig] lobby fill in ${string.format("%.0f", delay)}s — ${first} is the first player here`);
+		logInfo(`[Rig] lobby fill in ${string.format("%.0f", delay)}s — ${first} is the first player here`);
 
 		task.spawn(() => {
 			if (delay > 0) task.wait(delay);
@@ -769,7 +770,7 @@ export class LobbyRigService implements OnStart {
 			// made. The seats are not lost: `rebalance` fills the arena while the round is on, and the lobby
 			// is filled from empty by the same poll when the whistle goes for the intermission.
 			if (this.phase() === PLAYING) {
-				print("[Rig] lobby fill skipped — the round opened first, so the seats are filled in the arena");
+				logInfo("[Rig] lobby fill skipped — the round opened first, so the seats are filled in the arena");
 
 				this.rebalance();
 
@@ -902,7 +903,7 @@ export class LobbyRigService implements OnStart {
 		// reader who expects `8 seat(s)` to mean `8 rig(s)` is looking at the fault this method was rewritten
 		// for, and the two figures side by side is what says the deficit was applied. There is no stand-down
 		// to read beside it any more, because nothing is built to be stood down.
-		print(
+		logInfo(
 			`[Rig] up — ${made} placeholder rig(s) for ${present.size()} player(s) of ${count} seat(s) ` +
 				`(${openA} open on A, ${openB} on B), ` +
 				`${spawns.size()} lobby spawn(s), pads ${padsA.size()} + ${padsB.size()}, ` +
@@ -1123,7 +1124,7 @@ export class LobbyRigService implements OnStart {
 			this.writePadWalk(rig, short);
 			rig.AddTag(BEHAVIOR_WALK_TO_JOIN_PAD);
 
-			print(`[Rig] ${rig.Name}: side ${over} is full — sent to ${short} instead`);
+			logInfo(`[Rig] ${rig.Name}: side ${over} is full — sent to ${short} instead`);
 		}
 	}
 
@@ -1293,7 +1294,7 @@ export class LobbyRigService implements OnStart {
 				// same trace in the output as one that did not. The figures are the ones read above, so
 				// the line names the shortfall rather than the repair.
 				if (rig !== undefined) {
-					print(
+					logInfo(
 						`[Rig] refill — ${rig.Name} to side ${side} ` +
 							`(seats held before: A ${heldA}, B ${heldB})`,
 					);
@@ -1482,7 +1483,7 @@ export class LobbyRigService implements OnStart {
 
 		rig.Destroy();
 
-		print(
+		logInfo(
 			`[Rig] ${name}: ${what} — ` +
 				(source === undefined ? "no source model recorded" : `"${source}" back in the pool`),
 		);
@@ -1524,7 +1525,7 @@ export class LobbyRigService implements OnStart {
 		this.parked.push(rig);
 
 		const from = source === undefined ? "no source model recorded" : `"${source}" kept for it`;
-		print(`[Rig] ${name}: ${what} — parked (${this.parked.size()} waiting, ${from})`);
+		logInfo(`[Rig] ${name}: ${what} — parked (${this.parked.size()} waiting, ${from})`);
 	}
 
 	/**
@@ -1645,7 +1646,7 @@ export class LobbyRigService implements OnStart {
 			playSpawnPoof(rig);
 			this.npcs.announcePlaced(rig);
 
-			print(
+			logInfo(
 				`[Rig] ${rig.Name}: back on side ${side} (arena spawn)` +
 					(holdGameplay ? " — held for the arena freeze" : ""),
 			);
@@ -1662,7 +1663,7 @@ export class LobbyRigService implements OnStart {
 		// and when it was reported as happening mid-round there was nothing in the output to say what this
 		// service had believed. Read once, here, purely for the message: the caller's `playing` is what the
 		// placement used, so the two disagreeing is the finding rather than a cause of one.
-		print(`[Rig] ${rig.Name}: back on side ${side}'s pad (phase "${this.phase()}")`);
+		logInfo(`[Rig] ${rig.Name}: back on side ${side}'s pad (phase "${this.phase()}")`);
 
 		return true;
 	}
@@ -2025,9 +2026,9 @@ export class LobbyRigService implements OnStart {
 		// the only evidence that the seat was filled at the moment it was freed. A spawn that failed has
 		// already said why, so this says that it was the seat that went without rather than repeating it.
 		if (rig === undefined) {
-			print(`[Rig] ${player.Name}: left — the seat on ${seat} is empty (no rig could be spawned)`);
+			logInfo(`[Rig] ${player.Name}: left — the seat on ${seat} is empty (no rig could be spawned)`);
 		} else {
-			print(`[Rig] ${player.Name}: left — ${rig.Name} takes the seat on ${seat}`);
+			logInfo(`[Rig] ${player.Name}: left — ${rig.Name} takes the seat on ${seat}`);
 		}
 	}
 
@@ -2211,7 +2212,7 @@ export class LobbyRigService implements OnStart {
 		// **Said out loud, because this is the one seat that changes meaning silently.** A reader of the
 		// next log wants to know whether the round absorbed a reservation or ignored it, and the count is
 		// the only place that is visible.
-		print(
+		logInfo(
 			`[Rig] round start — ${count} pending seat(s) released: the roster is taken at the whistle, ` +
 				`so a player who has not chosen by now is holding nothing until they do`,
 		);
@@ -2545,7 +2546,7 @@ export class LobbyRigService implements OnStart {
 		}
 
 		if (promoted > 0) {
-			print(`[Rig] round start — ${promoted} rig(s) still walking were put on a side and into the round`);
+			logInfo(`[Rig] round start — ${promoted} rig(s) still walking were put on a side and into the round`);
 		}
 
 		// **And the round is made full in the same breath, rather than a cover later.** `refillAtRoundStart`
@@ -2726,7 +2727,7 @@ export class LobbyRigService implements OnStart {
 			// sixteen lines of a log that is read by a person looking for a rig that is not doing what it
 			// should — so the per-rig line is the useful one, and a "N rigs" line above them would be a
 			// second way to say the same thing. Not per tick, and not per tag: the transition is the event.
-			print(
+			logInfo(
 				`[Rig] ${rig.Name}: ${on ? "playing — six behaviours on" : "standing down — behaviours off"}`,
 			);
 		}
@@ -3098,7 +3099,7 @@ export class LobbyRigService implements OnStart {
 		// away; two rigs wearing one model is what a short folder *must* produce, and the whole of the question
 		// "why does the same body keep appearing" is answered by which of the two it is — a repeat (this
 		// sentence) or the folder holding two models that look alike (not this file's to see).
-		print(
+		logInfo(
 			`[Rig] ${draw.name}: from "${draw.template.Name}" — lobby spawn, side ${side}` +
 				(draw.repeatedFace ? " — every model is in use, so this face repeats" : ""),
 		);
@@ -3196,7 +3197,7 @@ export class LobbyRigService implements OnStart {
 		// of a folder that is already fully worn is a duplicate a reader would otherwise have to infer from
 		// two lines minutes apart. See `drawRigIdentity` — a repeat is the price of a folder smaller than the
 		// lobby, and the least-worn face is what it is spent on.
-		print(
+		logInfo(
 			(holdGameplay
 				? `[Rig] ${draw.name}: from "${draw.template.Name}" — held for the arena freeze (${side}, arena spawn)`
 				: `[Rig] ${draw.name}: from "${draw.template.Name}" — six behaviours on (${side}, arena spawn)`) +
@@ -3411,7 +3412,7 @@ export class LobbyRigService implements OnStart {
 		const side = sideOfRig(rig) ?? this.sideForWalker(preferred, rig);
 
 		if (side !== preferred) {
-			print(
+			logInfo(
 				`[Rig] ${rig.Name}: side ${preferred} has no room for this seat — walking to ${side}'s pad instead`,
 			);
 		}
@@ -3540,7 +3541,7 @@ export class LobbyRigService implements OnStart {
 		if (this.reported.has(key)) return;
 
 		this.reported.add(key);
-		warn(message);
+		logWarn(message);
 	}
 
 	/**

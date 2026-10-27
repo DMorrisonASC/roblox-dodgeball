@@ -7,6 +7,7 @@ import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, THROW_WALK_ATTRIBUTE } f
 import type { ThrowWalk } from "shared/constants";
 import { pendingAbilityOn } from "shared/ability";
 import { resolveDodgeable } from "shared/dodge";
+import { logInfo } from "shared/logger";
 import { claim, claimedBy, release } from "../ballClaims";
 import { detectEnemy } from "../detect";
 import { fetchRegionFor, insideZone } from "../sideZones";
@@ -591,7 +592,7 @@ export function createSeekBehavior(
 					seek.outside.add(ball);
 
 					if (DEBUG_CONFIG.VERBOSE_LOGS) {
-						print(
+						logInfo(
 							`[Rig] ${rig.Name}: skipped a ball outside ${region.label} — ` +
 								`${string.format("%.0f", distance)} studs away`,
 						);
@@ -723,7 +724,7 @@ export function createSeekBehavior(
 
 			endSprint(model, seek);
 
-			print(`[Rig] ${model.Name}: sprint ended — the walk it was for stopped being ticked`);
+			logInfo(`[Rig] ${model.Name}: sprint ended — the walk it was for stopped being ticked`);
 		});
 
 		// The edge: everything below happens once per walk, everything above happens once per turn.
@@ -743,7 +744,7 @@ export function createSeekBehavior(
 		// behaviour is identical either way: the sprint is still started, the watchdog is still armed, and the
 		// line was only ever a report of the edge.
 		if (DEBUG_CONFIG.VERBOSE_LOGS) {
-			print(`[Rig] ${model.Name}: sprinting to a ball — ${string.format("%.0f", distance)} studs`);
+			logInfo(`[Rig] ${model.Name}: sprinting to a ball — ${string.format("%.0f", distance)} studs`);
 		}
 	};
 
@@ -815,7 +816,7 @@ export function createSeekBehavior(
 		// Gated with the sprint line above — see there for the measurement and the reason. The draw is not
 		// gated: `seek.curve` is written above this, so the walk still curves whatever the log is set to.
 		if (DEBUG_CONFIG.VERBOSE_LOGS) {
-			print(
+			logInfo(
 				`[Rig] ${model.Name}: walk curving — amplitude ` +
 					`${string.format("%.1f", amplitude)}° ` +
 					`(${string.format("%.1f", lateral)} studs here), period ${string.format("%.1f", period)} s`,
@@ -921,7 +922,7 @@ export function createSeekBehavior(
 		seek.sidestep = root.Position.add(sideways.mul(NPC_CONFIG.PANIC_SIDESTEP_STUDS * side));
 		seek.shuffleUntil = now + NPC_CONFIG.PANIC_SHUFFLE_SECONDS;
 
-		print(
+		logInfo(
 			`[Rig] ${model.Name}: shuffling — ${enemy.model.Name} armed at ` +
 				`${string.format("%.0f", enemy.distance)} studs`,
 		);
@@ -977,7 +978,7 @@ export function createSeekBehavior(
 		seek.jumpedAt = now;
 		humanoid.Jump = true;
 
-		print(`[Rig] ${model.Name}: jump — ${enemy.model.Name} at ${string.format("%.0f", enemy.distance)} studs`);
+		logInfo(`[Rig] ${model.Name}: jump — ${enemy.model.Name} at ${string.format("%.0f", enemy.distance)} studs`);
 	};
 
 	/**
@@ -1190,7 +1191,7 @@ export function createSeekBehavior(
 			seek.pickupWalkDirection = direction;
 			seek.pickupWalkUntil = now + NPC_CONFIG.PICKUP_WALK_SECONDS;
 
-			print(`[Rig] ${model.Name}: ${reason}`);
+			logInfo(`[Rig] ${model.Name}: ${reason}`);
 
 			// **And the walk it was making is over, which is what makes this a *new* movement rather than the old
 			// one.** The claim on the ball it just took has nothing left to do, the sprint is off anyway because the
@@ -1486,7 +1487,7 @@ export function createSeekBehavior(
 				if (free) {
 					const distance = box.Position.sub(root.Position).Magnitude;
 
-					print(
+					logInfo(
 						`[Rig] ${model.Name}: going for a mystery box — ` +
 							`${string.format("%.0f", distance)} studs`,
 					);

@@ -3,9 +3,7 @@ import Fusion from "@rbxts/fusion-3.0";
 import { ContentProvider, ReplicatedStorage, RunService, SoundService } from "@rbxts/services";
 import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, ROUND_TIME_ATTRIBUTE } from "shared/constants";
-
-/** Prints the mount line, every cue, and one line per fade boundary. The lines the Studio acceptance run reads. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 
 /**
  * The two phases this controller cares about, spelled out.
@@ -303,14 +301,14 @@ export class MusicController implements OnStart {
 			roundMusic.Volume = writtenRound;
 			roundMusic.Play();
 
-			if (DEBUG) print(`[Music] mounted into a round — round audio up at ${string.format("%.2f", writtenRound)}`);
+			logDebug(`[Music] mounted into a round — round audio up at ${string.format("%.2f", writtenRound)}`);
 		}
 
 		ContentProvider.PreloadAsync([intermissionMusic, roundMusic, beep, whistle], (contentId, status_) => {
 			if (status_ !== Enum.AssetFetchStatus.Success) {
-				warn(`[Music] sound did not load — ${contentId} (${status_.Name})`);
-			} else if (DEBUG) {
-				print(`[Music] sound loaded — ${contentId}`);
+				logWarn(`[Music] sound did not load — ${contentId} (${status_.Name})`);
+			} else if (DEBUG_LOGGING) {
+				logInfo(`[Music] sound loaded — ${contentId}`);
 			}
 		});
 
@@ -323,8 +321,8 @@ export class MusicController implements OnStart {
 				if (value === INTERMISSION && lastPhase !== INTERMISSION) {
 					fadeInElapsed = 0;
 
-					if (DEBUG) {
-						print(`[Music] ${INTERMISSION} — fading in over ${AUDIO_CONFIG.INTERMISSION_FADE_IN_SECONDS}s`);
+					if (DEBUG_LOGGING) {
+						logInfo(`[Music] ${INTERMISSION} — fading in over ${AUDIO_CONFIG.INTERMISSION_FADE_IN_SECONDS}s`);
 					}
 				}
 
@@ -356,8 +354,8 @@ export class MusicController implements OnStart {
 					roundMusic.Volume = writtenRound;
 					roundMusic.Play();
 
-					if (DEBUG) {
-						print(`[Music] ${PLAYING} — round audio rising over ${AUDIO_CONFIG.ROUND_FADE_IN_SECONDS}s`);
+					if (DEBUG_LOGGING) {
+						logInfo(`[Music] ${PLAYING} — round audio rising over ${AUDIO_CONFIG.ROUND_FADE_IN_SECONDS}s`);
 					}
 				}
 
@@ -387,8 +385,8 @@ export class MusicController implements OnStart {
 					// existing to tell them.
 					whistle.Play();
 
-					if (DEBUG) {
-						print(`[Music] ${value} — music out at ${string.format("%.2f", writtenRound)}, whistle`);
+					if (DEBUG_LOGGING) {
+						logInfo(`[Music] ${value} — music out at ${string.format("%.2f", writtenRound)}, whistle`);
 					}
 				}
 
@@ -430,7 +428,7 @@ export class MusicController implements OnStart {
 				lastBeepSecond = value;
 				beep.Play();
 
-				if (DEBUG) print(`[Music] ${value}s left — beep`);
+				logDebug(`[Music] ${value}s left — beep`);
 			}),
 		);
 
@@ -481,12 +479,12 @@ export class MusicController implements OnStart {
 					// the clock reaching the fade window with the music still up. Printed on the edge
 					// rather than per step, and only when the fade actually begins.
 					if (
-						DEBUG &&
+						DEBUG_LOGGING &&
 						currentPhase === INTERMISSION &&
 						remaining === AUDIO_CONFIG.INTERMISSION_FADE_OUT_SECONDS &&
 						wantedIntermission < writtenIntermission
 					) {
-						print(`[Music] ${AUDIO_CONFIG.INTERMISSION_FADE_OUT_SECONDS}s of intermission left — fading out`);
+						logInfo(`[Music] ${AUDIO_CONFIG.INTERMISSION_FADE_OUT_SECONDS}s of intermission left — fading out`);
 					}
 
 					writtenIntermission = wantedIntermission;
@@ -501,12 +499,12 @@ export class MusicController implements OnStart {
 				// is not playing: `roundVolume` answers 0 the moment the phase leaves `Playing`, which is
 				// a change worth writing to the property and not worth announcing.
 				if (
-					DEBUG &&
+					DEBUG_LOGGING &&
 					currentPhase === PLAYING &&
 					remaining === AUDIO_CONFIG.ROUND_FADE_SECONDS &&
 					wantedRound < writtenRound
 				) {
-					print(`[Music] ${AUDIO_CONFIG.ROUND_FADE_SECONDS}s of round left — fading out`);
+					logInfo(`[Music] ${AUDIO_CONFIG.ROUND_FADE_SECONDS}s of round left — fading out`);
 				}
 
 				writtenRound = wantedRound;
@@ -514,8 +512,8 @@ export class MusicController implements OnStart {
 			}),
 		);
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Music] up — ${string.format("%.2f", intermissionMusic.Volume)} intermission, ` +
 					`${string.format("%.2f", roundMusic.Volume)} round, ` +
 					`phase ${Fusion.peek(phase) === "" ? "(unset)" : Fusion.peek(phase)}`,

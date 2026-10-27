@@ -22,6 +22,7 @@ import {
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
 import { taggedParts } from "shared/taggedParts";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { latchedTarget } from "../../aimAssist";
 import { pushNotification } from "../../notifications";
 import { isMobile } from "../../platform";
@@ -37,9 +38,6 @@ const INTERMISSION = "Intermission";
 
 /** The `ContextActionService` action the player's release key is bound to. Named so an unbind could find it. */
 const RELEASE_ACTION_NAME = "ShiftLockRelease";
-
-/** Prints the lock's transitions. See `shared/config/debug.config.ts` — they are behind the gate too. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The crosshair's size, in pixels — the one number that sizes the sight, on every platform. `44`.**
@@ -169,7 +167,7 @@ function cameraSettings(): UserGameSettings | undefined {
 	const [childOk, child] = pcall(() => UserSettings().FindFirstChildWhichIsA("UserGameSettings"));
 	if (childOk && isCameraSettings(child)) return child;
 
-	warn(
+	logWarn(
 		`[ShiftLock] no UserGameSettings — the character will not turn with the view.` +
 			` GetService: ${tostring(service)} | FindFirstChild: ${tostring(child)}`,
 	);
@@ -423,7 +421,7 @@ export class ShiftLock implements OnStart {
 		// `StarterPlayerScripts` at all. Present, and the next line is missing: the question is which call
 		// in {@link mount} failed. The HUD controllers print that they are up for the same reason; this
 		// one is one step earlier, because what can go wrong here is at the very top.
-		if (DEBUG) print(`[ShiftLock] onStart — mounting`);
+		logDebug(`[ShiftLock] onStart — mounting`);
 
 		// Spawned rather than done inline: the round folder is made by the *server's*
 		// `RoundService.onStart`, so waiting for it can yield — and a controller's `onStart` is the wrong
@@ -555,8 +553,8 @@ export class ShiftLock implements OnStart {
 		// is a request to Roblox's own CoreScripts rather than a property write, so the only thing worth
 		// printing is whether it took: `false` is the evidence, and a `true` here would say the key is
 		// still opening an inventory and send the search somewhere else entirely.
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[ShiftLock] backpack GUI disabled — enabled reads ` +
 					`${StarterGui.GetCoreGuiEnabled(Enum.CoreGuiType.Backpack)}`,
 			);
@@ -644,15 +642,15 @@ export class ShiftLock implements OnStart {
 		const first = this.reportedZoneParts === undefined;
 		this.reportedZoneParts = count;
 
-		if (!DEBUG) return;
+		if (!DEBUG_LOGGING) return;
 
 		if (first) {
-			print(
+			logInfo(
 				`[ShiftLock] up — ${count} ${PRACTICE_ZONE_TAG} part(s), ` +
 					`watching during ${INTERMISSION}, no key bound`,
 			);
 		} else {
-			print(`[ShiftLock] ${PRACTICE_ZONE_TAG}: now ${count} part(s)`);
+			logInfo(`[ShiftLock] ${PRACTICE_ZONE_TAG}: now ${count} part(s)`);
 		}
 	}
 
@@ -953,8 +951,8 @@ export class ShiftLock implements OnStart {
 		// after it is absent in exactly the case worth diagnosing, where "the line is missing" reads as
 		// "the state never changed" and sends the search in the wrong direction entirely. Printed first,
 		// the log shows the decision and then whatever became of it.
-		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
-			print(`[ShiftLock] ${on ? "locked" : "unlocked"} — ${reason}`);
+		if (DEBUG_LOGGING) {
+			logInfo(`[ShiftLock] ${on ? "locked" : "unlocked"} — ${reason}`);
 		}
 
 		this.writeSettings(on);
@@ -1026,7 +1024,7 @@ export class ShiftLock implements OnStart {
 		}
 
 		this.sight.Visible = on;
-		if (DEBUG) print(`[ShiftLock] sight ${on ? "up" : "down"}`);
+		logDebug(`[ShiftLock] sight ${on ? "up" : "down"}`);
 	}
 
 	/**
@@ -1055,14 +1053,14 @@ export class ShiftLock implements OnStart {
 				settings.RotationType = Enum.RotationType.MovementRelative;
 			});
 
-			if (!ok) warn(`[ShiftLock] RotationType refused: ${tostring(problem)}`);
+			if (!ok) logWarn(`[ShiftLock] RotationType refused: ${tostring(problem)}`);
 		}
 
 		const [mouseOk, mouseProblem] = pcall(() => {
 			UserInputService.MouseBehavior = on ? Enum.MouseBehavior.LockCenter : Enum.MouseBehavior.Default;
 		});
 
-		if (!mouseOk) warn(`[ShiftLock] MouseBehavior refused: ${tostring(mouseProblem)}`);
+		if (!mouseOk) logWarn(`[ShiftLock] MouseBehavior refused: ${tostring(mouseProblem)}`);
 
 		// **The engine's cursor is *hidden* while locked, because the sight is the crosshair now.** The write above has
 		// already pinned the pointer to the middle of the screen (`LockCenter`), so the icon it would draw is a pointer
@@ -1081,7 +1079,7 @@ export class ShiftLock implements OnStart {
 			}
 		});
 
-		if (!cursorOk) warn(`[ShiftLock] the cursor refused to change: ${tostring(cursorProblem)}`);
+		if (!cursorOk) logWarn(`[ShiftLock] the cursor refused to change: ${tostring(cursorProblem)}`);
 	}
 
 	/**
@@ -1306,7 +1304,7 @@ export class ShiftLock implements OnStart {
 		if (target === undefined) {
 			if (this.following) {
 				this.following = false;
-				if (DEBUG) print(`[ShiftLock] follow — off`);
+				logDebug(`[ShiftLock] follow — off`);
 			}
 
 			return;
@@ -1318,7 +1316,7 @@ export class ShiftLock implements OnStart {
 		// the deadzone is still a frame this is following on, and the log should say so.
 		if (!this.following) {
 			this.following = true;
-			if (DEBUG) print(`[ShiftLock] follow — on ${target.Name}`);
+			logDebug(`[ShiftLock] follow — on ${target.Name}`);
 		}
 
 		const camera = Workspace.CurrentCamera;
@@ -1423,7 +1421,7 @@ export class ShiftLock implements OnStart {
 		if (this.lastLook !== undefined) {
 			const degrees = math.deg(math.acos(math.clamp(look.Dot(this.lastLook), -1, 1)));
 
-			print(
+			logInfo(
 				`[Camera] frame — delta ${string.format("%.2f", degrees)}° — ` +
 					`dt ${string.format("%.1f", delta * 1000)}ms`,
 			);
@@ -1459,7 +1457,7 @@ export class ShiftLock implements OnStart {
 		// computed in floating point can put the variance a hair below zero on a perfectly still camera.
 		const variance = math.max(0, this.sampleSquares / frames - mean * mean);
 
-		print(
+		logInfo(
 			`[Camera] summary — ${frames} frames, mean ${string.format("%.2f", mean)}°, ` +
 				`max ${string.format("%.2f", this.sampleMax)}°, ` +
 				`stddev ${string.format("%.2f", math.sqrt(variance))}°`,
@@ -1478,7 +1476,7 @@ export class ShiftLock implements OnStart {
 	private reportCameraSources(): void {
 		const camera = Workspace.CurrentCamera;
 
-		print(
+		logInfo(
 			`[Camera] write — priority ${Enum.RenderPriority.Camera.Value - 2} — ` +
 				`type ${camera !== undefined ? tostring(camera.CameraType) : "no camera"}`,
 		);
@@ -1493,7 +1491,7 @@ export class ShiftLock implements OnStart {
 		// while a mobile client holds a throw at a latched body. A reader chasing "something else places this
 		// camera" has to know it exists, and has to know it is conditional: on a desktop, or with no latch,
 		// nothing here writes a `CFrame` at all. See `watchFollow`.
-		print(
+		logInfo(
 			`[Camera] sources — shiftLock true, zoom false — offset every frame, and a CFrame only while the ` +
 				`aim assist follows`,
 		);

@@ -250,7 +250,7 @@ export const AUDIO_CONFIG = {
 	 *
 	 * **Supplied rather than invented**, so what is unverified about it is not the spelling but the character:
 	 * whether a build-up compressed to fit a one-second charge reads as a charge or as a gulp. That is an ear
-	 * judgement, and it is the reason the derived speed is printed whenever `DEBUG` is on in `ThrowController`.
+	 * judgement, and it is the reason the derived speed is printed whenever `DEBUG_LOGGING` is on in `ThrowController`.
 	 */
 	THROW_CHARGE: "rbxassetid://134302747911283",
 

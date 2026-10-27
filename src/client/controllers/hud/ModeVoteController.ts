@@ -11,11 +11,9 @@ import {
 } from "shared/constants";
 import { decodeModeIds, GAME_MODE_NAMES, GameModeId } from "shared/gameMode";
 import { events } from "shared/networking";
+import { logDebug } from "shared/logger";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
-
-/** Prints when the row is built and on every vote cast. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The client half of the vote's event, as the declarations build it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -184,7 +182,7 @@ export class ModeVoteController implements OnStart {
 			}),
 		);
 
-		if (DEBUG) print("[Vote] row up");
+		logDebug("[Vote] row up");
 	}
 
 	/**
@@ -286,7 +284,7 @@ export class ModeVoteController implements OnStart {
 			slot.Parent = row;
 		}
 
-		if (DEBUG) print(`[Vote] ${options.size()} option(s) offered`);
+		logDebug(`[Vote] ${options.size()} option(s) offered`);
 	}
 
 	/**
@@ -303,7 +301,7 @@ export class ModeVoteController implements OnStart {
 	 * below reports, and the only one available on this side of the wire.
 	 */
 	private cast(mode: GameModeId, status: Instance): void {
-		if (DEBUG) print(`[Vote] voted for ${GAME_MODE_NAMES[mode]}`);
+		logDebug(`[Vote] voted for ${GAME_MODE_NAMES[mode]}`);
 
 		this.getVoteRemote().SendToServer(mode);
 		this.confirmVote(status, mode);

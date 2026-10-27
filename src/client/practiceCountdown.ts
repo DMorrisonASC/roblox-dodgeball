@@ -1,12 +1,11 @@
 import { CollectionService, RunService, Workspace } from "@rbxts/services";
 import { NEXT_THROW_AT_ATTRIBUTE, PRACTICE_THROW_TAG } from "shared/constants";
+import { logDebug } from "shared/logger";
 import { styleSplashText } from "./ui/actionSplash";
 
 /**
  * Prints each rig it starts drawing for. Off for frame time, for the reason every other client module gives.
  */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
-
 /** What the countdown's `BillboardGui` is called, and how a stray one is found. */
 const BOARD_NAME = "PracticeCountdown";
 
@@ -104,7 +103,7 @@ export function startPracticeCountdown(): void {
 	// Said at boot, for `hitVfx`'s and `catchPrompt`'s reason: a module with a subscription and no controller around
 	// it is started by hand from `main.client.ts`, and a countdown that never appears prints the same nothing as one
 	// that was never wired.
-	if (DEBUG) print(`[HUD] practice countdown up — ${MAX_COUNTDOWN_SECONDS}s of digits over a ${PRACTICE_THROW_TAG} rig`);
+	logDebug(`[HUD] practice countdown up — ${MAX_COUNTDOWN_SECONDS}s of digits over a ${PRACTICE_THROW_TAG} rig`);
 
 	/** Every rig this module is drawing for, by rig. See {@link Row}. */
 	const rows = new Map<Model, Row>();

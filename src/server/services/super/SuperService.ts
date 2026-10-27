@@ -18,10 +18,8 @@ import {
 	SUPER_STREAK_ATTRIBUTE,
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
+import { LOGGING_ENABLED, logInfo } from "shared/logger";
 import { rigsOnASide } from "../../npc/rigs";
-
-/** Prints the mount line, and every grant, spend and forfeit. */
-const DEBUG = true; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.
@@ -259,8 +257,8 @@ export class SuperService implements OnStart {
 			this.refreshCrowns();
 		});
 
-		if (DEBUG) {
-			print(
+		if (LOGGING_ENABLED) {
+			logInfo(
 				`[Super] up — crowning the leader of each side at ${SUPER_CONFIG.CROWN_STREAK_THRESHOLD}+ hits,` +
 					` a tie going to the newest; nothing grants a charge but the dev bypass`,
 			);
@@ -312,7 +310,7 @@ export class SuperService implements OnStart {
 		// hit may have taken the crown off the body who used to be their side's highest.
 		this.refreshCrowns();
 
-		if (DEBUG) print(`[Super] ${thrower.Name}: hits ${streak}`);
+		logInfo(`[Super] ${thrower.Name}: hits ${streak}`);
 	}
 
 	/**
@@ -381,7 +379,7 @@ export class SuperService implements OnStart {
 			// everything keyed on it goes.
 			this.recentHits.delete(owner);
 
-			if (DEBUG && had) print(`[Super] ${owner.Name}: streak reset — died`);
+			if (LOGGING_ENABLED && had) logInfo(`[Super] ${owner.Name}: streak reset — died`);
 		}
 
 		// **And a death can move a crown that is not this body's.** The count has just gone to nought,
@@ -410,7 +408,7 @@ export class SuperService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: charge forfeited`);
+		logInfo(`[Super] ${player.Name}: charge forfeited`);
 	}
 
 	/**
@@ -454,8 +452,8 @@ export class SuperService implements OnStart {
 		// and what closes the window is the throw that spends the last of it: see
 		// {@link consumeMultiBallBall}, which is where the row is dropped. Nothing has to run later, which
 		// also means nothing can be left scheduled for a body who has since died or left the game.
-		if (DEBUG) {
-			print(
+		if (LOGGING_ENABLED) {
+			logInfo(
 				`[Super] ${owner.Name}: MultiBall window open — ` +
 					`${SUPER_CONFIG.MULTI_BALL_BALL_COUNT} throws, until they are spent`,
 			);
@@ -514,7 +512,7 @@ export class SuperService implements OnStart {
 		// A rig's window is not published, for the reason `activateMultiBall` gives.
 		if (owner.IsA("Player")) this.publish(owner);
 
-		if (DEBUG) print(`[Super] ${owner.Name}: MultiBall throw spent — ${window.remaining} left`);
+		logInfo(`[Super] ${owner.Name}: MultiBall throw spent — ${window.remaining} left`);
 
 		if (window.remaining <= 0) this.clearMultiBall(owner);
 
@@ -542,7 +540,7 @@ export class SuperService implements OnStart {
 
 		if (owner.IsA("Player")) this.publish(owner);
 
-		if (DEBUG) print(`[Super] ${owner.Name}: MultiBall window closed`);
+		logInfo(`[Super] ${owner.Name}: MultiBall window closed`);
 	}
 
 	/**
@@ -580,7 +578,7 @@ export class SuperService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: ${kind} armed — the HUD says ready until it is spent`);
+		logInfo(`[Super] ${player.Name}: ${kind} armed — the HUD says ready until it is spent`);
 	}
 
 	/**
@@ -602,7 +600,7 @@ export class SuperService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: armed power over — nothing is ready`);
+		logInfo(`[Super] ${player.Name}: armed power over — nothing is ready`);
 	}
 
 	/**
@@ -635,7 +633,7 @@ export class SuperService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: charge spent`);
+		logInfo(`[Super] ${player.Name}: charge spent`);
 	}
 
 	/**
@@ -676,7 +674,7 @@ export class SuperService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: streak cleared for the new round`);
+		logInfo(`[Super] ${player.Name}: streak cleared for the new round`);
 	}
 
 	/**
@@ -805,7 +803,7 @@ export class SuperService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: mystery prize held — ${kind}, until it is used`);
+		logInfo(`[Super] ${player.Name}: mystery prize held — ${kind}, until it is used`);
 
 		return true;
 	}
@@ -909,7 +907,7 @@ export class SuperService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: mystery prize released — ${reason}`);
+		logInfo(`[Super] ${player.Name}: mystery prize released — ${reason}`);
 	}
 
 	/**
@@ -1008,7 +1006,7 @@ export class SuperService implements OnStart {
 
 		body.SetAttribute(CROWN_ATTRIBUTE, crowned);
 
-		if (DEBUG && crowned) print(`[Super] ${body.Name}: crowned at ${count} hit(s)`);
+		if (LOGGING_ENABLED && crowned) logInfo(`[Super] ${body.Name}: crowned at ${count} hit(s)`);
 	}
 
 	/** Zeroes `player`'s streak and says why, unless it is already zero. */
@@ -1026,7 +1024,7 @@ export class SuperService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) print(`[Super] ${player.Name}: streak reset — ${why}`);
+		logInfo(`[Super] ${player.Name}: streak reset — ${why}`);
 	}
 
 	/**

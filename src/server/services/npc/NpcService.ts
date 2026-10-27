@@ -15,6 +15,7 @@ import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { COSMETICS } from "shared/config/economy.config";
 import { EQUIPPED_TRAIL_ATTRIBUTE } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { NPC_TAG, NpcBehavior } from "../../npc/Behavior";
 import { createAlwaysCatchBehavior } from "../../npc/behaviors/AlwaysCatchBehavior";
 import { createAlwaysDodgeBehavior } from "../../npc/behaviors/AlwaysDodgeBehavior";
@@ -38,9 +39,6 @@ import { FreezeService } from "../actions/FreezeService";
 import { WalkSpeedService } from "../character/WalkSpeedService";
 import { MysteryBoxService } from "../mystery/MysteryBoxService";
 import { SuperService } from "../super/SuperService";
-
-/** Prints each model as it is picked up. A print per tick would flood the output. */
-const DEBUG = false;
 
 /** How often the loop turns when no behavior is registered: idle, rather than spin. */
 const IDLE_PERIOD = 0.5;
@@ -622,7 +620,7 @@ export class NpcService implements OnStart {
 			if (model.IsDescendantOf(Workspace)) this.ownForServer(model, true);
 		});
 
-		if (!prepared) warn(`[NPC] ${model.Name}: setup failed — ${tostring(err)}`);
+		if (!prepared) logWarn(`[NPC] ${model.Name}: setup failed — ${tostring(err)}`);
 
 		// **`ownershipCheckedAt` starts at nought rather than at now, and that one word is the fix.** The
 		// throttle in `publishAnimationBody` is `now - checkedAt < RECHECK_SECONDS`, so seeding it with the
@@ -635,14 +633,14 @@ export class NpcService implements OnStart {
 
 		task.spawn(() => this.run(model, loop));
 
-		if (DEBUG) {
+		if (DEBUG_LOGGING) {
 			// **Which of the two states it is in, said out loud.** "This rig is managed" and "this rig is
 			// managed and doing nothing" are identical from anywhere but here — and the second one is the
 			// whole of "there are balls coming from somewhere and I cannot see who is throwing them", a
 			// question this file should answer in one line rather than leave to be inferred. A rig outside
 			// the world names itself here instead of only being skipped quietly by the gate in `run`.
 			const idle = model.IsDescendantOf(Workspace) ? "" : " — not in the world, so idle until it is placed";
-			print(`[NPC] ${model.Name}: managed — ${this.describeBehaviors(model)}${idle}`);
+			logInfo(`[NPC] ${model.Name}: managed — ${this.describeBehaviors(model)}${idle}`);
 		}
 	}
 
@@ -730,7 +728,7 @@ export class NpcService implements OnStart {
 			// the re-check below runs every few seconds and passes `false`, because a line repeated for
 			// ever is a line nobody reads.
 			if (report) {
-				warn(`[NPC] ${model.Name}: the server cannot own it — ${reason ?? "no reason given"}`);
+				logWarn(`[NPC] ${model.Name}: the server cannot own it — ${reason ?? "no reason given"}`);
 			}
 
 			return;
@@ -780,7 +778,7 @@ export class NpcService implements OnStart {
 	private run(model: Model, loop: NpcLoop): void {
 		const humanoid = model.FindFirstChildWhichIsA("Humanoid");
 		if (!humanoid) {
-			warn(`[NPC] ${model.Name}: no humanoid, so there is nothing to run behaviors on`);
+			logWarn(`[NPC] ${model.Name}: no humanoid, so there is nothing to run behaviors on`);
 			this.forget(model, loop);
 			return;
 		}
@@ -1157,7 +1155,7 @@ export class NpcService implements OnStart {
 			if (!grounded && !moving) {
 				const owner = humanoid.RootPart?.GetNetworkOwner();
 
-				print(
+				logInfo(
 					`[NPC] ${model.Name}: off the floor while standing — ${humanoid.FloorMaterial.Name}, ` +
 						`owned by ${owner === undefined ? "server" : owner.Name}`,
 				);
@@ -1254,7 +1252,7 @@ export class NpcService implements OnStart {
 		if (loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED && !loop.staleReported) {
 			loop.staleReported = true;
 
-			print(
+			logInfo(
 				`[NPC] ${model.Name}: ${why} with the speed still ${string.format("%.2f", loop.runningSpeed)} ` +
 					`studs/s — published as standing from here`,
 			);
@@ -1369,7 +1367,7 @@ export class NpcService implements OnStart {
 	private announceDeath(model: Model): void {
 		if (model.Parent === undefined) return;
 
-		if (DEBUG) print(`[NPC] ${model.Name}: died`);
+		logDebug(`[NPC] ${model.Name}: died`);
 
 		// **A rig's run of hits dies with it, through the same reset a player's death uses.** A player's
 		// death is resolved by the round and reaches `SuperService.noteDeath` from `RoundService.handleDeath`;

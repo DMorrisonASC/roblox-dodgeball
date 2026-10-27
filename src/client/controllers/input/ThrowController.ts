@@ -23,6 +23,7 @@ import { abilityOn } from "shared/ability";
 import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 import { Trajectory } from "shared/Trajectory";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { AssistRequest, assistedAim, watchAim } from "../../aimAssist";
 import { aiming, aimSessionStartedAt, predictedLanding, predictedTargets } from "../../aiming";
 import { holdingBall } from "../camera/ShiftLock";
@@ -77,8 +78,6 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
  * it will not flood the output, and sits behind `DEBUG_CONFIG.VERBOSE_LOGS` as well. Flip this to `true`
  * when chasing a charging or a landing problem.
  */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
-
 /**
  * **The charge has no smoothing constant, and the one that used to sit here is worth understanding before
  * another is added back.**
@@ -324,9 +323,9 @@ export class ThrowController implements OnStart {
 		// makes the pitch shift a number in the log rather than something somebody has to work out.
 		ContentProvider.PreloadAsync([charge], (contentId, fetchStatus) => {
 			if (fetchStatus !== Enum.AssetFetchStatus.Success) {
-				warn(`[Throw] charge sound did not load — ${contentId} (${fetchStatus.Name})`);
-			} else if (DEBUG) {
-				print(
+				logWarn(`[Throw] charge sound did not load — ${contentId} (${fetchStatus.Name})`);
+			} else if (DEBUG_LOGGING) {
+				logInfo(
 					`[Throw] charge sound loaded — ${string.format("%.2f", charge.TimeLength)}s clip, ` +
 						`${string.format("%.2f", BALL_CONFIG.CHARGE_SECONDS)}s charge, speed ` +
 						`${string.format("%.2f", chargePlaybackSpeed(charge))}`,
@@ -453,8 +452,8 @@ export class ThrowController implements OnStart {
 		// "nothing happens" has two causes — this never started, or it started and found nothing to do — and
 		// the charge adds a third, which is whether the press bound at all. Missing, and the question is
 		// whether the file is in `StarterPlayerScripts`; present, and the question moves to what the press did.
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Throw] up — hold to charge (${BALL_CONFIG.CHARGE_SECONDS}s to full), release to throw, ` +
 					`${Enum.KeyCode.V.Name} bends it (${this.curve ? "on" : "off"})`,
 			);
@@ -686,7 +685,7 @@ export class ThrowController implements OnStart {
 
 		// The marker report is the noisiest thing in the game, and it is rate limited and behind
 		// `DEBUG_CONFIG.VERBOSE_LOGS` for that reason — see `shared/config/debug.config.ts`.
-		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) this.reportMarkerJitter(arc, getThrowMuzzle(character));
+		if (DEBUG_LOGGING) this.reportMarkerJitter(arc, getThrowMuzzle(character));
 
 		// **What the arc would reach, published for the glow.** The glow answers "what is my aim on",
 		// and the honest answer is where this throw goes rather than what is under the crosshair —
@@ -911,7 +910,7 @@ export class ThrowController implements OnStart {
 	 */
 	public toggleCurve(): void {
 		this.curve = !this.curve;
-		if (DEBUG) print(`[Throw] curve ${this.curve ? "on" : "off"}`);
+		logDebug(`[Throw] curve ${this.curve ? "on" : "off"}`);
 
 		this.updateGuide();
 	}
@@ -941,8 +940,8 @@ export class ThrowController implements OnStart {
 		this.lastCharge = 0;
 		this.playChargeSound();
 
-		if (DEBUG) {
-			print(`[Throw] charging — ${BALL_CONFIG.CHARGE_SECONDS}s to full${this.curve ? ", bending" : ""}`);
+		if (DEBUG_LOGGING) {
+			logInfo(`[Throw] charging — ${BALL_CONFIG.CHARGE_SECONDS}s to full${this.curve ? ", bending" : ""}`);
 		}
 
 		// **The marker report's memory of a frame is dropped here, because the frame it remembers belongs to the
@@ -1007,8 +1006,8 @@ export class ThrowController implements OnStart {
 		sound.TimePosition = 0;
 		sound.Play();
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Throw] charge sound — ${string.format("%.2f", sound.TimeLength)}s clip at speed ` +
 					`${string.format("%.2f", speed)}` +
 					(loaded ? "" : " (clip not loaded — playing at 1×, so the click will not land on time)"),
@@ -1135,8 +1134,8 @@ export class ThrowController implements OnStart {
 		// there for why the order is what it is.
 		this.throwRemote?.FireServer(heading, request.charge, request.curve, getThrowMuzzle(character), request.aim);
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Throw] released at charge ${string.format("%.2f", charge)}` +
 					` (drawn ${string.format("%.2f", drawn)})${this.curve ? " — bending" : ""}, heading ` +
 					`(${string.format("%.2f", heading.X)}, ${string.format("%.2f", heading.Y)}, ` +
@@ -1182,7 +1181,7 @@ export class ThrowController implements OnStart {
 		releasedCharge.set(undefined);
 		this.updateGuide();
 
-		if (DEBUG) print(`[Throw] charge cancelled — ${reason}`);
+		logDebug(`[Throw] charge cancelled — ${reason}`);
 	}
 
 	/**
@@ -1271,7 +1270,7 @@ export class ThrowController implements OnStart {
 		if (report === this.lastArcReport) return;
 
 		this.lastArcReport = report;
-		if (DEBUG) print(`[Aim] arc: ${report}`);
+		logDebug(`[Aim] arc: ${report}`);
 	}
 
 	/**
@@ -1338,7 +1337,7 @@ export class ThrowController implements OnStart {
 					this.nextReport = now + 0.5;
 					const jump = (value: number) => string.format("%.2f", value);
 
-					print(
+					logInfo(
 						`[Aim] marker sideways +${jump(landingAcross)} | mid +${jump(midAcross)}` +
 							` | muzzle +${jump(muzzle.sub(this.lastMuzzle ?? muzzle).Magnitude)}` +
 							` | points ${arc.points.size()} | hit ${ThrowController.describeHit(arc)}`,
@@ -1570,7 +1569,7 @@ export class ThrowController implements OnStart {
 	 * **The print is the diagnostic, and it fires on a change of count only.** A tag read is silent when it
 	 * finds nothing — the whole point of `TAGS.md` — so a line naming the number is the only evidence that a
 	 * painted wall was read at all, and a zero is the line that says the string is misspelled or the part is
-	 * outside `Workspace`. It is behind no `DEBUG` flag on purpose: it fires once per tag change and never
+	 * outside `Workspace`. It is behind no `DEBUG_LOGGING` flag on purpose: it fires once per tag change and never
 	 * per frame, which is the same trade `[Collision] … barrier part(s)` and `[ShiftLock] up — N practiceZone
 	 * part(s)` make. The count guard is what stops a folder and a part inside it reporting twice for one wall.
 	 */
@@ -1580,6 +1579,6 @@ export class ThrowController implements OnStart {
 
 		this.aimIgnoredParts = parts;
 
-		if (parts.size() !== previous) print(`[Throw] aim ignores ${parts.size()} ${AIM_IGNORE_TAG} part(s)`);
+		if (parts.size() !== previous) logInfo(`[Throw] aim ignores ${parts.size()} ${AIM_IGNORE_TAG} part(s)`);
 	}
 }

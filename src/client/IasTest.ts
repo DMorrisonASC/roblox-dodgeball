@@ -20,6 +20,7 @@
  * whatever this fed them, and a broken walk would be indistinguishable from a broken binding.
  */
 import { Players, ReplicatedStorage } from "@rbxts/services";
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 
 /**
  * The off switch. False and this file does nothing at all — `main.client.ts` need not change.
@@ -36,8 +37,6 @@ import { Players, ReplicatedStorage } from "@rbxts/services";
  * committed, so deleting it here would lose it rather than retire it. It is one file and one call in
  * `main.client.ts` whenever the answer stops being worth keeping.
  */
-const DEBUG = false;
-
 /**
  * The context's priority.
  *
@@ -64,7 +63,7 @@ let sawIjkl = false;
  * client's boot and does not deserve to be part of it.
  */
 export function startIasTest(): void {
-	if (!DEBUG) return;
+	if (!DEBUG_LOGGING) return;
 
 	task.spawn(() => run());
 }
@@ -86,23 +85,23 @@ function run(): void {
 	// which of the two actions spoke.
 	wasd.StateChanged.Connect((value) => {
 		sawWasd = true;
-		print(`[IasTest] WASD -> ${tostring(value)}`);
+		logInfo(`[IasTest] WASD -> ${tostring(value)}`);
 	});
 
 	ijkl.StateChanged.Connect((value) => {
 		// Ungated, and printed the moment it happens rather than at the summary: this single line is
 		// the answer, and a run that saw it does not have to wait twenty seconds to know.
-		if (!sawIjkl) print("[IasTest] IJKL seen — IAS can read these keys");
+		if (!sawIjkl) logInfo("[IasTest] IJKL seen — IAS can read these keys");
 		sawIjkl = true;
 
-		print(`[IasTest] IJKL -> ${tostring(value)}`);
+		logInfo(`[IasTest] IJKL -> ${tostring(value)}`);
 	});
 
-	print(`[IasTest] ${player}: up — ${context.GetFullName()}, priority ${context.Priority}, Sink ${context.Sink}`);
-	print(`[IasTest] ${player}: press W, then I, then both together. Verdict in ${VERDICT_SECONDS}s.`);
+	logInfo(`[IasTest] ${player}: up — ${context.GetFullName()}, priority ${context.Priority}, Sink ${context.Sink}`);
+	logInfo(`[IasTest] ${player}: press W, then I, then both together. Verdict in ${VERDICT_SECONDS}s.`);
 
 	task.delay(VERDICT_SECONDS, () => {
-		print(
+		logInfo(
 			`[IasTest] ${player}: verdict — WASD seen: ${sawWasd ? "yes" : "no"}, ` +
 				`IJKL seen: ${sawIjkl ? "yes" : "no"}`,
 		);
@@ -110,12 +109,12 @@ function run(): void {
 		// **The line that decides something.** It names the road the feature takes rather than leaving
 		// the two booleans above to be re-derived by whoever reads the log next.
 		if (sawIjkl) {
-			print(
+			logInfo(
 				`[IasTest] ${player}: go — IAS reads IJKL. Build the movement controller on it; ` +
 					`the PlayerModule is not forked.`,
 			);
 		} else {
-			print(
+			logInfo(
 				`[IasTest] ${player}: no-go — IAS never reported an IJKL key. The fallback is a ` +
 					`PlayerModule fork, and this output is what justifies it.`,
 			);

@@ -6,6 +6,7 @@ import type { ThrowWalk } from "shared/constants";
 import { pendingAbilityOn } from "shared/ability";
 import { resolveDodgeable } from "shared/dodge";
 import { chargeForRange, getThrowMuzzle } from "shared/throw";
+import { logInfo } from "shared/logger";
 import { BEHAVIOR_THROWING, NpcBehavior } from "../Behavior";
 import { detectEnemy } from "../detect";
 import type { BallService } from "../../services/ball/BallService";
@@ -552,7 +553,7 @@ export function createWindupTracker(): WindupTracker {
 
 		endWindup(model);
 
-		print(`[Rig] ${model.Name}: windup cancelled — ${reason}`);
+		logInfo(`[Rig] ${model.Name}: windup cancelled — ${reason}`);
 	};
 
 	/**
@@ -658,7 +659,7 @@ export function createWindupTracker(): WindupTracker {
 		// it.
 		model.SetAttribute(THROW_WALK_ATTRIBUTE, walk);
 
-		print(
+		logInfo(
 			`[Rig] ${model.Name}: winding up — charge ${string.format("%.2f", charge)} ` +
 				`over ${string.format("%.2f", duration)}s, ${walk}`,
 		);
@@ -960,7 +961,7 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 							: `the nearest is ${math.floor(sighting.distance)} studs off, ` +
 								`and the range is ${NPC_CONFIG.THROW_RANGE_STUDS}`;
 
-					print(`[Rig] ${model.Name}: holding a ball and not throwing — ${reason}`);
+					logInfo(`[Rig] ${model.Name}: holding a ball and not throwing — ${reason}`);
 				}
 
 				return;
@@ -969,7 +970,7 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			if (idle.has(model)) {
 				idle.delete(model);
 
-				print(`[Rig] ${model.Name}: throwing again — target ${math.floor(sighting.distance)} studs off`);
+				logInfo(`[Rig] ${model.Name}: throwing again — target ${math.floor(sighting.distance)} studs off`);
 			}
 
 			// Turn toward it. This runs whether or not the rig is already on target, because the
@@ -1288,7 +1289,7 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 						: `, ${string.format("%.1f", miss.studs)} studs to the ` +
 							`${miss.side > 0 ? "right" : "left"} (missed on purpose)`;
 
-				print(
+				logInfo(
 					`[Rig] ${model.Name}: throw ${walk} — ` +
 						`charge ${string.format("%.2f", charge)} at ` +
 						`${string.format("%.1f", solvedAt)} studs, heading ` +

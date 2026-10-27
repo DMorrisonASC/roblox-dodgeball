@@ -1,11 +1,9 @@
 import { OnStart, Service } from "@flamework/core";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { BallService } from "../ball/BallService";
 import { CatchService } from "./CatchService";
 import { DodgeService } from "./DodgeService";
-
-/** Prints every manual action that arrived, and why one of them did nothing. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The key that is not aiming: dropping the ball in hand.
@@ -44,29 +42,29 @@ export class ActionService implements OnStart {
 	 * and a ball that cannot be put down for half a second after a dodge would be a rule
 	 * with nothing behind it. The keys say nothing in either direction: a press that is
 	 * refused and a press with an empty hand both look the same from the player's seat,
-	 * which is what `DEBUG` is for.
+	 * which is what `DEBUG_LOGGING` is for.
 	 */
 	private drop(player: Player): void {
 		const character = player.Character;
 		if (!character) {
-			if (DEBUG) print(`[Action] ${player.Name}: nothing to drop`);
+			logDebug(`[Action] ${player.Name}: nothing to drop`);
 			return;
 		}
 
 		if (this.dodges.isDodging(character)) {
-			if (DEBUG) print(`[Action] ${player.Name}: drop refused — a dodge is in flight`);
+			logDebug(`[Action] ${player.Name}: drop refused — a dodge is in flight`);
 			return;
 		}
 
 		if (this.catches.isCatching(character)) {
-			if (DEBUG) print(`[Action] ${player.Name}: drop refused — a catch window is open`);
+			logDebug(`[Action] ${player.Name}: drop refused — a catch window is open`);
 			return;
 		}
 
 		// An empty hand is not an error: the key is pressed to see whether it does
 		// anything, and `dropBall` is the one place that knows whether there was a ball.
-		if (!this.balls.dropBall(character) && DEBUG) {
-			print(`[Action] ${player.Name}: drop asked for with an empty hand`);
+		if (!this.balls.dropBall(character) && DEBUG_LOGGING) {
+			logInfo(`[Action] ${player.Name}: drop asked for with an empty hand`);
 		}
 	}
 }

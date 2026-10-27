@@ -1,4 +1,5 @@
 import { GameModeId } from "shared/gameMode";
+import { logWarn } from "shared/logger";
 import { DRAW, RoundOutcome, TEAM_A, TEAM_B, TeamLabel } from "../team";
 import { DeathDecision, GameMode, RoundView } from "./GameMode";
 
@@ -101,7 +102,7 @@ class DodgeAndSeekMode implements GameMode {
 	 * conversion are the same event, so they are one method rather than two.
 	 */
 	public hitAward(): number | undefined {
-		warn("[Mode] DodgeAndSeek.hitAward was called — this mode keeps no score");
+		logWarn("[Mode] DodgeAndSeek.hitAward was called — this mode keeps no score");
 
 		return undefined;
 	}

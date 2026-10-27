@@ -3,6 +3,7 @@ import { CollectionService, Players, Workspace } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
 import { NPC_TAG } from "shared/constants";
 import { ChargeRequest, getThrowMuzzle, planChargedThrow } from "shared/throw";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { aimSessionStartedAt } from "./aiming";
 import { isMobile } from "./platform";
 import { inTaggedZone, isParticipant, sideOfBody, SideLabel } from "./roundZone";
@@ -102,9 +103,6 @@ import { inTaggedZone, isParticipant, sideOfBody, SideLabel } from "./roundZone"
  * 3. **It has to be in sight**, one raycast from the muzzle that must reach the body before anything else.
  * 4. **It has to have a root**, because the prediction reads a position and a velocity off one.
  */
-
-/** Prints when a hold latches a target and when a latch drops. Never a line per frame. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What the caller has, handed over once so this file cannot read the same facts a frame apart.
@@ -737,7 +735,7 @@ function latchFor(request: AssistRequest, raw: Vector3): Chosen {
 	if (held.model !== undefined) {
 		if (stillEligible(held.model, request)) return { model: held.model, dropped: false };
 
-		if (DEBUG) print(`[Aim] assist: dropped ${held.model.Name} — nothing else is picked this hold`);
+		logDebug(`[Aim] assist: dropped ${held.model.Name} — nothing else is picked this hold`);
 
 		held.model = undefined;
 		// The smoothing state goes with the body — the next one has its own velocity, and averaging the two
@@ -947,12 +945,12 @@ function flatUnit(vector: Vector3): Vector3 | undefined {
  * sixty times.
  */
 function report(target: Model | undefined): void {
-	if (!DEBUG) return;
+	if (!DEBUG_LOGGING) return;
 
 	const line = target === undefined ? "off — no eligible body in the cone" : `latched ${target.Name}`;
 
 	if (line === lastReport) return;
 
 	lastReport = line;
-	print(`[Aim] assist: ${line}`);
+	logInfo(`[Aim] assist: ${line}`);
 }

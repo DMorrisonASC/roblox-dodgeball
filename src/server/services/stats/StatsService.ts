@@ -16,9 +16,7 @@ import {
 	STAT_OUTS,
 	STAT_RATIO,
 } from "shared/constants";
-
-/** Prints each load, each write, and each counted figure. Silent about the ordinary refusals. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { DEBUG_LOGGING, logDebug, logError, logInfo } from "shared/logger";
 
 /** The phase name that counts as competitive play. A word between two files, not a setting. */
 const PLAYING = "Playing";
@@ -27,19 +25,19 @@ const PLAYING = "Playing";
  * How many times a DataStore call is attempted before it is given up on.
  *
  * Two, which is one retry: a call that fails twice is a DataStore that is down rather than a call
- * that arrived badly, and a third attempt only delays the answer that matters — whether this player
+ * that arrived badly, and a third attempt only delays the answer that matters Ã¢â‚¬â€ whether this player
  * gets to play.
  */
 const ATTEMPTS = 2;
 
 /**
- * How long to wait between those attempts, in seconds. **Placeholder — 1.**
+ * How long to wait between those attempts, in seconds. **Placeholder Ã¢â‚¬â€ 1.**
  *
  * **There was no pause at all, and that was a real fault rather than a tidiness.** Two calls issued in the
  * same frame is the shape that turns one throttled write into two, and the platform's best-practice page
  * asks for backoff with jitter on exactly this path (*"retry transient failures with exponential backoff ...
  * cap the delay and number of attempts"*). This is the smallest honest version of that: one pause, no jitter,
- * one second — the base delay the reference sample starts from. The full version would double it per attempt
+ * one second Ã¢â‚¬â€ the base delay the reference sample starts from. The full version would double it per attempt
  * and add `math.random()` to the delay; with two attempts there is only one gap to place, so doubling and
  * jittering would be ceremony around a single number.
  */
@@ -47,14 +45,14 @@ const RETRY_SLEEP_SECONDS = 1;
 
 /**
  * What a write attempt did. **Three answers rather than a boolean, because the caller reacts to each
- * differently** — `written` retires the dirty mark, `failed` leaves it for the next sweep, and `refused`
+ * differently** Ã¢â‚¬â€ `written` retires the dirty mark, `failed` leaves it for the next sweep, and `refused`
  * means this session must stop writing this record altogether. The shape is `RigDraw`'s, for its reason: a
  * decision that only said "no" would leave the caller inventing why, and the three "no"s here want three
  * different things done about them.
  */
 type WriteOutcome = "written" | "failed" | "refused";
 
-/** What reading — and locking — a record answered. See `claim`. */
+/** What reading Ã¢â‚¬â€ and locking Ã¢â‚¬â€ a record answered. See `claim`. */
 type ClaimOutcome =
 	| { readonly ok: true; readonly stats: PlayerStats }
 	| { readonly ok: false; readonly reason: string };
@@ -80,7 +78,7 @@ export interface PlayerStats {
  *
  * **Two figures about the two directions of one exchange**, which is what makes their ratio worth
  * reading: a throw that lands on a body is a hit, and being taken out of a round is an out. Neither
- * is a count of throws — a throw that lands on the floor is counted nowhere — so this is a record of
+ * is a count of throws Ã¢â‚¬â€ a throw that lands on the floor is counted nowhere Ã¢â‚¬â€ so this is a record of
  * outcomes rather than of activity, and a player who throws all round and hits nobody has a record no
  * fuller than one who never threw at all.
  *
@@ -88,7 +86,7 @@ export interface PlayerStats {
  * and written back at four boundaries and nowhere else: when they leave, when a round ends, on a
  * three-minute sweep, and when the server shuts down. A hit during a round costs a table lookup
  * rather than a round trip, and a DataStore that is briefly unreachable costs a session's worth of
- * counting rather than the game. Nothing on the hit path writes anything — the coalescing rule the
+ * counting rather than the game. Nothing on the hit path writes anything Ã¢â‚¬â€ the coalescing rule the
  * autosave was built with still holds.
  *
  * **The join-time read also takes a session lock on the record, and every write is refused while
@@ -101,13 +99,13 @@ export interface PlayerStats {
  *
  * **It does not know the round exists.** Which phase is running is read off the same status folder
  * the HUD and `BallSpawnerService` read, so this is a sibling of `RoundService` rather than a
- * dependent of it — and "only competitive play counts" becomes a line in here instead of an
+ * dependent of it Ã¢â‚¬â€ and "only competitive play counts" becomes a line in here instead of an
  * injection. See {@link isRoundActive}. `RoundService` calls {@link recordOut} the other way, and
  * that direction is not the same thing: what the round hands over is a decision it has already made,
  * not a question it is asking about itself.
  *
  * **Only players are scored, and no rig is ever asked about.** A hit arrives as the token the ball
- * was stamped with at release — a `UserId` as text for a player, a GUID for a rig — and a GUID is not
+ * was stamped with at release Ã¢â‚¬â€ a `UserId` as text for a player, a GUID for a rig Ã¢â‚¬â€ and a GUID is not
  * a number, so a rig's hits fall out of {@link playerOf} without this file having an opinion about
  * what a rig is. An out arrives as a `Player`, because a rig is never in a round to be taken out of
  * one.
@@ -138,14 +136,14 @@ export class StatsService implements OnStart {
 	 * Two different roads lead here and they end in the same place, which is why it is one set rather than two
 	 * flags:
 	 *
-	 * - **The record could not be loaded.** The player then plays on a blank record — the platform recommends
+	 * - **The record could not be loaded.** The player then plays on a blank record Ã¢â‚¬â€ the platform recommends
 	 *   that over kicking (*"we recommend letting the player play with default data and clear messaging ...
-	 *   rather than removing them from the game"*) — but a blank record written back over a real one is a
+	 *   rather than removing them from the game"*) Ã¢â‚¬â€ but a blank record written back over a real one is a
 	 *   wipe, and the same page warns about it by name: *"Take special care to ensure that fallback data
 	 *   doesn't later overwrite 'real' data."*
 	 * - **Another server holds the lock.** Roblox's own sample marks a profile `errored` for exactly this and
 	 *   refuses to write it; and the reason the refusal has to be permanent for the session is subtle: the
-	 *   *moment the other server releases*, a write from here would succeed — and it would carry the copy this
+	 *   *moment the other server releases*, a write from here would succeed Ã¢â‚¬â€ and it would carry the copy this
 	 *   server loaded before the other one changed it. Refusing once is not enough; the stale copy has to stop
 	 *   being written at all.
 	 *
@@ -158,14 +156,14 @@ export class StatsService implements OnStart {
 		Players.PlayerRemoving.Connect((player) => this.saveAndForget(player));
 
 		// A player already in the game when this service started never fires the added-signal, so the
-		// ones already here are walked rather than waited for — the scan-and-subscribe `JoinService`
+		// ones already here are walked rather than waited for Ã¢â‚¬â€ the scan-and-subscribe `JoinService`
 		// and `OutlineService` both do, for the same reason.
 		for (const player of Players.GetPlayers()) this.load(player);
 
 		// **The one save that is waited for, and only for as long as the window allows.** Every other
 		// write is fired and forgotten so that a player's exit is never held up by a DataStore; a
 		// server that is shutting down has nobody left to hold up, and returning from this without
-		// waiting is a session's counting lost. Returning late is the same loss from the other side —
+		// waiting is a session's counting lost. Returning late is the same loss from the other side Ã¢â‚¬â€
 		// the engine gives `BindToClose` thirty seconds and kills the server after that, so `saveAll`
 		// gives each write a slice of a per-service window and says what it dropped. See
 		// {@link saveAll} and {@link writeWithin}.
@@ -173,7 +171,7 @@ export class StatsService implements OnStart {
 
 		task.spawn(() => this.autosaveLoop());
 
-		if (DEBUG) print(`[Stats] up — ${STATS_CONFIG.DATASTORE_NAME}, autosave every ${STATS_CONFIG.AUTOSAVE_INTERVAL}s`);
+		logDebug(`[Stats] up Ã¢â‚¬â€ ${STATS_CONFIG.DATASTORE_NAME}, autosave every ${STATS_CONFIG.AUTOSAVE_INTERVAL}s`);
 	}
 
 	// ---- Reading a record ----
@@ -184,7 +182,7 @@ export class StatsService implements OnStart {
 	}
 
 	/**
-	 * Hits over hits and outs together, from `0` to `1` — or nothing when there is no record to
+	 * Hits over hits and outs together, from `0` to `1` Ã¢â‚¬â€ or nothing when there is no record to
 	 * divide.
 	 *
 	 * **A player with neither figure reads as `0`, not as nothing.** "Nothing has happened yet" and
@@ -200,7 +198,7 @@ export class StatsService implements OnStart {
 	/**
 	 * Throws `player`'s record away and starts them from nothing.
 	 *
-	 * Here for a dev to call — from the command bar, or from whatever command reaches it later. It is
+	 * Here for a dev to call Ã¢â‚¬â€ from the command bar, or from whatever command reaches it later. It is
 	 * **not** wired to the `!dev` chat parser: that parser switches boolean flags, and a reset is an
 	 * action rather than a state, so folding it in would mean teaching the parser a second kind of
 	 * thing to save one line here.
@@ -211,7 +209,7 @@ export class StatsService implements OnStart {
 		this.stats.set(player, stats);
 		this.publish(player);
 
-		if (DEBUG) print(`[Stats] ${player.Name}: record reset`);
+		logDebug(`[Stats] ${player.Name}: record reset`);
 	}
 
 	// ---- Recording a figure ----
@@ -220,7 +218,7 @@ export class StatsService implements OnStart {
 	 * Counts a throw as having landed on a body.
 	 *
 	 * Takes the token and not the thrower, because the token is the *whole* of what an arriving ball
-	 * knows about who threw it — see {@link playerOf}. Narrower than a model, and it keeps every
+	 * knows about who threw it Ã¢â‚¬â€ see {@link playerOf}. Narrower than a model, and it keeps every
 	 * question about who counts out of `BallComponent`.
 	 */
 	public recordHit(throwerToken: string): void {
@@ -235,7 +233,7 @@ export class StatsService implements OnStart {
 	 *
 	 * **A player and not a token, and that is the difference between the two figures.** A hit arrives
 	 * from a ball that knows only who threw it; an elimination is a fact about somebody the round has
-	 * just taken out, and by the time it reaches here the round has already decided it — see
+	 * just taken out, and by the time it reaches here the round has already decided it Ã¢â‚¬â€ see
 	 * `RoundService.eliminate` for the guards that make that decision the round's rather than this
 	 * method's.
 	 */
@@ -244,7 +242,7 @@ export class StatsService implements OnStart {
 	}
 
 	/**
-	 * Adds one to `what` for `player` — or does nothing, which is most of what this method is.
+	 * Adds one to `what` for `player` Ã¢â‚¬â€ or does nothing, which is most of what this method is.
 	 *
 	 * **Both figures are counted through here so that neither can be counted without the round being
 	 * checked first.** "Only competitive play counts" is the rule for both of them, and two public
@@ -270,8 +268,8 @@ export class StatsService implements OnStart {
 
 		this.publish(player);
 
-		if (DEBUG) {
-			print(`[Stats] ${player.Name}: ${what} → ${stats.hits}H/${stats.outs}O`);
+		if (DEBUG_LOGGING) {
+			logInfo(`[Stats] ${player.Name}: ${what} Ã¢â€ â€™ ${stats.hits}H/${stats.outs}O`);
 		}
 	}
 
@@ -282,8 +280,8 @@ export class StatsService implements OnStart {
 	 *
 	 * **The same channel the HUD and `BallSpawnerService` read**, which is what makes this a sibling
 	 * of the round rather than a dependent of it: nothing here has to be told when a round starts or
-	 * ends, and the round needs no reference to stats. A folder that does not exist yet — the first
-	 * moments of a server's life — is not a round either.
+	 * ends, and the round needs no reference to stats. A folder that does not exist yet Ã¢â‚¬â€ the first
+	 * moments of a server's life Ã¢â‚¬â€ is not a round either.
 	 */
 	private isRoundActive(): boolean {
 		const folder = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
@@ -296,7 +294,7 @@ export class StatsService implements OnStart {
 	 *
 	 * Attributes rather than a remote, for the reason the round's are: they replicate on their own,
 	 * so a label above somebody's head needs no request, no reply to wait for, and no reference to
-	 * this service. All three go out together every time — including the ratio, which is derived —
+	 * this service. All three go out together every time Ã¢â‚¬â€ including the ratio, which is derived Ã¢â‚¬â€
 	 * because a reader that had to divide them itself would be a second place the rule is stated.
 	 */
 	private publish(player: Player): void {
@@ -314,8 +312,8 @@ export class StatsService implements OnStart {
 	 * The store, fetched once and held.
 	 *
 	 * Held because `GetDataStore` is the one DataStore call that is not cheap. Wrapped in `pcall`
-	 * like the rest, and the failure is remembered: a server with DataStores switched off — which is
-	 * every Studio session until somebody enables them — throws here rather than returning nothing,
+	 * like the rest, and the failure is remembered: a server with DataStores switched off Ã¢â‚¬â€ which is
+	 * every Studio session until somebody enables them Ã¢â‚¬â€ throws here rather than returning nothing,
 	 * and a stat system that printed a warning per throw would be its own kind of broken.
 	 */
 	private store(): DataStore | undefined {
@@ -325,7 +323,7 @@ export class StatsService implements OnStart {
 		if (!success) {
 			if (!this.storeReported) {
 				this.storeReported = true;
-				warn(`[Stats] ${STATS_CONFIG.DATASTORE_NAME} unavailable, records will not persist: ${result}`);
+				logError(`[Stats] ${STATS_CONFIG.DATASTORE_NAME} unavailable, records will not persist: ${result}`);
 			}
 
 			return undefined;
@@ -340,7 +338,7 @@ export class StatsService implements OnStart {
 	 * **Reads `player`'s record and takes the session lock on it, in one `UpdateAsync`.**
 	 *
 	 * **The claim and the read have to be the same call.** `GetAsync` followed by a write would leave a
-	 * window in which two servers both read the same record and both believe they own it — which is the bug
+	 * window in which two servers both read the same record and both believe they own it Ã¢â‚¬â€ which is the bug
 	 * the lock exists to close, re-opened by the read itself. The platform's reference implementation makes
 	 * the same move: *"when a player's DataStore key is first read by the server, the server atomically
 	 * writes a lock to the key's metadata inside the same `UpdateAsync()` call."*
@@ -352,7 +350,7 @@ export class StatsService implements OnStart {
 	 *
 	 * **A claimed record is written back stamped, with its gameplay fields untouched**, so claiming costs
 	 * nothing to the player and gives this server the ownership it needs. A value that is absent or is not a
-	 * table is replaced by a blank record — which is also the migration step for every record written before
+	 * table is replaced by a blank record Ã¢â‚¬â€ which is also the migration step for every record written before
 	 * this change: an old record has no session fields, reads as unlocked, and is upgraded in place by the
 	 * first claim, keeping its figures because the extra fields were never part of them.
 	 */
@@ -369,8 +367,8 @@ export class StatsService implements OnStart {
 					const now = serverNow();
 
 					// **Held by somebody else and not expired: cancel the write by returning nothing.** That is
-					// the documented way to refuse — *"If the callback returns nil, the write operation is
-					// cancelled"* — and it costs no request beyond the one already spent.
+					// the documented way to refuse Ã¢â‚¬â€ *"If the callback returns nil, the write operation is
+					// cancelled"* Ã¢â‚¬â€ and it costs no request beyond the one already spent.
 					if (heldByAnother(oldValue, session, now, LOCK_EXPIRY_SECONDS) !== undefined) {
 						return $tuple(undefined);
 					}
@@ -382,7 +380,7 @@ export class StatsService implements OnStart {
 			);
 
 			if (!success) {
-				warn(`[Stats] claim failed for ${player.Name} (${key}, attempt ${attempt}/${ATTEMPTS}): ${tostring(result)}`);
+				logError(`[Stats] claim failed for ${player.Name} (${key}, attempt ${attempt}/${ATTEMPTS}): ${tostring(result)}`);
 
 				if (attempt < ATTEMPTS) task.wait(RETRY_SLEEP_SECONDS);
 
@@ -404,14 +402,14 @@ export class StatsService implements OnStart {
 	 * **Writes `player`'s record through the session lock, retrying once with a pause between attempts.**
 	 *
 	 * **`UpdateAsync` rather than `SetAsync`, on the platform's own rule**: *"Prefer UpdateAsync() when a write
-	 * depends on the current value or when multiple servers might write the same key."* This write does both —
+	 * depends on the current value or when multiple servers might write the same key."* This write does both Ã¢â‚¬â€
 	 * the value it is about to write carries the lock, so it has to read before it writes. The cost is that
 	 * `UpdateAsync` *"consumes from both the read and write request budgets"*; at two writes per player per
-	 * three minutes against a server budget of `60 + numPlayers × 40`, that is not a number worth counting.
+	 * three minutes against a server budget of `60 + numPlayers Ãƒâ€” 40`, that is not a number worth counting.
 	 *
 	 * **`release` is the difference between an ordinary write and the last one.** A periodic or round-end
 	 * write refreshes the stamp and keeps the lock; a leaver's write and a shutdown's write *drop* it, which
-	 * is the documented unlocking step — the lock *"should always happen through an instruction to unlock the
+	 * is the documented unlocking step Ã¢â‚¬â€ the lock *"should always happen through an instruction to unlock the
 	 * key as part of the final write in `PlayerRemoving` or `BindToClose()`."* Releasing is what makes a player
 	 * who hops servers land unlocked on the next one instead of waiting out the expiry.
 	 *
@@ -427,7 +425,7 @@ export class StatsService implements OnStart {
 
 		for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
 			// **A fresh payload per attempt**: the live record can be added to while a write is in flight, so a
-			// retry sends what is true now rather than what was true when the attempt was first made — which is
+			// retry sends what is true now rather than what was true when the attempt was first made Ã¢â‚¬â€ which is
 			// also the reordering hazard the best-practice page names (*"an older request that retries after a
 			// newer request succeeds can overwrite newer data"*): reading the live record inside the transform is
 			// what makes the newer `UpdateAsync` the one that wins.
@@ -447,7 +445,7 @@ export class StatsService implements OnStart {
 
 			if (success) return result === undefined ? "refused" : "written";
 
-			warn(
+			logError(
 				`[Stats] write failed for ${player.Name} (${key}, attempt ${attempt}/${ATTEMPTS}): ` +
 					`${tostring(result)}`,
 			);
@@ -462,13 +460,13 @@ export class StatsService implements OnStart {
 	 * Reads `player`'s record, locks it, and publishes it. Never blocks the join.
 	 *
 	 * Spawned, because the claim yields and this is called from a signal: the server does not hold somebody
-	 * at the door while a DataStore answers, and nothing downstream depends on the record existing — a throw
+	 * at the door while a DataStore answers, and nothing downstream depends on the record existing Ã¢â‚¬â€ a throw
 	 * that lands before the read comes back is dropped rather than miscounted.
 	 *
 	 * **A failed claim leaves the player playing and this session silent.** Blank figures, published so the
 	 * buildboard and anything else reading them has an answer, and the player added to {@link unsaveable} so
 	 * that those blanks can never be written over whatever is really in the store. The platform recommends
-	 * exactly this over kicking — the player plays, and the loss is one session rather than a record.
+	 * exactly this over kicking Ã¢â‚¬â€ the player plays, and the loss is one session rather than a record.
 	 */
 	private load(player: Player): void {
 		task.spawn(() => {
@@ -484,7 +482,7 @@ export class StatsService implements OnStart {
 				this.unsaveable.add(player);
 				this.publish(player);
 
-				warn(`[Stats] ${player.Name}: ${claim.reason} — they play on blank figures and this session will not save them`);
+				logError(`[Stats] ${player.Name}: ${claim.reason} Ã¢â‚¬â€ they play on blank figures and this session will not save them`);
 
 				return;
 			}
@@ -493,15 +491,15 @@ export class StatsService implements OnStart {
 			this.saved.set(player, { hits: claim.stats.hits, outs: claim.stats.outs });
 			this.publish(player);
 
-			if (DEBUG) print(`[Stats] ${player.Name}: loaded ${claim.stats.hits}H/${claim.stats.outs}O (locked)`);
+			logDebug(`[Stats] ${player.Name}: loaded ${claim.stats.hits}H/${claim.stats.outs}O (locked)`);
 		});
 	}
 
 	/**
 	 * **Retires a record for this session, and says so once.**
 	 *
-	 * The single door to {@link unsaveable}, so that the two roads there — a failed load and a lock held
-	 * elsewhere — are one rule in one place. The warning is the first thing anybody would want when a player
+	 * The single door to {@link unsaveable}, so that the two roads there Ã¢â‚¬â€ a failed load and a lock held
+	 * elsewhere Ã¢â‚¬â€ are one rule in one place. The warning is the first thing anybody would want when a player
 	 * reports that their stats stopped counting: it names them, says which of the two happened, and says what
 	 * this server is going to do about it.
 	 */
@@ -509,7 +507,7 @@ export class StatsService implements OnStart {
 		if (this.unsaveable.has(player)) return;
 
 		this.unsaveable.add(player);
-		warn(`[Stats] ${player.Name}: ${what} — another server holds this record, so this session stops writing it`);
+		logError(`[Stats] ${player.Name}: ${what} Ã¢â‚¬â€ another server holds this record, so this session stops writing it`);
 	}
 
 	/**
@@ -517,7 +515,7 @@ export class StatsService implements OnStart {
 	 *
 	 * **Fired and forgotten, so a leaver is never held up by a DataStore.** The entry goes either way: the
 	 * record has been handed to the store, and a map keyed on a player who has left is a leak with nothing in
-	 * it to read. **The release is the point of writing at all here** — a player who hops servers in the same
+	 * it to read. **The release is the point of writing at all here** Ã¢â‚¬â€ a player who hops servers in the same
 	 * second must land on a record that is not still locked by a server they have left, which is the case the
 	 * lock expiry alone would make them wait out.
 	 */
@@ -541,12 +539,12 @@ export class StatsService implements OnStart {
 	}
 
 	/**
-	 * **Writes one player if their record differs from what was last written — the only path a periodic or
+	 * **Writes one player if their record differs from what was last written Ã¢â‚¬â€ the only path a periodic or
 	 * round-end write takes, and the only place the dirty test lives.**
 	 *
 	 * The comparison was inline in the autosave loop; it is a method now because there are two callers. The
 	 * coalescing rule is the user's own constraint: *"I don't think player hit and death ratio should be saved
-	 * instantly for each"* — nothing on a hit, a throw or a death touches the store, and every write below is
+	 * instantly for each"* Ã¢â‚¬â€ nothing on a hit, a throw or a death touches the store, and every write below is
 	 * either a boundary or the three-minute backstop.
 	 *
 	 * **`why` is for the log line, and the line is what proves a boundary write happened**: a round end that
@@ -565,7 +563,7 @@ export class StatsService implements OnStart {
 		if (outcome === "written") {
 			this.saved.set(player, { hits: stats.hits, outs: stats.outs });
 
-			if (DEBUG) print(`[Stats] ${player.Name}: saved ${stats.hits}H/${stats.outs}O — ${why}`);
+			logDebug(`[Stats] ${player.Name}: saved ${stats.hits}H/${stats.outs}O Ã¢â‚¬â€ ${why}`);
 
 			return;
 		}
@@ -577,7 +575,7 @@ export class StatsService implements OnStart {
 	 * **The round boundary: writes every player with something new, and only those.**
 	 *
 	 * **A round end is a save boundary and it was not one.** Every figure this service keeps moves *only*
-	 * inside a round — `count` refuses anything while the phase is not `Playing` — so the round's end is the
+	 * inside a round Ã¢â‚¬â€ `count` refuses anything while the phase is not `Playing` Ã¢â‚¬â€ so the round's end is the
 	 * exact instant the record stops changing, and until now the only things that wrote it were the
 	 * three-minute sweep and the player leaving. A crash, a shutdown or a server that emptied in between lost
 	 * the round. `create.roblox.com` asks for precisely this: *"save it periodically, when the player leaves,
@@ -585,7 +583,7 @@ export class StatsService implements OnStart {
 	 *
 	 * **It takes no roster, and that is deliberate rather than lazy.** The obvious caller passes
 	 * `RoundService.playersInRound()`, and that list is **wrong** for this job: it is `activePlayers`, which
-	 * `eliminate` deletes from *during* the round — so the round-end roster is missing precisely the players
+	 * `eliminate` deletes from *during* the round Ã¢â‚¬â€ so the round-end roster is missing precisely the players
 	 * whose `outs` went up, which is the figure the save exists to keep. Every player this service holds a
 	 * record for is the honest subject instead, and the dirty test in {@link flush} is what makes that cheap:
 	 * a lobby spectator, a player who joined after the round ended and anybody already written are all one
@@ -593,7 +591,7 @@ export class StatsService implements OnStart {
 	 *
 	 * **Spawned rather than awaited, because the caller is the round's own loop.** `RoundService.finishRound`
 	 * is inside `gameLoop`, and holding it for eight sequential writes would delay the intermission that
-	 * follows — for a save that has a shutdown path ({@link saveAll}) already waiting behind it.
+	 * follows Ã¢â‚¬â€ for a save that has a shutdown path ({@link saveAll}) already waiting behind it.
 	 */
 	public onRoundEnded(): void {
 		task.spawn(() => {
@@ -604,7 +602,7 @@ export class StatsService implements OnStart {
 	/**
 	 * Writes out everybody with something new.
 	 *
-	 * Not the answer to a shutdown — {@link saveAll} is — but the answer to a *crash*, which `BindToClose`
+	 * Not the answer to a shutdown Ã¢â‚¬â€ {@link saveAll} is Ã¢â‚¬â€ but the answer to a *crash*, which `BindToClose`
 	 * never runs for. Skipping a player with nothing new is what keeps this from being a periodic rewrite of
 	 * the same numbers. **And it is also the lock's heartbeat**: an expiry of `LOCK_EXPIRY_SECONDS` outlasting
 	 * this interval by one sweep is what makes a live server's lock survive and a dead one's lapse.
@@ -622,11 +620,11 @@ export class StatsService implements OnStart {
 	}
 
 	/**
-	 * Writes everybody out, releases their locks, and **waits for it — inside a deadline.**
+	 * Writes everybody out, releases their locks, and **waits for it Ã¢â‚¬â€ inside a deadline.**
 	 *
 	 * **The bound is a per-write deadline taken from the window that is left, and that is one mechanism
 	 * rather than two.** A budget check (`GetRequestBudgetForRequestType`) would answer a different question
-	 * — *may* I write? — and the failure this is built for is a write that is *allowed* and never answers,
+	 * Ã¢â‚¬â€ *may* I write? Ã¢â‚¬â€ and the failure this is built for is a write that is *allowed* and never answers,
 	 * because a throttled request sits in the engine's queue and *"the called function continues to yield as
 	 * long as its request is still queued"*. So every write gets a slice, no write gets more than the window
 	 * has left, and the loop stops when the window is gone.
@@ -661,29 +659,29 @@ export class StatsService implements OnStart {
 			else skipped++;
 		}
 
-		if (DEBUG) {
-			print(`[Stats] shutdown — ${written} record(s) written, ${skipped} skipped, of ${this.stats.size()}`);
+		if (DEBUG_LOGGING) {
+			logInfo(`[Stats] shutdown Ã¢â‚¬â€ ${written} record(s) written, ${skipped} skipped, of ${this.stats.size()}`);
 		}
 
 		if (skipped > 0) {
-			warn(`[Stats] shutdown ran out of its ${BIND_TO_CLOSE_SECONDS}s window — ${skipped} record(s) not saved`);
+			logError(`[Stats] shutdown ran out of its ${BIND_TO_CLOSE_SECONDS}s window Ã¢â‚¬â€ ${skipped} record(s) not saved`);
 		}
 	}
 
 	/**
 	 * One shutdown write, waited for at most `seconds`.
 	 *
-	 * A thin wrapper over `runWithin` — that function owns the thread-and-poll, because the economy's
-	 * shutdown needs the same one — and what is left here is the part only this service can say: which
+	 * A thin wrapper over `runWithin` Ã¢â‚¬â€ that function owns the thread-and-poll, because the economy's
+	 * shutdown needs the same one Ã¢â‚¬â€ and what is left here is the part only this service can say: which
 	 * player timed out, and that a refusal is the other server's lock rather than a fault.
 	 */
 	private writeWithin(player: Player, stats: PlayerStats, seconds: number): boolean {
 		const outcome = runWithin(seconds, () => this.write(player, stats, true));
 
 		if (!outcome.ok) {
-			warn(
+			logError(
 				`[Stats] ${player.Name}: the shutdown write did not answer within ` +
-					`${string.format("%.1f", seconds)}s — moved on`,
+					`${string.format("%.1f", seconds)}s Ã¢â‚¬â€ moved on`,
 			);
 
 			return false;
@@ -700,7 +698,7 @@ function blankStats(): PlayerStats {
 	return { hits: 0, outs: 0 };
 }
 
-/** Hits over hits and outs — `0` when there are neither, the honest reading of "nothing yet". */
+/** Hits over hits and outs Ã¢â‚¬â€ `0` when there are neither, the honest reading of "nothing yet". */
 function ratioOf(stats: PlayerStats): number {
 	const counted = stats.hits + stats.outs;
 
@@ -712,7 +710,7 @@ function ratioOf(stats: PlayerStats): number {
  *
  * **The token is all a ball carries.** `BallService.throwBall` stamps the ball's `ThrowerId` with the
  * thrower model's `THROWER_TOKEN` and then lets go of the model entirely, so there is nothing to ask
- * for it — the token is the whole of what an arriving ball knows about who threw it, and resolving a
+ * for it Ã¢â‚¬â€ the token is the whole of what an arriving ball knows about who threw it, and resolving a
  * *model* from it would mean scanning every rig in the world for a matching token on every landing.
  *
  * A player's token is their `UserId` as text and a rig's is a GUID, so `tonumber` is the entire rule
@@ -735,7 +733,7 @@ function playerOf(throwerToken: string): Player | undefined {
  *
  * **This is also what retires the old record.** A store written before `misses` became `outs` holds
  * `{hits, misses}` and fails the check below, so every player's figures start from nothing on the new
- * shape — rather than a `hits` count surviving next to an `outs` count that was never kept, which
+ * shape Ã¢â‚¬â€ rather than a `hits` count surviving next to an `outs` count that was never kept, which
  * would read as a record of somebody who has never been eliminated.
  */
 function toStats(value: unknown): PlayerStats {

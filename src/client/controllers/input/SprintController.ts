@@ -3,10 +3,8 @@ import Net from "@rbxts/net";
 import { Players, ReplicatedStorage, RunService, UserInputService } from "@rbxts/services";
 import { isMobile } from "../../platform";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { sprinting } from "../../sprinting";
-
-/** Prints the bind once, every edge of the action, and every call that reports a change to the server. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The keys that sprint — either of them.
@@ -447,8 +445,8 @@ export class SprintController implements OnStart {
 		// two it was in rather than leaving the reader to guess whether the loop ran.
 		if (isMobile()) {
 			task.spawn(() => this.watchStick());
-		} else if (DEBUG) {
-			print("[Sprint] this device has a keyboard, so the stick is not read — the keys are the sprint here");
+		} else if (DEBUG_LOGGING) {
+			logInfo("[Sprint] this device has a keyboard, so the stick is not read — the keys are the sprint here");
 		}
 	}
 
@@ -504,7 +502,7 @@ export class SprintController implements OnStart {
 		// state did not actually change — the de-duplication working, rather than a dropped input. `sprinting.ts`
 		// is the published value and `getRemote()` is the wire; this line is the only evidence that both were
 		// reached, and it is why it is printed inside the guard rather than before it.
-		if (DEBUG) print(`[Sprint] ${active ? "held" : "released"} — published and sent to the server`);
+		logDebug(`[Sprint] ${active ? "held" : "released"} — published and sent to the server`);
 
 		this.getRemote().SendToServer(active);
 	}
@@ -531,7 +529,7 @@ export class SprintController implements OnStart {
 			// **The one failure that has no other symptom.** A client that cannot create the instances cannot bind
 			// anything and cannot report anything else, so this line is the whole of what a session would have to
 			// say about it. Printed unconditionally, because it is not a diagnostic — it is a fault.
-			print(`[Sprint] the Input Action System would not build the action: ${tostring(built)}`);
+			logInfo(`[Sprint] the Input Action System would not build the action: ${tostring(built)}`);
 
 			return;
 		}
@@ -547,14 +545,14 @@ export class SprintController implements OnStart {
 
 			this.keysDown = true;
 
-			if (DEBUG) print("[Sprint] pressed — a shift key");
+			logDebug("[Sprint] pressed — a shift key");
 			this.holdSprint(true);
 		});
 
 		action.Released.Connect(() => {
 			this.keysDown = false;
 
-			if (DEBUG) print("[Sprint] released — a shift key");
+			logDebug("[Sprint] released — a shift key");
 			this.holdSprint(false);
 		});
 
@@ -584,8 +582,8 @@ export class SprintController implements OnStart {
 		// completely different causes — the bind never happened, or the press never arrived — and this is the line
 		// that tells them apart. Both keys are named, read from the list itself so that the line cannot fall out of
 		// step with what is actually bound.
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Sprint] IAS bound — ${SPRINT_KEYS.map((key) => key.Name).join(" + ")} on the "${ACTION_NAME}" ` +
 					`action; the stick, where there is one, is read from the humanoid`,
 			);
@@ -725,8 +723,8 @@ export class SprintController implements OnStart {
 		// rather than run inline. It reports; it decides nothing.
 		this.scaleStickFrame();
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Sprint] mobile — reading the stick from Humanoid:GetMoveVelocity() ÷ WalkSpeed; start ` +
 					`${SPRINT_START_MAGNITUDE}, stop ${SPRINT_STOP_MAGNITUDE} (literals — the drawn size of the ` +
 					`stick does not move them); press on the crossing, release ${SPRINT_RELEASE_SECONDS}s`,
@@ -769,11 +767,11 @@ export class SprintController implements OnStart {
 			// **The suffix names which side of the start line the reading is on**, because that is the one thing
 			// the number cannot say for itself: `0.45` and `0.63` are both "the stick is pushed", and only the
 			// comparison says whether either of them is a sprint.
-			if (DEBUG && reports < STICK_REPORT_LIMIT && math.abs(magnitude - reported) >= STICK_REPORT_STEP) {
+			if (DEBUG_LOGGING && reports < STICK_REPORT_LIMIT && math.abs(magnitude - reported) >= STICK_REPORT_STEP) {
 				reported = magnitude;
 				reports += 1;
 
-				print(
+				logInfo(
 					`[Sprint] mobile — the reading ${string.format("%.2f", magnitude)}` +
 						(magnitude >= SPRINT_START_MAGNITUDE ? " (past the start line)" : ""),
 				);
@@ -803,7 +801,7 @@ export class SprintController implements OnStart {
 					this.stickSprinting = true;
 					this.stickBelowSeconds = 0;
 
-					if (DEBUG) print(`[Sprint] pressed — stick ${string.format("%.2f", magnitude)} (over start)`);
+					logDebug(`[Sprint] pressed — stick ${string.format("%.2f", magnitude)} (over start)`);
 
 					this.holdSprint(true);
 				}
@@ -813,7 +811,7 @@ export class SprintController implements OnStart {
 				if (this.stickBelowSeconds >= SPRINT_RELEASE_SECONDS) {
 					this.stickSprinting = false;
 
-					if (DEBUG) print(`[Sprint] released — stick ${string.format("%.2f", magnitude)} (under stop)`);
+					logDebug(`[Sprint] released — stick ${string.format("%.2f", magnitude)} (under stop)`);
 
 					this.holdSprint(false);
 				}
@@ -859,7 +857,7 @@ export class SprintController implements OnStart {
 	 */
 	private scaleStickFrame(): void {
 		if (STICK_SCALE === 1) {
-			if (DEBUG) print("[Sprint] mobile — STICK_SCALE is 1, so the stick keeps the size the engine gave it");
+			logDebug("[Sprint] mobile — STICK_SCALE is 1, so the stick keeps the size the engine gave it");
 
 			return;
 		}
@@ -867,14 +865,14 @@ export class SprintController implements OnStart {
 		const frame = this.findStickFrame(this.player.WaitForChild("PlayerGui") as PlayerGui);
 
 		if (frame === undefined) {
-			if (DEBUG) print("[Sprint] mobile — no stick frame, so the resize is skipped and the pair stands");
+			logDebug("[Sprint] mobile — no stick frame, so the resize is skipped and the pair stands");
 
 			return;
 		}
 
 		if (frame.Name === "Thumbpad" || frame.Name === "TouchDPad") {
-			if (DEBUG) {
-				print(
+			if (DEBUG_LOGGING) {
+				logInfo(
 					`[Sprint] mobile — ${frame.GetFullName()} is a pad mode, whose reading is 1 at any pressure; ` +
 						`the resize is skipped and the pair stands`,
 				);
@@ -923,8 +921,8 @@ export class SprintController implements OnStart {
 		// {@link SPRINT_START_MAGNITUDE}.
 		const applied = before.X > 0 ? after.X / before.X : 1;
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Sprint] mobile — the stick is ${frame.GetFullName()} (${frame.ClassName}) at ` +
 					`${string.format("%.0fx%.0f", before.X, before.Y)}px, drawn at ` +
 					`${string.format("%.0fx%.0f", after.X, after.Y)}px (x${string.format("%.2f", applied)}); ` +
@@ -938,7 +936,7 @@ export class SprintController implements OnStart {
 		// deliberately not done**: a frame rebuilt for a mode this file has not seen is a frame to *report*, not one
 		// to dress from a distance. See {@link STICK_FRAME_NAMES}.
 		frame.Destroying.Connect(() => {
-			if (DEBUG) print(`[Sprint] mobile — ${frame.Name} went away, so the stick is at engine size again`);
+			logDebug(`[Sprint] mobile — ${frame.Name} went away, so the stick is at engine size again`);
 		});
 	}
 
@@ -966,8 +964,8 @@ export class SprintController implements OnStart {
 		const touch = playerGui.WaitForChild("TouchGui", STICK_FRAME_WAIT_SECONDS);
 
 		if (touch === undefined) {
-			if (DEBUG) {
-				print(
+			if (DEBUG_LOGGING) {
+				logInfo(
 					`[Sprint] mobile — no TouchGui after ${STICK_FRAME_WAIT_SECONDS}s, so there is no stick to find`,
 				);
 			}
@@ -978,7 +976,7 @@ export class SprintController implements OnStart {
 		const control = touch.FindFirstChild("TouchControlFrame", true);
 
 		if (control === undefined) {
-			if (DEBUG) print("[Sprint] mobile — TouchGui holds no TouchControlFrame, so there is no stick to find");
+			logDebug("[Sprint] mobile — TouchGui holds no TouchControlFrame, so there is no stick to find");
 
 			return undefined;
 		}
@@ -987,7 +985,7 @@ export class SprintController implements OnStart {
 			const found = control.FindFirstChild(name, true);
 
 			if (found !== undefined && found.IsA("GuiObject") && !found.IsA("GuiButton")) {
-				if (DEBUG) print(`[Sprint] mobile — the stick's frame is ${found.GetFullName()}, found by name`);
+				logDebug(`[Sprint] mobile — the stick's frame is ${found.GetFullName()}, found by name`);
 
 				return found;
 			}
@@ -997,16 +995,16 @@ export class SprintController implements OnStart {
 			if (!child.IsA("GuiObject") || child.IsA("GuiButton")) continue;
 			if (child.FindFirstChildWhichIsA("ImageLabel", true) === undefined) continue;
 
-			if (DEBUG) print(`[Sprint] mobile — the stick's frame is ${child.GetFullName()}, found by its shape`);
+			logDebug(`[Sprint] mobile — the stick's frame is ${child.GetFullName()}, found by its shape`);
 
 			return child;
 		}
 
-		if (DEBUG) {
+		if (DEBUG_LOGGING) {
 			const held: string[] = [];
 			for (const child of control.GetChildren()) held.push(`${child.Name} (${child.ClassName})`);
 
-			print(
+			logInfo(
 				`[Sprint] mobile — no stick frame under TouchControlFrame, by name ` +
 					`(${STICK_FRAME_NAMES.join(", ")}) or by shape. It holds: ${held.join(", ")}`,
 			);

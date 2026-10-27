@@ -2,11 +2,9 @@ import { Service } from "@flamework/core";
 import { Debris, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { findTemplate } from "shared/find";
 import { SUPER_CONFIG } from "shared/config/super.config";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { WalkSpeedService } from "../character/WalkSpeedService";
 import { overrideOutlineColour } from "../visual/OutlineService";
-
-/** Prints every freeze and every release, with what the body was doing before. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The named contribution a freeze makes to a body's walk speed.
@@ -405,7 +403,7 @@ export class FreezeService {
 		this.frozen.set(model, entry);
 
 		if (previous) {
-			if (DEBUG) print(`[Freeze] ${model.Name}: still frozen — the clock restarted`);
+			logDebug(`[Freeze] ${model.Name}: still frozen — the clock restarted`);
 		} else {
 			// **One watcher per body, and both are the rule rather than a tidy-up.** A freeze is defined
 			// to clear when its body dies, and a body that leaves the world cannot be thawed by anything —
@@ -414,7 +412,7 @@ export class FreezeService {
 			humanoid.Died.Connect(() => this.unfreeze(model));
 			model.Destroying.Connect(() => this.unfreeze(model));
 
-			if (DEBUG) print(`[Freeze] ${model.Name}: frozen for ${string.format("%.2f", seconds)}s`);
+			logDebug(`[Freeze] ${model.Name}: frozen for ${string.format("%.2f", seconds)}s`);
 		}
 
 		task.delay(seconds, () => {
@@ -642,12 +640,12 @@ export class FreezeService {
 			if (!splashTemplateMissingReported) {
 				splashTemplateMissingReported = true;
 
-				warn(`[VFX] no ${FREEZE_SPLASH_NAME} in ReplicatedStorage — the Freeze splash will not play`);
+				logWarn(`[VFX] no ${FREEZE_SPLASH_NAME} in ReplicatedStorage — the Freeze splash will not play`);
 
 				const top: string[] = [];
 				for (const child of ReplicatedStorage.GetChildren()) top.push(`${child.Name} (${child.ClassName})`);
 
-				warn(
+				logWarn(
 					`[VFX] ReplicatedStorage holds: ${top.isEmpty() ? "nothing" : top.join(", ")} — ` +
 						`a splash template is a Model or a BasePart named ${FREEZE_SPLASH_NAME}, ` +
 						`and it is found by name wherever it sits.`,
@@ -666,7 +664,7 @@ export class FreezeService {
 			if (!splashTemplateMissingReported) {
 				splashTemplateMissingReported = true;
 
-				warn(
+				logWarn(
 					`[VFX] ${FREEZE_SPLASH_NAME} holds no BasePart — the Freeze splash will not play. ` +
 						"The template is scaled and placed by its part(s).",
 				);
@@ -739,7 +737,7 @@ export class FreezeService {
 		// template. The question it answers is "did a clone appear, and was it the size of the freeze", and
 		// against a splash that looks wrong the factor is what separates a template authored at the wrong size
 		// from one placed in the wrong place.
-		print(
+		logInfo(
 			`[VFX] ${FREEZE_SPLASH_NAME} spawned at ${origin} with size ${diameter} ` +
 				`(radius ${radius}, scale ${string.format("%.2f", scale)}, ${parts.size()} part(s))`,
 		);
@@ -800,7 +798,7 @@ export class FreezeService {
 		const humanoid = model.FindFirstChildWhichIsA("Humanoid");
 		if (humanoid) humanoid.SetStateEnabled(Enum.HumanoidStateType.Jumping, entry.jumpingWasEnabled);
 
-		if (DEBUG) print(`[Freeze] ${model.Name}: released`);
+		logDebug(`[Freeze] ${model.Name}: released`);
 	}
 
 	/**
@@ -1108,7 +1106,7 @@ export class FreezeService {
 		 * **The splash reports itself, always, including when it found nothing — and this line is the fix
 		 * for a report that could not be answered without it.**
 		 *
-		 * It used to be gated twice: behind `DEBUG`, and behind `caught.size() > 0`. So the *only* state it
+		 * It used to be gated twice: behind `DEBUG_LOGGING`, and behind `caught.size() > 0`. So the *only* state it
 		 * ever printed was the one that needed no explanation, and the two states worth asking about were
 		 * identical in the output — a splash that examined every body and refused them all, and a splash
 		 * that never ran at all. Both read as "the ice power does nothing", which is exactly the report
@@ -1140,7 +1138,7 @@ export class FreezeService {
 		 * anything happen", and the list is what answers *why not*: a splash that found scenery and a splash
 		 * that found rigs it refused are the same two numbers and two completely different faults.
 		 */
-		print(
+		logInfo(
 			`[Freeze] splash at ${origin} — radius ${radius}, found ${found} bod(ies), ` +
 				`spared ${spared}, caught ${caught.size()} — ${describeFound(notes)}`,
 		);

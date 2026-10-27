@@ -11,6 +11,7 @@ import { canDodge, dodgeDirectionOf, flattenToGround, resolveDodgeable } from "s
 import type { DodgeDirection } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { lockoutElapsed } from "./actionLock";
 import type { DuckState } from "./DuckService";
 import { DevService } from "../../dev/DevService";
@@ -21,15 +22,12 @@ import { insideZone } from "../zone/PracticeZoneService";
 import { BadgeService } from "../badges/BadgeService";
 import { BallService } from "../ball/BallService";
 
-/** Prints what every dodge request did, and why it did nothing. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
-
 /**
  * Shortest direction vector that is accepted.
  *
  * Rejects a zero-length vector, and anything a client might send that is not
  * roughly unit length. The direction is normalized before it is used, so this is
- * only about refusing input that does not mean a direction at all — and it is
+ * only about refusing input that does not mean a direction at all Ã¢â‚¬â€ and it is
  * checked *before* flattening, so a request aimed at the sky is refused for
  * having no heading rather than accepted for having length.
  */
@@ -55,29 +53,29 @@ const PLAYING = "Playing";
  * are the two ways a proximity test of this kind fails:
  *
  * - **It measured the wrong place.** The root sits at the hips; a ball into the chest, the head or an arm was
- *   several studs from it, so the radius had to be generous — generous enough to swallow a real near miss.
+ *   several studs from it, so the radius had to be generous Ã¢â‚¬â€ generous enough to swallow a real near miss.
  * - **It measured the wrong *time*.** The watch opens when the dash starts, and a ball that struck the body
- *   *before* that instant is already past it — a proximity test run a frame later cannot see a contact that has
+ *   *before* that instant is already past it Ã¢â‚¬â€ a proximity test run a frame later cannot see a contact that has
  *   already happened. That is the log this was found from: a body tagged at `20:15:30.512` and reported as a
  *   "perfect dodge" against the same body at `20:15:30.793`, 281 ms later.
  *
  * A `GetBoundingBox()` volume was the other candidate and is rejected for a reason the constant list cannot
  * show: **a held ball is a child of the character** (`BallService.attachToHand` parents it to the model), so the
- * character's own bounding box includes it — which would push the contact volume about three studs out on the
+ * character's own bounding box includes it Ã¢â‚¬â€ which would push the contact volume about three studs out on the
  * side the hand is on, past `PERFECT_DISTANCE`, and silently swallow every dodge made by a body carrying a ball.
  * See `watchForPerfectDodge` for what replaced both.
  */
 
 /**
  * How near a body a ball has to be *predicted* to arrive for the dodge that avoided it to be disqualified, in
- * studs — **the radius {@link stillOnCourse} uses, and the one place a radius is still the right instrument.**
+ * studs Ã¢â‚¬â€ **the radius {@link stillOnCourse} uses, and the one place a radius is still the right instrument.**
  *
  * `BALL_SIZE / 2` is the ball and the other `1.5` is a body: an R15 torso is two studs wide and an arm hangs a
  * little beyond that.
  *
  * **This is not the retired contact test, though it looks like it.** That test asked "is the ball at the body
  * *now*" and was replaced by the ball's own tag list, because a tag is exact and a sphere is not. This one asks
- * "will the ball be at the body *later*", which no tag can answer — the contact has not happened yet — so a
+ * "will the ball be at the body *later*", which no tag can answer Ã¢â‚¬â€ the contact has not happened yet Ã¢â‚¬â€ so a
  * prediction is the only available instrument and a radius is what a prediction is made of.
  */
 const PREDICTED_HIT_RADIUS = BALL_SIZE / 2 + 1.5;
@@ -100,7 +98,7 @@ interface ActiveDash {
  * Declared as **methods**, which is the opposite of {@link ActiveDash} and right for the
  * same reason: the only thing that implements this is `CatchService` itself, passed as an
  * instance, and a class's methods satisfy a method signature. An object literal could
- * not — it would need function properties.
+ * not Ã¢â‚¬â€ it would need function properties.
  */
 export interface CatchState {
 	/** Whether `model` has a catch window open at this instant. */
@@ -118,14 +116,14 @@ export interface CatchState {
  * functions that played them.**
  *
  * This service used to resolve the clip (`dodgeAnimationId`), load it onto a player character's animator
- * (`playDodgeAnimation`) and stop it when the dash ended (`stopDodgeAnimation`) — a track started on the
+ * (`playDodgeAnimation`) and stop it when the dash ended (`stopDodgeAnimation`) Ã¢â‚¬â€ a track started on the
  * server, on the argument that a client-started one would be that client's private flourish. A rig was drawn
  * by every client from the direction published below, so the game had two ways of drawing one dodge, and the
  * two could disagree about which of the four clips a dash was.
  *
  * **There is one way now, and it is the direction below.** Every body's dash is drawn from
- * `DODGE_DIRECTION_ATTRIBUTE` by `client/controllers/character/BodyAnimator.ts` — a rig on every client, a
- * player's own body on the client that owns it — and the clip is `BODY_ANIMATION`'s dodge row for the
+ * `DODGE_DIRECTION_ATTRIBUTE` by `client/controllers/character/BodyAnimator.ts` Ã¢â‚¬â€ a rig on every client, a
+ * player's own body on the client that owns it Ã¢â‚¬â€ and the clip is `BODY_ANIMATION`'s dodge row for the
  * direction that was published. So this service's animation duty is one attribute write and one clear, and
  * the clip table is the shared one rather than a second lookup here.
  */
@@ -134,7 +132,7 @@ export interface CatchState {
  * Dodging, decided by the server.
  *
  * `requestDodge` is the entry point for everything: the remote handler below and
- * an NPC's AI call the same method, so neither has to be a player — a humanoid,
+ * an NPC's AI call the same method, so neither has to be a player Ã¢â‚¬â€ a humanoid,
  * though, is required, which is what keeps this to things that can actually
  * dodge. The dash itself is a velocity applied to the model's root for a fixed
  * time, which is what makes it behave the same on a character the player's
@@ -165,7 +163,7 @@ export class DodgeService implements OnStart {
 	 *
 	 * **Not {@link lastDodgeAt},** which is when a dodge *started* and exists only to time
 	 * the cooldown between two of them. This one is the moment a dash was over, which is
-	 * what a catch is gated on — and the two are written at opposite ends of a dash for
+	 * what a catch is gated on Ã¢â‚¬â€ and the two are written at opposite ends of a dash for
 	 * that reason: the cooldown is charged when the request is accepted, this when the dash
 	 * ends, however it ends.
 	 */
@@ -179,7 +177,7 @@ export class DodgeService implements OnStart {
 	 * ({@link DODGE_CONFIG.PERFECT_WINDOW_SECONDS}, 0.6 s), so "is this still my dash" is false for most of the
 	 * window it is supposed to be measuring. What has to be compared instead is *which dodge opened the watch*,
 	 * and the token is that question. It only matters for a dev with `NoCooldown`, who can dodge again inside
-	 * the window — for everybody else the cooldown is longer than the window and there is never a second one.
+	 * the window Ã¢â‚¬â€ for everybody else the cooldown is longer than the window and there is never a second one.
 	 *
 	 * An entry per model that is replaced rather than pruned, exactly like {@link lastDodgeAt}: they are one
 	 * table reference each, and pruning would need a `Destroying` subscription per body.
@@ -190,7 +188,7 @@ export class DodgeService implements OnStart {
 	 * The catch window, as answered by the service that owns it.
 	 *
 	 * Handed over rather than injected: the two services are gated on each other, and
-	 * Flamework **errors on a circular dependency** — so `CatchService` holds this service
+	 * Flamework **errors on a circular dependency** Ã¢â‚¬â€ so `CatchService` holds this service
 	 * and this is how the other direction is closed. Unset until `CatchService` is
 	 * constructed, which is during ignite and long before anything can dodge; while it is
 	 * unset nothing is refused, because a service that does not exist cannot be holding a
@@ -199,13 +197,13 @@ export class DodgeService implements OnStart {
 	private catchState?: CatchState;
 
 	/**
-	 * The duck, as this service has to see it — **the same handover as {@link catchState}, in the other
+	 * The duck, as this service has to see it Ã¢â‚¬â€ **the same handover as {@link catchState}, in the other
 	 * direction, and it is a handover rather than an injection for a mechanical reason.** `DuckService`
 	 * injects this service, because it has to ask whether a dash is in flight before it starts one, so
 	 * this service cannot inject that one back. `DuckService.onStart` hands itself over instead, which is
 	 * the arrangement {@link watchCatchState} already established one file over.
 	 *
-	 * Unset until then, and while it is unset nothing is refused — a service that does not exist cannot
+	 * Unset until then, and while it is unset nothing is refused Ã¢â‚¬â€ a service that does not exist cannot
 	 * be holding a body in a duck.
 	 */
 	private duckState?: DuckState;
@@ -217,8 +215,8 @@ export class DodgeService implements OnStart {
 		/**
 		 * **The balls, and the one thing this service needs from that domain: what is in flight.**
 		 *
-		 * The perfect dodge is the only part of a dodge that has to look at the world — a dash is a velocity and
-		 * needs nothing else — and what it has to look at is a ball's *position*, which is the ball domain's to
+		 * The perfect dodge is the only part of a dodge that has to look at the world Ã¢â‚¬â€ a dash is a velocity and
+		 * needs nothing else Ã¢â‚¬â€ and what it has to look at is a ball's *position*, which is the ball domain's to
 		 * report rather than this service's to enumerate. See `BallService.armedBalls` for the query and why
 		 * `Armed` is the definition of "still a throw".
 		 *
@@ -246,16 +244,16 @@ export class DodgeService implements OnStart {
 
 	public onStart() {
 			events.Server.OnEvent("dodge", (player, direction, reference) => {
-				if (DEBUG) print(`[Dodge] ${player.Name} asked to dodge ${direction}`);
+				logDebug(`[Dodge] ${player.Name} asked to dodge ${direction}`);
 
 				const character = player.Character;
 				if (!character) {
-					if (DEBUG) print(`[Dodge] ${player.Name}: no character to move`);
+					logDebug(`[Dodge] ${player.Name}: no character to move`);
 					return;
 				}
 
 				// **The reference is passed straight through as the optional argument it is.** A client that could not
-				// read its camera sends zero, which flattens to nothing, which is the same as not sending one — and
+				// read its camera sends zero, which flattens to nothing, which is the same as not sending one Ã¢â‚¬â€ and
 				// then the dash reads the body itself. See the `dodge` event for what the two fields are.
 				this.requestDodge(character, direction, reference);
 		});
@@ -264,16 +262,16 @@ export class DodgeService implements OnStart {
 	/**
 	 * Asks for `model` to dodge `direction`.
 	 *
-	 * Returns whether the model moved. Everything that decides that — a round being played, the model
-	 * having a living humanoid, being off cooldown and having been given a usable direction — is checked
+	 * Returns whether the model moved. Everything that decides that Ã¢â‚¬â€ a round being played, the model
+	 * having a living humanoid, being off cooldown and having been given a usable direction Ã¢â‚¬â€ is checked
 	 * here, so a caller cannot half-ask, and the direction is normalized rather than trusted: a client can
 	 * send anything, and the only thing its direction is allowed to decide is which way the dash goes.
 	 *
 	 * **`reference` is optional, and which caller omits it is the whole of the rule.** A player's client sends
-	 * it — the frame its keys were read in, which is the camera — because the server has no camera to read.
+	 * it Ã¢â‚¬â€ the frame its keys were read in, which is the camera Ã¢â‚¬â€ because the server has no camera to read.
 	 * An NPC's AI does not, because the server owns *that* body and the rig's own facing is both fresher and
 	 * the right frame for a step the AI chose: `DodgeBehavior` reaches this through
-	 * `requestDodge(model, direction)`. Omitting it is therefore not a degraded path — it is the correct
+	 * `requestDodge(model, direction)`. Omitting it is therefore not a degraded path Ã¢â‚¬â€ it is the correct
 	 * answer for a body whose direction is motion rather than input. What the two callers must not do is
 	 * disagree about *whose* reading wins for the same body, which is why the fallback lives where the dash
 	 * starts rather than being decided by the caller. See {@link startDash}.
@@ -281,7 +279,7 @@ export class DodgeService implements OnStart {
 	public requestDodge(model: Model, direction: Vector3, reference?: Vector3): boolean {
 		const entity = resolveDodgeable(model);
 		if (!entity || !canDodge(entity)) {
-			if (DEBUG) print(`[Dodge] ${model.Name}: no living humanoid to dodge with`);
+			logDebug(`[Dodge] ${model.Name}: no living humanoid to dodge with`);
 			return false;
 		}
 
@@ -291,7 +289,7 @@ export class DodgeService implements OnStart {
 
 		// The other action has the first word, and it is asked before the cooldown rather
 		// than after: a dodge refused because a catch is in the way has not happened, so it
-		// must not be charged for one. Deliberately not skipped for a dev with `NoCooldown` —
+		// must not be charged for one. Deliberately not skipped for a dev with `NoCooldown` Ã¢â‚¬â€
 		// that flag buys freedom from the *dodge's* own clock, and this is a rule about the two
 		// actions rather than a clock of either one. Turn the flag off to test it.
 		if (this.blocksDodge(model)) return false;
@@ -300,7 +298,7 @@ export class DodgeService implements OnStart {
 		//
 		// **This supersedes "round only", and the reason it was round-only is the reason it changed.** The
 		// earlier argument was cost: a zone half here would have been a `GetPartBoundsInBox` walk over
-		// every tagged zone part on every press of a movement key — the one place in the game where the
+		// every tagged zone part on every press of a movement key Ã¢â‚¬â€ the one place in the game where the
 		// query rate is set by how fast somebody can mash rather than by a tick. That argument was correct
 		// for as long as the zone was a *question the server had to ask*. It is not a question any more:
 		// `PracticeZoneService` owns membership and publishes it on the player, so the zone half below is
@@ -308,7 +306,7 @@ export class DodgeService implements OnStart {
 		// changed because its reason did, which is the only good reason to change one.
 		//
 		// **And the round half is `IN_ROUND_ATTRIBUTE` as well as the phase, which is the correction a report
-		// bought.** The half used to be the phase alone — *a round is being played* — and that is a fact about the
+		// bought.** The half used to be the phase alone Ã¢â‚¬â€ *a round is being played* Ã¢â‚¬â€ and that is a fact about the
 		// **server**, not about this body: it is true for every player watching from the lobby. So a player who
 		// opted out of the round, or who surrendered out of it, could dodge for the whole length of somebody else's
 		// match. The phase says the game is on; the attribute says the round has *this player* in it; a dodge needs
@@ -318,11 +316,11 @@ export class DodgeService implements OnStart {
 		//
 		// **Placed here, before the cooldown is read or charged**, which is the position `blocksDodge`
 		// occupies and for the reason that method gives: a dodge that was never allowed has not happened, so
-		// it must not be charged for one. `blocksDodge` keeps the first word of the two — a freeze is a
+		// it must not be charged for one. `blocksDodge` keeps the first word of the two Ã¢â‚¬â€ a freeze is a
 		// state about the *body*, and this one is about where the body is and what the round is doing.
 		//
 		// The round is read from the round folder, which is how every other reader on this side gets at it,
-		// and it is the *same* source the client's half reads — so the two sides cannot disagree about what
+		// and it is the *same* source the client's half reads Ã¢â‚¬â€ so the two sides cannot disagree about what
 		// the round is doing. Membership and the zone are read from the player, which is how every other
 		// consumer gets at *that*, and it is likewise the client's source once the attributes have
 		// replicated. A folder that is not there yet reads as "no round" and a player who has never been in a
@@ -330,16 +328,16 @@ export class DodgeService implements OnStart {
 		//
 		// **A rig is the one body that still asks the phase alone, because a rig cannot be asked anything
 		// else, and this paragraph is the exception to the rule above.** The attribute is written on the
-		// *player* — `PracticeZoneService.tick` takes a `Player`, one per body — so `GetPlayerFromCharacter`
+		// *player* Ã¢â‚¬â€ `PracticeZoneService.tick` takes a `Player`, one per body Ã¢â‚¬â€ so `GetPlayerFromCharacter`
 		// answers `nil` for an NPC rig and the attribute half of this gate would answer `false` for it for
 		// ever. A round covers that, because the round half is about the *round* rather than about the body,
 		// which is why an NPC dodges in play and why the hole only shows in the practice area: the place a
 		// rig is most likely to be tested in. So a body with no player queries the zone directly, through
-		// `insideZone` — already exported, already taking any `Instance` for the mystery box's sake, and
+		// `insideZone` Ã¢â‚¬â€ already exported, already taking any `Instance` for the mystery box's sake, and
 		// already the one place the rule about what a zone *is* lives.
 		//
 		// **What makes the exception legitimate is the rule's own reason.** The cost the tracker exists to
-		// avoid is a query whose rate is set by *how fast somebody can mash a key* — and a rig does not
+		// avoid is a query whose rate is set by *how fast somebody can mash a key* Ã¢â‚¬â€ and a rig does not
 		// mash. Its requests come from `DodgeBehavior`, which pre-checks `DODGE_CONFIG.COOLDOWN` on its own
 		// side, so the query runs at most once per 1.5 seconds per rig, for the handful of rigs that exist.
 		// A player never reaches it: the attribute arm is what a player takes, and a ternary does not
@@ -349,7 +347,7 @@ export class DodgeService implements OnStart {
 
 		const player = Players.GetPlayerFromCharacter(model);
 
-		// A rig has no membership to ask about, so the phase is its whole answer — see the paragraph above.
+		// A rig has no membership to ask about, so the phase is its whole answer Ã¢â‚¬â€ see the paragraph above.
 		const inRound = player !== undefined ? playing && player.GetAttribute(IN_ROUND_ATTRIBUTE) === true : playing;
 
 		if (!inRound) {
@@ -363,13 +361,13 @@ export class DodgeService implements OnStart {
 					: insideZone(model);
 
 			if (!inZone) {
-				if (DEBUG) print(`[Dodge] ${model.Name}: refused — not in the round, and not in a practice zone`);
+				logDebug(`[Dodge] ${model.Name}: refused Ã¢â‚¬â€ not in the round, and not in a practice zone`);
 
 				return false;
 			}
 		}
 
-		// A dev with `NoCooldown` drops the clock entirely — the read here *and* the
+		// A dev with `NoCooldown` drops the clock entirely Ã¢â‚¬â€ the read here *and* the
 		// write below, because keeping only one of them would mean charging a cooldown
 		// nobody checks, or checking one that was never charged.
 		const free = this.dodgesFreely(model);
@@ -377,12 +375,12 @@ export class DodgeService implements OnStart {
 		const now = os.clock();
 		const last = this.lastDodgeAt.get(model);
 		if (!free && last !== undefined && now - last < DODGE_CONFIG.COOLDOWN) {
-			if (DEBUG) print(`[Dodge] ${model.Name}: still cooling down`);
+			logDebug(`[Dodge] ${model.Name}: still cooling down`);
 			return false;
 		}
 
 		if (!typeIs(direction, "Vector3") || direction.Magnitude < MIN_DIRECTION_MAGNITUDE) {
-			if (DEBUG) print(`[Dodge] ${model.Name}: not a usable direction`);
+			logDebug(`[Dodge] ${model.Name}: not a usable direction`);
 			return false;
 		}
 
@@ -390,13 +388,13 @@ export class DodgeService implements OnStart {
 		// still dash along the floor, not into it.
 		const heading = flattenToGround(direction);
 		if (!heading) {
-			if (DEBUG) print(`[Dodge] ${model.Name}: no heading in that direction`);
+			logDebug(`[Dodge] ${model.Name}: no heading in that direction`);
 			return false;
 		}
 
 		// **The reference the requester reported, when it reported a usable one.** Flattened here rather than
 		// trusted, for the reason the direction is: the value arrives from a client, and the only thing this
-		// side does with it is name a clip — so a value with no horizontal part is the same as no value, and
+		// side does with it is name a clip Ã¢â‚¬â€ so a value with no horizontal part is the same as no value, and
 		// the dash falls back to reading the body itself. See {@link startDash}, which owns that fallback
 		// because it is the only place that has the body's root to read.
 		const reportedReference = typeIs(reference, "Vector3") ? flattenToGround(reference) : undefined;
@@ -404,7 +402,7 @@ export class DodgeService implements OnStart {
 		// Charged now, before the dash exists: the request has been accepted at this
 		// point, and charging it after the fact would leave a window in which two
 		// requests can both pass the check. Nothing is charged for a dev who is not
-		// gated by it in the first place — and nothing is published either, so the
+		// gated by it in the first place Ã¢â‚¬â€ and nothing is published either, so the
 		// readout agrees with the rule rather than with what was asked for.
 		if (!free) {
 			this.lastDodgeAt.set(model, now);
@@ -417,7 +415,7 @@ export class DodgeService implements OnStart {
 		// actions, which holds for a dev exactly as it holds for anybody else.
 		//
 		// "At least" rather than outright, because a catch cycle already running may end after this
-		// does — and the readout has to show the longer of the two waits, or it would go light
+		// does Ã¢â‚¬â€ and the readout has to show the longer of the two waits, or it would go light
 		// while the pair was still shut.
 		extendReadyAt(model, CATCH_READY_AT, DODGE_CONFIG.DURATION + ACTION_CONFIG.ACTION_LOCKOUT_SECONDS);
 
@@ -425,20 +423,20 @@ export class DodgeService implements OnStart {
 
 		// **Heard here, which is after every reason this dodge might not have happened.** No living
 		// humanoid, a catch in the way, a cooldown not yet elapsed, a direction that is not a
-		// direction, a heading with no horizontal part — each of those returned above. So arriving at
+		// direction, a heading with no horizontal part Ã¢â‚¬â€ each of those returned above. So arriving at
 		// this line *is* the dodge, and a refused attempt is silent by construction rather than by a
 		// condition written here. That matters more for this sound than for the other two: a dodge
 		// refused for cooldown is the common case, and it is the one a stray sound would give away.
 		//
 		// **At the root part, which is where the model *is*.** `Dodgeable.root` is the part whose
-		// position the model's position is — see `resolveDodgeable` for how one is chosen — so this is
+		// position the model's position is Ã¢â‚¬â€ see `resolveDodgeable` for how one is chosen Ã¢â‚¬â€ so this is
 		// the dodger rather than whatever the humanoid's own centre happens to be. It is also the part
 		// the dash's own constraints are hung from, so the sound and the move are in the same place by
 		// construction rather than by two lookups agreeing.
 		//
 		// **On the server, which costs a round trip and buys every nearby player the sound.** The
 		// rejected alternative is worth naming because it is not a bad idea: this client already knows
-		// it dodged — it pressed the key — so a sound played locally would be immediate, and the one
+		// it dodged Ã¢â‚¬â€ it pressed the key Ã¢â‚¬â€ so a sound played locally would be immediate, and the one
 		// the dodger heard would not arrive a round trip after their own input. It is rejected because
 		// the sound is not *for* the dodger. A dodge is something other people need to notice, which is
 		// exactly why `playDodgeAnimation` starts its flourish from the server and not from the client
@@ -449,8 +447,8 @@ export class DodgeService implements OnStart {
 		emitSound(entity.root.CFrame, model.Name, SOUND_CONFIG.DODGE, DODGE_EMITTER_NAME);
 
 		// **And the round's badge count, on the line after the sound and for the sound's own reason.** Everything
-		// above this sentence has returned for a reason the dodge did not happen — no humanoid, a catch in the
-		// way, a cooldown, a direction that is not one — so arriving here *is* the dodge, and a refused attempt
+		// above this sentence has returned for a reason the dodge did not happen Ã¢â‚¬â€ no humanoid, a catch in the
+		// way, a cooldown, a direction that is not one Ã¢â‚¬â€ so arriving here *is* the dodge, and a refused attempt
 		// is not counted by construction rather than by a condition written here. The counters are keyed on the
 		// body, which folds to its `Player`; a rig's dodge is counted under its model, because a rig has a head
 		// for the badge strip to hang over.
@@ -487,7 +485,7 @@ export class DodgeService implements OnStart {
 	 * lockout.
 	 *
 	 * Both halves are one comparison over the catch's own timing, which is why the catch
-	 * state is asked for its clock rather than told what the rule is — the window is the
+	 * state is asked for its clock rather than told what the rule is Ã¢â‚¬â€ the window is the
 	 * catch's to know about, the lockout is the reader's to apply, and the lockout itself is
 	 * {@link lockoutElapsed}, so this gate and the two others cannot disagree about it.
 	 */
@@ -498,14 +496,14 @@ export class DodgeService implements OnStart {
 		// all". Asked first so a frozen player is told the real reason rather than that they are still
 		// cooling down from something that finished two seconds ago.
 		if (this.freezes.isFrozen(model)) {
-			if (DEBUG) print(`[Dodge] ${model.Name}: refused — frozen`);
+			logDebug(`[Dodge] ${model.Name}: refused Ã¢â‚¬â€ frozen`);
 
 			return true;
 		}
 
 		// **The duck, asked before the catch and for a state's reason rather than a clock's.** A duck is
 		// *up* for as long as it is up, so a dodge refused by one has not been charged for a cooldown it
-		// could have waited out — which is the position the freeze occupies above. What follows it is the
+		// could have waited out Ã¢â‚¬â€ which is the position the freeze occupies above. What follows it is the
 		// duck's own lockout, and then the catch's, and both of those are clocks.
 		//
 		// **A ducking body cannot dash, and the anchor is why it must not.** `DuckService` anchors the root
@@ -515,15 +513,15 @@ export class DodgeService implements OnStart {
 		const duck = this.duckState;
 		if (duck !== undefined) {
 			if (duck.isDucking(model)) {
-				if (DEBUG) print(`[Dodge] ${model.Name}: refused — ducking`);
+				logDebug(`[Dodge] ${model.Name}: refused Ã¢â‚¬â€ ducking`);
 				return true;
 			}
 
 			const sinceDuck = lockoutElapsed(duck.getLastDuckEndTime(model));
 			if (sinceDuck !== undefined) {
-				if (DEBUG) {
-					print(
-						`[Dodge] ${model.Name}: refused — the duck ended ` +
+				if (DEBUG_LOGGING) {
+					logInfo(
+						`[Dodge] ${model.Name}: refused Ã¢â‚¬â€ the duck ended ` +
 							`${string.format("%.2f", sinceDuck)}s ago`,
 					);
 				}
@@ -536,16 +534,16 @@ export class DodgeService implements OnStart {
 		if (!state) return false;
 
 		if (state.isCatching(model)) {
-			if (DEBUG) print(`[Dodge] ${model.Name}: refused — a catch window is open`);
+			logDebug(`[Dodge] ${model.Name}: refused Ã¢â‚¬â€ a catch window is open`);
 			return true;
 		}
 
 		const since = lockoutElapsed(state.getLastCatchWindowCloseTime(model));
 		if (since === undefined) return false;
 
-		if (DEBUG) {
-			print(
-				`[Dodge] ${model.Name}: refused — the catch window closed ` +
+		if (DEBUG_LOGGING) {
+			logInfo(
+				`[Dodge] ${model.Name}: refused Ã¢â‚¬â€ the catch window closed ` +
 					`${string.format("%.2f", since)}s ago`,
 			);
 		}
@@ -557,7 +555,7 @@ export class DodgeService implements OnStart {
 	 * Whether `model` is a dev who has switched `NoCooldown` on.
 	 *
 	 * Asked of the model rather than of the remote's player, so the same question
-	 * could be asked of an NPC's AI — an NPC has no player, so it simply never dodges
+	 * could be asked of an NPC's AI Ã¢â‚¬â€ an NPC has no player, so it simply never dodges
 	 * for free.
 	 */
 	private dodgesFreely(model: Model): boolean {
@@ -566,9 +564,9 @@ export class DodgeService implements OnStart {
 
 		// Printed only when the flag *is* on, so the line's absence is the diagnosis: a
 		// dash still refused on a cooldown, with the chat log saying `NoCooldown on`,
-		// means this never ran — which points at the flag reaching the service rather
+		// means this never ran Ã¢â‚¬â€ which points at the flag reaching the service rather
 		// than at the cooldown arithmetic below.
-		if (free && DEBUG) print(`[Dodge] ${model.Name}: NoCooldown on — the cooldown is skipped`);
+		if (free && DEBUG_LOGGING) logDebug(`[Dodge] ${model.Name}: NoCooldown on Ã¢â‚¬â€ the cooldown is skipped`);
 
 		return free;
 	}
@@ -578,8 +576,8 @@ export class DodgeService implements OnStart {
 	 * {@link DODGE_CONFIG.DURATION} and then destroyed.
 	 *
 	 * Velocity rather than a `PivotTo`: a teleport moves the model without moving
-	 * its *motion*, so the humanoid — which is still steering toward wherever it
-	 * was headed — walks it straight back and the dash reads as a stumble. A
+	 * its *motion*, so the humanoid Ã¢â‚¬â€ which is still steering toward wherever it
+	 * was headed Ã¢â‚¬â€ walks it straight back and the dash reads as a stumble. A
 	 * constraint moves the model and what the engine thinks it is doing, so there
 	 * is nothing to walk back from.
 	 */
@@ -600,7 +598,7 @@ export class DodgeService implements OnStart {
 		// move, and a direction with no horizontal part has no heading to normalize.
 		const flat = new Vector3(heading.X, 0, heading.Z);
 		if (flat.Magnitude < 0.01) {
-			if (DEBUG) print(`[Dodge] ${model.Name}: no heading to dash along`);
+			logDebug(`[Dodge] ${model.Name}: no heading to dash along`);
 			return;
 		}
 
@@ -616,7 +614,7 @@ export class DodgeService implements OnStart {
 		// **The reference is the requester's when it reported one, and this machine's own copy otherwise.**
 		// That is not a preference, it is *which frame the decision was made in*: a player's dodge is an
 		// input, read by the client through its camera, so the camera's heading is the frame that makes `S`
-		// mean backward — and the server has no camera, so it has to be told. A *rig*'s dodge is motion
+		// mean backward Ã¢â‚¬â€ and the server has no camera, so it has to be told. A *rig*'s dodge is motion
 		// chosen by its AI, and the rig's own facing is both the right frame for it and a value the server
 		// owns, so `DodgeBehavior`'s call arrives with no reference at all and this read is the answer.
 		//
@@ -624,24 +622,24 @@ export class DodgeService implements OnStart {
 		// reference is where the body was pointing when the dodge was asked for, and the `balance` a few lines
 		// down is what takes it away. Read the root's `CFrame` after the `lookAt` is parented and every dash
 		// in the game classifies as forward. (For a player's dodge this ordering costs nothing and buys
-		// nothing — the camera is not what the dash turns — but one line serves both callers.)
+		// nothing Ã¢â‚¬â€ the camera is not what the dash turns Ã¢â‚¬â€ but one line serves both callers.)
 		const reported = reference !== undefined;
 		const frame = reference ?? root.CFrame.LookVector;
 
 		const dodgeDirection = dodgeDirectionOf(direction, frame);
 
-		// **Said out loud, once per dash, at the edge — and it says which reference was used, because that is
+		// **Said out loud, once per dash, at the edge Ã¢â‚¬â€ and it says which reference was used, because that is
 		// the one fact the log otherwise cannot show and the one this classification kept getting wrong.**
 		// `(from the client)` is a player's camera; `(read here)` is the server's own copy of the body's
 		// facing, which is what a rig's dodge always is. One line per dash rather than per tick, in the four
 		// words the clips are named by, so a test can read a dodge off the output without a second instrument.
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Dodge] ${model.Name}: direction (${string.format("%.2f", direction.X)}, ` +
 					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)}), ` +
 					`measured against (${string.format("%.2f", frame.X)}, ${string.format("%.2f", frame.Y)}, ` +
 					`${string.format("%.2f", frame.Z)}) (${reported ? "from the client" : "read here"}) ` +
-					`→ ${dodgeDirection}`,
+					`Ã¢â€ â€™ ${dodgeDirection}`,
 			);
 		}
 
@@ -662,9 +660,9 @@ export class DodgeService implements OnStart {
 		velocity.VectorVelocity = direction.mul(DODGE_SPEED);
 		velocity.Parent = root;
 
-		// Platform stand takes the humanoid's own balance away — which is the point,
+		// Platform stand takes the humanoid's own balance away Ã¢â‚¬â€ which is the point,
 		// because that balance is the walk controller steering toward whatever is
-		// held on WASD — so something has to hold the character up in its place. Both
+		// held on WASD Ã¢â‚¬â€ so something has to hold the character up in its place. Both
 		// points of the `lookAt` sit at the same height, so this is a yaw and nothing
 		// else: upright, and never pitched into the ground.
 		const balance = new Instance("AlignOrientation");
@@ -679,7 +677,7 @@ export class DodgeService implements OnStart {
 
 		// **Nothing about the animation is declared here any more.** There was a `let track` on this line, and
 		// a comment explaining that the clip was started at the very *end* of this method so that a flourish
-		// which would not load could not leave a character flying — the one part of a dash that depends on an
+		// which would not load could not leave a character flying Ã¢â‚¬â€ the one part of a dash that depends on an
 		// asset outside this project's control, deliberately last. That whole arrangement is gone with the
 		// server-side flourish: nothing here loads a track, so nothing here can fail on one. The dash is
 		// registered, its cleanup is armed, and the direction published below is the entire animation contract.
@@ -688,7 +686,7 @@ export class DodgeService implements OnStart {
 		// The fall states are what the humanoid answers a shove with, and with no
 		// balance of its own it would flop, get up, and flop again for as long as the
 		// dash lasts. Switched off for the duration, and back on in the cleanup
-		// — platform stand is put back to whatever it was, not just to `false`.
+		// Ã¢â‚¬â€ platform stand is put back to whatever it was, not just to `false`.
 		const wasPlatformStanding = humanoid?.PlatformStand ?? false;
 		if (humanoid) {
 			humanoid.SetStateEnabled(Enum.HumanoidStateType.FallingDown, false);
@@ -724,17 +722,17 @@ export class DodgeService implements OnStart {
 				// **This is the whole of the dodge's ending, now that the clip is not this service's.** The
 				// flourish used to be stopped on the line above this one, because a track cannot be allowed to
 				// run on past the move it describes. Nothing needs stopping any more: the renderer sees the
-				// clear on this attribute change, and its own rule takes the dodge clip off — which is the same
+				// clear on this attribute change, and its own rule takes the dodge clip off Ã¢â‚¬â€ which is the same
 				// instant and one fewer thing to keep in step.
 				model.SetAttribute(DODGE_DIRECTION_ATTRIBUTE, undefined);
 
-				if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
+				if (DEBUG_LOGGING) {
 					// What actually moved, against what was asked for. The two match
 					// unless something else got a hold of the character mid-dash.
 					const travelled =
 						new Vector3(root.Position.X - start.X, 0, root.Position.Z - start.Z).Magnitude;
 
-					print(
+					logInfo(
 						`[Dodge] ${model.Name}: dashed ${string.format("%.1f", travelled)} of ` +
 							`${string.format("%.1f", DODGE_CONFIG.DISTANCE)} studs`,
 					);
@@ -747,19 +745,19 @@ export class DodgeService implements OnStart {
 		// **And the perfect-dodge watch opens with the window it measures**, which is the same instant and for
 		// the same reason the trail below does: the dashes table *is* the window, so a watch started anywhere
 		// else would be measuring a dodge that was not in flight. `start` is the body's position before this
-		// method moved it — the value the travelled-distance line at the end of `finish` measures from — and it
+		// method moved it Ã¢â‚¬â€ the value the travelled-distance line at the end of `finish` measures from Ã¢â‚¬â€ and it
 		// is the point the ball is measured against, so the two uses are one read rather than two that could
 		// disagree about where the dash began.
 		this.watchForPerfectDodge(model, root, humanoid, start);
 
 		// **Restored, and the history matters because it went round a full turn.** This line was removed on
-		// request — a ghost trail on a dash was read as visual noise rather than as motion — and the catch's
+		// request Ã¢â‚¬â€ a ghost trail on a dash was read as visual noise rather than as motion Ã¢â‚¬â€ and the catch's
 		// trail was left standing in its place. That reading was then reversed in the other direction: the
 		// cue is a *dodge's*, so the dodge keeps it and the catch lost its own. The argument below is the
 		// original one, and it stands again unchanged.
 		//
 		// **The trail opens exactly here, which is where `isDodging` starts answering yes.** The dashes table
-		// *is* the window — see {@link isDodging} — so the ghosts and the state they stand for begin in the
+		// *is* the window Ã¢â‚¬â€ see {@link isDodging} Ã¢â‚¬â€ so the ghosts and the state they stand for begin in the
 		// same instant by construction rather than by two places agreeing to write at the same time. It
 		// cannot be anywhere later in the method and still mean that: the timer below and the flourish at the
 		// end are both still to come, and a trail started after either of them would begin emitting against
@@ -767,7 +765,7 @@ export class DodgeService implements OnStart {
 		//
 		// **And the trail has already emitted by the time this returns**, which is the reversal recorded in
 		// `afterimage.ts`: the version before this waited a whole interval first, on the argument that a copy
-		// laid down here would sit inside the body that was still standing — true, and the wrong thing to
+		// laid down here would sit inside the body that was still standing Ã¢â‚¬â€ true, and the wrong thing to
 		// optimise, because that is the position the eye expects a smear to start from. So a dash is its
 		// opening position *plus* the positions it travels, and the queueing is the trail's business rather
 		// than this method's. See `emitGhost`.
@@ -779,18 +777,18 @@ export class DodgeService implements OnStart {
 
 		// **The direction is published in the same instant the dash is registered, so a reader cannot see
 		// one without the other.** The renderer plays a dodge clip from this attribute and nothing else,
-		// and it reads it on the same `AttributeChanged` connection the rest of a rig's state arrives on —
+		// and it reads it on the same `AttributeChanged` connection the rest of a rig's state arrives on Ã¢â‚¬â€
 		// so writing it here is the whole of the wiring, and there is no second signal to keep in step.
 		//
 		// **It goes on the model rather than on the rig, and both bodies now read it.** A player's character
-		// gets it too — this method runs a player's dash exactly as it runs a rig's — and the client that owns
+		// gets it too Ã¢â‚¬â€ this method runs a player's dash exactly as it runs a rig's Ã¢â‚¬â€ and the client that owns
 		// that character draws the dodge from it, the way it draws a throw and a catch. **That is a change**:
 		// the player's dodge used to be a flourish the *server* played, so this attribute was published for a
 		// body that did not read it, and the note here said so. It has a reader on both bodies now, which is
 		// what makes the four directional clips one feature rather than two. See `DODGE_DIRECTION_ATTRIBUTE`.
 		//
 		// **Cleared in `finish` below**, which is the only path a dash ends by, and before that happens for
-		// a dash being replaced the newer one's own write comes after it — so the attribute never describes
+		// a dash being replaced the newer one's own write comes after it Ã¢â‚¬â€ so the attribute never describes
 		// a dash that is not the one in flight.
 		model.SetAttribute(DODGE_DIRECTION_ATTRIBUTE, dodgeDirection);
 
@@ -798,8 +796,8 @@ export class DodgeService implements OnStart {
 		// `PlatformStand` left on is a player who cannot walk after respawning.
 		diedConnection = humanoid?.Died.Connect(() => this.endDash(model));
 
-		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Dodge] ${model.Name}: ${string.format("%.1f", DODGE_CONFIG.DISTANCE)} studs over ` +
 					`${string.format("%.2f", DODGE_CONFIG.DURATION)}s at ${string.format("%.1f", DODGE_SPEED)} studs/s ` +
 					`toward (${string.format("%.2f", direction.X)}, ${string.format("%.2f", direction.Y)}, ` +
@@ -824,7 +822,7 @@ export class DodgeService implements OnStart {
 	 *
 	 * **Every way a dash can end arrives here**, which is why this is also the whole of how the trail is
 	 * stopped: its own timer, a newer dodge replacing it ({@link startDash} ends the old one first), and its
-	 * dasher dying. There is deliberately no second path that ends the emission — a stop written into the
+	 * dasher dying. There is deliberately no second path that ends the emission Ã¢â‚¬â€ a stop written into the
 	 * timer would leave a death mid-dash emitting for as long as the corpse existed, and one written into
 	 * the death connection would leave an ordinary dash emitting for the rest of its life. Both of those are
 	 * the same fault seen from opposite ends, and both are avoided by asking the question this method already
@@ -844,7 +842,7 @@ export class DodgeService implements OnStart {
 		// **The trail stops beside the clock, and before the cleanup**, for the reason above and in that
 		// order: the entry has already left the table, so `isDodging` is false from this line onwards and the
 		// emitting has to have stopped with it. The ghosts already in the world are deliberately *not* this
-		// line's business — each fades and destroys itself on its own timer, so a trail's tail outlives the
+		// line's business Ã¢â‚¬â€ each fades and destroys itself on its own timer, so a trail's tail outlives the
 		// window by exactly as long as one ghost takes to fade and not a frame longer.
 		//
 		// Stopping an emission that was never started is the ordinary case rather than a fault: a dash that
@@ -853,10 +851,10 @@ export class DodgeService implements OnStart {
 		//
 		// **And the trail table is keyed on the body rather than on the action, which is worth knowing here.**
 		// One body has one trail however many windows it has open, so this line ends whatever trail that body
-		// has — exactly right while the dodge is the only action that opens one, and a real fault while the
+		// has Ã¢â‚¬â€ exactly right while the dodge is the only action that opens one, and a real fault while the
 		// catch opened one too: a dash ending would have cut a catch's cue short. The catch's trail has since
 		// been removed, so the collision is gone. **If a second action is ever given a trail, this is the line
-		// that needs the split** — one trail per action rather than per body.
+		// that needs the split** Ã¢â‚¬â€ one trail per action rather than per body.
 		stopAfterimage(model);
 
 		record.finish();
@@ -864,17 +862,17 @@ export class DodgeService implements OnStart {
 
 	/**
 	 * **Watches the balls for the length of one dodge, and says `perfect` if one passes close enough to the
-	 * place the body left — and never close enough to the place the body went.**
+	 * place the body left Ã¢â‚¬â€ and never close enough to the place the body went.**
 	 *
 	 * **Why this exists at all: a dodge leaves no trace for the hit path to read.** The dash is a velocity, and
-	 * the mechanics that make it work are purely geometric — the body is simply no longer where the ball was
-	 * going — so by the time a ball would have touched somebody it touches nothing, and `Touched` is not called
+	 * the mechanics that make it work are purely geometric Ã¢â‚¬â€ the body is simply no longer where the ball was
+	 * going Ã¢â‚¬â€ so by the time a ball would have touched somebody it touches nothing, and `Touched` is not called
 	 * at all. `isDodging` is asked by everything that *uses* a dodge (a catch, a duck, a pickup, the action
 	 * lock), and by nothing that *measures* one, because there is nothing to measure at the moment of contact.
 	 * So the miss has to be observed while it is happening, and this is the only thing in the game that
 	 * observes it.
 	 *
-	 * **The distance is measured to `origin` — where the body was standing when it dodged — and not to where
+	 * **The distance is measured to `origin` Ã¢â‚¬â€ where the body was standing when it dodged Ã¢â‚¬â€ and not to where
 	 * the dash takes it.** That is the whole of "the ball would have hit me": the ball is not aimed at a body,
 	 * it is aimed at a patch of floor, and the patch it passes through on the way is the patch the body was
 	 * standing on. Measuring against the *live* position instead would count a dash that carried a body *into*
@@ -882,15 +880,15 @@ export class DodgeService implements OnStart {
 	 * figure depend on which way the dash went.
 	 *
 	 * **The second half of the rule is "was this body hit", and it is answered by the ball rather than by a
-	 * radius.** A ball can pass within a ball's width of where a body *was* and still have hit it — a dash a step
-	 * blocked, or one taken straight into the throw — and the near miss is real in both cases while "perfect
+	 * radius.** A ball can pass within a ball's width of where a body *was* and still have hit it Ã¢â‚¬â€ a dash a step
+	 * blocked, or one taken straight into the throw Ã¢â‚¬â€ and the near miss is real in both cases while "perfect
 	 * dodge" is not. `BallComponent` publishes the bodies a throw has tagged, so this asks that list about this
 	 * body on every frame and **ends the whole watch the moment this body appears in it**: a body that has been
 	 * struck has not dodged, whatever else is in the air, and there is no caption to draw.
 	 *
 	 * **That check replaced a radius around the root, and it replaced it because the radius was wrong twice.**
 	 * See the note where `BODY_CONTACT_RADIUS` used to be declared: a root-centred sphere misses the chest, the
-	 * head and the arms, and — the fault a Studio log actually found — it cannot see a contact that happened
+	 * head and the arms, and Ã¢â‚¬â€ the fault a Studio log actually found Ã¢â‚¬â€ it cannot see a contact that happened
 	 * *before the watch opened*, which is the ordinary case for a dodge taken after a hit. **281 ms**, not a
 	 * frame: a body tagged at `20:15:30.512` and reported as a perfect dodge against the same body at
 	 * `20:15:30.793`, because the ball had hit it, flown on, and the watch that opened afterwards could only see
@@ -900,12 +898,12 @@ export class DodgeService implements OnStart {
 	 * **What the tag check does not cover, stated rather than left to be found.** A contact that produces no tag
 	 * is not a contact to this test: a same-side ball (friendly fire is vetoed before any tag is written) and a
 	 * ball into a practice-zone player (a practice player is not a body to a ball at all). In both cases the game
-	 * itself says the ball did nothing to the body, so a pass close enough to be a near miss is a near miss —
+	 * itself says the ball did nothing to the body, so a pass close enough to be a near miss is a near miss Ã¢â‚¬â€
 	 * the caption can appear for a teammate's throw that goes past you. **Making that exact is a side comparison
-	 * and not a geometry change**, and it is written up in `HANDOFF.md` §15 rather than done here.
+	 * and not a geometry change**, and it is written up in `HANDOFF.md` Ã‚Â§15 rather than done here.
 	 *
 	 * **And a dead body cannot have dodged anything, so the humanoid is asked every tick.** A tagged body is not
-	 * killed at the tag — the tags resolve when the ball dies, and the throw can take up to a second to land — so
+	 * killed at the tag Ã¢â‚¬â€ the tags resolve when the ball dies, and the throw can take up to a second to land Ã¢â‚¬â€ so
 	 * between the two moments the body is alive, hittable and already doomed. The tag check above ends the watch
 	 * for that body; this one is the backstop for every other way a body dies mid-dash (another throw, a reset, a
 	 * freeze falling off a ledge), and both are needed because they answer different questions.
@@ -914,27 +912,27 @@ export class DodgeService implements OnStart {
 	 * `THROW_MAX_SPEED` studs a second, which is over three studs between two frames; sampling positions alone
 	 * would leave gaps wider than the threshold and miss the passes this exists to reward. The start of each
 	 * segment is the ball's position on the previous turn, so the distance tested is
-	 * `distance(point, segment)` — the closest the ball actually came, not the closest it was ever sampled at.
+	 * `distance(point, segment)` Ã¢â‚¬â€ the closest the ball actually came, not the closest it was ever sampled at.
 	 * The first turn seeds that map and tests nothing; the segment from the dash's own instant to it is the one
 	 * frame of path this does not see, and it is skipped rather than guessed from a velocity, because a
 	 * velocity's extrapolation is a *prediction* and this measurement is deliberately an observation.
 	 *
 	 * **The caption waits for the pass rather than for the approach, and the difference is the number in the
 	 * log.** A ball inside the radius gets a *candidate* record and the watch keeps following it until the
-	 * distance stops falling — that instant is the closest approach, which is the figure worth reporting:
+	 * distance stops falling Ã¢â‚¬â€ that instant is the closest approach, which is the figure worth reporting:
 	 * firing on the frame a ball *enters* a four-stud radius would always print something just under four,
 	 * because a ball covers three studs a frame, and a tuning note that reads `3.3` for a pass that went
 	 * straight through the body is worse than no note at all. It also delays the caption by a frame or two,
-	 * which is the beat the ball has finished going past — the moment the player saw it.
+	 * which is the beat the ball has finished going past Ã¢â‚¬â€ the moment the player saw it.
 	 *
 	 * **The contact test runs over the whole window and not just the moment of the miss**, and that is a
 	 * correction a simulation made rather than a guess: a ball can hit the body *on its way to* the point the
-	 * body left — a dash toward an incoming throw — so a test restricted to the frames the candidate was being
+	 * body left Ã¢â‚¬â€ a dash toward an incoming throw Ã¢â‚¬â€ so a test restricted to the frames the candidate was being
 	 * followed would see a clean pass and call a hit a perfect dodge. The tag check runs on every frame, for
 	 * every armed ball, whether or not it is the candidate.
 	 * **The candidate is the first ball to come inside the radius**, and it has the measurement to itself until
 	 * it has passed. A MultiBall throw is three paths on the same schedule and they are the same dodge, so there
-	 * is nothing to gain from measuring all of them — and a ball that missed perfectly is the one worth saying.
+	 * is nothing to gain from measuring all of them Ã¢â‚¬â€ and a ball that missed perfectly is the one worth saying.
 	 *
 	 * **A loop rather than a `Heartbeat` connection**, like every other long-lived loop in this project: it runs
 	 * for one dodge's worth of frames and then ends, and a connection that had to be hung up per body would be
@@ -942,14 +940,14 @@ export class DodgeService implements OnStart {
 	 * dash, which is a handful of balls and at most a few bodies.
 	 *
 	 * **Not `DodgeBehavior.threatAgainst`, which looks similar and answers a different question.** That test
-	 * predicts, from a ball's current velocity alone, whether it *will* arrive inside a hit radius — it is a
+	 * predicts, from a ball's current velocity alone, whether it *will* arrive inside a hit radius Ã¢â‚¬â€ it is a
 	 * decision about whether to dodge, taken before the fact, and it solves in the plane because gravity has no
 	 * horizontal component. This is an observation after it: the actual path, in three dimensions, against a
 	 * point the body has already left. Sharing them would mean a function that had to be told which of the two
 	 * it was answering.
 	 */
 	private watchForPerfectDodge(model: Model, root: BasePart, humanoid: Humanoid | undefined, origin: Vector3): void {
-		/** This watch's identity — see {@link perfectWatches}, which is what a newer dodge replaces. */
+		/** This watch's identity Ã¢â‚¬â€ see {@link perfectWatches}, which is what a newer dodge replaces. */
 		const watch = {};
 
 		this.perfectWatches.set(model, watch);
@@ -969,10 +967,10 @@ export class DodgeService implements OnStart {
 		const settle = (ball: BasePart, closest: number) => {
 			// **The window closing is not a reason to skip the death check.** The loop asks it every tick, but a
 			// miss settled on the *last* tick leaves the loop and comes here, so the same question is asked once
-			// more rather than assumed — a body that died with the pass is a body that did not dodge it.
+			// more rather than assumed Ã¢â‚¬â€ a body that died with the pass is a body that did not dodge it.
 			if (humanoid !== undefined && humanoid.Health <= 0) return;
 
-			// **Still on course for the body it just missed** — see `stillOnCourse`, and note that the horizon is
+			// **Still on course for the body it just missed** Ã¢â‚¬â€ see `stillOnCourse`, and note that the horizon is
 			// what is left of the window rather than an arbitrary look-ahead: a ball that will be at the body
 			// before this dodge stops being responsible for it was not dodged by it, and one that would arrive
 			// after that is a different throw's problem.
@@ -988,11 +986,11 @@ export class DodgeService implements OnStart {
 
 				// **A dead body has not dodged anything.** Checked every tick rather than once, because the death
 				// can arrive at any point in the window and the whole feature is a claim about something that has
-				// not happened to the body — a hit that did not land. See this method's note.
+				// not happened to the body Ã¢â‚¬â€ a hit that did not land. See this method's note.
 				if (humanoid !== undefined && humanoid.Health <= 0) return;
 
 				for (const ball of this.balls.armedBalls()) {
-					// **Struck by this ball, so this was not a dodge** — and the whole watch ends, not just this
+					// **Struck by this ball, so this was not a dodge** Ã¢â‚¬â€ and the whole watch ends, not just this
 					// ball's candidacy: the body is hit, whatever else is still in the air. This is the test a
 					// radius could not make, because the contact may have happened before the dash began. See
 					// `BALL_TAGGED_BODIES_ATTRIBUTE`.
@@ -1016,7 +1014,7 @@ export class DodgeService implements OnStart {
 							continue;
 						}
 
-						// Moving away — that was the pass, and this is the closest it came.
+						// Moving away Ã¢â‚¬â€ that was the pass, and this is the closest it came.
 						const passed = candidate;
 						candidate = undefined;
 
@@ -1033,7 +1031,7 @@ export class DodgeService implements OnStart {
 				task.wait();
 			}
 
-			// **The window closed with the ball still coming** — a pass at the very end of it, a ball caught or
+			// **The window closed with the ball still coming** Ã¢â‚¬â€ a pass at the very end of it, a ball caught or
 			// destroyed mid-flight, or one that landed inside the radius. Whatever the reason, the figure held is
 			// the closest this watch managed to see, and a near miss it did see is worth saying.
 			if (candidate !== undefined) settle(candidate.ball, candidate.closest);
@@ -1041,23 +1039,23 @@ export class DodgeService implements OnStart {
 	}
 
 	/**
-	 * **Says a perfect dodge happened** — to the player's own screen, and to the output for either kind of body.
+	 * **Says a perfect dodge happened** Ã¢â‚¬â€ to the player's own screen, and to the output for either kind of body.
 	 *
 	 * **The event is sent to the player and to nobody else**, on `teamWipe`'s arrangement: the caption is on the
 	 * dodger's own screen, and the near miss is not news to anybody else in the arena. The name travels anyway
 	 * so the receiving client makes the same `Players.LocalPlayer.Name` comparison it makes for every other
-	 * event rather than trusting the addressing — see `networking.ts` on `perfectDodge`.
+	 * event rather than trusting the addressing Ã¢â‚¬â€ see `networking.ts` on `perfectDodge`.
 	 *
-	 * **A rig is measured and printed and nothing more, and that is not an omission.** The rule is uniform —
-	 * a rig dodges by the same code and its misses are the same fact about the same geometry — but a rig has no
+	 * **A rig is measured and printed and nothing more, and that is not an omission.** The rule is uniform Ã¢â‚¬â€
+	 * a rig dodges by the same code and its misses are the same fact about the same geometry Ã¢â‚¬â€ but a rig has no
 	 * screen to draw on, and the one client that could draw it (the owner of the camera watching that rig) has
 	 * no business being told about a near miss it was not part of. **`DodgeBehavior` needs no message either**:
 	 * its dodges are decided by its own threat solve, and nothing in its AI reads a caption.
 	 *
 	 * **The print is unconditional for both kinds of body**, which is unusual in a file where almost everything
-	 * is behind `DEBUG`. The reason is that this is the feature's *only* observable evidence: whether the
-	 * threshold is right is a question only a session can answer, and a line per perfect dodge — at most one
-	 * per cooldown per body — is what a run in Studio reads. The distance is in the line rather than only in
+	 * is behind `DEBUG_LOGGING`. The reason is that this is the feature's *only* observable evidence: whether the
+	 * threshold is right is a question only a session can answer, and a line per perfect dodge Ã¢â‚¬â€ at most one
+	 * per cooldown per body Ã¢â‚¬â€ is what a run in Studio reads. The distance is in the line rather than only in
 	 * the fact, because "it worked" and "it fired for a ball three studs past my shoulder" are the two
 	 * findings this needs to be told apart by.
 	 */
@@ -1068,17 +1066,17 @@ export class DodgeService implements OnStart {
 		if (player !== undefined) {
 			events.Server.Get("perfectDodge").SendToPlayer(player, player.Name);
 
-			print(`[Dodge] ${model.Name}: perfect dodge — the ball missed by ${distance} studs`);
+			logInfo(`[Dodge] ${model.Name}: perfect dodge Ã¢â‚¬â€ the ball missed by ${distance} studs`);
 
 			return;
 		}
 
-		print(`[Dodge] ${model.Name}: perfect dodge — the ball missed by ${distance} studs (a rig, so nothing is drawn)`);
+		logInfo(`[Dodge] ${model.Name}: perfect dodge Ã¢â‚¬â€ the ball missed by ${distance} studs (a rig, so nothing is drawn)`);
 	}
 }
 
 /**
- * How far `point` is from the segment `from`→`to` — **the closest a ball came, not the closest it was sampled
+ * How far `point` is from the segment `from`Ã¢â€ â€™`to` Ã¢â‚¬â€ **the closest a ball came, not the closest it was sampled
  * at.**
  *
  * A ball moves over three studs between two frames at the game's fastest throw, so the distance to a *position*
@@ -1087,7 +1085,7 @@ export class DodgeService implements OnStart {
  * without the assumption that the thing being measured is still coming: the clamp is what makes a point beside
  * the segment's end read as "past it" rather than "on the line behind it".
  *
- * A zero-length segment is a ball that did not move — a frame of rest, or a repeat — and it is answered as a
+ * A zero-length segment is a ball that did not move Ã¢â‚¬â€ a frame of rest, or a repeat Ã¢â‚¬â€ and it is answered as a
  * distance to the point rather than by dividing by zero.
  */
 function distanceToSegment(point: Vector3, from: Vector3, to: Vector3): number {
@@ -1102,7 +1100,7 @@ function distanceToSegment(point: Vector3, from: Vector3, to: Vector3): number {
 }
 
 /**
- * Whether `ball` has already tagged the body named `body` — **the exact "was this body hit" question, asked of
+ * Whether `ball` has already tagged the body named `body` Ã¢â‚¬â€ **the exact "was this body hit" question, asked of
  * the ball's own published record.**
  *
  * `BallComponent.publishTaggedBodies` writes the tagged models' names `|`-joined, so this is a substring test
@@ -1111,7 +1109,7 @@ function distanceToSegment(point: Vector3, from: Vector3, to: Vector3): number {
  * rig's own for a rig, so one string answers for both kinds of body.
  *
  * **Paired with separators on purpose.** A plain `find` would let `Rig1` match `Rig10`, so the attribute is
- * wrapped in `|` before the search and the needle is wrapped to match — the same shape `OWNED_ITEMS_ATTRIBUTE`'s
+ * wrapped in `|` before the search and the needle is wrapped to match Ã¢â‚¬â€ the same shape `OWNED_ITEMS_ATTRIBUTE`'s
  * readers use to avoid a prefix collision between two ids in one string.
  *
  * **Absent reads as "no tags"**, which is the truth for a ball that has never hit anybody and is the right answer
@@ -1126,25 +1124,25 @@ function hasTagged(ball: BasePart, body: string): boolean {
 }
 
 /**
- * **Whether `ball` is still on course to be at a body standing at `body` within `horizon` seconds** — the veto a
+ * **Whether `ball` is still on course to be at a body standing at `body` within `horizon` seconds** Ã¢â‚¬â€ the veto a
  * near miss has to survive before it is called a dodge.
  *
  * **The one prediction in this file, and it exists because a measurement alone cannot tell a dodge from a
  * failure.** A ball can pass within a ball's width of where a body stood and then simply keep going into the
- * body it dodged away from — a backward dash is *along* the throw, and the ball is faster than the dash, so the
+ * body it dodged away from Ã¢â‚¬â€ a backward dash is *along* the throw, and the ball is faster than the dash, so the
  * player sees the ball go by and then gets hit by it. That pass is real and the dodge is not, so the question
  * has to be asked after it: is that ball *going to be here*?
  *
- * **The arithmetic is `DodgeBehavior.threatAgainst`'s** — the instant of closest approach is
- * `t = dot(toBody, v) / |v|²`, positive while the ball is closing — with the two differences the question
+ * **The arithmetic is `DodgeBehavior.threatAgainst`'s** Ã¢â‚¬â€ the instant of closest approach is
+ * `t = dot(toBody, v) / |v|Ã‚Â²`, positive while the ball is closing Ã¢â‚¬â€ with the two differences the question
  * needs. It is solved in **three dimensions**, because the body's height is the thing that decides whether a
  * throw goes over it, and it is evaluated with the ball's **gravity** applied at that instant, because a
  * quarter-second of fall is two studs and two studs is the whole radius being judged.
  *
  * **What it gets wrong, in `threatAgainst`'s own words**: a ball that is about to hit the floor short of the
  * body is predicted to reach it, and one curved by a super or about to bounce is predicted from its current
- * motion alone. Both are wrong in the harmless direction for a *reward* — they cost a caption rather than
- * printing one that should not exist — and the horizon is short enough (what is left of a 0.6-second window)
+ * motion alone. Both are wrong in the harmless direction for a *reward* Ã¢â‚¬â€ they cost a caption rather than
+ * printing one that should not exist Ã¢â‚¬â€ and the horizon is short enough (what is left of a 0.6-second window)
  * that neither has much room to develop.
  */
 function stillOnCourse(ball: BasePart, body: Vector3, horizon: number): boolean {

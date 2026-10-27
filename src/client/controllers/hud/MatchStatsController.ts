@@ -7,6 +7,7 @@ import { isGameModeId, sideNameOf, teamColourOf } from "shared/gameMode";
 import type { GameModeId } from "shared/gameMode";
 import type { MatchStatsRow } from "shared/matchStats";
 import { events } from "shared/networking";
+import { LOGGING_ENABLED, logInfo, logWarn } from "shared/logger";
 import { Controller, OnStart } from "@flamework/core";
 import {
 	addContentBand,
@@ -22,9 +23,6 @@ import {
 import { lightPanelTheme } from "../../ui/lightPanelTheme";
 import type { HudTheme } from "../../ui/hudTheme";
 import { getHudScreenGui } from "../../ui/screenGui";
-
-/** Prints the open, the answer and any refusal. Off for frame time — see `shared/config/debug.config.ts`. */
-const DEBUG = true; // ON for the empty-board diagnosis — see `reportGeometry`. Turn back off with the prints.
 
 /** The typed client side of the remote, named the way `ShopController` names its own. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -288,7 +286,7 @@ export class MatchStatsController implements OnStart {
 	 * a layout pass has not run on the frame it arrives on — read there, every number would be the one from
 	 * before the tree existed, which is the direction that lies.
 	 *
-	 * **Deliberately unconditional and deliberately not behind `DEBUG`.** It is a handful of numbers once per
+	 * **Deliberately unconditional and deliberately not behind `DEBUG_LOGGING`.** It is a handful of numbers once per
 	 * session, and the entire cost of the five sessions before this one was that the numbers were not in the
 	 * output.
 	 */
@@ -314,7 +312,7 @@ export class MatchStatsController implements OnStart {
 			const parent = sheet?.Parent;
 			const parentIsGui = parent !== undefined && parent.IsA("ScreenGui");
 
-			print(
+			logInfo(
 				`[Stats] geometry — sheet at ${this.px(sheet?.AbsolutePosition.X)}` +
 					`,${this.px(sheet?.AbsolutePosition.Y)} size ${this.px(sheet?.AbsoluteSize.X)}` +
 					`×${this.px(sheet?.AbsoluteSize.Y)}, visible ${sheet?.Visible === true ? "yes" : "no"}` +
@@ -344,7 +342,7 @@ export class MatchStatsController implements OnStart {
 			// centred in a region narrower than the device is a panel the player may not be looking at.
 			if (parentIsGui) {
 				const gui = parent as ScreenGui;
-				print(
+				logInfo(
 					`[Stats] screen gui — ${gui.Name}: ScreenInsets ${tostring(gui.ScreenInsets)}` +
 						`, AbsoluteSize ${gui.AbsoluteSize.X}×${gui.AbsoluteSize.Y}` +
 						`, children ${gui.GetChildren().size()}`,
@@ -502,7 +500,7 @@ export class MatchStatsController implements OnStart {
 				break;
 			}
 
-			print(
+			logInfo(
 				`[Stats] first row — "${child.Name}" at ${this.px(child.AbsolutePosition.X)}` +
 					`,${this.px(child.AbsolutePosition.Y)} size ${this.px(child.AbsoluteSize.X)}` +
 					`×${this.px(child.AbsoluteSize.Y)}, visible ${child.Visible ? "yes" : "no"}` +
@@ -544,7 +542,7 @@ export class MatchStatsController implements OnStart {
 		// for the same reason: `hudTheme()` is the HUD's palette and can be moved by the big-ui configuration.
 		const theme = lightPanelTheme();
 
-		print("[Stats] board up — hold Tab to read the round");
+		logInfo("[Stats] board up — hold Tab to read the round");
 
 		const panel = addPanelFrame(this.scope, theme, "MatchStatsPanel", this.open, PATTERN_TEXTURE);
 
@@ -653,7 +651,7 @@ export class MatchStatsController implements OnStart {
 					this.open.set(true);
 					this.refresh();
 
-					if (DEBUG) print("[Stats] board opened");
+					logInfo("[Stats] board opened");
 				} else {
 					this.open.set(false);
 				}
@@ -685,12 +683,12 @@ export class MatchStatsController implements OnStart {
 		// the remote is resolved before the key is bound — so it is worth a line of its own rather than a
 		// silent no-op.
 		if (this.request === undefined) {
-			warn("[Stats] press ignored — the request remote was never resolved (mount did not finish)");
+			logWarn("[Stats] press ignored — the request remote was never resolved (mount did not finish)");
 
 			return;
 		}
 
-		print(`[Stats] asking — ${this.last.size()} row(s) remembered from the last answer`);
+		logInfo(`[Stats] asking — ${this.last.size()} row(s) remembered from the last answer`);
 
 		// **And a press that is never answered says so in two seconds.** Without this the panel's "waiting" line
 		// is indistinguishable from a board that is broken: a request that never arrives, an answer that is never
@@ -705,7 +703,7 @@ export class MatchStatsController implements OnStart {
 
 			this.awaitingSince = 0;
 
-			warn(
+			logWarn(
 				"[Stats] no answer within 2s — the request did not reach MatchStatsService, or its answer did " +
 					"not reach this client; see the server's '[Stats] sending …' line",
 			);
@@ -732,7 +730,7 @@ export class MatchStatsController implements OnStart {
 	private receive(rows: ReadonlyArray<MatchStatsRow>): void {
 		// **The one line that was always missing from this hop.** The server's line says what it *sent*, and
 		// this says what arrived — and "sent 8, arrived none" and "sent 8, arrived 8" are a transport fault and
-		// a drawing fault respectively. Unconditional rather than `DEBUG`, because the four sessions this
+		// a drawing fault respectively. Unconditional rather than `DEBUG_LOGGING`, because the four sessions this
 		// panel has cost were all spent unable to tell those two apart.
 		//
 		// **The first row is on the line**, because the other thing that can empty a board is a payload whose
@@ -745,9 +743,9 @@ export class MatchStatsController implements OnStart {
 					? "none"
 					: `name=${tostring(first.name)} side=${tostring(first.side)} points=${tostring(first.points)}`;
 
-			print(`[Stats] received — ${rows.size()} row(s); first { ${shape} }`);
+			logInfo(`[Stats] received — ${rows.size()} row(s); first { ${shape} }`);
 		} else {
-			warn(`[Stats] received — not a table but a ${typeOf(rows)}; drawing the empty state`);
+			logWarn(`[Stats] received — not a table but a ${typeOf(rows)}; drawing the empty state`);
 		}
 
 		this.answered = true;
@@ -758,7 +756,7 @@ export class MatchStatsController implements OnStart {
 
 		this.reportOnce(this.last.size());
 
-		if (DEBUG) print(`[Stats] board answered — ${this.last.size()} row(s)`);
+		logInfo(`[Stats] board answered — ${this.last.size()} row(s)`);
 	}
 
 	/**
@@ -786,7 +784,7 @@ export class MatchStatsController implements OnStart {
 				(child) => !child.IsA("UIListLayout") && !child.IsA("UIFlexItem"),
 			).size();
 
-			print(
+			logInfo(
 				`[Stats] board answered — ${rowCount} row(s), ${drawn} drawn into a frame ` +
 					`${string.format("%.0f", list.AbsoluteSize.X)}×${string.format("%.0f", list.AbsoluteSize.Y)} px ` +
 					`(visible ${list.Visible ? "yes" : "no"})`,
@@ -968,7 +966,7 @@ export class MatchStatsController implements OnStart {
 		const [ok, failure] = pcall(() => this.renderBody(rows));
 
 		if (!ok) {
-			warn(`[Stats] render failed — ${tostring(failure)}`);
+			logWarn(`[Stats] render failed — ${tostring(failure)}`);
 
 			this.say("Match stats could not be drawn — see the output window.");
 
@@ -1072,7 +1070,7 @@ export class MatchStatsController implements OnStart {
 				const [rowOk, rowFailure] = pcall(() => this.addRow(list, theme, row, order));
 
 				if (!rowOk) {
-					warn(`[Stats] row for ${tostring(row.name)} could not be drawn — ${tostring(rowFailure)}`);
+					logWarn(`[Stats] row for ${tostring(row.name)} could not be drawn — ${tostring(rowFailure)}`);
 					continue;
 				}
 
@@ -1102,7 +1100,7 @@ export class MatchStatsController implements OnStart {
 		// correct once and empty afterwards is a different fault from one that has never worked. It names the
 		// payload's own shape as well — `in` beside `drawn` is what says "eight arrived and none matched a
 		// side", which no other line in this project can say.
-		print(
+		logInfo(
 			`[Stats] drew ${drawn} of ${rows.size()} row(s) into ${list.AbsoluteSize.X}×${list.AbsoluteSize.Y} px` +
 				` (list ${list.Visible ? "shown" : "hidden"}, empty ` +
 				`${empty !== undefined && empty.Visible ? "shown" : "hidden"})`,

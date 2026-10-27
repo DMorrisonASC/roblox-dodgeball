@@ -40,6 +40,7 @@ import {
 	ThrowRequest,
 } from "shared/throw";
 import { LaunchPlan, leftAxis } from "shared/Trajectory";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
@@ -52,8 +53,6 @@ import { FreezeService } from "../actions/FreezeService";
 import { BadgeService } from "../badges/BadgeService";
 import { BallFactory } from "./BallFactory";
 import { watchThrow } from "./ThrowProbe";
-
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * TEMPORARY — **the bay-despawn half of the catch trace**, kept as its own flag so it can be turned off without
@@ -217,7 +216,7 @@ const PIERCE_WELD_NAME = "PierceEffectWeld";
  * thrown about once a second in a busy round, and a warn per throw would bury every other line in the log
  * inside a minute. What that costs is named in the client copies' docs and applies here too: a warning that
  * fires once and then goes quiet is indistinguishable, from the seat, from code that never ran — which is
- * why the missing-template line is a `warn` and not a `print` behind `DEBUG`.
+ * why the missing-template line is a `warn` and not a `print` behind `DEBUG_LOGGING`.
  */
 const reportedMissingTemplates = new Set<string>();
 
@@ -552,7 +551,7 @@ export class BallService implements OnStart {
 		// uses. Switching it off does nothing: the ball already in the hand is theirs to
 		// throw either way.
 		this.dev.onFlagChanged("InfiniteBalls", (player, on) => {
-			if (DEBUG) print(`[Ball] ${player.Name}: InfiniteBalls ${on ? "on" : "off"}`);
+			logDebug(`[Ball] ${player.Name}: InfiniteBalls ${on ? "on" : "off"}`);
 
 			if (!on) return;
 
@@ -561,7 +560,7 @@ export class BallService implements OnStart {
 
 			this.giveBall(character);
 
-			if (DEBUG) print(`[Ball] ${character.Name}: handed a ball by InfiniteBalls`);
+			logDebug(`[Ball] ${character.Name}: handed a ball by InfiniteBalls`);
 		});
 	}
 
@@ -588,7 +587,7 @@ export class BallService implements OnStart {
 			// against every bound, so the naive pair of comparisons waves it through. The same idiom
 			// `EconomyService.devSetMoney` uses on its amount, for the same reason.
 			if (!typeIs(charge, "number") || !(charge >= 0) || charge > 1) {
-				warn(`[Ball] ${player.Name}: throw refused — charge ${tostring(charge)} is not within 0..1`);
+				logWarn(`[Ball] ${player.Name}: throw refused — charge ${tostring(charge)} is not within 0..1`);
 				return;
 			}
 
@@ -796,7 +795,7 @@ export class BallService implements OnStart {
 			playSpawnPoof(undefined, ball.CFrame);
 			this.removeBall(body);
 
-			if (DEBUG) print(`[Ball] ${body.Name}: ball lost to the wall "${wall.Name}"`);
+			logDebug(`[Ball] ${body.Name}: ball lost to the wall "${wall.Name}"`);
 		}
 	}
 
@@ -985,7 +984,7 @@ export class BallService implements OnStart {
 		if (!this.attachToHand(pull.catcher, ball)) return;
 
 		if (pull.kind === "catch") {
-			print(`[Ball] ${pull.catcher.Name} caught a dodgeball`);
+			logInfo(`[Ball] ${pull.catcher.Name} caught a dodgeball`);
 
 			// **The sound is not here, and it moved for a playtest reason.** It used to be emitted at this moment —
 			// the frame the ball reaches the hand — on the argument that the sound *is* the ball landing. Standing in
@@ -1004,7 +1003,7 @@ export class BallService implements OnStart {
 			return;
 		}
 
-		print(`[Ball] ${pull.catcher.Name} picked up a dodgeball`);
+		logInfo(`[Ball] ${pull.catcher.Name} picked up a dodgeball`);
 
 		// **Written only on a pickup that happened.** `attachToHand` above is the refusal, and a refused pickup is
 		// nothing to announce, so the count cannot be moved by an attempt. See {@link PICKUP_COUNT_ATTRIBUTE}.
@@ -1030,7 +1029,7 @@ export class BallService implements OnStart {
 		ball.CanCollide = true;
 		ball.CanQuery = true;
 
-		print(`[Ball] ${pull.catcher.Name}: pull abandoned — ${why}`);
+		logInfo(`[Ball] ${pull.catcher.Name}: pull abandoned — ${why}`);
 	}
 
 	/** Destroys the constraint and its attachment and forgets the entry. The one teardown, shared by both exits. */
@@ -1142,8 +1141,8 @@ export class BallService implements OnStart {
 		// rig, its own for a player — and each of those prints its own line when it changes clip
 		// (`[Animate] <name>: catch — Action`, `[Rig] <name>: catch — Action`). This line is the *server's*
 		// half, and it says the fact was published, which is the one thing a client's silence cannot tell you.
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Ball] ${model.Name}: catch animation mark — ${cause}, ` +
 					`${CATCH_CONFIG.CATCH_ANIMATION_SECONDS}s`,
 			);
@@ -1281,7 +1280,7 @@ export class BallService implements OnStart {
 
 			ball.Destroy();
 
-			if (DEBUG) print(`[Ball] ${model.Name} dropped a marked dodgeball — it is destroyed`);
+			logDebug(`[Ball] ${model.Name} dropped a marked dodgeball — it is destroyed`);
 
 			// **And an open MultiBall window fills the hand the marker emptied.** These two rules are
 			// deliberately different and must not be made consistent: the *mark* is the ball's, so losing
@@ -1353,7 +1352,7 @@ export class BallService implements OnStart {
 		// caught to its new owner.
 		scheduleBallExpiry(ball, BALL_CONFIG.LIFETIME_SECONDS, (expiring) => this.isHeld(expiring));
 
-		if (DEBUG) print(`[Ball] ${model.Name} dropped a dodgeball`);
+		logDebug(`[Ball] ${model.Name} dropped a dodgeball`);
 
 		// **And the hand is filled again if a MultiBall window is open**, which is the whole of the bug
 		// this ability exposed: putting a ball down used to mean losing the super move with it, because
@@ -1400,7 +1399,7 @@ export class BallService implements OnStart {
 		// `syncArmedPower`; the read finds an empty hand, because the entry went first.
 		this.syncArmedPower(model);
 
-		if (DEBUG) print(`[Ball] ${model.Name}'s ball was destroyed`);
+		logDebug(`[Ball] ${model.Name}'s ball was destroyed`);
 
 		return true;
 	}
@@ -1448,7 +1447,7 @@ export class BallService implements OnStart {
 		// here: one rig-type rule, in one file, for both the placing and the welding.
 		const hand = this.factory.getRightHand(model);
 		if (!hand) {
-			warn(`[Ball] ${model.Name}: could not find a right hand to hold the ball`);
+			logWarn(`[Ball] ${model.Name}: could not find a right hand to hold the ball`);
 			ball.Destroy();
 			return false;
 		}
@@ -1583,7 +1582,7 @@ export class BallService implements OnStart {
 			this.setBallAbility(ball, armed);
 			owner.SetAttribute(ARMED_ABILITY_ATTRIBUTE, "");
 
-			if (DEBUG) print(`[Super] ${owner.Name}: ${ball.Name} took up the armed ${armed}`);
+			logDebug(`[Super] ${owner.Name}: ${ball.Name} took up the armed ${armed}`);
 		}
 
 		// The trail stays off until the throw — otherwise it hangs off the hand every time
@@ -1617,10 +1616,10 @@ export class BallService implements OnStart {
 		// hands a few times a minute and wears `TRAIL_COUNT` of them per layer. `(default)` is the record's own
 		// word for the empty id, and the holder falls back to the body's name so that a rig — which has no
 		// `Player` and therefore never has an equipped trail — reads as itself rather than as an unnamed default.
-		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
+		if (DEBUG_LOGGING) {
 			const equipped = this.economy.equippedTrailId(owner);
 
-			print(
+			logInfo(
 				`[Ball] ${owner?.Name ?? model.Name}: trail ` +
 					`${trail === undefined ? "off" : trail.adopted ? "adopted" : "built"} — ` +
 					`${equipped === "" ? "(default)" : equipped}`,
@@ -1751,12 +1750,12 @@ export class BallService implements OnStart {
 			if (!reportedMissingTemplates.has(PIERCE_EFFECT_NAME)) {
 				reportedMissingTemplates.add(PIERCE_EFFECT_NAME);
 
-				warn(`[VFX] no ${PIERCE_EFFECT_NAME} in ReplicatedStorage — the Pierce trail will not play`);
+				logWarn(`[VFX] no ${PIERCE_EFFECT_NAME} in ReplicatedStorage — the Pierce trail will not play`);
 
 				const top: string[] = [];
 				for (const child of ReplicatedStorage.GetChildren()) top.push(`${child.Name} (${child.ClassName})`);
 
-				warn(
+				logWarn(
 					`[VFX] ReplicatedStorage holds: ${top.isEmpty() ? "nothing" : top.join(", ")} — ` +
 						`a template is a BasePart carrying an Attachment and a ParticleEmitter, ` +
 						`and it is found by name wherever it sits.`,
@@ -1775,7 +1774,7 @@ export class BallService implements OnStart {
 			if (!reportedMissingTemplates.has(PIERCE_EFFECT_NAME)) {
 				reportedMissingTemplates.add(PIERCE_EFFECT_NAME);
 
-				warn(
+				logWarn(
 					`[VFX] ${PIERCE_EFFECT_NAME} has no BasePart in it — the Pierce trail will not play. ` +
 						"The template is cloned and welded by its part.",
 				);
@@ -1980,7 +1979,7 @@ export class BallService implements OnStart {
 		// asking on a timer does nothing with either, and `throwForPlayer` spends the charge only when a
 		// ball actually left — so a frozen player loses nothing for the throw they could not make.
 		if (this.freezes.isFrozen(model)) {
-			if (DEBUG) print(`[Ball] ${model.Name}: throw refused — frozen`);
+			logDebug(`[Ball] ${model.Name}: throw refused — frozen`);
 
 			return false;
 		}
@@ -1993,7 +1992,7 @@ export class BallService implements OnStart {
 		// client's point of view, and it is the fact both halves of the exemption already read. One writer,
 		// three readers, no second copy of the state.
 		if (model.GetAttribute(DUCKING_ATTRIBUTE) === true) {
-			if (DEBUG) print(`[Ball] ${model.Name}: throw refused — ducking`);
+			logDebug(`[Ball] ${model.Name}: throw refused — ducking`);
 
 			return false;
 		}
@@ -2157,13 +2156,14 @@ export class BallService implements OnStart {
 				? `charged ${string.format("%.2f", request.charge)}${request.curve ? " bend" : ""}`
 				: `${request.arc}`;
 
-		// **Gated on the config as well as on this file's own `DEBUG`, and that is the fix for the log volume
-		// measured on 2026-10-17.** `const DEBUG = true` above is a build-time switch for the *lifecycle* lines
-		// — who threw, who caught, what ended on a part — and those are the ones worth having on. This block is
-		// not one of them: it is a per-throw measurement of eight `string.format`s, `describeThrow` and
-		// `describeMuzzle`, and `describeMuzzle` walks the model to find the torso and head. With eight rigs
-		// throwing, that is two or three of these a second, forever, and `VERBOSE_LOGS: false` did not touch a
-		// single one of them because this file never read the flag.
+		// **Gated on `DEBUG_LOGGING`, and that gate is the fix for the log volume measured on 2026-10-17.** This
+		// file's always-on lines are the *lifecycle* ones — who threw, who caught, what ended on a part — and those
+		// are the ones worth having. This block is not one of them: it is a per-throw measurement of eight
+		// `string.format`s, `describeThrow` and `describeMuzzle`, and `describeMuzzle` walks the model to find the
+		// torso and head. With eight rigs throwing, that is two or three of these a second, forever. It used to sit
+		// behind this file's own `const DEBUG`, which meant `VERBOSE_LOGS: false` did not touch a single one of them
+		// because the flag was read here and set elsewhere; `DEBUG_LOGGING` is that config value *and* the Studio
+		// check, so there is one switch again.
 		//
 		// **What is kept, because it is not diagnostic.** Everything outside this block runs regardless — the
 		// collision ignore, the trail, the armed token, the network owner — so silencing the line changes what
@@ -2171,9 +2171,9 @@ export class BallService implements OnStart {
 		//
 		// **The `at N fps` number goes with it, which is a real loss and is noted rather than hidden:** it is
 		// `Workspace:GetRealPhysicsFPS()`, the server's actual physics-step rate, and the 2026-10-17 log caught
-		// the server at 29–46 of them during a rig-heavy stretch. Turning it back on for one run is how the next
-		// frame-time reading is taken — see `DEBUG_CONFIG.PROFILE` beside this flag in `debug.config.ts`.
-		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
+		// the server at 29–46 of them during a rig-heavy stretch. Turning `DEBUG_CONFIG.VERBOSE_LOGS` back on for one
+		// run is how the next frame-time reading is taken — see `debug.config.ts`.
+		if (DEBUG_LOGGING) {
 			// Both halves of the correction, and only the second one is ever zero for a reason: a
 			// straight throw's line has no pull in it, so its log line is the one it always was.
 			const curvePull = new Vector3(correction.X, 0, correction.Z).Magnitude;
@@ -2194,7 +2194,7 @@ export class BallService implements OnStart {
 					)}/${string.format("%.2f", nudge.up)}${source}`
 				: "";
 
-			print(
+			logInfo(
 				`[Ball] ${model.Name}: ${label} ${this.describeThrow(plan, commanded)}, ` +
 					`release ${releasePosition} -> launch ${plan.origin}` +
 					` (${string.format("%.2f", launch.sub(ownLaunch).Magnitude)} studs from our own)` +
@@ -2267,8 +2267,8 @@ export class BallService implements OnStart {
 			// then thrown twice should wear the trail once, per throw.
 			this.attachPierceEffect(ball);
 
-			if (DEBUG) {
-				print(
+			if (DEBUG_LOGGING) {
+				logInfo(
 					`[Ball] ${model.Name}: Pierce — set up to pass through ` +
 						`${bodies.size()} ${bodies.size() === 1 ? "body" : "bodies"}`,
 				);
@@ -2303,7 +2303,7 @@ export class BallService implements OnStart {
 		// **And whether it took, asked a frame later rather than here.** See `reportOwnership`: this is
 		// the only place in the project that can tell whether the flight being watched is stepped by the
 		// machine that derived the boost, and no other number in the log can answer it.
-		if (DEBUG) this.reportOwnership(ball, model);
+		if (DEBUG_LOGGING) this.reportOwnership(ball, model);
 
 		ball.AssemblyLinearVelocity = commanded;
 
@@ -2343,7 +2343,7 @@ export class BallService implements OnStart {
 		// How far the engine's flight actually is from the plan's, per throw.
 		// Behind the verbosity gate as well: the probe watches every throw per frame, and it costs
 		// the very frame time it is reporting on. See `shared/config/debug.config.ts`.
-		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) watchThrow(ball, plan, model);
+		if (DEBUG_LOGGING) watchThrow(ball, plan, model);
 
 
 
@@ -2377,7 +2377,7 @@ export class BallService implements OnStart {
 		if (this.hasInfiniteBalls(model) && !this.getHeldBall(model)) {
 			this.giveBall(model);
 
-			if (DEBUG) print(`[Ball] ${model.Name}: refilled by InfiniteBalls`);
+			logDebug(`[Ball] ${model.Name}: refilled by InfiniteBalls`);
 		}
 
 		// **The throw is the done trigger for a ball-carried power**, and this is the line after the hand has
@@ -2413,7 +2413,7 @@ export class BallService implements OnStart {
 	 * reason: an anchored part and a part outside the workspace are two refusals with two different
 	 * fixes, and the engine is the only thing that knows which this was.
 	 *
-	 * One line per throw, behind `DEBUG`, like the launch line above it. Delete it once the hand-off is
+	 * One line per throw, behind `DEBUG_LOGGING`, like the launch line above it. Delete it once the hand-off is
 	 * trusted.
 	 */
 	private reportOwnership(ball: BasePart, thrower: Model): void {
@@ -2426,7 +2426,7 @@ export class BallService implements OnStart {
 			// ownership left to report, and the line says that rather than going quiet about it.
 			if (ball.Parent === undefined) {
 				connection.Disconnect();
-				print(`[Ball] ${thrower.Name}: flight ownership — never read, the ball was gone within a frame`);
+				logInfo(`[Ball] ${thrower.Name}: flight ownership — never read, the ball was gone within a frame`);
 
 				return;
 			}
@@ -2437,7 +2437,7 @@ export class BallService implements OnStart {
 				connection.Disconnect();
 
 				const settling = frame === 1 ? "" : ` (took ${frame} frames)`;
-				print(`[Ball] ${thrower.Name}: flight owned by the server${settling}`);
+				logInfo(`[Ball] ${thrower.Name}: flight owned by the server${settling}`);
 
 				return;
 			}
@@ -2456,7 +2456,7 @@ export class BallService implements OnStart {
 			// `BallComponent.logTouch` documents at its own `subject`.
 			const refusal = canSet ? "" : `: ${reason}`;
 
-			print(
+			logInfo(
 				`[Ball] ${thrower.Name}: flight owned by ${owner.Name} two frames in — it is being stepped at ` +
 					`that machine's rate while the boost was derived from ours (canSet ${canSet}${refusal})`,
 			);
@@ -2500,7 +2500,7 @@ export class BallService implements OnStart {
 		const character = owner.IsA("Player") ? owner.Character : owner;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		if (!character || !humanoid || humanoid.Health <= 0) {
-			if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no living body`);
+			logDebug(`[Super] ${owner.Name}: MultiBall refused — no living body`);
 
 			return;
 		}
@@ -2516,7 +2516,7 @@ export class BallService implements OnStart {
 			// unlocked by the chest, and this is where an unowned one is refused. A dev bypasses it as they
 			// bypass the round-or-zone gate and the charge below.
 			if (!dev && !this.economy.ownsPower(owner, "MultiBall")) {
-				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — not owned`);
+				logDebug(`[Super] ${owner.Name}: MultiBall refused — not owned`);
 
 				return;
 			}
@@ -2528,7 +2528,7 @@ export class BallService implements OnStart {
 			// does it — and see `SuperService.inRoundOrZone` for why that one line is now a round *or a practice
 			// zone* rather than a round alone.
 			if (!dev && !this.abilities.inRoundOrZone(owner)) {
-				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no round and no practice zone`);
+				logDebug(`[Super] ${owner.Name}: MultiBall refused — no round and no practice zone`);
 
 				return;
 			}
@@ -2550,7 +2550,7 @@ export class BallService implements OnStart {
 			// it, however long that takes. The spend is below.
 			const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
 			if (!charged && !dev) {
-				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no charge and no mystery prize`);
+				logDebug(`[Super] ${owner.Name}: MultiBall refused — no charge and no mystery prize`);
 
 				return;
 			}
@@ -2561,7 +2561,7 @@ export class BallService implements OnStart {
 			// throw behaviours, which are themselves gated to a round or a practice zone by the tags they wear,
 			// so a rig that is here is already somewhere a power can act.
 			if (pendingAbilityOn(owner) !== "MultiBall") {
-				if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — no pending MultiBall`);
+				logDebug(`[Super] ${owner.Name}: MultiBall refused — no pending MultiBall`);
 
 				return;
 			}
@@ -2573,7 +2573,7 @@ export class BallService implements OnStart {
 		// because opening a window and answering whether one was opened are the same act — and it is the
 		// "no stacking" rule precondition, asked of both bodies through the one call.
 		if (!this.abilities.activateMultiBall(owner)) {
-			if (DEBUG) print(`[Super] ${owner.Name}: MultiBall refused — a window is already open`);
+			logDebug(`[Super] ${owner.Name}: MultiBall refused — a window is already open`);
 
 			return;
 		}
@@ -2637,7 +2637,7 @@ export class BallService implements OnStart {
 		const kind = this.abilities.mysteryPowerOf(player);
 
 		if (kind === undefined) {
-			if (DEBUG) print(`[Mystery] ${player.Name}: refused — no mystery prize is held`);
+			logDebug(`[Mystery] ${player.Name}: refused — no mystery prize is held`);
 
 			return;
 		}
@@ -2703,7 +2703,7 @@ export class BallService implements OnStart {
 
 		this.giveBall(model);
 
-		if (DEBUG) print(`[Super] ${model.Name}: MultiBall supplied a ball`);
+		logDebug(`[Super] ${model.Name}: MultiBall supplied a ball`);
 
 		return true;
 	}
@@ -2883,7 +2883,7 @@ export class BallService implements OnStart {
 		// the ball stays in the hand: the spend below happens only for a throw that actually left, and
 		// `throwBall` is never reached.
 		if (roundCelebrating()) {
-			if (DEBUG) print(`[Ball] ${player.Name}: throw refused — the round is celebrating`);
+			logDebug(`[Ball] ${player.Name}: throw refused — the round is celebrating`);
 
 			return;
 		}
@@ -2962,7 +2962,7 @@ export class BallService implements OnStart {
 		// word is a ball ability is the same question for a rig as for a player, so it sits ahead of every
 		// `Player`/`Model` branch — which is the whole of the split this method now has.
 		if (!typeIs(kind, "string") || !isBallAbility(kind)) {
-			warn(`[Super] ${owner.Name}: mark refused — not an ability a ball can carry (${tostring(kind)})`);
+			logWarn(`[Super] ${owner.Name}: mark refused — not an ability a ball can carry (${tostring(kind)})`);
 			return;
 		}
 
@@ -2979,7 +2979,7 @@ export class BallService implements OnStart {
 		const character = owner.IsA("Player") ? owner.Character : owner;
 		const humanoid = character?.FindFirstChildWhichIsA("Humanoid");
 		if (!character || !humanoid || humanoid.Health <= 0) {
-			if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no living body`);
+			logDebug(`[Super] ${owner.Name}: mark refused — no living body`);
 
 			return;
 		}
@@ -2991,7 +2991,7 @@ export class BallService implements OnStart {
 		// precondition, "no stacking", and it runs for both bodies before any access question: a second
 		// mark is refused whoever is asking, because the rule is about the *ball* and not about the owner.
 		if (ball !== undefined && abilityOn(ball) !== undefined) {
-			if (DEBUG) print(`[Super] ${owner.Name}: mark refused — the held ball is already marked`);
+			logDebug(`[Super] ${owner.Name}: mark refused — the held ball is already marked`);
 
 			return;
 		}
@@ -3013,7 +3013,7 @@ export class BallService implements OnStart {
 			// powers, and this is the lock the chest opens. Asked of `EconomyService`, which owns the roster —
 			// the dev bypass skips it exactly as it skips the round-or-zone gate and the charge.
 			if (!dev && !this.economy.ownsPower(owner, kind)) {
-				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — ${kind} not owned`);
+				logDebug(`[Super] ${owner.Name}: mark refused — ${kind} not owned`);
 
 				return;
 			}
@@ -3025,7 +3025,7 @@ export class BallService implements OnStart {
 			// `DodgeService.requestDodge`'s rule; see `SuperService.inRoundOrZone` for why the two actions share
 			// it, and for the bug that came of this one half being missing here.
 			if (!dev && !this.abilities.inRoundOrZone(owner)) {
-				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no round and no practice zone`);
+				logDebug(`[Super] ${owner.Name}: mark refused — no round and no practice zone`);
 
 				return;
 			}
@@ -3054,14 +3054,14 @@ export class BallService implements OnStart {
 			// end — see `SuperService.holdMysteryPrize`.
 			if (ball === undefined) {
 				if (!dev) {
-					if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no ball in hand`);
+					logDebug(`[Super] ${owner.Name}: mark refused — no ball in hand`);
 
 					return;
 				}
 
 				if (this.abilities.isMysteryActive(owner)) {
-					if (DEBUG) {
-						print(`[Super] ${owner.Name}: mark refused — a mystery prize is waiting on a ball`);
+					if (DEBUG_LOGGING) {
+						logInfo(`[Super] ${owner.Name}: mark refused — a mystery prize is waiting on a ball`);
 					}
 
 					return;
@@ -3069,8 +3069,8 @@ export class BallService implements OnStart {
 
 				owner.SetAttribute(ARMED_ABILITY_ATTRIBUTE, kind);
 
-				if (DEBUG) {
-					print(`[Super] ${owner.Name}: armed ${kind} — the next ball they take up will carry it`);
+				if (DEBUG_LOGGING) {
+					logInfo(`[Super] ${owner.Name}: armed ${kind} — the next ball they take up will carry it`);
 				}
 
 				return;
@@ -3087,7 +3087,7 @@ export class BallService implements OnStart {
 			// rather than one sentence — see `SuperService.inRoundOrZone`.
 			const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
 			if (!charged && !dev) {
-				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no charge and no mystery prize`);
+				logDebug(`[Super] ${owner.Name}: mark refused — no charge and no mystery prize`);
 
 				return;
 			}
@@ -3098,13 +3098,13 @@ export class BallService implements OnStart {
 			// slot first, so this is the same test read from the other end; it exists so that no other caller
 			// can mark a rig's ball without a box behind it.
 			if (ball === undefined) {
-				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no ball in hand`);
+				logDebug(`[Super] ${owner.Name}: mark refused — no ball in hand`);
 
 				return;
 			}
 
 			if (pendingAbilityOn(owner) !== kind) {
-				if (DEBUG) print(`[Super] ${owner.Name}: mark refused — no pending ${kind}`);
+				logDebug(`[Super] ${owner.Name}: mark refused — no pending ${kind}`);
 
 				return;
 			}
@@ -3121,16 +3121,16 @@ export class BallService implements OnStart {
 		// terms of `charged` are in play, so the line that names the charge or the prize for a player is kept
 		// word for word; a rig has no charge and no prize to name, so its line names the slot instead. The
 		// branch here is a log line's, not a rule's — the mark itself is one code path above it.
-		if (DEBUG) {
+		if (DEBUG_LOGGING) {
 			if (owner.IsA("Player")) {
 				const charged = this.abilities.hasCharge(owner) || this.abilities.isMysteryActive(owner);
 
-				print(
+				logInfo(
 					`[Super] ${owner.Name}: ${ball.Name} marked as ${kind}` +
 						`${charged ? " — paid for, and the charge or the prize will be spent" : " — dev bypass, nothing held"}`,
 				);
 			} else {
-				print(`[Super] ${owner.Name}: ${ball.Name} marked as ${kind} — the pending prize paid`);
+				logInfo(`[Super] ${owner.Name}: ${ball.Name} marked as ${kind} — the pending prize paid`);
 			}
 		}
 	}
@@ -3273,7 +3273,7 @@ export class BallService implements OnStart {
 	public isHeld(ball: BasePart): boolean {
 		for (const [model, held] of this.heldBalls) {
 			if (held.ball === ball) {
-				if (DEBUG) print(`[Ball] ${ball.Name} is still held by ${model.Name}`);
+				logDebug(`[Ball] ${ball.Name} is still held by ${model.Name}`);
 				return true;
 			}
 		}
@@ -3333,7 +3333,7 @@ export class BallService implements OnStart {
 		const offset = claimed.sub(own).Magnitude;
 		if (offset <= MUZZLE_TOLERANCE) return claimed;
 
-		warn(`[Ball] ignoring a launch point ${string.format("%.1f", offset)} studs from the thrower's hand`);
+		logWarn(`[Ball] ignoring a launch point ${string.format("%.1f", offset)} studs from the thrower's hand`);
 		return own;
 	}
 
@@ -3490,7 +3490,7 @@ export class BallService implements OnStart {
 							// TEMPORARY — remove with `practiceBay`'s trace once the log has been read. **Still the line
 							// that proves a ball was destroyed mid-air**, now with the wait that preceded it.
 							if (TRACE_BAY_DESPAWN) {
-								print(
+								logInfo(
 									`[Catch] ${instance.Name}: DESTROYED ${string.format("%.1f", now - leftAt)}s after ` +
 										`leaving the bay — Armed ${tostring(instance.GetAttribute("Armed"))}, ` +
 										`${string.format("%.0f", instance.AssemblyLinearVelocity.Magnitude)} studs/s`,

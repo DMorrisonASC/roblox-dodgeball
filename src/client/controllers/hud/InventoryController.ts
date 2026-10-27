@@ -20,6 +20,7 @@ import {
 	ownsPower,
 } from "shared/economy";
 import { events } from "shared/networking";
+import { logDebug } from "shared/logger";
 import { inventoryOpen, participating } from "../../panels";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { lightPanelTheme } from "../../ui/lightPanelTheme";
@@ -51,9 +52,6 @@ import {
 	wrapLabels,
 } from "../../ui/panelChrome";
 import type { Showcase, Tile } from "../../ui/panelChrome";
-
-/** Prints the mount line, each tab change and each equip request. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** The client half of the equip remote, as the declaration builds it. */
 type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinitions<typeof events>>;
@@ -361,7 +359,7 @@ export class InventoryController implements OnStart {
 		for (const slot of this.slots) this.equipped.set(slot, Fusion.Value(this.scope, ""));
 		this.currentTab.set(tabOf(this.slots[0] ?? ""));
 
-		if (DEBUG) print(`[Inventory] panel up — ${this.slots.size()} slots`);
+		logDebug(`[Inventory] panel up — ${this.slots.size()} slots`);
 
 		// Visible when it is open *and* this player is not in a round — the same two facts the dock reads, so a
 		// round taking the dock away takes what it opened with it, and a round somebody *else* is playing leaves
@@ -385,7 +383,7 @@ export class InventoryController implements OnStart {
 		tabs.push({ name: POWER_TAB });
 
 		addTabStrip(this.scope, theme, panel, 2, tabs, this.currentTab, (tab) => {
-			if (DEBUG) print(`[Inventory] tab: ${tab}`);
+			logDebug(`[Inventory] tab: ${tab}`);
 		});
 
 		const content = addContentBand(this.scope, panel, 3);
@@ -845,7 +843,7 @@ export class InventoryController implements OnStart {
 	 * that is already written is still a write.
 	 */
 	private requestEquip(slot: string, id: string): void {
-		if (DEBUG) print(`[Inventory] equip request: ${slot} = ${id === "" ? "(default)" : id}`);
+		logDebug(`[Inventory] equip request: ${slot} = ${id === "" ? "(default)" : id}`);
 
 		this.equipRemote?.SendToServer(slot, id);
 	}
@@ -860,7 +858,7 @@ export class InventoryController implements OnStart {
 	 * argument the equipped tiles' re-send makes from the other side.
 	 */
 	private requestTogglePower(kind: AbilityKind): void {
-		if (DEBUG) print(`[Inventory] pool toggle: ${kind}`);
+		logDebug(`[Inventory] pool toggle: ${kind}`);
 
 		this.poolRemote?.SendToServer(kind);
 	}

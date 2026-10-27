@@ -3,10 +3,8 @@ import Net from "@rbxts/net";
 import { Players, UserInputService, Workspace } from "@rbxts/services";
 import { flattenToGround } from "shared/dodge";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { inRoundOrZone } from "../../roundZone";
-
-/** Prints each completed combination, every refusal, and whether the request went out. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Every input that can dodge, and the direction each one points.
@@ -198,7 +196,7 @@ export class DodgeController implements OnStart {
 		// *silently* while the chat box has focus — that is what `gameProcessed` means — and having
 		// just typed a dev command is exactly how a player ends up in that state, so this line is
 		// also how that shows up as the cause rather than as a broken dodge.
-		if (DEBUG) print(`[Dodge] bound: a movement key plus right-click`);
+		logDebug(`[Dodge] bound: a movement key plus right-click`);
 	}
 
 	/**
@@ -268,7 +266,7 @@ export class DodgeController implements OnStart {
 		// camera with the button down and no hand on the movement keys — so it is not a refusal worth
 		// shouting about, only worth a line when the logs are being read.
 		if (combo === "") {
-			if (DEBUG) print(`[Dodge] right-click with no movement key held`);
+			logDebug(`[Dodge] right-click with no movement key held`);
 			return false;
 		}
 
@@ -277,7 +275,7 @@ export class DodgeController implements OnStart {
 		// player asking for two opposite directions has not asked for a direction, and picking one of
 		// the two would be inventing an answer. See `COMBO_AXES`.
 		if (!isDodgeCombo(combo)) {
-			if (DEBUG) print(`[Dodge] ${combo} is not a direction to dodge in`);
+			logDebug(`[Dodge] ${combo} is not a direction to dodge in`);
 			return false;
 		}
 
@@ -320,14 +318,14 @@ export class DodgeController implements OnStart {
 	public push(): boolean {
 		const humanoid = this.findHumanoid();
 		if (humanoid === undefined) {
-			if (DEBUG) print(`[Dodge] the button with nothing to move`);
+			logDebug(`[Dodge] the button with nothing to move`);
 
 			return false;
 		}
 
 		const move = flattenToGround(humanoid.MoveDirection);
 		if (move === undefined) {
-			if (DEBUG) print(`[Dodge] the button with the stick centred — nothing to dodge towards`);
+			logDebug(`[Dodge] the button with the stick centred — nothing to dodge towards`);
 
 			return false;
 		}
@@ -351,7 +349,7 @@ export class DodgeController implements OnStart {
 	private cameraAxes(): [Vector3, Vector3] | undefined {
 		const camera = Workspace.CurrentCamera;
 		if (!camera) {
-			if (DEBUG) print(`[Dodge] no camera to take a heading from`);
+			logDebug(`[Dodge] no camera to take a heading from`);
 
 			return undefined;
 		}
@@ -359,7 +357,7 @@ export class DodgeController implements OnStart {
 		const forward = flattenToGround(camera.CFrame.LookVector);
 		const right = flattenToGround(camera.CFrame.RightVector);
 		if (!forward || !right) {
-			if (DEBUG) print(`[Dodge] the camera has no heading to dodge along`);
+			logDebug(`[Dodge] the camera has no heading to dodge along`);
 
 			return undefined;
 		}
@@ -395,13 +393,13 @@ export class DodgeController implements OnStart {
 	 */
 	private requestDodge(label: string, direction: Vector3, forward: Vector3): boolean {
 		if (!inRoundOrZone(this.player.Character)) {
-			if (DEBUG) print(`[Dodge] ${label} + the button outside this round and outside a zone`);
+			logDebug(`[Dodge] ${label} + the button outside this round and outside a zone`);
 
 			return false;
 		}
 
 		if (this.findHumanoid() === undefined) {
-			if (DEBUG) print(`[Dodge] ${label} + the button with nothing to move`);
+			logDebug(`[Dodge] ${label} + the button with nothing to move`);
 
 			return false;
 		}
@@ -418,8 +416,8 @@ export class DodgeController implements OnStart {
 		// **It is sent rather than re-derived on the server**, which has no camera to read, and it is the
 		// same vector the heading above was built from — so the two are in one frame by construction rather
 		// than by two reads happening to agree.
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Dodge] ${label} + the button → (${string.format("%.2f", direction.X)}, ` +
 					`${string.format("%.2f", direction.Y)}, ${string.format("%.2f", direction.Z)}) ` +
 					`camera (${string.format("%.2f", forward.X)}, ${string.format("%.2f", forward.Y)}, ` +

@@ -8,9 +8,7 @@ import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { STATS_CONFIG } from "shared/config/stats.config";
 import { BADGES_ATTRIBUTE, NPC_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, STAT_HITS, STAT_OUTS } from "shared/constants";
 import { BADGE_COLOURS, Badge, badgeById, decodeBadges } from "shared/badges";
-
-/** Prints once, when the billboards are up — the line that says the controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { logDebug, logWarn } from "shared/logger";
 
 /** The phase a billboard is shown in. A word between two files, not a setting. */
 const INTERMISSION = "Intermission";
@@ -179,7 +177,7 @@ export class StatsBillboardController implements OnStart {
 			}),
 		);
 
-		if (DEBUG) print(`[HUD] stats billboards and badge strips up — ${Players.GetPlayers().size()} players`);
+		logDebug(`[HUD] stats billboards and badge strips up — ${Players.GetPlayers().size()} players`);
 	}
 
 	/** Gives `player` a billboard above every body they get, for as long as they are in the game. */
@@ -218,14 +216,14 @@ export class StatsBillboardController implements OnStart {
 		// character can also be taken away before its head arrives — a death into a respawn, a leaver —
 		// and an unbounded wait would hold the thread that mounts it. See `HEAD_WAIT_SECONDS`.
 		if (character.Parent === undefined) {
-			if (DEBUG) print(`[HUD] ${player.Name}: character gone before its billboard — skipped`);
+			logDebug(`[HUD] ${player.Name}: character gone before its billboard — skipped`);
 
 			return;
 		}
 
 		const head = character.WaitForChild(HEAD_NAME, HEAD_WAIT_SECONDS);
 		if (head === undefined || !head.IsA("BasePart")) {
-			warn(`[HUD] ${player.Name}: no ${HEAD_NAME} on the character — no billboard for this body`);
+			logWarn(`[HUD] ${player.Name}: no ${HEAD_NAME} on the character — no billboard for this body`);
 
 			return;
 		}
@@ -301,7 +299,7 @@ export class StatsBillboardController implements OnStart {
 		// `Destroy` clears `Parent`, so this is an exact test — and it is worth having beside the timeout,
 		// because it costs nothing where the timeout costs five seconds.
 		if (model.Parent === undefined) {
-			if (DEBUG) print(`[HUD] ${model.Name}: gone before its billboard — skipped`);
+			logDebug(`[HUD] ${model.Name}: gone before its billboard — skipped`);
 
 			return;
 		}
@@ -315,7 +313,7 @@ export class StatsBillboardController implements OnStart {
 		// that was going away; a stalled thread is the whole feature.
 		const head = model.WaitForChild(HEAD_NAME, HEAD_WAIT_SECONDS);
 		if (head === undefined || !head.IsA("BasePart")) {
-			warn(`[HUD] ${model.Name}: no ${HEAD_NAME} — no badge strip for this body`);
+			logWarn(`[HUD] ${model.Name}: no ${HEAD_NAME} — no badge strip for this body`);
 
 			return;
 		}
@@ -436,7 +434,7 @@ export class StatsBillboardController implements OnStart {
 			// and the three candidates are "the server never wrote", "the client never heard about it" and
 			// "the client heard about ids it cannot name". One line per body per change separates them: a
 			// count of nought against a non-empty attribute is the third, and no line at all is the second.
-			if (DEBUG) print(`[HUD] ${source.Name}: ${rows.size()} of ${ids.size()} badge(s) drawn`);
+			logDebug(`[HUD] ${source.Name}: ${rows.size()} of ${ids.size()} badge(s) drawn`);
 
 			list.Visible = hasBadges;
 			if (stats !== undefined) stats.Visible = !hasBadges;

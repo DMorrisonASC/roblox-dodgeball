@@ -1,6 +1,7 @@
 import { Workspace } from "@rbxts/services";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
+import { logInfo } from "shared/logger";
 
 /**
  * How long an emitter lives, in seconds.
@@ -139,5 +140,5 @@ export function emitSound(at: CFrame, subject: string, soundId: string, emitterN
 	// The id rather than "a sound played", because which id was chosen is the one part of this that
 	// cannot be heard in the output — a head hit and a body hit are distinguishable by ear, a wrong
 	// id is not.
-	if (DEBUG_CONFIG.VERBOSE_LOGS) print(`[Sound] ${subject}: ${soundId}`);
+	if (DEBUG_CONFIG.VERBOSE_LOGS) logInfo(`[Sound] ${subject}: ${soundId}`);
 }

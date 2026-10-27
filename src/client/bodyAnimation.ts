@@ -10,9 +10,7 @@ import {
 	THROW_ANIMATION_ATTRIBUTE,
 } from "shared/constants";
 import { DodgeDirection } from "shared/dodge";
-
-/** Prints every clip a body changes into, with the rung it plays on. Silent while the clip stays the same. */
-const DEBUG = false;
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 
 /**
  * How long the change from one **cycle** to the next takes, in seconds.
@@ -421,10 +419,10 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	// actually wearing the state. **The state printed is `worn`, not the one that was wanted**, because the
 	// locomotion floor below can answer with a different clip — and a line naming a clip the body is not wearing
 	// is the one thing a diagnosis cannot survive.
-	if (DEBUG) {
+	if (DEBUG_LOGGING) {
 		const rung = isCycle(worn) ? "Movement" : "Action";
 
-		print(`[${render.logTag}] ${render.body.Name}: ${worn} — ${rung}`);
+		logInfo(`[${render.logTag}] ${render.body.Name}: ${worn} — ${rung}`);
 	}
 }
 
@@ -617,7 +615,7 @@ function trackFor(render: BodyRender, clip: AnimationState): AnimationTrack | un
 
 	const id = clipIdFor(clip, render.humanoid.RigType === Enum.HumanoidRigType.R15);
 	if (id === "") {
-		if (DEBUG) print(`[${render.logTag}] ${clip}: no id for this body — left as it stands`);
+		logDebug(`[${render.logTag}] ${clip}: no id for this body — left as it stands`);
 
 		render.unplayable.add(clip);
 
@@ -702,7 +700,7 @@ function loadTrack(id: string, animator: Animator, clip: AnimationState): Animat
 	});
 
 	if (!ok || track === undefined) {
-		warn(`[Animation] clip ${id} would not load — the body keeps what it was wearing`);
+		logWarn(`[Animation] clip ${id} would not load — the body keeps what it was wearing`);
 		return undefined;
 	}
 

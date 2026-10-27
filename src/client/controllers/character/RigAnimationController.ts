@@ -8,10 +8,8 @@ import {
 	NPC_ANIM_SPRINTING_ATTRIBUTE,
 	NPC_TAG,
 } from "shared/constants";
+import { logDebug, logWarn } from "shared/logger";
 import { BodyConditions, BodyRender, applyBodyRender, destroyBodyRender, startBodyRender } from "../../bodyAnimation";
-
-/** Prints each rig as it starts being dressed, and any rig that cannot be. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * How long a rig is given to produce its `Humanoid` and its `Animator`, in seconds, and how long each
@@ -228,12 +226,12 @@ export class RigAnimationController implements OnStart {
 			// is recoverable: see `apply`, which keeps looking. One message for both sent the reader
 			// after an animator that was never the missing object.
 			if (!humanoid || !humanoid.IsA("Humanoid")) {
-				warn(`[Rig] ${model.Name}: no Humanoid — nothing to animate, and nothing will be`);
+				logWarn(`[Rig] ${model.Name}: no Humanoid — nothing to animate, and nothing will be`);
 				return;
 			}
 
 			if (!animator || !animator.IsA("Animator")) {
-				warn(`[Rig] ${model.Name}: no Animator yet — looking again for a moment`);
+				logWarn(`[Rig] ${model.Name}: no Animator yet — looking again for a moment`);
 				rig.humanoid = humanoid;
 
 				// **And it goes on looking, because a rig standing still will not change its state again.**
@@ -266,7 +264,7 @@ export class RigAnimationController implements OnStart {
 		rig.animator = animator;
 		rig.body = startBodyRender(model, humanoid, animator, "Rig");
 
-		if (DEBUG) print(`[Rig] ${model.Name}: dressing from the state the server publishes`);
+		logDebug(`[Rig] ${model.Name}: dressing from the state the server publishes`);
 
 		this.apply(model, rig);
 	}

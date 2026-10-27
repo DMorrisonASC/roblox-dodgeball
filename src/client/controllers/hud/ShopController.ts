@@ -11,6 +11,7 @@ import type { ChestItem, CosmeticDef } from "shared/config/economy.config";
 import { IMAGES_CONFIG } from "shared/config/images.config";
 import { ownedCosmeticIdsOf, ownsPower } from "shared/economy";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { participating, shopOpen } from "../../panels";
 import { lightPanelTheme } from "../../ui/lightPanelTheme";
 import { createConfirmModal } from "../../ui/confirmModal";
@@ -39,9 +40,6 @@ import {
 	wrapLabels,
 } from "../../ui/panelChrome";
 import type { Tile } from "../../ui/panelChrome";
-
-/** Prints the mount line, every tab change, every chest request, and every answer. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /** How many tiles sit across a shelf. Three, because the widest shelf here holds seven. */
 const COLUMNS = 3;
@@ -244,7 +242,7 @@ export class ShopController implements OnStart {
 		// than resolved through `hudTheme()`'s table, which can be moved by the big-ui configuration and once was.
 		const theme = lightPanelTheme();
 
-		print("[Shop] panel up — Cosmetics (catalogue) · Power & Items (the chest, over the whole pool)");
+		logInfo("[Shop] panel up — Cosmetics (catalogue) · Power & Items (the chest, over the whole pool)");
 
 		const panel = addPanelFrame(
 			this.scope,
@@ -257,7 +255,7 @@ export class ShopController implements OnStart {
 		this.addBalancePill(right, theme);
 
 		addTabStrip(this.scope, theme, panel, 2, TABS, this.currentTab, (name) => {
-			if (DEBUG) print(`[Shop] tab: ${name}`);
+			logDebug(`[Shop] tab: ${name}`);
 		});
 
 		const content = addContentBand(this.scope, panel, 3);
@@ -612,7 +610,7 @@ export class ShopController implements OnStart {
 
 	/** Asks for a chest. The whole of what this panel can ask the server to do. */
 	private requestChest(): void {
-		if (DEBUG) print("[Shop] asked for a Power Chest");
+		logDebug("[Shop] asked for a Power Chest");
 
 		// Cleared first, so a refusal cannot be read as the answer to the *previous* request while this
 		// one is in flight. Nothing on the wire says which reply belongs to which press, and the only
@@ -640,7 +638,7 @@ export class ShopController implements OnStart {
 	private requestPurchase(def: CosmeticDef): void {
 		if (ownedCosmeticIdsOf(Fusion.peek(this.cosmetics)).has(def.id)) return;
 
-		if (DEBUG) print(`[Shop] asked to buy ${def.id}`);
+		logDebug(`[Shop] asked to buy ${def.id}`);
 
 		// Cleared for `requestChest`'s reason: a reply must not be readable as the answer to an earlier ask.
 		this.chestGranted.set("");
@@ -750,7 +748,7 @@ export class ShopController implements OnStart {
 
 		ContentProvider.PreloadAsync([award], (contentId, fetchStatus) => {
 			if (fetchStatus !== Enum.AssetFetchStatus.Success) {
-				warn(`[Shop] chest award sound did not load — ${contentId} (${fetchStatus.Name})`);
+				logWarn(`[Shop] chest award sound did not load — ${contentId} (${fetchStatus.Name})`);
 			}
 		});
 
@@ -779,8 +777,8 @@ export class ShopController implements OnStart {
 				 */
 				if (grantedText !== "") this.awardSound?.Play();
 
-				if (DEBUG) {
-					print(
+				if (DEBUG_LOGGING) {
+					logInfo(
 						`[Shop] chest replied — granted "${grantedText}", reason "${reasonText}"` +
 							` (coins now ${Fusion.peek(this.coins)})`,
 					);
@@ -817,8 +815,8 @@ export class ShopController implements OnStart {
 
 				if (grantedText !== "") this.awardSound?.Play();
 
-				if (DEBUG) {
-					print(`[Shop] purchase replied — granted "${grantedText}", reason "${reasonText}"`);
+				if (DEBUG_LOGGING) {
+					logInfo(`[Shop] purchase replied — granted "${grantedText}", reason "${reasonText}"`);
 				}
 			}),
 		);

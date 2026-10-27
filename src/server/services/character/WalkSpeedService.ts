@@ -11,6 +11,7 @@ import {
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import type { CatchState } from "../actions/DodgeService";
 
 /**
@@ -35,8 +36,6 @@ const BASE_KEY = "Base";
  * and the numbers in brackets say whether a base was there to be summed or whether the entry was
  * empty.
  */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
-
 /**
  * The name sprint's contribution is stored under.
  *
@@ -314,7 +313,7 @@ export class WalkSpeedService implements OnStart {
         // took, which is the same reason `Trajectory` integrates by step rather than assuming a rate.
         RunService.Heartbeat.Connect((dt) => this.onHeartbeat(dt));
 
-        if (DEBUG) print(`[Sprint] up — LeftShift/RightShift, ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s pool`);
+        logDebug(`[Sprint] up — LeftShift/RightShift, ${CHARACTER_CONFIG.STAMINA_MAX_SECONDS}s pool`);
     }
 
     /**
@@ -620,17 +619,17 @@ export class WalkSpeedService implements OnStart {
         // move: `0 ()` is an entry with nothing in it, which is a bug here, and `0 (Base:20)` would
         // mean the base itself had been set to nothing. Rebuilding the string rather than logging the
         // map because an attribute-shaped table prints as a pointer, which is no use in a log.
-        // **Gated on the config as well as on this file's own `DEBUG`.** The doc above calls this "a handful
+        // **Gated on the config as well as on `DEBUG_LOGGING`.** The doc above calls this "a handful
         // of lines a round"; a live log on 2026-10-17 had it firing roughly twice per rig per walk, because
         // every walk starts and ends a sprint and every sprint is two writes to the map. Eight rigs cycling a
         // walk every three seconds made this one of the three loudest lines in the server script. Nothing
         // below is skipped when it is off — the write to `humanoid.WalkSpeed` is above it, which is the whole
         // reason this is a print guard and not an early return.
-        if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) {
+        if (DEBUG_LOGGING) {
             const parts: string[] = [];
             entry.forEach((value, key) => parts.push(`${key}:${value}`));
 
-            print(`[Walk] ${model.Name}: ${humanoid.WalkSpeed} (${parts.join(" ")})`);
+            logInfo(`[Walk] ${model.Name}: ${humanoid.WalkSpeed} (${parts.join(" ")})`);
         }
     }
 
@@ -829,8 +828,8 @@ export class WalkSpeedService implements OnStart {
         const holding = hold !== undefined;
         if (holding !== (state.held === true)) {
             state.held = holding;
-            if (DEBUG) {
-                print(
+            if (DEBUG_LOGGING) {
+                logInfo(
                     holding
                         ? `[Sprint] ${player.Name}: pool held — ${hold?.action}`
                         : `[Sprint] ${player.Name}: pool running again`,
@@ -845,7 +844,7 @@ export class WalkSpeedService implements OnStart {
             state.sprinting = sprinting;
             this.applySprint(player, sprinting);
 
-            if (DEBUG) print(`[Sprint] ${player.Name}: ${sprinting ? "sprinting" : "walking"}`);
+            logDebug(`[Sprint] ${player.Name}: ${sprinting ? "sprinting" : "walking"}`);
         }
 
         this.publish(player, state, now);
@@ -1027,7 +1026,7 @@ export class WalkSpeedService implements OnStart {
 
         state.active = active;
 
-        if (DEBUG) print(`[Sprint] ${player.Name}: key ${active ? "down" : "up"}`);
+        logDebug(`[Sprint] ${player.Name}: key ${active ? "down" : "up"}`);
     }
 
     /**
@@ -1056,6 +1055,6 @@ export class WalkSpeedService implements OnStart {
             this.charging.delete(player);
         }
 
-        if (DEBUG) print(`[Walk] ${player.Name}: ${active ? "holding a throw — capped" : "throw released — cap off"}`);
+        logDebug(`[Walk] ${player.Name}: ${active ? "holding a throw — capped" : "throw released — cap off"}`);
     }
 }

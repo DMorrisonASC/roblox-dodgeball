@@ -6,15 +6,13 @@ import { ARENA_CONFIG } from "shared/config/arena.config";
 import { AUDIO_CONFIG } from "shared/config/audio.config";
 import { TRANSITION_CONFIG, TRANSITION_COVER_SECONDS } from "shared/config/transition.config";
 import { ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE } from "shared/constants";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { PLAYING } from "../../panels";
 import { onASide } from "../../roundZone";
 import { SPLASH_STROKE_TRANSPARENCY, styleSplashText } from "../../ui/actionSplash";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { hudTheme } from "../../ui/hudTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
-
-/** Prints on mount — the line that says the controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * Where the countdown sits in the `ZIndex` order: **above every HUD label, below every panel.**
@@ -535,7 +533,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 		// `Sound`s and neither can rely on the other having asked first.
 		ContentProvider.PreloadAsync([whistle], (contentId, fetchStatus) => {
 			if (fetchStatus !== Enum.AssetFetchStatus.Success) {
-				warn(`[HUD] round-start whistle did not load — ${contentId} (${fetchStatus.Name})`);
+				logWarn(`[HUD] round-start whistle did not load — ${contentId} (${fetchStatus.Name})`);
 			}
 		});
 
@@ -568,8 +566,8 @@ export class ArenaFreezeCountdownController implements OnStart {
 			}),
 		);
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[HUD] arena freeze countdown up — ${ARENA_CONFIG.ARENA_FREEZE_SECONDS}s in whole seconds from ` +
 					`the ${PLAYING} edge, delayed by ${TRANSITION_CONFIG.ENABLED ? TRANSITION_COVER_SECONDS : 0}s`,
 			);
@@ -814,7 +812,7 @@ export class ArenaFreezeCountdownController implements OnStart {
 			// which should read `ARENA_FREEZE_SECONDS` to the hundredth. That line beside the server's own hold
 			// print is what says whether this client's freeze and the server's ended together — the one thing
 			// about the timing that cannot be checked from the source alone.
-			if (DEBUG) print(`[HUD] start — round whistle at ${string.format("%.2f", time() - this.startedAt)}s`);
+			logDebug(`[HUD] start — round whistle at ${string.format("%.2f", time() - this.startedAt)}s`);
 		}
 
 		const leaving = this.labels[this.front];

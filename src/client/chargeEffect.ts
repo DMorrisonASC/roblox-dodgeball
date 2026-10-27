@@ -2,11 +2,9 @@ import Fusion from "@rbxts/fusion-3.0";
 import { CollectionService, Players, ReplicatedStorage, RunService, Workspace } from "@rbxts/services";
 import { BALL_CONFIG } from "shared/config/ball.config";
 import { CHARGING_ATTRIBUTE, NPC_TAG, THROW_ANIMATION_ATTRIBUTE } from "shared/constants";
+import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { chargeStartedAt } from "./throwing";
 import { playWindBurst } from "./windBurst";
-
-/** Prints one line per effect edge, and one per template that is not there. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The template's name in `ReplicatedStorage`, and **the whole of the contract with it.**
@@ -188,7 +186,7 @@ export function startChargeEffect(body: Model): void {
 
 	const hand = handOf(body);
 	if (hand === undefined) {
-		if (DEBUG) print(`[VFX] ${body.Name}: charge effect wanted, but no hand to put it on`);
+		logDebug(`[VFX] ${body.Name}: charge effect wanted, but no hand to put it on`);
 
 		return;
 	}
@@ -198,7 +196,7 @@ export function startChargeEffect(body: Model): void {
 	// **One line per edge, and the hand is on it** — because the hand is the decision this file makes that a
 	// person cannot check from the game: an effect that plays on the wrong arm is exactly "the hand is not the
 	// one the animation throws from", and a line naming the part is what turns that from a guess into a report.
-	if (DEBUG) print(`[VFX] ${body.Name}: charge effect on ${hand.Name}`);
+	logDebug(`[VFX] ${body.Name}: charge effect on ${hand.Name}`);
 }
 
 /**
@@ -227,14 +225,14 @@ function mountEffect(body: Model, hand: BasePart, templateName: string, mounted:
 	if (template === undefined) {
 		if (!warnedTemplates.has(templateName)) {
 			warnedTemplates.add(templateName);
-			warn(`[VFX] no ${templateName} in ReplicatedStorage — that effect will not play`);
+			logWarn(`[VFX] no ${templateName} in ReplicatedStorage — that effect will not play`);
 
 			// **And then what it can see**, because "no template" is the half of the answer nobody can act on:
 			// not there, and there under another name in another container, look identical from one line.
-			for (const line of nearMissReport()) warn(`[VFX] ${line}`);
+			for (const line of nearMissReport()) logWarn(`[VFX] ${line}`);
 		}
 
-		if (DEBUG) print(`[VFX] ${body.Name}: no ${templateName} template to clone`);
+		logDebug(`[VFX] ${body.Name}: no ${templateName} template to clone`);
 		return false;
 	}
 
@@ -263,7 +261,7 @@ function mountEffect(body: Model, hand: BasePart, templateName: string, mounted:
 	const declared = clone.IsA("Model") ? clone.PrimaryPart : undefined;
 	const anchor = declared ?? first;
 	if (anchor === undefined) {
-		if (DEBUG) print(`[VFX] ${body.Name}: the ${templateName} template has no parts to weld`);
+		logDebug(`[VFX] ${body.Name}: the ${templateName} template has no parts to weld`);
 		return false;
 	}
 
@@ -291,14 +289,14 @@ function mountEffect(body: Model, hand: BasePart, templateName: string, mounted:
 	// template holds rather than what this file just did to it. `Rate` and `Lifetime` decide whether anything
 	// is emitted, `Size` and `Transparency` whether it can be seen — none of it visible from code, all of it one
 	// print. See `describeEmitter`.
-	if (DEBUG && !describedTemplates.has(templateName)) {
+	if (DEBUG_LOGGING && !describedTemplates.has(templateName)) {
 		describedTemplates.add(templateName);
 
 		if (emitters.isEmpty()) {
-			print(`[VFX] the ${templateName} template holds no ParticleEmitter — there is nothing to loop`);
+			logInfo(`[VFX] the ${templateName} template holds no ParticleEmitter — there is nothing to loop`);
 		}
 
-		for (const emitter of emitters) print(`[VFX] emitter ${emitter.Name}: ${describeEmitter(emitter)}`);
+		for (const emitter of emitters) logInfo(`[VFX] emitter ${emitter.Name}: ${describeEmitter(emitter)}`);
 	}
 
 	// **`LockedToPart`, so the particles ride the hand.** Unlocked, they are born *into the world* where they
@@ -359,7 +357,7 @@ export function stopChargeEffect(body: Model, reason: string): void {
 	// which is why there is no fade handle to wait on.
 	clone.Destroy();
 
-	if (DEBUG) print(`[VFX] ${body.Name}: charge effect off — ${reason}`);
+	logDebug(`[VFX] ${body.Name}: charge effect off — ${reason}`);
 }
 
 /**
@@ -404,7 +402,7 @@ function setFireBall(body: Model, level: number): void {
 
 		dropFireBall(body);
 
-		if (DEBUG) print(`[VFX] ${body.Name}: fire ball off — charge ${formatCharge(level)}`);
+		logDebug(`[VFX] ${body.Name}: fire ball off — charge ${formatCharge(level)}`);
 		return;
 	}
 
@@ -412,14 +410,14 @@ function setFireBall(body: Model, level: number): void {
 
 	const hand = handOf(body);
 	if (hand === undefined) {
-		if (DEBUG) print(`[VFX] ${body.Name}: fire ball wanted, but no hand to put it on`);
+		logDebug(`[VFX] ${body.Name}: fire ball wanted, but no hand to put it on`);
 
 		return;
 	}
 
 	if (!mountEffect(body, hand, FIRE_TEMPLATE_NAME, fireBalls)) return;
 
-	if (DEBUG) print(`[VFX] ${body.Name}: fire ball on — charge ${formatCharge(level)}`);
+	logDebug(`[VFX] ${body.Name}: fire ball on — charge ${formatCharge(level)}`);
 }
 
 /** Takes the fire ball down if there is one. **Silent**, because the two callers each print for themselves. */

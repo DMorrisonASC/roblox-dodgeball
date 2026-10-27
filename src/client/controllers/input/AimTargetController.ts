@@ -2,11 +2,9 @@ import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { Players, RunService } from "@rbxts/services";
 import { AIM_CONFIG } from "shared/config/aim.config";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { aiming, predictedTargets } from "../../aiming";
 import { inRound, sideOfBody } from "../../roundZone";
-
-/** Prints a line as a target is lit and as it goes out. Silent while a target stays the same. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * What the outline is called, and the whole of how one is found.
@@ -200,7 +198,7 @@ export class AimTargetController implements OnStart {
 		// bind and the HUDs print that they are up: "nothing happens" has two completely different
 		// causes — this never started, or it started and found nothing to do — and this is the line
 		// that tells them apart. If it is missing from the output, nothing below it can be trusted.
-		if (DEBUG) print(`[Aim] up — watching the aiming flag`);
+		logDebug(`[Aim] up — watching the aiming flag`);
 	}
 
 	/** One turn of the loop: keep the glow on what the throw would reach, or put it out. */
@@ -213,7 +211,7 @@ export class AimTargetController implements OnStart {
 		// held balls.
 		if (isAiming !== this.lastAiming) {
 			this.lastAiming = isAiming;
-			if (DEBUG) print(`[Aim] flag: ${isAiming}`);
+			logDebug(`[Aim] flag: ${isAiming}`);
 		}
 
 		// This is still asked first, and no longer for the throttle's sake: the flag is this
@@ -337,10 +335,10 @@ export class AimTargetController implements OnStart {
 		if (report === this.lastSkipReport) return;
 
 		this.lastSkipReport = report;
-		if (!DEBUG) return;
+		if (!DEBUG_LOGGING) return;
 
-		if (report === "") print(`[Aim] nothing skipped`);
-		else print(`[Aim] skipped on own side: ${report}`);
+		if (report === "") logInfo(`[Aim] nothing skipped`);
+		else logInfo(`[Aim] skipped on own side: ${report}`);
 	}
 
 	/**
@@ -398,7 +396,7 @@ export class AimTargetController implements OnStart {
 			// from "the arc never hit anything".** The write is skipped and there is nothing to see,
 			// so this line is the whole of the diagnosis for a glow that does nothing on a model the
 			// throw is heading straight for.
-			if (DEBUG) print(`[Aim] ${target.Name}: ${on ? "lit" : "out"}=false — no ${OUTLINE_NAME} to write`);
+			logDebug(`[Aim] ${target.Name}: ${on ? "lit" : "out"}=false — no ${OUTLINE_NAME} to write`);
 			return;
 		}
 
@@ -415,7 +413,7 @@ export class AimTargetController implements OnStart {
 		// `=true` is the load-bearing half: it says the write reached a real `Highlight`. A `true`
 		// here with nothing on screen is therefore a *rendering* question and not a logic one, and
 		// that is the fork this whole line exists to expose.
-		if (DEBUG) print(`[Aim] ${target.Name}: ${on ? "lit" : "out"}=true`);
+		logDebug(`[Aim] ${target.Name}: ${on ? "lit" : "out"}=true`);
 	}
 
 	/** Puts the glow out when `character` dies — see {@link onStart} for why this is hooked. */

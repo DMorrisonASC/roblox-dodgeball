@@ -9,6 +9,7 @@ import {
 	ROUND_STATUS_FOLDER,
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
+import { DEBUG_LOGGING, logInfo } from "shared/logger";
 import { inPracticeZone, participating, roundPhase, togglePanel } from "../../panels";
 import { isParticipant } from "../../roundZone";
 import { addElevation, wireInteraction } from "../../ui/elevation";
@@ -16,9 +17,6 @@ import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { applyGlow } from "../../ui/glow";
 import { getHudScreenGui } from "../../ui/screenGui";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
-
-/** Prints once, with the phase the dock is reading — the line that says it mounted and what it saw. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * The dock's ZIndex.
@@ -106,8 +104,8 @@ export class DockController implements OnStart {
 		this.watchRound();
 		this.addDock();
 
-		if (DEBUG) {
-			print(
+		if (DEBUG_LOGGING) {
+			logInfo(
 				`[Dock] up — Shop and Inventory, shown while this player is not in a round` +
 					` (phase ${Fusion.peek(roundPhase)}, in the round ${Fusion.peek(participating)})`,
 			);

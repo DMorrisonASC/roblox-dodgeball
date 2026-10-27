@@ -1,6 +1,7 @@
 import Fusion from "@rbxts/fusion-3.0";
 import { Players } from "@rbxts/services";
 import { LAST_HIT_BY_CAUSE_ATTRIBUTE, STAT_HITS, STAT_OUTS } from "shared/constants";
+import { logDebug, logInfo } from "shared/logger";
 import { killCamActive } from "./panels";
 import { applyGlow, applyTextGlow } from "./ui/glow";
 import { PREMIUM } from "./ui/premiumTheme";
@@ -87,9 +88,6 @@ const LINE_GAP = 2;
  * is written up at the top of this file.
  */
 const Z_INDEX = 10;
-
-/** Prints one line when the overlay mounts, and one per shot while `DEBUG` is on. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * **The two words a caught-throw death is drawn with** — the server's cause value, and the caption that replaces the
@@ -204,7 +202,7 @@ export function showEnemyView(body: Model): void {
 		}
 	}
 
-	if (DEBUG) print(`[EnemyView] watching ${body.GetFullName()}${caught ? " — a caught throw" : ""}`);
+	logDebug(`[EnemyView] watching ${body.GetFullName()}${caught ? " — a caught throw" : ""}`);
 }
 /**
  * Drops the bindings. **The panel's visibility is not touched here**, and that is deliberate: it follows
@@ -214,7 +212,7 @@ export function showEnemyView(body: Model): void {
 export function hideEnemyView(): void {
 	unbind();
 
-	if (DEBUG) print("[EnemyView] released");
+	logDebug("[EnemyView] released");
 }
 
 /** Builds the panel, once. Idempotent, so both entry points can call it without agreeing about who goes first. */
@@ -295,7 +293,7 @@ function mount(): void {
 
 	frame = panel;
 
-	print("[HUD] enemy view up — hidden until a kill cam describes somebody");
+	logInfo("[HUD] enemy view up — hidden until a kill cam describes somebody");
 }
 
 /**

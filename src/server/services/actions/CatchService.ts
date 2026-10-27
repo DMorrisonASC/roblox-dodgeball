@@ -6,6 +6,7 @@ import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { CATCHING_ATTRIBUTE, CATCH_READY_AT, DODGE_READY_AT } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { events } from "shared/networking";
+import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { lockoutElapsed } from "./actionLock";
 import { DevService } from "../../dev/DevService";
 import { FreezeService } from "./FreezeService";
@@ -15,9 +16,6 @@ import { WalkSpeedService } from "../character/WalkSpeedService";
 import { DodgeService } from "./DodgeService";
 import { roundCelebrating } from "../round/roundStatus";
 
-/** Prints window openings, expiries and refusals — but not refreshes, which happen every tick. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
-
 /**
  * TEMPORARY — **the input half of the catch trace.** Set to `false`, or delete this block and its call sites, once the
  * log has been read. See `BallComponent`'s `TRACE_CATCH` for the ball half.
@@ -26,7 +24,7 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  * one says whether the *press* was accepted and a window opened, that one says whether the *ball* was eligible at all.
  * A single flag would still work — but a shared module for a temporary diagnostic is more to remove than two booleans.
  *
- * **What it proves, on this side.** `attemptCatch` already prints at `DEBUG` for most of its refusals, but `DEBUG` is
+ * **What it proves, on this side.** `attemptCatch` already prints at `DEBUG_LOGGING` for most of its refusals, but `DEBUG_LOGGING` is
  * off in every shipped file, so a real session shows nothing at all. This prints on the outcome that matters — window
  * opened, or refused and why — so the log can be read against the ball's side without turning on a per-refresh line.
  */
@@ -161,17 +159,17 @@ export class CatchService implements OnStart {	/**
 			// no output at all and a press that produces the wrong output look identical
 			// from the player's seat, and this is the one line that says the event got here
 			// — so its absence means the key or the wire, never the catch itself.
-			if (DEBUG) print(`[Catch] ${player.Name} asked to catch`);
+			logDebug(`[Catch] ${player.Name} asked to catch`);
 
 			const character = player.Character;
 			if (!character) {
-				if (DEBUG) print(`[Catch] ${player.Name}: no character to catch with`);
-				if (TRACE_CATCH) print(`[Catch] ${player.Name}: REFUSED — no character yet`);
+				logDebug(`[Catch] ${player.Name}: no character to catch with`);
+				if (TRACE_CATCH) logInfo(`[Catch] ${player.Name}: REFUSED — no character yet`);
 				return;
 			}
 
 			if (!this.attemptCatch(character) && TRACE_CATCH) {
-				print(`[Catch] ${player.Name}: REFUSED — see the line above for why`);
+				logInfo(`[Catch] ${player.Name}: REFUSED — see the line above for why`);
 			}
 		});
 
@@ -210,7 +208,7 @@ export class CatchService implements OnStart {	/**
 					// is the question this feature will be judged on: if this never prints, the ball is not passing within
 					// eight studs and the radius is not the reason a catch did or did not happen.
 					if (TRACE_CATCH) {
-						print(`[Catch] ${model.Name}: caught by PROXIMITY — within ${CATCH_CONFIG.CATCH_RADIUS_STUDS} studs`);
+						logInfo(`[Catch] ${model.Name}: caught by PROXIMITY — within ${CATCH_CONFIG.CATCH_RADIUS_STUDS} studs`);
 					}
 				}
 			}
@@ -231,9 +229,9 @@ export class CatchService implements OnStart {	/**
 	public attemptCatch(model: Model): boolean {
 		const humanoid = resolveDodgeable(model)?.humanoid;
 		if (!humanoid || humanoid.Health <= 0) {
-			if (DEBUG) print(`[Catch] ${model.Name}: no living humanoid to catch with`);
+			logDebug(`[Catch] ${model.Name}: no living humanoid to catch with`);
 			// TEMPORARY — remove with `TRACE_CATCH`.
-			if (TRACE_CATCH) print(`[Catch] ${model.Name}: REFUSED — no living humanoid`);
+			if (TRACE_CATCH) logInfo(`[Catch] ${model.Name}: REFUSED — no living humanoid`);
 
 			return false;
 		}
@@ -269,8 +267,8 @@ export class CatchService implements OnStart {	/**
 			// issued it a ball, whether or not that rig was meant to have a throwing tag. An inert ball
 			// is the other case entirely: a catch or a pickup that has not been dropped yet, and which
 			// `CatchBehavior` takes out of the hand on its next tick.
-			if (DEBUG) {
-				print(
+			if (DEBUG_LOGGING) {
+				logInfo(
 					`[Catch] ${model.Name}: refused — ${held.Name} is already in hand` +
 						` (Armed ${held.GetAttribute("Armed")})`,
 				);
@@ -280,7 +278,7 @@ export class CatchService implements OnStart {	/**
 			// has just picked a ball up**: a hand that already holds one cannot catch another, because a catch
 			// replaces the ball in the hand rather than joining it.
 			if (TRACE_CATCH) {
-				print(`[Catch] ${model.Name}: REFUSED — a ball is already in hand (${held.Name})`);
+				logInfo(`[Catch] ${model.Name}: REFUSED — a ball is already in hand (${held.Name})`);
 			}
 
 			return false;
@@ -291,10 +289,10 @@ export class CatchService implements OnStart {	/**
 		// flags move each action's own clock, and this is not one of those. See
 		// {@link lockoutElapsed}.
 		if (this.blocksCatch(model)) {
-			// TEMPORARY — remove with `TRACE_CATCH`. `blocksCatch` prints its own reason at `DEBUG`, which is off in a
+			// TEMPORARY — remove with `TRACE_CATCH`. `blocksCatch` prints its own reason at `DEBUG_LOGGING`, which is off in a
 			// shipped session; this line is what makes the refusal visible. A frozen catcher, a dodge in flight and a
 			// dodge that ended a moment ago are the three ways in.
-			if (TRACE_CATCH) print(`[Catch] ${model.Name}: REFUSED — catch blocked (frozen, dodging, or just dodged)`);
+			if (TRACE_CATCH) logInfo(`[Catch] ${model.Name}: REFUSED — catch blocked (frozen, dodging, or just dodged)`);
 
 			return false;
 		}
@@ -317,14 +315,14 @@ export class CatchService implements OnStart {	/**
 		if (player !== undefined) {
 			const readyAt = this.catchReadyAt.get(model);
 			if (readyAt !== undefined && now < readyAt) {
-				if (DEBUG) print(`[Catch] ${model.Name}: still in the catch cycle`);
+				logDebug(`[Catch] ${model.Name}: still in the catch cycle`);
 
 				// TEMPORARY — remove with `TRACE_CATCH`. **A press inside the cycle does nothing at all**, so a player
 				// mashing catch after a bounce lands every press but the first in here and sees no window open. The
 				// remaining wait is printed because it is the number that distinguishes "just missed" from "the cycle
 				// never reset".
 				if (TRACE_CATCH) {
-					print(
+					logInfo(
 						`[Catch] ${model.Name}: REFUSED — still in the catch cycle, ` +
 							`${string.format("%.2f", readyAt - now)}s to go`,
 					);
@@ -393,7 +391,7 @@ export class CatchService implements OnStart {	/**
 		// ball never follows with its own line, the window opened and no eligible ball arrived inside it — so look at
 		// what the ball was doing (`Armed`, `not in the world`, `no catch window open`) rather than at the press.
 		if (TRACE_CATCH) {
-			print(
+			logInfo(
 				`[Catch] ${model.Name}: window OPENED for ${string.format("%.2f", CATCH_CONFIG.WINDOW_SECONDS)}s` +
 					` — waiting for a ball to touch`,
 			);
@@ -447,7 +445,7 @@ export class CatchService implements OnStart {	/**
 		// lazily. The trail was the only part of it that could not be lazy about *when it was noticed*, which
 		// is why it had a timer and the window does not.
 
-		if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Catch] ${model.Name}: window open`);
+		logDebug(`[Catch] ${model.Name}: window open`);
 
 		return true;
 	}
@@ -491,7 +489,7 @@ export class CatchService implements OnStart {	/**
 		// event, and it is the only thing here that repeats.
 		this.balls.markCatchAnimation(model, "attempt");
 
-		if (DEBUG) print(`[Catch] ${model.Name}: endless window open (dev)`);
+		logDebug(`[Catch] ${model.Name}: endless window open (dev)`);
 
 		return true;
 	}
@@ -535,7 +533,7 @@ export class CatchService implements OnStart {	/**
 		const expiresAt = window.expiresAt;
 
 		if (os.clock() > expiresAt) {
-			if (DEBUG && DEBUG_CONFIG.VERBOSE_LOGS) print(`[Catch] ${model.Name}: window expired`);
+			logDebug(`[Catch] ${model.Name}: window expired`);
 
 			// Closed through `consume` so the death watch goes with the window: an
 			// expired window must not leave a listener behind.
@@ -570,7 +568,7 @@ export class CatchService implements OnStart {	/**
 		// things below are clocks that expire on their own, and a freeze is a state that has to be waited
 		// out. A frozen body hears that it is frozen rather than that its dodge ended a moment ago.
 		if (this.freezes.isFrozen(model)) {
-			if (DEBUG) print(`[Catch] ${model.Name}: refused — frozen`);
+			logDebug(`[Catch] ${model.Name}: refused — frozen`);
 
 			return true;
 		}
@@ -582,20 +580,20 @@ export class CatchService implements OnStart {	/**
 		// would otherwise open a window ten seconds into a result nobody is playing for, and hand the catcher a
 		// ball they cannot throw (`BallService.throwBallBody` refuses it for exactly this long).
 		if (roundCelebrating()) {
-			if (DEBUG) print(`[Catch] ${model.Name}: refused — the round is celebrating`);
+			logDebug(`[Catch] ${model.Name}: refused — the round is celebrating`);
 
 			return true;
 		}
 
 		if (this.dodges.isDodging(model)) {
-			if (DEBUG) print(`[Catch] ${model.Name}: refused — a dodge is in flight`);
+			logDebug(`[Catch] ${model.Name}: refused — a dodge is in flight`);
 			return true;
 		}
 
 		const since = lockoutElapsed(this.dodges.getLastDodgeEndTime(model));
 		if (since === undefined) return false;
 
-		if (DEBUG) print(`[Catch] ${model.Name}: refused — a dodge ended ${string.format("%.2f", since)}s ago`);
+		logDebug(`[Catch] ${model.Name}: refused — a dodge ended ${string.format("%.2f", since)}s ago`);
 
 		return true;
 	}

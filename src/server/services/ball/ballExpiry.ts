@@ -1,6 +1,3 @@
-/** Prints every ball this file actually destroys. **This line is why the bug below was invisible.** */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
-
 /**
  * The clock each ball is currently on, as a token. A row exists only while a timer is pending for that
  * ball, and it is the *newest* clock's token that is in it.
@@ -14,6 +11,8 @@ const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
  * is not reliably "the last token plus one" — and a timer that wrongly matched would destroy a ball it had
  * no business touching. One rising number for the whole server cannot collide with itself.
  */
+import { logDebug } from "shared/logger";
+
 const clocks = new Map<BasePart, number>();
 
 let nextToken = 0;
@@ -89,7 +88,7 @@ export function scheduleBallExpiry(
 		// why a sixty-second-old timer taking a ball mid-flight looked like the ball simply vanishing. The
 		// time is the ball's own lifetime and not the time it spent in the world, which is the distinction
 		// that makes this readable.
-		if (DEBUG) print(`[Ball] ${ball.Name} expired — ${timeoutSeconds}s since it last left a hand`);
+		logDebug(`[Ball] ${ball.Name} expired — ${timeoutSeconds}s since it last left a hand`);
 
 		ball.Destroy();
 	});

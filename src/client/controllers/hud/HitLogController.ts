@@ -4,6 +4,7 @@ import type { TypographyVariant } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { teamColourOf } from "shared/gameMode";
 import { events, HitDirection } from "shared/networking";
+import { logDebug } from "shared/logger";
 import { killCamActive, PLAYING, roundPhase } from "../../panels";
 import { raiseZIndex } from "../../ui/panelChrome";
 import { getHudScreenGui } from "../../ui/screenGui";
@@ -11,9 +12,6 @@ import { HudTheme } from "../../ui/hudTheme";
 import { applyGlow } from "../../ui/glow";
 import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
-
-/** Prints on mount, and one line per hit that lands in the feed. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
 
 /**
  * # Every size this element draws at, in one place
@@ -527,13 +525,13 @@ export class HitLogController implements OnStart {
 			this.paint(feed, cards, theme);
 			anyHits.set(feed.size() > 0);
 
-			if (DEBUG) print(`[HUD] hit feed — ${hitter} → ${victim} (${feed.size()} row(s))`);
+			logDebug(`[HUD] hit feed — ${hitter} → ${victim} (${feed.size()} row(s))`);
 		});
 
 		// The second way a row leaves, and the only one on a clock.
 		this.watchLifetime(feed, cards, anyHits, theme);
 
-		if (DEBUG) print(`[HUD] hit feed up — ${ROW_COUNT} rows, ${ROW_LIFETIME_SECONDS}s each`);
+		logDebug(`[HUD] hit feed up — ${ROW_COUNT} rows, ${ROW_LIFETIME_SECONDS}s each`);
 	}
 
 	/**
@@ -745,7 +743,7 @@ export class HitLogController implements OnStart {
 				this.paint(feed, cards, theme);
 				anyHits.set(feed.size() > 0);
 
-				if (DEBUG) print(`[HUD] hit feed — ${feed.size()} row(s) left after ${ROW_LIFETIME_SECONDS}s`);
+				logDebug(`[HUD] hit feed — ${feed.size()} row(s) left after ${ROW_LIFETIME_SECONDS}s`);
 			}
 		});
 	}

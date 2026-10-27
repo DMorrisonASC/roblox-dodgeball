@@ -1,8 +1,6 @@
 import { Controller, OnStart } from "@flamework/core";
 import { StarterGui } from "@rbxts/services";
-
-/** Prints once, when the chrome has been dealt with — the line that says the controller ran at all. */
-const DEBUG = false; // off for frame time — see shared/config/debug.config.ts
+import { DEBUG_LOGGING, logInfo, logWarn } from "shared/logger";
 
 /**
  * How long to keep looking for the player list's configuration object, in seconds.
@@ -101,7 +99,7 @@ export class CoreGuiController implements OnStart {
 	 *
 	 * **The report that forced this: `Tab` opened the default leaderboard.** The configuration path below was
 	 * already here and already wrote `Enabled = false`, and its own read-back is the only evidence it ever took.
-	 * It prints behind `DEBUG`, which is off, so nothing in a captured log said whether it worked — and a
+	 * It prints behind `DEBUG_LOGGING`, which is off, so nothing in a captured log said whether it worked — and a
 	 * leaderboard that is *enabled* still owns `Tab`. So there are now three changes, and none of them is a
 	 * guess about which one is missing:
 	 *
@@ -156,7 +154,7 @@ export class CoreGuiController implements OnStart {
 				});
 
 				if (ok) {
-					print(`[CoreGui] PlayerList disabled — attempt ${attempt}, enabled now reads ${StarterGui.GetCoreGuiEnabled(Enum.CoreGuiType.PlayerList)}`);
+					logInfo(`[CoreGui] PlayerList disabled — attempt ${attempt}, enabled now reads ${StarterGui.GetCoreGuiEnabled(Enum.CoreGuiType.PlayerList)}`);
 
 					return;
 				}
@@ -164,7 +162,7 @@ export class CoreGuiController implements OnStart {
 				// **The reason on the way out only**, so fifty identical lines from a client that is simply early
 				// do not bury the one that matters.
 				if (attempt === LEGACY_ATTEMPTS) {
-					warn(
+					logWarn(
 						`[CoreGui] SetCoreGuiEnabled(PlayerList) refused ${LEGACY_ATTEMPTS} times over ` +
 							`${LEGACY_ATTEMPTS * LEGACY_RETRY_SECONDS}s — the list may stay. ${tostring(err)}`,
 					);
@@ -239,7 +237,7 @@ export class CoreGuiController implements OnStart {
 		const [ok, found] = pcall(() => game.GetService("CoreGuiConfiguration"));
 
 		if (!ok || !typeIs(found, "Instance") || !found.IsA("CoreGuiConfiguration")) {
-			warn(`[CoreGui] no CoreGuiConfiguration — the default player list stays. ${tostring(found)}`);
+			logWarn(`[CoreGui] no CoreGuiConfiguration — the default player list stays. ${tostring(found)}`);
 
 			return;
 		}
@@ -249,8 +247,8 @@ export class CoreGuiController implements OnStart {
 		// **What the service holds while it waits**, which is the line that says whether the other two
 		// configuration objects are there: if they are and the player list's is not, this build does not carry
 		// one and the legacy call is the only path left.
-		if (DEBUG) {
-			print(`[CoreGui] no PlayerListConfiguration at mount — ${found.GetFullName()} holds ${describe(found)}`);
+		if (DEBUG_LOGGING) {
+			logInfo(`[CoreGui] no PlayerListConfiguration at mount — ${found.GetFullName()} holds ${describe(found)}`);
 		}
 
 		// **Watching the children rather than the property**, which is the same correction: a changed-signal on a
@@ -260,7 +258,7 @@ export class CoreGuiController implements OnStart {
 		task.delay(WATCH_SECONDS, () => {
 			if (this.applyPlayerList(found, `after ${WATCH_SECONDS}s`)) return;
 
-			warn(
+			logWarn(
 				`[CoreGui] still no PlayerListConfiguration ${WATCH_SECONDS}s in — the list stays. ` +
 					`${found.GetFullName()} holds ${describe(found)}`,
 			);
@@ -310,17 +308,17 @@ export class CoreGuiController implements OnStart {
 			playerList.Open = false;
 		});
 
-		// **Unconditional rather than behind `DEBUG`, which is the change the missing log forced.** The read-back
+		// **Unconditional rather than behind `DEBUG_LOGGING`, which is the change the missing log forced.** The read-back
 		// is the only evidence this setting took, and a `true` here is the finding that sends a reader to the
 		// legacy path — a line that is off by default is a line that is not there on the run where it matters.
 		// The engine may also *accept* the write and keep the list, which is exactly what this prints and the
 		// `Debug` variant never could.
-		print(
+		logInfo(
 			`[CoreGui] PlayerList disabled ${when} — ` +
 				`enabled reads ${playerList.Enabled}, open reads ${playerList.Open}`,
 		);
 
-		if (!wrote) warn(`[CoreGui] could not write the player list's settings ${when} — ${tostring(err)}`);
+		if (!wrote) logWarn(`[CoreGui] could not write the player list's settings ${when} — ${tostring(err)}`);
 
 		return true;
 	}

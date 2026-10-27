@@ -1,6 +1,7 @@
 import { RunService, Workspace } from "@rbxts/services";
 import { BALL_NAME, BALL_SIZE } from "shared/constants";
 import { LaunchPlan, Trajectory } from "shared/Trajectory";
+import { logInfo } from "shared/logger";
 
 /**
  * Measurement scaffolding for "the ball does not land where the guide drew it,
@@ -92,7 +93,7 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 	const contact = predicted.contact ?? predicted.landing;
 	const normal = predicted.normal ?? new Vector3(0, 1, 0);
 
-	print(
+	logInfo(
 		`[Probe] predict landing ${reported(predicted.landing)}` +
 			` contact ${reported(contact)} in ${fixed(predicted.duration)}s over ${predicted.points.size()} points`,
 	);
@@ -115,7 +116,7 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 			// watched". One line, on the timeout only, for the reason the HUD controllers print that they
 			// are up: a measurement that produces nothing has to be distinguishable from no measurement.
 			if (ball.Parent !== undefined) {
-				print(
+				logInfo(
 					`[Probe] still flying at t=${fixed(elapsed)}s (at ${reported(ball.Position)})` +
 						` — never met the predicted surface`,
 				);
@@ -144,7 +145,7 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 			const at = elapsed + clock;
 			const expected = plan.origin.add(plan.velocity.mul(at)).add(pull.mul(0.5 * at * at));
 
-			print(
+			logInfo(
 				`[Probe] t=${fixed(elapsed)} frame=${fixed(frame)} clock ${signed(clock * 1000)}ms` +
 					` | launch error ${reported(launchError)}` +
 					` | path ${describe(position.sub(expected), heading)}`,
@@ -186,7 +187,7 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 				const part = from / (from - to);
 				const hit = previousPosition.add(position.sub(previousPosition).mul(part));
 				const when = previousElapsed + (elapsed - previousElapsed) * part;
-				print(
+				logInfo(
 					`[Probe] landing ${describe(hit.sub(predicted.landing), heading)}` +
 						` | flight ${fixed(when)}s (plan ${fixed(predicted.duration)}s)` +
 						` | frame ${fixed(frame)}s`,
@@ -198,11 +199,11 @@ export function watchThrow(ball: BasePart, plan: LaunchPlan, thrower: Model): vo
 				// back up inside one of them — so the crossing the interpolation above looks for is not
 				// there, and the one throw this matters most for reported no landing at all. The sample
 				// before the impact is the closest thing to where it met the floor.
-				print(
+				logInfo(
 					`[Probe] stopped t=${fixed(elapsed)}s without crossing the predicted` +
 						` surface (at ${reported(position)}) — it hit something else`,
 				);
-				print(
+				logInfo(
 					`[Probe] landing (last sample)` +
 						` ${describe(previousPosition.sub(predicted.landing), heading)}`,
 				);

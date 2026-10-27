@@ -4,6 +4,7 @@ import { TEAM_ATTRIBUTE } from "shared/constants";
 import { pointsOf } from "shared/matchStats";
 import type { MatchStatsRow } from "shared/matchStats";
 import { events } from "shared/networking";
+import { logInfo, logWarn } from "shared/logger";
 import { rigsOnASide } from "../../npc/rigs";
 import { TEAM_A } from "../round/team";
 import { BadgeService } from "../badges/BadgeService";
@@ -56,14 +57,14 @@ export class MatchStatsService implements OnStart {
 			// looks from the client exactly like a board that was never asked for.
 			const rows = this.answer(player);
 
-			print(`[Stats] sending ${rows.size()} row(s) to ${player.Name}`);
+			logInfo(`[Stats] sending ${rows.size()} row(s) to ${player.Name}`);
 
 			const [ok, failure] = pcall(() => answer.SendToPlayer(player, rows));
 
-			if (!ok) warn(`[Stats] the send to ${player.Name} threw — ${tostring(failure)}`);
+			if (!ok) logWarn(`[Stats] the send to ${player.Name} threw — ${tostring(failure)}`);
 		});
 
-		print("[Stats] board up — throws, hits, catches and dodges, read from the badge ledger");
+		logInfo("[Stats] board up — throws, hits, catches and dodges, read from the badge ledger");
 	}
 
 	/**
@@ -107,7 +108,7 @@ export class MatchStatsService implements OnStart {
 		const [ok, result] = pcall(() => this.board());
 
 		if (!ok) {
-			warn(`[Stats] the board threw for ${player.Name} — ${tostring(result)}`);
+			logWarn(`[Stats] the board threw for ${player.Name} — ${tostring(result)}`);
 
 			return [];
 		}
@@ -115,7 +116,7 @@ export class MatchStatsService implements OnStart {
 		const rows = result as ReadonlyArray<MatchStatsRow>;
 
 		if (rows.size() === 0) {
-			warn(
+			logWarn(
 				`[Stats] board for ${player.Name} — 0 rows: nobody is on a side ` +
 					`(${Players.GetPlayers().size()} player(s) connected)`,
 			);
@@ -131,7 +132,7 @@ export class MatchStatsService implements OnStart {
 			if (row.points > 0) scored += 1;
 		}
 
-		print(
+		logInfo(
 			`[Stats] board for ${player.Name} — ${rows.size()} row(s), A ${a} / B ${rows.size() - a}` +
 				`, ${scored} with points`,
 		);
