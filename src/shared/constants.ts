@@ -1031,8 +1031,8 @@ export const ARMED_ABILITY_ATTRIBUTE = "ArmedAbility";
 /**
  * Attribute on a **`Player`** holding how many times they have hit somebody with a throw.
  *
- * Written by `StatsService` when a record is loaded and again after every hit, and read by the
- * client's stats billboard — which is why it is on the **player** and not the character: the record
+ * Written by `StatsService` when a record is loaded and again after every hit, and read by the kill cam's
+ * record card (`client/enemyView.ts`) — which is why it is on the **player** and not the character: the record
  * outlives every body it was earned in.
  *
  * **A round's count, not a session's.** Only a hit thrown while a round is being played reaches the
@@ -1091,8 +1091,9 @@ export const SUPER_CHARGE_ATTRIBUTE = "SuperCharge";
  * **On the player rather than on the body**, for {@link SUPER_STREAK_ATTRIBUTE}'s reason and for one
  * more: the crown is derived from a count that outlives a body, so putting it on the character would
  * mean recomputing a server-side answer in every client the moment somebody respawned. Here a respawn
- * costs nothing at all — the player keeps the attribute, and the client's only job is to hang a new
- * `BillboardGui` on the new head.
+ * costs nothing at all — the player keeps the attribute. **Nothing on the client reads it since 2026-10-27**: the
+ * billboard that drew the crown was deleted (`HANDOFF.md` §15 item 111), so today this is a server-side fact with no
+ * picture.
  *
  * **A boolean rather than the count**, because the count is already published beside it: a client that
  * wanted to answer the question for itself would need every other player's count *and* side, and two
@@ -1106,8 +1107,12 @@ export const CROWN_ATTRIBUTE = "Crown";
  *
  * **The one fact the badge system publishes, and it is published to both kinds of body.** A player's badges
  * go on the `Player` and a rig's on the `Model`, for `CROWN_ATTRIBUTE`'s reason: the answer outlives a body,
- * and a respawn then costs the client nothing but a new billboard. A rig *is* a body and is replaced whole,
+ * and a respawn then costs a display nothing but a re-read. A rig *is* a body and is replaced whole,
  * so its attribute dies with it — which is correct, because a rig's round ends with the rig.
+ *
+ * **Read by `StatsBillboardController` and by nothing else**, which is the whole display: one row per id, a name
+ * and a description, above the head of the body wearing it — for the first fifteen seconds of the intermission
+ * and no longer.
  *
  * **An attribute rather than a remote**, for the reason `STAT_HITS` gives: it replicates on its own, so the
  * display needs nothing to ask and nothing to wait for. **A string rather than children or JSON**, and
@@ -1376,26 +1381,26 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * wobbled rather than when it was told to do something, and every change costs a crossfade — so a rig could walk
  * with neither clip fully worn. See `animationFor` in `shared/animation.ts` for the whole of the record.
  *
- * **The fact is the humanoid's running speed, and this attribute's name now says a little more than it should.**
- * A *request* is what a player's body has — `MoveDirection`, written by the client's own input — and a rig's
- * half was written as one twice before landing here: `Humanoid.MoveDirection` and `Humanoid:GetMoveVelocity()`
- * are both documented as the *input*-driven pair, and both read zero for every rig in this game, because every
- * walk here is a `Humanoid:MoveTo()` and a behaviour has no input to report. Two play sessions of every rig
- * wearing its idle clip while walking is what that cost. What a rig has instead is `Humanoid.Running`'s speed,
- * which the engine's own notes name as the way to tell a walking humanoid from a standing one because there is
- * no idle *state* to ask about. See `NpcService.publishAnimation` for the whole of the reasoning and for the
- * cost it accepts, and `NPC_CONFIG.RIG_MOVING_SPEED` for the threshold.
+ * **The fact is now genuinely a request, which took four attempts to arrive at.** A *request* is what a player's
+ * body has — `MoveDirection`, written by the client's own input — and the rig's half was written as one twice
+ * before landing on a measurement: `Humanoid.MoveDirection` and `Humanoid:GetMoveVelocity()` are both documented as
+ * the *input*-driven pair, and both read zero for every rig in this game, because every walk here is a
+ * `Humanoid:MoveTo()` and a behaviour has no input to report. Two play sessions of every rig wearing its idle clip
+ * while walking is what that cost.
  *
- * **And the fact has two edges, because one of them is a speed and a speed does not promise to report a stop.**
- * `Humanoid.Running` says when the speed changed; nothing says the last change is the one that leaves the body
- * standing, so a rig could publish *moving* for ever after its last walk — every client drawing a lobby of
- * bodies walking on the spot while they stood still. The walk now ends where the engine promises it ends,
- * `Humanoid.MoveToFinished`, which fires on arrival and on the engine's own give-up. See
- * `NpcLoop.moveToFinished`.
+ * **The measurement that replaced them was `Humanoid.Running`'s speed, and it was wrong for a reason worth keeping.**
+ * It answers what the body *did*, and the question is what the body was *told*. Three reports followed — a shoved
+ * rig animating a walk it was never asked for, a rig parked mid-walk coming back still walking, and a rig whose
+ * walker was stripped at a round boundary with nobody left to correct it — and each was patched by watching the body
+ * harder rather than by asking it anything. **The value published here is now the rig's own intent**: it is true when
+ * a behaviour has asked the body to walk and false when one has told it to stand, and nothing consults a speed. See
+ * `NpcLoop.walking` in `NpcService` for the three reports and for why a store of what a body was told cannot be
+ * surprised the way a watch on the body always can be.
  *
- * **The name is kept although it is a slight lie.** "Asked to move" is what a *player* is, and the two bodies
- * still answer one question for one decision (`animationFor`), which is the property this set of attributes
- * exists to give; renaming it would touch both sides of the wire to fix a word.
+ * **The name is finally the right name.** "Asked to move" is what a player is and what a rig now is, so the two
+ * bodies answer one question for one decision (`animationFor`), which is the property this set of attributes exists
+ * to give. It was kept through the measurement years because renaming it would have touched both sides of the wire
+ * to fix a word; there is no such debt left.
  */
 export const NPC_ANIM_MOVING_ATTRIBUTE = "AnimMoving";
 

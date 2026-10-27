@@ -16,7 +16,7 @@ import { COSMETICS } from "shared/config/economy.config";
 import { EQUIPPED_TRAIL_ATTRIBUTE } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
-import { NPC_TAG, NpcBehavior } from "../../npc/Behavior";
+import { NPC_TAG, NpcBehavior, NpcMoves } from "../../npc/Behavior";
 import { createAlwaysCatchBehavior } from "../../npc/behaviors/AlwaysCatchBehavior";
 import { createAlwaysDodgeBehavior } from "../../npc/behaviors/AlwaysDodgeBehavior";
 import { createAlwaysSeekBehavior } from "../../npc/behaviors/AlwaysSeekingBehavior";
@@ -63,96 +63,39 @@ interface NpcLoop {
 	ownershipCheckedAt: number;
 
 	/**
-	 * The last speed `Humanoid.Running` reported for this rig, in studs per second.
+	 * **Whether a behaviour has asked this rig to walk — and it is the whole of what a client animates.**
 	 *
-	 * **Recorded as it arrives rather than sampled, because the engine already owns this question and answers
-	 * it on an edge.** `Humanoid.Running` fires when the running speed changes — its whole documented
-	 * description is "fires when the speed at which a `Humanoid` is running changes" — so the loop keeps the
-	 * answer and `publishAnimation` compares it against `NPC_CONFIG.RIG_MOVING_SPEED`: no per-turn velocity
-	 * read and nothing to band. Kept on the loop for `ownershipCheckedAt`'s reason: this object is already
-	 * one per rig and already dies with the rig.
+	 * **Intent is authoritative and velocity is not, because they are different facts and this game has been wrong
+	 * about the difference three times.** A body that is *moving* is not a body somebody asked to *walk*, and the three
+	 * cases below are each a report that came from reading the first as the second:
 	 *
-	 * **A speed is only half of the fact, and the missing half is what had every rig standing in its walking
-	 * clip.** This field says what the last *change* of speed was. It says nothing about a body that stopped
-	 * without the engine publishing another change, and three of the ways a rig in this game stops are
-	 * exactly that — see {@link moveToFinished}, which is the field's second writer and the one that ends
-	 * the walk. **A physics shove is a fourth, and it is the one no edge can cover**: nothing was asked to walk, so
-	 * nothing can finish, which is what {@link stillTurns} and `watchForStaleWalk` exist for.
+	 * 1. **The shove.** A thrown ball moves a rig a little. Nothing asked it to go anywhere, so nothing can finish, and
+	 *    a watch that reads motion draws a rig in its walking clip while it slides to a stop. A `practiceThrow` drill
+	 *    is the pure case: it issues no `MoveTo` at all, so every edge the engine offers about a *walk* is one it can
+	 *    never produce, however long it lives.
+	 * 2. **The parked rig.** `LobbyRigService.parkRig` reparents a body into `ServerStorage` without stopping it. It is
+	 *    not walking in there, but a movement reading taken before the reparent describes a body that is no longer in
+	 *    the world — and it came back out wearing the walking clip, on its pad, for the rest of the session.
+	 * 3. **The behaviour that stopped mid-walk.** Every gameplay tag is stripped at a round boundary, so a rig whose
+	 *    walker was switched off mid-stride keeps whatever it had and nobody is left to correct it.
+	 *
+	 * **Each of the three was answered with a watch on the body** — a speed from `Humanoid.Running`, that speed's end
+	 * from `MoveToFinished`, and finally a watchdog counting turns of physical stillness to catch the shove. Each watch
+	 * leaked the next edge, and that is the shape of the problem rather than a run of bad luck: **a measurement of what
+	 * a body did can always be surprised by a new way for a body to move**, and every repair moved the surprise
+	 * somewhere else. A store of what a body was *told* cannot be surprised, because the only two things that write it
+	 * are the two calls that also command the engine — {@link walkTo} and {@link standAt} — so the clip and the body's
+	 * target always describe the same instruction. **A rig nobody asked to move is standing, whatever the physics does
+	 * to it.**
+	 *
+	 * **Written by exactly five places, and they are enumerable**: the two helpers above ({@link walkTo} and
+	 * {@link standAt}), the world gate in {@link run} for a body that has left `Workspace`, {@link announcePlaced}
+	 * for a body a mover has put somewhere, and {@link stopWalking} for the two lobby boundary paths. Nothing else may
+	 * write it — in particular nothing writes it from a velocity, a speed, or a finished `MoveTo`. If a sixth appears,
+	 * it belongs in this sentence: the list is short enough to be checked by reading it, which is the whole reason the
+	 * state is a field rather than an inference.
 	 */
-	runningSpeed: number;
-
-	/**
-	 * **How many consecutive turns the body has been physically still while `runningSpeed` still said it was
-	 * walking** — the debounce behind the shove watchdog, and the fourth writer of the fact
-	 * {@link runningSpeed} holds.
-	 *
-	 * **The bug it exists for, in the user's words: a rig hit by a ball keeps walking on the spot.** A physics shove
-	 * is not a walk, so nothing in this file ever hears about it ending: `Humanoid.Running` fires on a *change of
-	 * speed* and a shoved body does change speed, but `Humanoid.MoveToFinished` fires only for a body that was
-	 * *asked* to walk. So a stationary rig — a `practiceThrow` drill is the one that showed it, since a drill is
-	 * planted by definition and never issues a `MoveTo` at all — gets a walking speed recorded by the shove and keeps
-	 * it for the rest of its life. Every client then draws it walking where it stands.
-	 *
-	 * **Counted rather than cleared on the first quiet turn**, for the reason `NPC_CONFIG.RIG_STALE_WALK_TURNS`
-	 * gives: the engine accelerates a real walk from a standstill, so one turn of low travel is the ordinary top of
-	 * every walk rather than evidence of anything.
-	 *
-	 * **Reset to nought the moment the body is travelling again**, so the count is consecutive by construction and a
-	 * rig that is repeatedly nudged cannot accumulate its way to a false stop.
-	 */
-	stillTurns: number;
-
-	/**
-	 * The `Running` subscription, **held so {@link forget} can drop it with the loop**.
-	 *
-	 * A connection outlives the loop that made it unless somebody disconnects it, and a loop that has ended is
-	 * a loop nobody is publishing from — so this is the one thing a loop owns that has to be hung up rather
-	 * than left to be collected.
-	 */
-	running?: RBXScriptConnection;
-
-	/**
-	 * **The stop — `MoveToFinished`, and the fix for a rig drawn walking while it stands perfectly still.**
-	 *
-	 * `Humanoid.Running` is an edge *on the speed*. It is not a level and it is not a promise, and the
-	 * difference is the whole of this field. Every `MoveTo` in this game ends one of three ways, and none of
-	 * them is a change of speed the engine is guaranteed to publish: a `MoveTo` at the body's own position
-	 * (the stop every behaviour here uses — `SeekBehavior`'s `stand`, `WalkToJoinPadBehavior`'s arrival), an
-	 * arrival inside the engine's own arrival tolerance, and the engine's own eight-second give-up on a goal
-	 * it cannot reach. What all three *do* promise is `MoveToFinished` — documented as "fires when the
-	 * `Humanoid` finishes walking to a goal declared by `Humanoid:MoveTo()`", fired reached or not. So the
-	 * end of a walk clears {@link runningSpeed} here. Without it a rig whose last reported speed was a
-	 * walking speed kept publishing `AnimMoving` true for the rest of its life, and every client drew it
-	 * walking on the spot for ever: the 2026-10-24 report, and the rigs in the lobby were the ones that
-	 * showed it because they walk to their pads exactly once and then never move again.
-	 *
-	 * **This is the fault the player's half of the decision was rebuilt to avoid, arriving from the other
-	 * side.** `animationFor` is the record of a grace on a measured speed buying "a walk that outlived its
-	 * stop". A rig's half has no grace and no band to tune, but it had an edge that could fail to arrive,
-	 * and that is the same symptom with a different cause — which is why the answer here is the engine's own
-	 * end-of-walk edge rather than a threshold or a grace of our own.
-	 *
-	 * **Why not stop asking `Running` and sample the root's velocity every turn.** Because that is the band
-	 * `animationFor` was rebuilt to remove: a threshold on a measurement changes its mind for reasons the
-	 * game never asked for, and the five-stud floor this attribute replaced published creeping rigs as
-	 * standing. The edge is the right shape — it simply needed the second ending the engine already has.
-	 *
-	 * **Held for {@link running}'s reason**: a connection outlives the loop that made it, so `forget` is
-	 * where it is hung up.
-	 */
-	moveToFinished?: RBXScriptConnection;
-
-	/**
-	 * Whether the stale-walk line has been printed for this rig — **once per rig, so a session says whether
-	 * the clears below are doing work without printing a line per walk.**
-	 *
-	 * The line is the evidence for the whole of {@link clearWalk}: it prints only when a clear found a speed
-	 * still above `NPC_CONFIG.RIG_MOVING_SPEED`, which is precisely the state that leaves a rig wearing its
-	 * walk clip while standing still. A rig that never reaches it prints nothing, so a healthy session stays
-	 * quiet; a session that does print names the rig, the speed, and *which* of the three clears found it —
-	 * which is the difference between a walk that ended and a body that was taken somewhere.
-	 */
-	staleReported: boolean;
+	walking: boolean;
 }
 
 /**
@@ -487,10 +430,9 @@ export class NpcService implements OnStart {
 		//
 		// **These are a player's own attribute names, chosen rather than invented, and the reader is why**: the
 		// Enemy View asks whichever instance holds the record and does not have to know whose body it is looking
-		// at. **The one thing that could have gone wrong does not**: `StatsBillboardController` mounts a badge
-		// strip and *no* stats line on a rig (`attachRig` passes no stats label, and `mountBadges` is handed only
-		// the badges attribute on that path), so these numbers do not appear above a rig's head in the lobby or
-		// the arena. They are read by the kill cam and nothing else.
+		// at. **Nothing shows a rig's record above its head**: the per-head billboard mounts a badge strip and no
+		// stats line (`attachRig` passes no stats label), so these numbers are read only by the kill cam's card,
+		// on the left of the screen, when a rig is the killer.
 		//
 		// **The clone only — never the template**, which is the rule this method already keeps for the token and
 		// the trail: writing to a pooled model would put fake stats into the place file the next time it is
@@ -628,7 +570,11 @@ export class NpcService implements OnStart {
 		// turn fell while the rig was parked again, another five. Seeded with nought, the first turn the rig
 		// spends in the world claims it, which is the same promise `ensureToken` keeps one line up: the first
 		// turn in the world is when a rig's setup is settled.
-		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: 0, runningSpeed: 0, stillTurns: 0, staleReported: false };
+		// **`walking` starts false, and that is the whole of the spawn-time answer.** A rig that has just appeared has
+		// been asked to do nothing yet, so it stands — and a rig coming back out of `ServerStorage.RigParking` comes
+		// back wearing a loop that was made when it was first tagged, which is why the two boundary paths clear the
+		// flag explicitly rather than relying on this line. See `LobbyRigService.setGameplayBehaviors` and `parkRig`.
+		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: 0, walking: false };
 		this.loops.set(model, loop);
 
 		task.spawn(() => this.run(model, loop));
@@ -792,37 +738,42 @@ export class NpcService implements OnStart {
 		// rig's setup happens, and it is idempotent, so the spawned route pays one attribute read for it.
 		this.dressRig(model);
 
-		// **The walking fact is subscribed to, and this is its third shape.** `Humanoid.MoveDirection` read zero
-		// for every rig in the game, and so did `Humanoid:GetMoveVelocity()` when it replaced it: they are the
-		// *input*-driven pair, and a behaviour has no input — it has a `MoveTo`. What the engine does publish
-		// about a `MoveTo` body is its running speed, and `Humanoid.Running` is the documented way to tell a
-		// walking humanoid from a standing one, because there is no idle *state* to ask about. It fires on the
-		// edge — the speed changed — so the loop holds the answer and the publisher never reads a velocity per
-		// turn. **What it does not give is the last edge**, which is the subscription below this one.
-		loop.running = humanoid.Running.Connect((speed) => {
-			loop.runningSpeed = speed;
-		});
+		// **The two instructions a behaviour may give this rig's body, and the whole of what this file hands out.**
+		// They are closures over the loop rather than methods on it, because a behaviour is handed a model and a
+		// humanoid and never the loop — see `NpcBehavior.tick`, whose third parameter is this object and which is
+		// the only way a behaviour can move a rig at all.
+		//
+		// **Made once per loop rather than once per turn**, because a turn is ten a second per rig and two closures
+		// built inside the dispatch would be four hundred allocations a second across eight rigs for something that
+		// never changes. It is the same argument the MicroProfiler labels below make at their own length.
+		//
+		// **`walkTo` sets the flag before it moves, and the order matters for exactly one frame.** A client reads the
+		// attribute this flag publishes, so a `MoveTo` issued first would leave one published frame describing the
+		// previous instruction — invisible in almost every case, and visible in exactly the one that gets reported,
+		// which is a rig that starts walking a frame late with its idle clip still on.
+		// **Methods rather than arrow properties, and `rbxtsc` is the only thing that would have said so.** `NpcMoves`
+		// declares both members as methods, and roblox-ts rejects an object literal that assigns a function where a
+		// method was expected — the same trap `NpcBehavior.tick` documents. It matters beyond the compiler: a method
+		// written here compiles to a plain function on the table rather than to a function value, which is what the
+		// call sites in the behaviours become.
+		const moves: NpcMoves = {
+			walkTo(position: Vector3) {
+				loop.walking = true;
+				humanoid.MoveTo(position);
+			},
 
-		// **And the end of the walk, which `Running` cannot be relied on to report.** A stop here is one of
-		// three things, and not one of them is guaranteed to be a change of speed the engine publishes: a
-		// `MoveTo` at the body's own position, an arrival inside the engine's own tolerance, and the engine's
-		// eight-second give-up. `MoveToFinished` is fired for all three. See `NpcLoop.moveToFinished` for the
-		// whole of the argument and for the report that found it.
-		//
-		// **What makes clearing safe is the engine's own side of this event: it fires when the body has
-		// finished walking, which means the engine has stopped it** — on arrival, on the give-up, or because a
-		// later `MoveTo` replaced the goal with one the body is already standing on. So this can only ever
-		// withdraw a speed the body is no longer travelling at, and a walk issued afterwards re-asserts through
-		// `Running` as the body sets off again. **The pair cannot leave a walking rig standing; it can only
-		// leave a standing rig standing**, which is the direction this attribute is allowed to be wrong in.
-		//
-		// **And this is one of the three places the fact is cleared, not the only one.** A speed can also go
-		// stale without a walk ending — a body taken out of the world mid-walk, or one a mover has just placed
-		// somewhere it is not walking to — so {@link clearWalk} is the single statement and this is its most
-		// ordinary caller. See that method for the other two and for the report that produced them.
-		loop.moveToFinished = humanoid.MoveToFinished.Connect(() => {
-			this.clearWalk(model, loop, "the walk ended");
-		});
+			// **The stop, and the `RootPart` guard is not defensive padding.** A humanoid has no root for a moment
+			// after it is built and after it dies, and `MoveTo` on that body has nowhere to stand — so the flag is
+			// still cleared, because "nobody asked this body to walk" is true either way, and the move is simply
+			// skipped. Clearing the flag and failing to stop the body would be the harmless direction; the opposite
+			// would animate a body that is walking.
+			standAt() {
+				loop.walking = false;
+
+				const root = humanoid.RootPart;
+				if (root !== undefined) humanoid.MoveTo(root.Position);
+			},
+		};
 
 		/** When each behavior last ran, so periods are honoured per behavior. */
 		const lastRan = new Map<string, number>();
@@ -878,15 +829,17 @@ export class NpcService implements OnStart {
 			// rather than shared for the reason `roundParticipants` keeps its own: the test is one call, and
 			// what needs writing down is the reason rather than the expression.
 			if (!model.IsDescendantOf(Workspace)) {
-				// **And a body that is not in the world is not walking anywhere**, which is the second of
-				// `clearWalk`'s three callers and the one that matters most in this project: the body a
-				// player's arrival stands down is parked in `ServerStorage` by `parkRig`, which reparents it
-				// without issuing a stop — so a rig parked mid-walk kept a walking speed and every client
-				// drawing it kept the walking clip. It came back on the next refill and stood on its pad
-				// wearing that clip for the rest of the session. Clearing here is one field write per turn
-				// while parked (the second turn onward finds nought and does nothing) and it costs no
-				// attribute write, because nothing publishes while the rig is out of the world.
-				this.clearWalk(model, loop, "taken out of the world");
+				// **And a body that is not in the world is not walking anywhere.** `parkRig` reparents a rig into
+				// `ServerStorage` without issuing a stop, so a rig parked mid-walk kept whatever it had been told and
+				// came back out on its pad still animating a walk — the second of the three reports behind
+				// {@link NpcLoop.walking}. The two boundary paths in `LobbyRigService` clear this before the reparent,
+				// which is the frame that matters; this line is the backstop for every other way a body can leave the
+				// world (a `Parent` write by hand in Studio, a mover this file has never heard of).
+				//
+				// **One field write, and no `MoveTo`.** There is nothing to stop in `ServerStorage` — the body is not
+				// being simulated — and the flag is not published while the rig is out of the world, so the first turn
+				// back publishes standing before any behaviour has run.
+				loop.walking = false;
 
 				task.wait(period);
 				continue;
@@ -989,7 +942,7 @@ export class NpcService implements OnStart {
 				// and how an error inside a behaviour unwinds, which instrumentation is not allowed to do.
 				const scope = profileScopes.get(behavior.tag);
 				if (scope !== undefined && DEBUG_CONFIG.PROFILE) debug.profilebegin(scope);
-				behavior.tick(model, humanoid);
+				behavior.tick(model, humanoid, moves);
 				if (scope !== undefined && DEBUG_CONFIG.PROFILE) debug.profileend();
 			}
 
@@ -1023,11 +976,10 @@ export class NpcService implements OnStart {
 	 * written, so a rig asked to walk a straight line publishes its request once and then says nothing
 	 * at all — and there is no second copy of "what did I last publish" to keep in step, because the
 	 * rig carries it. **That guard is the whole of this arrangement's economics, and it is why every
-	 * fact published here arrives on an edge.** These were chosen as *requests* because a request
-	 * changes when the game changes its mind and not before, while a *measured* speed has to be banded
+	 * fact published here arrives on an edge.** Every one is a *request*, on that rule: a request
+	 * changes when the game changes its mind and not before, while a *measured* value has to be banded
 	 * to satisfy the guard and rarely has an edge to write on. See `NPC_ANIM_MOVING_ATTRIBUTE` for the
-	 * banded speed this replaced and for what it cost — and for the one fact here that had to be a
-	 * measurement anyway, taken from an engine edge rather than from a per-turn sample.
+	 * banded speed that used to be published here, and for what it cost.
 	 *
 	 * **The two facts are the same two a player's own client gathers for its body** — "somebody has
 	 * asked this body to walk", and "and to sprint" — so the two callers of `animationFor` answer the
@@ -1036,57 +988,32 @@ export class NpcService implements OnStart {
 	 * the base speed is a per-rig number and the *contribution* is the fact. A rig's own speed is only
 	 * true while the server owns it, which is what {@link ownForServer} is for — and is now a fact
 	 * about the walk rather than about the animation.
+	 * **The walk is a request, and it is now asked of the behaviour rather than of the engine.**
 	 *
-	 * **The walk was written as a request twice, and the engine publishes no request for a `MoveTo` body.** It
-	 * read `Humanoid.MoveDirection` first — "the direction the body is walking in" — on the reading that it
-	 * describes movement. It is documented as the property `Humanoid:Move()` writes, and every walk in this game
-	 * is a `Humanoid:MoveTo()`, which the engine documents as setting `WalkToPoint` and `WalkToPart` and says
-	 * nothing about a direction. `Humanoid:GetMoveVelocity()` replaced it and is documented verbatim as the
-	 * "*input*-driven" velocity — the same family, so the same zero. Two play sessions say the same thing: no rig
-	 * in the game ever prints a `walk` or a `run` line while the server prints it walking and sprinting, and every
-	 * rig wore its idle clip.
+	 * **Three readings of the body were tried and each was wrong, which is the reason this is no longer a reading
+	 * at all.** `Humanoid.MoveDirection` was the first — "the direction the body is walking in" — and it is
+	 * documented as the property `Humanoid:Move()` writes, while every walk in this game is a `MoveTo`; it read zero
+	 * for every rig in the game. `Humanoid:GetMoveVelocity()` replaced it and is documented verbatim as the
+	 * "*input*-driven" velocity — the same family, so the same zero, and two play sessions in which no rig ever
+	 * printed a walk line while the server printed it walking. `Humanoid.Running` was the third, and it is a real
+	 * edge: it fires when the speed changes, and Roblox's own `Animate` script branches on it. **It still could not
+	 * answer the question**, because it says what the body *did*, and the question is what the body was *told*.
 	 *
-	 * **What a `MoveTo` body does publish is its running speed, and `Humanoid.Running` is the engine's own answer
-	 * — on an edge.** Its notes name the event as *the* way to tell a walking humanoid from a standing one ("as
-	 * there is no 'idle' humanoid state"); it fires when the speed changes, which is the edge the `writeAttribute`
-	 * guard wants. `NPC_CONFIG.RIG_MOVING_SPEED` is Roblox's own `0.01` — the number its own `Animate` script
-	 * branches on in `onRunning` — and the loop records each speed as it arrives, so nothing here samples a
-	 * velocity per turn and there is no band to tune.
+	 * **What the pair of velocity subscriptions cost, in three reports.** A rig shoved by a ball is *moving* and was
+	 * never asked to walk; a rig parked in `ServerStorage` mid-walk kept the last speed any edge had published; and a
+	 * rig whose walking behaviour was stripped at a round boundary had nobody left to correct it. Each was patched
+	 * with another watch on the body — the speed, then the speed's end from `MoveToFinished`, then a watchdog
+	 * counting turns of physical stillness — and each watch leaked the next edge. **That is the argument this
+	 * paragraph exists to leave behind**: no watch on a body can be complete, because a watch enumerates the ways a
+	 * body can move and the next report adds one.
 	 *
-	 * **And the event that ends a walk is `MoveToFinished`, not a speed of nought.** The first version of this
-	 * read the stop out of `Running` too, on the belief that "it fires `0` when the body stops" — and a rig whose
-	 * last published speed was a walking one therefore kept publishing `AnimMoving` true for the rest of its life,
-	 * so every client drew it walking on the spot while it stood perfectly still. That is the 2026-10-24 report,
-	 * and the reason the lobby is where it showed: a placeholder walks to its pad exactly once and then never
-	 * moves again. **`Running` is an edge on the speed, not a level**, so it can only describe a stop the engine
-	 * chooses to publish as a change of speed — and the three ways a rig here stops (a `MoveTo` at the body's own
-	 * position, an arrival inside the engine's arrival tolerance, and the engine's eight-second give-up on a goal
-	 * it cannot reach) need not be one. `MoveToFinished` is fired for all three. The stop is therefore
-	 * {@link NpcLoop.moveToFinished}'s, and it is the same shape as the start rather than a second mechanism: two
-	 * subscriptions on the one body, each an edge the engine promises.
-	 *
-	 * **The cost, named, and this is the reversal: the rig's half of this fact is now a measurement, and it is
-	 * measured in the wrong direction on purpose.** `Running` reports the speed the engine saw the body move at,
-	 * so a rig leaning on a wall it cannot pass publishes *moving* for as long as the engine still counts it as
-	 * trying. A rig shoved by another body publishes *moving* too, where a shoved player publishes a clip from its
-	 * keys. **`WalkToPoint` against the root's position was the other candidate and is refused**: before the first
-	 * `MoveTo` that property holds no position at all, so a rig nobody has ever asked to walk is indistinguishable
-	 * from one asked to walk three hundred studs away — and a rig teleported into the arena with a stale target would
-	 * publish *walking* through the opening freeze, exactly while the rigs are being watched line up. The size of the
-	 * threshold is what makes the measurement survivable: the fault this replaced was a **five-stud** floor that
-	 * published creeping rigs as standing, and `0.01` from an edge-fired source cannot reproduce it. **The failure
-	 * this pair of edges can still have is the benign one** — if `Running` fires nothing at all for our rigs the flag
-	 * stays at the `0` it was seeded with and a walking rig wears its idle clip, which is a rig standing still that
-	 * looks like a rig standing still rather than a lobby of bodies walking on the spot.
-	 *
-	 * **Both of those "accepted costs" are now bounded by {@link watchForStaleWalk}, and the paragraph above is kept
-	 * because it is why the *source* is still an edge rather than a per-turn sample.** A rig shoved by a ball is
-	 * published walking for as long as its body is actually travelling and then corrected; a rig pressed into a wall
-	 * is corrected after `RIG_STALE_WALK_TURNS` too, which is a **reversal of what this paragraph used to defend** —
-	 * "pushing" read as a walk is the same visual fault as a shove read as one, a body animating travel through
-	 * ground it is not moving across. What survives from the old reading is the direction of the error: a rig that is
-	 * genuinely walking is never *published* as walking by the watchdog, and a wrong answer from it always errs
-	 * toward standing.
+	 * **So the fact is now stored rather than measured**, and it is stored where the instruction is given: two
+	 * helpers, `walkTo` and `standAt`, set {@link NpcLoop.walking} and issue the `MoveTo` in the same breath. Every
+	 * walk in this game goes through one of them, so the clip and the body's target always describe one instruction —
+	 * and a rig nobody asked to move is standing, however the physics treats it. The cost is that a behaviour has to
+	 * withdraw an instruction it gave, which each one does at its own end: arrival, a lost target, a full hand, or
+	 * `onStopped`.
+	
 	 *
 	 * **Ownership is re-asserted from here, on a throttle**, because this is the one function that
 	 * already runs per rig on a clock. See `NPC_CONFIG.NETWORK_OWNERSHIP_RECHECK_SECONDS` for what the
@@ -1115,19 +1042,38 @@ export class NpcService implements OnStart {
 		// **Read once, because two things below are the same question.** `AnimGrounded` is what a client dresses the
 		// body from, and the jump-request rule at the end of this block is about the same fact — so a second
 		// `FloorMaterial` read would be a second sample of the floor on one turn, and the two could disagree.
-		const grounded = humanoid.FloorMaterial !== Enum.Material.Air;
+		//
+		// **`FloorMaterial` alone is not the question, and believing it was is what put a rig in the jump clip for
+		// ever.** The material is `Air` for two completely different situations: a body that is genuinely in the air,
+		// and a body **the server is not simulating**, which never reports a floor because nothing is running the
+		// contact solver for it. The second is not hypothetical here — it is the case this file already documents at
+		// `ownForServer` ("a rig with an anchored root, or one welded to anything anchored, cannot be walked by
+		// `MoveTo` either"), and its symptom is exactly the report that came back: a rig standing on its join pad
+		// animating a jump, for the rest of its life, because `AnimationFor` answers `"jump"` for any body that is not
+		// grounded and the attribute was written `false` once and then never changed.
+		//
+		// **So the state is asked as well, and the two are combined in one direction only.** `GetState()` is the
+		// engine's own answer to "is this body in the air" — `Freefall` and `Jumping` are the only states that mean it
+		// — and it is already the read `LocomotionAnimationController` uses for its deferral, so this is the file
+		// following the player side rather than inventing a second rule. A body is airborne only when the *state* says
+		// so; `FloorMaterial` can still make it grounded, and can never make it airborne on its own.
+		//
+		// **What that fixes, precisely.** A rig in `Physics` state — unsimulated, `FloorMaterial` permanently `Air` —
+		// now reads grounded and stands. A rig that is genuinely falling is `Freefall` and still reads airborne, so
+		// the hop animation is untouched. And the frame or two after a `PivotTo`, where the material has not caught up
+		// but the body has not left the ground either, no longer flashes the jump clip.
+		const state = humanoid.GetState();
+		const airborne = state === Enum.HumanoidStateType.Freefall || state === Enum.HumanoidStateType.Jumping;
+		const grounded = humanoid.FloorMaterial !== Enum.Material.Air || !airborne;
 
 		// **Read once and shared, because the grounded line below asks about it.** Whether a rig was asked to move
 		// is what separates a body leaving the floor on purpose from one leaving it while standing still, so the
 		// two reads have to be the same sample of the same turn.
 		//
-		// **And the shove watchdog runs first, because it can change the answer.** A rig hit by a ball is given a
-		// walking speed by the physics and no edge ever takes it back — see `watchForStaleWalk`, which is the only
-		// thing that can, and which has to run before this read so the corrected value is the one this turn publishes
-		// rather than the one after it.
-		this.watchForStaleWalk(model, humanoid, loop);
-
-		const moving = loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED;
+		// **And this is the whole of the walking answer: what a behaviour *told* this body to do.** Nothing here
+		// samples a speed or a velocity, and nothing can — see {@link NpcLoop.walking} for the three reports that
+		// put a measurement here and for why each of them leaked the next edge.
+		const moving = loop.walking;
 
 		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, moving);
 		this.writeAttribute(model, NPC_ANIM_SPRINTING_ATTRIBUTE, this.speeds.isSprinting(model));
@@ -1155,9 +1101,14 @@ export class NpcService implements OnStart {
 			if (!grounded && !moving) {
 				const owner = humanoid.RootPart?.GetNetworkOwner();
 
+				// **The state is on the line because two very different faults produce it.** `Freefall` is a body
+				// genuinely falling — out of the world, or off a pad it missed — and `Physics` (or anything that is
+				// neither `Freefall` nor `Jumping`) with `Air` beneath it is a body the engine is not simulating, which
+				// is an anchored or unweldable rig and a fault in the *place file*. Telling them apart cost a session
+				// of guessing, and one word on this line does it.
 				logInfo(
 					`[NPC] ${model.Name}: off the floor while standing — ${humanoid.FloorMaterial.Name}, ` +
-						`owned by ${owner === undefined ? "server" : owner.Name}`,
+						`state ${state.Name}, owned by ${owner === undefined ? "server" : owner.Name}`,
 				);
 			}
 
@@ -1210,132 +1161,7 @@ export class NpcService implements OnStart {
 		this.ownForServer(model, firstClaim);
 	}
 
-	/**
-	 * **The one statement of "this rig is standing"** — the third and last writer of `NpcLoop.runningSpeed`,
-	 * and the answer to a rig that stands still while wearing its walking clip.
-	 *
-	 * **Why a speed can be stale at all, and why one edge was not enough.** `Humanoid.Running` is an edge on
-	 * the speed; it is not a level, and it says nothing about a body that stopped without the engine
-	 * publishing another change. Two versions of the stop have now been needed to make that survivable — the
-	 * engine's own end-of-walk edge (`Humanoid.MoveToFinished`) and, before it, a belief that `Running` fires
-	 * `0` at a stop. The 2026-10-24 log settled the second of those: seven of eight rigs printed
-	 * {@link NpcLoop.moveToFinished}'s line with the engine's last speed still at 15.93–31.00 studs a second
-	 * *at the moment the walk ended*, which is the engine saying it had never reported the stop. So the clear
-	 * is what makes the fact true, and it has to be reachable from every way a rig can stop — not only from
-	 * the end of a walk.
-	 *
-	 * **Four callers, and they are the four ways a rig can be standing with an old speed still recorded.**
-	 *
-	 * 1. **The walk ended** — `MoveToFinished`, on arrival or on the engine's eight-second give-up.
-	 * 2. **Taken out of the world** — the gate at the top of {@link run}. A body in `ServerStorage` is not
-	 *    walking anywhere, and a walk it was in the middle of did not survive the trip: `parkRig` reparents it
-	 *    without issuing a stop, and `NpcService` stops turning for it in the same breath, so neither edge
-	 *    the speed is built from can fire. Without this, a rig parked mid-walk keeps a walking speed until
-	 *    something else clears it — and the body that is parked is the one a player's arrival stood down, so
-	 *    the same rig every session.
-	 * 3. **Placed by a mover** — {@link announcePlaced}. A `PivotTo` by `RoundService` or `LobbyRigService`
-	 *    says where the body stands, and the walk it was on is over by definition. `Running`
-	 *    re-asserts if the body genuinely walks again, so this cannot suppress real motion for longer than
-	 *    the next change of speed — which is the same guarantee the other two have.
-	 * 4. **The body stopped travelling** — {@link watchForStaleWalk}. The fourth and the only one that is not an
-	 *    event: a rig shoved by a ball has a speed and no walk, so no edge exists to fire and the clear has to be
-	 *    read off the body's own velocity. See that method for the report that found it.
-	 *
-	 * **The line is the evidence, it names which caller found it, and it prints at most once per rig.** It
-	 * fires only when the speed being cleared was still a walking one, which is the exact state that leaves a
-	 * rig animated walking on the spot — so a session that prints nothing is a session where the clears found
-	 * nothing to do, and a session that prints says whether the fault was an interrupted walk or a walk that
-	 * ended. That distinction is the whole of what the next report needs and none of what the previous logs
-	 * could say.
-	 */
-	private clearWalk(model: Model, loop: NpcLoop, why: string): void {
-		if (loop.runningSpeed > NPC_CONFIG.RIG_MOVING_SPEED && !loop.staleReported) {
-			loop.staleReported = true;
 
-			logInfo(
-				`[NPC] ${model.Name}: ${why} with the speed still ${string.format("%.2f", loop.runningSpeed)} ` +
-					`studs/s — published as standing from here`,
-			);
-		}
-
-		loop.runningSpeed = 0;
-	}
-
-	/**
-	 * **The shove watchdog: a rig whose body has stopped travelling is not walking, whatever `Humanoid.Running` last
-	 * said.**
-	 *
-	 * ## The bug, and why neither existing edge can see it
-	 *
-	 * `Humanoid.Running` is an edge on a *speed*, and `MoveToFinished` is an edge on a *walk*. **A physics shove is
-	 * neither.** A ball hitting a planted rig moves it a little, the engine reports a change of speed, and there is
-	 * nothing afterwards: no walk was issued, so no walk can finish, so nothing in this file is ever told the body
-	 * has come to rest. The rig keeps its walking speed for the rest of its life and every client draws it walking
-	 * where it stands.
-	 *
-	 * **The `practiceThrow` drill is what surfaced it, and it is the shape of body the two edges can never cover.** A
-	 * drill is planted by definition — it issues no `MoveTo` at all — so `MoveToFinished` cannot fire for it however
-	 * long it lives, and {@link clearWalk}'s other two callers (leaving the world, being placed by a mover) are things
-	 * that happen to a rig rather than to its velocity. The older walking rigs masked the fault because they walk
-	 * constantly and every walk ends on an edge that also happens to clear it.
-	 *
-	 * ## What it measures, and why the whole velocity rather than the horizontal part
-	 *
-	 * **`AssemblyLinearVelocity` and not `Humanoid.MoveDirection`.** `MoveDirection` is the property `Humanoid:Move()`
-	 * writes and reads zero for every rig in this game — that is `publishAnimation`'s own recorded finding, and the
-	 * reason the walk was never readable as a request in the first place. It is also the wrong *kind* of fact here: a
-	 * body being shoved has no intent to move, and the shove is exactly what the intent would fail to report.
-	 *
-	 * **The whole vector rather than its horizontal part**, which is the one non-obvious choice in this method. A rig
-	 * knocked into the air has almost no horizontal travel for the whole of its arc, so a horizontal test would call it
-	 * stationary mid-flight — and the state that produces is worse than the bug: `publishAnimation` reads "measured
-	 * still" as *standing*, and a rig that is standing while `FloorMaterial` is `Air` prints its
-	 * `off the floor while standing` line and dresses as a body falling to its feet. Measuring the whole vector means a
-	 * rig in the air is moving, which it is.
-	 *
-	 * ## What it costs, and when it costs it
-	 *
-	 * **Nothing at all for a rig that is not already published as walking.** The first branch returns before any
-	 * velocity read, so the ordinary standing rig — which is most of them, most of the time — pays one number
-	 * comparison per turn. A walking rig pays one `AssemblyLinearVelocity` read, and a rig that has just been shoved
-	 * pays that until the debounce expires.
-	 *
-	 * **It is called from `publishAnimationBody` and not from a loop of its own**, because that function already runs
-	 * once per rig per turn on the shared cadence and already holds the humanoid. A `Heartbeat` watchdog would be the
-	 * per-frame cost this project has refused twice for exactly this class of question.
-	 *
-	 * ## What it deliberately does not do
-	 *
-	 * **It does not unsubscribe from `Running`,** and it must not: a body genuinely setting off again re-asserts
-	 * through that edge on the next change of speed, and the debounce means the watchdog has already called it standing
-	 * by then. The two are complementary — the engine says when a speed changed, this says whether the body is
-	 * travelling — and the pair can only ever be wrong in the safe direction, publishing a moving rig as standing.
-	 */
-	private watchForStaleWalk(model: Model, humanoid: Humanoid, loop: NpcLoop): void {
-		// Not published as walking: there is no lie to correct, and the count restarts so a stale reading cannot
-		// survive a gap.
-		if (loop.runningSpeed <= NPC_CONFIG.RIG_MOVING_SPEED) {
-			loop.stillTurns = 0;
-
-			return;
-		}
-
-		const root = humanoid.RootPart;
-		if (root !== undefined && root.AssemblyLinearVelocity.Magnitude >= NPC_CONFIG.RIG_STALE_WALK_SPEED) {
-			loop.stillTurns = 0;
-
-			return;
-		}
-
-		loop.stillTurns += 1;
-		if (loop.stillTurns < NPC_CONFIG.RIG_STALE_WALK_TURNS) return;
-
-		loop.stillTurns = 0;
-
-		// **The existing statement, with a reason of its own** — so the log distinguishes a walk that ended from a
-		// body that was never walking, which is the difference between a behaviour's bug and a physics one.
-		this.clearWalk(model, loop, "the body had stopped travelling");
-	}
 
 	/**
 	 * Writes an attribute only where it differs from what is already on the instance.
@@ -1401,26 +1227,17 @@ export class NpcService implements OnStart {
 	 * same reason: a placement is a fact about the model, and what to make of it is the hook's business.
 	 * A behavior with no use for one simply does not write the hook.
 	 *
-	 * **And the walking fact is cleared here, because a placement is the one thing that can end motion
-	 * without either of the engine's two edges firing.** A `PivotTo` moves a body without stopping it and
-	 * without changing its speed — so a rig placed while it was walking carried the old speed into wherever
-	 * it was put, and a rig placed *after* it had stopped carried a speed the engine had never reported as
-	 * nought. Either way the client draws it walking where it stands. This is the third of
-	 * {@link clearWalk}'s three callers; see it for why the fact needs three at all, and note what the clear
-	 * cannot do: suppress a body that is genuinely moving. `Humanoid.Running` re-asserts on the next change of
-	 * speed, which is the same guarantee the other two callers have.
-	 *
-	 * **The stop is issued here rather than only the fact being cleared, and the order is the point.** Clearing
-	 * the field alone would be a claim the body does not honour: a rig snapped into the arena by
-	 * `moveWalkersToArena` still carries the `WalkToPoint` it was given in the lobby, so it would go on walking
-	 * toward a pad in another room while every client drew it standing — the *opposite* error to the one this
-	 * pass exists for, and a worse one, because the body would be in the wrong place. So every mover gets the
-	 * engine's own stop first — `MoveTo` at the point the body is already standing on, the idiom
-	 * `SeekBehavior.stand` and `WalkToJoinPadBehavior`'s arrival both use, and the only wording a humanoid
-	 * understands for "stay here" — and then the published fact is withdrawn to match. Every caller of this
-	 * method is a mover saying *this is where the body belongs now*: the round's arena teleport, its return to
-	 * the lobby, a walker snapped in, and both halves of a parked rig being restored. None of them wants the
-	 * body to carry on walking, which is what makes one statement safe for all five.
+	 * **And the walk is withdrawn here, because a placement is a thing that can end motion with no behaviour
+	 * involved.** A `PivotTo` moves a body without stopping it and without anything being asked for, so a rig
+	 * snapped into the arena while it was walking would otherwise still be carrying the instruction — and a
+	 * client would draw it walking to a pad that is in another room. **The stop and the flag are both needed and
+	 * neither implies the other**: the flag alone is a claim the body does not honour, because it still carries the
+	 * `WalkToPoint` it was given; the stop alone leaves the published fact describing a walk that has ended. So
+	 * every mover gets the engine's own stop — `MoveTo` at the point the body already stands on, the idiom
+	 * `SeekBehavior.stand` and `WalkToJoinPadBehavior`'s arrival both use — and the flag is withdrawn to match.
+	 * Every caller of this method is a mover saying *this is where the body belongs now*: the round's arena
+	 * teleport, its return to the lobby, a walker snapped in, and both halves of a parked rig being restored. None
+	 * of them wants the body to carry on walking, which is what makes one statement safe for all five.
 	 */
 	public announcePlaced(model: Model): void {
 		const humanoid = model.FindFirstChildWhichIsA("Humanoid");
@@ -1428,8 +1245,10 @@ export class NpcService implements OnStart {
 
 		if (humanoid !== undefined && root !== undefined) humanoid.MoveTo(root.Position);
 
+		// **The flag is cleared even when there was no root to stop**, for `standAt`'s reason: a body with no
+		// `RootPart` for a frame is still a body nobody has asked to walk.
 		const loop = this.loops.get(model);
-		if (loop !== undefined) this.clearWalk(model, loop, "placed by a mover");
+		if (loop !== undefined) loop.walking = false;
 
 		for (const behavior of this.behaviors) {
 			if (model.HasTag(behavior.tag)) behavior.onPlaced?.(model);
@@ -1437,24 +1256,49 @@ export class NpcService implements OnStart {
 	}
 
 	/**
-	 * Drops the record of a loop that has ended, **and hangs up the subscription it was holding**.
+	 * **Withdraws the walk from outside this service — the two lobby boundary paths, and nothing else.**
+	 *
+	 * `LobbyRigService` strips six gameplay tags at a round boundary and parks a rig into
+	 * `ServerStorage.RigParking` when a player takes its seat. Both are moments where the behaviours that could
+	 * clear their own walk have just stopped existing, and both are one frame earlier than this service would
+	 * notice: the tag's removal is only seen by the loop on its *next* turn, and a parked rig is turned for not at
+	 * all. So the boundary clears it here, synchronously, and the client sees a standing rig from the frame the
+	 * boundary happened rather than a turn later.
+	 *
+	 * **It stops the body as well as withdrawing the instruction**, which is not redundancy: the humanoid still
+	 * carries the `MoveTo` it was given, so clearing the flag alone would leave a rig walking on with its idle clip
+	 * — the *opposite* of the fault this pass exists for, and the worse direction of the two, because the body would
+	 * be somewhere nobody put it.
+	 *
+	 * **Public and `announcePlaced`'s sibling**, for its reason: this service cannot see the boundaries itself,
+	 * because `LobbyRigService` owns the tags and the parking folder. It deliberately does **not** announce a
+	 * placement to the behaviours — a boundary is not a placement, and the hooks that answer one (`onStopped`,
+	 * `onPlaced`) already fire on their own edges.
+	 */
+	public stopWalking(model: Model): void {
+		const loop = this.loops.get(model);
+		if (loop !== undefined) loop.walking = false;
+
+		const humanoid = model.FindFirstChildWhichIsA("Humanoid");
+		const root = humanoid?.RootPart;
+
+		if (humanoid !== undefined && root !== undefined) humanoid.MoveTo(root.Position);
+	}
+
+	/**
+	 * Drops the record of a loop that has ended.
 	 *
 	 * Only if it is still *this* loop: a model can be re-tagged while its old loop
 	 * is waiting out its period, and the old one must not delete the new one's
-	 * entry on its way out. The `Running` connection is dropped unconditionally, because it belongs to the loop
-	 * rather than to the model — a loop that has ended is a loop nobody publishes from, whether or not a newer
-	 * loop has already taken the rig. The early return for a humanoid that never appeared reaches this with no
-	 * connection, which is what the optional field is for. {@link NpcLoop.moveToFinished} is dropped beside it
-	 * for the same reason and with the same lifetime: it writes the field `Running` writes, so a loop that has
-	 * ended must not be able to write it either.
+	 * entry on its way out.
+	 *
+	 * **Nothing has to be hung up any more.** This used to disconnect the two connections a loop held —
+	 * `Humanoid.Running` and `Humanoid.MoveToFinished` — because a connection outlives the loop that made it, and
+	 * a loop that has ended is a loop nobody publishes from. Both are gone with the velocity reading they fed: the
+	 * walking fact is now a field two helpers write, so there is nothing subscribed and nothing to drop. See
+	 * {@link NpcLoop.walking}.
 	 */
 	private forget(model: Model, loop: NpcLoop): void {
-		loop.running?.Disconnect();
-		loop.running = undefined;
-
-		loop.moveToFinished?.Disconnect();
-		loop.moveToFinished = undefined;
-
 		if (this.loops.get(model) === loop) this.loops.delete(model);
 	}
 

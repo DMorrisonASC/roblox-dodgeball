@@ -2,6 +2,7 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import type { NpcMoves } from "../Behavior";
 import { Workspace } from "@rbxts/services";
 import { CHARGING_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, THROW_WALK_ATTRIBUTE } from "shared/constants";
 import type { ThrowWalk } from "shared/constants";
@@ -1026,7 +1027,7 @@ export function createSeekBehavior(
 	 * rig at its rest point is a rig that is standing, and a `pickupWalk` left set would be a point the next
 	 * turn's `MoveTo` would set it walking to again.
 	 */
-	const stand = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek): void => {
+	const stand = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek, moves: NpcMoves): void => {
 		// **Two things can be "a walk in progress" now, and either is enough to need stopping**: the ball this rig
 		// set off for, and the carry-through it is making after taking it. The flag's meaning has not changed — it
 		// is "there is somewhere this body is walking to" — it has two sources since `pickupWalk` arrived, and a
@@ -1038,7 +1039,7 @@ export function createSeekBehavior(
 		// would be left walking at an empty point with this test answering "no walk in progress". The box is a
 		// walk like any other and belongs in the same sentence.
 		if (seek.ball !== undefined || seek.pickupWalk !== undefined || seek.box !== undefined) {
-			humanoid.MoveTo(root.Position);
+			moves.standAt();
 		}
 
 		seek.pickupWalk = undefined;
@@ -1100,10 +1101,17 @@ export function createSeekBehavior(
 	 * here reads the hold's *length*: the walk is kept alive for as long as the hold is published, and the hold's
 	 * own expiry is `ThrowBehavior`'s business.
 	 */
-	const keepWalking = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek, now: number): void => {
+	const keepWalking = (
+		model: Model,
+		humanoid: Humanoid,
+		root: BasePart,
+		seek: Seek,
+		now: number,
+		moves: NpcMoves,
+	): void => {
 		const direction = seek.pickupWalkDirection ?? awayFromEnemy(model, root)?.direction;
 		if (direction === undefined) {
-			stand(model, humanoid, root, seek);
+			stand(model, humanoid, root, seek, moves);
 			return;
 		}
 
@@ -1111,7 +1119,7 @@ export function createSeekBehavior(
 		seek.pickupWalk = root.Position.add(direction.mul(NPC_CONFIG.PICKUP_WALK_STUDS));
 		seek.pickupWalkUntil = now + NPC_CONFIG.PICKUP_WALK_SECONDS;
 
-		humanoid.MoveTo(seek.pickupWalk);
+		moves.walkTo(seek.pickupWalk);
 	};
 
 	/**
@@ -1154,7 +1162,14 @@ export function createSeekBehavior(
 	 * where it can is a hold this behaviour never runs on — the seek is half a second behind the throw's tenth — and
 	 * that is unchanged and still the same price `ThrowBehavior` documents for a shoved or dashing rig.
 	 */
-	const pickupWalk = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek, now: number): void => {
+	const pickupWalk = (
+		model: Model,
+		humanoid: Humanoid,
+		root: BasePart,
+		seek: Seek,
+		now: number,
+		moves: NpcMoves,
+	): void => {
 		// **The draw, on the first turn the hand is full** — which is the last turn the direction the rig was
 		// walking is still known, because `endWalk` below is what forgets it. `seek.ball` is the ball this rig set
 		// off for and has just taken.
@@ -1211,12 +1226,12 @@ export function createSeekBehavior(
 
 		if (model.GetAttribute(CHARGING_ATTRIBUTE) !== undefined) {
 			if (walk === "moveAndAim") {
-				keepWalking(model, humanoid, root, seek, now);
+				keepWalking(model, humanoid, root, seek, now, moves);
 				return;
 			}
 
 			if (walk !== "moveThenPlant") {
-				stand(model, humanoid, root, seek);
+				stand(model, humanoid, root, seek, moves);
 				return;
 			}
 
@@ -1229,11 +1244,11 @@ export function createSeekBehavior(
 		// **Or the window is simply over**, which is the ordinary end of it: the rig reaches its rest point, stands
 		// for the remainder of the window, and throws from there when its gate opens.
 		if (seek.pickupWalk === undefined || now >= seek.pickupWalkUntil) {
-			stand(model, humanoid, root, seek);
+			stand(model, humanoid, root, seek, moves);
 			return;
 		}
 
-		humanoid.MoveTo(seek.pickupWalk);
+		moves.walkTo(seek.pickupWalk);
 	};
 
 	/**
@@ -1319,7 +1334,7 @@ export function createSeekBehavior(
 	 * point at all. A rig that is neither there nor out of time keeps walking, and nothing is re-issued — the same
 	 * "asking for one point twice is the same walk asked for twice" the whole retarget interval is built on.
 	 */
-	const wander = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek, now: number): void => {
+	const wander = (model: Model, humanoid: Humanoid, root: BasePart, seek: Seek, now: number, moves: NpcMoves): void => {
 		const arrived =
 			seek.wanderTo !== undefined && root.Position.sub(seek.wanderTo).Magnitude <= WANDER_ARRIVED_STUDS;
 		const expired = seek.wanderAt > 0 && now - seek.wanderAt >= WANDER_EVERY_SECONDS;
@@ -1336,7 +1351,7 @@ export function createSeekBehavior(
 		seek.wanderAt = now;
 		seek.wanderFrom = from;
 
-		humanoid.MoveTo(point);
+		moves.walkTo(point);
 
 		// **A hop out of a corner, and only out of a corner.** `Jump` is a request rather than a velocity, so a rig
 		// with nothing above it simply does not leave the ground; setting it on every pick would be a field of
@@ -1384,7 +1399,7 @@ export function createSeekBehavior(
 			speeds.setBaseSpeed(model, NPC_CONFIG.WALK_TO_PAD_SPEED);
 		},
 
-		tick(model, humanoid) {
+		tick(model, humanoid, moves) {
 			// The part this rig is judged and moved by. `resolveDodgeable` rather than a name or a
 			// `Humanoid.RootPart` read, because it is the helper a dodge, a catch and a pickup
 			// already ask the same question through, and it answers for a rig with no humanoid too.
@@ -1415,7 +1430,7 @@ export function createSeekBehavior(
 			// construction rather than by a series of guards: the rest of this method is the round's business and
 			// the round is over.
 			if (roundCelebrating()) {
-				wander(model, humanoid, root, seek, now);
+				wander(model, humanoid, root, seek, now, moves);
 
 				return;
 			}
@@ -1433,7 +1448,7 @@ export function createSeekBehavior(
 				seek.wanderAt = 0;
 				seek.wanderFrom = undefined;
 
-				humanoid.MoveTo(root.Position);
+				moves.standAt();
 			}
 
 			// **Stop conditions, before anything is asked or moved.** The first is a ball in hand: there is nothing
@@ -1458,7 +1473,7 @@ export function createSeekBehavior(
 					seek.box = undefined;
 				}
 
-				pickupWalk(model, humanoid, root, seek, now);
+				pickupWalk(model, humanoid, root, seek, now, moves);
 				return;
 			}
 
@@ -1499,7 +1514,7 @@ export function createSeekBehavior(
 				// walk's, and a box is a short, transient walk to a thing that despawns the moment the body
 				// reaches it. `MoveTo` at the box's own position is the whole of it; the humanoid walks the
 				// XZ, and the `Touched` that collects the box is the arrival.
-				humanoid.MoveTo(box.Position);
+				moves.walkTo(box.Position);
 
 				return;
 			}
@@ -1511,7 +1526,7 @@ export function createSeekBehavior(
 			// walked-for-nothing case the reservation exists to prevent, arriving through the reservation's own
 			// hole. `stand` is the stop (its own "a walk in progress" test counts this box), and it is what
 			// releases the reservation — see `endWalk`.
-			if (seek.box !== undefined) stand(model, humanoid, root, seek);
+			if (seek.box !== undefined) stand(model, humanoid, root, seek, moves);
 
 			// What is on the floor, asked once per turn and used for both questions below: is the
 			// ball I set off for still there, and if not, which ball is next.
@@ -1521,7 +1536,7 @@ export function createSeekBehavior(
 			// a throw, in somebody's hand, or dropped and still settling. The walk ends rather than
 			// being re-aimed at something that is gone: which ball is right *now* is the question
 			// below, and it is asked once.
-			if (seek.ball !== undefined && !loose.includes(seek.ball)) stand(model, humanoid, root, seek);
+			if (seek.ball !== undefined && !loose.includes(seek.ball)) stand(model, humanoid, root, seek, moves);
 
 			// Nothing to walk to, and the reasons are ordinary rather than exceptional: an empty floor;
 			// every ball loose enough to be seen but not yet settled; nothing left this rig has not already
@@ -1574,7 +1589,7 @@ export function createSeekBehavior(
 				// nobody else holds. Standing is the right answer, for the same reason it is right on
 				// arrival: the ball is not this rig's to fetch, and next turn's selection will choose from
 				// whatever is free by then.
-				stand(model, humanoid, root, seek);
+				stand(model, humanoid, root, seek, moves);
 				return;
 			}
 
@@ -1620,7 +1635,7 @@ export function createSeekBehavior(
 				// `stand` itself — and this is the route where that matters most: a ball this rig cannot reach
 				// is a ball the next rig should be allowed to try, and without the release it would sit behind
 				// a claim held by a rig standing still and thinking about it.
-				stand(model, humanoid, root, seek);
+				stand(model, humanoid, root, seek, moves);
 
 				return;
 			}
@@ -1658,7 +1673,7 @@ export function createSeekBehavior(
 			if (seek.sidestep !== undefined && now >= seek.shuffleUntil) seek.sidestep = undefined;
 			if (seek.sidestep === undefined) maybeShuffle(model, root, ball, seek, now);
 
-			humanoid.MoveTo(seek.sidestep ?? curveTarget(ball, root, seek, now));
+			moves.walkTo(seek.sidestep ?? curveTarget(ball, root, seek, now));
 
 			// **And the hop, after the walk has been issued, because "while moving" is exactly this line having
 			// been reached.** Everything above is gates — a ball in hand, nothing to fetch, a claim that failed,

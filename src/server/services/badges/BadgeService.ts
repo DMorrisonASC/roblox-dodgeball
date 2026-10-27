@@ -11,7 +11,7 @@ import type { RoundParticipant } from "../round/modes/GameMode";
  *
  * **What this is for.** The end of a round used to be a scoreboard — `RoundResultController`, a panel with
  * a row per player and their hits and outs. It was information dressed as a ceremony, shown to people who
- * already knew who won from the HUD, and it is deleted. What replaces it is this: every body in the round
+ * already knew who won from the HUD, and it is deleted. What replaced it is this: every body in the round
  * gets a short strip of badges above its head, and the strip says **what kind of round it was** rather than
  * who beat whom. The ceremony stays; the ledger goes.
  *
@@ -35,13 +35,11 @@ import type { RoundParticipant } from "../round/modes/GameMode";
  */
 
 /**
- * How long the badges stay above a head, in seconds. **Placeholder — 15.**
+ * How long the badges stay published, in seconds. **Placeholder — 15.**
  *
  * **Sized against the intermission rather than against the eye.** A badge is a thing to read once, and the
- * window has to be long enough that somebody looking at the scoreboard's old corner sees it and short
- * enough that the heads are clear before the next round's roster is assigned. Fifteen seconds is half a
- * thirty-second intermission: long enough to read six labels and laugh, short enough that the last few
- * seconds of the lobby are a lobby again.
+ * window has to be long enough that somebody gets to see it and short enough that it is gone before the next
+ * round's roster is assigned. Fifteen seconds is half a thirty-second intermission.
  *
  * **The alternative is "until the phase changes", and it is what this would be without the timer.** It is
  * worse in the one case that matters: a held intermission — no lobby, or a roster that cannot start a

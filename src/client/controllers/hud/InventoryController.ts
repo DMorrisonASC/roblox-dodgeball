@@ -281,8 +281,9 @@ function unlockText(milestone: MilestoneDef): string {
  *
  * **The panel reads two attributes and writes nothing.** `OWNED_COSMETICS_ATTRIBUTE` says what is in the
  * shelf and each slot's `Equipped*` attribute says which one is on, both published by `EconomyService` and
- * both watched through a changed signal plus one opening read — the bridge `StatsBillboardController`
- * established, for its reason: an attribute read inside a `Computed` is a sample rather than a dependency.
+ * both watched through a changed signal plus one opening read — the bridge `ArenaFreezeCountdownController`
+ * and `RespawnHudController` both build, for its reason: an attribute read inside a `Computed` is a sample
+ * rather than a dependency.
  *
  * **What a click does is a *request*.** The panel sends "I would like to wear this" and then draws whatever
  * the attribute says a moment later; it never assumes the equip succeeded. That round trip is the whole

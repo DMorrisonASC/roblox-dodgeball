@@ -20,7 +20,7 @@ import { sideOfBody } from "../../roundZone";
  * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.
  *
  * **Must match the string `RoundService` publishes**, and it is copied rather than shared for the reason
- * `StatsBillboardController` and `MusicController` both give: it is one word, and a `shared/constants` entry
+ * `MusicController` gives: it is one word, and a `shared/constants` entry
  * for one word invites the impression that the phase vocabulary has two homes when it has one — the server's.
  */
 const PLAYING = "Playing";
@@ -389,8 +389,8 @@ export class TeamRingController implements OnStart {
 	/**
 	 * The rigs: every `NPC_TAG` model, now and whenever another appears.
 	 *
-	 * **The same scan-and-subscribe pair the rest of the client uses for rigs** — `RigAnimationController`,
-	 * `StatsBillboardController` and `chargeEffect` all walk `GetTagged` once and then listen. A rig is created
+	 * **The same scan-and-subscribe pair the rest of the client uses for rigs** — `RigAnimationController` and
+	 * `chargeEffect` both walk `GetTagged` once and then listen. A rig is created
 	 * after this client boots and pooled after that, so neither a list taken once nor the signal alone would
 	 * find them all.
 	 */

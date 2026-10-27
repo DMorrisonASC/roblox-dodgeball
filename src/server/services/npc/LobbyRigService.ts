@@ -1517,6 +1517,18 @@ export class LobbyRigService implements OnStart {
 
 		for (const tag of GAMEPLAY_BEHAVIORS) rig.RemoveTag(tag);
 
+		// **The rig is stood where it is before it leaves the world, and the order is the whole point.** This is the
+		// second of the two reports behind `NpcLoop.walking`: the body is reparented into `ServerStorage.RigParking`
+		// without anything stopping it, sits there un-simulated and un-turned, and comes back out on the next refill
+		// still carrying the instruction it was given in the lobby — animating a walk on its pad for the rest of the
+		// session. Stopping it *before* the reparent is what makes the body still be somewhere a `MoveTo` means
+		// anything; afterwards the flag would be cleared against a body nobody simulates.
+		//
+		// **And it is also what stops the walk from being resumed.** A humanoid carries its `WalkToPoint` across a
+		// `Parent` write, so a rig parked mid-approach would set off again the moment it was put back in the world —
+		// toward a pad in a lobby it may have been parked out of a round ago.
+		this.npcs.stopWalking(rig);
+
 		rig.SetAttribute(TEAM_ATTRIBUTE, undefined);
 
 		playSpawnPoof(rig);
@@ -2722,6 +2734,19 @@ export class LobbyRigService implements OnStart {
 			}
 
 			if (!touched) continue;
+
+			// **The walk is withdrawn on the way down, and this is one of the two places that has to say so.**
+			// Six gameplay tags going off is precisely the third case in `NpcLoop.walking`: a rig whose walking
+			// behaviour has just stopped existing, mid-stride, with nobody left to correct it. The loop only notices a
+			// removed tag on its *next* turn, and a parked rig is not turned at all, so waiting for that turn is up to
+			// a tenth of a second of a rig animating a walk to a pad it is no longer going to — which is exactly the
+			// "walking after returning to lobby" report. `stopWalking` clears the flag and issues the engine's stop
+			// together, in the frame the boundary happened.
+			//
+			// **Only on the way down.** Arming a rig asks it to do nothing until a behaviour ticks, and a fresh rig is
+			// already standing — clearing there would be a `MoveTo` per rig per round boundary for a fact that is
+			// already true, and it would race the arena teleport that puts the body where it belongs.
+			if (!on) this.npcs.stopWalking(rig);
 
 			// **One line per rig per boundary, and no summary line.** Two edges a round with eight rigs is
 			// sixteen lines of a log that is read by a person looking for a rig that is not doing what it

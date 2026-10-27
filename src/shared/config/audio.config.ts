@@ -78,8 +78,22 @@ export const AUDIO_CONFIG = {
 	 */
 	ROUND_MUSIC: "rbxassetid://76122240800540",
 
-	/** **Placeholder.** The round track's level. The louder of the two tracks is a taste question, not a fact. */
-	ROUND_MUSIC_VOLUME: 0.3,
+	/**
+	 * **The round track's level — `0.55`, and it is the louder of the two tracks now.**
+	 *
+	 * **The number used to be `0.3`, and raising it is a correction rather than a taste change.** While this was the
+	 * only sound in a round, `0.3` was a bed under a referee's whistle and nothing had to compete with it. The song
+	 * arrived at `0.4` — *above* this — and the crowd disappeared. Nothing was broken: both tracks were playing, at
+	 * their configured volumes, from the same phase edge. **A crowd is broadband noise, and broadband noise loses to a
+	 * melody at any comparable level** — it does not sit underneath, it is masked out of existence. The report was
+	 * "the first track is gone", which is exactly what masking sounds like from the player's seat.
+	 *
+	 * **So the ordering is the fact, and the numbers are Placeholders around it:** the room is the louder bed, the
+	 * song is the quieter layer, and `ROUND_SONG_VOLUME` sits at `0.25` to keep it so. If either is ever retuned,
+	 * **keep the crowd above the song** — that is the property the pair exists to express, and it was arrived at by
+	 * getting it wrong once.
+	 */
+	ROUND_MUSIC_VOLUME: 0.65,
 
 	/**
 	 * How long the round's track takes to come up from silence, in seconds, after the round begins.
@@ -121,6 +135,62 @@ export const AUDIO_CONFIG = {
 	 * edge.
 	 */
 	ROUND_FADE_SECONDS: 5,
+
+	/**
+	 * **The round's song — actual music, layered over the room rather than replacing it.**
+	 *
+	 * **What this is, and what it is not.** `ROUND_MUSIC` above is a *room*: a crowd and a space, which is why its own
+	 * doc calls it "a room full of people". This is the thing a round is played *to* — a track with a tempo and a
+	 * shape — and the two are meant to be heard at once, which is why it is a second `Sound` rather than a second id
+	 * in a slot. Nothing ducks, nothing crossfades, and neither one is the other's fallback.
+	 *
+	 * **It has its own knob because the two mix differently, and mixing them on one number would be wrong in both
+	 * directions.** The room is a bed: it wants to sit under everything. The song is the thing a player notices. One
+	 * number for both would mean turning the music up doubling the crowd, and turning the crowd down taking the
+	 * music with it.
+	 *
+	 * **`0.25`, and it is BELOW the room's `0.55` — which reverses what this comment first argued.** The first cut of
+	 * this track set it at `0.4`, *above* the room's then-`0.3`, on the reasoning that "the room is texture and the
+	 * song is content". **That reasoning was wrong about what masking does.** A crowd bed is broadband and diffuse: a
+	 * melody a tenth of a unit louder does not sit on top of it, it *replaces* it perceptually, and the report that
+	 * came back was "the first track is gone entirely" from a mix where nothing was actually broken. The room has to
+	 * be the louder of the two or it is not there at all; the song is audible at a quarter volume because it is
+	 * tonal and the room is not.
+	 *
+	 * **Both are Placeholders.** The constraint that is not a placeholder is that this must stay under
+	 * `ROUND_WHISTLE_VOLUME` (0.6) and `COUNTDOWN_BEEP_VOLUME` (0.5), because those are cues and a cue that cannot be
+	 * heard over the music is not a cue. The three numbers to move together are this, those two, and
+	 * `ROUND_MUSIC_VOLUME`.
+	 */
+	ROUND_SONG_VOLUME: 0.15,
+
+	/**
+	 * **The round's song, `rbxassetid://77385580591591` — supplied by the user, and not validated here.**
+	 *
+	 * **Loops from its own middle rather than from the start**, which is the feature and is worth stating where the
+	 * id is: the first play is the whole track, `0` to the end, and **every repeat after that is the second half**,
+	 * from `TimeLength / 2` back to the end. So the first pass audibly longer than every later one is the intended
+	 * behaviour and not a fault — see `MusicController`'s `Ended` handler, which is where the rule lives and where a
+	 * reader who finds the timeline surprising is meant to land.
+	 *
+	 * **It is `Looped = false`.** The loop is a handler rather than the engine's own repetition precisely because the
+	 * engine's would restart at `0`, and restarting at `0` is the thing this track must not do.
+	 */
+	ROUND_SONG_ID: "rbxassetid://77385580591591",
+
+	/**
+	 * How long the round's song takes to come up at a round's start, and to go back down at its end, in seconds.
+	 *
+	 * **`1.5` is a Placeholder, and it is deliberately much shorter than the room's own fades.** The room fades over
+	 * five seconds in both directions because it is meant to read as a space filling and emptying — see
+	 * `ROUND_FADE_IN_SECONDS`. A song is not a space: it is a thing that starts, and a long ramp would smear its
+	 * opening bar into a swell. The number wants to be long enough that the entry is not a click and short enough
+	 * that the track is recognisably playing its first bar by the time the round's freeze lifts.
+	 *
+	 * **One number for both directions**, on the same rule the room's pair follows: an ear should not be able to tell
+	 * which end of the round it is listening to.
+	 */
+	ROUND_SONG_FADE_SECONDS: 1.5,
 
 	/**
 	 * The countdown beep, and the volume it fires at.

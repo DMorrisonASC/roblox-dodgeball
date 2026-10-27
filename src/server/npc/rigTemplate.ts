@@ -338,15 +338,14 @@ export function inspectRigTemplate(model: Model): RigTemplateFault[] {
 		}
 	}
 
-	// **8. A `Head`, because the client hangs the billboard on one.** **The cost of this fault changed on
-	// 2026-10-19 and the history is the reason it is still on the list**: `StatsBillboardController` used to
-	// wait for the head with no timeout, from the single thread that walked every tagged rig — so one rig with
-	// no `Head` stopped that walk for the whole session and silently took every later rig's strip with it, and
-	// the fault was worth a warning precisely because its damage was somewhere else. It now waits
-	// `HEAD_WAIT_SECONDS` and mounts each body on its own thread, so the damage is local and small: **no strip
-	// above this body, one `[HUD] … no Head` warning per client, and five seconds of a thread nothing joins
-	// on.** Reported anyway, because a rig whose head nobody can read is a rig wearing nothing, and still not
-	// fatal: the *rig* walks, fights and dies, and a lobby of working rigs beats a refused spawn.
+	// **8. A `Head`, because the client hangs the badge strip on one.** **The cost of this fault changed twice and
+	// the history is the reason it is still on the list**: `StatsBillboardController` used to wait for the head with
+	// no timeout, from the single thread that walked every tagged rig — so one rig with no `Head` stopped that walk
+	// for the whole session and silently took every later rig's strip with it, and the fault was worth a warning
+	// precisely because its damage was somewhere else. It now waits `HEAD_WAIT_SECONDS` and mounts each body on its
+	// own thread, so the damage is local and small: **no strip above this body, one `[HUD] … no Head` warning per
+	// client, and five seconds of a thread nothing joins on.** Reported anyway, and not fatal: the *rig* walks,
+	// fights and dies, and a lobby of working rigs beats a refused spawn.
 	const head = model.FindFirstChild("Head");
 
 	if (head === undefined || !head.IsA("BasePart")) {
@@ -354,7 +353,7 @@ export function inspectRigTemplate(model: Model): RigTemplateFault[] {
 			severity: "warn",
 			kind: "no head",
 			at: path,
-			detail: "there is no BasePart named Head, so the client waits five seconds for one and then skips this body — no badge strip and no stats billboard above it, for its whole life",
+			detail: "there is no BasePart named Head, so the client waits five seconds for one and then skips this body — no badge strip above it, for its whole life",
 		});
 	}
 

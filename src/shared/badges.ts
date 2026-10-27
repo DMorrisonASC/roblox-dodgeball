@@ -1,5 +1,12 @@
 /**
- * The round's badges: **what kind of round it was, said above each head for fifteen seconds.**
+ * The round's badges: **what kind of round it was**, derived at `finishRound` and drawn above each head for
+ * fifteen seconds.
+ *
+ * **The display is `StatsBillboardController`, and it is the only one.** That file was deleted for one pass on
+ * 2026-10-27 and restored on the same day: deleting it took the badge strip with it, which is not what the owner
+ * asked for — he asked for the *hits/outs record* above heads to go, and for the badges to be smaller. The record
+ * is gone; the strip is here, at `14`/`11` with no card behind it. **Nothing else in the client reads this file's
+ * ids**, so a change to a badge's name is a change to what appears above every head.
  *
  * **The three rules that govern every badge, and a badge that violates one is a bug rather than a
  * matter of taste.**
@@ -64,18 +71,18 @@ export interface Badge {
 	 * and the client looks the sentence up. A description replicated per body per round would be the same
 	 * text sent again every fifteen seconds to say something that has not changed since the build.
 	 *
-	 * **One line, never wrapped.** The display truncates rather than wraps, because a wrapped description
-	 * would make a badge's height depend on its wording and the strip's total height depend on which badges
-	 * fired — see `StatsBillboardController`. A description is a sentence, and it should stay one.
+	 * **One line, never wrapped.** A description is a sentence, and it should stay one. That was written for a
+	 * display that truncated above a head; the constraint outlives it, because a two-clause description reads as two
+	 * badges however it is drawn.
 	 */
 	readonly description: string;
 
-	/** Which of the three tones. The display colours by this and decides nothing else from it. */
+	/** Which of the three tones. A display colours by this and decides nothing else from it. */
 	readonly tone: BadgeTone;
 }
 
 /**
- * Every badge there is, **in the order a head draws them.**
+ * Every badge there is, **in the order a display draws them.**
  *
  * The order is the table's own: the round's broad verdicts first, then the narrower ones, then the pair of
  * events that are about *when* something happened rather than how much of it did. A body with six badges
@@ -174,6 +181,11 @@ export function badgeById(id: string): Badge | undefined {
 
 /**
  * The three tones' colours, for a label with no background behind it.
+ *
+ * **These are exactly what the strip above a head paints with, and they are the reason it has no card.** They were
+ * written for lettering over the world; item 110 of `HANDOFF.md` put white paper behind them for a pass and
+ * `neutral` at `#F2F2F2` vanished into it. **A display with a light surface cannot use this table** — it needs its
+ * own ink, and the strip above a head is not that display.
  *
  * **The HUD's palette rather than the HUD's theme, and the difference is legibility rather than taste.**
  * `hudTheme` describes panels — surfaces, accents, the text colour for each — and a billboard is drawn

@@ -1,19 +1,23 @@
 import { Controller, OnStart } from "@flamework/core";
-import { Text } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { HudTheme, UI_FONT } from "../../ui/hudTheme";
-import { applyTextGlow } from "../../ui/glow";
-import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
-import { STATS_CONFIG } from "shared/config/stats.config";
-import { BADGES_ATTRIBUTE, NPC_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, STAT_HITS, STAT_OUTS } from "shared/constants";
+import { UI_FONT } from "../../ui/hudTheme";
+import { BADGES_ATTRIBUTE, NPC_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
 import { BADGE_COLOURS, Badge, badgeById, decodeBadges } from "shared/badges";
 import { logDebug, logWarn } from "shared/logger";
 
 /** The phase a billboard is shown in. A word between two files, not a setting. */
 const INTERMISSION = "Intermission";
 
-/** What the billboard is called, so a stray one can be told from anything else on a head. */
+/**
+ * What the billboard is called, so a stray one can be told from anything else on a head.
+ *
+ * **The instance name and the class name are both historical now** — this file drew a hits/outs record
+ * beside the badges until 2026-10-27 and draws only the badges since. The names are kept rather than changed
+ * because they are what the class is called in `HANDOFF.md`, in five other files' comments and in the owner's
+ * own words ("I still see the `StatsBillboardController` over my head"); a rename is a manifest diff and a
+ * hundred comment edits that buy nothing a reader cannot get from this note.
+ */
 const BILLBOARD_NAME = "StatsBillboard";
 
 /**
@@ -25,7 +29,7 @@ const BILLBOARD_NAME = "StatsBillboard";
  * (a player joined and took its seat) a fraction of a second before the client's walk reached it, so
  * `PixelPhantom23:WaitForChild("Head")` never returned: **Studio printed `Infinite yield possible`, the walk
  * stopped there, and everything after it in `mount` never ran** — the added-signal that gives every later rig
- * a billboard, and the `[HUD] stats billboards up` line itself. The visible cost was every rig spawned after
+ * a billboard, and the `[HUD] badge strips up` line itself. The visible cost was every rig spawned after
  * that moment having no billboard at all, with nothing in the output saying why. A body that a server can
  * destroy mid-walk is ordinary, so the wait must be bounded and the body skipped.
  *
@@ -41,21 +45,26 @@ const BADGE_LIST_NAME = "Badges";
 const BADGE_ROW_NAME = "Badge";
 
 /**
- * The two type sizes in a badge row, in pixels — **the name at the badge size and the description at three
- * quarters of it.**
+ * The two type sizes in a badge row, in pixels — **the name at the badge size and the description close under
+ * it.**
+ *
+ * **Both came down on 2026-10-27, and the reason is the whole lesson of this file's last three passes.** The
+ * sizes were `16` and `12` while the strip was the only thing above a head. Once a `BillboardGui` is drawn
+ * *in the world*, its apparent size is a function of how close the camera is to that body — so the fix for "it
+ * takes up too much space" is to make the text smaller rather than to make the box smaller, because the box is
+ * not what anyone is looking at. `14` and `11` still read at conversational distance and cut roughly an
+ * eighth off every row.
  *
  * **A ratio rather than two numbers.** A description is subordinate to its name: it is the same badge said
  * plainly, for somebody who could not decode the name, and it should read as one block with the name on top
- * rather than as two competing lines. Three quarters is small enough to be visibly secondary at arm's length
- * and large enough to be legible above a body — the step down from `caption` to the size under it, which is
- * the same relationship `hudTheme` uses between a heading and its body text.
+ * rather than as two competing lines.
  */
-const BADGE_NAME_SIZE = 16;
-const BADGE_DESCRIPTION_SIZE = 12;
+const BADGE_NAME_SIZE = 14;
+const BADGE_DESCRIPTION_SIZE = 11;
 
 /** The gap between a badge's two lines, and between two badges, in pixels. **Placeholder.** */
-const BADGE_LINE_GAP = 1;
-const BADGE_ROW_GAP = 5;
+const BADGE_LINE_GAP = 0;
+const BADGE_ROW_GAP = 3;
 
 /**
  * How much of the name's colour the description keeps, **as one number rather than a second palette.**
@@ -69,48 +78,54 @@ const BADGE_ROW_GAP = 5;
 const BADGE_DESCRIPTION_CONTRAST = 0.62;
 
 /**
- * The canvas above a head, in pixels — **one box for both contents, and its width is now the badges' rather
- * than the record's.**
+ * The canvas above a head, in pixels — **a width for the text and nothing else.**
  *
- * **Wide enough for the longest line either content can hold, not for a typical one.** Nothing but the text
- * is drawn — no label has a background — so a billboard wider than its own line costs a clip rectangle and
- * nothing else, while one narrower cuts the end off it. The record's line
- * (`Hits: 999 | Outs: 999 | Ratio: 1.00`) is a little over three hundred pixels at caption size; the longest
- * badge *description* is a fifty-character sentence at `BADGE_DESCRIPTION_SIZE`, which is wider still, so the
- * width is sized for the longer of the two and the record simply has room to spare.
+ * **The width is the truncation width, which is all it has ever been.** Nothing here draws a background (see
+ * `mountBadges` for why the opaque card is gone), so a billboard wider than its own line costs nothing while a
+ * narrower one cuts the end off the longest description — a fifty-character sentence at
+ * `BADGE_DESCRIPTION_SIZE`. `300` is that sentence at the smaller type with a little room.
  *
- * **The height is the record's, and the badges ignore it.** Forty pixels holds one line of caption text —
- * which is the whole of the in-play record — and the badge strip is drawn *outside* this box on purpose; see
- * `mountBadges` and `billboard.ClipsDescendants` in `makeBillboard`.
+ * **The height is not a layout number and never was.** The strip is anchored to the canvas centre and drawn
+ * *outside* this box on purpose — `ClipsDescendants` is `false`, see `makeBillboard` — so a taller canvas only
+ * moves the anchor, and the anchor is the canvas' centre, which does not move at all. It stays at `40` because
+ * it is the box nothing is drawn in.
  */
-const BILLBOARD_SIZE = UDim2.fromOffset(380, 40);
+const BILLBOARD_SIZE = UDim2.fromOffset(300, 40);
+
+/** How far above the head the canvas floats, in studs, and how far away it is still drawn. **Placeholder.** */
+const BILLBOARD_OFFSET_Y = 2.5;
+const BILLBOARD_MAX_DISTANCE = 100;
 
 /**
- * **What is above a head between rounds**: the round's badges, or the player's own record.
+ * **What is above a head between rounds**: the round's badges, drawn as letters over the world.
  *
- * **The badge strip is the new thing here, and it owns the slot whenever it has anything to say.** The
- * server derives a set of badges at `finishRound` and publishes them on `BADGES_ATTRIBUTE`; while that set
- * is non-empty this billboard draws one row per badge, and when it is empty — at the start, and again when
- * the fifteen-second window closes — the hit-and-out record comes back for the rest of the intermission.
- * **One billboard, two contents**, because they are one slot: two `BillboardGui`s on one head would be two
- * labels in the same place at the same time, which is what "stacked" means in practice.
+ * **The badges are the whole of it, and the record used to be the other half.** A body's
+ * `Hits: n | Outs: n | Ratio: n` line lived in this same billboard and was removed on 2026-10-27: the
+ * numbers are on the kill cam's own card during a shot (`client/enemyView.ts`) and were, above a head, a
+ * second copy nobody asked for. What is left is the thing no other surface carries — **what the round decided
+ * about a body**.
  *
- * **A record is something you read while nothing is happening.** During a round it would be a label
- * in the way of the thing it describes — and a ratio that moved mid-round would be a number to watch
- * instead of the ball — so the whole billboard is switched off while a round can be played and back on when
- * it ends. That is the one moment a player has to look at anybody else's numbers, and the moment they
- * are standing still in a lobby.
+ * **No panel behind them, and this file spent three passes learning that.** Items 109–111 of `HANDOFF.md` put
+ * an opaque white card behind this text twice, first behind the record and then behind the badges, and both
+ * were withdrawn: a `BillboardGui` is drawn *in the world*, so a background's size is judged against a body
+ * that is a different distance away from every viewer, and the card read as a slab with the text at its
+ * bottom edge. **Letters and a halo are the right material for something drawn over an arena** — the size is
+ * the type size, which is the one number this file can reason about — and `BADGE_COLOURS` exists to be legible
+ * against a floor rather than against paper.
  *
- * **It reads attributes and computes nothing that the server could have computed.** The counts, the ratio
- * and the badges are all published server-side, so the two machines cannot disagree about what a round was;
- * this decides only how to draw it. Nothing here is sent, asked for, or reconciled.
+ * **Badges are something you read while nothing is happening.** During a round the strip would be a label
+ * in the way of the thing it describes, so the whole billboard is switched off while a round can be played and
+ * back on when it ends. That is the one moment a player has to look at anybody else's round, and the moment
+ * they are standing still in a lobby.
  *
- * **A rig wears a badge strip too, and it is the half of this file that did not exist before.** A rig has no
- * stats record, so for a long time the only thing hung above a rig's head was the crown. The crown is
- * retired — `CROWN_ATTRIBUTE` is unchanged and still drives `EconomyService.checkMilestones`, but the visual
- * is replaced by the `onFire` badge — and a rig now gets the same strip a player does, read off the model
- * where a player's is read off the `Player`. The tag walk that finds the rigs is the one this file already
- * made for the crown, so no new tag is involved and `TAGS.md` is untouched.
+ * **It reads an attribute and computes nothing that the server could have computed.** Which badges a body
+ * earned is decided server-side and published as ids on `BADGES_ATTRIBUTE`, so the two machines cannot
+ * disagree about what a round was; this decides only how to draw it. Nothing here is sent, asked for, or
+ * reconciled.
+ *
+ * **A rig wears a badge strip too.** A rig has no stats record — which is why losing one cost this file
+ * nothing — and it gets the same strip a player does, read off the model where a player's is read off the
+ * `Player`.
  *
  * **Every scope is per body and torn down with it.** A player's billboard is mounted on `CharacterAdded` and
  * cleaned on `CharacterRemoving`; a rig's is cleaned when the model leaves `Workspace`, which is how a
@@ -131,14 +146,6 @@ export class StatsBillboardController implements OnStart {
 
 		const scope = Fusion.scoped();
 
-		// **The HUD's colours, read once with the rest of the mount and handed to every body below.**
-		// Read now rather than at module load, for the reason `hudTheme` gives: `configureTheme` has run
-		// by the time anything mounts, and a value captured earlier would be Material's default. Read
-		// here rather than in `attach`, even though that is where it is painted, because the theme is
-		// fixed for the session — there is nothing about a respawn that would change it. **Answered from the
-		// game palette**, so the pill behind a player's head is plum and its text is the palette's white.
-		const theme = premiumHudTheme();
-
 		// The phase, as a `Value` rather than read where it is needed: a `Computed` has to be able to
 		// *watch* this, and `GetAttribute` inside one is a reading taken once rather than a dependency.
 		const state = Fusion.Value(scope, stateOf(folder));
@@ -147,19 +154,18 @@ export class StatsBillboardController implements OnStart {
 			folder.GetAttributeChangedSignal(ROUND_STATE_ATTRIBUTE).Connect(() => state.set(stateOf(folder))),
 		);
 
-		scope.push(Players.PlayerAdded.Connect((player) => this.watch(player, state, scope, theme)));
+		scope.push(Players.PlayerAdded.Connect((player) => this.watch(player, state, scope)));
 
 		// A player already in the game when this mounted never fires the added-signal, so the ones
 		// already here are walked rather than waited for — the scan-and-subscribe the other services
 		// and HUDs do, for the same reason.
-		for (const player of Players.GetPlayers()) this.watch(player, state, scope, theme);
+		for (const player of Players.GetPlayers()) this.watch(player, state, scope);
 
 		// **Rigs wear the badge strip the same way a player does, and this is the rig half of the same watch.**
 		// The rigs are found by tag rather than by watching `Workspace`, the same read
-		// `RigAnimationController` makes and for the same reason; a rig has no stats record, so its billboard
-		// is badges and nothing else, and it is read off the *model* — where a player's is read off the
-		// `Player`, and where `CROWN_ATTRIBUTE` used to be read for this half. Both those facts have the same
-		// shape and the same reason: the attribute outlives a body.
+		// `RigAnimationController` makes and for the same reason, and the attribute is read off the *model* —
+		// where a player's is read off the `Player`, and where `CROWN_ATTRIBUTE` used to be read for this half.
+		// Both those facts have the same shape and the same reason: the attribute outlives a body.
 		// **Each rig is mounted on its own thread, and this is the second half of the same fix.** The walk
 		// used to call `attachRig` inline, so one body that never produced a `Head` held the loop — and,
 		// behind it, the tag-added connection and the line below, which is how a single retired rig cost the
@@ -177,39 +183,28 @@ export class StatsBillboardController implements OnStart {
 			}),
 		);
 
-		logDebug(`[HUD] stats billboards and badge strips up — ${Players.GetPlayers().size()} players`);
+		logDebug(`[HUD] badge strips up — ${Players.GetPlayers().size()} players`);
 	}
 
 	/** Gives `player` a billboard above every body they get, for as long as they are in the game. */
-	private watch(
-		player: Player,
-		state: Fusion.Value<string>,
-		parent: Fusion.Scope<unknown>,
-		theme: HudTheme,
-	): void {
-		player.CharacterAdded.Connect((character) => this.attach(character, player, state, parent, theme));
+	private watch(player: Player, state: Fusion.Value<string>, parent: Fusion.Scope<unknown>): void {
+		player.CharacterAdded.Connect((character) => this.attach(character, player, state, parent));
 	}
 
 	/**
-	 * Mounts a stat billboard on `character`'s head.
+	 * Mounts a badge billboard on `character`'s head.
 	 *
-	 * **A scope of its own for each body, torn down with it.** The two computeds below are bound to a
-	 * label that is destroyed when the character is — but a computed is *not* destroyed by the
+	 * **A scope of its own for each body, torn down with it.** The computed below is bound to the
+	 * billboard that is destroyed when the character is — but a computed is *not* destroyed by the
 	 * instance it writes to, and a scope belonging to the controller would collect one pair per
 	 * respawn for the life of the session. An inner scope is destroyed either by its owner or by the
 	 * scope it came from, so a respawn takes its own down and leaves nothing behind.
-	 *
-	 * The `Text` is big-ui's, so this label reads the same theme as every other piece of the HUD —
-	 * see `ThemeController`, which configures it before any of this mounts. The theme arrives as a
-	 * parameter rather than being read here, so that the HUD reads its colours exactly once, in
-	 * `mount`, and this method cannot disagree with the rest of the file about them.
 	 */
 	private attach(
 		character: Model,
 		player: Player,
 		state: Fusion.Value<string>,
 		parent: Fusion.Scope<unknown>,
-		theme: HudTheme,
 	): void {
 		// Waited for rather than found: a character is announced before its parts have all arrived,
 		// and a head that is not there yet is a billboard with nowhere to go. **Bounded**, because a
@@ -241,45 +236,15 @@ export class StatsBillboardController implements OnStart {
 
 		const billboard = makeBillboard(head, state, scope);
 
-		// The two counts as watchable states, so the line below follows them rather than sampling them
-		// once. Per body, and in the body's own scope — the connections they hold belong to this head.
-		const hits = watchCount(scope, player, STAT_HITS);
-		const outs = watchCount(scope, player, STAT_OUTS);
-
-		const label = Text(scope, {
-			text: Fusion.Computed(scope, (use) => describe(use(hits), use(outs))),
-			variant: "caption",
-			align: Enum.TextXAlignment.Center,
-		});
-
-		// **The theme's colour, painted onto the instance rather than asked for as a prop.** big-ui's
-		// `color` is not a `Color3` — it is its own nine-word vocabulary (`"primary" | "secondary" |
-		// "disabled" | "primaryMain" | …`) which the component resolves against its own palette, so a
-		// `Color3` handed to it is a type error and would be ignored at runtime in favour of the
-		// default. `TextColor3` on the label that `Text` returns *is* a `Color3`, which is where a
-		// colour from `hudTheme` belongs. Leaving the prop off would give the same colour, because
-		// big-ui's default is `Palette.text.primary`; the assignment is here so the choice is visible
-		// and so moving to another theme colour is one word rather than a discovery.
-		// **White rather than `onAccent`, which is the one place this palette inverts a name.** `onAccent` is the
-		// ink for a filled *accent* surface — gold here — and the pill behind a head is not gold: it is the
-		// palette's plum, so the correct ink is the palette's white. The alpha is the direction's text rule, and it
-		// is safe because the pill behind the label is solid.
-		label.TextColor3 = PREMIUM.text;
-		label.TextTransparency = PREMIUM.textTransparency;
-		// **The halo, and it is the whole of this element's neon treatment.** There is no frame here to bloom — a
-		// `BillboardGui` is a canvas, not a surface, and this label is a line of text floating over a head — so the
-		// letters are lit and the "panel" is the absence of one.
-		applyTextGlow(label);
-		label.Parent = billboard;
-
-		// **And the badges, which take the slot whenever they have something to say.** The record is not a
-		// second billboard: the two are one slot and one head, and the only thing that changes is what is
-		// drawn in it. `label` is handed over so the switch can hide it.
-		this.mountBadges(billboard, player, label, scope);
+		// **And the badges, which are now the whole of what is drawn.** The hits/outs record that used to share
+		// this billboard is gone: the figures are on the kill cam's card during a shot, and above a head they
+		// were a second copy of a number nobody was asking for. See this file's header for the two passes that
+		// tried to style it and why both were withdrawn.
+		this.mountBadges(billboard, player, scope);
 	}
 
 	/**
-	 * Mounts a badge strip on a rig's head, **and nothing else — a rig has no stats record to draw.**
+	 * Mounts a badge strip on a rig's head.
 	 *
 	 * **The rig half of the same strip a player wears.** The attribute is read off the *model* (the server
 	 * writes `BADGES_ATTRIBUTE` on the rig's body, where it writes it on the `Player` for a player), and the
@@ -287,10 +252,10 @@ export class StatsBillboardController implements OnStart {
 	 * leaves the world — destroyed by `RespawnBehavior`, or taken out of `Workspace` — the same signal
 	 * `RigAnimationController` uses for the same reason, and the same one the crown used before it.
 	 *
-	 * **A rig's billboard has no stats fallback**, so an intermission with no badges draws an empty
-	 * `BillboardGui` above its head. That is one transparent instance for the length of a lobby, and the
-	 * alternative — hiding the billboard itself — would mean two visibility rules on one head, one for the
-	 * phase and one for the content, which is how a rig's strip ends up visible during a round.
+	 * **An intermission with no badges draws an empty `BillboardGui` above a rig's head.** That is one
+	 * transparent instance for the length of a lobby, and the alternative — hiding the billboard itself —
+	 * would mean two visibility rules on one head, one for the phase and one for the content, which is how a
+	 * rig's strip ends up visible during a round.
 	 */
 	private attachRig(model: Model, state: Fusion.Value<string>, parent: Fusion.Scope<unknown>): void {
 		// **A body that is already gone is skipped without waiting for anything.** This is the observed case
@@ -328,12 +293,21 @@ export class StatsBillboardController implements OnStart {
 
 		const billboard = makeBillboard(head, state, scope);
 
-		this.mountBadges(billboard, model, undefined, scope);
+		this.mountBadges(billboard, model, scope);
 	}
 
 	/**
-	 * **The badge rows, and the switch between them and the record** — one construction, shared by a player's
-	 * head and a rig's.
+	 * **The badge rows** — one construction, shared by a player's head and a rig's.
+	 *
+	 * **No background, and the two passes that added one are the reason this paragraph exists.** Handoff items
+	 * 109 and 110 put an opaque white card behind this list, first behind the record and then behind the badges.
+	 * Both were asked for as a fix for legibility and both made something worse: **the card was a pale slab with
+	 * the badge text bunched at its bottom edge and empty panel above it**, because the list measures its own
+	 * height for its *rows* and the anchor pins its bottom to the canvas centre — so any space the layout
+	 * reserved above the rows showed as blank card. A background drawn over a body is a surface whose size the
+	 * viewer re-derives from their distance to that body; text drawn over a body is just text. Letters, a halo
+	 * effect from the tone's colour and a screen-space card for anything that must be read like a scoreboard —
+	 * that is the split this file now keeps.
 	 *
 	 * **Imperative rather than Fusion-hydrated, and this is the one place in the HUD that is.** A badge strip
 	 * is a *list*: its length is whatever the server derived, from nought to twenty, and it changes at most
@@ -372,18 +346,13 @@ export class StatsBillboardController implements OnStart {
 	 * every row the same two lines and the strip's height a function of the count alone.
 	 *
 	 * **`source` is the instance the attribute lives on**, which is the `Player` for a player and the `Model`
-	 * for a rig. **`stats` is passed only by the player path**: it is the label to hide while badges are up,
-	 * and a rig has none.
+	 * for a rig.
 	 */
-	private mountBadges(
-		billboard: BillboardGui,
-		source: Instance,
-		stats: TextLabel | undefined,
-		scope: Fusion.Scope<unknown>,
-	): void {
+	private mountBadges(billboard: BillboardGui, source: Instance, scope: Fusion.Scope<unknown>): void {
 		const list = new Instance("Frame");
 		list.Name = BADGE_LIST_NAME;
 		list.BackgroundTransparency = 1;
+		list.BorderSizePixel = 0;
 		// **Sized by its contents, and pinned by its bottom edge to the middle of the canvas.** The anchor is
 		// what turns "grows" into "grows upward"; see this method's doc for why that matters more than it
 		// looks.
@@ -437,7 +406,6 @@ export class StatsBillboardController implements OnStart {
 			logDebug(`[HUD] ${source.Name}: ${rows.size()} of ${ids.size()} badge(s) drawn`);
 
 			list.Visible = hasBadges;
-			if (stats !== undefined) stats.Visible = !hasBadges;
 		};
 
 		const read = (): string[] => {
@@ -519,24 +487,6 @@ function makeBadgeLine(name: string, text: string, size: number, colour: Color3,
 	return label;
 }
 
-/**
- * The record as the one line above a head.
- *
- * **Every figure is named, and the names are what make it readable from across an arena.** A row of
- * bare numbers above somebody else's head is a small puzzle to be solved while looking at it;
- * `Hits:`, `Outs:` and `Ratio:` are read without being worked out, which is the whole job of a
- * label drawn above every player in the game.
- *
- * Nothing is abbreviated and nothing is implied. The line is long for a reason, and it is the reason
- * the billboard it sits in is as wide as it is — see {@link BILLBOARD_SIZE}.
- */
-function describe(hits: number, outs: number): string {
-	const counted = hits + outs;
-	const ratio = counted === 0 ? 0 : hits / counted;
-
-	return `Hits: ${hits} | Outs: ${outs} | Ratio: ${string.format("%.2f", ratio)}`;
-}
-
 /** The phase `folder` is publishing, or `""` while it has not said. */
 function stateOf(folder: Instance): string {
 	const state = folder.GetAttribute(ROUND_STATE_ATTRIBUTE);
@@ -549,25 +499,26 @@ function stateOf(folder: Instance): string {
  *
  * **Built here rather than at each caller**, because a player's head and a rig's head get the same box: the
  * same name, the same offset, the same distance cut-off, and the same phase gate. The two paths differ in
- * what is drawn *inside* it and nothing else, so a second construction would be a second place for the
+ * nothing else now that the record is gone, which makes a second construction a second place for the
  * "occluded, not drawn through walls" decision to be forgotten.
  *
- * **`Enabled` is the phase and only the phase.** The billboard is on screen for the whole intermission — it
- * carries the badge strip for the first fifteen seconds and the record for the rest — and off during a round.
- * The content is what changes, and `mountBadges` is what changes it.
+ * **`Enabled` is the phase and only the phase.** The billboard is on screen for the whole intermission and off
+ * during a round; the *contents* are what change, and `mountBadges` is what changes them. A body that earned
+ * nothing has a `BillboardGui` with a hidden list in it, which is one transparent instance rather than a
+ * second visibility rule on one head.
  */
 function makeBillboard(head: BasePart, state: Fusion.Value<string>, scope: Fusion.Scope<unknown>): BillboardGui {
 	const billboard = new Instance("BillboardGui");
 	billboard.Name = BILLBOARD_NAME;
 	billboard.Adornee = head;
 	billboard.Size = BILLBOARD_SIZE;
-	billboard.StudsOffsetWorldSpace = new Vector3(0, STATS_CONFIG.BILLBOARD_OFFSET_Y, 0);
+	billboard.StudsOffsetWorldSpace = new Vector3(0, BILLBOARD_OFFSET_Y, 0);
 	// **Occluded rather than drawn through the world.** This is a label about a body standing in
 	// the map, not a marker on a screen: somebody behind a wall is somebody you cannot read, and a
 	// scoreboard that floated through geometry would be showing the numbers of a player who could
 	// be anywhere.
 	billboard.AlwaysOnTop = false;
-	billboard.MaxDistance = STATS_CONFIG.BILLBOARD_MAX_DISTANCE;
+	billboard.MaxDistance = BILLBOARD_MAX_DISTANCE;
 	// **The canvas is a fixed box and the content is allowed to leave it, which is what lets the badge strip
 	// grow without the billboard being resized.** `ClipsDescendants` on a `BillboardGui` is the switch for
 	// exactly this — "whether portions of GuiObjects that fall outside the canvas borders will be drawn" —
@@ -581,27 +532,4 @@ function makeBillboard(head: BasePart, state: Fusion.Value<string>, scope: Fusio
 	});
 
 	return billboard;
-}
-
-/**
- * The phase as a `Value`, so a `Computed` can watch it.
- *
- * **The bridge between two channels.** Attributes are how the server publishes this, and a Fusion
- * state is the only thing a `Computed` can depend on — `GetAttribute` read inside one is a value
- * taken once, not a dependency, so a label built straight on it would be a label that never changed
- * after its first frame. Fed from the changed-signal, it is live.
- */
-function watchCount(scope: Fusion.Scope<unknown>, player: Player, name: string): Fusion.Value<number> {
-	const state = Fusion.Value(scope, countOf(player, name));
-
-	scope.push(player.GetAttributeChangedSignal(name).Connect(() => state.set(countOf(player, name))));
-
-	return state;
-}
-
-/** A numeric attribute, or `0` — the count a player with nothing recorded has. */
-function countOf(player: Player, name: string): number {
-	const value = player.GetAttribute(name);
-
-	return typeIs(value, "number") ? value : 0;
 }

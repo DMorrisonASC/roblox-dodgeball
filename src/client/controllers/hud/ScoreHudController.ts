@@ -115,7 +115,7 @@ export class ScoreHudController implements OnStart {
 
 		// Two numbers, each a `Value` fed from its own changed-signal. **A `Value` rather than a `GetAttribute`
 		// inside a `Computed`**, because an attribute read is a sample rather than a subscription — the bridge
-		// `StatsBillboardController` and `RoundStatusController` both use, for the reason they give. This is
+		// `RoundStatusController` uses, for the reason it gives. This is
 		// also why nothing here polls: the signal fires when the server writes.
 		//
 		// **There is no third `Value` for the mode any more**, which is what the bar's visibility used to

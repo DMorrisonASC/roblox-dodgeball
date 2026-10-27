@@ -1467,7 +1467,7 @@ function addCooldownOverlay(
  *
  * **A `RenderStepped` step rather than a `Computed` over a Fusion value**, and the reason is the shape of the input.
  * The cooldown arrives as an *attribute*, and an attribute read inside a `Computed` is a sample rather than a
- * dependency — the lesson `RespawnHudController` and `StatsBillboardController` both record — so a binding would need
+ * dependency — the lesson `RespawnHudController` records — so a binding would need
  * a `Value` fed by `GetAttributeChangedSignal` *and* a second `Value` fed per frame by the clock, which is the loop
  * below written twice with a graph in the middle. One step over two records is less machinery for the same result,
  * and `RenderStepped` is the right step for a thing drawn rather than simulated.

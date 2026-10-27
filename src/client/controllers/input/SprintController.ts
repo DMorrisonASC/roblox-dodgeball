@@ -669,8 +669,9 @@ export class SprintController implements OnStart {
 	 *
 	 * **Two caveats, named rather than hidden.** **The first**: this project has already measured this method
 	 * reading `0` — `NpcService` records it for rigs, which are driven by `Humanoid:MoveTo()` and have no input to
-	 * report, which is why rig animation asks `Humanoid.Running` instead. That is consistent with this use rather
-	 * than against it: a *player's* body is exactly the body that has input. **The second**: on a device whose touch
+	 * report, which is why rig animation is published from the server as an intent rather than read off the body at
+	 * all. That is consistent with this use rather than against it: a *player's* body is exactly the body that has
+	 * input. **The second**: on a device whose touch
 	 * movement mode is the thumbpad or the DPad the fraction is `1` whenever the pad is off centre, so the start
 	 * threshold is met by any push — see {@link SPRINT_START_MAGNITUDE}. Both are things the lines below can show
 	 * and neither can be settled from this repository.

@@ -239,6 +239,57 @@ export class MusicController implements OnStart {
 		let writtenIntermission = -1;
 		let writtenRound = -1;
 
+		/**
+		 * **The song's fade, as one number running between 0 and 1** — and it is a third accumulator rather than a
+		 * `TweenService` tween, which is a decision worth writing down because it is the obvious thing to reach for.
+		 *
+		 * **A tween would have introduced the delay this file cannot afford.** The fade out has to be followed by a
+		 * `Stop()`, and a tween completes on real time rather than on anything this file controls — so the stop would
+		 * have to be a `task.delay`, and that delay would keep running across a phase change. A round ending and the
+		 * next one starting inside `ROUND_SONG_FADE_SECONDS` — which a dev forcing matches can do trivially — would
+		 * have the *old* round's delayed stop fire into the *new* round's freshly started track: music that begins
+		 * and then goes silent a second later, for no reason visible from the phase. Counting the fade on the tick
+		 * that already exists has no second timer to get out of step, and the stop happens on the frame the volume
+		 * reaches zero.
+		 *
+		 * **It also keeps the file to one fade mechanism.** Every other fade here is arithmetic in the `Heartbeat`
+		 * handler — see the note on this class forbidding tweens — so a tween for this track alone would be the second
+		 * pipeline the arrangement was chosen to avoid.
+		 *
+		 * **Seeded complete**, on `roundFadeInElapsed`'s rule: a client that mounts into a round that is already
+		 * running should hear the song at the volume it has reached, not a fade it was not present for.
+		 */
+		let songProgress = 1;
+
+		/** The last volume written to the song, so the per-frame loop can skip identical writes. */
+		let writtenSong = -1;
+
+		/**
+		 * **Whether the song is running, tracked here rather than asked of the `Sound`.**
+		 *
+		 * `Sound.IsPlaying` is false for a moment after `Play()` on an asset that has not finished loading, so
+		 * asking the instance would let the stop below fire on a track that is about to start. One flag written by
+		 * the two places that start and stop it cannot be wrong about that.
+		 */
+		let songPlaying = false;
+
+		/**
+		 * **Whether this round's mix has been reported — one line per round, on the frame the ambience reaches full.**
+		 *
+		 * **This exists because a session was spent on a mix question with nothing to read.** Every `[Music]` line in
+		 * this file is behind `DEBUG_LOGGING`, which is `IsStudio() && DEBUG_CONFIG.VERBOSE_LOGS` — and
+		 * `VERBOSE_LOGS` ships `false`, so a normal playtest printed **no music lines at all**. "The crowd is not
+		 * playing" and "the crowd is playing under a louder song" then look identical from the outside, which is
+		 * exactly the ambiguity this line removes.
+		 *
+		 * **`logInfo` rather than `logDebug`**, deliberately: the tier that is silent by default is the tier that
+		 * could not answer the question. One line per round is not a frame-time concern.
+		 *
+		 * **Reported at the *end* of the entry ramp rather than on the phase edge**, because on the edge both tracks
+		 * are at volume 0 by design — a line there reads `0.00 / 0.00` whatever is wrong, and proves nothing.
+		 */
+		let reportedRoundMix = false;
+
 		// **Four `Sound`s, made once and never made again.** Once per client for the session rather than
 		// once per round: a `Sound` rebuilt at a round's start would restart the track from the top
 		// whenever the phase flickered, and would leave an instance per round in a service nothing cleans.
@@ -257,6 +308,16 @@ export class MusicController implements OnStart {
 		// independent instances; the engine mixes them, and nothing here has to.
 		const intermissionMusic = this.makeSound("IntermissionMusic", AUDIO_CONFIG.INTERMISSION_MUSIC, true, 0);
 		const roundMusic = this.makeSound("RoundMusic", AUDIO_CONFIG.ROUND_MUSIC, true, 0);
+
+		// **Five `Sound`s now, and the fifth is the round's song** — music over the room rather than another room. See
+		// `ROUND_SONG_VOLUME` for why the two are separate instances with separate knobs, and the note above for why
+		// none of them is under a `SoundGroup`.
+		//
+		// **`Looped` is `false` on this one and that is the feature, not an omission.** Every other track here is
+		// `true` because repeating from the start is what a bed should do. This track must repeat **from its middle**,
+		// which no property can express — the engine's own loop restarts at `0` — so the repeat is the `Ended` handler
+		// below and the flag has to be off for that handler to ever run.
+		const roundSong = this.makeSound("RoundSong", AUDIO_CONFIG.ROUND_SONG_ID, false, 0);
 
 		// The two cues are at a fixed volume and are never faded — they are *events*, not beds, and a cue
 		// that fades is a cue nobody hears. The overlap with the tracks is handled by them being louder
@@ -286,6 +347,59 @@ export class MusicController implements OnStart {
 		// the phase edge does.
 		intermissionMusic.Play();
 
+		/**
+		 * **The song's repeat, and the whole of "loop from the middle".**
+		 *
+		 * ## The rule, stated plainly because the timeline is otherwise indistinguishable from a bug
+		 *
+		 * **The first play is the whole track — `0` to the end. Every repeat after that is the second half — from
+		 * `TimeLength / 2` to the end.** So the first pass is twice as long as every subsequent one, and a player
+		 * listening to a long round will hear the track's opening once and never again. That is the feature: the
+		 * middle of a piece is where its groove is, and a round is two minutes of play rather than two minutes of
+		 * listening, so repeating the whole thing would put the slow introduction in front of every repeat.
+		 *
+		 * **`Looped` is `false` and must stay false.** The engine's own loop restarts at `0`; this handler is the only
+		 * way to restart anywhere else, and it cannot fire on a looping sound that never ends.
+		 *
+		 * **`TimeLength` is read here rather than cached**, and that is the answer to the only question this cannot
+		 * be sure of without a session: a `Sound`'s length is `0` until its asset has loaded, so a value read at
+		 * mount — or one captured on the first `Play` — can be `0` and would stay `0` for the client's whole life. By
+		 * the time this fires the track has just played all the way through, so its length is known **if it is ever
+		 * going to be**. Reading it per repeat costs one property read once per track-length and cannot go stale.
+		 *
+		 * **And if it is still `0`, the fallback is `0` with a warning rather than silence.** A track that has not
+		 * resolved its length after playing to completion is a broken asset, not a slow one; looping from the start
+		 * is the least-bad behaviour, and saying so is what stops the next reader concluding that the half-way rule
+		 * was never implemented. **If the loop ever restarts from the beginning, this line is the thing to look at.**
+		 *
+		 * **Guarded on the phase**, because a round can end between the last sample and this callback: the phase edge
+		 * stops the track, and a handler that restarted it would put music over the intermission — which is the one
+		 * thing the phase wiring exists to prevent. The guard reads the phase as it is *now* rather than as it was
+		 * when the track started.
+		 */
+		scope.push(
+			roundSong.Ended.Connect(() => {
+				if (Fusion.peek(phase) !== PLAYING) return;
+
+				const length = roundSong.TimeLength;
+
+				if (!(length > 0)) {
+					logWarn(
+						`[Music] the round's song reported ${tostring(length)}s of length at its end — looping from ` +
+							`the start rather than the middle; the asset has not resolved`,
+					);
+
+					roundSong.TimePosition = 0;
+					roundSong.Play();
+
+					return;
+				}
+
+				roundSong.TimePosition = length / 2;
+				roundSong.Play();
+			}),
+		);
+
 		if (Fusion.peek(phase) === PLAYING) {
 			// **A joining player hears the round they joined**, at the volume its clock implies — full for
 			// a round that has just started, partway down for one that is nearly over. Nothing is sent
@@ -301,15 +415,56 @@ export class MusicController implements OnStart {
 			roundMusic.Volume = writtenRound;
 			roundMusic.Play();
 
+			// **And the song, from its beginning, at the volume it would have reached.** A joining player missed the
+			// entry ramp, so `songProgress` is already 1 — the seed above — and there is no fade to reproduce. The
+			// track starts at `0` rather than at a position derived from the round's clock, because unlike the room
+			// this is a piece of music with a beginning: there is no "where the round has got to" in it, and starting
+			// mid-phrase would put a player into a song they never heard start.
+			roundSong.TimePosition = 0;
+			writtenSong = AUDIO_CONFIG.ROUND_SONG_VOLUME;
+			roundSong.Volume = writtenSong;
+			roundSong.Play();
+			songPlaying = true;
+
 			logDebug(`[Music] mounted into a round — round audio up at ${string.format("%.2f", writtenRound)}`);
 		}
 
-		ContentProvider.PreloadAsync([intermissionMusic, roundMusic, beep, whistle], (contentId, status_) => {
+		/**
+		 * **Every track's state, once, when the assets have actually answered — the line whose absence cost two
+		 * sessions.**
+		 *
+		 * **It is inside the callback rather than after `PreloadAsync` because `PreloadAsync` does not wait.** A
+		 * report written on the next line would read `loaded false, 0.0s` for perfectly good assets and send the
+		 * next reader hunting a fault that does not exist. Counting the answers and printing on the last one is what
+		 * makes the numbers mean something.
+		 *
+		 * **`logInfo`, not `logDebug`.** Every other `[Music]` line is behind `DEBUG_LOGGING` (Studio *and*
+		 * `VERBOSE_LOGS`, which ships `false`), which is exactly why "the crowd is missing" could not be told from
+		 * "the crowd is masked" — or from "the crowd's asset is silent" — in a log that contained no music lines at
+		 * all. One line per client is not a frame-time concern.
+		 */
+		const tracks = [intermissionMusic, roundMusic, roundSong, beep, whistle];
+		let resolved = 0;
+
+		ContentProvider.PreloadAsync(tracks, (contentId, status_) => {
 			if (status_ !== Enum.AssetFetchStatus.Success) {
 				logWarn(`[Music] sound did not load — ${contentId} (${status_.Name})`);
 			} else if (DEBUG_LOGGING) {
 				logInfo(`[Music] sound loaded — ${contentId}`);
 			}
+
+			resolved += 1;
+			if (resolved < tracks.size()) return;
+
+			logInfo(
+				`[Music] tracks — ` +
+					`"${intermissionMusic.Name}" ${string.format("%.2f", AUDIO_CONFIG.INTERMISSION_MUSIC_VOLUME)}` +
+					` (${string.format("%.1f", intermissionMusic.TimeLength)}s), ` +
+					`"${roundMusic.Name}" ${string.format("%.2f", AUDIO_CONFIG.ROUND_MUSIC_VOLUME)}` +
+					` (${string.format("%.1f", roundMusic.TimeLength)}s), ` +
+					`"${roundSong.Name}" ${string.format("%.2f", AUDIO_CONFIG.ROUND_SONG_VOLUME)}` +
+					` (${string.format("%.1f", roundSong.TimeLength)}s)`,
+			);
 		});
 
 		scope.push(
@@ -354,8 +509,41 @@ export class MusicController implements OnStart {
 					roundMusic.Volume = writtenRound;
 					roundMusic.Play();
 
+					// **And the song starts here, from the top, inaudible.** Same shape as the room above and for the
+					// same reason — the track begins at zero and the tick brings it up, so there is no frame of a
+					// full-volume song before its fade begins — but the ramp is its own number because it is a
+					// different length. See `songProgress` for why the fade is counted here rather than tweened.
+					//
+					// **`TimePosition = 0` is written explicitly rather than trusted.** The sound is stopped at every
+					// round end, and a stopped `Sound` does remember where it was; a second round would otherwise
+					// begin the song where the last one abandoned it, which for a track that loops from its middle is
+					// exactly the confusion this feature does not need.
+					roundSong.TimePosition = 0;
+					songProgress = 0;
+					writtenSong = 0;
+					roundSong.Volume = 0;
+					roundSong.Play();
+					songPlaying = true;
+
+					// **A new round means a new mix report**, armed here so the line below prints once per round
+					// rather than once per client. See `reportedRoundMix` for why the line exists at all.
+					reportedRoundMix = false;
+
+					// **Both tracks, named, on the edge that starts them.** Every value here is 0 by design — the two
+					// ramps bring them up — so this line is not a volume report; it is the answer to "did the edge
+					// run, and are both instances actually playing". `IsPlaying` is true for a `Sound` whose asset has
+					// not arrived yet, which is what makes it the right question here rather than `IsLoaded`.
+					logInfo(
+						`[Music] ${PLAYING} — ambience "${roundMusic.Name}" ${string.format("%.2f", roundMusic.Volume)} ` +
+							`(playing ${tostring(roundMusic.IsPlaying)}), song "${roundSong.Name}" ` +
+							`${string.format("%.2f", roundSong.Volume)} (playing ${tostring(roundSong.IsPlaying)})`,
+					);
+
 					if (DEBUG_LOGGING) {
-						logInfo(`[Music] ${PLAYING} — round audio rising over ${AUDIO_CONFIG.ROUND_FADE_IN_SECONDS}s`);
+						logInfo(
+							`[Music] ${PLAYING} — round audio rising over ${AUDIO_CONFIG.ROUND_FADE_IN_SECONDS}s, ` +
+								`song over ${AUDIO_CONFIG.ROUND_SONG_FADE_SECONDS}s`,
+						);
 					}
 				}
 
@@ -372,6 +560,16 @@ export class MusicController implements OnStart {
 					// requirement, not "the beep never starts again".
 					beep.Stop();
 					roundMusic.Stop();
+
+					// **The song is deliberately NOT stopped here, and the asymmetry is the feature.** The room is cut
+					// because its fade is the clock's work and is therefore already finished — see the note below — so
+					// stopping it is inaudible. The song fades on its own short ramp from the moment the phase leaves
+					// `Playing`, and the tick stops it on the frame that ramp reaches zero. Stopping it here would cut it
+					// mid-bar, which is the one thing a fade exists to avoid.
+					//
+					// **What that means for a short round**: a track stopped part-way has no `Ended`, so the repeat
+					// handler never fires and `TimePosition` is simply abandoned where the fade left it. The next round
+					// writes `TimePosition = 0` on its entry edge, so nothing carries over.
 
 					// **No fade here, and none is needed for the two kinds of end to come out right.** A
 					// round the clock ended has already faded to exactly zero — that is what the last five
@@ -472,6 +670,29 @@ export class MusicController implements OnStart {
 				const currentPhase = Fusion.peek(phase);
 				const remaining = Fusion.peek(time);
 
+				// **The mix, once per round, on the frame the ambience finishes coming up.** Placed here rather than
+				// after the round's volume write because the loop below **returns early** when its own volume is
+				// settled — which on any round longer than the ramp is every frame after the fifth, so a check down
+				// there would simply never run.
+				//
+				// **What each answer means, so the next reader does not have to guess:**
+				// - ambience `playing false` — it is not running at all (stopped, or never started);
+				// - ambience `loaded false` or `0.0s` — the *asset* is the problem, and no volume here will fix it;
+				// - both playing with volumes at their configured values — nothing is broken and the crowd is being
+				//   masked by the song, which is a question for the two volume knobs and not for this file.
+				if (roundProgress >= 1 && currentPhase === PLAYING && !reportedRoundMix) {
+					reportedRoundMix = true;
+
+					logInfo(
+						`[Music] round mix — ambience ${string.format("%.2f", roundMusic.Volume)} ` +
+							`(playing ${tostring(roundMusic.IsPlaying)}, loaded ${tostring(roundMusic.IsLoaded)}, ` +
+							`${string.format("%.1f", roundMusic.TimeLength)}s), song ` +
+							`${string.format("%.2f", roundSong.Volume)} ` +
+							`(playing ${tostring(roundSong.IsPlaying)}, loaded ${tostring(roundSong.IsLoaded)}, ` +
+							`${string.format("%.1f", roundSong.TimeLength)}s)`,
+					);
+				}
+
 				const wantedIntermission = intermissionVolume(currentPhase, remaining, progress);
 
 				if (wantedIntermission !== writtenIntermission) {
@@ -512,10 +733,62 @@ export class MusicController implements OnStart {
 			}),
 		);
 
+		/**
+		 * **The song's fade, and the stop that follows it — the same shape as the room's, in its own handler.**
+		 *
+		 * It is a third connection rather than more lines in the one above because the room's loop **returns early**
+		 * once its own volume is settled, which on a long round is every frame after the fifth. The song's fade would
+		 * then only be advanced on frames where the room happened to change, so a round ending would leave the song
+		 * at whatever volume the room last implied — the fade would appear to work in testing and fail on the end of
+		 * a round, which is the only moment it matters.
+		 *
+		 * **The target is the phase, and the fade is pure arithmetic on `delta`**, so it starts on the frame the
+		 * phase changes rather than on a timer. **The stop is the frame the volume reaches zero** — not a
+		 * `task.delay` — which is what makes it impossible for a stop to land in the next round: a phase that goes
+		 * back to `Playing` before the fade completes turns the target around and the zero is never reached. That race
+		 * is argued at {@link songProgress}, and it is the reason this is not a tween.
+		 */
+		scope.push(
+			RunService.Heartbeat.Connect((delta) => {
+				const target = Fusion.peek(phase) === PLAYING ? 1 : 0;
+
+				if (songProgress !== target) {
+					const step = delta / AUDIO_CONFIG.ROUND_SONG_FADE_SECONDS;
+
+					songProgress =
+						target > songProgress
+							? math.min(songProgress + step, 1)
+							: math.max(songProgress - step, 0);
+				}
+
+				const wantedSong = AUDIO_CONFIG.ROUND_SONG_VOLUME * songProgress;
+
+				if (wantedSong !== writtenSong) {
+					writtenSong = wantedSong;
+					roundSong.Volume = wantedSong;
+				}
+
+				// **The stop, once, on the frame the ramp reaches the bottom while the phase is elsewhere.** Guarded on
+				// `songPlaying` so it is one `Stop()` rather than one per frame, and so a track that has never started
+				// — a client that mounted into an intermission — is not stopped every frame for the session.
+				//
+				// **A fade-out that is interrupted by a new round never reaches here**, which is the property the
+				// tween version could not have: `songProgress` turns round at `Playing` and the track carries on from
+				// where the fade had got to rather than restarting. The entry edge sets it back to `0` and rewinds the
+				// track, so a round that begins during the previous one's fade starts the song from the top anyway —
+				// two paths to the same place, and this one is the one that cannot stop the wrong track.
+				if (songPlaying && songProgress === 0 && Fusion.peek(phase) !== PLAYING) {
+					songPlaying = false;
+					roundSong.Stop();
+				}
+			}),
+		);
+
 		if (DEBUG_LOGGING) {
 			logInfo(
 				`[Music] up — ${string.format("%.2f", intermissionMusic.Volume)} intermission, ` +
 					`${string.format("%.2f", roundMusic.Volume)} round, ` +
+					`${string.format("%.2f", roundSong.Volume)} song, ` +
 					`phase ${Fusion.peek(phase) === "" ? "(unset)" : Fusion.peek(phase)}`,
 			);
 		}

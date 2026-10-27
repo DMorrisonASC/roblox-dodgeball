@@ -1,6 +1,7 @@
 import { Workspace } from "@rbxts/services";
 import { DODGE_CONFIG } from "shared/config/dodge.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import type { NpcMoves } from "../Behavior";
 import { BALL_NAME } from "shared/constants";
 import { resolveDodgeable } from "shared/dodge";
 import { DEBUG_LOGGING, logInfo } from "shared/logger";
@@ -234,6 +235,18 @@ export function makeDodgeBehavior(
 	 */
 	const lastDodgedAt = new Map<Model, number>();
 
+	/**
+	 * Where each rig's current run was aimed — the point a walk issued by {@link runAway} is walking to.
+	 *
+	 * **The one piece of state this file needs because the walk is no longer read off the body.** A run has no
+	 * arrival edge to hear, so `finishRun` compares the body against the point it was sent to and stands it when it
+	 * gets there. A rig with no row has no run outstanding.
+	 *
+	 * **A row is deleted when its run ends**, which is the ordinary path. A rig destroyed mid-run leaves one behind,
+	 * which is the same lifetime the two maps above have — named here rather than fixed, because `NpcService` drops
+	 * the *loop* on death and this file has never had an `onDied` to hang its own tables up on.
+	 */
+	const runTo = new Map<Model, Vector3>();
 	/**
 	 * The decision each rig has already made about the ball it is currently facing.
 	 *
@@ -492,29 +505,55 @@ export function makeDodgeBehavior(
 	 * buys. Only the paths where the rig *could not* dodge call this: the cooldown below, and a refusal from
 	 * the service.
 	 *
-	 * **`MoveTo` and not a velocity write**, for `SeekBehavior`'s reason: the engine's own mover owns the body,
-	 * and this is the same request that behaviour issues.
-	 *
-	 * **What it fights, named.** `Behavior_Seeking` also issues `MoveTo` — at a ball, rather than away from one
-	 * — so a rig doing both is two walkers taking turns and whichever ticks last each turn wins. That is the
-	 * same interaction `WalkToJoinPadBehavior`'s doc records for its own pair, and it is worth its cost here: a
-	 * rig running for its life and a rig fetching a ball are both doing what they were told, and the ball it
-	 * wants is usually the one away from the ball coming at it.
+	 * **And it now has to end its own walk, which is the one thing this file gained from intent-driven animation.**
+	 * Every other walker in this game stops itself — `SeekBehavior` on a lost target or a full hand,
+	 * `WalkToJoinPadBehavior` on the pad — but a run has no arrival edge to hear, because this behaviour is asked
+	 * only on its own interval and the engine's `MoveToFinished` is deliberately no longer consulted. So the point a
+	 * run was aimed at is remembered, and the first turn that finds the body there tells it to stand. **The
+	 * alternative was leaving it to whichever behaviour ticks next**, which works today only because every rig
+	 * wearing this tag also wears `Behavior_Seeking` — a dependency that holds by accident and would break silently
+	 * the first time a rig was painted with one tag and not the other.
 	 */
-	const runAway = (model: Model, root: BasePart, direction: Vector3): void => {
-		const humanoid = model.FindFirstChildWhichIsA("Humanoid");
-		if (!humanoid) return;
+	const runAway = (model: Model, root: BasePart, direction: Vector3, moves: NpcMoves): void => {
+		const target = root.Position.add(direction.mul(NPC_CONFIG.DODGE_RUN_STUDS));
 
-		humanoid.MoveTo(root.Position.add(direction.mul(NPC_CONFIG.DODGE_RUN_STUDS)));
+		runTo.set(model, target);
+		moves.walkTo(target);
+	};
+
+	/**
+	 * **Ends the run once the body has got where the run was aimed, and does nothing at all on any other turn.**
+	 *
+	 * The distance test is against the point *this behaviour* issued, so a rig that has since been walked somewhere
+	 * else by `SeekBehavior` is nowhere near it and is left alone — which is what stops this from standing a rig that
+	 * another behaviour is in the middle of moving. That is the whole reason it is a position this file remembers
+	 * rather than a "did I run recently" flag: a flag would fire on a rig somebody else had taken hold of.
+	 */
+	const finishRun = (model: Model, root: BasePart, moves: NpcMoves): void => {
+		const target = runTo.get(model);
+		if (target === undefined) return;
+		if (root.Position.sub(target).Magnitude > NPC_CONFIG.DODGE_RUN_ARRIVED_STUDS) return;
+
+		runTo.delete(model);
+		moves.standAt();
 	};
 
 	return {
 		tag,
 		tickInterval: DODGE_TICK_SECONDS,
 
-		tick(model) {
+		tick(model, humanoid, moves) {
 			const root = resolveDodgeable(model)?.root;
 			if (!root) return;
+
+			// **The run this behaviour issued stand-ins first, before any new decision.** A rig that has arrived where
+			// it ran to is standing, and nothing else is going to say so — see `finishRun` for why this file has to
+			// answer that itself rather than leave it to whichever behaviour ticks next.
+			//
+			// **Above the `Anchored` gate on purpose**, because a body that cannot move must still be told to stand:
+			// the gate below returns before anything is issued, and a rig anchored mid-run would otherwise animate
+			// walking where it is anchored for the rest of its life.
+			finishRun(model, root, moves);
 
 			// **An anchored rig is not asked, because a dodge is pure movement and an anchored assembly
 			// does not move.** `SetNetworkOwner` already refused this same rig at setup — see
@@ -561,7 +600,7 @@ export function makeDodgeBehavior(
 			// direction it has already proved clear; see `runAway` for what that is and is not.
 			const last = lastDodgedAt.get(model);
 			if (last !== undefined && now - last < DODGE_CONFIG.COOLDOWN) {
-				runAway(model, root, direction);
+				runAway(model, root, direction, moves);
 
 				return;
 			}
@@ -630,7 +669,7 @@ export function makeDodgeBehavior(
 				// **The stamp above is left alone**, which is the point of it being stamped on success: a
 				// refusal has not happened, so no cooldown is charged here — the walk is free to repeat every
 				// turn the ball stays on course, and that repetition is what makes it a run rather than a step.
-				runAway(model, root, direction);
+				runAway(model, root, direction, moves);
 			}
 		},
 	};

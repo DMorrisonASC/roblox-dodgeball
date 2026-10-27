@@ -107,7 +107,7 @@ export const inPracticeZone = Fusion.Value(scope, false);
  *
  * **A `Value` rather than a `Computed`, which is the whole reason it is here at all.** The answer is an
  * attribute read, and an attribute read inside a `Computed` is a *sample* rather than a dependency — the
- * lesson `ArenaFreezeCountdownController`, `StatsBillboardController` and `RespawnHudController` each
+ * lesson `ArenaFreezeCountdownController` and `RespawnHudController` each
  * record about the same engine behaviour. So the connection has to exist somewhere, and it exists once,
  * in the controller named below.
  *

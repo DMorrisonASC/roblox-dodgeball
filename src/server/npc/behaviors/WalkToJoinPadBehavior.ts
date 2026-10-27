@@ -2,6 +2,7 @@ import { Workspace } from "@rbxts/services";
 import { resolveDodgeable } from "shared/dodge";
 import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { NPC_CONFIG } from "shared/config/npc.config";
+import type { NpcMoves } from "../Behavior";
 import { TEAM_ATTRIBUTE } from "shared/constants";
 import { logInfo, logWarn } from "shared/logger";
 // **A type-only import, because a behaviour must not require the service it is handed.** `SeekBehavior`
@@ -823,7 +824,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 			speeds.setBaseSpeed(model, NPC_CONFIG.WALK_TO_PAD_SPEED);
 		},
 
-		tick(model, humanoid) {
+		tick(model, humanoid, moves) {
 			const walk = stateOf(model);
 
 			// The part this rig is judged and moved by, through the helper a seek, a dodge and a pickup
@@ -1032,7 +1033,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				// of saying "stay here" — the same call `SeekBehavior` makes, for the same reason. There
 				// is no second mechanism: a humanoid walks until something tells it otherwise, and this
 				// is what tells it.
-				humanoid.MoveTo(root.Position);
+				moves.standAt();
 
 				// **And the tag comes off, which is the end of this behaviour on this rig — and what stops a
 				// rebuilt rig from walking back to the lobby.**
@@ -1074,7 +1075,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 			// where the *start delay* is an instant a spawner wrote for a rig to compare against a shared
 			// clock — which is why one is `os.clock()` and the other is `Workspace:GetServerTimeNow()`.
 			if (walk.stage !== "approach") {
-				humanoid.MoveTo(root.Position);
+				moves.standAt();
 
 				if (now < walk.stageUntil) return;
 
@@ -1113,7 +1114,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 				const lookAtPoint = model.GetAttribute(WALK_TO_JOIN_PAD_LOOK_AT_ATTRIBUTE);
 
 				if (typeIs(lookAtPoint, "Vector3")) {
-					humanoid.MoveTo(root.Position);
+					moves.standAt();
 					lookAt(model, root, walk, lookAtPoint);
 
 					walk.stage = "look-away";
@@ -1145,7 +1146,7 @@ export function createWalkToJoinPadBehavior(speeds: WalkSpeedService): NpcBehavi
 			// across the other side's pad, in which case it is a point beside that pad — the corridor. The
 			// distance test above is against the *destination*, so a rig bending around a sign still arrives on
 			// the arrival threshold rather than on some larger one.
-			humanoid.MoveTo(aim);
+			moves.walkTo(aim);
 		},
 
 		/**

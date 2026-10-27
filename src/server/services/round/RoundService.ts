@@ -2339,8 +2339,8 @@ export class RoundService implements OnStart {
 
         // **And the badges' out, which is a third count of the same fact and not a duplicate of either above.**
         // It is a third because the two above answer questions this one cannot: a lifetime figure is not the
-        // round's, and `roundOuts` is keyed on people — while the badge strip is drawn above every head in the
-        // round, rigs included. A rig is never eliminated (the round has no concept of it), so this is the only
+        // round's, and `roundOuts` is keyed on people — while the badge counters are kept per body, rigs included.
+        // A rig is never eliminated (the round has no concept of it), so this is the only
         // out the badge system will ever see and it is always a player's.
         this.badges.recordOut(player);
 

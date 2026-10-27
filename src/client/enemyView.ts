@@ -4,6 +4,7 @@ import { LAST_HIT_BY_CAUSE_ATTRIBUTE, STAT_HITS, STAT_OUTS } from "shared/consta
 import { logDebug, logInfo } from "shared/logger";
 import { killCamActive } from "./panels";
 import { applyGlow, applyTextGlow } from "./ui/glow";
+import { hudTheme } from "./ui/hudTheme";
 import { PREMIUM } from "./ui/premiumTheme";
 import { getFullScreenGui } from "./ui/screenGui";
 
@@ -24,8 +25,8 @@ import { getFullScreenGui } from "./ui/screenGui";
  *
  * **The numbers are a player's, and a rig has none — which is a fact about the server rather than an omission
  * here.** `StatsService` writes `STAT_HITS` and `STAT_OUTS` on the **`Player`**, because the record outlives every
- * body it was earned in, and a rig has no player and no record: `StatsBillboardController` reads those two off the
- * player and nothing off a rig's model. So a rig's overlay says `—` rather than `0`, which is the honest answer —
+ * body it was earned in, and a rig has no player and no record: these two are read off the `Player` and nothing
+ * off a rig's model. So a rig's overlay says `—` rather than `0`, which is the honest answer —
  * a nought would be a claim that it threw and missed.
  *
  * **Nothing here is drawn with a `BillboardGui` or a `ScreenGui` of its own** — it mounts into `getFullScreenGui`,
@@ -57,6 +58,32 @@ import { getFullScreenGui } from "./ui/screenGui";
  * 64 clears the topbar's ~36–58px and nothing else.
  */
 const TOP_INSET = 64;
+
+/** How far in from the screen's left edge the record card sits, in pixels. **Placeholder — 16.** */
+const LEFT_INSET = 16;
+
+/**
+ * The record card's size and inner spacing, in pixels. **Placeholder — 132 wide, a 2-pixel gap between lines, 8 at
+ * the sides and bottom and 2 at the top.**
+ *
+ * **It got smaller because it was too big, and the honest record of what was tried is this comment.** The first
+ * shape was `150` wide with a `Stats` heading above three 15-pixel lines and `10` of padding all round; it read as a
+ * panel with a title rather than as a scorecard, and it took a corner of the screen to say four short things.
+ *
+ * **The heading is gone rather than shrunk, and nothing is lost by it.** `Hits:`, `Outs:` and `Ratio:` already name
+ * themselves — a `Stats` title above them is the same word said twice, and it was the single tallest row in the box.
+ * What is left is the three figures at `RECORD_TEXT_SIZE`, which is the smallest size at which a bold label is
+ * readable while the camera is moving.
+ *
+ * **The gap and the type both came down with it.** `2` between lines still separates them — the rows carry their own
+ * line height, so this is space rather than structure — and the width is set by `Ratio: 1.00`, the longest line the
+ * card can ever hold, rather than by the 150 that was chosen for a heading it no longer has.
+ */
+const RECORD_WIDTH = 132;
+const RECORD_LINE_GAP = 2;
+const RECORD_PADDING = 8;
+const RECORD_TOP_PADDING = 2;
+const RECORD_TEXT_SIZE = 13;
 
 /** The panel's width in pixels; its height is its content's. **Placeholder — 260, wide enough for a long name.** */
 const WIDTH = 260;
@@ -126,6 +153,31 @@ let statsLabel: TextLabel | undefined;
 let headerLabel: TextLabel | undefined;
 
 /**
+ * **The attacker's record, in its own card on the left of the screen** — hits, outs and the ratio those make.
+ *
+ * **Why a second element rather than a fourth line in the centre caption.** The caption at the top centre is the
+ * *narrative* of a shot: what you are looking at, who it is, and why it happened. Its stats line is a caption on a
+ * name and it is read last, at `caption` size, under two larger lines. The question this panel answers is different
+ * and it is asked first — **how good was the body I am watching** — so it gets its own surface, its own corner of the
+ * screen, and type large enough to be read while the camera is moving.
+ *
+ * **On the left because the centre is taken.** The kill-cam caption is anchored `(0.5, 0)` at the top of the screen
+ * and the HUD's own readout column hides itself for the length of a shot (`killCamActive`), so the top-left is the one
+ * part of the screen that is empty for exactly as long as this is on it.
+ *
+ * **White paper with black ink, which is the one element in this file that is not plum.** The caption wears the HUD's
+ * dark panel because it sits over the same arena the HUD does. This panel is deliberately the other material: it is a
+ * *scorecard*, the same paper the shop and the stats board are made of, and it is the only thing on screen during a
+ * shot, so a second dark panel would read as more caption rather than as a different kind of fact.
+ */
+let recordPanel: Frame | undefined;
+
+/** The record's three lines, one per figure. Held because every shot rewrites all three. */
+let recordHits: TextLabel | undefined;
+let recordOuts: TextLabel | undefined;
+let recordRatio: TextLabel | undefined;
+
+/**
  * The connections that keep the numbers live, one per attribute.
  *
  * **Held so they can be dropped when the shot ends.** They are made on the *killer's* instance, which is a
@@ -184,22 +236,30 @@ export function showEnemyView(body: Model): void {
 
 	if (statsLabel !== undefined) statsLabel.Text = caught ? CAUGHT_TEXT : describeStats(source);
 
+	// **The card is written whether or not the death was a catch**, which is the one place its content and the caption's
+	// diverge on purpose: a caught throw's caption is an explanation and has no numbers in it, but the body being
+	// watched is still the catcher, and *their* record is exactly what a player wants to know next to a caption that
+	// says they caught the ball.
+	writeRecord(source);
+
 	// **The numbers are live only for a hit.** A catch's line is a fixed sentence, so a stat write arriving under it a
 	// frame later would replace the explanation with `Hits: 4 | Outs: 1` — the exact thing this case exists to stop
-	// saying.
-	if (!caught) {
-		// **Live, because the overlay says "how are they doing" and the answer can change while it is being read.**
-		// Two signals rather than a poll, and one connection per attribute rather than one per number: a `Value` and
-		// a `Computed` would be the Fusion way to do the same thing, but an attribute read inside a `Computed` is a
-		// *sample* rather than a dependency — the lesson `RespawnHudController` and `StatsBillboardController` both
-		// record — so the subscription has to exist somewhere and here is where it belongs.
-		for (const attribute of [STAT_HITS, STAT_OUTS]) {
-			live.push(
-				source.GetAttributeChangedSignal(attribute).Connect(() => {
-					if (statsLabel !== undefined) statsLabel.Text = describeStats(source);
-				}),
-			);
-		}
+	// saying. **The card is live either way**: it is a record rather than a caption, and a catch is when the record
+	// changes, so gating it on the death's cause would freeze it exactly when it was about to matter.
+	//
+	// **Live, because the overlay says "how are they doing" and the answer can change while it is being read.**
+	// Two signals rather than a poll, and one connection per attribute rather than one per number: a `Value` and
+	// a `Computed` would be the Fusion way to do the same thing, but an attribute read inside a `Computed` is a
+	// *sample* rather than a dependency — the lesson `RespawnHudController` records — so the subscription has to
+	// exist somewhere and here is where it belongs.
+	for (const attribute of [STAT_HITS, STAT_OUTS]) {
+		live.push(
+			source.GetAttributeChangedSignal(attribute).Connect(() => {
+				writeRecord(source);
+
+				if (!caught && statsLabel !== undefined) statsLabel.Text = describeStats(source);
+			}),
+		);
 	}
 
 	logDebug(`[EnemyView] watching ${body.GetFullName()}${caught ? " — a caught throw" : ""}`);
@@ -293,7 +353,110 @@ function mount(): void {
 
 	frame = panel;
 
+	// **And the record card, in the same GUI for the same reason**: it is furniture pinned to the screen's own edges,
+	// and it must be visible for exactly the length of a shot, which is when the HUD plane hides itself. See
+	// {@link recordPanel} for why it is the left and why it is paper rather than plum.
+	const record = Fusion.New(scope, "Frame")({
+		Name: "EnemyRecord",
+		AnchorPoint: Vector2.zero,
+		Position: UDim2.fromOffset(LEFT_INSET, TOP_INSET),
+		Size: new UDim2(0, RECORD_WIDTH, 0, 0),
+		AutomaticSize: Enum.AutomaticSize.Y,
+		BackgroundColor3: hudTheme().colors.panel,
+		BackgroundTransparency: 0,
+		BorderSizePixel: 0,
+		ZIndex: Z_INDEX,
+		Visible: Fusion.Computed(scope, (use) => use(killCamActive)),
+	});
+
+	Fusion.New(scope, "UICorner")({ Parent: record, CornerRadius: new UDim(0, PREMIUM.corner) });
+	Fusion.New(scope, "UIPadding")({
+		Parent: record,
+		PaddingTop: new UDim(0, RECORD_TOP_PADDING),
+		PaddingBottom: new UDim(0, RECORD_PADDING),
+		PaddingLeft: new UDim(0, RECORD_PADDING),
+		PaddingRight: new UDim(0, RECORD_PADDING),
+	});
+	Fusion.New(scope, "UIListLayout")({
+		Parent: record,
+		FillDirection: Enum.FillDirection.Vertical,
+		SortOrder: Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment: Enum.HorizontalAlignment.Left,
+		Padding: new UDim(0, RECORD_LINE_GAP),
+	});
+
+	recordHits = recordLine(scope, record, "Hits", "Hits: —", RECORD_TEXT_SIZE, Enum.Font.GothamBold, 1);
+	recordOuts = recordLine(scope, record, "Outs", "Outs: —", RECORD_TEXT_SIZE, Enum.Font.GothamBold, 2);
+	recordRatio = recordLine(scope, record, "Ratio", "Ratio: —", RECORD_TEXT_SIZE, Enum.Font.GothamBold, 3);
+
+	record.Parent = getFullScreenGui();
+
+	recordPanel = record;
+
 	logInfo("[HUD] enemy view up — hidden until a kill cam describes somebody");
+}
+
+/**
+ * **One line of the record card: left-aligned, black, and as tall as its own text.**
+ *
+ * **No halo, and that is the difference from {@link line}.** The caption's letters are lit because they sit on the
+ * HUD's dark plum and the glow is what makes it read as neon; this card is white paper, and a stroke around black ink
+ * on paper is the one thing that would make it look wrong rather than lit. The two styles are separate functions
+ * rather than one with a flag because the *material* is the difference, not a property of any one line.
+ */
+function recordLine(
+	scope: Fusion.Scope<unknown>,
+	parent: Frame,
+	name: string,
+	text: string,
+	textSize: number,
+	font: Enum.Font,
+	order: number,
+): TextLabel {
+	return Fusion.New(scope, "TextLabel")({
+		Name: name,
+		Parent: parent,
+		BackgroundTransparency: 1,
+		Font: font,
+		Text: text,
+		TextColor3: hudTheme().colors.textPrimary,
+		TextSize: textSize,
+		TextXAlignment: Enum.TextXAlignment.Left,
+		AutomaticSize: Enum.AutomaticSize.XY,
+		LayoutOrder: order,
+		ZIndex: Z_INDEX,
+	});
+}
+
+/**
+ * **The three figures, from whichever instance the numbers live on** — the `Player` for a player, and the body itself
+ * for a rig, which has no record and answers with em dashes. The same rule {@link describeStats} states, split into
+ * lines because the card draws them one per row.
+ */
+function recordOf(source: Instance): { hits: string; outs: string; ratio: string } {
+	const hits = source.GetAttribute(STAT_HITS);
+	const outs = source.GetAttribute(STAT_OUTS);
+
+	if (!typeIs(hits, "number") || !typeIs(outs, "number")) {
+		return { hits: "Hits: —", outs: "Outs: —", ratio: "Ratio: —" };
+	}
+
+	const counted = hits + outs;
+
+	return {
+		hits: `Hits: ${hits}`,
+		outs: `Outs: ${outs}`,
+		ratio: `Ratio: ${counted === 0 ? "—" : string.format("%.2f", hits / counted)}`,
+	};
+}
+
+/** Writes `source`'s figures into the card. Called on every shot and on every write that changes them. */
+function writeRecord(source: Instance): void {
+	const record = recordOf(source);
+
+	if (recordHits !== undefined) recordHits.Text = record.hits;
+	if (recordOuts !== undefined) recordOuts.Text = record.outs;
+	if (recordRatio !== undefined) recordRatio.Text = record.ratio;
 }
 
 /**

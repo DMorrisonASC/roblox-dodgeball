@@ -344,9 +344,9 @@ export class ArenaFreezeCountdownController implements OnStart {
 		 * and validated once. That the *phase* is deliberately not part of it is that file's argument; the
 		 * countdown is driven by the transition below, which only runs in a playing phase.
 		 *
-		 * **A `Value` fed by the attribute's change signal**, the bridge `StatsBillboardController` and
-		 * `RespawnHudController` both build: an attribute read inside a `Computed` is a *sample* rather than a
-		 * dependency, so the one connection has to exist for the reactive form to be true.
+		 * **A `Value` fed by the attribute's change signal**, the bridge `RespawnHudController` builds: an
+		 * attribute read inside a `Computed` is a *sample* rather than a dependency, so the one connection has to
+		 * exist for the reactive form to be true.
 		 */
 		const onTeam = Fusion.Value(scope, onASide(player));
 

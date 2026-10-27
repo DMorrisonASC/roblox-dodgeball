@@ -450,8 +450,8 @@ export class DodgeService implements OnStart {
 		// above this sentence has returned for a reason the dodge did not happen Ã¢â‚¬â€ no humanoid, a catch in the
 		// way, a cooldown, a direction that is not one Ã¢â‚¬â€ so arriving here *is* the dodge, and a refused attempt
 		// is not counted by construction rather than by a condition written here. The counters are keyed on the
-		// body, which folds to its `Player`; a rig's dodge is counted under its model, because a rig has a head
-		// for the badge strip to hang over.
+		// body, which folds to its `Player`; a rig's dodge is counted under its model, because a rig has no
+		// `Player` and `BadgeService`'s counters are keyed on the body.
 		this.badges.recordDodge(model);
 
 		return true;

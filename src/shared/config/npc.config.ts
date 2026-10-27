@@ -57,63 +57,6 @@ export const NPC_CONFIG = {
 	NETWORK_OWNERSHIP_RECHECK_SECONDS: 5,
 
 	/**
-	 * The running speed above which a rig counts as walking, in studs per second.
-	 *
-	 * **Roblox's own number, from Roblox's own animation script.** Its `onRunning` handler branches on
-	 * `speed > 0.01`, against exactly the fact this reads — the speed `Humanoid.Running` reports — so this is a
-	 * cited precedent rather than a tuned value, and it is deliberately *tiny*: the fault this half of the
-	 * locomotion decision replaced was a **five-stud** band floor, which published every rig moving slower than
-	 * that as standing, creeping rigs included.
-	 *
-	 * **What it is not:** not a band, and not a claim that a measurement is as good as a request. A rig is
-	 * published as moving the moment it is moving at all, and it is a measurement only because a `MoveTo`-driven
-	 * body has no readable request — see `NpcService.publishAnimation` for the two properties that were tried
-	 * before this and why both were zero.
-	 *
-	 * **The number is only half of what makes the comparison safe: the other half is the edge it is read on.**
-	 * This is compared against what `Humanoid.Running` last reported, and a walk *ends* on
-	 * `Humanoid.MoveToFinished` rather than on a reported zero, because a speed that changes is not a promise
-	 * that the last change was the stop — see `NpcLoop.moveToFinished` for the lobby of rigs that walked on the
-	 * spot because it was read as one.
-	 */
-	RIG_MOVING_SPEED: 0.01,
-
-	/**
-	 * **The physical travel below which a rig is not really moving, in studs per second — `1`.**
-	 *
-	 * **A second threshold rather than a bigger {@link RIG_MOVING_SPEED}, because the two measure different
-	 * things.** `RIG_MOVING_SPEED` is compared against *what the engine last reported*, and it is `0.01` so that any
-	 * reported motion at all counts. This is compared against **where the body actually is** — its
-	 * `AssemblyLinearVelocity` — and asks a much cruder question: is anything moving this rig through space.
-	 *
-	 * **Placeholder, and the ordering is the argument for the value.** A rig that is genuinely walking travels at
-	 * `WALK_TO_PAD_SPEED` (16) or a seek run, so anything near this number is either a body being nudged or one that
-	 * has already stopped; a shove from a thrown ball decays through it in a few tenths of a second. Putting it at
-	 * `0.01` would make the watchdog fire on a body that is barely creeping, and putting it at 4 would catch a rig
-	 * mid-stride on its first frame. One is below every walk in the game and above every decay curve's tail.
-	 *
-	 * **Measured on the whole velocity and not its horizontal part** — see `NpcService.watchForStaleWalk`, which
-	 * argues why a falling rig must not be read as standing.
-	 */
-	RIG_STALE_WALK_SPEED: 1,
-
-	/**
-	 * **How many turns in a row a rig must be physically still before its walk is called stale — `3`.**
-	 *
-	 * **A debounce rather than an immediate clear, and the case it protects is the first frame of a real walk.** The
-	 * engine accelerates a `MoveTo` body from a standstill, so the turn a walk is issued on — or the one after it —
-	 * can legitimately read near-zero travel while the body is already on its way. The threshold alone cannot tell
-	 * that apart from a body that has come to rest, and a watchdog that fired on one quiet turn would flicker
-	 * `AnimMoving` false and true at the top of every walk, which is two attribute writes and a visible clip stutter.
-	 *
-	 * **Three turns is 0.3 s at the tenth-of-a-second tick** `NpcService.run` runs at, which is longer than a humanoid
-	 * needs to reach walking speed and far shorter than anybody would notice a shove's animation outlasting the shove.
-	 *
-	 * **Placeholder.**
-	 */
-	RIG_STALE_WALK_TURNS: 3,
-
-	/**
 	 * **How long a drill's ball survives outside its bay before it is destroyed, in seconds — `5`.**
 	 *
 	 * **A grace period rather than the instant death this used to be, and the reason is that a catch needs the ball to
@@ -839,6 +782,24 @@ export const NPC_CONFIG = {
 	 * radius the dash exists to escape.
 	 */
 	DODGE_RUN_STUDS: 12,
+
+	/**
+	 * **How close to the point it ran to a rig has to get before the run is over, in studs — `2`.**
+	 *
+	 * **The dodge's run is the one walk in this game that nothing used to stop, and with the animation now read from
+	 * intent rather than from velocity that became a visible fault rather than a harmless one.** Every other walker
+	 * here ends its own walk — `SeekBehavior` on arrival or a lost target, `WalkToJoinPadBehavior` on the pad — but a
+	 * runaway issues a `MoveTo` and has no arrival edge to hear: it is asked `tick` only on its own interval, and the
+	 * engine's `MoveToFinished` is deliberately not consulted any more. So the behaviour measures arrival itself, at
+	 * the one point it already knows.
+	 *
+	 * **Two studs rather than the pad's arrival radius, because this is a different question.** A pad stop is about
+	 * leaving a resting body inside a sign; this is about a body that has visibly finished a twelve-stud move, and the
+	 * engine's own arrival tolerance for a `MoveTo` is small. Overshooting costs a body that animates walking for a
+	 * few tenths of a second at the end of a run; undershooting costs a rig that stops before it has cleared the line
+	 * the whole run exists to clear. **Placeholder.**
+	 */
+	DODGE_RUN_ARRIVED_STUDS: 2,
 
 	/**
 	 * How far from its ball a seeking rig has to be to *run* for it, in studs. **Placeholder — 30.**

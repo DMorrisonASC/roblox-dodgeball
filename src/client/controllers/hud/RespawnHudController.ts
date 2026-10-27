@@ -223,8 +223,7 @@ export class RespawnHudController implements OnStart {
 		// **Two lines, stacked, and the wrapper's `AutomaticSize.Y` is what makes its height the sum of them.**
 		// A `BillboardGui` cannot size itself and a `Frame` can, so the layout measures and the file adds up
 		// nothing: `h4`'s line box and `caption`'s come from the theme, and a hand-written total would be a
-		// guess that goes stale the day either variant is retuned (`StatsBillboardController` made the same
-		// move for the same reason).
+		// guess that goes stale the day either variant is retuned.
 		const stack = new Instance("UIListLayout");
 		stack.FillDirection = Enum.FillDirection.Vertical;
 		stack.SortOrder = Enum.SortOrder.LayoutOrder;

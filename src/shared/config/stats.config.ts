@@ -1,9 +1,9 @@
 /**
- * The lifetime throw record: where it is kept, and how it is shown.
+ * The lifetime throw record: where it is kept and how often it is written.
  *
- * Read by `StatsService` for the store and the autosave, and by the client's stats billboard for the
- * two figures that decide how it is drawn. Shared rather than server-only because the billboard's
- * reach and offset are the game's look rather than one machine's business.
+ * **The presentation half lives with the client now.** `BILLBOARD_OFFSET_Y` and `BILLBOARD_MAX_DISTANCE` were
+ * here until 2026-10-27 and moved into `StatsBillboardController` when the only thing left above a head was the
+ * badge strip: they are that billboard's own layout, and nothing on the server reads either of them.
  */
 export const STATS_CONFIG = {
 	/**
@@ -26,40 +26,26 @@ export const STATS_CONFIG = {
 	AUTOSAVE_INTERVAL: 180,
 
 	/**
-	 * How far a stat billboard is drawn, in studs.
-	 *
-	 * The figures above every head are only worth drawing for people near enough to be in the round
-	 * with you — and a billboard is drawn per viewer, so this is what keeps a full server's worth of
-	 * labels from being built by every client for a lobby they cannot read.
-	 */
-	BILLBOARD_MAX_DISTANCE: 100,
-
-	/** How far above a head the billboard floats, in studs. Clear of the head and of a tall hat. */
-	BILLBOARD_OFFSET_Y: 2.5,
-
-	/**
 	 * The crown, drawn above the head of a player who is hot.
 	 *
 	 * **An image and never an emoji glyph.** The same sigil as a character would render differently on
 	 * every platform and as a hollow box on some of them, and a box above a player's head is worse than
 	 * nothing at all — so this is an upload, and the whole of the crown's look is these four numbers.
 	 *
-	 * **Its own offset from the billboard's, because the two can be up at once.** A crowned player with a
-	 * record to show wears both, and they are different sizes: the crown sits above the line of text
-	 * rather than inside it.
-	 *
-	 * The reach is the billboard's number as a starting point rather than a shared constant, because the
-	 * two are answers to the same question — how far away is a label worth drawing — asked about objects
-	 * of different sizes. See `BILLBOARD_MAX_DISTANCE`.
+	 * **Nothing reads these four any more, and that is recorded rather than tidied.** The crown's visual was
+	 * replaced by the `onFire` badge and the billboard that drew it is deleted; `CROWN_ATTRIBUTE` is unchanged and
+	 * still drives `EconomyService.checkMilestones`. They are left because they are the crown's look and the badge
+	 * that replaced it is currently drawn by nothing either — the four numbers are the only description of the
+	 * art that exists if that visual comes back. **Do not treat them as a knob while they are unread.**
 	 */
 	CROWN_IMAGE: "rbxassetid://109209442459081",
 
 	/** How big the crown is drawn, in pixels. **Placeholder.** Scaled to fit rather than stretched. */
 	CROWN_SIZE: UDim2.fromOffset(40, 40),
 
-	/** How far above a head the crown floats, in studs. **Placeholder** — above the billboard's. */
+	/** How far above a head the crown floats, in studs. **Placeholder.** */
 	CROWN_OFFSET_Y: 4.5,
 
-	/** How far the crown is drawn, in studs. **Placeholder** — see the note above. */
+	/** How far the crown is drawn, in studs. **Placeholder.** */
 	CROWN_MAX_DISTANCE: 100,
 } as const;

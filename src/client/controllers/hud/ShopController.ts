@@ -145,7 +145,7 @@ export class ShopController implements OnStart {
 	 * `Computed`.** A `Computed` derives its dependencies from the reads that actually ran, and an
 	 * attribute read is a *sample* rather than a subscription — so a label built straight on
 	 * `GetAttribute` draws once and never again, which for a balance is the most visible failure this
-	 * panel could have. The bridge is the shape `StatsBillboardController` uses for the same reason.
+	 * panel could have. So the balance is a `Value` fed from the attribute's changed signal.
 	 */
 	private coins = Fusion.Value(this.scope, 0);
 
@@ -684,9 +684,9 @@ export class ShopController implements OnStart {
 	/**
 	 * Bridges the three attributes into `Fusion` values.
 	 *
-	 * **A connection per attribute plus one read, which is `StatsBillboardController`'s shape and for its
-	 * reason**: an attribute read inside a `Computed` is a sample rather than a dependency, so the value
-	 * has to be pushed in from the changed signal for anything drawing it to update.
+	 * **A connection per attribute plus one read**, because an attribute read inside a `Computed` is a sample
+	 * rather than a dependency, so the value has to be pushed in from the changed signal for anything drawing it
+	 * to update.
 	 *
 	 * The opening read is not redundant with the connections. A player who already has coins when this
 	 * mounts — every player after their first match, and every player in Studio where the module reloads

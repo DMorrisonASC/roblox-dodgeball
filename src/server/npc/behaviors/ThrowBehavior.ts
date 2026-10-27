@@ -1059,12 +1059,16 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				// the rig is still walking its carry-through, or decelerating out of it, and letting the ball go now
 				// would make this shape identical to `moveAndAim` — the other seventy per cent of throws. The fact
 				// is `NPC_ANIM_MOVING_ATTRIBUTE`, written by `NpcService.publishAnimation` *before* this behaviour
-				// ticks from the two edges a rig's walk has — `Humanoid.Running` for the start and
-				// `Humanoid.MoveToFinished` for the stop — so it is this turn's answer rather than a stale one, and
-				// it is the same fact every client is already using to choose the rig's walk or idle clip, so the
-				// rule reads as "the body waits to be seen standing before it throws". A body being *shoved* does
-				// delay this, because the engine reports the speed the body actually moved at rather than a key:
-				// the shove is motion, and the expiry timer below covers the frame where it never quite ends.
+				// ticks, and since 2026-10-26 it is the rig's **intent** rather than a measured speed — so it is this
+				// turn's answer rather than a stale one, and it is the same fact every client is already using to
+				// choose the rig's walk or idle clip, so the rule reads as "the body waits to be seen standing before
+				// it throws".
+				//
+				// **The shove caveat this comment used to carry is gone, and its absence is the point of the change.**
+				// It said a shoved body would delay the release, "because the engine reports the speed the body
+				// actually moved at rather than a key". Under the intent reading a shoved rig was never asked to walk,
+				// so it is standing and throws on time — the one case that needed the expiry timer below to rescue it
+				// no longer arrives.
 				//
 				// **Nothing here can hold forever, which is what makes waiting safe.** The seek ends the walk on its
 				// own — arrival, or its `PICKUP_WALK_SECONDS` window — and the expiry timer is armed to cover that

@@ -925,7 +925,7 @@ wrong:
 | `RespawnHudController` | **two lines** above centre (`0.44` down): the tenths countdown as `h4` seconds + dimmer `subtitle1` tenths, and beneath it `Hit by <name>` — the splash's own styling (`ui/actionSplash.ts`) rather than a copy of it | `RESPAWN_AT_ATTRIBUTE`, `LAST_HIT_BY_ATTRIBUTE` |
 | `CurrencyHudController` | `Coins: N`, under the shop button | `COINS_ATTRIBUTE` |
 | `SuperHudController` | streak / charge / armed ability / MultiBall window | the four `SUPER_*` attributes + the held ball's mark |
-| `StatsBillboardController` | **the round's badges, or** the per-head hit/out record — one billboard, two contents; a rig wears the badge strip alone. **The crown visual is retired** (`CROWN_ATTRIBUTE` still drives `EconomyService.checkMilestones`; the `onFire` badge is the picture now) | `BADGES_ATTRIBUTE`, `STAT_HITS`, `STAT_OUTS` |
+| `StatsBillboardController` | **the round's badges above every head** — a strip of a name and a one-line description per badge, `14`/`11`, no card behind it. **The hits/outs record is gone** (deleted 2026-10-27, §15 item 112): those figures are the kill cam's card's, and two copies were one too many | `BADGES_ATTRIBUTE` |
 | `HitLogController` | who you hit / who hit you, top left, during a round | the `roundHit` event |
 | `ControlsLegendController` | the control legend | `THROW_ENABLED` |
 | `MobileControlsController` | **the six mobile buttons** — `Drop`, `Catch`, `Curve`, `Dodge`, `Throw`, `Jump` — packed by `pack()` into the bottom-right corner of `getScreenSpaceGui()`, with a cooldown ring behind the two that have a clock and the engine's own jump button dressed or hidden (`HIDE_ENGINE_JUMP`). Glass face at `0.7`, white inverse on a press — §10 has both stories | `CATCH_READY_AT`, `DODGE_READY_AT`; `isMobile()` |
@@ -1400,7 +1400,9 @@ boundary** do, and the round's reset happens as the next round *opens*, so the c
 stays on screen through the intermission. `refreshCrowns()` crowns a player at
 `count >= CROWN_STREAK_THRESHOLD` (3) **or** at `count >= 1 && count === the best on their side`, and
 a tie at the top crowns both. The crown is a boolean (`CROWN_ATTRIBUTE`) on the **player**, so a
-respawn costs nothing; `StatsBillboardController` draws it above the head.
+respawn costs nothing. **Nothing draws it since 2026-10-27** — the per-head billboard that did was stripped
+back to badges only (`HANDOFF.md` §15 item 112); `CROWN_ATTRIBUTE` is read by `EconomyService.checkMilestones`
+and by nothing on the client.
 
 **The power lock.** Pierce, MultiBall and Freeze must be **owned** before the keys do anything:
 `BallService.markHeldBall` and `BallService.activateMultiBall` both ask
@@ -2119,7 +2121,7 @@ almost no server code; 45 is what it cannot show.**
     all eight in the arena on a rigs-only round (it should — the promote now has 0.86 s), and whether
     `moveWalkersToArena` is still needed at all now that the promote is reliable.
 
-52. **Every rig in the lobby stood still in its walking clip, and the fact was an edge with only one ending.**
+52. **Every rig in the lobby stood still in its walking clip, and the fact was an edge with only one ending.**  **REVERSED by item 104** — the mechanism this item introduced is deleted; the rig's walking fact is intent, not a measured speed.
     The report was a client one — "the NPCs render as walking when they are completely still" — and the
     client was innocent: `RigAnimationController` reads `AnimMoving` off the rig and `applyBodyRender` swaps
     the clip the moment it changes, so a client that draws walking is being *told* walking.
@@ -2159,7 +2161,7 @@ almost no server code; 45 is what it cannot show.**
     `animationFor`'s note on where a rig's half of the fact comes from, and `ThrowBehavior`'s
     `moveThenPlant` note that said a shove could not delay it.
 
-53. **Still one rig walking on the spot per session — and it was the one a player's arrival stands down.**
+53. **Still one rig walking on the spot per session — and it was the one a player's arrival stands down.**  **REVERSED by item 104** — the parked-rig case is now one of the two boundary clears, not a third caller of a speed clear.
     The next log (`00:21`) was the proof item 52 asked for, and it disproved half of it. **Seven of eight
     rigs printed the new line, and every one printed it with the engine's last speed still at
     15.93–31.00 studs/s** — so `Running` does *not* report a stop, `MoveToFinished` is the only stop edge
@@ -3133,7 +3135,7 @@ almost no server code; 45 is what it cannot show.**
     `poolRemote` (a chest-pool toggle) — **neither spends anything**, so neither gained a dialog. No server file, no
     economy config and no remote changed.
 
-79. **A rig hit by a ball kept walking on the spot, and it is the mechanism §15 item 52 named and left standing.**
+79. **A rig hit by a ball kept walking on the spot, and it is the mechanism §15 item 52 named and left standing.**  **REVERSED by item 104** — the watchdog this item added is deleted, along with the reading it corrected; a shoved rig was never asked to walk and now simply stands.
     `Humanoid.Running` is an edge on a *speed*; `Humanoid.MoveToFinished` is an edge on a *walk*. **A physics shove is
     neither** — a ball moves a planted rig, the engine reports a change of speed, and nothing follows, because no walk
     was issued and so no walk can finish. The rig keeps that speed for the rest of its life and every client draws it
@@ -4504,6 +4506,441 @@ almost no server code; 45 is what it cannot show.**
      server is now cheaper. Everything above is arithmetic over call sites and a read of the emitted Luau; the frame
      cost that motivated it is a MicroProfiler reading nobody has taken. `DEBUG_CONFIG.PROFILE` is the switch for that
      reading, and it is still `false`.
+
+104. **A rig animates walking if and only if a behaviour asked it to, and the velocity reading is deleted — items 52,
+     53 and 79 are REVERSED, not superseded by a better version of themselves.**
+
+     **Those three items are the record of a mechanism that was repaired three times and never worked**, and they are
+     left in place as history: item 52 subscribed to `Humanoid.Running`'s speed as an edge and added
+     `MoveToFinished` as the stop; item 53 found the rig a player's arrival stands down still walking, because
+     parking it fires neither edge; item 79 added a watchdog that counted three turns of physical stillness to catch
+     a shove, because a shoved rig is neither walking nor finishing a walk. **Nothing in this repository now does any
+     of that**, so read those three as the argument for what replaced them rather than as a description of the code.
+     The failure they share is the lesson: **a watch on a body enumerates the ways a body can move, and the next
+     report adds one.** Each repair moved the surprise rather than removing it.
+
+     **The rule now, in one sentence: a rig animates walking iff a behaviour has set the intent, and physical velocity
+     is not consulted at all.** `NpcLoop.walking` is the store, its doc names the three failures above so nobody has
+     to re-derive a velocity reading to understand why it exists, and it has exactly five writers — the two helpers
+     `walkTo` and `standAt`, the world gate in `NpcService.run`, `announcePlaced` for a body a mover has put
+     somewhere, and `stopWalking`, which the two lobby boundary paths call. **`publishAnimationBody` reads
+     `loop.walking`** and the emitted Luau is `local moving = loop.walking`.
+
+     **Deleted in full**: `watchForStaleWalk`, `stillTurns`, `staleReported`, `runningSpeed`, the
+     `Humanoid.Running` subscription, the `Humanoid.MoveToFinished` subscription (it existed only for the walk, and
+     the prompt's question — keep or delete — is answered *delete*, because with intent stored there is no edge left
+     for it to end), both connection fields, and `RIG_MOVING_SPEED`, `RIG_STALE_WALK_SPEED` and
+     `RIG_STALE_WALK_TURNS` from `npc.config.ts`. `NpcService.forget` no longer hangs up anything, which is the whole
+     of what it lost.
+
+     **How a behaviour is given the two commands, and why the prompt's signature could not be used.** It asks for
+     `walkTo(loop, position)` exported to the behaviour modules — but **a behaviour never receives the loop**:
+     `tick(model, humanoid)` is handed a model and a humanoid, and the loop is one per rig, private to `NpcService`
+     and created when the rig is tagged. So the two helpers are built once per loop and handed to `tick` as a third
+     argument, `NpcMoves` in `Behavior.ts`. That is the same pair with the loop kept where it belongs; the interface
+     is deliberately two methods wide (`walkTo`, `standAt`) with no `setWalking(value)`, because a setter would let a
+     call site publish a walk it never issued, which is the original bug wearing a new coat.
+
+     **Every one of the twelve `MoveTo` sites in `behaviors/` is routed** and `grep` returns none outside the
+     helpers: `SeekBehavior` (two stops — its own `stand`, and the wander cleanup — and five walks: the pickup
+     carry-through, the pickup window, the wander point, the mystery box, and the ball), `WalkToJoinPadBehavior`
+     (three stops, one walk), `DodgeBehavior` (one run).
+
+     **The one behaviour that could not clear its own walk, named: `DodgeBehavior`.** Every other walker ends its walk
+     on something it observes — arrival, a lost target, a full hand — but a run has no arrival edge: the behaviour is
+     asked only on its own interval and `MoveToFinished` is no longer consulted. Leaving it to whichever behaviour
+     ticks next happens to work only because every rig wearing `Behavior_Dodging` also wears `Behavior_Seeking`, which
+     is an accident of `GAMEPLAY_BEHAVIORS` and would break silently the first time a rig was painted with one tag
+     and not the other. So the run remembers the point it was aimed at in `DodgeBehavior`'s `runTo`, and `finishRun`
+     stands the body once it gets there — a **position** check against a point this behaviour issued, not a timer and
+     not a velocity, so a rig another behaviour has since walked somewhere else is left alone.
+
+     **The safety net was not added.** The prompt's `!loop.hasTickedThisTurn` rule guards a rig whose behaviours are
+     not running at all — and the case that actually needed guarding (`DodgeBehavior`) *is* ticking, so the rule
+     would not have caught it while adding a second generation of watchdog for the boundary case the two explicit
+     clears already handle.
+
+     **Both boundary paths were needed, and neither covered the other.** `setGameplayBehaviors` clears on the
+     branch that strips the six tags, because the loop only notices a removed tag on its *next* turn and the report
+     was a rig animating a walk for a tenth of a second after the round had ended. `parkRig` clears *before* the
+     reparent, because a body in `ServerStorage` is not simulated and a `MoveTo` against it means nothing — and
+     because a humanoid carries its `WalkToPoint` across a `Parent` write, so a rig parked mid-approach would have set
+     off again on its next refill. Clearing at spawn covers neither: a restored rig is not spawned, it is the same
+     body and the same loop.
+
+     **`NPC_ANIM_MOVING_ATTRIBUTE` changed meaning rather than name** — it is the intent now, which is what its own
+     doc had been apologising for since the measurement went in ("the name is kept although it is a slight lie"). No
+     client changed: `RigAnimationController` reads the attribute and `animationFor` gets a boolean either way.
+
+     **"All models", recorded as a standing rule rather than a note about rigs.** The player half already obeyed this
+     — `LocomotionAnimationController` answers from `MoveDirection` and the given walk speed and has read no velocity
+     since 2026-10-19 — so the pass changed nothing there and says so in `BodyState.moving` instead: **a body animates
+     walking iff something told it to walk**, the player's "something" being input and a rig's being `walkTo`, and a
+     third kind of animated model is to answer the same way and never from what it is doing.
+
+     **Unverified**: all four cases the prompt names need a session — a shoved standing rig, a pad walk, a tag cleared
+     mid-walk, and a parked rig returning. Nothing here has been watched in Studio.
+
+105. **The round has a song now, layered over the room, and it repeats from its own middle.**
+
+     **The premise needed correcting before anything was written: `MusicController` already had a track called
+     `roundMusic`, and `AUDIO_CONFIG` already had `ROUND_MUSIC` and `ROUND_MUSIC_VOLUME`.** Those are the arena
+     ambience — a crowd and a room tone, which the config's own doc calls "a room full of people". So the task's
+     proposed `ROUND_MUSIC_VOLUME = 0.4` was a direct collision with the ambience's `0.3`, and reusing the name would
+     have silently retuned the crowd. **The new track is named for what it is instead**: `ROUND_SONG_ID`,
+     `ROUND_SONG_VOLUME` and `ROUND_SONG_FADE_SECONDS`, with the `Sound` called `RoundSong` beside the existing
+     `RoundMusic`.
+
+     **Additive, and nothing about the ambience moved.** Its id, its volume, its five-second clock-driven fades, its
+     `Looped = true` and the `roundMusic.Stop()` on the round-end edge are all byte-identical; `git diff` on those
+     lines is empty. The two are independent instances under `SoundService` and **under no `SoundGroup`** — there is
+     no such group anywhere in this project, and the file argues against one at length, so per-track volumes are the
+     only knobs.
+
+     **The loop-from-the-middle rule, which is the feature and reads like a bug if you do not know it**: the first
+     play is the whole track, `0` to the end; **every repeat after that runs from `TimeLength / 2` to the end**, so
+     the first pass is twice as long as every later one. `Looped` is `false` on this `Sound` — the engine's own loop
+     restarts at `0`, which is the one thing this track must not do — and the repeat is a single `Ended` handler
+     connected once at creation. **`TimeLength` is read inside that handler rather than cached**, because a `Sound`'s
+     length is `0` until the asset loads: by the time `Ended` has fired the track has just played through, so the
+     value is known if it is ever going to be, and it cannot go stale the way a value read at mount could. A length
+     still at `0` logs a `logWarn` and loops from `0` rather than being silent, and that warning names the line to
+     check if the loop is ever seen restarting from the beginning.
+
+     **The fade is counted on the existing `Heartbeat`, not tweened, and the reason is a race rather than taste.** The
+     task asked for a `TweenService` fade followed by `Stop()`, which would need a `task.delay` for the stop — and that
+     delay keeps running across a phase change, so a round ending and the next beginning inside 1.5 s (trivial for a
+     dev forcing matches) would have the old round's delayed stop silence the new round's track. Counting the ramp in a
+     third `Heartbeat` connection has no second timer to get out of step: the stop happens on the frame the volume
+     reaches zero, and a phase that returns to `Playing` before the fade completes turns the ramp around so the zero is
+     never reached. It also keeps the file to one fade mechanism, which the class doc demands ("do not simplify any of
+     this into a tween"). **A third connection rather than more lines in the room's**, because that loop returns early
+     once its own volume settles — putting the song's fade behind it would mean the fade only advanced on frames the
+     *room* changed, so it would appear to work in testing and fail on the round-end edge, the only moment it matters.
+
+     **The two knobs for the user's mix, named.** `ROUND_SONG_VOLUME` (0.4, `audio.config.ts:144`) is the music;
+     `ROUND_MUSIC_VOLUME` (0.3, `audio.config.ts:82`) is the ambience. There is no master knob — no `SoundGroup`
+     exists — so those two are the whole mix, and the song is set above the room on the argument that the room is
+     texture and the song is content. Both must stay under `ROUND_WHISTLE_VOLUME` (0.6) and `COUNTDOWN_BEEP_VOLUME`
+     (0.5), because those are cues.
+
+     **Unverified, and it is the one number this pass cannot know**: whether `sound.TimeLength` is non-zero when
+     `Ended` fires on the first play. If it is zero, the `logWarn` will say so and the fix is a `Loaded` signal to
+     seed it. Also unverified: that both tracks sit together acceptably, that 1.5 s is not abrupt, and that the small
+     gap at the loop point is acceptable — that gap is the accepted cost of a handler-driven loop rather than two
+     staggered `Sound`s.
+
+106. **"The crowd is not playing" — investigated, and the cause is NOT in the code that was suspected. No fix
+     applied; instrumentation added instead.**
+
+     **The report was that the arena ambience (`RoundMusic`) is inaudible during a round while the new song plays.**
+     The three candidate causes were: the ambience's `Volume` written to 0 by the new code, `roundVolume` shared with
+     `songProgress`, or the ambience's `Sound` stopped on the entering edge. **None of the three is present**, and the
+     evidence is `git diff -U0` on `MusicController.ts`: the only lines that mention `roundMusic.` anywhere in the
+     pass are two that *read* it to build a log string. There is no new write, no new `Stop()`, and no new `Play()`.
+     The two ramps are separate fields (`roundFadeInElapsed` / `writtenRound` against `songProgress` / `writtenSong`)
+     in separate connections, and neither reads the other. **The ambience's code path is byte-identical to the commit
+     before the song existed.**
+
+     **The log could not have confirmed anything, and that is itself the finding.** It contains **zero** `[Music]`
+     lines and no mention of `song`, `Song`, `music`, `Music`, `RoundSong` or `RoundMusic` — because every one of
+     this file's log lines is behind `DEBUG_LOGGING`, which is `IsStudio() && DEBUG_CONFIG.VERBOSE_LOGS` and
+     `VERBOSE_LOGS` ships `false`. The pasted log is also server-only after `23:34:41`; the client's Output stops
+     there, so the round's client-side lines were never captured. A claim that "the log confirms" a mix fault was
+     being read off a file with no mix lines in it.
+
+     **So this pass adds the instrument rather than a guess, and deliberately makes no behavioural change.** Two
+     `logInfo` lines, both always printed in Studio (not `logDebug` — the silent-by-default tier is the tier that
+     failed to answer this):
+
+     - on the `Playing` edge: `[Music] Playing — ambience "RoundMusic" 0.00 (playing true), song "RoundSong" 0.00
+       (playing true)` — proves the edge ran and both instances are running. **Every volume there is 0 by design**,
+       which is why the prompt's proposed line on this edge would have proved nothing.
+     - once per round, on the frame the ambience's ramp completes: `[Music] round mix — ambience 0.30 (playing true,
+       loaded true, 42.0s), song 0.40 (playing true, loaded true, 97.3s)` — and that one line separates all three
+       remaining explanations. **`playing false`**: it is not running. **`loaded false` or `0.0s`**: the asset is the
+       problem and no volume in this file will fix it. **Both playing at their configured volumes**: nothing is
+       broken and the crowd is being *masked* by the song, which is a question for `ROUND_MUSIC_VOLUME` (0.3,
+       `audio.config.ts:82`) and `ROUND_SONG_VOLUME` (0.4, `audio.config.ts:144`) — not for this file.
+
+     **Why no fix was applied, stated plainly.** A change made without a demonstrated cause is the "patch on a patch"
+     this project has been bitten by three times on the rig-walk problem (items 52, 53, 79, all reversed by 104). The
+     one thing this pass *could* do blind — lower the song, raise the crowd — is a mix decision for the user's ears,
+     not a defect to correct. **The next session's `[Music] round mix` line names the cause in one grep.**
+
+     **What is now known not to be the cause**: this pass's own diff, which is the ambience path untouched.
+
+107. **The crowd was never missing — it was MASKED by the song, and the fix is the mix, not the code.** The player
+     reported "nothing from the first track at all" a second time. The second investigation could rule the code out
+     completely, by three facts rather than by elimination:
+
+     1. **The song is heard, and `roundMusic.Play()` sits in the same `if` block as `roundSong.Play()`** — lines 464
+        and 476 of `MusicController`, one branch, no early return between them. If one ran, both ran.
+     2. **The ambience's volume does reach its configured value.** The round clock starts at
+        `ARENA_CONFIG.ROUND_SECONDS` (`RoundService:4397`), so `ramp` is past its `ROUND_FADE_SECONDS` window and
+        returns the base within five seconds of the round starting.
+     3. **No asset failed.** `PreloadAsync` logs `[Music] sound did not load — <id>` on any failure, and the 886-line
+        session log contains no such line, no `[Music]` line of any kind, and no mention of `song`, `music`,
+        `RoundSong` or `RoundMusic` — because every `[Music]` line was behind `DEBUG_LOGGING` (Studio **and**
+        `VERBOSE_LOGS`, which ships `false`).
+
+     **So the fault was the numbers I chose, and the reasoning behind them was wrong in a way worth recording.** The
+     song shipped at `0.4`, *above* the room's `0.3`, justified in this file as "the room is texture and the song is
+     content". **That is backwards for a broadband bed**: crowd noise does not sit underneath a melody at comparable
+     level, it is masked out of existence, so a mix that is measurably fine was perceptually a solo. The report
+     "the first track is gone" is exactly what masking sounds like from the player's seat, and no amount of reading
+     `Volume` would have shown it.
+
+     **The correction**: `ROUND_MUSIC_VOLUME` **0.3 → 0.55**, `ROUND_SONG_VOLUME` **0.4 → 0.25**, so the room is the
+     louder of the two. Both config comments are rewritten rather than left standing — the song's doc argued the
+     ordering that has now been reversed, and the room's doc called the pair "a taste question", which this turn
+     disproved. **The rule now written down: keep the crowd above the song.**
+
+     **And the line that would have ended this in one run**: `[Music] tracks — "IntermissionMusic" 0.30 (43.0s),
+     "RoundMusic" 0.55 (37.5s), "RoundSong" 0.25 (97.3s)`, printed once per client **inside the `PreloadAsync`
+     callback** rather than beside it — `PreloadAsync` does not wait, so a report on the next line would read
+     `0.0s` for good assets and send the next reader after a fault that does not exist. It reports `TimeLength`, so
+     a genuinely silent asset shows as `0.0s` and is distinguishable from a mix problem for ever after. It is
+     `logInfo` deliberately: the silent-by-default tier is the tier that failed to answer this twice.
+
+     **Unverified**: that 0.55/0.25 is the right pair by ear, and — still — that the crowd's asset contains audio.
+     The `[Music] tracks` line answers the second one on the next run.
+
+108. **A rig stood in the jump clip for ever because `FloorMaterial` was asked a question it cannot answer.** The
+     report: a rig on a join pad, animated as jumping, permanently.
+
+     **`animationFor` answers `"jump"` for any body that is not grounded**, and a rig's grounded fact is one attribute
+     with one writer — `publishAnimationBody`, from `humanoid.FloorMaterial !== Enum.Material.Air`. **`Air` is two
+     different facts wearing one value**: a body genuinely in the air, and a body **the engine is not simulating**,
+     which never reports a floor because nothing is running the contact solver for it. The second is not hypothetical
+     — this file's own `ownForServer` doc names it ("a rig with an anchored root, or one welded to anything anchored
+     cannot be walked by `MoveTo` either"), and the boot audit warns about it on every one of the templates:
+     *"spawn clears this on every clone, but a copy dragged into the world by hand keeps it and cannot be simulated"*.
+     A hand-placed rig — which is exactly what a `practiceThrow` drill is, and what several lobby models are until they
+     are cloned — sits in that state for its whole life, publishes `AnimGrounded = false` once, and never publishes
+     anything else, because the write is gated on a *change*. **One write, then a jump clip for the rest of the
+     session**, with nothing in the log to say so: the diagnostic line had already printed once at spawn and a
+     non-changing attribute prints nothing.
+
+     **The fix is one line of combination rather than a new mechanism.** The state is now asked as well —
+     `humanoid:GetState()`, the same read `LocomotionAnimationController` uses for its deferral, so this follows the
+     player side instead of inventing a rule — and a body is airborne **only** when the state says `Freefall` or
+     `Jumping`. `FloorMaterial` can still make a body grounded and can never make it airborne on its own. So an
+     unsimulated rig (any state that is neither of those, with `Air` beneath it) reads grounded and stands, a genuinely
+     falling rig still animates the fall, and the frame or two after a `PivotTo` — material not caught up, body never
+     left the ground — no longer flashes the jump clip.
+
+     **The diagnostic learned the same distinction.** `[NPC] <name>: off the floor while standing — Air, state
+     <State>, owned by <owner>` now prints the state, because `Freefall` and `Physics` are different faults with
+     different fixes: the first is a body that has fallen out of the world and needs catching, the second is an
+     anchored rig and needs the place file fixing.
+
+     **Unverified**: that this was the fault in the session that reported it. It accounts for every case the log shows
+     — rigs handed to the world by hand, `Air` at spawn — but the same symptom has a second possible cause (a rig that
+     falls out of the world and never lands), and that one is `Freefall` rather than a mystery. The state on the line
+     tells them apart next time.
+
+109. **The per-head record is an opaque white card with black text, and its lifetime is a post-game window rather
+     than the intermission's length.** Two changes in one file, and the second was the one with a fault behind it.
+
+     > **SUPERSEDED by item 112 — the card this item built is gone, and so is the record it went behind.** What it
+     > diagnosed is still right: three passes went into styling a surface whose problem is that a `BillboardGui` is
+     > drawn in the world, so its apparent size is a function of the viewer's distance to the body wearing it. Item 112
+     > is the pass that stopped styling and deleted the surface.
+
+     **The card did not exist.** `StatsBillboardController` had no container at all: the record was a big-ui `Text`
+     parented straight into a `BillboardGui`, drawn onto the arena in the palette's *white* with a cyan halo from
+     `applyTextGlow`. A comment in the file justified the white ink on the grounds that "the pill behind a head is the
+     palette's plum" — **there was no pill**, which is why the halo was needed and why the line was unreadable the
+     moment the background stopped being a static lobby. So a `Frame` named `Card` was added, filling the billboard
+     canvas, with `BackgroundColor3 = hudTheme().colors.panel` (the palette's `paper`, `#FFFFFF`) and
+     `BackgroundTransparency = 0`; the label moved inside it, took `hudTheme().colors.textPrimary` as its ink, and
+     **lost its halo** — a stroke that existed only to make text legible against a transparent background, and the
+     one thing on this element that a solid panel makes wrong.
+
+     **`hudTheme()` rather than the `theme` the method is handed**, and that is deliberate rather than an oversight:
+     the parameter is `premiumHudTheme()` (the plum direction), and a plum card is the surface the halo was
+     compensating for. The paper theme is the one whose panel is white and whose ink is black, so it is asked for by
+     name. **`textPrimary` is `Color3.fromRGB(0, 0, 0)`** — the prompt predicted `#141414`; big-ui's palette says
+     otherwise, and the theme wins, because a near-black invented in this file would be a colour nothing else knows.
+
+     **One style, permanently.** No per-outcome branch, no gold/red/grey: the resulting construction contains no
+     `Color3` literal at all, only the two theme reads, which is what makes "no variants" checkable rather than
+     promised.
+
+     **The fault behind the second half: the card was gated on the phase, and the phase is the wrong clock twice
+     over.** `Enabled` was `state === "Intermission"`, so the record was **absent for the ten seconds of celebration**
+     — the phase is still `Playing` then, and that is the one stretch of a post-game where everybody is standing
+     still with nothing to do — and then **stayed up for the whole intermission**, which is a card about a round
+     nobody is in any more. Replaced by one window armed by `CELEBRATING_ATTRIBUTE` (written by `finishRound`, the
+     earliest client-visible "the round is over") and closed by whichever of two boundaries arrives first:
+     **`ARENA_CONFIG.POST_GAME_CARD_SECONDS` (15, `arena.config.ts`)** or **the next `Playing` edge**. A
+     `cardGeneration` token makes a stale `task.delay` a no-op, so a round ending inside an unfinished window cannot
+     have its card closed by the *previous* round's timer — the same class of bug the round song's fade avoids by
+     not being a tween.
+
+     **Which of the two transition problems was fixed: erased-with-host, not hidden-by-wipe — and the other one turns
+     out to be impossible in this shape.** The card is a `BillboardGui` adorned to a head, so a `PivotTo` carries it
+     and a destroyed body takes it with it; the window being *state* in `mount` rather than per-body means a respawned
+     character gets a new billboard that is already inside the open window. But a `BillboardGui` renders in the 3D
+     pass and is **drawn under every `ScreenGui`**, and the transition grid is a `ScreenGui` at `DisplayOrder` 1
+     (`RoundTransitionController`, `TRANSITION_DISPLAY_ORDER`). **No `ZIndex` and no `AlwaysOnTop` can lift a
+     billboard above a `ScreenGui`**, so the card cannot be made to render over the wipe without ceasing to be a label
+     on a head. It survives the transition; the wipe covers it for the ~2.6 s it covers everything. `AlwaysOnTop`
+     stays `false` — the file's argument that a body behind a wall is a body you cannot read still holds — and the
+     limit is written at `makeBillboard` so the next reader does not try.
+
+     **Also changed**: the badge strip and the record now share one window (the strip's own is 15 s server-side, and
+     the two are one slot above a head, so two clocks could disagree); the record no longer returns for the rest of
+     the intermission once the strip is empty; and `mountBadges` hides the *card* rather than the bare label, so an
+     empty white slab is never left above a head while badges are up.
+
+     **Unverified**: that the white panel is legible against a real arena, and that the card is up during the
+     celebration and again in the lobby — the two frames to look at are the first second of the celebration hold and
+     the first second after the wipe opens. **A round that starts inside fifteen seconds ends the window early, by
+     design.**
+
+     > **CORRECTED by item 110.** The white card was put on the wrong element — the hit/out record — and has been
+     > moved to the round's *badges*, which is what "the post-game card" actually meant. The record is back to
+     > transparent lettering with its halo, and its phase gate is restored. Read item 110 for the current state; this
+     > item is kept because the *argument* about the phase gate missing the celebration is still the reason the badge
+     > strip is styled as a card rather than as lettering. **Item 112 is where this ended: the card was withdrawn and
+     > the strip is lettering again — so the phase-gate argument below is moot, because the strip no longer competes
+     > with a record for the same slot.**
+
+110. **The white card was on the wrong element. It is now the round's BADGES, the record is back to how it was, and the
+     killer's record has its own card on the left during a kill cam.**
+
+     > **HALF-SUPERSEDED by items 111 and 112.** The kill-cam card described here survives, smaller. The badge card does
+     > not: item 111 deleted it and item 112 put the strip back as plain lettering, so everything here about a badge
+     > *surface* describes a design that was tried twice and withdrawn twice.
+
+     **The correction.** Item 109 put an opaque panel and a fifteen-second timer behind the hit/out **record** — the
+     `Hits: n | Outs: n | Ratio: n` line above a head. That was the wrong element: the record is a standing fact about a
+     body and reads correctly as lettering with its halo, which is what it is; **what needs a surface is the badges**,
+     because those are the round's verdict on a player and they were bright neon text over a moving court with nothing
+     behind them. `StatsBillboardController` was reverted to its pre-109 state by `git checkout` (the diff is empty),
+     which restored `PREMIUM.text`, `applyTextGlow`, `Enabled = state === "Intermission"`, and deleted the card and the
+     timer.
+
+     **The badges UI is not a separate controller, and that is the prompt's error worth recording.** It is
+     `StatsBillboardController.mountBadges` — the same `BillboardGui` on the same head, one slot with two contents. So
+     there was no "badges UI" to find elsewhere; the badge *list* is the container, and it is now the card:
+     `BackgroundColor3 = hudTheme().colors.panel` (the palette's paper, `#FFFFFF`), `BackgroundTransparency = 0`, a
+     `UICorner` and a `UIPadding`, with the padding doing the work of turning a background into a card.
+
+     **The badge ink had to change with it, and the loss is real rather than glossed.** `BADGE_COLOURS` was written
+     explicitly "for a label with no background behind it" — bright, high-contrast, `neutral` at `#F2F2F2`. On white,
+     nine units from the paper, that colour **vanishes**. So both lines take `hudTheme().colors.textPrimary` and the
+     tone survives only as **opacity** on the description (`1 - BADGE_DESCRIPTION_CONTRAST`, the same ratio the old
+     dimming used). **A praise badge and a rib badge now look the same**, and `BADGE_COLOURS` is exported and used by
+     nothing on this side. Getting tone back means changing the surface, not the ink.
+
+     **No timer was added, because the window already exists and it is the server's.** `BadgeService.publish` writes
+     `BADGES_ATTRIBUTE`, clears it after `BADGE_WINDOW_SECONDS` (15) or on the next `Playing` edge, and `show` already
+     answers `list.Visible = hasBadges`. A client-side copy of that clock would be a second timer that could disagree
+     with the channel it describes — so `ARENA_CONFIG.POST_GAME_CARD_SECONDS`, added by item 109 and read by nothing
+     after the revert, was **deleted** rather than left as dead config.
+
+     **New: the attacker's record, on the left, during a kill cam** — `enemyView.ts`, a `Frame` named `EnemyRecord`
+     anchored `(0, 0)` at `UDim2.fromOffset(LEFT_INSET, TOP_INSET)` in `getFullScreenGui()`, so it shares the caption's
+     GUI and its reasoning: the HUD plane hides itself for a shot, so an element that must be visible *for the length of
+     a shot* cannot live on the HUD plane. It is paper white with `textPrimary` ink — the only element in that file
+     that is not plum — because it is a scorecard rather than a caption, and the caption's own stats line is a
+     `caption`-sized footnote under a name. Left because the centre is taken: the caption is anchored `(0.5, 0)` and
+     the top-left is the one part of the screen that is empty for exactly as long as this is up.
+
+     **It shows `Hits`, `Outs` and `Ratio`, not `Catches`.** The codebase has no per-player catch count —
+     `STAT_HITS`, `STAT_OUTS` and `STAT_RATIO` are the whole set — and the ratio is the number that answers "how good
+     was this body" anyway. It is written on the shot **and live afterwards for a catch too**, which is a deliberate
+     divergence from the caption: a catch's caption is a fixed sentence with no numbers in it (`caught your shot!`), but
+     the card is a record and freezing it exactly when the record changed would be backwards.
+
+     **The caption's own stats line was left alone, so the figures appear twice during a shot** — once small and centred,
+     once large and on the left. That is stated rather than hidden: removing the caption's line is a two-line change
+     (and its `STAT_HITS` subscription), and it was not taken because "add a panel" is what was asked for.
+
+     **Unverified**: that the card reads well at the left edge on a phone, that white-on-arena is legible, and that the
+     badge card's padding survives a strip long enough to wrap to its fourth row.
+
+111. **`StatsBillboardController` is deleted. The per-head record and the round's badges are gone from every model,
+     and the kill cam's left card got smaller.**
+
+     > **REVERTED by item 112 — read that one, not this.** The deletion was a misreading: the badges were wanted, and
+     > the record above heads was the thing to delete. This item is kept because its diagnosis of the *size* problem
+     > is right and it is the third pass in a row to try to fix it with styling; item 112 records what the answer
+     > actually was (letters, not paper).
+
+     **The complaint and the evidence.** A screenshot of an intermission with a pale panel over most of the centre of
+     the screen, `sniper` on it twice and a badge description under it — that is the badge strip, drawn per head, at a
+     `BillboardGui` scale that turns four short lines into a wall. **Three passes of styling had gone into that strip
+     (items 109 and 110) and all three were answering the wrong question**: the problem was never the colour of the
+     surface, it was that a `BillboardGui` is drawn *in the world*, so its apparent size is a function of how close the
+     camera happens to be to the body wearing it, and there is no layout that survives that. Deleting it is the fix
+     that should have been reached two passes earlier.
+
+     **So the whole controller is gone**, by `Remove-Item` rather than by disabling it: the per-head hit/out record, the
+     badge strip, the card, the padding, `HEAD_WAIT_SECONDS`, the tag walk over rigs, the `CharacterAdded` mounts — 661
+     lines. `flamework.build` loses exactly one line, which is the honest record of a controller that no longer exists
+     and is the one case where a moved manifest is correct.
+
+     **What that leaves behind, stated rather than discovered later.** `BADGES_ATTRIBUTE` and `CROWN_ATTRIBUTE` now have
+     **no client reader at all**. `BadgeService` still derives and publishes a badge set that nothing draws;
+     `CROWN_ATTRIBUTE` still drives `EconomyService.checkMilestones` and is otherwise inert. Both are labelled in
+     `shared/constants.ts` and `shared/badges.ts`, and `BadgeService`'s header now says the choice explicitly: keep the
+     derivation because it is the written half, and **delete the service and its five writers if no display is ever
+     built** — do not leave it running for ever on the assumption that something will read it.
+
+     **Fourteen comments named the deleted file and every one of them was rewritten or had the name dropped** — the
+     sweep is the part that makes a deletion finished rather than merely compiled. Two kinds: citations of the bridge
+     pattern (attribute read is a sample, not a dependency) where the citation was a list of examples, so the deleted
+     name came out and the survivors stayed; and claims that had become false — `DodgeService`'s "a rig has a head for
+     the badge strip to hang over", `rigTemplate`'s "a `Head`, because the client hangs the billboard on one" (the
+     `Head` check survives at `warn`, but for the reason it always mattered: a rig without a head is assembled wrong),
+     and `RoundService`'s "the badge strip is drawn above every head in the round".
+
+     **The kill cam's record card shrank, and the heading is what went.** `150` wide with a `Stats` title above three
+     15-pixel lines and `10` of padding became `132` wide, three 13-pixel lines, a `2`-pixel gap, `8` of padding and
+     `2` at the top. **The title was the tallest row in the box and said nothing** — `Hits:`, `Outs:` and `Ratio:` name
+     themselves. **Unverified**: whether this is small enough; the remaining levers are `RECORD_LINE_GAP` and the type
+     size, both one number.
+
+112. **Item 111 was wrong and is reverted: the badge strip is back above every head, smaller, and the hits/outs
+     record above heads is what actually gets deleted.**
+
+     **The message that corrected it**: "I don't see the badges anymore", with three `[Badge] … nothing shown — only
+     rib badges` lines attached. **Those lines were not the fault** — they are rule 3 working, on players who had
+     earned nothing but `sprayAndPray`. The fault was mine: item 111 deleted the only renderer the badges had.
+     "That is not needed anymore for all models" meant the *record*, not the strip, and the pale slab in the
+     screenshot was the badge card being too big rather than the badges being unwanted.
+
+     **So `StatsBillboardController` is restored from `HEAD` and cut back to one job.** `flamework.build` is
+     byte-identical to `HEAD` again. What was removed from the restored file: the big-ui `Text` record label, the
+     `watchCount`/`countOf` bridge, `describe`, `STAT_HITS`/`STAT_OUTS`, `premiumHudTheme`, `PREMIUM`,
+     `applyTextGlow`, and the `theme` parameter that existed to hand those colours down. What is left is the badge
+     list and its mount. **That deletion is the one the owner asked for**: `Hits: n | Outs: n | Ratio: n` above a
+     head was a second copy of what the kill cam's card says, in the worse place.
+
+     **The card went with it, and this is the answer to "huge space at the top".** Item 110's white `Frame` —
+     `BackgroundTransparency = 0`, `UICorner`, `UIPadding` — is gone; the list is transparent lettering again.
+     **The empty band was the card**: the list measures the height of its *rows* and anchors its bottom edge to the
+     canvas centre, so whatever the layout reserved above the rows showed as blank white panel with the text bunched
+     at the bottom. A background over a body is a surface whose size every viewer re-derives from their own distance
+     to that body, which is why three passes of styling never made it look right. Letters with their tone colour
+     are the material for this; a card is the material for a screen-space panel.
+
+     **Smaller, by type rather than by box.** `BADGE_NAME_SIZE` 16 → **14**, `BADGE_DESCRIPTION_SIZE` 12 → **11**,
+     the line gap 1 → **0**, the row gap 5 → **3**, the canvas width 380 → **300** (`BILLBOARD_SIZE` is the
+     truncation width and the height is a box nothing is drawn in). **`BADGE_COLOURS` is read again** — the neon
+     table written for lettering over the world, restored along with the letters.
+
+     **The two billboard constants moved house.** `BILLBOARD_OFFSET_Y` and `BILLBOARD_MAX_DISTANCE` were deleted from
+     `ARENA`/`STATS_CONFIG` by item 111 and are now local constants in the controller: they are that billboard's
+     layout, nothing on the server reads them, and the size of the box should not need a shared config entry to
+     change.
+
+     **Unverified**: whether `14`/`11` is small enough. The levers, in order of effect: the description size, then
+     the row gap, then dropping the description line — the last is the one the owner has already declined once.
 
 ---
 

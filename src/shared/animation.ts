@@ -188,6 +188,15 @@ export interface BodyState {
 	 * not, so there is no line in the middle of a range for a sample to wander across — and therefore no
 	 * jitter, no band and no grace. See `animationFor`, and the note where the speed line used to be for what
 	 * the measurement cost while it was here.
+	 *
+	 * **Both bodies are intent, and since 2026-10-26 that is true of the rig half as well.** The rule is one
+	 * sentence and it has no exceptions: **a body animates walking if and only if something told it to walk, and
+	 * what the physics then does to it is not animation's business.** For a player the "something" is the input the
+	 * local client writes into `MoveDirection`; for a rig it is `NpcService`'s `walkTo`, and the fact arrives here as
+	 * the attribute. A shoved body of *either* kind was never asked, so it stands — which is the whole of what
+	 * `NpcLoop.walking` records and the reason rigs no longer read a running speed. **If a third kind of animated
+	 * model is ever added it answers this field the same way**: from whatever asked it to move, never from what it
+	 * is doing.
 	 */
 	readonly moving: boolean;
 

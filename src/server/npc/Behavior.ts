@@ -197,6 +197,42 @@ export const BEHAVIOR_RESPAWN = "Behavior_Respawn";
  * registry key: one tag turns on one behavior, and that holds whether the tag
  * was put there by hand in Studio's Tag Editor or by `NpcService.spawn`.
  */
+/**
+ * **The two instructions a behaviour may give a rig's body — and the whole of how a rig moves.**
+ *
+ * **A capability handed per call rather than a reference to the loop**, because a behaviour is handed a model and a
+ * humanoid and never the loop: the loop is one per rig, made here, and private to this service. Handing it out would
+ * let a behaviour write any field on it, and the walking flag is the one thing in this game that has cost four passes
+ * to get wrong — it should be reachable only through the two calls that also command the engine.
+ *
+ * **The pair is deliberately not open-ended.** There is no `moveTo(point, walking)` and no `setWalking(value)`, because
+ * every spelling of that shape is a call site that can set the flag without moving the body, or move the body without
+ * setting the flag — and the second of those is the whole bug this interface exists to make unrepresentable. A
+ * behaviour either asks the rig to walk somewhere or tells it to stand where it is.
+ */
+export interface NpcMoves {
+	/**
+	 * **Walk to `position`, and record that this body has been asked to walk.**
+	 *
+	 * A wrapper rather than a convention, so that "issued a `MoveTo`" and "published as walking" cannot come apart.
+	 * Safe to call on every turn of a walk: re-issuing the same point is the same request, and the attribute is only
+	 * written when the flag changes.
+	 */
+	walkTo(position: Vector3): void;
+
+	/**
+	 * **Stop where the body is, and record that nobody is asking it to walk.**
+	 *
+	 * **The stop is a `MoveTo` at the rig's own position** — the engine's own wording for "stay here", and the idiom
+	 * every behaviour already used before this pair existed. There is no separate stop call on a `Humanoid`.
+	 *
+	 * **Re-issued wherever a behaviour wants the body held still rather than once at the end of a walk**, which is
+	 * the one piece of the old movement code that survives: a body that is shoved, or one the engine has decided
+	 * cannot make progress, drops a request it is not told about again.
+	 */
+	standAt(): void;
+}
+
 export interface NpcBehavior {
 	/** The tag that enables this behavior on a model. */
 	readonly tag: string;
@@ -218,8 +254,13 @@ export interface NpcBehavior {
 	 * implementation has to be written as a method too: an object literal using
 	 * `tick: () => ...` is rejected with "Attempted to assign non-method where
 	 * method was expected", and `rbxtsc` is the only thing that reports it.
+	 *
+	 * **`moves` is how a behaviour makes a rig walk, and the only way.** It carries `walkTo` and `standAt`, which
+	 * set the published walking fact and issue the `MoveTo` in one call — see {@link NpcMoves} for why the pair is
+	 * that narrow. A behaviour that does not move a rig (`CatchBehavior`, `ThrowBehavior`) simply does not use the
+	 * parameter, and a rig nobody asks to move animates standing.
 	 */
-	tick(model: Model, humanoid: Humanoid): void;
+	tick(model: Model, humanoid: Humanoid, moves: NpcMoves): void;
 
 	/**
 	 * Optional: collect whatever this behavior needs before it can run at all.
