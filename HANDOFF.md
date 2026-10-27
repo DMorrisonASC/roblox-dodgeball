@@ -1341,8 +1341,9 @@ Roughly in commit order (`git log` from 2026-09-28):
 it), and `abilityOn(ball)` — the single reader of the ball's mark.
 
 - **Pierce and Freeze are ball-carried** — the mark rides `BALL_ABILITY_ATTRIBUTE` on the ball.
-- **MultiBall is player-carried** — a timed window on the player, and nothing about a thrown ball
-  carries it. That is why `isBallAbility` exists as a *narrower* test than `isAbilityKind`: without
+- **MultiBall is player-carried** — a window on the player (it has no duration any more), and nothing
+  about a thrown ball carries *the power*; a window's spent throws carry a cleanup marker, which is not
+  an ability. That is why `isBallAbility` exists as a *narrower* test than `isAbilityKind`: without
   it a client could send the word for a player buff and have it stamped onto a ball.
 
 **The charge system is intact but grants nothing.** `SUPER_CHARGE_ATTRIBUTE` is a boolean on the
@@ -1371,10 +1372,15 @@ ball, so marking a ball and changing your mind costs nothing).
 field). **There is no duration any more**: `MULTI_BALL_DURATION_SECONDS` was removed and the count is
 the whole limit — spending the fifth throw is what closes the window (`SuperService.consumeMultiBallBall`
 drops the row). It refills the hand at the moment the window opens and after each throw
-(`BallService.refillFromBuff`), and the ball already in hand when the window opens is *on top* of the
-count. The window is a **stock rather than a burst** now, and the cost of that is written out in
-`super.config.ts`. Closed by spending the last throw, by death, by the intermission and by the round
-end.
+(`BallService.refillFromBuff`), and **the ball already in hand when the window opens is one of the
+five, not a sixth**: every throw spends a throw from the window whichever ball it is, so a window is
+five balls thrown and four refills supplied. The window is a **stock rather than a burst** now, and the
+cost of that is written out in `super.config.ts`. Closed by spending the last throw, by death, by the
+intermission and by the round end. **Four of the five spent balls are destroyed once they are on the floor** (item
+116): `BallService.throwBallBody` marks the ball with `BALL_DESPAWN_ON_LAND_ATTRIBUTE` while the window still has a
+throw in it, and `BallService.settleLooseBalls` destroys a marked ball that is disarmed and `isOnGround`, with the
+spawn poof. The last throw — the one that closed the window — survives, and the marker is re-decided on every
+throw, so a caught ball thrown again is ordinary unless its new thrower's window is open.
 
 **Freeze** — the splash numbers are two because they are two promises: `FREEZE_HIT_RADIUS = 8` from
 the body part a Freeze ball *struck*, `FREEZE_MISS_RADIUS = 5` from where a ball *stopped* having
@@ -5053,6 +5059,49 @@ almost no server code; 45 is what it cannot show.**
      `[Dodge] DodgeballBall: skipped — prospeed1 is its own thrower` with `VERBOSE_LOGS` on — and that an enemy
      rig's ball still does, which is the twelfth line's shape. No client module changed: if the filters hold, the
      caption and its clip simply stop appearing on the wrong ball.
+
+116. **Four of a MultiBall window's five spent balls now leave the arena once they land.**
+     `BALL_DESPAWN_ON_LAND_ATTRIBUTE` is written by `BallService.throwBallBody` — `true` when the window still holds
+     a throw after the spend, cleared when it does not — and read by `BallService.settleLooseBalls`, which destroys a
+     marked ball that is disarmed and `isOnGround`, with the ordinary spawn poof.
+
+     **The first cut cashed the marker in `BallComponent`'s world branch, and the report was that it was too fast.**
+     That branch is the end of the *throw*, not the end of the ball's fall: a tagged throw can be finished by another
+     *ball*, so a shot into a rig's chest can end at head height a frame after the tag. The log is exact — a ball
+     tagged the rig at `17.860` and was `ended on DodgeballBall — 1 tag(s)` at `17.877`, and the throw was gone
+     beside the body it hit. **The destroy moved to the sweep**, which already walks every loose ball and already owns
+     `isOnGround`; the ball is allowed to fall and is taken when it is resting on something.
+
+     **The arithmetic, unchanged by that move.** `consumeMultiBallBall` returns a boolean — "there was a window to
+     spend" — and it answers `true` for the fifth throw too, because it closes the window on the way out. So the
+     survivor cannot be read from that return; the test is `isMultiBallActive` **after** `refillFromBuff(model,
+     true)`, which is the same question that decides whether a replacement ball is supplied. Throws 1–4 find the
+     window open and are marked; throw 5 finds it closed and is not. **A player who dies after three throws leaves
+     zero balls from that window** — those three landed and went, and the window never reached its survivor. Keeping
+     one in that case would need either a per-owner "last thrown ball" record to unmark on `clearMultiBall`, or a
+     first-throw-survives rule, which needs the count *before* the spend and a second query on `SuperService`.
+
+     **The marker is re-decided on every throw, not only written when true**, because a ball is thrown, caught and
+     thrown again. Leaving an earlier `true` on a ball that becomes somebody's fifth throw would destroy the one ball
+     the window was meant to leave behind; `undefined` is written instead, so an ordinary ball carries nothing.
+
+     **A caught ball is untouched**: a catch goes to a hand, where the sweep does not look. If the catcher throws it,
+     the marker is decided again by *their* window, so a MultiBall ball re-thrown by somebody with no window is an
+     ordinary ball. A marked ball that is **dropped** instead keeps the marker and will be taken on the floor — the
+     consequence of the rule as asked rather than a second one.
+
+     **The poof is the bay despawn's**, `playSpawnPoof(undefined, ball.CFrame)`: a ball is a `BasePart` with no body
+     for the helper to find a torso on, so it is anchored to the ball's own frame. `BallTrail`'s ribbons and
+     attachments are children of the ball and go with it; the `Destroying` hook sees `Armed` false and stays silent;
+     the pending `scheduleBallExpiry` timer is guarded on `Parent === undefined` and no-ops; the bay timer's row is
+     deleted on the way out, as it is for a ball that leaves the world.
+
+     **Unverified in Studio**: one window leaving exactly one ball on the floor and four poofs. The landing line
+     `[Ball] DodgeballBall #N: ended on <part> — N tag(s)` prints for all five, before any despawn; with
+     `VERBOSE_LOGS` on the four marked ones add `despawned on landing — a MultiBall throw with the window open` on
+     the tick after they touch down; the fifth prints the landing line, no despawn line, and is still in
+     `Workspace`. The visible check is the ball staying with the model it hit and vanishing once it reaches the
+     floor.
 
 ---
 

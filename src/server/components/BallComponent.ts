@@ -503,15 +503,29 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			}
 
 			// **The Pierce trail comes off here, because this is the throw's death.** The effect is a child of
-			// the ball, so the ball's own destruction takes it — but a ball that has *landed* is not
+			// the ball, so the ball's own destruction takes it — but an ordinary ball that has *landed* is not
 			// destroyed, it lies on the floor until somebody collects it or it expires, and a particle
 			// emitter on a stationary ball is a plume of trail sitting in the middle of the arena for as long
-			// as that takes. `BallTrail` refused to be an emitter for exactly this reason and named this
-			// branch as the honest hook; see `BallService.detachPierceEffect` for the other two exits, and
-			// note this one is the only place that knows the throw is over while the ball lives on.
+			// as that takes. (A MultiBall window's spent throw is the exception, and it is destroyed below.)
+			// `BallTrail` refused to be an emitter for exactly this reason and named this branch as the honest
+			// hook; see `BallService.detachPierceEffect` for the other two exits, and note this one is the only
+			// place that knows the throw is over while the ball lives on.
 			this.balls.detachPierceEffect(this.instance);
 
 			this.instance.SetAttribute("Armed", false);
+
+			// **And a throw the MultiBall window has finished with is *marked* for cleanup here, but not destroyed
+			// here.** `BALL_DESPAWN_ON_LAND_ATTRIBUTE` says the throw spent itself; the destroy waits until the ball
+			// is on the floor, and `BallService.settleLooseBalls` is what does it, poof included.
+			//
+			// **This line ends the throw, and that is not the end of the ball's fall — the difference was a report.**
+			// A tagged throw can be finished by another *ball*: a rig holding one, a spent one underfoot. That makes
+			// this branch run at chest height, a frame after the tag, with the thrown ball still in the air beside the
+			// body it just hit — and a destroy here made it vanish on the model. The sweep asks `isOnGround` instead,
+			// so the ball falls, lands, and goes with a poof.
+			//
+			// **And the tag is not the trigger either**, for the reason above it: a tag is not a death, and the ball
+			// has a hit still owed until this branch resolves it.
 			return;
 		}
 

@@ -4,6 +4,7 @@ import {
 	ARMED_ABILITY_ATTRIBUTE,
 	BALL_ABILITY_ATTRIBUTE,
 	BALL_BARRIER_TAG,
+	BALL_DESPAWN_ON_LAND_ATTRIBUTE,
 	BALL_SIZE,
 	BALL_THROWER_SIDE_ATTRIBUTE,
 	CATCH_ANIMATION_ATTRIBUTE,
@@ -2380,6 +2381,33 @@ export class BallService implements OnStart {
 		// the floor like anybody else: running out ends the supply, not the round.
 		this.refillFromBuff(model, true);
 
+		// **And this throw's ball is marked for cleanup unless it closed the window.**
+		//
+		// **The bug this answers is the arena filling with its own ammunition.** A MultiBall window is
+		// `SUPER_CONFIG.MULTI_BALL_BALL_COUNT` throws (5), and before this marker every one of them stayed where
+		// it landed — so one window left four spent balls scattered across the floor and the round's own sweep
+		// only got them at the end. **Four of the five go; the fifth is the throw that closed the window**, and it
+		// is the one a player can walk over and pick back up.
+		//
+		// **Asked after the refill, because that is where the spend is.** `refillFromBuff` calls
+		// `consumeMultiBallBall` and then asks whether the window still holds a throw; this asks the same
+		// question one line later, and the answer is "one of the first four" exactly when `isMultiBallActive` is
+		// still true. The question is asked here rather than inside `refillFromBuff` because this method is the
+		// one holding the ball that was thrown — the helper is handed a body and a flag, not a ball.
+		//
+		// **`false` is not written; the marker is removed instead.** Absence is the ordinary state and the reader
+		// tests `=== true`, so a ball that never had the marker costs nothing. The `else if` is the half that
+		// matters for a *re-thrown* ball: one caught and thrown again as somebody's fifth throw still carries the
+		// `true` from the throw that marked it, and leaving that alone would destroy the one ball the window was
+		// supposed to leave behind.
+		const windowOwner = Players.GetPlayerFromCharacter(model) ?? model;
+
+		if (this.abilities.isMultiBallActive(windowOwner)) {
+			ball.SetAttribute(BALL_DESPAWN_ON_LAND_ATTRIBUTE, true);
+		} else if (ball.GetAttribute(BALL_DESPAWN_ON_LAND_ATTRIBUTE) !== undefined) {
+			ball.SetAttribute(BALL_DESPAWN_ON_LAND_ATTRIBUTE, undefined);
+		}
+
 		// A dev with `InfiniteBalls` never runs out: the throw they just made is answered
 		// with another ball, by the same call the first one arrived by. **The other
 		// self-refilling throw is a MultiBall one** — `refillFromBuff` above answers it while
@@ -2684,9 +2712,11 @@ export class BallService implements OnStart {
 	 * asked after the spend rather than before it because that is the rule: the throw is paid for, and
 	 * then the window decides whether there is another ball for the hand.
 	 *
-	 * **Nothing here marks anything, and that is the ability rather than an omission.** The ball this
+	 * **Nothing in this helper marks anything, and that is the ability rather than an omission.** The ball this
 	 * hands over comes from the same `giveBall` a hand-out uses, so it is an ordinary ball in every way:
-	 * catchable, taggable, pickable, and carrying no ability of its own.
+	 * catchable, taggable, pickable, and carrying no ability of its own. **The one marker a MultiBall throw does
+	 * carry is written by the caller** — `throwBallBody`, `BALL_DESPAWN_ON_LAND_ATTRIBUTE` — because this method is
+	 * handed a body and a flag rather than the ball that was thrown, and the decision is about that ball.
 	 *
 	 * **The callers, and why this is one method rather than three:** the end of a throw (paid), the
 	 * activation handler (free), and both ways out of {@link dropBall} (free). Every one of them is a
@@ -3517,6 +3547,39 @@ export class BallService implements OnStart {
 
 						continue;
 					}
+				}
+
+				// **A MultiBall window's spent throw goes once it is on the floor**, and this is the loop that knows
+				// where the floor is. The marker is written at the throw (`BALL_DESPAWN_ON_LAND_ATTRIBUTE`): four of a
+				// window's five balls carry it, and the throw that closed the window does not.
+				//
+				// **Why the destroy is not in `BallComponent`'s world branch, which is where the throw ends.** The end
+				// of a throw is not the end of the fall: a tagged throw can be finished by another *ball* — a rig
+				// holding one, a spent one underfoot — so that branch can run at chest height a frame after the tag,
+				// and a destroy there made the thrown ball vanish on the model it had just hit. The report was exactly
+				// that: a ball tagged a rig at `17.860` and was gone by `17.877`, ended on a `DodgeballBall` in the
+				// rig's hand. This sweep already walks every loose ball and already owns `isOnGround`, so the ball is
+				// allowed to fall and is taken when it is resting on something — with the ordinary spawn poof, anchored
+				// to the ball's own `CFrame` for the reason the bay's despawn below gives.
+				//
+				// **`Armed !== true` as well as on the ground**, because the marker survives the throw: a ball must not
+				// be taken at the instant of a ground contact it is still armed through. A marked ball on the floor is
+				// always disarmed — the world branch does that — and a marked ball still falling is skipped here and
+				// counted as loose below, so the loop keeps its tenth-of-a-second turn while it is in the air.
+				if (
+					instance.GetAttribute(BALL_DESPAWN_ON_LAND_ATTRIBUTE) === true &&
+					instance.GetAttribute("Armed") !== true &&
+					this.isOnGround(instance)
+				) {
+					logDebug(`[Ball] ${instance.Name}: despawned on landing — a MultiBall throw with the window open`);
+
+					// The bay timer is keyed on the instance, the same pin this loop clears for a ball that leaves
+					// the world; a ball destroyed here must not leave a row behind.
+					this.leftBayAt.delete(instance);
+					playSpawnPoof(undefined, instance.CFrame);
+					instance.Destroy();
+
+					continue;
 				}
 
 				loose++;

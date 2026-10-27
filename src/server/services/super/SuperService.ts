@@ -418,9 +418,11 @@ export class SuperService implements OnStart {
 	 * Pierce marks a ball: the ability travels with the thing that flies, which is why putting a marked
 	 * ball down costs the player their charge. MultiBall is a *state of the player* — a stretch of time
 	 * in which throwing is answered — so there is nothing on a ball to drop, and the balls it supplies
-	 * are ordinary balls in every way: catchable, taggable, pickable, with no collision rule, no flag and
-	 * no immunity of their own. **Nothing in this file touches a ball**, which is what keeps that true,
-	 * and the refills that do touch one are in `BallService` for exactly this reason.
+	 * are ordinary balls in every way: catchable, taggable, pickable, with no collision rule, no ability
+	 * flag and no immunity of their own. **Nothing in this file touches a ball**, which is what keeps that
+	 * true, and the refills that do touch one are in `BallService` for exactly this reason. (The one attribute
+	 * a MultiBall throw writes is `BALL_DESPAWN_ON_LAND_ATTRIBUTE`, and `BallService` owns that line too: it is
+	 * cleanup of the window's spent throws, not a property of the power.)
 	 *
 	 * **The charge is spent at the press for this ability and at the throw for Pierce, and the two are
 	 * not inconsistent.** A mark commits a player to nothing — the charge follows the ball, so marking

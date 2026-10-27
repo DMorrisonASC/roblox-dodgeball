@@ -73,7 +73,7 @@ export const DODGE_CONFIG = {
 	 * `DodgeService.watchForPerfectDodge` for the whole argument. That is what makes this a *hitbox*
 	 * distance rather than a distance to a body that has already left.
 	 */
-	PERFECT_DISTANCE: 8,
+	PERFECT_DISTANCE: 4,
 
 	/**
 	 * How long after a dodge starts the ball is still counted against it, in seconds. **Placeholder — 0.6.**

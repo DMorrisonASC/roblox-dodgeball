@@ -528,6 +528,34 @@ export const BALL_TAGGED_BODIES_ATTRIBUTE = "BallTaggedBodies";
 export const BALL_THROWER_SIDE_ATTRIBUTE = "BallThrowerSide";
 
 /**
+ * Attribute on a **ball**, `true` when this throw's ball should be destroyed the moment the throw is over, and
+ * **absent** otherwise.
+ *
+ * **Written by `BallService.throwBallBody`, immediately after the MultiBall spend** — `true` when the window still
+ * has a throw in it after this one, and cleared when it does not. That is the whole of the survivor rule: four of
+ * a five-throw window's balls are marked, and the fifth — the throw that closed the window — is not. **The value
+ * is re-written on every throw rather than only when it is `true`**, because a ball is thrown, caught, dropped and
+ * thrown again: a marker left on the ball by an earlier throw would destroy the window's survivor when the same
+ * ball is thrown again as the last one. `undefined` is therefore written where `true` is not, which is also the
+ * convention `TEAM_ATTRIBUTE` and `IN_ROUND_ATTRIBUTE` use for "this does not apply".
+ *
+ * **Read in one place: `BallService.settleLooseBalls`**, which destroys a marked ball that is no longer `Armed` and
+ * is `isOnGround`, with the ordinary spawn poof. **The ground and not the end of the throw**, because those are not
+ * the same moment: a tagged throw can be finished by another *ball* at chest height, and a destroy at that instant
+ * makes the thrown ball vanish on the model it just hit. The sweep already walks every loose ball every tenth of a
+ * second and already owns `isOnGround`, so the ball is allowed to fall and is taken when it is resting on
+ * something.
+ *
+ * **A caught ball never reaches the reader**, which is the rule rather than a gap: a catch takes the ball into a
+ * hand, where this loop does not look. The marker is cleared by whatever throws that ball next, so a caught
+ * MultiBall ball becomes an ordinary ball in the catcher's hand; a ball that is *dropped* instead keeps it and will
+ * be taken on the floor.
+ *
+ * **Placeholder** — the name, not the mechanism.
+ */
+export const BALL_DESPAWN_ON_LAND_ATTRIBUTE = "BallDespawnOnLand";
+
+/**
  * Attribute on a **`Player`** holding the server-time instant at which their next dodge is allowed.
  *
  * `Workspace:GetServerTimeNow()` seconds, written by `DodgeService` at the moment a dodge is
