@@ -2434,9 +2434,12 @@ export class RoundService implements OnStart {
      * has already landed or been caught, so this walks `rigsInRound()`'s handful of models a handful of times
      * a round — nothing here runs per frame, and `StatsService`'s objection to resolving a model from a token
      * is about a scan on every *landing*, which is a different quantity from a scan on every *outcome*.
-     * The O(1) alternative is to stamp the thrower's side on the ball at the throw, and it was rejected for
-     * where it puts the fact: a side is this service's table plus an attribute, so the stamp would be written
-     * by `BallService`, which knows nothing about sides, or by this service at a moment it is not told about.
+     * **The O(1) alternative — a copy of the thrower's side on the ball — now exists** as
+     * `BALL_THROWER_SIDE_ATTRIBUTE`, stamped by `BallService` beside `ThrowerId` for the perfect-dodge watch,
+     * which has no token to resolve and has to answer before any hit exists. **This scan is not replaced by
+     * it**: the watch asks "was that an enemy's ball", while a caller here asks "which *body* threw it", and a
+     * label cannot name the rig a crown is compared against — `BallComponent.score` also calls this with a
+     * token and nothing else.
      *
      * **Only a rig in the round used to be considered, and a drill outside one is the correction.** `rigsInRound()`
      * carries the `Playing` gate and the side test together, so a rig throwing between rounds resolved to nothing and

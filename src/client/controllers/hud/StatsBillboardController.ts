@@ -1,9 +1,9 @@
 import { Controller, OnStart } from "@flamework/core";
 import Fusion from "@rbxts/fusion-3.0";
 import { CollectionService, Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import { UI_FONT } from "../../ui/hudTheme";
+import { hudTheme, UI_FONT } from "../../ui/hudTheme";
 import { BADGES_ATTRIBUTE, NPC_TAG, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
-import { BADGE_COLOURS, Badge, badgeById, decodeBadges } from "shared/badges";
+import { Badge, badgeById, decodeBadges } from "shared/badges";
 import { logDebug, logWarn } from "shared/logger";
 
 /** The phase a billboard is shown in. A word between two files, not a setting. */
@@ -40,64 +40,60 @@ const BILLBOARD_NAME = "StatsBillboard";
 const HEAD_NAME = "Head";
 const HEAD_WAIT_SECONDS = 5;
 
-/** The badge list inside that billboard, and the name of each row in it. */
+/** The card, the badge list inside it, and the name of each row. */
+const CARD_NAME = "Card";
 const BADGE_LIST_NAME = "Badges";
 const BADGE_ROW_NAME = "Badge";
 
 /**
- * The two type sizes in a badge row, in pixels — **the name at the badge size and the description close under
- * it.**
- *
- * **Both came down on 2026-10-27, and the reason is the whole lesson of this file's last three passes.** The
- * sizes were `16` and `12` while the strip was the only thing above a head. Once a `BillboardGui` is drawn
- * *in the world*, its apparent size is a function of how close the camera is to that body — so the fix for "it
- * takes up too much space" is to make the text smaller rather than to make the box smaller, because the box is
- * not what anyone is looking at. `14` and `11` still read at conversational distance and cut roughly an
- * eighth off every row.
- *
- * **A ratio rather than two numbers.** A description is subordinate to its name: it is the same badge said
- * plainly, for somebody who could not decode the name, and it should read as one block with the name on top
- * rather than as two competing lines.
+ * The two type sizes in a badge row, in pixels — **the name larger than the description, which is the only
+ * hierarchy the card has.** Both lines are the same ink by request, so size and face are what separate the badge
+ * from its explanation: `14` in the project's heavy face for the name, `11` in a medium weight for the sentence
+ * under it. **Placeholder.**
  */
 const BADGE_NAME_SIZE = 14;
 const BADGE_DESCRIPTION_SIZE = 11;
 
+/**
+ * The two faces — **the project's own heavy face for a name, and one weight down for the sentence under it.**
+ *
+ * **A second face is the only hierarchy a one-colour card can offer**, and it is the difference between a badge
+ * and a caption of it: `UI_FONT` is `GothamBlack`, which is right for two or three words and smears at eleven
+ * pixels across forty. `GothamMedium` at `BADGE_DESCRIPTION_SIZE` stays legible and still reads as subordinate.
+ * The alternative — dimming the description's colour — was the old design and does not survive on white paper,
+ * where a dimmed black is grey mush and a dimmed `#F2F2F2` is invisible.
+ */
+const DESCRIPTION_FONT = Enum.Font.GothamMedium;
+
 /** The gap between a badge's two lines, and between two badges, in pixels. **Placeholder.** */
-const BADGE_LINE_GAP = 0;
-const BADGE_ROW_GAP = 3;
+const BADGE_LINE_GAP = 1;
+const BADGE_ROW_GAP = 6;
+
+/** The card's inner padding, in pixels, on all four sides. **Placeholder — 8.** */
+const CARD_PADDING = 8;
 
 /**
- * How much of the name's colour the description keeps, **as one number rather than a second palette.**
+ * **The canvas the card lives on — deliberately much larger than the card, and the size is not a layout number.**
  *
- * **The contrast ratio, and it is a ratio on purpose.** The description is the same tone as its name — a rib
- * badge's explanation is not a different kind of rib badge — so it is the name's colour *dimmed*, and this is
- * how much of it survives: sixty-two per cent of each channel, which is about a third less luminance. Enough
- * that the two lines read as one badge and the eye goes to the name first; not so little that the sentence
- * disappears against a floor. **Placeholder** — chosen against a grey arena floor at the two sizes above.
+ * The card sizes itself (`AutomaticSize.XY`) and is pinned to the centre of this box by its own anchor, so the
+ * canvas only ever needs to be *big enough*: it never clips (`ClipsDescendants = false`) and a card smaller than
+ * the canvas you can see is the only thing that draws. **`400` is a ceiling rather than a target** — a strip of
+ * four badges is about a hundred pixels wide — and stating it as a square is what lets the centre be written as
+ * `(0.5, 0.5)` in `mountBadges` rather than as two halves of two different numbers.
+ *
+ * **What it costs**: a `BillboardGui`'s canvas is centred on the adornee, so a taller canvas does not lift the
+ * card — the card is centred in it, which means the *card's* centre sits `BILLBOARD_OFFSET_Y` above the head. A
+ * strip tall enough to reach the face is answered by raising {@link BILLBOARD_OFFSET_Y}, not by shifting the card
+ * inside the canvas.
  */
-const BADGE_DESCRIPTION_CONTRAST = 0.62;
-
-/**
- * The canvas above a head, in pixels — **a width for the text and nothing else.**
- *
- * **The width is the truncation width, which is all it has ever been.** Nothing here draws a background (see
- * `mountBadges` for why the opaque card is gone), so a billboard wider than its own line costs nothing while a
- * narrower one cuts the end off the longest description — a fifty-character sentence at
- * `BADGE_DESCRIPTION_SIZE`. `300` is that sentence at the smaller type with a little room.
- *
- * **The height is not a layout number and never was.** The strip is anchored to the canvas centre and drawn
- * *outside* this box on purpose — `ClipsDescendants` is `false`, see `makeBillboard` — so a taller canvas only
- * moves the anchor, and the anchor is the canvas' centre, which does not move at all. It stays at `40` because
- * it is the box nothing is drawn in.
- */
-const BILLBOARD_SIZE = UDim2.fromOffset(300, 40);
+const BILLBOARD_SIZE = UDim2.fromOffset(400, 400);
 
 /** How far above the head the canvas floats, in studs, and how far away it is still drawn. **Placeholder.** */
 const BILLBOARD_OFFSET_Y = 2.5;
 const BILLBOARD_MAX_DISTANCE = 100;
 
 /**
- * **What is above a head between rounds**: the round's badges, drawn as letters over the world.
+ * **What is above a head between rounds**: the round's badges, on a white card.
  *
  * **The badges are the whole of it, and the record used to be the other half.** A body's
  * `Hits: n | Outs: n | Ratio: n` line lived in this same billboard and was removed on 2026-10-27: the
@@ -105,13 +101,18 @@ const BILLBOARD_MAX_DISTANCE = 100;
  * second copy nobody asked for. What is left is the thing no other surface carries — **what the round decided
  * about a body**.
  *
- * **No panel behind them, and this file spent three passes learning that.** Items 109–111 of `HANDOFF.md` put
- * an opaque white card behind this text twice, first behind the record and then behind the badges, and both
- * were withdrawn: a `BillboardGui` is drawn *in the world*, so a background's size is judged against a body
- * that is a different distance away from every viewer, and the card read as a slab with the text at its
- * bottom edge. **Letters and a halo are the right material for something drawn over an arena** — the size is
- * the type size, which is the one number this file can reason about — and `BADGE_COLOURS` exists to be legible
- * against a floor rather than against paper.
+ * **The card is back, and what was wrong with the first two was the layout rather than the idea.** Items 109–111
+ * put white paper behind this text twice and withdrew it twice, because both attempts used a bottom-anchored,
+ * self-sizing list inside a canvas whose size it did not know. The card that replaced them is the textbook one —
+ * `AutomaticSize.XY` on a frame pinned to the centre of an oversized canvas, a `UIPadding`, and rows that size
+ * themselves — and **the two hazards that broke the earlier attempts are written down where they bite**: in
+ * `mountBadges` (no scale-width rows inside an X-auto parent) and in `makeBadgeRow` (`Top`, never `Bottom` or
+ * `Center`, in a frame that sizes itself).
+ *
+ * **Black on white, with no tone at all.** `BADGE_COLOURS` — the neon palette written for lettering over an
+ * arena — is not read here any more: it is a table for a dark surface, and on paper `neutral` (`#F2F2F2`) is nine
+ * units from the page. The tone still exists in `shared/badges.ts` and still decides whether a set is published
+ * (see `BadgeService`'s rib rule); what it no longer does is choose an ink.
  *
  * **Badges are something you read while nothing is happening.** During a round the strip would be a label
  * in the way of the thing it describes, so the whole billboard is switched off while a round can be played and
@@ -297,17 +298,23 @@ export class StatsBillboardController implements OnStart {
 	}
 
 	/**
-	 * **The badge rows** — one construction, shared by a player's head and a rig's.
+	 * **The card and the badge rows on it** — one construction, shared by a player's head and a rig's.
 	 *
-	 * **No background, and the two passes that added one are the reason this paragraph exists.** Handoff items
-	 * 109 and 110 put an opaque white card behind this list, first behind the record and then behind the badges.
-	 * Both were asked for as a fix for legibility and both made something worse: **the card was a pale slab with
-	 * the badge text bunched at its bottom edge and empty panel above it**, because the list measures its own
-	 * height for its *rows* and the anchor pins its bottom to the canvas centre — so any space the layout
-	 * reserved above the rows showed as blank card. A background drawn over a body is a surface whose size the
-	 * viewer re-derives from their distance to that body; text drawn over a body is just text. Letters, a halo
-	 * effect from the tone's colour and a screen-space card for anything that must be read like a scoreboard —
-	 * that is the split this file now keeps.
+	 * **The layout is the standard self-sizing one, and saying it in three lines is the point.** A `Frame` with
+	 * `AutomaticSize.XY`, pinned to the centre of the canvas by `AnchorPoint (0.5, 0.5)`, holding a `UIPadding`
+	 * and a vertical list; rows and lines that size themselves; `VerticalAlignment.Top` at both levels. The card is
+	 * then exactly as large as its contents plus its padding, and it grows outwards from its own centre. There is
+	 * no arithmetic in this function and no number that has to agree with a font.
+	 *
+	 * **Two hazards, both of which broke earlier versions of this card, and both are avoided by construction:**
+	 *
+	 * 1. **Nothing inside an `AutomaticSize.X` parent is sized by scale.** A row at `Size = (1, 0, 0, 0)` inside a
+	 *    card that is asking its children how wide it should be is a circular question, and the engine's answer is
+	 *    a row with no width — so every row and every line here is `AutomaticSize.XY` and the list centres them.
+	 * 2. **Every layout in a self-sizing frame is `Top`.** `Bottom` (the previous badge card) and the default
+	 *    `Center` (the previous rows) both need the frame's height in order to place children, while the frame's
+	 *    height is the children — so the arrangement settles a frame late. That is what made text overlap and the
+	 *    last line hang past the card's edge.
 	 *
 	 * **Imperative rather than Fusion-hydrated, and this is the one place in the HUD that is.** A badge strip
 	 * is a *list*: its length is whatever the server derived, from nought to twenty, and it changes at most
@@ -317,70 +324,53 @@ export class StatsBillboardController implements OnStart {
 	 * scope and cannot be un-hydrated, so rebuilding the list would collect one dead hydration per badge per
 	 * change for the life of the session.
 	 *
-	 * ---
-	 *
-	 * **There is no per-row height in this file any more, and the arithmetic that used to be here is why it
-	 * went.** A badge row was one line and the billboard was resized on every change — `rows × height + pad`,
-	 * written by hand because a `BillboardGui` is a `LayerCollector` and has no `AutomaticSize`. A row is now
-	 * **two** lines of different sizes, and the second line's height is the engine's answer to a font rather
-	 * than a number this file can add up: the same sentence in two fonts is two heights, and a table of
-	 * constants would be a guess that goes stale the day `UI_FONT` or a badge's wording changes.
-	 *
-	 * **So the layout measures itself and the billboard stopped resizing.** A row is a `Frame` with
-	 * `AutomaticSize = Y` holding two `TextLabel`s that also size to their own text, stacked by a
-	 * `UIListLayout`; the list is another `AutomaticSize` frame, anchored to its own bottom-centre and placed
-	 * at the *centre* of the canvas, so it grows **upward** from the anchor instead of down over the body.
-	 * The canvas itself stays at `BILLBOARD_SIZE` and the list draws outside it — `ClipsDescendants` is
-	 * `false`, which is the property that allows exactly this and is set explicitly in `makeBillboard` rather
-	 * than relied on as a default.
-	 *
-	 * **Growing upward is the other half of the fix, and it is not cosmetic.** The billboard is centred on its
-	 * adornee, so a box that grows holds its centre and hangs half of its new height *below* the anchor —
-	 * which for a six-badge strip is a label over the body it belongs to. Anchor the list's own bottom to the
-	 * canvas centre and every row a body earns pushes the strip further **up**, never down.
-	 *
-	 * **What a wrapped description would have cost, which is why the lines truncate instead.** If a
-	 * description wrapped to fit the width, a badge's height would depend on its wording — and then the
-	 * strip's total height would depend on *which* badges fired, so the same body would be six tall rows one
-	 * round and four short ones the next. One line each, truncated with an ellipsis at the right edge, keeps
-	 * every row the same two lines and the strip's height a function of the count alone.
-	 *
 	 * **`source` is the instance the attribute lives on**, which is the `Player` for a player and the `Model`
 	 * for a rig.
 	 */
 	private mountBadges(billboard: BillboardGui, source: Instance, scope: Fusion.Scope<unknown>): void {
+		// **The one surface in this file, and the theme's paper rather than a literal** — so the card is the same
+		// white as every panel in the game, and moving the palette moves it. `BackgroundTransparency = 0` is the
+		// point of the element: the arena behind a head is whatever is happening in it, and text over that is
+		// unreadable at exactly the moment — the end of a round — when there is something to read.
+		const card = new Instance("Frame");
+		card.Name = CARD_NAME;
+		card.BackgroundColor3 = hudTheme().colors.panel;
+		card.BackgroundTransparency = 0;
+		card.BorderSizePixel = 0;
+		card.AnchorPoint = new Vector2(0.5, 0.5);
+		card.Position = UDim2.fromScale(0.5, 0.5);
+		card.AutomaticSize = Enum.AutomaticSize.XY;
+		card.Parent = billboard;
+
+		const padding = new Instance("UIPadding");
+		padding.PaddingTop = new UDim(0, CARD_PADDING);
+		padding.PaddingBottom = new UDim(0, CARD_PADDING);
+		padding.PaddingLeft = new UDim(0, CARD_PADDING);
+		padding.PaddingRight = new UDim(0, CARD_PADDING);
+		padding.Parent = card;
+
 		const list = new Instance("Frame");
 		list.Name = BADGE_LIST_NAME;
 		list.BackgroundTransparency = 1;
 		list.BorderSizePixel = 0;
-		// **Sized by its contents, and pinned by its bottom edge to the middle of the canvas.** The anchor is
-		// what turns "grows" into "grows upward"; see this method's doc for why that matters more than it
-		// looks.
-		//
-		// **The width is pixels rather than a scale of the canvas, and that is deliberate.** A `BillboardGui` is
-		// a `LayerCollector`, not a `GuiObject`, and a child sized `1, 0` against one is asking the layout to
-		// resolve a scale against a canvas that is not a frame — the rows would depend on that answer for their
-		// width, and a wrong answer is invisible text rather than a broken build. One number, the canvas's own
-		// width, keeps the strip exactly as wide as the box above it.
-		list.AutomaticSize = Enum.AutomaticSize.Y;
-		list.AnchorPoint = new Vector2(0.5, 1);
-		list.Position = UDim2.fromScale(0.5, 0.5);
-		list.Size = new UDim2(0, BILLBOARD_SIZE.X.Offset, 0, 0);
-		list.Parent = billboard;
+		// **Auto-sized on both axes, and no width of its own**: the card asks the list how big it is, so the list
+		// must be able to answer without being told. See hazard 1 in this method's doc.
+		list.AutomaticSize = Enum.AutomaticSize.XY;
+		list.Parent = card;
 
 		const layout = new Instance("UIListLayout");
 		layout.FillDirection = Enum.FillDirection.Vertical;
 		layout.SortOrder = Enum.SortOrder.LayoutOrder;
 		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center;
-		layout.VerticalAlignment = Enum.VerticalAlignment.Bottom;
+		// **`Top` because this frame sizes itself** — see hazard 2. The card is what makes the strip appear to grow
+		// upward: the card is centred on the canvas and the canvas on the head, so rows added at the top push the
+		// card's centre up by half their height.
+		layout.VerticalAlignment = Enum.VerticalAlignment.Top;
 		layout.Padding = new UDim(0, BADGE_ROW_GAP);
 		layout.Parent = list;
 
 		let rows: Frame[] = [];
 
-		// **The whole of the display, and it no longer touches the billboard.** Everything the old version did
-		// with arithmetic — how tall the box is, where the rows sit in it — is now the layout engine's, which
-		// is the only thing that knows how tall a line of GothamBlack at two different sizes actually is.
 		const show = (ids: string[]): void => {
 			for (const row of rows) row.Destroy();
 
@@ -405,7 +395,10 @@ export class StatsBillboardController implements OnStart {
 			// count of nought against a non-empty attribute is the third, and no line at all is the second.
 			logDebug(`[HUD] ${source.Name}: ${rows.size()} of ${ids.size()} badge(s) drawn`);
 
-			list.Visible = hasBadges;
+			// **The card is what hides, not the list.** The list is transparent, so hiding it while leaving the card
+			// visible would show an empty white box above a body that earned nothing — which is the one failure this
+			// feature can produce that looks worse than having no feature at all.
+			card.Visible = hasBadges;
 		};
 
 		const read = (): string[] => {
@@ -421,67 +414,83 @@ export class StatsBillboardController implements OnStart {
 }
 
 /**
- * **One badge as two lines: the name, and beneath it the sentence that explains it.**
+ * **One badge as two lines inside the card: the name, and beneath it the sentence that explains it.**
  *
  * **A `Frame` per badge rather than two labels in the list**, so the `UIListLayout` stacks *badges* rather
  * than lines: two lists are impossible to keep in step, and one flat list of four labels for two badges would
- * have no idea which pair belonged together. The row is a transparent `Frame` with `AutomaticSize = Y` and its
- * own layout, which makes it exactly as tall as its two lines and the gap between them — the measurement the
- * old fixed row height was standing in for.
+ * have no idea which pair belonged together.
  *
- * **The description is the name's tone at `BADGE_DESCRIPTION_CONTRAST` of it.** Same hue, less of it: a rib
- * badge's explanation is not a different kind of rib badge, and a second palette for one field would be a
- * second thing to keep in step with the first.
+ * **The row and its lines are all `AutomaticSize.XY`, and the row has no `Size`.** It is inside a card that asks
+ * its children how big it should be, so a row at `Size = (1, 0, 0, 0)` would be asking for a percentage of an
+ * answer that does not exist yet — the engine resolves that as a zero-width row. Auto on both axes means the row
+ * is exactly its widest line, the card is exactly its widest row, and the list centres the shorter rows on it.
  *
- * **Both lines truncate rather than wrap.** See `mountBadges` for what wrapping would have cost; the short
- * version is that a wrapped line makes a row's height depend on the sentence in it.
+ * **`Top` at both layouts, because both frames size themselves.** `Bottom` and the default `Center` need the
+ * frame's height in order to place children against it, and the height is a function of those children; the
+ * arrangement then settles a frame late, which is what made the two earlier cards' text overlap and their last
+ * line hang past the bottom edge.
+ *
+ * **Both lines are the same ink and the hierarchy is size and weight**, which is the only hierarchy a one-colour
+ * card has. The name is the project's heavy face at `BADGE_NAME_SIZE`; the description is the same family one
+ * weight down at `BADGE_DESCRIPTION_SIZE`, so a full sentence does not smear.
  */
 function makeBadgeRow(badge: Badge): Frame {
 	const row = new Instance("Frame");
 	row.Name = BADGE_ROW_NAME;
 	row.BackgroundTransparency = 1;
-	row.AutomaticSize = Enum.AutomaticSize.Y;
-	row.Size = new UDim2(1, 0, 0, 0);
+	row.AutomaticSize = Enum.AutomaticSize.XY;
 
 	const layout = new Instance("UIListLayout");
 	layout.FillDirection = Enum.FillDirection.Vertical;
 	layout.SortOrder = Enum.SortOrder.LayoutOrder;
 	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center;
+	layout.VerticalAlignment = Enum.VerticalAlignment.Top;
 	layout.Padding = new UDim(0, BADGE_LINE_GAP);
 	layout.Parent = row;
 
-	const colour = BADGE_COLOURS[badge.tone];
-	const dimmed = new Color3(
-		colour.R * BADGE_DESCRIPTION_CONTRAST,
-		colour.G * BADGE_DESCRIPTION_CONTRAST,
-		colour.B * BADGE_DESCRIPTION_CONTRAST,
-	);
+	const ink = hudTheme().colors.textPrimary;
 
-	const name = makeBadgeLine("Name", badge.name, BADGE_NAME_SIZE, colour, 1);
+	const name = makeBadgeLine("Name", badge.name, BADGE_NAME_SIZE, UI_FONT, ink, 1);
 	name.Parent = row;
 
-	const description = makeBadgeLine("Description", badge.description, BADGE_DESCRIPTION_SIZE, dimmed, 2);
+	const description = makeBadgeLine(
+		"Description",
+		badge.description,
+		BADGE_DESCRIPTION_SIZE,
+		DESCRIPTION_FONT,
+		ink,
+		2,
+	);
 	description.Parent = row;
 
 	return row;
 }
 
-/** One line of a badge row: centred, one line, truncated at the right edge, and as tall as its own text. */
-function makeBadgeLine(name: string, text: string, size: number, colour: Color3, order: number): TextLabel {
+/** One line of a badge row: centred, one line, and exactly as large as its own text. */
+function makeBadgeLine(
+	name: string,
+	text: string,
+	size: number,
+	font: Enum.Font,
+	colour: Color3,
+	order: number,
+): TextLabel {
 	const label = new Instance("TextLabel");
 	label.Name = name;
 	label.BackgroundTransparency = 1;
-	// **The height is the text's**, which is what makes a row two measured lines rather than a constant.
-	label.AutomaticSize = Enum.AutomaticSize.Y;
-	label.Size = new UDim2(1, 0, 0, 0);
-	label.Font = UI_FONT;
+	// **Both axes are the text's**, for the reason `makeBadgeRow` gives: nothing inside an `AutomaticSize.X` parent
+	// can be sized by scale. `TextWrapped` is off for the older reason — a wrapped line would make a card's height
+	// depend on a badge's wording — and there is no `TextTruncate` because an auto-sized label has no width to
+	// truncate against: the card grows to the longest sentence instead, which is what a card that hugs its text
+	// means.
+	label.AutomaticSize = Enum.AutomaticSize.XY;
+	label.Font = font;
 	label.TextSize = size;
 	label.Text = text;
 	label.TextColor3 = colour;
 	label.TextXAlignment = Enum.TextXAlignment.Center;
 	label.TextYAlignment = Enum.TextYAlignment.Center;
 	label.TextWrapped = false;
-	label.TextTruncate = Enum.TextTruncate.AtEnd;
 	label.LayoutOrder = order;
 
 	return label;
@@ -504,8 +513,8 @@ function stateOf(folder: Instance): string {
  *
  * **`Enabled` is the phase and only the phase.** The billboard is on screen for the whole intermission and off
  * during a round; the *contents* are what change, and `mountBadges` is what changes them. A body that earned
- * nothing has a `BillboardGui` with a hidden list in it, which is one transparent instance rather than a
- * second visibility rule on one head.
+ * nothing has a `BillboardGui` whose card is hidden — one instance rather than a second visibility rule on one
+ * head.
  */
 function makeBillboard(head: BasePart, state: Fusion.Value<string>, scope: Fusion.Scope<unknown>): BillboardGui {
 	const billboard = new Instance("BillboardGui");
@@ -519,11 +528,11 @@ function makeBillboard(head: BasePart, state: Fusion.Value<string>, scope: Fusio
 	// be anywhere.
 	billboard.AlwaysOnTop = false;
 	billboard.MaxDistance = BILLBOARD_MAX_DISTANCE;
-	// **The canvas is a fixed box and the content is allowed to leave it, which is what lets the badge strip
-	// grow without the billboard being resized.** `ClipsDescendants` on a `BillboardGui` is the switch for
-	// exactly this — "whether portions of GuiObjects that fall outside the canvas borders will be drawn" —
-	// and it is written here rather than left to its default because the whole layout depends on it: a strip
-	// anchored to the canvas centre grows upward, out of a box that stays one line tall.
+	// **The canvas is deliberately far larger than the card, and it never clips.** The card sizes itself and is
+	// centred on this box by its own anchor, so the canvas is a ceiling rather than a container — the only thing
+	// that draws is the card. `ClipsDescendants` is written explicitly rather than left to its default because the
+	// whole arrangement depends on that answer: a card that outgrew the canvas would be cut in half by a property
+	// nobody looked at. See `BILLBOARD_SIZE`.
 	billboard.ClipsDescendants = false;
 	billboard.Parent = head;
 

@@ -505,6 +505,29 @@ export const BALL_TAGGED_TEAM_ATTRIBUTE = "BallTaggedTeam";
 export const BALL_TAGGED_BODIES_ATTRIBUTE = "BallTaggedBodies";
 
 /**
+ * Attribute on a **ball** naming the side its thrower was on when it left the hand — `"A"`, `"B"`, or `""` when
+ * the thrower had no side at that instant.
+ *
+ * **Written by `BallService.throwBallBody`, beside `ThrowerId`**, and that is the same rule: the two describe
+ * *this throw* rather than the ball, so both are re-stamped at every release and a ball picked up by the other side
+ * carries the new thrower's label rather than the one it was made with.
+ *
+ * **Published for one reader: `DodgeService.watchForPerfectDodge`**, which must not call a same-side pass a
+ * perfect dodge. A friendly contact writes no tag — `BallComponent.handleTouch` vetoes it before any tag exists —
+ * so the tag list cannot answer this question and a side comparison is the only thing that can. **The label is
+ * stamped on the ball rather than asked of the thrower at read time**, because the watch has the throwing `Model`
+ * and a side does not: `TEAM_ATTRIBUTE` lives on the `Player` for a person and on the rig for an NPC, and asking
+ * the round for it from `DodgeService` is the constructor cycle item 40 of `HANDOFF.md` §15 records.
+ *
+ * **`""` is a real value and means "no side at the throw"**, not "unknown": a lobby throw and a practice-zone
+ * player's throw both carry it. A reader that wants "an enemy's ball" must therefore treat `""` as no answer
+ * rather than as a side that matches nobody.
+ *
+ * **Placeholder** — the name, not the mechanism.
+ */
+export const BALL_THROWER_SIDE_ATTRIBUTE = "BallThrowerSide";
+
+/**
  * Attribute on a **`Player`** holding the server-time instant at which their next dodge is allowed.
  *
  * `Workspace:GetServerTimeNow()` seconds, written by `DodgeService` at the moment a dodge is

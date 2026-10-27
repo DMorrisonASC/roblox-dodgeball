@@ -180,7 +180,7 @@ function play(sound: Sound): void {
  * localisation, on `hitConfirm`'s rule: the game's text is English everywhere, and a caption is the last place
  * to start a second mechanism.
  */
-const PERFECT_TEXT = "Perfect";
+const PERFECT_TEXT = "Perfect Dodge";
 
 /**
  * The typography variant the word is drawn in — **`h6`, as the request named it, and this is the whole of what

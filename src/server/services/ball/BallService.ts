@@ -5,6 +5,7 @@ import {
 	BALL_ABILITY_ATTRIBUTE,
 	BALL_BARRIER_TAG,
 	BALL_SIZE,
+	BALL_THROWER_SIDE_ATTRIBUTE,
 	CATCH_ANIMATION_ATTRIBUTE,
 	CatchCause,
 	DUCKING_ATTRIBUTE,
@@ -2021,6 +2022,18 @@ export class BallService implements OnStart {
 		// the catch check both read this one token.
 		ball.SetAttribute("Armed", true);
 		ball.SetAttribute("ThrowerId", this.tokenOf(model));
+
+		// **And the side the thrower was on at the release**, stamped here rather than at the factory beside
+		// `Armed` and `ThrowerId`, and overwritten on every throw for the reason those two are: a caught ball has
+		// been through somebody else's hand since, and this throw is what decides whose ball it is now. The one
+		// reader is `DodgeService.watchForPerfectDodge`, which has to tell an enemy's pass from a teammate's —
+		// a friendly contact writes no tag, so the tag list cannot answer it. See
+		// `BALL_THROWER_SIDE_ATTRIBUTE` for why the label is a copy on the ball rather than a read of the body.
+		//
+		// **`sideOfBody` rather than the attribute directly**, because a player's `TEAM_ATTRIBUTE` is on the
+		// `Player` and `model` here is the character. It answers `undefined` for a body with no side, which is
+		// written as `""` — the value that means "no side at the throw" rather than "unknown".
+		ball.SetAttribute(BALL_THROWER_SIDE_ATTRIBUTE, this.sideOfBody(model) ?? "");
 
 		// **And whether it came out of a practice bay, which decides where it dies.** A drill's ball is destroyed the
 		// first settle turn it is outside every `practiceBay` — see `settleLooseBalls` — and the fact is written here,

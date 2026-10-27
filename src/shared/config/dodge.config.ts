@@ -57,13 +57,17 @@ export const DODGE_CONFIG = {
 
 	/**
 	 * How close an in-flight ball has to pass to the body for the dodge that avoided it to be a **perfect**
-	 * dodge, in studs. **Placeholder — 4.**
+	 * dodge, in studs. **Placeholder — 8.**
 	 *
 	 * **The number is a hitbox and a ball rather than a taste.** A contact happens at about two studs from
-	 * the root — a torso's own half-width plus `BALL_SIZE / 2` — so four studs is a pass that came within
-	 * about one ball's width of touching, which is the sentence a player would use: *it missed me by a
-	 * ball.* Lower it and only the whisker passes count; raise it and a ball that was never going to reach
-	 * the body starts counting, and a perfect dodge stops saying anything.
+	 * the root — a torso's own half-width plus `BALL_SIZE / 2` — so eight studs is a pass that came within
+	 * about two and a half ball-widths of touching, which is the sentence a player would use: *it missed me by
+	 * a couple of balls.* Lower it and only the whisker passes count; raise it and a ball that was never going
+	 * to reach the body starts counting, and a perfect dodge stops saying anything.
+	 *
+	 * **It has been `8` while this doc said `4`**, and the mismatch is worth the line: the 2026-10-27 session
+	 * logged perfect dodges at 2.5–7.7 studs, which reads as a threshold bug until the constant is read. The
+	 * value is unchanged by that finding; only the sentence above it was wrong.
 	 *
 	 * **Measured against where the body was standing when it dodged**, not where the dash took it — see
 	 * `DodgeService.watchForPerfectDodge` for the whole argument. That is what makes this a *hitbox*

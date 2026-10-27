@@ -2,11 +2,12 @@
  * The round's badges: **what kind of round it was**, derived at `finishRound` and drawn above each head for
  * fifteen seconds.
  *
- * **The display is `StatsBillboardController`, and it is the only one.** That file was deleted for one pass on
- * 2026-10-27 and restored on the same day: deleting it took the badge strip with it, which is not what the owner
- * asked for — he asked for the *hits/outs record* above heads to go, and for the badges to be smaller. The record
- * is gone; the strip is here, at `14`/`11` with no card behind it. **Nothing else in the client reads this file's
- * ids**, so a change to a badge's name is a change to what appears above every head.
+ * **The display is `StatsBillboardController`, and it is the only one.** It draws each id as two black lines — the
+ * name and the sentence under it — on a white card above the head of the body wearing it, for the fifteen seconds
+ * the set is published. That file has been deleted, reverted and rebuilt around this display in one day
+ * (`HANDOFF.md` §15 items 111–114); what it needs from this file is only the vocabulary, which has not moved.
+ * **Nothing else in the client reads these ids**, so a change to a badge's name is a change to what appears above
+ * every head.
  *
  * **The three rules that govern every badge, and a badge that violates one is a bug rather than a
  * matter of taste.**
@@ -180,31 +181,16 @@ export function badgeById(id: string): Badge | undefined {
 }
 
 /**
- * The three tones' colours, for a label with no background behind it.
+ * **`BADGE_COLOURS` is deleted, and the reason is the surface it was written for.** It held three bright colours
+ * "for a label with no background behind it" — legible over a floor, which is a different job from legible on a
+ * panel. The strip above a head has a white card behind it now, and on paper `neutral` at `#F2F2F2` is nine units
+ * from the page: a rib badge would vanish. **Tone therefore chooses no ink at all.** It still exists and still
+ * matters — `BadgeService` publishes nothing when a set is *only* ribs — but a display that wants to colour by it
+ * will have to answer the paper question first, which is why the argument is kept here rather than the table.
  *
- * **These are exactly what the strip above a head paints with, and they are the reason it has no card.** They were
- * written for lettering over the world; item 110 of `HANDOFF.md` put white paper behind them for a pass and
- * `neutral` at `#F2F2F2` vanished into it. **A display with a light surface cannot use this table** — it needs its
- * own ink, and the strip above a head is not that display.
- *
- * **The HUD's palette rather than the HUD's theme, and the difference is legibility rather than taste.**
- * `hudTheme` describes panels — surfaces, accents, the text colour for each — and a billboard is drawn
- * against *the world*: whatever is behind it, at whatever distance, in whatever light. So these are three
- * bright, high-contrast colours whose only job is to be readable over a floor, which is a different job
- * from the one `theme.colors.onAccent` does inside a panel. The existing stats line writes
- * `theme.colors.onAccent` for exactly the same reason, and this is that choice widened to three.
- *
- * **Tone is a colour and not a rank.** Praise is not "better" than rib — rule 1 says a rib badge describes
- * a performance — and a player reading a warm-coloured label should be laughing rather than being told
- * off. The three are deliberately close in brightness so that no tone shouts louder than another.
- *
- * **Placeholder** — the three values, not the three tones. They were chosen against a grey arena floor.
+ * **Tone is a rank-free distinction.** Praise is not "better" than rib — rule 1 says a rib badge describes a
+ * performance — and a player reading a rib badge should be laughing rather than being told off.
  */
-export const BADGE_COLOURS: { readonly praise: Color3; readonly neutral: Color3; readonly rib: Color3 } = {
-	praise: Color3.fromRGB(126, 232, 148),
-	neutral: Color3.fromRGB(242, 242, 242),
-	rib: Color3.fromRGB(255, 170, 96),
-};
 
 /**
  * **How a set is published: one comma-joined string, and the empty string for "nothing".**

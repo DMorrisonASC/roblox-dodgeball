@@ -925,7 +925,7 @@ wrong:
 | `RespawnHudController` | **two lines** above centre (`0.44` down): the tenths countdown as `h4` seconds + dimmer `subtitle1` tenths, and beneath it `Hit by <name>` — the splash's own styling (`ui/actionSplash.ts`) rather than a copy of it | `RESPAWN_AT_ATTRIBUTE`, `LAST_HIT_BY_ATTRIBUTE` |
 | `CurrencyHudController` | `Coins: N`, under the shop button | `COINS_ATTRIBUTE` |
 | `SuperHudController` | streak / charge / armed ability / MultiBall window | the four `SUPER_*` attributes + the held ball's mark |
-| `StatsBillboardController` | **the round's badges above every head** — a strip of a name and a one-line description per badge, `14`/`11`, no card behind it. **The hits/outs record is gone** (deleted 2026-10-27, §15 item 112): those figures are the kill cam's card's, and two copies were one too many | `BADGES_ATTRIBUTE` |
+| `StatsBillboardController` | **the round's badges above every head** — a white card with a padding, holding a name and a one-line description per badge in black, `14`/`11`. **The hits/outs record is gone** (deleted 2026-10-27, §15 item 112): those figures are the kill cam's card's, and two copies were one too many | `BADGES_ATTRIBUTE` |
 | `HitLogController` | who you hit / who hit you, top left, during a round | the `roundHit` event |
 | `ControlsLegendController` | the control legend | `THROW_ENABLED` |
 | `MobileControlsController` | **the six mobile buttons** — `Drop`, `Catch`, `Curve`, `Dodge`, `Throw`, `Jump` — packed by `pack()` into the bottom-right corner of `getScreenSpaceGui()`, with a cooldown ring behind the two that have a clock and the engine's own jump button dressed or hidden (`HIDE_ENGINE_JUMP`). Glass face at `0.7`, white inverse on a press — §10 has both stories | `CATCH_READY_AT`, `DODGE_READY_AT`; `isMobile()` |
@@ -1943,16 +1943,19 @@ the fix was; 39 is the one number in it that is a guess; 40 is the gap the fix d
     that had already stopped — but the window was never the thing that ended a watch, so nothing in the output
     distinguishes 0.6 from 0.3. It is the number to cut if a caption ever fires for a ball that had clearly
     stopped being one.
-40. **A contact that writes no tag is invisible to the perfect dodge, and two kinds of contact write none.** A
-    same-side ball is vetoed at `BallComponent.handleTouch` before any tag exists, and a ball into a
-    practice-zone player is not a body to a ball at all — so in both cases a pass close enough to count is
-    counted, and a teammate's throw going past you can raise `Perfect`. **This is not a regression from the
+40. **A contact that writes no tag is invisible to the perfect dodge, and three kinds of contact write none.** A
+    same-side ball is vetoed at `BallComponent.handleTouch` before any tag exists, a ball into a
+    practice-zone player is not a body to a ball at all, and **an own throw returns from the self-catch branch
+    before the tag** — so in all three cases a pass close enough to count is counted, and a teammate's throw, or
+    your own coming back off somebody, can raise `Perfect`. **This is not a regression from the
     radius**: that test only reached 2.5 studs, so the same pass at 3.5 fired before the fix too. Making it
     exact is a *side comparison*, not a geometry change — the dodger's `TEAM_ATTRIBUTE` against the thrower's —
-    and the thrower's side is not on the ball today. **`RoundService` cannot be injected to get it**:
+    and the thrower's side was not on the ball then. **`RoundService` cannot be injected to get it**:
     `RoundService` reaches `DodgeService` through `NpcService`, so the dependency would be a cycle and Flamework
-    refuses those at ignite. The route is to publish the thrower's side on the ball beside `ThrowerId`, which is
-    the throw path's state rather than this feature's, so it is left as a decision.
+    refuses those at ignite. The route was to publish the thrower's side on the ball beside `ThrowerId`, which is
+    the throw path's state rather than this feature's, so it is left as a decision. **Closed by item 115**, which
+    took that route and added the own-throw filter beside it; the one case still open is a drill's ball at a
+    practice-zone player.
 
 **Found by the 2026-10-23 rig-miss pass, which was asked a question rather than given a bug. Both items are
 tuning decisions the code cannot settle, and both comments were corrected to describe the shipped values.**
@@ -4941,6 +4944,115 @@ almost no server code; 45 is what it cannot show.**
 
      **Unverified**: whether `14`/`11` is small enough. The levers, in order of effect: the description size, then
      the row gap, then dropping the description line — the last is the one the owner has already declined once.
+
+113. **The badge strip's vertical alignment was wrong in both of its auto-sized frames, and that is what the empty
+     band and the clipped description were.**
+
+     **The prompt described the healthiest possible version of this bug**: it reported a white container with empty
+     space at the top, text at the bottom and the last line clipped — against a build where the container no longer
+     existed (item 112 removed it). Both facts are true at once, which is why this item exists: **the container was
+     removed and the misalignment that made it look broken was not**, so the next surface put behind this list would
+     have broken in exactly the same way.
+
+     **`UIListLayout.VerticalAlignment` was `Bottom` on the badge list and left at its default `Center` on each
+     row**, in frames that size themselves. That is the one arrangement that cannot resolve in one pass: the layout
+     needs the frame's height to place children against the bottom or middle of it, and the frame's height is the
+     sum of those children. The engine settles it a row late, so with a background the strip showed **a blank band
+     along the top and its last description hanging past the bottom edge.** Both are now `Top` — the list and the
+     row — where the height is an answer rather than an input. **`Top` at the list does not mean the strip grows down
+     over the body**: the list's own `AnchorPoint = (0.5, 1)` still pins its bottom edge to the canvas centre, which
+     is what makes the whole strip grow upward.
+
+     **The list's `Position` is now an offset rather than a scale**, half of `BILLBOARD_SIZE` on each axis. It was
+     `fromScale(0.5, 0.5)` beside an offset `Size` — the one inconsistency the comment above it already argued
+     against, since a scale resolved against a `LayerCollector` is the part that is easy to get wrong. The canvas'
+     centre is now stated rather than resolved.
+
+     **Nothing here sizes by arithmetic and nothing needs to**: the list, each row and each line are all
+     `AutomaticSize.Y`, every label carries a `TextSize` (never `TextScaled`), and `TextTruncate = AtEnd` is what
+     keeps a long description one line. There is no `UIPadding` and no container, so the "symmetric padding" half of
+     the pattern does not apply — the strip has no edges to keep text off.
+
+     **Unverified**: that the strip now reads as a tight block in Studio. This one is worth the owner's eyes,
+     because the last three passes here were each judged from a screenshot and each was wrong about the cause.
+
+114. **The white card is back, and this time the layout underneath it is one that can work: `AutomaticSize.XY` at
+     the centre of an oversized canvas, `Top` at both layouts, nothing sized by scale inside an auto parent.**
+
+     **What the screenshot showed**: green and white text mashed together, rows drawn on top of one another. Item
+     113 had fixed the *alignments* but left the strip on the arrangement behind them — a list anchored to its own
+     bottom edge at the canvas centre, sized `300 × auto`, with rows at `Size = (1, 0, 0, 0)`. **That row size was
+     the overlap**: a scale-width child inside a frame that is deciding its own width is a circular question, and
+     the engine's answer is a row with no width and a position it re-resolves each frame — so the two lines of a
+     badge and the next badge all landed in the same place.
+
+     **The structure now**, and every link of it is standard: a `Card` `Frame` with `AutomaticSize.XY`,
+     `AnchorPoint (0.5, 0.5)`, `Position (0.5, 0.5)` on a `400 × 400` canvas, `hudTheme().colors.panel` at
+     `BackgroundTransparency = 0`, a `UIPadding` of `8`; a transparent list with `AutomaticSize.XY` inside it; a
+     row per badge with `AutomaticSize.XY` and **no `Size` at all**; two `TextLabel`s with `AutomaticSize.XY`,
+     `TextSize` 14 and 11, `TextWrapped` off and **no `TextTruncate`** — an auto-width label has no width to
+     truncate against, so the card grows to the longest sentence instead, which is what hugging the text means.
+
+     **Both layouts are `Top`, and that is stated twice in the file because it has now been the bug twice.**
+     `Bottom` (item 110's card) and the default `Center` (the rows) both need a frame's height in order to place
+     children against it while the height is the children — the arrangement settles a frame late, which is what
+     produced the empty band at the top of the old card and the clipped last line. Row size by scale is written
+     down beside it as the second hazard.
+
+     **The ink is the theme's, not literals**: `hudTheme().colors.panel` is `#FFFFFF` and
+     `hudTheme().colors.textPrimary` is `#000000` — exactly the values the request named — and both come from the
+     palette so the card is the same white as every other panel. **`BADGE_COLOURS` is deleted** from
+     `shared/badges.ts`: it was a table of three bright colours "for a label with no background behind it", and on
+     paper `neutral` (`#F2F2F2`) is nine units from the page. `tone` still exists and still decides whether a set
+     is published at all (the rib rule); it no longer chooses a colour anywhere.
+
+     **The hierarchy is size and weight, not colour**: the name in `UI_FONT` (`GothamBlack`) at 14, the
+     description in `GothamMedium` at 11. One ink, two weights — the alternative, dimming the description's colour,
+     is exactly what stops working on white.
+
+     **Two things to look at in Studio**: whether the card sits over the face on a short body (the answer is
+     `BILLBOARD_OFFSET_Y`, not a different anchor — the card is centred on the canvas by design), and whether the
+     longest description makes the card too wide for a phone, since nothing truncates any more.
+
+115. **The perfect dodge fired on the dodger's own ball, and the side filter item 40 asked for landed beside it.**
+     Both halves are the class item 40 names — a contact that writes no tag — and the own throw is the member the log
+     actually showed.
+
+     **The evidence, from one server session.** Eleven of the twelve `[Dodge] prospeed1: perfect dodge` lines were
+     preceded within ~50 ms by `[Catch] DodgeballBall: own throw reached prospeed1 — no window, no damage`; the
+     twelfth was `own throw reached VelvetVenom8`, an enemy rig's ball passing prospeed1, which is the behaviour
+     worth keeping. `BallComponent.handleTouch`'s own-throw branch offers the catch and then `return`s **before any
+     tag is written**, so `BALL_TAGGED_BODIES_ATTRIBUTE` is empty for that contact and item 38's tag gate cannot end
+     the watch on it. **The watch had no thrower filter at all** — it sampled every entry of `armedBalls()` and
+     measured the closest approach of all of them, which is what the twelve lines were reporting.
+
+     **Two filters, in `DodgeService.watchForPerfectDodge`, both before the ball is sampled.** Own throw compares the
+     ball's `ThrowerId` with the body's `THROWER_TOKEN` — the same two strings `BallComponent` compares to refuse
+     self-damage, so "this ball is mine" has one definition rather than two. Same side compares the new
+     `BALL_THROWER_SIDE_ATTRIBUTE` with the dodger's own side, resolved as `(GetPlayerFromCharacter(model) ?? model)`
+     because a player's `TEAM_ATTRIBUTE` is on the `Player` and a rig's is on the rig. **`""` is not compared**: a
+     lobby throw and a practice-zone player's throw have no side, and treating "no side" as a value would make two
+     side-less bodies teammates — their own throws are still caught by the first filter. A drill's ball at a
+     practice-zone player is the one case neither filter answers, and it is still open.
+
+     **The stamp is written in `BallService.throwBallBody` beside `ThrowerId`** — same function, a comment apart —
+     through the file's own `sideOfBody`, so a ball caught and re-thrown carries the new thrower's label and a ball
+     that outlives a round change cannot carry the old one. It lives on the ball rather than being asked of the round
+     at read time for item 40's cycle reason. **`RoundService.throwerOf`'s note that the stamp "was rejected" is
+     corrected there**, because the code now does it and a comment arguing against its own codebase is the fault this
+     file keeps recording; the rig scan stays, because a caller there needs the *body* and not a label.
+
+     **`PERFECT_DISTANCE` is `8`, and its own doc said `4`.** The 2.5–7.7-stud figures are all below the shipped
+     threshold, so this was never a threshold bug — the sentence above the constant was stale, and now says eight and
+     records the mismatch. `PERFECT_WINDOW_SECONDS` is still 0.6 and is still `deadline`'s only term; `PREDICTED_HIT_RADIUS` is
+     untouched and used only by `stillOnCourse`.
+
+     **The skip lines are `logDebug` and once per ball per watch**, held in `skipped`, because a spent ball near the
+     dodger would otherwise print on every frame of the window. **Unverified in Studio**: that a bounce-back no
+     longer captions — the evidence is the *absence* of the perfect-dodge line, or
+     `[Dodge] DodgeballBall: skipped — prospeed1 is its own thrower` with `VERBOSE_LOGS` on — and that an enemy
+     rig's ball still does, which is the twelfth line's shape. No client module changed: if the filters hold, the
+     caption and its clip simply stop appearing on the wrong ball.
 
 ---
 

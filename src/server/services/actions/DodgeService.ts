@@ -6,7 +6,7 @@ import { BALL_CONFIG } from "shared/config/ball.config";
 import { DODGE_CONFIG, DODGE_SPEED } from "shared/config/dodge.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { SOUND_CONFIG } from "shared/config/sound.config";
-import { CATCH_READY_AT, BALL_SIZE, BALL_TAGGED_BODIES_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, DODGE_READY_AT, IN_ROUND_ATTRIBUTE, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER } from "shared/constants";
+import { CATCH_READY_AT, BALL_SIZE, BALL_TAGGED_BODIES_ATTRIBUTE, BALL_THROWER_SIDE_ATTRIBUTE, DODGE_DIRECTION_ATTRIBUTE, DODGE_READY_AT, IN_ROUND_ATTRIBUTE, PRACTICE_ZONE_ATTRIBUTE, ROUND_STATE_ATTRIBUTE, ROUND_STATUS_FOLDER, TEAM_ATTRIBUTE, THROWER_TOKEN } from "shared/constants";
 import { canDodge, dodgeDirectionOf, flattenToGround, resolveDodgeable } from "shared/dodge";
 import type { DodgeDirection } from "shared/dodge";
 import type { Dodgeable } from "shared/dodge";
@@ -895,12 +895,24 @@ export class DodgeService implements OnStart {
 	 * a ball leaving. A tag is the exact record of that contact and it survives the ball flying on, which is why
 	 * the answer is the tag list and not a bigger sphere.
 	 *
-	 * **What the tag check does not cover, stated rather than left to be found.** A contact that produces no tag
-	 * is not a contact to this test: a same-side ball (friendly fire is vetoed before any tag is written) and a
-	 * ball into a practice-zone player (a practice player is not a body to a ball at all). In both cases the game
-	 * itself says the ball did nothing to the body, so a pass close enough to be a near miss is a near miss Ã¢â‚¬â€
-	 * the caption can appear for a teammate's throw that goes past you. **Making that exact is a side comparison
-	 * and not a geometry change**, and it is written up in `HANDOFF.md` Ã‚Â§15 rather than done here.
+	 * **What the tag check cannot cover, and the two filters that now do.** A contact that produces no tag is
+	 * not a contact to this test, and two ordinary contacts write none: **an own throw** (`handleTouch` offers
+	 * the catch and then returns, before the tag) and **a same-side ball** (friendly fire is vetoed before the
+	 * tag). Both are contacts the game itself says did nothing, so the tag list is empty and a pass close
+	 * enough to count was being called a dodge. **The log that found the first one:** eleven of the twelve
+	 * `perfect dodge` lines in one session were preceded within ~50 ms by `[Catch] … own throw reached
+	 * <the dodger>` — their own ball, off somebody, coming back. The twelfth was an enemy rig's ball, which is
+	 * the case worth keeping.
+	 *
+	 * **Own throw is answered by `ThrowerId`**, which the ball has carried since the throw and which
+	 * `BallComponent` already compares against the body's `THROWER_TOKEN` to refuse self-damage. **Same side is
+	 * answered by a label stamped on the ball at the release** (`BALL_THROWER_SIDE_ATTRIBUTE`), because a side
+	 * is not a fact the ball can derive and not a fact this service can ask for: `TEAM_ATTRIBUTE` lives on the
+	 * `Player` for a person and on the rig for an NPC, and the round that owns both would be a constructor
+	 * cycle — which is why item 40's route is a stamped attribute rather than a call. A ball whose label is
+	 * `""` — thrown in the lobby, or by a practice-zone player — passes the side filter; its own throws are
+	 * still caught by the first, and a drill's ball at a practice-zone player is the case neither filter
+	 * answers, because there is no side to compare. That one is left as item 40 left it.
 	 *
 	 * **And a dead body cannot have dodged anything, so the humanoid is asked every tick.** A tagged body is not
 	 * killed at the tag Ã¢â‚¬â€ the tags resolve when the ball dies, and the throw can take up to a second to land Ã¢â‚¬â€ so
@@ -920,8 +932,9 @@ export class DodgeService implements OnStart {
 	 * **The caption waits for the pass rather than for the approach, and the difference is the number in the
 	 * log.** A ball inside the radius gets a *candidate* record and the watch keeps following it until the
 	 * distance stops falling Ã¢â‚¬â€ that instant is the closest approach, which is the figure worth reporting:
-	 * firing on the frame a ball *enters* a four-stud radius would always print something just under four,
-	 * because a ball covers three studs a frame, and a tuning note that reads `3.3` for a pass that went
+	 * firing on the frame a ball *enters* `PERFECT_DISTANCE` would print the distance that frame happened to
+	 * be at, which for a ball covering three studs a frame can be most of the way across the radius, and a
+	 * tuning note that reads `3.3` for a pass that went
 	 * straight through the body is worse than no note at all. It also delays the caption by a frame or two,
 	 * which is the beat the ball has finished going past Ã¢â‚¬â€ the moment the player saw it.
 	 *
@@ -954,6 +967,34 @@ export class DodgeService implements OnStart {
 
 		/** The last position seen for each ball, so each turn tests a path rather than a point. */
 		const observed = new Map<BasePart, Vector3>();
+
+		/**
+		 * **The balls this watch has already declared none of its business, so each skip is said once.**
+		 *
+		 * A ball that passes close and is not an enemy's stays in `armedBalls()` for the whole window, and the
+		 * loop turns every frame — a line per frame would be the loudest thing in the output for a spent ball
+		 * rolling to a stop. The set is also the cache for the decision itself: an own throw cannot become
+		 * somebody else's ball inside a 0.6 s window without being caught and thrown again, and a same-side
+		 * ball's label is stamped at its release and never rewritten in flight.
+		 */
+		const skipped = new Set<BasePart>();
+
+		/**
+		 * **Who this watch belongs to, read once: the token its own throws wear, and the side it is on.**
+		 *
+		 * `THROWER_TOKEN` is on the body itself — stamped on every character by `JoinService.welcome` and on
+		 * every rig by `NpcService` — which is the same fact `BallComponent` compares `ThrowerId` against to
+		 * refuse self-damage. **The side is not**: `TEAM_ATTRIBUTE` lives on the `Player` for a person and on the
+		 * rig for an NPC, so the lookup is the `GetPlayerFromCharacter`-or-model shape `BallService.sideOfBody`
+		 * uses. A body with neither — a lobby player, a practice-zone player — answers `undefined`, and that is
+		 * "no side to compare", not "matches nobody".
+		 */
+		const token = model.GetAttribute(THROWER_TOKEN);
+		const ownToken = typeIs(token, "string") && token !== "" ? token : undefined;
+
+		const wearer = Players.GetPlayerFromCharacter(model) ?? model;
+		const label = wearer.GetAttribute(TEAM_ATTRIBUTE);
+		const ownSide = typeIs(label, "string") && label !== "" ? label : undefined;
 
 		/**
 		 * The ball being measured, from the frame it came inside {@link DODGE_CONFIG.PERFECT_DISTANCE} until the
@@ -995,6 +1036,47 @@ export class DodgeService implements OnStart {
 					// radius could not make, because the contact may have happened before the dash began. See
 					// `BALL_TAGGED_BODIES_ATTRIBUTE`.
 					if (hasTagged(ball, model.Name)) return;
+
+					// **Declared not this watch's business on an earlier frame — see `skipped`.** The line was
+					// written the frame the decision was made; this turn says nothing.
+					if (skipped.has(ball)) continue;
+
+					// **This body's own throw, which `handleTouch` refuses without writing a tag.** The ball came
+					// back off somebody and is passing its thrower: nothing was done to the body and nothing is
+					// owed to it, so measuring it would be measuring a game of catch rather than a dodge. The
+					// comparison is the same one `BallComponent` makes to refuse the self-hit, against the same
+					// token — one string decides both halves of "this ball is mine". See this method's note for
+					// the session log that found it.
+					const throwerId = ball.GetAttribute("ThrowerId");
+
+					if (ownToken !== undefined && typeIs(throwerId, "string") && throwerId === ownToken) {
+						skipped.add(ball);
+						logDebug(`[Dodge] ${ball.Name}: skipped — ${model.Name} is its own thrower`);
+
+						continue;
+					}
+
+					// **A ball thrown by somebody on this body's side**, which is the other contact that writes no
+					// tag: `handleTouch` vetoes friendly fire before the tag exists, so the tag list is empty for
+					// it exactly as it is for an own throw. The side travels on the ball because it is stamped at
+					// the release — see `BALL_THROWER_SIDE_ATTRIBUTE` for why the watch cannot derive it.
+					//
+					// **`""` is not a side and is not compared.** A ball thrown in the lobby, or by a player in a
+					// practice zone, carries no side at all; treating that as a value would make two bodies with
+					// no side "teammates" and would hide a real enemy's ball thrown from outside a round.
+					const ballSide = ball.GetAttribute(BALL_THROWER_SIDE_ATTRIBUTE);
+
+					if (
+						ownSide !== undefined &&
+						typeIs(ballSide, "string") &&
+						ballSide !== "" &&
+						ballSide === ownSide
+					) {
+						skipped.add(ball);
+						logDebug(`[Dodge] ${ball.Name}: skipped — same side`);
+
+						continue;
+					}
 
 					const now = ball.Position;
 					const before = observed.get(ball);

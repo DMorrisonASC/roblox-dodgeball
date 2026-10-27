@@ -548,13 +548,13 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			return;
 		}
 
-		// Nobody is hurt by their own ball, and nobody catches it either — including off
-		// the rebound, which is the case that matters now that balls come off people. Both
-		// come down to the same string: the token stamped on the ball at release, held
-		// against the token on the model it is touching. A player's token is their
-		// `UserId` as text and an NPC's is a GUID, and this comparison cannot tell
-		// them apart — which is the point. Asking "is this a player?" instead would
-		// leave an NPC free to hit itself with its own throw.
+		// Nobody is hurt by their own ball — including off the rebound, which is the case
+		// that matters now that balls come off people — and the *catch* is offered
+		// separately below. Both come down to the same string: the token stamped on the
+		// ball at release, held against the token on the model it is touching. A player's
+		// token is their `UserId` as text and an NPC's is a GUID, and this comparison
+		// cannot tell them apart — which is the point. Asking "is this a player?" instead
+		// would leave an NPC free to hit itself with its own throw.
 		const throwerId = this.instance.GetAttribute("ThrowerId");
 		const token = character.GetAttribute(THROWER_TOKEN);
 		const ownThrow = typeIs(throwerId, "string") && throwerId !== "" && throwerId === token;
@@ -575,6 +575,14 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		//
 		// **It also cannot be used as a shield.** A self-catch spends the window through `tryCatch` → `consume`, exactly
 		// as any other catch does, so it costs the same second and catches the same one ball. See `CATCH_CONFIG`.
+		//
+		// **And this `return` is why the perfect-dodge watch filters by thrower.** A perfect dodge is measured from
+		// the tag list, and this branch writes no tag — the whole point is that the contact did nothing. So a ball of
+		// your own coming back past you is a contact the measurement cannot see at all, and a pass close enough to
+		// count would be called a dodge if the watch did not know whose ball it was.
+		// `DodgeService.watchForPerfectDodge` compares `ThrowerId` against this same `token` for exactly that
+		// reason; the two files agree about "this ball is mine" by reading one string, and a change to either
+		// comparison has to move with the other.
 		if (ownThrow) {
 			if (this.tryCatch(character, struck, "touch")) return;
 
