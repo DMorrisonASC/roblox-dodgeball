@@ -42,6 +42,7 @@ import {
 } from "../../persistence/sessionLock";
 import { BIND_TO_CLOSE_SECONDS, WRITE_DEADLINE_SECONDS, runWithin } from "../../persistence/shutdown";
 import { DRAW, RoundOutcome, TeamLabel } from "../round/team";
+import { participantsOnASide, roundPayout } from "shared/payout";
 
 /**
  * What a write attempt did. **Three answers rather than a boolean, because the caller reacts to each
@@ -109,6 +110,29 @@ export class EconomyService implements OnStart {
 	 */
 	private readonly unsaveable = new Set<Player>();
 
+	/**
+	 * **The players whose final write is already under way, so the shutdown never starts a second one.**
+	 *
+	 * **A teardown fires both roads at once.** `PlayerRemoving` → {@link saveAndForget} and `BindToClose` →
+	 * {@link saveAll} are written for the same player, in the same instant, with the lock released on both —
+	 * and the second of the two lands while the first is still in flight. A DataStore serialises per key, so
+	 * that second request is *queued*, and the engine says so out loud: **`DataStore request was added to
+	 * queue … Key = <userId>`**, once per key per store, every time a Studio session is stopped. Nothing is
+	 * dropped (the queue is thirty deep and this uses one), but the duplicate is ours and it is worth removing
+	 * rather than tolerating: the leaver's write already dropped the lock, so the shutdown's copy of the same
+	 * record asks the store to write the same bytes and release a lock that is not there.
+	 *
+	 * **Both roads mark the player *before* they yield, which is what makes the order not matter.** Whichever
+	 * of the two arrives first owns the write and the other skips, so a `BindToClose` that runs a frame before
+	 * the last `PlayerRemoving` is covered as well as the reverse.
+	 *
+	 * **The mark is not cleared by {@link saveAll}, deliberately.** `BindToClose` runs only when the server is
+	 * going away — there is no resumption to be wrong about — whereas clearing it would reopen the duplicate
+	 * for a `PlayerRemoving` that fires after the shutdown write returned. {@link saveAndForget} does clear it,
+	 * because that road can also run mid-session on an ordinary leave.
+	 */
+	private readonly leaving = new Set<Player>();
+
 	private cachedStore?: DataStore;
 
 	constructor(private readonly dev: DevService) {}
@@ -169,20 +193,31 @@ export class EconomyService implements OnStart {
 	}
 
 	/**
-	 * The payout at the end of a round, for everyone who was there.
+	 * The payout at the end of a round, for **the players who were in it.**
 	 *
-	 * **Called once per finished round by `RoundService.finishRound`**, after the winner is decided and
-	 * the result board is out Ã¢â‚¬â€ so the numbers it reads are the round's final ones, not a moving count.
-	 * It grants the base to everyone, the win bonus to the winning side, and a capped performance bonus
-	 * from the round's hits; then it counts the match and the win, and checks the milestone table.
+	 * **Called once per finished round by `RoundService.finishRound`**, after the winner is decided and the
+	 * result board is out — so the numbers it reads are the round's final ones, not a moving count. It grants the
+	 * base to the roster, the win bonus to the winning side, and a capped performance bonus from the round's hits;
+	 * then it counts the match and the win, and checks the milestone table.
+	 *
+	 * **The roster is the participants of the round just played, not the side map and not the server.** It is
+	 * `participantsOnASide(teams)` — the players who were on a side for this round, which is the set `assignTeams`
+	 * fills at the opening whistle and the one thing that keeps the eliminated in it. **This used to loop
+	 * `Players.GetPlayers()`**, which paid `MATCH_BASE_COINS` to every connected player: a body standing in the
+	 * lobby that had never touched a join part earned ten coins per round, and so did a body whose
+	 * `TEAM_ATTRIBUTE` from a previous round was still set. The user's report was *"I still earn 10 coins for being
+	 * in the lobby without joining the match at least once."* **The fix is the loop's subject and nothing else**:
+	 * the decision moved to `payout.roundPayout`, which cannot see the server, and this method hands it the roster.
+	 * See `payout.ts` for the requirement that it be pure, and `payout.spec.ts` for the case that pins it.
 	 *
 	 * **A draw grants the base and the performance bonus but no win.** There is nothing to win, but a
 	 * match was played and hits were thrown, and both are still worth something.
 	 *
-	 * **A player whose record has not loaded is skipped rather than guessed at.** The alternative Ã¢â‚¬â€
-	 * holding a grant in a queue and replaying it when the record arrives Ã¢â‚¬â€ is the kind of machinery a
-	 * solo economy should not carry; a DataStore that has not answered inside a round is already the
-	 * worse failure, and dropping one round's coins is the honest, small loss next to it.
+	 * **A player whose record has not loaded is skipped rather than guessed at**, and counted as `refused` on the
+	 * round's summary line so the skip is a number rather than an absence. The alternative — holding a grant in a
+	 * queue and replaying it when the record arrives — is the kind of machinery a solo economy should not carry; a
+	 * DataStore that has not answered inside a round is already the worse failure, and dropping one round's coins is
+	 * the honest, small loss next to it.
 	 */
 	public onRoundEnded(
 		outcome: RoundOutcome,
@@ -190,45 +225,48 @@ export class EconomyService implements OnStart {
 		roundHits: ReadonlyMap<Player, number>,
 		surrendered: ReadonlySet<Player>,
 	): void {
+		// **Who is owed what, decided before a single record is touched.** `roundPayout` is a pure function of the
+		// roster and the round's facts — no store, no clock, no `Players` — so this method's job is the part that
+		// *is* side-effecting: adding the coins, counting the match and the win, publishing, and flushing. The
+		// split is the reason the decision can be tested without a fixture; see `shared/payout.ts`.
+		//
+		// **`DRAW` becomes `undefined` on the way in**, because the pure module does not carry this project's
+		// outcome vocabulary: it asks whether there was a winner and which side it was. The two `record.wins`
+		// lines below still speak in `DRAW` terms, which is correct — counting a win is this service's job, not
+		// the payout's.
+		//
 		// **The round end is a save boundary, and the coins a round pays are the reason.** Every figure this
 		// record holds moves here and on a purchase; before this the store heard about either only when the
 		// player left or three minutes went by, so a crash or a shutdown in between lost the round's earnings
-		// Ã¢â‚¬â€ the "critical checkpoints such as purchase processing" the platform's best-practice page asks for.
+		// — the "critical checkpoints such as purchase processing" the platform's best-practice page asks for.
 		// Collected rather than written inline, so the payouts below stay one synchronous pass, and flushed
 		// after it so the writes carry the milestones the pass may have granted.
+		const roster = participantsOnASide(teams);
+		const payout = roundPayout(roster, outcome === DRAW ? undefined : outcome, teams, roundHits, surrendered);
+
 		const played: Player[] = [];
+		let refused = 0;
 
-		for (const player of Players.GetPlayers()) {
+		for (const [player, coins] of payout) {
 			const record = this.records.get(player);
-			if (record === undefined) continue;
 
-			let coins: number = ECONOMY_CONFIG.MATCH_BASE_COINS;
+			// **A roster member with no record is one of the two skips this method makes, and it is counted.**
+			// They were in the round and they will not be paid; the summary line says how many, so a DataStore
+			// that never answered is visible rather than inferred from a missing `+N coins` line.
+			if (record === undefined) {
+				refused++;
 
-			if (outcome !== DRAW && teams.get(player) === outcome) {
-				coins += ECONOMY_CONFIG.MATCH_WIN_BONUS;
+				continue;
 			}
 
-			// One coin per hit, up to the cap Ã¢â‚¬â€ the reward for *contributing*, kept small and bounded so
-			// a dominant player cannot convert one good round into a wallet ahead of everyone else.
-			coins += math.min(roundHits.get(player) ?? 0, ECONOMY_CONFIG.PERFORMANCE_COIN_CAP);
-			coins = math.min(coins, ECONOMY_CONFIG.MATCH_COIN_CAP);
-
-			// **A player who walked out of the round is paid half, and the promise is the other half of this.**
-			// Leaving mid-round is allowed, so it has to cost something or a side can be emptied on purpose the
-			// moment a round turns; but a player who walks back onto their pad and finishes the same match is
-			// back in the fight, and `RoundService.setTeam` drops them from the surrendered set the moment that
-			// happens. So this line is read at the *end* of the round and the answer is therefore the true one:
-			// still surrendered means they stayed in the lobby for the rest, and half is what that earns.
+			// **`coins` comes from `roundPayout`, and the surrender halving and the cap are inside it.** The
+			// promise the penalty is half of — *leave and you are paid half, come back and you are paid in full* —
+			// is `RoundService.setTeam` dropping a returning player from the set, which is why the set is read at
+			// the *end* of the round: still surrendered means they stayed in the lobby for the rest.
 			//
-			// **`math.floor`, so the halving can never round *up* into a reward for leaving.** A three-coin
-			// payout becomes one rather than two; the alternative is a player on a round with almost nothing in
-			// it losing no coins at all for walking out, which is the case the penalty exists for.
-			//
-			// **Nothing else moves.** The round still counts as played (`record.matches`), a win is still a win
-			// if their side won without them, and the badges are untouched Ã¢â‚¬â€ `BadgeService` reads its own
-			// subjects, and a surrendered player is still a body in the server when the round finishes.
-			if (surrendered.has(player)) coins = math.floor(coins / 2);
-
+			// **Nothing else moves for a surrendered player.** The round still counts as played
+			// (`record.matches`), a win is still a win if their side won without them, and the badges are
+			// untouched — `BadgeService` reads its own subjects.
 			record.coins += coins;
 			record.matches += 1;
 			if (outcome !== DRAW && teams.get(player) === outcome) record.wins += 1;
@@ -236,8 +274,8 @@ export class EconomyService implements OnStart {
 			this.publish(player);
 
 			// **And what this round was worth to them, published beside the wallet it was added to.** Two
-			// attributes rather than one, because they answer two questions Ã¢â‚¬â€ "what do I have" and "what did
-			// this just pay" Ã¢â‚¬â€ and the second is what the client's reward toast says out loud. Written from
+			// attributes rather than one, because they answer two questions — "what do I have" and "what did
+			// this just pay" — and the second is what the client's reward toast says out loud. Written from
 			// the same local `coins` the balance was just increased by, so the ledger and the line item cannot
 			// disagree about what the round was worth.
 			//
@@ -256,16 +294,23 @@ export class EconomyService implements OnStart {
 			played.push(player);
 		}
 
+		// **One line per round, and the only way the fix is observable in a playtest.** `paid` against `refused`
+		// answers "did the lobby player get paid" without reading a wallet, and `refused` is the record-not-loaded
+		// skip above rather than a refusal by the store — nothing here asks the store anything. The per-player lines
+		// above stay exactly as they were, so a session's existing output is unchanged except for this one line.
+		if (LOGGING_ENABLED) {
+			logInfo(`[Economy] round end — paid ${played.size()} player(s), ${refused} refused`);
+		}
+
 		// Spawned, so `RoundService.finishRound` is not held for a write per player before the intermission
-		// that follows Ã¢â‚¬â€ and so one slow record cannot delay the others. The dirty test in `flush` is what
+		// that follows — and so one slow record cannot delay the others. The dirty test in `flush` is what
 		// keeps this from being a request per player per round.
 		task.spawn(() => {
 			for (const player of played) this.flush(player, "the round end");
 		});
 	}
-
 	/**
-	 * Whether `owner` owns `kind` Ã¢â‚¬â€ the one fact `BallService` asks before honouring a key.
+	 * Whether `owner` owns `kind` — the one fact `BallService` asks before honouring a key.
 	 *
 	 * **A rig owns everything, and the rule lands here rather than at either call site.** The user's rule is
 	 * "rigs own every item", and the way that stays one rule is that it is answered by the query that already
@@ -1220,8 +1265,15 @@ export class EconomyService implements OnStart {
 	 * **The entry goes either way**: the record has been handed to the store, and a map keyed on a player who
 	 * has left is a leak with nothing in it to read. **The release is why this writes at all** Ã¢â‚¬â€ a player who
 	 * hops servers in the same second must not land on a wallet still locked by the server they left.
+	 *
+	 * **It marks the player in {@link leaving} before it yields, so a shutdown that begins at the same instant
+	 * does not write the record a second time.** This is one half of the pair; {@link saveAll} is the other, and
+	 * that field's doc says why the duplicate is worth removing.
 	 */
 	private saveAndForget(player: Player): void {
+		if (this.leaving.has(player)) return;
+		this.leaving.add(player);
+
 		task.spawn(() => {
 			if (this.records.has(player) && !this.unsaveable.has(player)) {
 				if (this.write(player, true) === "refused") this.refuse(player, "leaving");
@@ -1230,6 +1282,7 @@ export class EconomyService implements OnStart {
 			this.records.delete(player);
 			this.saved.delete(player);
 			this.unsaveable.delete(player);
+			this.leaving.delete(player);
 		});
 	}
 
@@ -1263,16 +1316,29 @@ export class EconomyService implements OnStart {
 	 * throttled request sits in the engine's queue and *"the called function continues to yield as long as its
 	 * request is still queued"*. When the window does run out the rest are skipped **loudly**: a shutdown that
 	 * runs out of time is a loss either way, and the choice left is whether it is a loss with a log.
+	 *
+	 * **Except the records a leaver's own write already owns**, which is the one hole in "every record" and the
+	 * reason it is a hole: a teardown fires `PlayerRemoving` and this handler together, so writing the same key
+	 * from both put two requests for it in flight at once and the engine queued the second — the
+	 * `DataStore request was added to queue … Key = <userId>` line in a Studio session's output. Those players
+	 * are counted separately rather than as `skipped`, because `skipped` is the number that means *not saved*
+	 * and these wallets are being saved, by the other road, right now. See {@link leaving}.
 	 */
 	private saveAll(): void {
 		const endsAt = os.clock() + BIND_TO_CLOSE_SECONDS;
 
 		let written = 0;
 		let skipped = 0;
+		let alreadyLeaving = 0;
 
 		for (const [player] of this.records) {
 			if (this.unsaveable.has(player)) {
 				skipped++;
+				continue;
+			}
+
+			if (this.leaving.has(player)) {
+				alreadyLeaving++;
 				continue;
 			}
 
@@ -1282,12 +1348,14 @@ export class EconomyService implements OnStart {
 				continue;
 			}
 
+			this.leaving.add(player);
+
 			if (this.writeWithin(player, math.min(left, WRITE_DEADLINE_SECONDS))) written++;
 			else skipped++;
 		}
 
 		if (LOGGING_ENABLED) {
-			logInfo(`[Economy] shutdown Ã¢â‚¬â€ ${written} record(s) written, ${skipped} skipped, of ${this.records.size()}`);
+			logInfo(`[Economy] shutdown Ã¢â‚¬â€ ${written} record(s) written, ${skipped} skipped, ${alreadyLeaving} already leaving, of ${this.records.size()}`);
 		}
 
 		if (skipped > 0) {

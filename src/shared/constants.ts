@@ -1475,11 +1475,12 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * by `NpcService`. So it lives beside these rather than among them, and an animation state added here still has
  * to justify itself against `animationFor`.
  *
- * **Every fact here is a *request* or a *window*, and never a measurement, which is the property that replaced a
- * published speed.** A measurement has no natural edge to be written on: it would have to be banded to satisfy
+ * **Every fact here is a *request* or a *window*, and never a measurement — with one qualified exception, which is
+ * the moving fact below.** A measurement has no natural edge to be written on: it would have to be banded to satisfy
  * the guard in {@link NpcService.writeAttribute}, and a band floored to zero cannot tell "creeping" from
  * "standing". The two movement facts come from what the server *asked the rig to do* — see
- * `NPC_ANIM_MOVING_ATTRIBUTE` — and the rest are edges by construction.
+ * `NPC_ANIM_MOVING_ATTRIBUTE`, whose request is additionally gated on the body actually covering ground — and the
+ * rest are edges by construction.
  *
  * **Five attributes rather than one packed value.** Each is a scalar, so Roblox replicates only the one
  * that changed, which is exactly what "bytes per rig per change" means; and none of them needs a packing
@@ -1520,15 +1521,30 @@ export const AFTERIMAGE_SOURCE_ATTRIBUTE = "AfterimageSource";
  * It answers what the body *did*, and the question is what the body was *told*. Three reports followed — a shoved
  * rig animating a walk it was never asked for, a rig parked mid-walk coming back still walking, and a rig whose
  * walker was stripped at a round boundary with nobody left to correct it — and each was patched by watching the body
- * harder rather than by asking it anything. **The value published here is now the rig's own intent**: it is true when
- * a behaviour has asked the body to walk and false when one has told it to stand, and nothing consults a speed. See
- * `NpcLoop.walking` in `NpcService` for the three reports and for why a store of what a body was told cannot be
- * surprised the way a watch on the body always can be.
+ * harder rather than by asking it anything. **The value published here is the rig's own intent, gated on its own
+ * displacement**: it is true when a behaviour has asked the body to walk *and* the body has covered ground, and false
+ * when one has told it to stand — or when the walk is going nowhere. **No speed is measured, banded or published**;
+ * the gate is a distance against an anchor, and it is described below with the paragraphs that were written for the
+ * request alone. See `NpcLoop.walking` in `NpcService` for the three reports and for why a store of what a body was
+ * told cannot be surprised the way a watch on the body always can be.
  *
  * **The name is finally the right name.** "Asked to move" is what a player is and what a rig now is, so the two
  * bodies answer one question for one decision (`animationFor`), which is the property this set of attributes exists
  * to give. It was kept through the measurement years because renaming it would have touched both sides of the wire
  * to fix a word; there is no such debt left.
+ *
+ * **What is published is now "asked to move *and* getting somewhere", and the second half is a correction rather
+ * than a return to the speed.** The request alone was honest about intent and silent about outcome, so a rig whose
+ * `MoveTo` was blocked — two of them at one pad, a walk into a barrier, a target behind geometry — kept the request
+ * (correctly: it had been asked) and wore the walk clip while standing still. Every session had at least one, and it
+ * is the report *"always at least one NPC walking in place"*. **The gate is `NpcService.advancing`**: the root must
+ * have covered `ANIM_STALL_STUDS` within `ANIM_STALL_SECONDS`, or the published answer is `false` while the request
+ * stays true.
+ *
+ * **Why this gate is not the velocity watch again, in one sentence.** That reading *drove* the clip, so it could turn
+ * a walk on for a body nobody asked to move; this one is consulted **only while a request stands**, so it can only
+ * turn the answer off — and the three reports that killed the speed watch (a shoved rig, a parked rig, a stripped
+ * walker) are all cases with no standing request. A measurement that cannot add a walk cannot resurrect any of them.
  */
 export const NPC_ANIM_MOVING_ATTRIBUTE = "AnimMoving";
 

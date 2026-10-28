@@ -1424,6 +1424,14 @@ export class RoundService implements OnStart {
         // other one; the badges keep their own participant-keyed count, because a rig lands hits and has no
         // row in this map. So this call is the reason the map is still written, and that is stated here
         // rather than left to be discovered by whoever next asks what reads it.
+        //
+        // **The roster is `teams`, and the economy derives it rather than being handed one.** `teams` is the
+        // players `assignTeams` put on a side at this round's opening whistle — cleared and refilled there, so it
+        // names *this* round's participants and not a lobby body whose `TEAM_ATTRIBUTE` from an earlier round is
+        // still set. **It is also the only list that still has the eliminated in it**: `playersInRound()` is
+        // `activePlayers`, which `eliminate` empties as bodies go down, so passing that would stop paying exactly
+        // the players whose `outs` went up. The payer reads the roster from the map and says so; see
+        // `EconomyService.onRoundEnded`.
         this.economy.onRoundEnded(outcome, this.teams, this.roundHits, this.surrendered);
 
         // **And the penalty dies with the round that earned it, on the line after the payout that read it.**

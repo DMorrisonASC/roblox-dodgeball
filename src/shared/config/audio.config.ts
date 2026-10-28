@@ -63,7 +63,12 @@ export const AUDIO_CONFIG = {
 	INTERMISSION_FADE_OUT_SECONDS: 5,
 
 	/**
-	 * The round's track: a room full of people, running under the round. **The id this task asked for.**
+	 * **The crowd bed: a room full of people, running under the round — ambience, not music.**
+	 *
+	 * **It was called `ROUND_MUSIC` and the name was wrong about what it is**, which is why it is now `CROWD_BG`.
+	 * A field called *music* beside `ROUND_SONG_ID` — the round's actual track — read as one of a pair of tracks,
+	 * and a reader (and a log line, which printed the `Sound`'s own name) had no way to tell which was the melody
+	 * and which was the room. *Background* is the job this sound does: it is the stadium, not the soundtrack.
 	 *
 	 * Plays while the round is `Playing`, loops for as long as it lasts, rises from silence over the first
 	 * {@link AUDIO_CONFIG.ROUND_FADE_IN_SECONDS} of the round, and falls to silence over the last
@@ -76,10 +81,10 @@ export const AUDIO_CONFIG = {
 	 * that the round has begun before anything has happened in it — the phase changes, the arena is held
 	 * still, and this comes up underneath. See `roundVolume` for how it composes with the fade out.
 	 */
-	ROUND_MUSIC: "rbxassetid://76122240800540",
+	CROWD_BG: "rbxassetid://76122240800540",
 
 	/**
-	 * **The round track's level — `0.55`, and it is the louder of the two tracks now.**
+	 * **The crowd bed's level — `0.75`, and it is the louder of the two tracks.**
 	 *
 	 * **The number used to be `0.3`, and raising it is a correction rather than a taste change.** While this was the
 	 * only sound in a round, `0.3` was a bed under a referee's whistle and nothing had to compete with it. The song
@@ -89,11 +94,11 @@ export const AUDIO_CONFIG = {
 	 * "the first track is gone", which is exactly what masking sounds like from the player's seat.
 	 *
 	 * **So the ordering is the fact, and the numbers are Placeholders around it:** the room is the louder bed, the
-	 * song is the quieter layer, and `ROUND_SONG_VOLUME` sits at `0.25` to keep it so. If either is ever retuned,
+	 * song is the quieter layer, and `ROUND_SONG_VOLUME` sits at `0.10` to keep it so. If either is ever retuned,
 	 * **keep the crowd above the song** — that is the property the pair exists to express, and it was arrived at by
 	 * getting it wrong once.
 	 */
-	ROUND_MUSIC_VOLUME: 0.75,
+	CROWD_BG_VOLUME: 0.75,
 
 	/**
 	 * How long the round's track takes to come up from silence, in seconds, after the round begins.
@@ -139,7 +144,7 @@ export const AUDIO_CONFIG = {
 	/**
 	 * **The round's song — actual music, layered over the room rather than replacing it.**
 	 *
-	 * **What this is, and what it is not.** `ROUND_MUSIC` above is a *room*: a crowd and a space, which is why its own
+	 * **What this is, and what it is not.** `CROWD_BG` above is a *room*: a crowd and a space, which is why its own
 	 * doc calls it "a room full of people". This is the thing a round is played *to* — a track with a tempo and a
 	 * shape — and the two are meant to be heard at once, which is why it is a second `Sound` rather than a second id
 	 * in a slot. Nothing ducks, nothing crossfades, and neither one is the other's fallback.
@@ -149,23 +154,42 @@ export const AUDIO_CONFIG = {
 	 * number for both would mean turning the music up doubling the crowd, and turning the crowd down taking the
 	 * music with it.
 	 *
-	 * **`0.25`, and it is BELOW the room's `0.55` — which reverses what this comment first argued.** The first cut of
+	 * **`0.10`, and it is BELOW the room's `0.75` — which reverses what this comment first argued.** The first cut of
 	 * this track set it at `0.4`, *above* the room's then-`0.3`, on the reasoning that "the room is texture and the
 	 * song is content". **That reasoning was wrong about what masking does.** A crowd bed is broadband and diffuse: a
 	 * melody a tenth of a unit louder does not sit on top of it, it *replaces* it perceptually, and the report that
 	 * came back was "the first track is gone entirely" from a mix where nothing was actually broken. The room has to
-	 * be the louder of the two or it is not there at all; the song is audible at a quarter volume because it is
-	 * tonal and the room is not.
+	 * be the louder of the two or it is not there at all; the song is audible at a tenth of the room's level because
+	 * it is tonal and the room is not.
+	 *
+	 * **The numbers have moved twice since that argument and the directions have not**, which is why they are quoted
+	 * here from the values rather than from memory: the pair is `0.10` and `0.75` today, both tuned by ear. The
+	 * ordering — **crowd above song** — is the property; the numbers are what it currently costs.
 	 *
 	 * **Both are Placeholders.** The constraint that is not a placeholder is that this must stay under
 	 * `ROUND_WHISTLE_VOLUME` (0.6) and `COUNTDOWN_BEEP_VOLUME` (0.5), because those are cues and a cue that cannot be
 	 * heard over the music is not a cue. The three numbers to move together are this, those two, and
-	 * `ROUND_MUSIC_VOLUME`.
+	 * `CROWD_BG_VOLUME`.
 	 */
 	ROUND_SONG_VOLUME: 0.10,
 
 	/**
-	 * **The round's song, `rbxassetid://77385580591591` — supplied by the user, and not validated here.**
+	 * **The round's song — supplied by the user, and not validated here.**
+	 *
+	 * **This doc deliberately names no id, and that is the correction of a paragraph that did.** It used to open
+	 * *"The round's song, `rbxassetid://77385580591591`"*, and by 2026-10-28 the field had been pointed at three
+	 * different assets in twenty minutes while that sentence still named the first: the value below is the only
+	 * source of truth, and a doc that repeats it can only fall behind it. **Before wondering why a round is silent,
+	 * read the value on the line below, not this paragraph.**
+	 *
+	 * **The failure signature, because it is what a silent song looks like and it is not obvious.** When the asset in
+	 * this field cannot be fetched, `MusicController` prints
+	 * `[Music] sound did not load — <id> (Failure)` at mount, and the round's own mix line afterwards reads
+	 * `song 0.10 (playing true, loaded false, 0.0s)`. **`playing true` beside `loaded false` is the whole diagnosis**:
+	 * a `Sound` whose asset never arrived stays "playing" and emits nothing, so nothing in the mixer is wrong and no
+	 * volume will fix it. Studio names the cause in its own output at the same moment — *"Asset is not approved for
+	 * the requester"* means the place that asked for it is not allowed to use it, which an upload to (or a share
+	 * with) this experience fixes and no code change can.
 	 *
 	 * **It starts over when it ends, and that is a reversal of the rule this paragraph used to state.** The song
 	 * shipped looping **from its own middle** — the first play was the whole track, `0` to the end, and every repeat
@@ -180,7 +204,7 @@ export const AUDIO_CONFIG = {
 	 * `TimeLength / 2`. There is no handler any more; see `MusicController` where it used to be, which records what
 	 * each part of it was for.
 	 */
-	ROUND_SONG_ID: "rbxassetid://77385580591591",
+	ROUND_SONG_ID: "rbxassetid://70973693496917",
 
 	/**
 	 * How long the round's song takes to come up at a round's start, and to go back down at its end, in seconds.
@@ -494,7 +518,7 @@ export const AUDIO_CONFIG = {
 	 * **Set above `PERFECT_DODGE_VOLUME` (0.6) rather than beside it**, on the argument that a cue a player must
 	 * *notice without looking* has to beat a cue they are already looking at. It is a rare sound — at most once in a
 	 * round, and only in a round that has stopped being close — so loud is not the same as frequent here. Tune by ear
-	 * against the round's music (`ROUND_MUSIC_VOLUME`, 0.3), because that is what it has to be heard over.
+	 * against the crowd bed (`CROWD_BG_VOLUME`, 0.75), because that is what it has to be heard over.
 	 */
 	MERCY_WARNING_VOLUME: 0.8,
 } as const;

@@ -2,7 +2,7 @@ import type { HudTheme } from "./hudTheme";
 import { hudTheme } from "./hudTheme";
 
 /**
- * **The pop-ups' own palette: a printable white sheet with black ink, hardcoded and shared by nothing.**
+ * **The pop-ups' own palette: a printable white sheet with black ink, hardcoded and shared by one other surface.**
  *
  * **Why this file exists rather than `hudTheme()` or `premiumHudTheme()`.** The game now has two directions in it —
  * the in-game HUD is neon on deep space, and the Shop and Inventory are read like a page of print — and the two
@@ -12,6 +12,13 @@ import { hudTheme } from "./hudTheme";
  * a pop-up that can go dark without anybody touching it. `premiumHudTheme()` is the opposite extreme and by design
  * dark. **This is the literal one**: seven surfaces and four inks written here, in the file that draws nothing, so a
  * reviewer can answer "what colour is the shop" by reading nine lines.
+ *
+ * **It was "shared by nothing" and it is shared by two now.** The badge cards above a head (`StatsBillboardController`)
+ * read this palette as of 2026-10-27, because the user asked for them to follow the Shop and Inventory's art style and
+ * the honest way to do that is to use the same seven values rather than to copy them. That is the right second
+ * consumer rather than a leak: a badge strip is the other surface in the game that is *read* rather than *operated* —
+ * a small printed sheet floating over the world, with no neon in it and nothing to press — so it belongs to the same
+ * one as the pop-ups, and the HUD's neon belongs to the other.
  *
  * **The typography and the spacing are still `hudTheme()`'s**, and deliberately: they are big-ui's type scale and this
  * file has no opinion about them. Only the `colors` record is replaced — the same shape `premiumHudTheme` uses, which

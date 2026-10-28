@@ -88,14 +88,47 @@ interface NpcLoop {
 	 * target always describe the same instruction. **A rig nobody asked to move is standing, whatever the physics does
 	 * to it.**
 	 *
+	 * **The converse was never true, and that is the other report.** A rig that *was* asked can be going nowhere —
+	 * blocked at a pad, walking into a barrier, aimed at a target it cannot reach — and the request is still correct,
+	 * because the behaviour has not arrived and has not given up. So the request stays the source of truth for
+	 * *whether* a walk exists, and {@link advanceFrom}/{@link advancing} decide whether the body is *doing* it. That
+	 * split is deliberate: the request is intent and cannot be surprised, the gate is evidence and can only subtract.
+	 *
 	 * **Written by exactly five places, and they are enumerable**: the two helpers above ({@link walkTo} and
 	 * {@link standAt}), the world gate in {@link run} for a body that has left `Workspace`, {@link announcePlaced}
 	 * for a body a mover has put somewhere, and {@link stopWalking} for the two lobby boundary paths. Nothing else may
 	 * write it — in particular nothing writes it from a velocity, a speed, or a finished `MoveTo`. If a sixth appears,
 	 * it belongs in this sentence: the list is short enough to be checked by reading it, which is the whole reason the
 	 * state is a field rather than an inference.
+	 *
+	 * **What is published is this field *and* {@link advancing}, and the second half is the report this pair exists
+	 * for.** A request is not the same fact as a body going somewhere: a rig whose `MoveTo` is blocked — two of them
+	 * pushing at one pad, a walk into a barrier, a target behind geometry — keeps this flag `true` for as long as the
+	 * behaviour keeps asking, and a client drawing that flag draws a walk on a body standing still. Every session had
+	 * at least one. So the flag stays what it always was (what a behaviour asked for, written by the five places
+	 * above) and the *published answer* is gated on measured displacement. See {@link advancing} for why that
+	 * measurement cannot fail the way the three velocity watches did.
 	 */
 	walking: boolean;
+
+	/**
+	 * **Where this rig's root was when its walk was last seen to be going somewhere, and when that was.**
+	 *
+	 * **The anchor and the stamp, and the pair is the whole of {@link advancing}.** Both are written only by that
+	 * method and reset by the two instructions that change the request ({@link walkTo} at the start of a walk,
+	 * {@link standAt} at its end), so they describe one walk and nothing else can move them.
+	 *
+	 * **`from` is an anchor rather than a previous-turn sample, and that is what makes a slow walk work.** A
+	 * comparison against the last turn would need the threshold to be smaller than the slowest body's step or it
+	 * would report a crawl as a stall; comparing against an anchor that only moves on success means displacement
+	 * accumulates, so a body crossing a stud a second still crosses {@link ANIM_STALL_STUDS} inside the grace.
+	 *
+	 * `undefined` means "this walk has not been sampled yet", which the first turn after a walk begins always is.
+	 */
+	advanceFrom?: Vector3;
+
+	/** When the anchor above was last moved, on the engine's clock. See {@link advanceFrom}. */
+	advanceAt: number;
 }
 
 /**
@@ -574,7 +607,7 @@ export class NpcService implements OnStart {
 		// been asked to do nothing yet, so it stands — and a rig coming back out of `ServerStorage.RigParking` comes
 		// back wearing a loop that was made when it was first tagged, which is why the two boundary paths clear the
 		// flag explicitly rather than relying on this line. See `LobbyRigService.setGameplayBehaviors` and `parkRig`.
-		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: 0, walking: false };
+		const loop: NpcLoop = { stopped: false, ownershipCheckedAt: 0, walking: false, advanceAt: 0 };
 		this.loops.set(model, loop);
 
 		task.spawn(() => this.run(model, loop));
@@ -758,7 +791,16 @@ export class NpcService implements OnStart {
 		// call sites in the behaviours become.
 		const moves: NpcMoves = {
 			walkTo(position: Vector3) {
-				loop.walking = true;
+				// **The stall sample is cleared here only when this is a *new* walk.** A behaviour that re-aims every
+				// turn — `SeekBehavior` chasing a moving target is the common one — must not reset the measurement on
+				// every call, or a rig leaning on a barrier would report progress once per turn by virtue of having
+				// been re-asked. The clock restarts when the request does, and not otherwise.
+				if (!loop.walking) {
+					loop.walking = true;
+					loop.advanceFrom = undefined;
+					loop.advanceAt = os.clock();
+				}
+
 				humanoid.MoveTo(position);
 			},
 
@@ -769,6 +811,9 @@ export class NpcService implements OnStart {
 			// would animate a body that is walking.
 			standAt() {
 				loop.walking = false;
+				// **And the stall sample goes with the request**, so the next walk starts measuring from wherever the
+				// body is standing rather than from the last place the previous walk got to.
+				loop.advanceFrom = undefined;
 
 				const root = humanoid.RootPart;
 				if (root !== undefined) humanoid.MoveTo(root.Position);
@@ -1070,10 +1115,27 @@ export class NpcService implements OnStart {
 		// is what separates a body leaving the floor on purpose from one leaving it while standing still, so the
 		// two reads have to be the same sample of the same turn.
 		//
-		// **And this is the whole of the walking answer: what a behaviour *told* this body to do.** Nothing here
-		// samples a speed or a velocity, and nothing can — see {@link NpcLoop.walking} for the three reports that
-		// put a measurement here and for why each of them leaked the next edge.
-		const moving = loop.walking;
+		// **`requested` is what a behaviour asked for; `moving` is that request *and* a body actually going
+		// somewhere.** The two are different facts and only the first is this file's to write — see
+		// {@link NpcLoop.walking} for the three velocity watches this replaced and for why the request is still the
+		// source of truth.
+		//
+		// **The second half is new, and it answers the report this file could not answer before**: *"always at least
+		// one NPC walking in place"*. A request stands until a behaviour withdraws it, and a behaviour withdraws it on
+		// *arrival* — so a rig whose `MoveTo` cannot get anywhere (two of them at one pad, a walk into a barrier, a
+		// target on the far side of geometry) keeps the request, correctly, and wore the walk clip while standing
+		// still. Nothing was ever wrong with the request; the clip was simply never told that the body was not
+		// moving.
+		//
+		// **Why measuring displacement here cannot fail the way the speed did — the asymmetry is the whole argument.**
+		// That reading drove the clip, so a shove made a standing rig walk and a lost `MoveTo` kept a stale value
+		// alive; the measurement could turn the clip *on*. This one is consulted **only while a request stands**, and
+		// it can only turn the answer **off**: a rig nobody asked to walk is never measured, a parked rig is not
+		// published at all, and a rig whose walker was stripped has its request cleared before this runs. So the
+		// three reports that killed the speed watch are not reachable from here by construction, and the store of
+		// intent keeps its place as the thing that decides *whether* a walk exists.
+		const requested = loop.walking;
+		const moving = requested && this.advancing(loop, humanoid, now);
 
 		this.writeAttribute(model, NPC_ANIM_MOVING_ATTRIBUTE, moving);
 		this.writeAttribute(model, NPC_ANIM_SPRINTING_ATTRIBUTE, this.speeds.isSprinting(model));
@@ -1098,7 +1160,7 @@ export class NpcService implements OnStart {
 		const wasGrounded = model.GetAttribute(NPC_ANIM_GROUNDED_ATTRIBUTE);
 
 		if (wasGrounded !== grounded) {
-			if (!grounded && !moving) {
+			if (!grounded && !requested) {
 				const owner = humanoid.RootPart?.GetNetworkOwner();
 
 				// **The state is on the line because two very different faults produce it.** `Freefall` is a body
@@ -1159,6 +1221,52 @@ export class NpcService implements OnStart {
 
 		loop.ownershipCheckedAt = now;
 		this.ownForServer(model, firstClaim);
+	}
+
+	/**
+	 * **Whether a rig that has been asked to walk is *getting anywhere* — the half a request cannot know.**
+	 *
+	 * **One sentence of what it does.** It keeps an anchor at the root's last position that counted as progress, and
+	 * it moves that anchor forward whenever the root has covered {@link NPC_CONFIG.ANIM_STALL_STUDS} since the last
+	 * one. The answer is whether the anchor moved within the last {@link NPC_CONFIG.ANIM_STALL_SECONDS}; a rig that
+	 * has not covered that much ground inside the window is standing still with a walk request on it, which is the
+	 * whole of the "walking in place" report.
+	 *
+	 * **A body with no root is not a body that failed to move.** A humanoid has no `RootPart` for a moment after it is
+	 * built and after it dies, and the honest answer then is that nothing can be measured — so the request stands and
+	 * the clip is drawn, which is the same choice `standAt` makes for the same reason: no evidence is not evidence of
+	 * a stall. The turn after the root appears starts the measurement.
+	 *
+	 * **The anchor is compared in three dimensions**, so a body that walks up a slope, steps onto a pad, or is lifted
+	 * a little by a landing counts every part of the distance it actually covered. There is nothing horizontal-only
+	 * about "is this rig going somewhere".
+	 *
+	 * **This cannot turn a walk on, only off, which is the difference between it and the speed watch it replaces.**
+	 * It is only ever consulted while {@link NpcLoop.walking} stands, so a shoved rig, a parked rig and a rig whose
+	 * walker was stripped are all unreachable from here — the three reports that made a measurement untrustworthy are
+	 * not candidates. See `publishAnimationBody` for the argument at its call site.
+	 */
+	private advancing(loop: NpcLoop, humanoid: Humanoid, now: number): boolean {
+		const root = humanoid.RootPart;
+		if (root === undefined) return true;
+
+		const from = loop.advanceFrom;
+
+		if (from === undefined) {
+			loop.advanceFrom = root.Position;
+			loop.advanceAt = now;
+
+			return true;
+		}
+
+		if (root.Position.sub(from).Magnitude >= NPC_CONFIG.ANIM_STALL_STUDS) {
+			loop.advanceFrom = root.Position;
+			loop.advanceAt = now;
+
+			return true;
+		}
+
+		return now - loop.advanceAt < NPC_CONFIG.ANIM_STALL_SECONDS;
 	}
 
 

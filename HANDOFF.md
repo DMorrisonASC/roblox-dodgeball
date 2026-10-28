@@ -1451,7 +1451,11 @@ DataStore record per player**.
 
 - **Coins** are earned at the end of a match: `MATCH_BASE_COINS = 10` for finishing (win or lose),
   `+ MATCH_WIN_BONUS = 4` for the winning side, `+ min(roundHits, PERFORMANCE_COIN_CAP = 3)` for
-  contributing, then clamped to `MATCH_COIN_CAP = 17`. A draw pays base + performance and no win.
+  contributing, then clamped to `MATCH_COIN_CAP = 17`, then halved (floored) for a player still
+  surrendered at the round end. A draw pays base + performance and no win. **"Finishing" means being on
+  a side for that round** — the roster is `participantsOnASide(teams)`, not every connected player, and
+  the decision lives in `shared/payout.ts` since 2026-10-27 (§15 item 128, moved by 129); before that the
+  loop read `Players.GetPlayers()` and paid a lobby player the base for a round they never played.
   Coins are clamped to >= 0 on every write — the one number in the game that must never read as a
   debt. All of these are **Placeholders**.
 - **The Power Chest** costs `CHEST_COST = 50` and rolls **over the whole of `CHEST_POOL` — unowned
@@ -1583,8 +1587,16 @@ deliberately not unified here (§15 item 25).
 **The log lines to look for** if any of this is ever seen in Studio: `[Stats] <Name>: loaded NH/MO
 (locked)`, `[Stats] <Name>: saved NH/MO — the round end`, `[Economy] <Name>: saved N coins — the round
 end`, `[Stats] claim failed …` / `[Economy] write failed …`, and the two `shutdown — N record(s)
-written, M skipped` summaries. `DEBUG` is `true` in both files, so all but the last two print by
-default.
+written, M skipped, L already leaving` summaries. `DEBUG` is `true` in both files, so all but the last two
+print by default.
+
+**The `added to queue … Key = <userId>` line is not a budget problem, and it is no longer ours.** Item 123
+found the cause: a teardown fired `PlayerRemoving` and `BindToClose` together, both wrote the same record
+with the lock released, and the engine queued the second request for that key — once per key per store,
+on every Studio Stop. A `leaving` set in each service, marked by either road *before* it yields, is what
+makes the two roads one write. **If that line reappears, look for a new writer of the same key rather than
+assuming the volume went up**: at `300 + concurrentUsers × 40` reads and `300 + concurrentUsers × 20`
+writes a minute, this game cannot reach the budget with what it has.
 
 ---
 
@@ -4642,7 +4654,10 @@ almost no server code; 45 is what it cannot show.**
      proposed `ROUND_MUSIC_VOLUME = 0.4` was a direct collision with the ambience's `0.3`, and reusing the name would
      have silently retuned the crowd. **The new track is named for what it is instead**: `ROUND_SONG_ID`,
      `ROUND_SONG_VOLUME` and `ROUND_SONG_FADE_SECONDS`, with the `Sound` called `RoundSong` beside the existing
-     `RoundMusic`.
+     `RoundMusic`. **Those three names were right; the two they were distinguished from were not** — `ROUND_MUSIC`,
+     `ROUND_MUSIC_VOLUME` and the `Sound` called `RoundMusic` were renamed to `CROWD_BG`, `CROWD_BG_VOLUME` and
+     `CrowdBg` by item 130, because *music* beside *song* reads as two soundtracks. Read this item's argument with
+     that rename applied.
 
      **Additive, and nothing about the ambience moved.** Its id, its volume, its five-second clock-driven fades, its
      `Looped = true` and the `roundMusic.Stop()` on the round-end edge are all byte-identical; `git diff` on those
@@ -4922,9 +4937,11 @@ almost no server code; 45 is what it cannot show.**
      divergence from the caption: a catch's caption is a fixed sentence with no numbers in it (`caught your shot!`), but
      the card is a record and freezing it exactly when the record changed would be backwards.
 
-     **The caption's own stats line was left alone, so the figures appear twice during a shot** — once small and centred,
-     once large and on the left. That is stated rather than hidden: removing the caption's line is a two-line change
-     (and its `STAT_HITS` subscription), and it was not taken because "add a panel" is what was asked for.
+     **The caption's own stats line was left alone, so the figures appeared twice during a shot** — once small and
+     centred, once on the card on the left. That was stated rather than hidden at the time: removing the caption's line
+     is a two-line change (and its `STAT_HITS` subscription), and it was not taken because "add a panel" is what was
+     asked for. **RESOLVED by item 124** — the user reported the duplication and the card is the copy that went, so the
+     caption's line is now the only one. Read that item rather than this paragraph for the current state.
 
      **Unverified**: that the card reads well at the left edge on a phone, that white-on-arena is legible, and that the
      badge card's padding survives a strip long enough to wrap to its fourth row.
@@ -4993,7 +5010,9 @@ almost no server code; 45 is what it cannot show.**
      canvas centre, so whatever the layout reserved above the rows showed as blank white panel with the text bunched
      at the bottom. A background over a body is a surface whose size every viewer re-derives from their own distance
      to that body, which is why three passes of styling never made it look right. Letters with their tone colour
-     are the material for this; a card is the material for a screen-space panel.
+     are the material for this; a card is the material for a screen-space panel. **Narrowed by item 125**: a card is
+     the wrong material for a *stud-scaled* canvas, and the right one for an offset canvas — the fault was the
+     scaling, not the paper, and the cards are back on a fixed-pixel canvas.
 
      **Smaller, by type rather than by box.** `BADGE_NAME_SIZE` 16 → **14**, `BADGE_DESCRIPTION_SIZE` 12 → **11**,
      the line gap 1 → **0**, the row gap 5 → **3**, the canvas width 380 → **300** (`BILLBOARD_SIZE` is the
@@ -5492,6 +5511,391 @@ almost no server code; 45 is what it cannot show.**
      pending map's shape, the cancel-on-reappear, the fallback and its `logInfo`, `flamework.build`'s silence.
      `npm run build` exit 0. **Unverified in Studio**: that three markers now yield three balls, and that a ball
      thrown from marker A to marker B over-stocks rather than starving A.
+
+123. **A teardown no longer writes a record twice — the `DataStore request was added to queue … Key = <userId>`
+     line in Studio was ours.** Reported by the user as a recurring line naming their own UserId. **The volume was
+     never the cause**: the budget is `300 + concurrentUsers × 40` reads and `300 + concurrentUsers × 20` writes a
+     minute (experience-wide, `UpdateAsync` draws on both), and this game issues *under one request a minute* for
+     any one key. The cause was **two requests for the same key in flight at once**, which the engine queues.
+
+     **Where the pair came from.** Both services subscribe to `PlayerRemoving` → `saveAndForget` *and*
+     `game:BindToClose` → `saveAll`, and both write with `release = true`. `saveAndForget` deletes its map entry
+     only *after* its `UpdateAsync` returns, and `saveAll` deliberately writes every record it still holds so that
+     a clean shutdown leaves nothing locked — so a teardown that fires both wrote the same key from two threads in
+     the same instant, and the second was queued. **That is every Studio Stop**, which is what made it recur.
+
+     **The fix is one field and three lines in each service.** A `leaving: Set<Player>` is marked by *both* roads
+     **before they yield**, so whichever arrives first owns the write and the other skips; marking before the yield
+     rather than after the write is what makes the order not matter, which matters because `BindToClose` running a
+     frame *before* the last `PlayerRemoving` is a real order. `saveAndForget` clears its mark when it finishes
+     (that road also runs on an ordinary mid-session leave); `saveAll` does not, because `BindToClose` only runs
+     when the server is going away — clearing it would reopen the duplicate for a `PlayerRemoving` that fires after
+     the shutdown write returned.
+
+     **`saveAll` counts them apart from `skipped`, and that is not cosmetic.** `skipped` drives
+     `shutdown ran out of its 20s window — N record(s) not saved`, so folding a deduplicated record into it would
+     print a data-loss error for a record that was saved by the other road a millisecond earlier. The summary line
+     gained a field instead: `[Stats] shutdown — N record(s) written, M skipped, L already leaving, of K`.
+
+     **Nothing was dropped and nothing was corrupt** — a queue holds thirty requests and this used one. The change
+     removes a redundant write per key per store per teardown, not a fault. **Unverified in Studio**: that the
+     `added to queue` line stops, and that a Stop still leaves both records cleanly released. **Not built**, and
+     named so it is not mistaken for an oversight: `saveAll`'s existing habit of counting an `unsaveable` record as
+     `skipped` still makes that error line name a record whose non-saving was deliberate — a pre-existing
+     conflation, out of scope here.
+
+124. **The kill cam's left-hand record card is deleted, and the caption's own stats line is what a shot shows now.**
+     `client/enemyView.ts` loses `EnemyRecord`: a `Frame` in `getFullScreenGui` anchored `(0, 0)` at
+     `UDim2.fromOffset(16, TOP_INSET)`, `132` wide with `Hits:`, `Outs:` and `Ratio:` on three bold 13-pixel lines,
+     white paper with `textPrimary` ink. Its `LEFT_INSET`, its five `RECORD_*` numbers, its three held labels,
+     `recordLine`, `recordOf` and `writeRecord` all go with it — 170 lines out, 40 in. **Unchanged**: the caption's
+     content, position, animation, the `caught your shot!` variant, `startEnemyView` and its call in `main.client.ts`,
+     and every other file that touches the kill cam. `flamework.build` silent; `npm run build` exit 0.
+
+     **Why it existed, in its own argument.** Item 110 added it because the caption's stats line is read *last*, at
+     `caption` size, under two larger lines — so *"how good was the body I am watching"* got its own surface in the
+     top-left corner, which is the one part of the screen that is empty for exactly as long as a shot is up. The
+     reasoning is sound and the conclusion was wrong: **the caption already answers that question.** It reads
+     `Hits: n | Outs: m` off the same two attributes, so a shot drew the same two figures twice, at 14px centred and
+     13px on a card. The user reported the duplicate; the card is the copy that went.
+
+     **The prompt said the caption carries `Hits` only, and that is a prompt error worth recording** — it carries
+     `Hits` *and* `Outs` (`describeStats`), so only one figure is actually lost: **`Ratio`**, which the card computed
+     from the two counts rather than reading. `STAT_HITS` and `STAT_OUTS` each keep a client reader
+     (`describeStats`), and the two `GetAttributeChangedSignal` subscriptions survive for a hit death — narrowed to
+     the caption's line, and **skipped entirely for a catch**, since a catch's line is a fixed sentence and the only
+     thing that used to justify subscribing through it was the card. `STAT_RATIO` is published by `StatsService` and
+     now read by nobody on the client; it stays, because it is a recorded statistic rather than a display.
+
+     **What a shot shows now, stated plainly because it is a visible loss.** A `"Hit"` death: `ENEMY VIEW`, the
+     attacker's name, `Hits: n | Outs: m`. A `"Catch"` death: `caught your shot!` and **no numbers at all** — the
+     header hides, the caption replaces the line, and the card that used to carry the catcher's record beside it is
+     gone. That is the trade the duplication forced, and it is the right side of it: a catch caption is an
+     explanation, and a kill cam is not a stats board.
+
+     **Two comments outside the file named the card and were corrected rather than left.** `StatsBillboardController`'s
+     badge doc said the numbers were "on the kill cam's own card during a shot" — the reason it gives for having
+     removed the per-head record — and now names the caption. `premiumTheme.ts` never mentioned the card, because the
+     card's colours were `hudTheme()`'s (the light palette it was drawn from) rather than `PREMIUM`'s, so there was
+     nothing to correct there and `PREMIUM.void`/`textPrimary` were never the card's.
+
+     **Unverified in Studio**: that a `"Hit"` kill cam shows the caption and no card, and that a `"Catch"` kill cam
+     shows the sentence and no card. **There is no log line for the card** — the only evidence is [EnemyView] watching
+     <full path> at `logDebug`, which says nothing about what was drawn, so the test is the user's eyes on those two
+     deaths.
+
+125. **Each badge above a head is its own white card — a stack of cards instead of one sheet with rows on it — on a
+     canvas that was already fixed-pixel and a strip whose text was already unscaled.** `StatsBillboardController`
+     only: the wrapper `Frame` named `Card` is gone (it loses its paper and its `UIPadding` and becomes the
+     transparent `Badges` list, which takes over the centring anchor), and each `Badge` frame gains
+     `BackgroundColor3 = hudTheme().colors.panel`, `BackgroundTransparency = 0`, a `UICorner` at `4`, a `UIPadding`
+     at `6` and a `UIStroke` in `hudTheme().colors.border` at `1` — plus a `UIShadow` from `ELEVATION.CARD`.
+     Constants: `CARD_NAME` deleted, `CARD_PADDING` 8 → **6** (it is one card's inner air now, not the stack's),
+     `CARD_CORNER_RADIUS = 4` and `CARD_STROKE_THICKNESS = 1` added, `BADGE_ROW_GAP` still **6** (the distance
+     *between* cards). `flamework.build` silent; `npm run build` exit 0. **`BADGE_COLOURS` stays exported and
+     unread**, as item 112 left it.
+
+     **The prompt's two premises were already true, and that is the most useful thing this pass found.**
+     `BILLBOARD_SIZE` has been `UDim2.fromOffset(400, 400)` since item 112, and **no label in the file has ever used
+     `TextScaled`** — the sizes are `TextSize` 14 and 11. So "the badges shrink or grow as I scroll" was not caused
+     by either half of the rule the prompt asked for, and **nothing about the canvas or the type changes here**.
+
+     **The rule itself, quoted because it settles the argument that ran through five passes.** Roblox's reference for
+     `BillboardGui`: *"While the **offset** components work the same, the **scale** components are used as stud
+     sizes in 3D space."* Offset is a screen-space box, constant in pixels at any distance; scale is a sign fixed in
+     studs, which is what shrinks on screen as the camera pulls back. **The pair matters and neither half alone is
+     enough** — an offset canvas with a `TextScaled` label still breathes with the box — and this file is offset
+     throughout and `TextScaled` nowhere. The same fact is already written down in `catchPrompt`
+     (*"a screen-space box that does not shrink with distance"*) and `practiceCountdown`, so it is the project's
+     established reading rather than this pass's opinion.
+
+     **That is what reconciles item 112 rather than contradicting it.** Item 112's conclusion — *"a card is the
+     material for a screen-space panel"* — was drawn from cards that had been put on a **stud-scaled** canvas, where
+     surface and shadow had an apparent size that was a function of camera distance. **A card on an offset canvas has
+     no such problem**, and item 112's line now says so. Items 109–113 were five passes at this element; this is the
+     sixth, and the rule from here is that the next complaint is about *content* (a card too tall, a gap too tight)
+     rather than about the element. That is written in the class doc so the next reader finds it before re-litigating.
+
+     **Two shapes the pass chose and did not build variations of.** Cards **hug their own text and are centred on the
+     stack**, so a two-word badge is a narrow card rather than a column of equal widths — equal widths need either a
+     scale-width child inside an `AutomaticSize.X` parent (hazard 1 in `mountBadges`, the bug that broke two earlier
+     cards) or `TextBounds` arithmetic this file refuses. And the shadow is **built with `Instance.new` from
+     `ELEVATION.CARD` rather than with `elevation.addElevation`**, because that helper is a `Fusion.New` and the list
+     is rebuilt on every badge change — hydrating one instance per card per change is the exact leak the file's own
+     `Text` paragraph refuses. The depth numbers and the colour are still the theme's and the table's; the hydration
+     is what is skipped.
+
+     **Unverified in Studio**: that two badges read as two cards rather than as one divided sheet, that the hairline
+     and shadow are visible against a bright arena, that a card does not cover the `Head` mesh, and that the strip is
+     unchanged in apparent size between a near and a far camera. **The only log line is the existing
+     `[HUD] <name>: N of M badge(s) drawn`**, which counts cards and says nothing about how they look.
+
+126. **A badge's name is drawn title-cased and compound-split: `fetch dog` is `Fetch Dog`, `hat-trick` is
+     `Hat-Trick`, `one and done` is `One and Done`.** One exported function, `badgeLabel(badge)` in
+     `shared/badges.ts`, called once from `StatsBillboardController.makeBadgeCard`. `flamework.build` silent;
+     `npm run build` exit 0.
+
+     **The request was "show the names instead of the id", and the display was already showing names** — the card has
+     read `badge.name` since item 110, and the emitted Luau confirms it (`makeBadgeLine("Name", badge.name, …)`).
+     What made a name read as an id was **the case**: every name in the table is authored lower case
+     (`fetch dog`), so the strip drew a wire value's silhouette over a head. So the change is the rule, not the field.
+
+     **The rule, as the user stated it, in one place.** *"Capitalize the first and last words, as well as all major
+     words (nouns, pronouns, verbs, adjectives, adverbs, and subordinating conjunctions)."* The complement is a
+     closed set — articles, coordinating conjunctions and short prepositions stay lower case — which is
+     `MINOR_WORDS` in `shared/badges.ts`, and it is a set rather than a length test because "major" is a part of
+     speech and a part of speech cannot be inferred from a spelling. `and` is the only minor word any badge contains,
+     which is why `one and done` and `spray and pray` are the two strings where the rule is visible at all; the first
+     and last words are capitalised regardless, which is what makes `The Wall` out of `the wall`.
+
+     **Compounds:** a capital before an interior capital is split first (`(%l)(%u)` via `string.gsub`), so
+     `fetchDog` would draw as `Fetch Dog`; and a hyphen joins two words that both take a capital, so `hat-trick`
+     draws as `Hat-Trick`. **The split path is unreachable for today's table** — every `name` has spaces already, and
+     the ids are the camel-case ones — and it is there because the ids and the names travel together in this file and
+     the next author who writes `name: "fetchDog"` should get the right answer rather than a bug report.
+
+     **The literals stay lower case, and the field's doc was corrected rather than deleted.** It used to argue
+     *"Lower case on purpose — these are captions, not headings, and the whole strip of them is meant to read as one
+     sentence about a round rather than as six achievements."* The user has overruled the conclusion; the paragraph
+     now records the reversal and says the authored voice is unchanged while the drawn form is `badgeLabel`'s. **The
+     cost is real and named**: the strip now reads as six headings rather than as one sentence, which is what was
+     asked for.
+
+     **Unverified in Studio**: that `One and Done` and `Spray and Pray` read as intended (the only two strings where
+     the minor-word rule does anything), and that `Hat-Trick`'s second capital looks deliberate rather than like a
+     typo. No log line changes.
+
+127. **The badge cards are drawn from the Shop and Inventory's palette and materials — a `trough` band carrying the
+     name in `onAccent`, the sentence in `textSecondary` under it, on the Shop's `panel` sheet.**
+     `StatsBillboardController` and one doc line in `lightPanelTheme.ts`; `flamework.build` silent;
+     `npm run build` exit 0.
+
+     **The request:** *"it would be more consistent for it to follow art style of SHOP and INVENTORY"*, after item
+     125's cards were accepted. The two pop-ups are drawn from `lightPanelTheme()` — the file whose doc calls itself
+     *"a printable white sheet with black ink"* — so the pass is one import and five colour reads rather than a new
+     palette: `panel` sheet, `trough` band, `onAccent` ink on it, `textSecondary` sentence, `border` hairline,
+     `shadow` cast. **`hudTheme()` would have been nearly the same colours through a table `configureTheme` can
+     move**; "nearly, until somebody re-themes big-ui" is not what consistency means, and the pop-ups' palette exists
+     precisely so a light sheet cannot go dark by accident.
+
+     **The card is a shop *tile* in the two ways a tile is recognisable — grey paper under a near-black name band
+     with white lettering — with the band above the sentence instead of below it.** A tile puts its bar at the bottom
+     because the artwork owns the top; a badge has no artwork, so the name takes the top and the sentence the body.
+
+     **The band hugs the name rather than spanning the card, and that is the one compromise the layout forced.** A
+     tile's bar is `(1, 0)` wide because the tile's width comes from the grid's cell; a badge card sizes itself to
+     its own text, so a scale-width child would be the hazard `mountBadges` records — the bug that broke two earlier
+     attempts. A full-width bar would need a **fixed** card width and a **wrapped** description, and
+     `shared/badges.ts` argues that a description is one sentence and stays one line. So the band is auto-sized and
+     centred, which reads as a printed label on the sheet.
+
+     **Two deliberate differences from a tile, both because a card out here has no sheet or grid behind it.** A tile
+     carries **no outline and no shadow** — the panel's sheet owns both, one shadow per panel — while a badge card
+     floats in the world with nothing behind it, so it borrows the *sheet's* 1px `border` hairline and takes a
+     `CARD`-level `UIShadow` of its own. One shadow per object is the shop's own rule; each badge is its own object.
+
+     **`lightPanelTheme()`'s doc said "shared by nothing" and now says what it is shared with.** That sentence was
+     the reason the file existed, not decoration, so it was corrected rather than left: the palette now has a second
+     consumer, and the argument for that second consumer is written down — a badge strip is the other surface in the
+     game that is *read* rather than *operated*, so it belongs with the pop-ups and not with the neon HUD.
+
+     **Constants:** `CARD_CORNER_RADIUS` 4 → **6** (the shop pill's own radius, copied rather than imported — a
+     number, in two files, with a note in each); `BAND_PADDING_X = 6` and `BAND_PADDING_Y = 2` added. The import of
+     `hudTheme` is gone from the controller (only `UI_FONT` remains from that module), and `ELEVATION` and
+     `lightPanelTheme` are imported.
+
+     **Unverified in Studio**: that `#1E2026` behind white at 14px reads as a band rather than as a black blob above
+     a head; that `#4A4A4A` on `#FFFFFF` is legible on a world billboard (it is the shop's own pair on a screen, which
+     is a different rendering path); and that a six-badge stack of bands does not read as a barcode. **No new log
+     line**; `[HUD] <name>: N of M badge(s) drawn` is unchanged.
+
+128. **A round pays only the players who were in it: `MATCH_BASE_COINS` went to every connected player, and a body in
+     the lobby that had never touched a join part earned ten coins a round.** The user's report: *"I still earn 10
+     coins for being in the lobby without joining the match at least once."* A pure `roundPayout` module and its
+     spec, plus a rewritten `EconomyService.onRoundEnded` and one `logInfo` line. `npm run build` exit 0.
+     **The module and spec were first put under `src/server/services/economy/` and that broke the server at boot —
+     item 129 is the correction and the lesson; read it with this one.**
+
+     **The cause, and it was one word: `Players.GetPlayers()`.** `onRoundEnded` looped the whole server and granted
+     the base to every body it found, then added the win bonus only where `teams.get(player) === outcome`. `teams`
+     was never consulted for *eligibility* — only for the bonus — so a lobby spectator got base + performance and
+     **the reported 10 was the base alone**, which is the number that identifies the line. **The prompt's causal
+     story — a stale `TEAM_ATTRIBUTE` putting a lobby player on the roster — is not what was happening**: `teams` is
+     cleared and refilled by `assignTeams` at every opening whistle, so it never held a previous round's player at
+     `finishRound`'s moment. The fix is the same either way, and the roster now guards both mistakes.
+
+     **The roster is `participantsOnASide(teams)` — the side map's keys — and that is the only list with the right
+     membership.** `playersInRound()` is `activePlayers`, which `eliminate` empties as bodies go down, so using it
+     would have stopped paying exactly the players whose `outs` went up: a knocked-out player keeps their side but
+     loses their place in the active set, and the map keeps both. So the map is the roster, the lobby is out because
+     it never picked a side, and the eliminated are in because they keep theirs until the next whistle.
+
+     **The decision is now a pure function, generic over its subject.** `roundPayout<Subject>(roster, outcome, sides,
+     hits, surrendered): Map<Subject, number>` imports `ECONOMY_CONFIG` and `team.ts`'s types and `DRAW` — **no
+     `DataStore`, no `@Service()`, no `sessionLock`, no runtime `Players`, no clock** — so the arithmetic (base, win,
+     per-hit with the cap, the match cap, the floored half) moved with the eligibility, and neither is testable in two
+     halves. It returns the amounts rather than a bare set because the amount is decided in the same three lines that
+     decide membership; the membership is `payout.keys()`. **The generic parameter is the purity contract made
+     structural**: the function cannot reach for a `Player`, so the spec hands it strings and constructs nothing.
+
+     **The write stayed exactly where it was.** `record.coins += coins`, `matches`, `wins`, `publish`,
+     `ROUND_EARNED_COINS_ATTRIBUTE`, the per-player `[Economy]` line, `checkMilestones`, and the spawned `flush` are
+     unchanged in order and in content; only the loop's subject changed, and the per-player arithmetic became a read
+     of the payout map. **A roster member whose record has not loaded is skipped as before and counted**, which is the
+     `refused` in the new line.
+
+     **The line a playtest reads, and the only way the fix is visible:**
+     `[Economy] round end — paid N player(s), M refused` — one per round, `logInfo`. A lobby player who never joined
+     makes `N` the number of people who played rather than the number of people connected, and `M` counts records that
+     had not loaded rather than anything the store said.
+
+     **A test harness exists and the suite could not be run.** `npm test` → `tools/run-tests.ps1` → `jest-roblox
+     --backend studio-cli --headed`. **It refuses (exit 3) while a Studio is open**, by design, because Studio is
+     single-instance and the runner's launch would close the user's session; the guard fired on both the before and
+     the after attempt in this pass. So `payout.spec.ts` is **written and compiled but not executed** — `npm run build`
+     type-checks it, nothing more. **To run it: save your work, close Studio, `npm test`.** The spec is
+     `src/shared/payout.spec.ts` — **moved there from `src/server/services/economy/` by item 129, after its first
+     location stopped the server booting** — which puts it beside the three specs that already exist and inside a
+     mount the runner already discovers. So the discovery question that stood here is settled: it is the same
+     arrangement as `purchase.spec.ts`.
+
+     **What the spec pins**, all with plain strings and no mock: a player on a side *last* round but not in the roster
+     is not paid; a roster member is paid base; the win bonus follows the roster rather than the side map; a draw pays
+     no win; the performance term is one coin per hit up to the cap; a surrendered player is paid half, floored; the
+     match cap binds; an empty roster pays nobody. `expect` reads `ECONOMY_CONFIG` rather than literals, so a balance
+     change moves the expectation with the code.
+
+     **Two things this pass deliberately did not do.** It did not touch `MatchService` or `TEAM_ATTRIBUTE`'s
+     lifecycle — clearing `TEAM_ATTRIBUTE` at `finishRound` is defence-in-depth for a different pass, and it is named
+     here rather than done. And it did not change a coin amount, the persistence path, or the `[Stats]`/`[Economy]`
+     save lines. **One value became honest rather than hardcoded**: the per-hit term now multiplies by
+     `PERFORMANCE_COINS_PER_HIT` (1) where the old line hardcoded one coin, so the emitted arithmetic differs and the
+     numbers do not.
+
+     **Unverified in Studio**: that a player on a side who sits out the next round is not paid — proven by that
+     round's `[Economy] round end — paid N …` line naming one fewer than the number connected, and by no `+10 coins`
+     line for them — and that a player who played is paid base + win + performance exactly as before. **And the spec's
+     own run**, which needs the Studio closed.
+
+129. **The payout module and its spec belong in `shared/`, not beside the service — a spec under `src/server/services`
+     is preloaded by Flamework and stops the server at boot.** The live output, from the user's Studio:
+     `ServerScriptService.TS.services.economy.payout.spec failed to preload (62ms): Requested module experienced an
+     error while loading`, with `JestGlobals:16` and `src:1` under it — **and every service behind it never started**,
+     which is what "everything broke" meant. Both files moved to `src/shared/payout.ts` and
+     `src/shared/payout.spec.ts`; `EconomyService` imports from `shared/payout`.
+
+     **The mechanism, because it is not obvious from the file tree.** `main.server.ts` calls
+     `Flamework.addPaths("src/server/services")`, `"src/server/components"` and `"src/server/dev"`, and Flamework
+     **preloads every module under an added path** — not only the decorated ones — in order to find its services. A
+     spec is a module, so it was required at boot; requiring it required `@rbxts/jest-globals`, which is a test-time
+     module with no standalone boot, and the load error propagated up through `RuntimeLib` into Flamework's own
+     preloader. **Nothing was wrong with the spec's content** — it compiled, and it is the same spec that is in
+     `shared/` now.
+
+     **`shared/` is where this project already keeps a tested pure decision**: `shared/purchase.ts` with
+     `shared/purchase.spec.ts` is the same arrangement and predates this. The three pre-existing specs are all under
+     `src/shared` for exactly this reason, and that was visible in the tree before the mistake was made.
+
+     **What the move cost, and it is one signature.** `payout.ts` had imported `DRAW`, `RoundOutcome` and `TeamLabel`
+     from `server/services/round/team` — server vocabulary a shared module may not reach for. So the parameter is now
+     **`winner: string | undefined`**, with `undefined` for a draw, and `EconomyService` passes
+     `outcome === DRAW ? undefined : outcome`. Nothing is lost: the only thing the payout does with a side is compare
+     it to the one a player is on. It also makes the module's contract plainer — *there was a winner, and this was
+     it* — and the spec is now entirely strings, with no import of `team.ts` at all.
+
+     **The verification that matters: no `.spec` file is under an added path.** `Get-ChildItem -Recurse out\server
+     -Filter *.spec.luau` is empty after the move, and the four shared specs ship to `ReplicatedStorage/TS` where
+     nothing requires them — inert, which is why they have never caused this. `npm run build` exit 0.
+
+     **`flamework.build` changed, and only in ordering.** The identifier set is byte-identical when sorted; four lines
+     (`TrailEffect`, `SphereService`, `BallFactory`, `BallSpawnerService`) moved position. **No identifier was added or
+     removed**, so the file's content is unchanged in meaning — the transformer's registry order is not stable across
+     runs, and a second compiler (a `npm run watch` was live at the time) makes it visibly churn. Worth knowing before
+     the next reader treats a moved line in that file as a moved service.
+
+130. **`ROUND_MUSIC` → `CROWD_BG` and `ROUND_MUSIC_VOLUME` → `CROWD_BG_VOLUME`, with the `Sound` renamed
+     `RoundMusic` → `CrowdBg` — the track is a stadium, not a soundtrack.** Requested by the user: *"It is misleading
+     and confusing since it is a track for ambience (people in a stadium)."* Rename only — no id, no volume, no
+     timing and no behaviour changed. `npm run build` exit 0; `flamework.build` silent.
+
+     **Why the old names were wrong rather than merely imprecise.** They were the *older* pair, and they were fine
+     while they were the only sound in a round. They stopped being fine when item 118 added a real music track beside
+     them: `ROUND_MUSIC` next to `ROUND_SONG_ID` reads as two soundtracks, and the only thing distinguishing them was
+     a nuance in the doc. *Background* says the job — it is the room the round happens in — and it cannot be confused
+     with the song in either a config file or a log line.
+
+     **The `Sound`'s own name had to move with the constants, and that is the half that was actually visible.** Every
+     mix line in `MusicController` quotes the instance's `Name`, so the output read
+     `[Music] PLAYING — ambience "RoundMusic" 0.75 …, song "RoundSong" …`: two *music* tracks, one of which the
+     message called ambience. The instance is `CrowdBg` now, and the lines say what they mean:
+     `ambience "CrowdBg" … song "RoundSong" …`. The `[Music] up` line's third word also changed `round` → `crowd`,
+     for the same reason.
+
+     **The local variable was renamed with them** (`roundMusic` → `crowdBg`), because a variable is what a reader
+     greps for next and leaving it behind would keep exactly the ambiguity in the one file that has both tracks.
+     **The prose was corrected, not just the identifiers**: `roundVolume`'s doc opened *"The round track's volume"*
+     and now opens *"The crowd bed's volume"*, with a sentence recording that the old wording existed and what it got
+     wrong. §15 item 118's premise paragraph carries a one-line pointer, because it is the item that introduced the
+     song and it names the old constants throughout.
+
+     **What did not change, and it is everything audible**: the id `rbxassetid://76122240800540`, the volume `0.75`,
+     `ROUND_FADE_IN_SECONDS`/`ROUND_FADE_SECONDS`, `Looped = true`, the stop at the round-end edge, and the
+     relationship the config argues for — **the crowd stays above the song** (`0.75` against `0.10`). A rename that
+     touched any of those would be a different pass.
+
+     **No Studio observation needed beyond the log line**: the next session's `[Music] up — … crowd, … song, …` and
+     `[Music] PLAYING — ambience "CrowdBg" …` are the proof the rename reached runtime, and nothing should sound
+     different.
+
+131. **A rig that is asked to walk but is going nowhere now draws the idle clip: the walk animation is gated on the
+     body actually covering ground.** The user's report, verbatim: *"Why is always at least one NPC that is 'walking in
+     place'? … Walking animation would be rendered if rig is walking."* `NpcService` gained `advancing` and two fields
+     on `NpcLoop`; `npc.config.ts` gained `ANIM_STALL_STUDS` (0.25) and `ANIM_STALL_SECONDS` (0.6). `npm run build`
+     exit 0; `flamework.build` identical as a set.
+
+     **The request was never the problem, and it is still the source of truth.** `NpcLoop.walking` is written by
+     `walkTo`/`standAt` and by three boundary paths, and it says what a behaviour *asked for* — which is right, because
+     a blocked rig has genuinely been asked to walk and has not arrived. What was wrong is that the request was
+     published as the animation answer, so a body stuck at a pad, against a barrier, or aimed at something it cannot
+     reach wore the walk clip for as long as the request stood. **Every session had at least one of those**, and it is
+     the one fault the request-only design could not see.
+
+     **The fix is one gate, and it is asymmetric on purpose.** `moving = requested && advancing(...)`, where
+     `advancing` keeps an anchor at the root's position whenever it has covered `ANIM_STALL_STUDS`, and answers
+     whether the anchor moved within `ANIM_STALL_SECONDS`. **The anchor only moves forward on success**, so a crawl
+     accumulates instead of being read turn-by-turn as a stall, and the grace covers the two ordinary cases: a walk
+     that has just begun (`MoveTo` needs a step) and one that loses a turn or two on a seam or another body. **A body
+     with no `RootPart` answers `true`** — no evidence is not evidence of a stall, the same call `standAt` makes.
+
+     **Why this is not the velocity watch again, and the argument is the whole of its safety.** That reading *drove*
+     the clip, so a shoved rig animated a walk it was never asked for, a parked rig came back wearing a stale one, and
+     a stripped walker could not be corrected. **This gate is consulted only while a request stands, so it can only
+     turn the answer off** — none of those three has a standing request, so none is a candidate. That asymmetry is
+     written at the call site, in `NpcLoop`, in `advancing` and in `NPC_ANIM_MOVING_ATTRIBUTE`.
+
+     **`walkTo` resets the sample only when the request was *not* already walking**, and that one `if` is
+     load-bearing: `SeekBehavior` re-aims every turn, and a reset per call would have reported progress on every turn
+     for a rig leaning on a barrier. `standAt` clears the anchor so the next walk measures from where the body
+     actually is.
+
+     **The replay loop is untouched and stays out of it**: `walkTo`/`standAt` still command the engine, and the gate
+     never stops, re-paths or times out a walk. A rig freed after ten seconds walks again on the next turn, because
+     the anchor is still where it left it and the request never moved.
+
+     **The client needed nothing.** `RigAnimationController` reads attributes only — it has never measured a velocity
+     — so this is one side of the wire, and `animationFor` still branches on the same two requests plus ground and
+     freeze.
+
+     **Unverified in Studio**: that a rig blocked at a pad switches to idle within `0.6s` and back to walking the
+     instant it frees; that a rig walking a normal path never flickers; and that nothing on a pad reads as stalled
+     while it is merely *slow*. **The proof is visual** — there is no log line for the gate, because a line per
+     transition would print for every rig at every pad. If one is ever needed, it belongs on the `false` transition
+     with the rig's name and the distance it failed to cover.
+
+     **Seen in the same log and deliberately not touched**: `[NPC] <name>: off the floor while standing — Air, state
+     Freefall, owned by server` printed for all seven rigs at spawn. That is a body falling to its spawn position
+     before anything has asked it to walk, which is the line working as written rather than a fault — but it is noise
+     at every boot, and it names a state (`Freefall`, a moment after the clone) that no player can act on.
 
 ---
 

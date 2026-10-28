@@ -57,6 +57,43 @@ export const NPC_CONFIG = {
 	NETWORK_OWNERSHIP_RECHECK_SECONDS: 5,
 
 	/**
+	 * **How far a rig's root has to move before its walk is believed, in studs — `0.25`.**
+	 *
+	 * **The threshold that separates "walking" from "walking into something".** A rig is published as moving when a
+	 * behaviour has asked it to walk **and** its root has covered this much ground recently; without the second half,
+	 * a rig whose `MoveTo` is blocked looks identical to one crossing the arena, because both were told to walk. The
+	 * report that produced this constant is the one it is named for: *"always at least one NPC walking in place"* —
+	 * two rigs pushing at the same pad, or a walk into a barrier, wearing the walk clip for as long as the request
+	 * stands.
+	 *
+	 * **`0.25` is measured against a turn, not a second, and it is deliberately far below a real walk.** A turn is a
+	 * tenth of a second and the slowest walk in this game crosses about `0.8` studs in one, so this is a quarter of
+	 * the slowest legitimate step — low enough that a rig creeping to a ball still reads as walking, high enough that
+	 * jitter on a standing body is not one. **A slower body still passes it**, because the comparison is against an
+	 * anchor rather than the previous turn: displacement accumulates until it crosses.
+	 *
+	 * **Placeholder.**
+	 */
+	ANIM_STALL_STUDS: 0.25,
+
+	/**
+	 * **How long a rig may go without covering {@link ANIM_STALL_STUDS} before its walk stops being drawn — `0.6`.**
+	 *
+	 * **Six turns of grace, for the two situations that are not a stall.** A walk that has just begun has not moved
+	 * yet — `MoveTo` needs a step to accelerate — and a body crossing a seam, a ledge or another rig's edge can lose
+	 * one or two turns of progress. Both are ordinary and neither should flicker the clip. **Past this window the
+	 * body is not going anywhere, and the clip is a lie**: the request stands (it will resume if the obstruction
+	 * clears) but what a client draws is the idle.
+	 *
+	 * **Not a timeout on the walk itself**, and that distinction is the whole point of it living here rather than in
+	 * a behaviour: nothing is cancelled, nothing is re-pathed, and a rig freed after ten seconds starts walking again
+	 * on the very next turn because the anchor is still where it left it.
+	 *
+	 * **Placeholder.**
+	 */
+	ANIM_STALL_SECONDS: 0.6,
+
+	/**
 	 * **How long a drill's ball survives outside its bay before it is destroyed, in seconds — `5`.**
 	 *
 	 * **A grace period rather than the instant death this used to be, and the reason is that a catch needs the ball to

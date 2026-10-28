@@ -2,9 +2,10 @@
  * The round's badges: **what kind of round it was**, derived at `finishRound` and drawn above each head for
  * fifteen seconds.
  *
- * **The display is `StatsBillboardController`, and it is the only one.** It draws each id as two black lines — the
- * name and the sentence under it — on a white card above the head of the body wearing it, for the fifteen seconds
- * the set is published. That file has been deleted, reverted and rebuilt around this display in one day
+ * **The display is `StatsBillboardController`, and it is the only one.** It draws each id as two lines — the name,
+ * title-cased, on a near-black band in the Shop's palette, and the sentence under it in the Shop's second ink — on a
+ * white card above the head of the body wearing it, for the fifteen seconds the set is published. That file has been
+ * deleted, reverted and rebuilt around this display in one day
  * (`HANDOFF.md` §15 items 111–114); what it needs from this file is only the vocabulary, which has not moved.
  * **Nothing else in the client reads these ids**, so a change to a badge's name is a change to what appears above
  * every head.
@@ -46,12 +47,18 @@ export type BadgeTone = "praise" | "neutral" | "rib";
 
 /** One badge: the id the attribute carries, what a head reads, and how it should be coloured. */
 export interface Badge {
-	/** The wire value. Never shown to a player; `name` is. */
+	/** The wire value. Never shown to a player; {@link badgeLabel} is what a head reads. */
 	readonly id: string;
 
 	/**
-	 * What is drawn above the head. **Lower case on purpose** — these are captions, not headings, and the
-	 * whole strip of them is meant to read as one sentence about a round rather than as six achievements.
+	 * **The authored caption, in lower case — and what a head draws is {@link badgeLabel}, not this.**
+	 *
+	 * These are written as captions rather than headings: `top gun`, `the wall`, `one and done`. **Until
+	 * 2026-10-27 they were also drawn in that case**, on the argument that a strip of them should read as one
+	 * sentence about a round rather than as six achievements. **The user has overruled that**: a lower-case
+	 * `fetch dog` above a head reads as a wire value rather than as a name, so the drawn form is title-cased by
+	 * {@link badgeLabel} while the strings here keep the voice they were written in. The rule lives in one
+	 * function rather than in twenty literals for the reason the function's own doc gives.
 	 */
 	readonly name: string;
 
@@ -178,6 +185,87 @@ for (const badge of BADGES) BY_ID.set(badge.id, badge);
  */
 export function badgeById(id: string): Badge | undefined {
 	return BY_ID.get(id);
+}
+
+/**
+ * **The words a card draws: `name`, split into its words and title-cased.**
+ *
+ * **The rule, written once so a badge added later inherits it rather than being hand-edited into compliance.**
+ * Capitalise the **first and last words, and every major word** — nouns, pronouns, verbs, adjectives, adverbs and
+ * subordinating conjunctions — and leave the minor ones in lower case: articles, coordinating conjunctions and short
+ * prepositions. That is why `one and done` draws as **One and Done** rather than One And Done, and why `the wall`
+ * draws as **The Wall**: `the` is minor but it is the first word, and the first word always takes a capital.
+ *
+ * **The compound split is the other half of the request, and it is why this is a function rather than twenty edited
+ * literals.** `fetchDog` must draw as **Fetch Dog**, not `fetchDog` or `Fetchdog`, so a word boundary is inserted
+ * before an interior capital (`string.gsub`, `%l` then `%u`) before anything is capitalised. The names in
+ * {@link BADGES} are authored with spaces already and none of them needs that path today — it is here because the
+ * *ids* are camel case, the two travel together in this file, and the next badge author who writes
+ * `name: "fetchDog"` out of habit should get **Fetch Dog** rather than a bug report.
+ *
+ * **A hyphen joins two words and both take a capital.** `hat-trick` draws as **Hat-Trick**: `hat` and `trick` are
+ * both nouns, and a capital on only the first would make it look like one hyphenated lexeme rather than two words
+ * of a title.
+ *
+ * **This is the display's whole styling contract, and it is deliberately in the vocabulary file rather than in
+ * `StatsBillboardController`.** The controller decides *where* a label goes and what face it wears; what the label
+ * *says* is this module's, for the same reason the strings are. One caller today, and `titleCase` is a rule that
+ * would be re-derived wrongly at the second call site.
+ */
+export function badgeLabel(badge: Badge): string {
+	// The compound split, before anything is capitalised: `fetchDog` → `fetch Dog`.
+	const spaced = string.gsub(badge.name, "(%l)(%u)", "%1 %2")[0];
+	const words = spaced.split(" ").filter((word) => word !== "");
+	const last = words.size() - 1;
+
+	return words
+		.map((word, index) => {
+			const capitalise = index === 0 || index === last || !MINOR_WORDS.has(string.lower(word));
+
+			return capitalise ? capitaliseWord(word) : word;
+		})
+		.join(" ");
+}
+
+/**
+ * **The words that stay lower case inside a title** — articles, coordinating conjunctions and short prepositions.
+ *
+ * **A closed set rather than a length test, and the set is the rule's own wording.** *"Major words"* is defined by
+ * part of speech, and a part of speech cannot be inferred from a spelling; what can be is the handful of words that
+ * are never major. `subordinating` conjunctions (`because`, `although`, `while`) are **major** by this rule and are
+ * absent on purpose — none appears in a badge today, and adding one there would capitalise it correctly.
+ */
+const MINOR_WORDS = new Set([
+	"a",
+	"an",
+	"the",
+	"and",
+	"but",
+	"or",
+	"nor",
+	"for",
+	"so",
+	"yet",
+	"as",
+	"at",
+	"by",
+	"in",
+	"of",
+	"off",
+	"on",
+	"per",
+	"to",
+	"up",
+	"via",
+	"with",
+]);
+
+/** `word` with a capital on every one of its hyphen-joined parts: `hat-trick` → `Hat-Trick`. */
+function capitaliseWord(word: string): string {
+	return word
+		.split("-")
+		.map((part) => string.upper(string.sub(part, 1, 1)) + string.sub(part, 2))
+		.join("-");
 }
 
 /**

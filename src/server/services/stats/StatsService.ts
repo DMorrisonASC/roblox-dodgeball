@@ -151,6 +151,29 @@ export class StatsService implements OnStart {
 	 */
 	private readonly unsaveable = new Set<Player>();
 
+	/**
+	 * **The players whose final write is already under way, so the shutdown never starts a second one.**
+	 *
+	 * **A teardown fires both roads at once.** `PlayerRemoving` → {@link saveAndForget} and `BindToClose` →
+	 * {@link saveAll} are written for the same player, in the same instant, with `release = true` on both — and
+	 * the second of the two lands while the first is still in flight. A DataStore serialises per key, so that
+	 * second request is *queued*, and the engine says so out loud: **`DataStore request was added to queue …
+	 * Key = <userId>`**, once per key per store, every time a Studio session is stopped. Nothing is dropped
+	 * (the queue is thirty deep and this uses one), but the duplicate is ours and it is worth removing rather
+	 * than tolerating: the leaver's write already dropped the lock, so the shutdown's copy of the same record
+	 * asks the store to write the same bytes and release a lock that is not there.
+	 *
+	 * **Both roads mark the player *before* they yield, which is what makes the order not matter.** Whichever
+	 * of the two arrives first owns the write and the other skips, so a `BindToClose` that runs a frame before
+	 * the last `PlayerRemoving` is covered as well as the reverse.
+	 *
+	 * **The mark is not cleared by {@link saveAll}, deliberately.** `BindToClose` runs only when the server is
+	 * going away — there is no resumption to be wrong about — whereas clearing it would reopen the duplicate
+	 * for a `PlayerRemoving` that fires after the shutdown write returned. {@link saveAndForget} does clear it,
+	 * because that road can also run mid-session on an ordinary leave.
+	 */
+	private readonly leaving = new Set<Player>();
+
 	public onStart(): void {
 		Players.PlayerAdded.Connect((player) => this.load(player));
 		Players.PlayerRemoving.Connect((player) => this.saveAndForget(player));
@@ -519,8 +542,15 @@ export class StatsService implements OnStart {
 	 * it to read. **The release is the point of writing at all here** Ã¢â‚¬â€ a player who hops servers in the same
 	 * second must land on a record that is not still locked by a server they have left, which is the case the
 	 * lock expiry alone would make them wait out.
+	 *
+	 * **It marks the player in {@link leaving} before it yields, so a shutdown that begins at the same instant
+	 * does not write the record a second time.** This is one half of the pair; {@link saveAll} is the other, and
+	 * that field's doc says why the duplicate is worth removing.
 	 */
 	private saveAndForget(player: Player): void {
+		if (this.leaving.has(player)) return;
+		this.leaving.add(player);
+
 		task.spawn(() => {
 			const stats = this.stats.get(player);
 
@@ -536,6 +566,7 @@ export class StatsService implements OnStart {
 			this.stats.delete(player);
 			this.saved.delete(player);
 			this.unsaveable.delete(player);
+			this.leaving.delete(player);
 		});
 	}
 
@@ -637,16 +668,29 @@ export class StatsService implements OnStart {
 	 * **Every record is written, not only the changed ones, because this write also releases the lock.** A
 	 * clean shutdown should leave every record unlocked for the next server; skipping an unchanged record
 	 * would leave it locked until the expiry for no gain at all.
+	 *
+	 * **Except the records a leaver's own write already owns**, which is the one hole in "every record" and
+	 * the reason it is a hole: a teardown fires `PlayerRemoving` and this handler together, so writing the
+	 * same key from both put two requests for it in flight at once and the engine queued the second — the
+	 * `DataStore request was added to queue … Key = <userId>` line in a Studio session's output. Those players
+	 * are counted separately rather than as `skipped`, because `skipped` is the number that means *not saved*
+	 * and these records are being saved, by the other road, right now. See {@link leaving}.
 	 */
 	private saveAll(): void {
 		const endsAt = os.clock() + BIND_TO_CLOSE_SECONDS;
 
 		let written = 0;
 		let skipped = 0;
+		let alreadyLeaving = 0;
 
 		for (const [player, stats] of this.stats) {
 			if (this.unsaveable.has(player)) {
 				skipped++;
+				continue;
+			}
+
+			if (this.leaving.has(player)) {
+				alreadyLeaving++;
 				continue;
 			}
 
@@ -656,12 +700,14 @@ export class StatsService implements OnStart {
 				continue;
 			}
 
+			this.leaving.add(player);
+
 			if (this.writeWithin(player, stats, math.min(left, WRITE_DEADLINE_SECONDS))) written++;
 			else skipped++;
 		}
 
 		if (DEBUG_LOGGING) {
-			logInfo(`[Stats] shutdown Ã¢â‚¬â€ ${written} record(s) written, ${skipped} skipped, of ${this.stats.size()}`);
+			logInfo(`[Stats] shutdown Ã¢â‚¬â€ ${written} record(s) written, ${skipped} skipped, ${alreadyLeaving} already leaving, of ${this.stats.size()}`);
 		}
 
 		if (skipped > 0) {

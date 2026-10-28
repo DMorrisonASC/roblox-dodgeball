@@ -85,8 +85,12 @@ function intermissionVolume(phase: string, time: number, fadeInProgress: number)
 }
 
 /**
- * The round track's volume for the current moment: up from silence at the start of a round, and back down
+ * The crowd bed's volume for the current moment: up from silence at the start of a round, and back down
  * to it over the last {@link AUDIO_CONFIG.ROUND_FADE_SECONDS} of the round's clock.
+ *
+ * **It is the crowd and not music, which is what the name `CROWD_BG_VOLUME` says and what this doc used to
+ * get wrong** — it opened "the round track's volume" while the field was called `ROUND_MUSIC_VOLUME`, which
+ * read as the round's soundtrack. The round's soundtrack is `ROUND_SONG_VOLUME` beside it.
  *
  * **It fades in, and this reverses what stood here.** The argument was that the track needed no ramp
  * because a round beginning is already unmistakable — the arena is moved and everybody is held still — so
@@ -105,14 +109,14 @@ function intermissionVolume(phase: string, time: number, fadeInProgress: number)
  *
  * **Keyed on `Playing` and not on "not the intermission"**, which is the whole reason {@link PLAYING}
  * exists in this file. A phase this controller has never heard of — a lobby, a warm-up, a word added to
- * `RoundState` next month — gets no round music, which is the safe direction to be wrong in. The
- * alternative default would put a round's track over whatever that phase turns out to be, and the only
- * thing that would notice is a player hearing music at the wrong time.
+ * `RoundState` next month — gets no crowd bed, which is the safe direction to be wrong in. The
+ * alternative default would put a round's ambience over whatever that phase turns out to be, and the only
+ * thing that would notice is a player hearing a stadium at the wrong time.
  */
 function roundVolume(phase: string, time: number, fadeInProgress: number): number {
 	if (phase !== PLAYING) return 0;
 
-	return ramp(AUDIO_CONFIG.ROUND_MUSIC_VOLUME * fadeInProgress, time, AUDIO_CONFIG.ROUND_FADE_SECONDS);
+	return ramp(AUDIO_CONFIG.CROWD_BG_VOLUME * fadeInProgress, time, AUDIO_CONFIG.ROUND_FADE_SECONDS);
 }
 
 /**
@@ -133,7 +137,7 @@ function roundVolume(phase: string, time: number, fadeInProgress: number): numbe
  *
  * **The two tracks point in opposite directions, and that is the shape of the file.** The intermission
  * track fades *out* over the last five seconds of the intermission: it is the music a player hears while
- * nothing is happening, and it leaves as a cue to get ready. The round track plays for the length of a
+ * nothing is happening, and it leaves as a cue to get ready. The crowd bed plays for the length of a
  * round and fades out over its last five seconds, with the countdown beeping over it. Every cue here is
  * driven by the same clock, which is what makes them line up without anybody keeping them in step.
  *
@@ -307,7 +311,11 @@ export class MusicController implements OnStart {
 		// have is the whistle and the track arguing over a number neither of them owns. They are four
 		// independent instances; the engine mixes them, and nothing here has to.
 		const intermissionMusic = this.makeSound("IntermissionMusic", AUDIO_CONFIG.INTERMISSION_MUSIC, true, 0);
-		const roundMusic = this.makeSound("RoundMusic", AUDIO_CONFIG.ROUND_MUSIC, true, 0);
+		// **`"CrowdBg"` rather than `"RoundMusic"`, and the name is not cosmetic.** Every line this file prints
+		// about the mix quotes the `Sound`'s own `Name`, so an instance called `RoundMusic` sitting beside
+		// `RoundSong` made the log read as two music tracks — the confusion the config rename exists to end. The
+		// instance is the crowd; the song is `RoundSong`.
+		const crowdBg = this.makeSound("CrowdBg", AUDIO_CONFIG.CROWD_BG, true, 0);
 
 		// **Five `Sound`s now, and the fifth is the round's song** — music over the room rather than another room. See
 		// `ROUND_SONG_VOLUME` for why the two are separate instances with separate knobs, and the note above for why
@@ -375,8 +383,8 @@ export class MusicController implements OnStart {
 			// missed that — what it should hear is the room as it already is. See where
 			// `roundFadeInElapsed` is declared for the same rule stated once.
 			writtenRound = roundVolume(PLAYING, Fusion.peek(time), 1);
-			roundMusic.Volume = writtenRound;
-			roundMusic.Play();
+			crowdBg.Volume = writtenRound;
+			crowdBg.Play();
 
 			// **And the song, from its beginning, at the volume it would have reached.** A joining player missed the
 			// entry ramp, so `songProgress` is already 1 — the seed above — and there is no fade to reproduce. The
@@ -406,7 +414,7 @@ export class MusicController implements OnStart {
 		 * "the crowd is masked" — or from "the crowd's asset is silent" — in a log that contained no music lines at
 		 * all. One line per client is not a frame-time concern.
 		 */
-		const tracks = [intermissionMusic, roundMusic, roundSong, beep, whistle];
+		const tracks = [intermissionMusic, crowdBg, roundSong, beep, whistle];
 		let resolved = 0;
 
 		ContentProvider.PreloadAsync(tracks, (contentId, status_) => {
@@ -423,8 +431,8 @@ export class MusicController implements OnStart {
 				`[Music] tracks — ` +
 					`"${intermissionMusic.Name}" ${string.format("%.2f", AUDIO_CONFIG.INTERMISSION_MUSIC_VOLUME)}` +
 					` (${string.format("%.1f", intermissionMusic.TimeLength)}s), ` +
-					`"${roundMusic.Name}" ${string.format("%.2f", AUDIO_CONFIG.ROUND_MUSIC_VOLUME)}` +
-					` (${string.format("%.1f", roundMusic.TimeLength)}s), ` +
+					`"${crowdBg.Name}" ${string.format("%.2f", AUDIO_CONFIG.CROWD_BG_VOLUME)}` +
+					` (${string.format("%.1f", crowdBg.TimeLength)}s), ` +
 					`"${roundSong.Name}" ${string.format("%.2f", AUDIO_CONFIG.ROUND_SONG_VOLUME)}` +
 					` (${string.format("%.1f", roundSong.TimeLength)}s)`,
 			);
@@ -469,8 +477,8 @@ export class MusicController implements OnStart {
 					// is set to the same number so the tick's first frame is not a write of a value the
 					// property already holds.
 					writtenRound = roundVolume(PLAYING, Fusion.peek(time), 0);
-					roundMusic.Volume = writtenRound;
-					roundMusic.Play();
+					crowdBg.Volume = writtenRound;
+					crowdBg.Play();
 
 					// **And the song starts here, from the top, inaudible.** Same shape as the room above and for the
 					// same reason — the track begins at zero and the tick brings it up, so there is no frame of a
@@ -497,8 +505,8 @@ export class MusicController implements OnStart {
 					// run, and are both instances actually playing". `IsPlaying` is true for a `Sound` whose asset has
 					// not arrived yet, which is what makes it the right question here rather than `IsLoaded`.
 					logInfo(
-						`[Music] ${PLAYING} — ambience "${roundMusic.Name}" ${string.format("%.2f", roundMusic.Volume)} ` +
-							`(playing ${tostring(roundMusic.IsPlaying)}), song "${roundSong.Name}" ` +
+						`[Music] ${PLAYING} — ambience "${crowdBg.Name}" ${string.format("%.2f", crowdBg.Volume)} ` +
+							`(playing ${tostring(crowdBg.IsPlaying)}), song "${roundSong.Name}" ` +
 							`${string.format("%.2f", roundSong.Volume)} (playing ${tostring(roundSong.IsPlaying)})`,
 					);
 
@@ -522,7 +530,7 @@ export class MusicController implements OnStart {
 					// into its clip, and "neither the music nor the beep survives a round ending" is the
 					// requirement, not "the beep never starts again".
 					beep.Stop();
-					roundMusic.Stop();
+					crowdBg.Stop();
 
 					// **The song is deliberately NOT stopped here, and the asymmetry is the feature.** The room is cut
 					// because its fade is the clock's work and is therefore already finished — see the note below — so
@@ -648,9 +656,9 @@ export class MusicController implements OnStart {
 					reportedRoundMix = true;
 
 					logInfo(
-						`[Music] round mix — ambience ${string.format("%.2f", roundMusic.Volume)} ` +
-							`(playing ${tostring(roundMusic.IsPlaying)}, loaded ${tostring(roundMusic.IsLoaded)}, ` +
-							`${string.format("%.1f", roundMusic.TimeLength)}s), song ` +
+						`[Music] round mix — ambience ${string.format("%.2f", crowdBg.Volume)} ` +
+							`(playing ${tostring(crowdBg.IsPlaying)}, loaded ${tostring(crowdBg.IsLoaded)}, ` +
+							`${string.format("%.1f", crowdBg.TimeLength)}s), song ` +
 							`${string.format("%.2f", roundSong.Volume)} ` +
 							`(playing ${tostring(roundSong.IsPlaying)}, loaded ${tostring(roundSong.IsLoaded)}, ` +
 							`${string.format("%.1f", roundSong.TimeLength)}s)`,
@@ -693,7 +701,7 @@ export class MusicController implements OnStart {
 				}
 
 				writtenRound = wantedRound;
-				roundMusic.Volume = wantedRound;
+				crowdBg.Volume = wantedRound;
 			}),
 		);
 
@@ -751,7 +759,7 @@ export class MusicController implements OnStart {
 		if (DEBUG_LOGGING) {
 			logInfo(
 				`[Music] up — ${string.format("%.2f", intermissionMusic.Volume)} intermission, ` +
-					`${string.format("%.2f", roundMusic.Volume)} round, ` +
+					`${string.format("%.2f", crowdBg.Volume)} crowd, ` +
 					`${string.format("%.2f", roundSong.Volume)} song, ` +
 					`phase ${Fusion.peek(phase) === "" ? "(unset)" : Fusion.peek(phase)}`,
 			);
