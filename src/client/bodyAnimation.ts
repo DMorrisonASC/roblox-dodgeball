@@ -291,7 +291,18 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
 	}
 
 	// Whether a released throw's clip is still owed to this body — see `BodyRender.throwPlayingUntil`.
-	const lifted = render.throwPlayingUntil !== undefined && os.clock() < render.throwPlayingUntil;
+	//
+	// **A latch with a dead track behind it is not a clip, and that check is the fix for a body snapping to the
+	// engine's default stance.** `lifted` alone says "a throw is still owed for another half second"; the track
+	// that would draw it is a one-shot, so it *ends on its own* well inside that window. While the name stayed
+	// `"throw"` the change guard below saw no change, no `Play` was ever re-issued, and the body had **no track
+	// playing at all** — which does not read as "no animation", it reads as Roblox's own `Animate` idle, hands at
+	// the hips. **Rapid throwing is what made it constant**: every release reopened the latch, and a charge
+	// starting inside it kept the name alive across a track that had already finished.
+	const throwTrack = render.tracks.get("throw");
+	const chargeLive = conditions.charge !== undefined;
+	const latchOpen = render.throwPlayingUntil !== undefined && os.clock() < render.throwPlayingUntil;
+	const lifted = latchOpen && (chargeLive || (throwTrack !== undefined && throwTrack.IsPlaying));
 
 	const state = {
 		moving: conditions.moving,
@@ -434,6 +445,13 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
  * difference between "a body winding up" and "a body mid-throw" is one number in the track. A speed of zero
  * alone would freeze a fresh track at `0`, which is the body *starting* the wind-up rather than holding it.
  *
+ * **A track that has already finished is started again, and that is the second report rather than a refinement.**
+ * `AdjustSpeed(0)` on an ended one-shot does nothing at all — there is no playback left to slow down — so a charge
+ * that began after the previous throw's clip had run out froze nothing and drew nothing, and the body fell through
+ * to the engine's default idle. **Throwing quickly makes that the common case**, because a charge is usually
+ * started a moment after the last clip ended. `Play` with a zero speed and no fade puts the track back on screen at
+ * the pose this function then sets, so the second throw winds up exactly as the first did.
+ *
  * **Written every call rather than once, and the guard is not decoration.** `Length` reads `0` until the
  * animation has streamed, and a track is cached for the life of the body — so the first charge of a session
  * can run against a track that has no length yet, where setting `TimePosition` clamps to the start. The
@@ -442,42 +460,62 @@ export function applyBodyRender(render: BodyRender, conditions: BodyConditions):
  * `STATE_CLIP_SECONDS` records one function up.
  */
 function holdThrowAtWindup(track: AnimationTrack): void {
+	// **The restart, before the freeze** — see this function's doc. `0` fade because this is a pose, not a
+	// transition: a fade would be the body sliding into a wind-up it should already be holding.
+	if (!track.IsPlaying) track.Play(0, 1, 0);
+
 	track.AdjustSpeed(0);
 
 	if (track.Length > 0) track.TimePosition = THROW_CHARGE_HOLD_SECONDS;
 }
 
 /**
- * **Plays the rest of the throw from the held pose, at the clip's own speed.**
+ * **Plays the rest of the throw from the held pose, at a rate that makes it end with its mark.**
  *
- * **`1×`, and it used to be the charge.** The clip's `0.63 s` of remaining motion was played at
- * `charge ×` speed so a weak throw drew itself over a longer window — and a tap producing a three-second throw
- * read as the game stalling, not as a weak throw. The clip now plays at its authored rate for every throw, and
- * **the charge is carried by the camera instead**: `cameraShake`'s tremble grows with the hold while a throw is
- * being charged, which says "how hard" *before* the release rather than by stretching the release. The
- * parameter is kept because the call site still names what released it and a future sign may want it again.
+ * **The rate is derived rather than authored, and it is the second half of the "default stance" bug.** The clip is
+ * wanted for as long as `THROW_ANIMATION_ATTRIBUTE` stands — that mark is what keeps `"throw"` the wanted clip once
+ * the release has been reported — and the mark lasts `throwAnimationWindowSeconds()`, which is the *whole* clip. But
+ * a charged throw only has `Length − THROW_CHARGE_HOLD_SECONDS` of motion left in it, because the hold consumed the
+ * front of the clip. Played at `1×` it therefore finishes about `0.17 s` **before** its mark clears, and a `Sound`-like
+ * "nothing is playing" is not what an ended track leaves behind: the animator falls back to the engine's own idle,
+ * hands at the hips. That is a flicker on every charged throw and a constant state when a player throws quickly.
  *
- * **The pose is re-asserted before the speed, and it is the cold-asset case again.** If the hold never landed
- * — the clip streamed after the charge began — the track may still be at the start, and resuming from there
- * would replay the wind-up the player has just spent a second holding. Putting it on the hold point first
- * means the release always continues from where the pose was, whatever the track did before.
+ * **So the remaining motion is spread across the window it is authorised for**: `remaining / window`, which is `1×`
+ * for a body that threw without a hold (its clip is the full length) and slightly slower for one that charged. The
+ * two ends then coincide by construction rather than by two constants agreeing.
  *
- * **`AdjustSpeed` rather than `Play`**, because the track is already playing (at speed zero): changing the
- * speed resumes it from its own position, which is what makes this one continuous motion rather than a
- * second clip starting. The speed is set explicitly rather than left at zero for the next throw, and the next
- * hold re-zeroes it in `holdThrowAtWindup`.
+ * **A clip *longer* than its mark is still played at `1×` and still cut**, which is the documented trade for every
+ * action in this game (`STATE_CLIP_SECONDS` argues it): stretching it would make a badly authored clip play in slow
+ * motion to fill a state it never fit. Only the short case — the one the hold creates — is re-timed.
+ *
+ * **`1×`, and it used to be the charge.** The clip's motion was played at `charge ×` speed so a weak throw drew
+ * itself over a longer window — and a tap producing a three-second throw read as the game stalling, not as a weak
+ * throw. The hold is still the only thing the charge does to the animation, and **the charge is carried by the camera
+ * instead**: `cameraShake`'s tremble grows with the hold while a throw is being charged, which says "how hard"
+ * *before* the release rather than by stretching the release. The parameter is kept because the call site still
+ * names what released it and a future sign may want it again.
+ *
+ * **The pose is re-asserted before the rate, and it is the cold-asset case again.** If the hold never landed — the
+ * clip streamed after the charge began — the track may still be at the start, and resuming from there would replay
+ * the wind-up the player has just spent a second holding. Putting it on the hold point first means the release always
+ * continues from where the pose was, whatever the track did before.
+ *
+ * **`AdjustSpeed` rather than `Play`**, because the track is already playing (at speed zero): changing the speed
+ * resumes it from its own position, which is what makes this one continuous motion rather than a second clip
+ * starting. The rate is set explicitly rather than left at zero for the next throw, and the next hold re-zeroes it in
+ * `holdThrowAtWindup`.
  */
 function releaseThrowAtCharge(track: AnimationTrack, charge: number): void {
 	if (track.Length > 0 && track.TimePosition < THROW_CHARGE_HOLD_SECONDS) {
 		track.TimePosition = THROW_CHARGE_HOLD_SECONDS;
 	}
 
-	// **`1×`, and the charge is no longer read here.** The speed used to be the charge level, which made a
-	// weak throw take two or three seconds to finish drawing — read as a stall rather than as a weak throw.
-	// The level is carried by the camera instead (`cameraShake`'s tremble during the hold), so the clip plays
-	// its authored motion at its authored rate and the pose is the only thing the hold changes. The parameter
-	// is kept so the call site still says what released it.
-	track.AdjustSpeed(1);
+	// **The rate that lands the clip's last frame on the frame the mark clears.** `Length` reads `0` until the asset
+	// streams, and a track that has not loaded has no remaining motion to spread, so both fall back to `1×`.
+	const remaining = track.Length - track.TimePosition;
+	const window = throwAnimationWindowSeconds();
+
+	track.AdjustSpeed(track.Length > 0 && remaining > 0 && remaining < window ? remaining / window : 1);
 }
 
 /**

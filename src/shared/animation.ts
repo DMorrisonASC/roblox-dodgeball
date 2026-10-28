@@ -349,13 +349,21 @@ export function bodyClipFor(state: BodyState): AnimationState | undefined {
  *
  * **A constant, and it was a function of the charge for one revision.** The clip used to be played at
  * `charge ×` speed so that a weak throw drew its motion over a longer window — and a throw that stretched to
- * three seconds read as the game stalling rather than as a weak throw. The clip plays at `1×` now, so what is
- * left is the asset's own length, which is the whole clip: the hold at `THROW_CHARGE_HOLD_SECONDS` plus
+ * three seconds read as the game stalling rather than as a weak throw. The clip plays at its own rate now, so
+ * what is left is the asset's own length, which is the whole clip: the hold at `THROW_CHARGE_HOLD_SECONDS` plus
  * everything after it. **The charge is carried by the camera instead** — see `client/cameraShake.ts`, whose
  * tremble during the hold scales with it.
  *
- * **The server is the one reader, and that is why this is arithmetic rather than a client read of the track.**
- * `BALL_CONFIG.THROW_ANIMATION_SECONDS` is the mark's length and the mark is what keeps the clip up; the
+ * **The second reader is the release, and it needs the number for the opposite reason.** This is the length of the
+ * *mark*, and a mark that outlives the motion leaves the body wanted in a clip that has already finished — which an
+ * animator draws as the engine's own idle, hands at the hips. A charged throw has only
+ * `THROW_CLIP_SECONDS − THROW_CHARGE_HOLD_SECONDS` of motion left when it is released, so `bodyAnimation`'s
+ * `releaseThrowAtCharge` spreads that remainder across this window instead of playing it at `1×`. **The clip and
+ * its mark end together because of that one division**, not because the two constants happen to agree — and a
+ * change that puts the release back on a fixed rate reintroduces the flicker on every throw.
+ *
+ * **The server is one of the two readers, and that is why this is arithmetic rather than a client read of the
+ * track.** `BALL_CONFIG.THROW_ANIMATION_SECONDS` is the mark's length and the mark is what keeps the clip up; the
  * client knows the real length of the asset and the server does not, so the length is written down in
  * `animation.config.ts` and this function is the single expression that turns it into a duration. Callers take
  * `math.max` with `THROW_ANIMATION_SECONDS` so the old floor survives.

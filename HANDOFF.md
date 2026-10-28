@@ -1700,7 +1700,9 @@ Carried over from the previous handoff where still live, plus what this revision
    offsets are measured from the true screen top and Roblox's topbar overlaps the top of them.
 4. **Trails render; elimination effects do not.** `BallService` passes the equipped trail's colours to
    `BallTrail.attach`, so an owned trail is worn on the ball. Nothing reads
-   `EQUIPPED_ELIMINATION_ATTRIBUTE`, so an owned elimination cosmetic is ownership-only still.
+   `EQUIPPED_ELIMINATION_ATTRIBUTE`, so an owned elimination cosmetic is ownership-only still — **and since
+   2026-10-28 the Inventory's Eliminations tab says "Coming Soon" rather than offering equips nobody can see
+   (§15 item 132)**. The tab exists; the shelf is gone.
 5. **Every premium `gamepassId` is `0`.** No Game Pass exists yet, so the catalog is unbuildable as
    a purchasable thing until the developer creates them in the dashboard.
 6. **The Pierce preview gap is now server-side only** — this item was stale until this pass and is
@@ -5896,6 +5898,96 @@ almost no server code; 45 is what it cannot show.**
      Freefall, owned by server` printed for all seven rigs at spawn. That is a body falling to its spawn position
      before anything has asked it to walk, which is the line working as written rather than a fault — but it is noise
      at every boot, and it names a state (`Freefall`, a moment after the clone) that no player can act on.
+
+132. **The Inventory's Eliminations tab says "Coming Soon" instead of drawing a shelf of cosmetics that nothing
+     renders — the same state the Balls tab has used since it was added.** `InventoryController` only:
+     `UNRENDERED_SLOT` (`"ball"`) became `UNRENDERED_SLOTS` (a `Set` of `"ball"` and `"elimination"`), and the three
+     places that asked the constant now ask the set. `npm run build` exit 0; `flamework.build` identical as a set.
+
+     **The bracket, before the detail: the Balls tab was already the "Coming Soon" one, so the request was exactly
+     right and the surprise is the other tab.** `UNRENDERED_SLOT = "ball"` put that sentence in the Balls pane, and
+     **Eliminations drew the full two-column pane** — the worn slot, the shelf, "Default", and an equip button on every
+     tile — for the three catalogue entries it has (`elim.striker`, `elim.sharp`, `elim.bolt`). Nothing in the game
+     reads `EQUIPPED_ELIMINATION_ATTRIBUTE`, so pressing one of those buttons changed a stored value with nothing on
+     screen to show for it. That is the dead affordance the tab's own class doc claims to prevent, in the sentence
+     *"nothing here is drawn as clickable unless the server will act on it"*.
+
+     **And the doc block above the constant had been describing the wrong slot.** It opened *"The slot that is stored
+     and equipped but drawn nowhere … there is exactly one of them … the elimination slot"* while the value beneath it
+     was `"ball"`. Both statements were true when each was written and neither was true together; a reader trusting
+     the prose drew one conclusion and a reader trusting the code drew the opposite. The block now describes a set,
+     names both slots and both reasons, and records that the disagreement existed — because the next person to add a
+     third slot needs to know the list is a list.
+
+     **The change is three call sites and one value, and the message is untouched.** `catalogueSlots` appends every
+     unrendered slot that the catalogue did not supply (so both tabs exist regardless of content);
+     `addSlotPane`'s early branch asks the set and calls the same `addCentredMessage(…, COMING_SOON, 1)` the Balls tab
+     has always called; `addFooter` asks the set to suppress its "Nothing earned yet" line, because the pane already
+     said it. **No helper was extracted**, because the branch already *is* the shared thing — one `if`, one message
+     constant, two slots — and wrapping three lines in a function with one call site would be the ceremony this
+     project's rules refuse. The string, colour, font and padding are the Balls tab's, unchanged.
+
+     **Nothing interactive is built for an unrendered slot** — the pane returns before `addColumns`, so there is no
+     grid, no tile, no equip button and no `Default` entry to hide. That is stronger than disabling them: a disabled
+     button on a "Coming soon" tab still says *this exists*.
+
+     **What a player loses, stated rather than glossed**: they can no longer equip an elimination cosmetic from the
+     Inventory. The equip did work — the record holds it and the attribute publishes — and nothing displayed it, so
+     what was lost is a setting with no visible effect. **`elim.bolt` ("Lightning KO") is the one that matters**, and
+     it is still on sale: `priceRobux: 249` puts it in the premium catalog, so **the Shop's Cosmetics shelf still sells
+     a 249-Robux item that does nothing**. Reported, not fixed — the Shop has no Eliminations tab to gate (its tabs
+     are "Cosmetics" and "Power & Items"), and gating a paid item is a decision about the catalogue rather than about
+     this panel.
+
+     **Stated as a divergence from the prompt**: it assumed the Balls tab *works* and the Eliminations tab is the
+     broken one. The reverse was true of the *panes* — Balls was already the placeholder — and the prompt's
+     instruction ("match the Balls tab") was therefore the correct one to follow. The prompt's guess about which tab
+     holds the exemplar was right for the wrong reason.
+
+     **Unverified in Studio**: that the Eliminations tab now shows one centred "Coming Soon" and nothing else — no
+     grid, no error, no dead button — and that the Balls tab is unchanged. **Two clicks**: Inventory → Eliminations,
+     Inventory → Balls. There is no log line for this; the pane is either the sentence or it is not.
+
+133. **The player's body no longer snaps to Roblox's default idle — hands at the hips — after a charged throw, or
+     while charging again quickly.** `client/bodyAnimation.ts` (`lifted`, `holdThrowAtWindup`,
+     `releaseThrowAtCharge`) and one doc block in `shared/animation.ts`. `npm run build` exit 0;
+     `flamework.build` identical as a set.
+
+     **The arithmetic, because the whole bug is two numbers that never met.** A throw is marked with
+     `THROW_ANIMATION_ATTRIBUTE` for `math.max(BALL_CONFIG.THROW_ANIMATION_SECONDS, 0.4, throwAnimationWindowSeconds())`
+     = **0.8 s**, and the mark is what keeps `"throw"` the wanted clip after the release. But a *charged* throw has
+     already spent `THROW_CHARGE_HOLD_SECONDS` (**0.17 s**) of the clip on the wind-up hold, so at `1×` its remaining
+     motion is `0.8 − 0.17 = 0.63 s` — **it finishes 0.17 s before its own mark clears.** That gap is not "no
+     animation": an animator with nothing playing falls back to the engine's own `Animate` idle, which is the
+     hands-at-the-hips stance. Every charged throw had it; throwing repeatedly made it read as permanent.
+
+     **Why it was worse when throwing quickly, which is the report.** `render.playing` is a *name*, and the guard at
+     the top of `applyBodyRender` returns early when the wanted name has not changed. During that 0.17 s the name was
+     still `"throw"`, so no `Play` was ever re-issued. A second charge starting inside it ran the "re-assert the pose"
+     branch — `holdThrowAtWindup` — which wrote `AdjustSpeed(0)` and `TimePosition` to an **already-finished track**,
+     and a finished track cannot be frozen: nothing came back. So the stance persisted for as long as the player kept
+     the cycle going.
+
+     **Three changes, one of them the fix and two of them belts.**
+     `releaseThrowAtCharge` now spreads the remaining motion across the window it is authorised for —
+     `remaining / throwAnimationWindowSeconds()` — so the clip's last frame and the mark's clear land together *by
+     construction* rather than by two constants agreeing. That is `0.79×` for a charged throw and unchanged `1×` for
+     one that threw without a hold, because its clip is the full length. Against a clip *longer* than its mark the
+     rate stays `1×` and the clip is still cut, which is the documented trade for every action (`STATE_CLIP_SECONDS`).
+     Then `holdThrowAtWindup` **restarts a track that has finished** (`Play(0, 1, 0)` before the freeze), and `lifted`
+     now requires the latch's track to actually be playing, so a stale latch cannot hold a name with nothing behind
+     it.
+
+     **`throwAnimationWindowSeconds`' doc claimed the two lengths already agreed, and that claim is what hid this.**
+     Its paragraph said *"the mark lasts exactly as long as the clip's motion"*, which is true only for an *uncharged*
+     throw. It now says what the function actually costs a charged one, names `releaseThrowAtCharge` as the second
+     reader, and warns that putting the release back on a fixed rate reintroduces the flicker — which is the one line
+     a future reader needs.
+
+     **The visual cost, stated**: a charged throw's follow-through takes `0.8 s` instead of `0.63 s` — about 20%
+     slower, and it is the rate that makes the pose last as long as the game says the throw lasts. **Unverified in
+     Studio**: that a throw now returns to idle without a flash of the default stance; that rapid charge-throw cycles
+     never show it; and that the slower follow-through reads as weight rather than as sluggishness.
 
 ---
 

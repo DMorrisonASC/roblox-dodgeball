@@ -204,7 +204,7 @@ export const AUDIO_CONFIG = {
 	 * `TimeLength / 2`. There is no handler any more; see `MusicController` where it used to be, which records what
 	 * each part of it was for.
 	 */
-	ROUND_SONG_ID: "rbxassetid://70973693496917",
+	ROUND_SONG_ID: "rbxassetid://86115908714885",
 
 	/**
 	 * How long the round's song takes to come up at a round's start, and to go back down at its end, in seconds.

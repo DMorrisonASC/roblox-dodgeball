@@ -74,16 +74,28 @@ const SLOT_PRESENTATION: Record<string, { tab: string; heading: string }> = {
 };
 
 /**
- * The slot that is stored and equipped but drawn nowhere.
+ * **The slots that are stored and equipped but drawn nowhere**, and the whole of the "Coming Soon" state.
  *
- * **A named exception rather than a rule, and it is named because there is exactly one of them.** The
- * elimination slot behaves like any other everywhere else — the record holds it, the equip command accepts
- * it, the attribute publishes it — and the only thing it cannot do is be shown, because no
- * `CosmeticDef` carries an asset id and there is no elimination render hook in the game. So its pane gets a
- * sentence instead of the two columns. A second slot with no render path would need its own line here, and
- * that is honest: "which slots can be drawn" is a fact about the renderer, not about the catalogue.
+ * **A named exception rather than a rule, and it is a *set* because there are two of them now.** Both slots behave
+ * like any other everywhere else — the record holds them, the equip command accepts them, the attribute publishes
+ * them — and the only thing they cannot do is be shown: **no `CosmeticDef` carries a render hook and there is no
+ * elimination effect in the game**, so a grid of them would be tiles that change a stored value with nothing on
+ * screen to show for it. Their panes get a sentence instead of the two columns.
+ *
+ * **`elimination` joined this set on 2026-10-28, and the reason is a fact rather than a taste.** The catalogue has
+ * three elimination entries, so the tab existed and drew a shelf with equip buttons — and `EQUIPPED_ELIMINATION_ATTRIBUTE`
+ * is read by nothing, which makes every one of those buttons a change nobody can see. The Balls tab already answered
+ * that situation correctly, by saying so, so the elimination tab now says the same thing. **A second slot with no
+ * render path belongs in this set**, and that is honest: "which slots can be drawn" is a fact about the renderer, not
+ * about the catalogue.
+ *
+ * **What this doc said until now, and why it is worth reading.** It described *the* elimination slot as the one
+ * exception — correctly, while it was — and the `const` beneath it had already been changed to `"ball"` when the balls
+ * category was added ahead of its content. For one release the paragraph and the value disagreed, which is worse than
+ * either being wrong on its own: a reader who trusted the prose would have concluded the elimination tab was the bare
+ * one, and a reader who trusted the value would have concluded the prose was about the wrong slot. Both are true now.
  */
-const UNRENDERED_SLOT = "ball";
+const UNRENDERED_SLOTS = new Set(["ball", "elimination"]);
 
 /**
  * The gap between the two runs of a shelf's `LayoutOrder`: owned tiles from 2, locked tiles from 1000.
@@ -97,7 +109,7 @@ const UNRENDERED_SLOT = "ball";
  */
 const LOCKED_ORDER_BASE = 1000;
 
-/** What the unrendered slot says in place of its columns. */
+/** What an unrendered slot says in place of its columns. */
 const COMING_SOON = "Coming Soon";
 
 /** The shelf entry that means "nothing equipped". Not a `COSMETICS` key — see {@link addDefaultTile}. */
@@ -162,11 +174,18 @@ function catalogueSlots(): string[] {
 		if (!slots.includes(def.slot)) slots.push(def.slot);
 	}
 
-	// **And the placeholder slot is appended whether or not the catalogue has anything in it**, which is the
+	// **And the placeholder slots are appended whether or not the catalogue has anything in them**, which is the
 	// one place this function is not purely a read of `COSMETICS`. A category with no content is exactly the
 	// state the structure exists to make visible; deriving the list strictly from the catalogue would make
 	// "Balls" invisible until a ball existed, which is the same as not having built the category at all.
-	if (!slots.includes(UNRENDERED_SLOT)) slots.push(UNRENDERED_SLOT);
+	//
+	// **"Eliminations" is here for the opposite reason, and the difference is worth a line.** It has catalogue
+	// entries — three of them — so it would appear either way; what it does not have is anything that draws one.
+	// Appending it as well costs nothing and says the intent: the tab is a promise that stays a tab even if the
+	// catalogue is emptied of the items it cannot render.
+	for (const slot of UNRENDERED_SLOTS) {
+		if (!slots.includes(slot)) slots.push(slot);
+	}
 
 	return slots;
 }
@@ -276,8 +295,15 @@ function unlockText(milestone: MilestoneDef): string {
  * record, no command on `EconomyService`, no remote — and an affordance that cannot persist is a lie to a
  * player. That is still the rule; what changed is that there is now a place to write, so a tile is a
  * button. The rule to keep is the one that outlives this change: **nothing here is drawn as clickable
- * unless the server will act on it**, which is why the elimination tab offers no tiles at all rather than
- * tiles that do nothing.
+ * unless the server will act on it and the player can see the result**, which is why the elimination tab
+ * offers no tiles at all rather than tiles that do nothing.
+ *
+ * **The second half of that rule was added on 2026-10-28, and the elimination tab is what taught it.** The server
+ * *does* act on an elimination equip — the record holds the slot and `EQUIPPED_ELIMINATION_ATTRIBUTE` is written —
+ * but nothing in the game reads that attribute, so an equip changed a stored value with nothing on screen to show
+ * for it. A button whose outcome is invisible is the same lie as one nobody answers, and the tab now says
+ * **Coming Soon** instead, exactly as the Balls tab has since the balls category was added ahead of its content.
+ * See `UNRENDERED_SLOTS` for the pair and for the reasons each one has no renderer.
  *
  * **The panel reads two attributes and writes nothing.** `OWNED_COSMETICS_ATTRIBUTE` says what is in the
  * shelf and each slot's `Equipped*` attribute says which one is on, both published by `EconomyService` and
@@ -421,13 +447,18 @@ export class InventoryController implements OnStart {
 			Fusion.Computed(this.scope, (use) => use(this.currentTab) === tab),
 		);
 
-		// **The unrendered slot gets a sentence rather than two columns, and that is the whole of the
+		// **The unrendered slots get a sentence rather than two columns, and that is the whole of the
 		// "Coming Soon" state.** No tiles, no equip affordance, no stand-in content: the state is stored and
-		// the command accepts it, so what is missing is a way to *show* an elimination effect, and a grid of
-		// grey boxes would be pretending otherwise. `addCentredMessage` fills the pane, which is why it is a
-		// builder of its own rather than `addMessageLine` — that one is a fixed line at the bottom of a band
-		// and cannot be centred in one.
-		if (slot === UNRENDERED_SLOT) {
+		// the command accepts it, so what is missing is a way to *show* the cosmetic, and a grid of grey boxes
+		// would be pretending otherwise. `addCentredMessage` fills the pane, which is why it is a builder of its
+		// own rather than `addMessageLine` — that one is a fixed line at the bottom of a band and cannot be
+		// centred in one.
+		//
+		// **One branch for both slots rather than one per slot, and that is the point of the set above.** The
+		// elimination tab drew a shelf with live equip buttons until 2026-10-28; the message, its colour and its
+		// type are the Balls tab's, unchanged, because two different "no content" states on two tabs of one panel
+		// is the inconsistency this state exists to remove.
+		if (UNRENDERED_SLOTS.has(slot)) {
 			addCentredMessage(this.scope, theme, pane, COMING_SOON, 1);
 			return;
 		}
@@ -815,10 +846,10 @@ export class InventoryController implements OnStart {
 			const slot = this.slots.find((candidate) => tabOf(candidate) === tab);
 			if (slot === undefined) return "";
 
-			// **The unrendered slot says nothing here, because its pane already says it.** "Coming Soon" is
+			// **An unrendered slot says nothing here, because its pane already says it.** "Coming Soon" is
 			// centred in the band where the columns would be; repeating it under the panel would be the same
 			// fact twice on one screen, and the second one would be the one a reader stops seeing.
-			if (slot === UNRENDERED_SLOT) return "";
+			if (UNRENDERED_SLOTS.has(slot)) return "";
 
 			if (ownedInSlot(owned, slot).size() === 0) return "Nothing earned yet — cosmetics come from milestones.";
 
