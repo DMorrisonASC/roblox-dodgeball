@@ -1,6 +1,7 @@
 import { Service } from "@flamework/core";
 import { Debris, ReplicatedStorage, Workspace } from "@rbxts/services";
 import { findTemplate } from "shared/find";
+import { FROZEN_ATTRIBUTE } from "shared/constants";
 import { SUPER_CONFIG } from "shared/config/super.config";
 import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
 import { WalkSpeedService } from "../character/WalkSpeedService";
@@ -402,6 +403,14 @@ export class FreezeService {
 		const entry: FrozenBody = { root, rootWasAnchored, jumpingWasEnabled, outlineColour, block };
 		this.frozen.set(model, entry);
 
+		// **And the same fact published, because one reader of it is a client.** The map above is the
+		// authority and stays the authority — this is the copy that lets `client/dashPrediction` refuse to
+		// move a frozen body, which it has to know *before* the press rather than a round trip later. Written
+		// on every freeze rather than only on the first: a re-freeze is a body that is still frozen, and
+		// writing `true` over `true` is not an event anybody can observe twice. See `FROZEN_ATTRIBUTE`, which
+		// carries the argument for a flag rather than an instant and for the server being the only writer.
+		model.SetAttribute(FROZEN_ATTRIBUTE, true);
+
 		if (previous) {
 			logDebug(`[Freeze] ${model.Name}: still frozen — the clock restarted`);
 		} else {
@@ -776,6 +785,11 @@ export class FreezeService {
 
 		this.frozen.delete(model);
 		this.speeds.removeModifier(model, FROZEN_SPEED_KEY);
+		// **Cleared above the early return below, which is where the ice also has to go** — a model that has left
+		// the world has nothing left to thaw, but an attribute still saying `true` on one is a fact outliving the
+		// thing it described, and a body destroyed mid-freeze that respawns into the same model is exactly the
+		// case a stale `true` would be read as "cannot dash" by a client that never saw the freeze at all.
+		model.SetAttribute(FROZEN_ATTRIBUTE, undefined);
 
 		// **The ice goes above the early return below, and that placement is the whole of this line's
 		// care.** The block is not a child of the model — see {@link buildBlock} — so a body that has

@@ -12,6 +12,7 @@ import { CHARACTER_CONFIG } from "shared/config/character.config";
 import { DEBUG_CONFIG } from "shared/config/debug.config";
 import { events } from "shared/networking";
 import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
+import { forgetCharging, noteCharging } from "./chargeClock";
 import type { CatchState } from "../actions/DodgeService";
 
 /**
@@ -304,6 +305,7 @@ export class WalkSpeedService implements OnStart {
         Players.PlayerRemoving.Connect((player) => {
             this.sprints.delete(player);
             this.charging.delete(player);
+            forgetCharging(player);
         });
 
         // **A heartbeat with the engine's own delta, not a one-second loop.** A three-second pool
@@ -696,8 +698,11 @@ export class WalkSpeedService implements OnStart {
             // a speed a player gets for one frame.
             this.charging.delete(player);
 
-            const state = this.sprints.get(player);
-            if (state?.sprinting) this.applySprint(player, true);
+            // **And the hold's instant goes with the flag, for the same reason and one of its own.** The flag is
+            // re-sent by the client on its own edge, so it recovers a frame later; an instant left standing would
+            // make the *next* throw look like it had been held since before the death, and the cap would refuse a
+            // throw the player had only just begun.
+            forgetCharging(player);
         };
 
         player.CharacterAdded.Connect(prepare);
@@ -896,11 +901,18 @@ export class WalkSpeedService implements OnStart {
  * **A charge was in here beside the catch and has been taken out, and it is the one hold whose length the
  * player controls.** It arrived by a different road — a charge is measured on the *client*, so the server was
  * told about it over the `setCharging` event — and it has gone for a reason the catch does not have.
- * `currentCharge` clamps at full and **nothing auto-throws**, so a player can hold the throw button for as
- * long as they like: while they did, nothing recovered. A stance somebody can stand in for a minute is not
- * evidence that they are not resting, it is a lockout they can inflict on themselves, and it was reported as
- * exactly that — *"stamina does not replenish while aiming"*. See the note at the bottom of this method for
- * what went with it.
+ * `currentCharge` clamps at full, so a player could hold the throw button for as long as they liked: while
+ * they did, nothing recovered. A stance somebody can stand in for a minute is not evidence that they are not
+ * resting, it is a lockout they can inflict on themselves, and it was reported as exactly that — *"stamina
+ * does not replenish while aiming"*. See the note at the bottom of this method for what went with it.
+ *
+ * **The premise of that paragraph has since moved, and the removal stands anyway.** It said *nothing
+ * auto-throws*; `ThrowController` now releases a hold one second after the charge reaches full
+ * (`BALL_CONFIG.FULL_CHARGE_HOLD_SECONDS`), so the hold has a ceiling where it used to have none. **That makes
+ * the old fault smaller and does not make the hold a rest**: a second at full charge is still a second in which
+ * a body is standing still on purpose, and the rule this method applies is "a stance does not refill the pool",
+ * which does not care how long the stance lasts. Re-adding the charge here would be re-arguing the report, not
+ * acting on it.
  *
  * **`setCharging` is on the wire again and has nothing to do with this method.** It carries the charge's level
  * for the *speed cap* — see {@link isAiming} — because a stance holds the throw clip at its windup and a body
@@ -1054,6 +1066,13 @@ export class WalkSpeedService implements OnStart {
         } else {
             this.charging.delete(player);
         }
+
+        // **And the instant, for the throw cap rather than for this file.** `BallService.throwForPlayer` refuses a
+        // throw that arrives more than `FULL_CHARGE_HOLD_SECONDS` after the charge reached full, and this is the
+        // only edge on which the server learns a hold began — so the stamp is taken here, where the message
+        // already arrives, rather than by a second listener on the same event. See `chargeClock`, which owns the
+        // map and states what a forged report can and cannot do.
+        noteCharging(player, active);
 
         logDebug(`[Walk] ${player.Name}: ${active ? "holding a throw — capped" : "throw released — cap off"}`);
     }

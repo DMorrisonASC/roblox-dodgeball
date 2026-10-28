@@ -28,6 +28,7 @@ import { roundCelebrating } from "../services/round/roundStatus";
 import { StatsService } from "../services/stats/StatsService";
 import { SuperService } from "../services/super/SuperService";
 import { BadgeService } from "../services/badges/BadgeService";
+import { resolved as probeResolved, tagged as probeTagged } from "../dev/HitDisagreementProbe";
 
 /**
  * The tag every dodgeball carries — **the same string as this component's own `tag: "Ball"`, which
@@ -725,6 +726,13 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// contact with this body — is a body the ball has already tagged.
 		this.hitModels.set(character, struck);
 
+		// **The disagreement probe, and this is the frame the hit was *decided*.** The death is not until the
+		// ball lands — a catch can still save every tag — so the two moments the probe prints are here and
+		// `resolveTags`, and the distance between their two `body=` figures is the answer to "why did it hit me
+		// after I moved". One line, gated on the verbose logs, and it changes nothing: see
+		// `HitDisagreementProbe` for the four numbers and what each pattern of them means.
+		probeTagged(character, struck, this.instance);
+
 		// **And the side of the body that was tagged, published on the ball for the client's prompt.** The ball
 		// now owes this body a death, and the only people who can take that back are the ones who may catch it —
 		// the victim and their side — so the side is what a client needs to decide whether to draw `CATCH IT!`.
@@ -1123,6 +1131,12 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 			if (!humanoid || humanoid.Health <= 0) continue;
 
 			hitAny = true;
+
+			// The tag became a death on the next two lines, so this is the second half of the probe's pair:
+			// where the body is *now*, against where it was when the contact was decided. Nothing is changed
+			// by it — see `HitDisagreementProbe` — and it sits above the comment below because that comment is
+			// about the two calls this one must not separate.
+			probeResolved(model, this.instance);
 
 			// **The ability goes with the hit, because nothing can be asked about it afterwards.** A mark rides
 			// the *ball*, and by the time a client reacts to the impact this instance may already be gone — so

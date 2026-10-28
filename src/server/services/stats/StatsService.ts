@@ -1,5 +1,5 @@
 import { OnStart, Service } from "@flamework/core";
-import { DataStoreService, Players, ReplicatedStorage } from "@rbxts/services";
+import { DataStoreService, Players } from "@rbxts/services";
 import { STATS_CONFIG } from "shared/config/stats.config";
 import {
 	LOCK_EXPIRY_SECONDS,
@@ -9,17 +9,17 @@ import {
 	stamped,
 } from "../../persistence/sessionLock";
 import { BIND_TO_CLOSE_SECONDS, WRITE_DEADLINE_SECONDS, runWithin } from "../../persistence/shutdown";
-import {
-	ROUND_STATE_ATTRIBUTE,
-	ROUND_STATUS_FOLDER,
-	STAT_HITS,
-	STAT_OUTS,
-	STAT_RATIO,
-} from "shared/constants";
+import { STAT_HITS, STAT_OUTS, STAT_RATIO } from "shared/constants";
+import { isPlaying } from "shared/roundMembership";
 import { DEBUG_LOGGING, logDebug, logError, logInfo } from "shared/logger";
 
-/** The phase name that counts as competitive play. A word between two files, not a setting. */
-const PLAYING = "Playing";
+/*
+ * **The `PLAYING` literal and the folder read used to live here**, as they did in `SuperService`, `OutlineService`
+ * and `MysteryBoxService` — four files spelling one attribute name and one value out for themselves. That read is
+ * `shared/roundMembership.isPlaying`'s now, and this file keeps no copy of it. The unused imports went with it:
+ * `ReplicatedStorage` was here for the folder and nothing else, which is also why it is gone rather than still
+ * imported for a reader to wonder about.
+ */
 
 /**
  * How many times a DataStore call is attempted before it is given up on.
@@ -284,9 +284,10 @@ export class StatsService implements OnStart {
 	 * moments of a server's life Ã¢â‚¬â€ is not a round either.
 	 */
 	private isRoundActive(): boolean {
-		const folder = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
-
-		return folder?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
+		// **The question moved to `shared/roundMembership.isPlaying`**, which is the same folder and the same
+		// `"Playing"` literal this method used to spell out for itself. It stays a method because `count` reads it
+		// as a sentence — "only competitive play counts" — rather than because the answer is this file's.
+		return isPlaying();
 	}
 
 	/**

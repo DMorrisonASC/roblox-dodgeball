@@ -5,6 +5,7 @@ import { logInfo } from "shared/logger";
 import { startCollisionGroups } from "./collision/CollisionGroups";
 import { auditRigTemplates } from "./npc/rigTemplate";
 import { startSpawnShield } from "./services/character/SpawnShield";
+import { startHitDisagreementProbe } from "./dev/HitDisagreementProbe";
 
 logInfo("[main] igniting");
 
@@ -129,5 +130,13 @@ logInfo(
 // dependency on a shield. It is here rather than inside a service because a `ForceField` outliving
 // or predeceasing the round is a fact about bodies, not about rounds.
 startSpawnShield();
+
+// **And the hit-disagreement probe, which has to be listening before the first ball is thrown rather than
+// when one is.** It owns the `positionEcho` receiver and the sample map behind it, so the client's ten-hertz
+// echo has somewhere to land from the session's first frame; the two lines it prints are called from
+// `BallComponent`, which is why the *starter* is here and the *reporting* is not. It returns immediately when
+// the logs are not verbose, which is the shipped state — see `HitDisagreementProbe` for the four numbers and
+// the `VERBOSE_LOGS` gate it shares with every other measurement in the project.
+startHitDisagreementProbe();
 
 logInfo("[main] ignited");

@@ -1,6 +1,6 @@
 import { OnStart, Service } from "@flamework/core";
 import { Players, TextChatService, RunService } from "@rbxts/services";
-import { IS_DEV_ATTRIBUTE } from "shared/constants";
+import { DEV_FLAG_ATTRIBUTE_PREFIX, IS_DEV_ATTRIBUTE } from "shared/constants";
 import { logDebug, logInfo, logWarn } from "shared/logger";
 import { DEV_CONFIG } from "./dev.config";
 
@@ -20,8 +20,14 @@ const IS_DEV = IS_DEV_ATTRIBUTE;
  * `Player` can read one without going through this service — `Dev_InfiniteBalls`,
  * `Dev_InfiniteCatch`, `Dev_NoCooldown`, and one for every other key in
  * `DEV_CONFIG.defaultFlags`.
+ *
+ * **The string now lives in `shared/constants.ts`, because a client reads one of them.** The dash
+ * prediction asks whether a player is on `NoCooldown` before it moves their body, which makes this the
+ * second dev fact to cross the wire and the second one to be shared rather than spelled twice — the
+ * same move, and the same argument, as {@link IS_DEV} above. This name is kept so every line in this
+ * file still reads `FLAG_PREFIX`, and it is a reference rather than a second definition of the value.
  */
-const FLAG_PREFIX = "Dev_";
+const FLAG_PREFIX = DEV_FLAG_ATTRIBUTE_PREFIX;
 
 /**
  * The command prefix.

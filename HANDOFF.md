@@ -210,8 +210,33 @@ down anywhere before this revision of the handoff.
   between services are fine when the call is small; the rule is **no *unnecessary* direct calls**,
   not "no calls". See `SuperService.inRoundOrZone`, which is deliberately *lent out* to `BallService`
   rather than copied, with the argument for the loan in its doc. (The private `isRoundActive` that
-  `inRoundOrZone` wraps is not shared — its own copy of the same read of the round folder also lives
-  in `StatsService`, which is the one place the rule is duplicated.)
+  `inRoundOrZone` wraps used to be described here as "not shared, and duplicated in `StatsService`" —
+  **that half is now out of date**: the phase read itself is `shared/roundMembership.isPlaying`, one
+  function with four former copies behind it, and both services' private methods delegate to it. What
+  is still owed rather than shared is `inRoundOrZone`'s *rule*, which is a different question from the
+  phase — see §15 item 13.)
+- **Every service asks "is `isParticipant` applicable here?" — and answers it out loud, rather than assuming
+  either way.** The question is: *does this rule apply to everybody in the server, or only to the bodies the
+  round actually admitted?* It is the mistake this project has now made twice — the celebration window refused
+  **every** player's throw because nothing asked (§15 item 118), and `SuperService.inRoundOrZone` still asks
+  about the phase where `DodgeService.requestDodge` and the client's own `inRoundOrZone` ask about the
+  participant — so it is written here as a question to ask at every new gate, not a fix to a known list.
+  `shared/roundMembership.ts` is where the three predicates live: `isPlaying()` for the game, `hasSide(body)` for
+  "this round put me on a side", `isParticipant(player)` for "this round has me in it".
+  - **"Yes, centrally" — `RoundService`.** Membership is that service's own subject, so the question is not a
+    gate it applies but the thing it publishes: `assignTeams`, `admitWithCover`, `eliminate` and the round's end
+    are where `TEAM_ATTRIBUTE` and `IN_ROUND_ATTRIBUTE` are written and cleared, and every other reader in the
+    game is downstream of them. A rule that needs "who is playing" asks that service, or reads what it published.
+  - **"Not applicable" — `ControlsLegendController`.** It draws one fixed list of key bindings and reads no
+    round fact at all (it used to dim rows from player attributes and that was removed), so the honest answer is
+    that the question does not apply and **no gate should be added**. This half matters as much as the first:
+    a pass that reads this bullet as "every service needs an `isParticipant` check" would gate a legend of
+    keybindings, which is the ceremonial shape the `Modular over monolithic` bullet below argues against.
+  - **And when the answer is "yes", *which* predicate is a second question with its own trap.** It is
+    `isParticipant` while the round is live — phase *and* `IN_ROUND_ATTRIBUTE` — and **`hasSide`** in any window
+    where the round has ended but its result is still being shown, because membership is cleared before the
+    celebration opens and a gate built on `isParticipant` there refuses nobody. That ordering is written out at
+    `shared/roundMembership.hasSide` and is the reason the two functions both exist.
 - **One service per domain.** A domain owns everything about its state. The sprint merge proved what
   happens otherwise: `SprintService` and `WalkSpeedService` both wrote one property, and the fix was
   to make one service own the speed as a *sum of named contributions* (`Base`, `Sprint`, `Frozen`,
@@ -1712,6 +1737,12 @@ Carried over from the previous handoff where still live, plus what this revision
     do not describe the same state — but the principle's *older* example (`isRoundActive`) is now a copy
     in two files. Whether to collapse them into one shared read is a decision for a later task; recorded
     here, not fixed.
+    **Decided, 2026-10-27: collapsed.** The read is `shared/roundMembership.isPlaying()`, and both private
+    `isRoundActive` methods — and `OutlineService.isPlaying` and `MysteryBoxService.inRound` beside them —
+    now delegate to it. **What is *not* collapsed is the rule those two wrap**: `SuperService.inRoundOrZone`
+    answers *phase or practice zone*, while `client/roundZone.inRoundOrZone` and `DodgeService.requestDodge`
+    answer *participant or practice zone*. Those are two different questions and the server's is the weaker
+    one — see item 118.
 
 **Found by this pass (2026-10-14), none of them fixed:**
 
@@ -1816,13 +1847,17 @@ open; 33 is the measurement that would settle the report all four came out of.**
 
 29. **The throw's comments quote numbers the config stopped holding, and the config is right.**
     `THROW_MAX_SPEED` is `90` and `CHARGE_MIN_SPEED` is `50`, which is **29.8 → 53.9 studs** on level
-    ground. The prose says otherwise in four places: `THROW_MAX_SPEED`'s own note still reads "336",
-    `planChargedThrow`'s still prints a table of *"18.5 / 52.0 / 84.8 / 117.5 / 150.1"* and calls the
+    ground. The prose says otherwise in four places: `THROW_MAX_SPEED`'s own note still reads "336",    `planChargedThrow`'s still prints a table of *"18.5 / 52.0 / 84.8 / 117.5 / 150.1"* and calls the
     full hold 150 studs, `CHARGE_PEAK_HEIGHT`'s still derives `v_y = 7.75`, a `0.77 s` hang and "about
     34 studs at a tap and 69 at a full hold" from a value that is now 0.9 (`v_y` 6, hang 0.6), and
     `peakAngle`'s still names "`CHARGE_MIN_SPEED` = 45" as the floor it is weighed against. **Nothing
     behaves wrongly** — every reader takes the config — but a reader who trusts the prose sizes the
     throw wrong by a factor of three. One pass, comments only.
+    **Out of date, 2026-10-27: the numbers in this item have moved too.** The config now holds
+    `THROW_MAX_SPEED` = `200`, `CHARGE_MIN_SPEED` = `80` and `CHARGE_PEAK_HEIGHT` = `0.5`, so this item's own
+    `90` / `50` / `0.9` are as stale as the four blocks it names — which are all four still standing. The
+    judgement it makes is unchanged and now easier to state: every one of those comments is wrong and the config
+    is right. See §15 item 119's last paragraph.
 30. **The shortest throw is ~30 studs, so the cursor cannot name a nearer target.** `reachTo`'s cap
     bottoms out at charge 0, and charge 0 *is* `CHARGE_MIN_SPEED`, which covers 29.8 studs. Point at a
     body 10 studs away with a full hold and the ball is fired 30 studs along that line — past it, by up
@@ -3219,8 +3254,16 @@ almost no server code; 45 is what it cannot show.**
       `BALL_TAGGED_TEAM_ATTRIBUTE` for the client's `CATCH IT!` prompt; it is display and never a gate.
 
     **The prompt's own warning is the other live candidate and is now traceable**: a `practiceThrow` ball carries
-    `THROWN_FROM_BAY_ATTRIBUTE`, and `settleLooseBalls` destroys it the first tenth of a second it is outside every bay —
-    **airborne or not**. If that is what is happening, the fix is in the despawn timing and not in the catch path at all.
+    `THROWN_FROM_BAY_ATTRIBUTE`, and `settleLooseBalls` takes it some seconds after it leaves every bay. **The "first
+    tenth of a second … airborne or not" is corrected — it was true when this item was written and it is not any
+    more.** Leaving a bay now starts a deadline of `NPC_CONFIG.BAY_DESPAWN_GRACE_SECONDS` (5, **Placeholder.**),
+    re-entering a bay clears it, and the ball is destroyed when the deadline passes. **It is still taken in the air**
+    if it is still flying five seconds later — that is the half item 82's third point records, and the trace line
+    `DESTROYED …s after leaving the bay` exists to catch it — but the version that destroyed a drill's ball in the
+    same tenth of a second in which a player might have reached for it is gone, which is what this item was chasing.
+    **The MultiBall rule in the same loop is the one that also waits for the ground**: see
+    `BALL_DESPAWN_ON_LAND_ATTRIBUTE` and item 116 for why "the throw ended" is not the same moment as "the ball
+    landed".
 
     **The trace, which is the deliverable and not the fix.** Two `TRACE_CATCH` constants — one in `BallComponent`, one in
     `CatchService`, both `true`, both marked TEMPORARY — plus one line in `BallService.settleLooseBalls`. Every early
@@ -4049,7 +4092,7 @@ almost no server code; 45 is what it cannot show.**
 
     | refusal | where | why there |
     | --- | --- | --- |
-    | a player's throw | `BallService.throwForPlayer` | **not** `throwBallBody`, which is the shared path: a gate there would refuse the practice bay's drills for ten seconds every time an unrelated match ended. The arena's own NPCs need nothing — `detect.ts` already answers "not playing" and they stop with no target |
+    | a player's throw | `BallService.throwForPlayer` | **not** `throwBallBody`, which is the shared path: a gate there would refuse the practice bay's drills for ten seconds every time an unrelated match ended. The arena's own NPCs need nothing — `detect.ts` already answers "not playing" and they stop with no target. **The subject was wrong here and is now `hasSide(character) && !isPractising(character)`**: "a player's throw" meant *every* player's, so a body practising in a zone could not throw while an unrelated match celebrated. `hasSide` rather than `isParticipant` because by then the phase has left `Playing` and `IN_ROUND_ATTRIBUTE` has been cleared — the round's players are exactly the bodies still wearing a side. See `shared/roundMembership.hasSide` and item 117's §15 counterpart in item 118 |
     | a catch | `CatchService.blocksCatch` | beside the frozen check, because both are a state the body is in rather than a clock like the dodge pair |
     | a ball doing damage | `BallComponent.landHit` | beside the practice zone's refusal and deliberately not folded into it: a ball already in the air when the whistle went can land ten seconds later, and the practice exemption is about *where* a body is while this one is about *when* |
 
@@ -4591,6 +4634,7 @@ almost no server code; 45 is what it cannot show.**
      mid-walk, and a parked rig returning. Nothing here has been watched in Studio.
 
 105. **The round has a song now, layered over the room, and it repeats from its own middle.**
+     **Reversed on 2026-10-27: it now starts over from the beginning — see the note at the end of this item.**
 
      **The premise needed correcting before anything was written: `MusicController` already had a track called
      `roundMusic`, and `AUDIO_CONFIG` already had `ROUND_MUSIC` and `ROUND_MUSIC_VOLUME`.** Those are the arena
@@ -4606,8 +4650,9 @@ almost no server code; 45 is what it cannot show.**
      no such group anywhere in this project, and the file argues against one at length, so per-track volumes are the
      only knobs.
 
-     **The loop-from-the-middle rule, which is the feature and reads like a bug if you do not know it**: the first
-     play is the whole track, `0` to the end; **every repeat after that runs from `TimeLength / 2` to the end**, so
+     **The loop-from-the-middle rule, which is the feature and reads like a bug if you do not know it** (reversed —
+     see the note at the end of this item): the first play is the whole track, `0` to the end; **every repeat after
+     that runs from `TimeLength / 2` to the end**, so
      the first pass is twice as long as every later one. `Looped` is `false` on this `Sound` — the engine's own loop
      restarts at `0`, which is the one thing this track must not do — and the repeat is a single `Ended` handler
      connected once at creation. **`TimeLength` is read inside that handler rather than cached**, because a `Sound`'s
@@ -4638,6 +4683,18 @@ almost no server code; 45 is what it cannot show.**
      seed it. Also unverified: that both tracks sit together acceptably, that 1.5 s is not abrupt, and that the small
      gap at the loop point is acceptable — that gap is the accepted cost of a handler-driven loop rather than two
      staggered `Sound`s.
+
+     **Reversed on 2026-10-27, at the user's instruction: the song starts over when it ends.** The loop-from-the-
+     middle rule is gone and the track is `Looped = true`, which is the engine's own restart at `0` — the first pass
+     and every one after it are now the same length. **The whole handler went with the rule**: the `Ended`
+     connection, its `TimeLength / 2` offset, its `logWarn` for an asset that had not resolved its length, and its
+     phase guard, because each of those existed only to serve an offset that is no longer wanted and a callback that
+     no longer exists. `audio.config.ts`'s `ROUND_SONG_ID` block is corrected the same way and keeps the original
+     argument, since "the middle of a piece is where its groove is" is the thing to re-read if the repeats are ever
+     judged too long. **Nothing else about the track changed**: its id, volume, 1.5-second fades, the phase-edge
+     start from `0` and the tick's fade-to-zero stop are all byte-identical. **Not observed in Studio** — a round
+     long enough to hear the second pass is the test, and the thing to listen for is the track's opening returning
+     rather than the middle.
 
 106. **"The crowd is not playing" — investigated, and the cause is NOT in the code that was suspected. No fix
      applied; instrumentation added instead.**
@@ -5048,10 +5105,14 @@ almost no server code; 45 is what it cannot show.**
      corrected there**, because the code now does it and a comment arguing against its own codebase is the fault this
      file keeps recording; the rig scan stays, because a caller there needs the *body* and not a label.
 
-     **`PERFECT_DISTANCE` is `8`, and its own doc said `4`.** The 2.5–7.7-stud figures are all below the shipped
-     threshold, so this was never a threshold bug — the sentence above the constant was stale, and now says eight and
-     records the mismatch. `PERFECT_WINDOW_SECONDS` is still 0.6 and is still `deadline`'s only term; `PREDICTED_HIT_RADIUS` is
-     untouched and used only by `stillOnCourse`.
+     **`PERFECT_DISTANCE` was `8` while its own doc said `4`, and it is now `4` with a doc that says `4`.** This pass
+     corrected the sentence to eight and recorded the mismatch, because the value was what it was. **`4c381be` then
+     set the value to `4`** — the retune the 2.5–7.7-stud figures were arguing for — so the constant's own doc has
+     since been rewritten to argue for four, and the contradiction this item found is closed from the other end
+     rather than by reverting anything. The 2.5–7.7-stud passes logged at eight are the *reason* four is defensible
+     and not a typo; **whether four is the right cut is still unjudged**, which is item 38's open question and the
+     place a session's answer belongs. `PERFECT_WINDOW_SECONDS` is still 0.6 and is still `deadline`'s only term;
+     `PREDICTED_HIT_RADIUS` is untouched and used only by `stillOnCourse`.
 
      **The skip lines are `logDebug` and once per ball per watch**, held in `skipped`, because a spent ball near the
      dodger would otherwise print on every frame of the window. **Unverified in Studio**: that a bounce-back no
@@ -5102,6 +5163,335 @@ almost no server code; 45 is what it cannot show.**
      the tick after they touch down; the fifth prints the landing line, no despawn line, and is still in
      `Workspace`. The visible check is the ball staying with the model it hit and vanishing once it reaches the
      floor.
+
+117. **A dash now moves the body on the frame the key was pressed, and a probe beside it prints the four numbers
+     that decide whether the hit-disagreement reports are lag, a sweep or a picture.**
+     `client/dashPrediction.predictDash` is called by `DodgeController.requestDodge` on the line before
+     `SendToServer`: it applies a `LinearVelocity` named `ClientDashVelocity`, zeroes the root's angular velocity
+     and puts the humanoid into `PlatformStand` with the two fall states off — the same four moves
+     `DodgeService.startDash` makes, and **a velocity rather than a `PivotTo` for that method's own reason plus one
+     more**: a teleport on a client-owned body is a position the server has to be talked out of, and a snap-back
+     would be a new class of jitter. It is destroyed either at `DODGE_CONFIG.DURATION` or on the frame the
+     server's `DodgeVelocity` arrives, whichever is first, watched through `root.DescendantAdded` — **not** on
+     `DODGE_DIRECTION_ATTRIBUTE`, because `startDash` writes that attribute *after* it creates the three instances,
+     so on a bad ordering the attribute would light up a frame after the server's force had already arrived. **The
+     three `Humanoid` writes are restored when the *server's* dash ends, not when this one does**: `startDash`
+     records `wasPlatformStanding` from its own copy of the humanoid, so a restore that raced its `true` could hand
+     the body back standing — a player who cannot walk, which is exactly what that method's own comment warns
+     about — and the server's constraint coming off the root is the one instant that cannot race it. A half-second
+     backstop after the dash's own length covers a server dash whose constraint never comes off. **`PlatformStand`
+     is written by nothing else in the game** — `FreezeService` and `CatchBehavior` both refuse it by name — so
+     `false` is the only value a restore can legitimately put back.
+
+     **The report this answers is the oldest one in this file's dodge notes: *"I dodge and the ball seems to hit me
+     when on my client I moved."*** The dash used to be a round trip of *nothing* — the client sent a direction and
+     its body stood still until the server's constraint replicated back — which is long enough for a ball the player
+     watched cross the screen to land where they were standing. That window is gone. **What is not gone is the other
+     two mechanisms**, and they are the reason this item is not a fix for the symptom: the server's copy of a
+     client-owned body still lags a replication step, so a `Touched` at the tag is resolved against the position the
+     body has just left (candidate 1); and a tag bounces the ball and the death waits for it to land, so the damage
+     and the `hitImpact` arrive at wherever the body is *then* (candidate 7a — load-bearing for the catch save and
+     not a bug). A `Touched` swept path (candidate 4) is untouched by any of this. **The rewind fix — a short
+     position history and a segment test at the tag — is deliberately not built**: it changes what a hit *is* for
+     `hitModels`, the catch save, the friendly-fire veto, the duck exemption and the Freeze splash centre, and
+     `Trajectory` spherecasts the client's *live* bodies, so a server testing a different set of positions than the
+     preview draws makes the arc a second kind of lie in the mechanic that is this game's differentiator.
+
+     **The prediction is gated on the server's own facts, read from what it publishes**, and the gate list is the
+     whole of its safety: `DODGE_READY_AT` (skipped only for `Dev_NoCooldown`, which is why
+     `DEV_FLAG_ATTRIBUTE_PREFIX` moved into `shared/constants.ts`), `CATCH_READY_AT` and `DUCK_READY_AT` (both
+     covering a window *and* its lockout, and both deliberately not skipped for a dev, which is `blocksDodge`'s own
+     rule), `DODGE_DIRECTION_ATTRIBUTE` absent so a second constraint cannot double the speed, and the new
+     `FROZEN_ATTRIBUTE` — **added to `FreezeService` for this reader and for no other**: a freeze was a `Map` entry
+     nothing off the server could see, and a frozen body moved locally is the worst outcome this feature has,
+     because the client owns the body's physics and the server's copy follows it. **`PICKUP_COUNT_ATTRIBUTE` is
+     *not* a gate**, which is the one thing the request for this pass had wrong: no server path refuses a dodge for
+     carrying a ball, and that attribute is a lifetime *pickup* count rather than a count of what a hand holds.
+
+     **And the probe, whose whole purpose is to be read before anything else is changed.**
+     `server/dev/HitDisagreementProbe` is a plain module (no `@Service`, so the decorator manifest does not move),
+     started from `main.server.ts`; it prints one line at the tag from `BallComponent.handleTouch` and one at the
+     resolve from `resolveTags`, both `logDebug` and therefore off unless `VERBOSE_LOGS` is on:
+     `[HitProbe] <body>: tag t=… body=(…) ball=(…) |ball-body|=… |client-body|=… clientAge=… owner=… speed=…` and
+     `[HitProbe] <body>: resolve t=… body=(…) ball=(…) tagAge=…`. **`|client-body|` is the number that did not exist
+     before**, and `client/positionEcho` is what produces it: ten hertz, `HumanoidRootPart.Position` stamped with
+     `Workspace:GetServerTimeNow()`, sent over the new `positionEcho` remote — **a remote rather than an attribute,
+     because an attribute a client writes on its own character does not replicate**, which is `DUCKING_ATTRIBUTE`'s
+     own sentence. What the patterns mean is the table at the top of that file; the short version is that
+     `|client-body|` at 2.5–5 studs with `|ball-body|` under 2.75 is candidate 1 and nothing else, `|ball-body|`
+     over 2.75 with the ball ahead is candidate 4, and a resolve `body=` far from the tag's is candidate 7a.
+
+     **Unverified in Studio, and this is the item's point.** The prediction is reasoned from the source and has not
+     been watched: whether the local constraint actually reaches `DODGE_SPEED` under a `PlatformStand` humanoid
+     (the server's dash has the same question and the same answer, so a shortfall would be shared rather than a
+     prediction fault), and whether the press-to-move gap is visibly one frame. The probe has produced **no lines
+     at all** yet — it ships off. A session with `VERBOSE_LOGS` on, dodging in the arena against enemy rigs, should
+     produce at least five `[HitProbe]` pairs, and **the pair that matters is a tag whose `clientAge` is small and
+     whose `|client-body|` is 2.5–5 studs while `|ball-body|` is under 2.75**: that is candidate 1 measured, and it
+     is the evidence the rewind fix would be bought with. Absent `clientAge=n/a` on every player line means the
+     client half never started, which the client's own `[HitProbe] position echo up` line at boot rules in or out.
+
+118. **"Is this body in the round" had four spellings and one of them was asking about the wrong body: a player
+     practising in a zone could not throw while an unrelated match celebrated.** `shared/roundMembership.ts` is now
+     the whole of that vocabulary — `isPlaying()`, `hasSide(body)` and `isParticipant(player)`, each reading only what
+     the round publishes — and `BallService.throwForPlayer`'s celebration gate is `hasSide(character) &&
+     !isPractising(character)` rather than `roundCelebrating()` alone.
+
+     **The report.** A player standing in a practice zone during another match's ten-second celebration could not
+     throw; the drills' balls still reached them (`[Ball] <name>: health spared — practising`), because a drill goes
+     through `throwBallBody`, which has no celebration gate. Their own throw was refused at `throwForPlayer`, which
+     is the *player* path and had no subject at all: it refused every player in the server for the length of the
+     window. **That is the class the item is about** — a rule about a round, applied to bodies the round never
+     admitted — and the fix is the subject, not the gate.
+
+     **The rule this bought is §0's first design bullet: every service asks whether `isParticipant` applies here.**
+     Not "every service needs one" — `ControlsLegendController` is the counter-example and needs nothing — but the
+     question has to be asked and answered out loud at every new gate, because this project has now shipped the
+     wrong answer twice (here, and at `SuperService.inRoundOrZone`, still open below).
+
+     **`isParticipant` cannot be that subject, and finding out why is the useful half of this pass.** By the time
+     anything is celebrated the phase has left `Playing` and `IN_ROUND_ATTRIBUTE` has been cleared for **every**
+     player (`gameLoop`'s intermission turn, two lines into it), while `holdCelebration` waits out the ten seconds
+     *afterwards*. A gate built on `isParticipant` would therefore refuse nobody, during exactly the window it
+     exists for. **What survives into the window is `TEAM_ATTRIBUTE`** — written by `assignTeams` at a whistle,
+     cleared by the same method at the *next* one, kept on purpose through an elimination and a surrender — so
+     "wears a side" means "this round put me on one", which is the celebration's subject. The `!isPractising` term
+     covers the one body that has a side and is still nobody's business: a player who played and then walked to a
+     practice floor to warm up.
+
+     **`TEAM_ATTRIBUTE`'s lifecycle, because a reader will need it and it is not obvious.** Written:
+     `RoundService.assignTeams` (roster, skipping practice players) and `setTeam` (a mid-round admission); on rigs by
+     `LobbyRigService` in five places and the pad walk and the respawn. Cleared: **`assignTeams` only**, for every
+     player in the server, at the *next* whistle — plus two rig clears in `LobbyRigService`. It is **not** cleared at
+     a round's end, at an elimination, on a surrender, or by `MatchService.clear`/`release`, each of which says so
+     in its own comment. So it is stale for the whole intermission by design, and no reader may treat it as
+     "currently in the round". **`IN_ROUND_ATTRIBUTE` is the member fact**: set by `admitWithCover` and the mid-round
+     admission, cleared by `eliminate`, by the round's end for everybody, and by `assignTeams`.
+
+     **What consolidated, and what did not.** Four private copies of the phase read (in `SuperService`,
+     `StatsService`, `OutlineService` and `MysteryBoxService`) and two of the participant pair
+     (`client/roundZone.isParticipant` and the inline test in `OutlineService.outlineColourFor`) now delegate to the
+     module; every one is behaviour-identical, because each was already reading the same folder and the same
+     attributes. **`isPractising` did not move** — it is server-only, and `client/roundZone.inTaggedZone` is a
+     genuinely different mechanism (a bounds test on the local body rather than a published attribute) that was left
+     alone on purpose. **`sessionHudVisible` did not change either**: it composes two Fusion `Value`s that a
+     controller feeds from the same predicates, because an attribute read inside a `Computed` is a sample rather than
+     a dependency.
+
+     **The transitions UI was reported as broken and is not.** `RoundTransitionController` watches
+     `ROUND_TRANSITION_ATTRIBUTE` **on the local player** and has no phase or side gate at all — items 48 and 51
+     moved that cue onto the per-player bump, and `transitionAround` writes it to the roster it was handed
+     (`playersInRound()` at the start, `playedThisRound` at the end, and `admitWithCover` for one mid-round arrival).
+     A practice-zone player and a lobby player who never touched a pad are never written to, so they see no wipe.
+     The line `This used to watch one counter on the round folder and ask roundZone.onASide` is where the reported
+     behaviour went; the report was against the version that predates it. **Nothing in that file changed.**
+
+     **Second pass, recorded rather than done.** (1) **`SuperService.inRoundOrZone` is weaker than the rule it
+     claims to be** — it is phase *or* zone, and `DodgeService.requestDodge` *and* the client's `inRoundOrZone` are
+     participant *or* zone, so a lobby spectator holding a ball can mark and spend a power during somebody else's
+     round. One line — `isParticipant(player) || isPractising(player)` — but it narrows two live call sites and is a
+     behaviour change rather than a rename. (2) **`CatchService.blocksCatch` and `BallComponent.landHit` gate on the
+     window rather than on a body**, so a practice session's catches and drills do nothing while an unrelated round
+     celebrates. Both comments argue for the clock deliberately — `landHit`'s says "one is about *where* a body is,
+     the other about *when*" — and narrowing `landHit` would let a lobby bystander be killed by a stray ball in the
+     window, so it is a decision rather than a fix. (3) `PLAYING` is still spelled out privately in `DodgeService`,
+     `BallSpawnerService`, `MatchService`, `LobbyRigService`, `detect`, `returnToLobby`, `MusicController`,
+     `TeamRingController` and `mercyWarning`; each is a phase test that could move to `isPlaying()`. **Nothing here
+     is observed in Studio**: the throw fix is reasoned from the ordering of `finishRound`, the intermission turn and
+     `holdCelebration`.
+
+119. **A charge held at full now releases itself one second later, on the client for the visible release and on the
+     server as a bound the client cannot talk it out of.** `BALL_CONFIG.FULL_CHARGE_HOLD_SECONDS` (1,
+     **Placeholder.**) and `BALL_CONFIG.FULL_CHARGE_GRACE_SECONDS` (0.15, **Placeholder.**) are the whole of the
+     numbers, and they live beside `CHARGE_SECONDS` because they are the same hold read at its top.
+
+     **The report was a ball that looked stuck at max charge, and the second half of it was worse.** `currentCharge`
+     clamps at `1` and nothing released it, so a player could hold a loaded arm for ever: the arc sat at full length,
+     the ball stayed in the hand, and — because the hold is also the aiming stance — `WalkSpeedService` kept the body
+     capped at `AIMING_WALK_SPEED` for as long as the button was down. A modified or lagging client could also simply
+     not let go, which is the same fault with the timer removed.
+
+     **The client half is a deadline on the crossing.** `ThrowController.autoReleaseDue` is checked first thing in
+     `updateGuide` — `RunService.RenderStepped`, once a frame — and it stamps `reachedFullAt` on the **first frame the
+     charge reads `1`**, never restamping while it stays there. At `+FULL_CHARGE_HOLD_SECONDS` it calls
+     **`endHold()`, the same call the player's own release makes**, so the charge, the heading, the latch and the
+     `setCharging` edge are the ones the ordinary release would have produced; a second release path was the thing
+     this could most easily have got wrong. **The reset-on-drop question turned out to be empty**: the charge is
+     `(now − press) / CHARGE_SECONDS` clamped, so it cannot fall below `1` while a hold runs — aiming nearer moves
+     the plan's *reach*, not the rate — which kills the one case a reset was argued for (a decayed charge thrown
+     weaker than the arc that was drawn). The clear is therefore the not-charging case alone. **A `RenderStepped`
+     loop that has stopped — a minimised client — fires on the first frame it draws**, because the deadline is
+     `os.clock` rather than accumulated frames.
+
+     **The server half is bound to the `setCharging` edge, not to the throw message.** `BallService.throwForPlayer`
+     refuses a throw whose hold exceeds `CHARGE_SECONDS + FULL_CHARGE_HOLD_SECONDS + FULL_CHARGE_GRACE_SECONDS`, and
+     the instant it counts from is **this server's own stamp when the client said the button went down**
+     (`WalkSpeedService.setCharging` → `server/services/character/chargeClock.ts`). **That is what makes the cap
+     worth anything**: two fields on the throw's remote — `holdStartedAt`, `reachedMaxAt` — were what this pass was
+     asked to add, and `reachedMaxAt` in particular **cannot work**, because a client that wants a long hold sets it
+     to `now` and passes. The round trip cancels between the press message and the release, so what the server
+     measures is the hold plus jitter, and the grace is the jitter allowance. **Nothing new crosses the wire.**
+
+     **What is not closed, stated plainly.** A client that never sends `setCharging` (or sends it at the instant of
+     the release) is not capped — `holdSeconds` answers `undefined`, the throw is accepted, the hold is stamped as
+     starting now and the line
+     `[Throw] <name>: no charge report — the hold starts at this throw and is capped from it` says so. **No cap built
+     on a client-reported edge can close that**, and closing it would need the server to own the charge. The refusal
+     line is `[Throw] <name>: refused — hold exceeded <n>s at full charge (cap <n>s + <n>s grace)` at `logInfo`,
+     because an exploit that prints nothing is next month's "it failed at random".
+
+     **The gate sits beside the celebration refusal (item 118), not inside it**, and above every effect:
+     `throwBall` (which spends the MultiBall window and records the badge and fires the sound and the afterimage), the
+     mystery-prize spend and the charge spend are all below it, so a refused throw costs nothing and leaves the ball
+     in the hand. The two gates are independent — a throw the celebration refuses does not touch the hold clock, and
+     the hold clock does not know what a round is. **A practice-zone player is subject to the same cap**, because it
+     is about the hold rather than about where the body is.
+
+     **Corrections that came with it.** `ThrowController.currentCharge`'s doc said *"nothing auto-throws,
+     deliberately"* and argued that a clock-driven release would take a throw from somebody still aiming; it now
+     records that this is true of a short hold and false of a long one, and points at the deadline.
+     `WalkSpeedService`'s stamina note said *"nothing auto-throws"* as the premise for removing the charge from the
+     stamina hold; the premise is corrected and **the removal stands**, because a stance does not refill a pool
+     however short it is. **Unverified in Studio**: that the release is visible at one second, and that a client
+     which holds for two is refused with the line above. Also still open, and now the more interesting number: item 29's
+     four stale comment blocks have drifted again — `THROW_MAX_SPEED` is `200`, `CHARGE_MIN_SPEED` is `80` and
+     `CHARGE_PEAK_HEIGHT` is `0.5`, while item 29 itself says `90`, `50` and `0.9` — and this pass did not touch them.
+
+120. **Every `practiceZone` is stocked with one ball on boot, gets it back a second after the floor loses it, and the
+     ball is inert until somebody throws it.** `shared/constants.ts` has `PRACTICE_BALL_TAG` (`"PracticeBall"`) and
+     `TAGS.md` has its register row; the rest is two files.
+
+     **The composition, which is the whole design.** *The zone owns when and where in its zone; the spawner owns how a
+     ball is made; the ball owns how long it lives.* `BallSpawnerService.spawn` gained one parameter —
+     `roundBudget = true` — and one line: `if (roundBudget) ball.AddTag(ROUND_BALL_TAG)`. The practice arm calls
+     `spawn(zone, false)`, so the ball is built by the same factory, placed by the same offset rule **and by the
+     wrong part** — corrected in item 121, which hands the spawner a `PracticeSpawn` marker instead of the zone — and
+     put on the same `math.huge` "not on a clock" call. **The bug the flag prevents is the budget**: `RoundBall` is
+     what `roundBallCount` counts, so a practice ball wearing it would spend one of `MATCH_BALL_COUNT`'s eight on a
+     floor nobody is playing a round on, and eight zones would empty the arena while every practice floor stayed
+     stocked.
+
+     **The initial state is `BallFactory.createLoose`'s, and this pass writes none of it.** A fresh ball is already
+     parented to `Workspace`, unarmed (`makeInert`: `Armed = false`, `ThrowerId = ""`), on no clock
+     (`scheduleBallExpiry(…, math.huge)` schedules nothing and drops the row), with no `THROWN_FROM_BAY_ATTRIBUTE` and
+     no `BALL_TAGGED_*`. That **is** the inert practice ball, so `PracticeZoneService.stockZone` is two lines: call
+     the spawner, add the tag. **Inert is `BallComponent.handleTouch`'s first line** — a ball whose `Armed` is not
+     `true` returns before any branch, so it walks past bodies without hurting them. **Pickable is
+     `BallPickupService.looseBalls`'s first filter** — it skips `Armed === true`, so an unarmed ball is exactly what
+     the pickup search wants. The two halves agree because the ball is an ordinary loose ball; the tag is the only
+     thing that makes it the zone's.
+
+     **The clock is the zone's, on the loop that already exists.** `PracticeZoneService.pendingSpawnAt` is
+     `Map<BasePart, number>`, keyed on the zone part, read by a second `for` inside `watch()` — the service's only
+     loop, 10 Hz, which already iterated players. **No new `Heartbeat`, no `task.spawn`, no per-ball expiry.** A zone
+     that loses its ball gets a deadline of `PRACTICE_BALL_RESPAWN_SECONDS` (1, **Placeholder.**) and one
+     `logInfo`; a zone that gets it back deletes the deadline and prints the cancel. **Cancel-on-reappear is the
+     point**: a ball thrown back into its own zone inside the window would otherwise be a second ball, and a
+     pickup-throw-back loop would stock the floor with N of them.
+
+     **Two facts had to be new in the zone module.** `insideZoneAt` answers "is this point on *any* practice floor",
+     which is the mystery marker's question; a zone asking about **its own** ball needs its own part, or two zones
+     side by side each count the other's ball and neither respawns. So the geometry moved into an exported
+     `insideZonePart(zone, point)` and `insideZoneAt` now calls it in its loop — one implementation, two questions.
+
+     **`cleanupRoundBalls` needed nothing**, and that was verified rather than assumed: it already skips
+     `insideZoneAt(instance.Position)`, so a practice ball inside a zone survives a round boundary. Verified the same
+     way: `roundBallCount` counts `RoundBall` only, so the arena's budget is untouched, and `spawn`'s phase gate is on
+     its **caller** (`tickBody`), not on `spawn`, so the practice arm is not refused during an intermission.
+
+     **What a session should print.** `[PracticeBall] up — N zone(s), M ball(s) seeded` at boot (a zero is the
+     diagnostic for "no practice zone in this place file", and is not an error), then
+     `[PracticeBall] <zone>: lost its ball — replacement in 1.00s` on a pickup, and
+     `[PracticeBall] <zone>: ball is back — replacement cancelled` for a throw returned inside the window. **A ball in
+     a hand is a lost ball on purpose** — a caught or carried ball is not on the floor, so the zone restocks; the
+     user's sentence is *"a new one spawned 1 second after the first ball is picked up"*, and that is what it says.
+     **Unverified in Studio**: every one of the four lines above.
+
+121. **A practice ball spawns at a `PracticeSpawn` marker, one ball per marker, and a zone with none falls back to its
+     own centre.** `shared/constants.ts` has `PRACTICE_SPAWN_TAG` (`"PracticeSpawn"`) and `TAGS.md` has row 28; the
+     rest is one module and one service.
+
+     **The correction, stated plainly because item 120 got this wrong and the user's pattern is the precedent.** Every
+     spawn in this project is **a part somebody paints and moves** — `MatchSpawner`, `LobbySpawns/A` and `/B`,
+     `ArenaSpawns/A` and `/B`, `mysterySpawnPrize`, `practiceBay`. Item 120 handed the zone part to the spawner as if
+     it were one of those, so the ball landed at the zone's centre plus half its height: **a ball you cannot put
+     where the floor wants it without moving the zone, and moving the zone moves the whole practice area.** That was
+     the one default in the pass that was not this project's shape, and nothing else about item 120 was wrong.
+
+     **What changed, and it is smaller than a revert.** `pendingSpawnAt` is keyed on the **marker** rather than the
+     zone, because the thing that can be short of a ball is a marker: a zone is *where* a ball should be and a
+     `PracticeSpawn` is *where in it*. `stockZone(zone)` became `stockAt(spawnPoint)`, `looseBallIn(zone)` became
+     `looseBallNear(zone, spawnPoint)`, `tickZone(zone)` became `tickSpawnPoint(zone, spawnPoint)`, and `seed`/`watch`
+     both walk `forEachStockPoint` — one walk, deduplicated, so a marker shared by two overlapping zones is stocked
+     once. **The tag, the ball's inert state, the cancel-on-reappear, the loose predicate (four facts plus
+     `insideZonePart` — and a fifth, the marker test, added in item 122 when the zone-wide version turned out to give
+     one ball to three markers), the `spawn` boolean, the composition and `flamework.build`'s silence all survive
+     untouched.**
+
+     **`spawnPointsFor(zone)`** is the read: `taggedPartsInWorkspace(PRACTICE_SPAWN_TAG)` filtered by
+     `insideZonePart(zone, marker.Position)` — **the footprint, not the ancestry**, so a marker in a folder beside the
+     zone counts and one whose centre is outside the zone does not — sorted by name so a two-marker zone's lines come
+     out in the same order every boot. `BallSpawnerService.spawn` still reads `spawner.Position` and
+     `spawner.Size.Y / 2 + 1`, which for a thin marker on a floor is a ball one stud above the floor it was painted
+     on. **One placement rule; the marker is simply the part that gets it.**
+
+     **The fallback is a `logInfo`, not a `warn`, and it fires once per zone at boot**:
+     `[PracticeBall] <zone>: no PracticeSpawn — using the zone's centre`. A zone with no marker is the pre-marker
+     behaviour rather than a fault, and a ball visible in the wrong place is easier to fix than a floor that is
+     silently empty. **The fallback spawn point is the zone part itself**, so the map key and every log line work in
+     one currency and the branch exists once, in `stockPointsFor`.
+
+     **The lines a session should produce.** `[PracticeBall] up — N zone(s), M ball(s) seeded` (M counts markers, not
+     zones — **item 122 put the marker count on this line as well**, so it now reads `N zone(s), M stock point(s), K
+     ball(s) seeded`, and M ≠ K is the diagnostic), `[PracticeBall] <marker>: lost its ball — replacement in 1.00s`,
+     and `[PracticeBall] <marker>: ball is back — replacement cancelled`; the fallback prints the zone's name with
+     `(centre)` so a zone that is on the fallback and a marker inside it never print the same word. **A zone with two
+     markers prints two lines per transition, and that is correct** — each marker is an independent stock, which is
+     the natural reading of a tag that names a spawn *point*. **Unverified in Studio**: all of it, and the placement
+     itself most of all.
+
+122. **A zone with three `PracticeSpawn` markers spawns three balls, not one — the loose predicate was the bug.**
+     Reported by the user as *"I duplicated 3 baseparts and only one spawns a ball"*, and **the tag was not the
+     cause.** Duplicating a part in Studio copies its tags, so all three markers were read; the service found them
+     and then stocked the first and skipped the other two.
+
+     **The cause, in one sentence.** `looseBallNear` asked *"is there a practice ball anywhere on this zone's
+     floor"* — `insideZonePart(zone, ball.Position)` and nothing else — so after the first marker was stocked its
+     ball was on the shared floor, and every other marker in that zone answered *yes, I am stocked* and never
+     spawned. **A zone's floor is shared and its markers are not**, which is the whole of it; the pass that added
+     markers changed the key of the map but left the *test* zone-wide, and the two disagreed.
+
+     **The fix is `nearestSpawnPoint(point, spawnPoints)`**, a module function that partitions a zone's floor across
+     its markers: a ball belongs to the closest marker in the same zone, ties going to the first in
+     `spawnPointsFor`'s name-sorted list so the answer is the same every boot. `looseBallNear` takes the zone's
+     `siblings` (the same list `stockPointsFor` returned, now threaded through `forEachStockPoint` to `seed` and
+     `tickSpawnPoint`) and adds one line after the footprint test:
+     `if (nearestSpawnPoint(ball.Position, siblings) !== spawnPoint) continue;`. **On the fallback `siblings` is
+     `[zone]`**, so a zone on the fallback behaves exactly as it did in item 121.
+
+     **Nearest rather than a radius or an attribute, and both alternatives were considered and rejected on
+     grounds of state rather than taste.** A radius ("within N studs of my marker") makes a ball that has rolled
+     away count as *lost*, so the zone spawns a replacement while the original is still on the floor and the count
+     only climbs; an attribute naming the owning marker travels *with* the ball, so a ball thrown across the floor
+     leaves its marker owed a ball for ever and that count climbs too. Nearest is a partition — every ball belongs
+     to exactly one marker — so it needs no state at all and self-corrects the first time a replacement lands where
+     it was asked for.
+
+     **The accepted cost, stated rather than discovered.** A ball knocked from one marker's side to another's now
+     belongs to the neighbour, so the first marker spawns a replacement and the floor settles a few balls *over*
+     the marker count rather than under it. **Over-stocked and visible beats under-stocked and silent**, and it is
+     the same trade item 121's fallback makes.
+
+     **The boot line gained the marker count because this bug had two look-alikes.** A duplicate that dropped its
+     tag and a marker the zone's footprint does not cover both present as "I painted three and got one"; the line
+     now reads `[PracticeBall] up — N zone(s), M stock point(s), K ball(s) seeded`, so `1 stock point` is a place
+     file problem and `3 stock point(s), 1 ball(s)` is this service's problem. **Item 121's version printed only
+     the ball count**, which could not tell the two apart.
+
+     **Unchanged and re-checked**: `spawn`'s placement rule, the `PracticeBall` tag, the ball's inert state, the
+     pending map's shape, the cancel-on-reappear, the fallback and its `logInfo`, `flamework.build`'s silence.
+     `npm run build` exit 0. **Unverified in Studio**: that three markers now yield three balls, and that a ball
+     thrown from marker A to marker B over-stocks rather than starving A.
 
 ---
 

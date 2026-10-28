@@ -11,6 +11,7 @@ import {
 	ROUND_STATUS_FOLDER,
 } from "shared/constants";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
+import { isPlaying } from "shared/roundMembership";
 import { LOGGING_ENABLED, logInfo, logWarn } from "shared/logger";
 import { EconomyService } from "../economy/EconomyService";
 import { SuperService } from "../super/SuperService";
@@ -25,13 +26,13 @@ import {
 } from "../../vfx/mysteryBoxVfx";
 import type { MysteryBoxVfx } from "../../vfx/mysteryBoxVfx";
 
-/**
- * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.
- *
- * A literal here rather than an import, which is what `StatsService`, `BallSpawnerService`, `DodgeService`
- * and `OutlineService` each do with the same two words — see `SuperService`'s copy for the full argument.
+/*
+ * **The `PLAYING` literal used to live here**, with a paragraph pointing at `SuperService`'s copy for the argument
+ * that one per file was the right arrangement. It was wrong for the same reason it was wrong there — four files, one
+ * attribute, one value — and the read is `shared/roundMembership.isPlaying`'s now. The constant list above lost
+ * nothing: `ROUND_STATE_ATTRIBUTE` and `ROUND_STATUS_FOLDER` are still imported, because {@link mountPhase} still
+ * subscribes to the folder's change signal even though it no longer tests the value itself.
  */
-const PLAYING = "Playing";
 
 /**
  * What a box part is called. **Nothing looks it up by this name, and that is the point of saying so.**
@@ -331,8 +332,10 @@ export class MysteryBoxService implements OnStart {
 
 	/** Whether a round is being played, read from the same attribute every other gate in the game reads. */
 	private inRound(): boolean {
-		const folder = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
-		return folder?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
+		// **The question moved to `shared/roundMembership.isPlaying`**, which is the same folder and the same
+		// `"Playing"` literal this method used to spell out for itself — see its doc, which names this file as one
+		// of the four copies the module replaced.
+		return isPlaying();
 	}
 
 	/** Asks every spawn point, forever. This is the field's rate and nothing else's. */

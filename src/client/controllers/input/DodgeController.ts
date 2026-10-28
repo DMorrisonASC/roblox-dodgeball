@@ -5,6 +5,7 @@ import { flattenToGround } from "shared/dodge";
 import { events } from "shared/networking";
 import { DEBUG_LOGGING, logDebug, logInfo } from "shared/logger";
 import { inRoundOrZone } from "../../roundZone";
+import { predictDash } from "../../dashPrediction";
 
 /**
  * Every input that can dodge, and the direction each one points.
@@ -108,11 +109,18 @@ type ClientRemotes = Net.Util.GetClientRemotes<Net.Util.GetDeclarationDefinition
  * the same code answer both orders: a key that is already down when the click lands, and a click
  * that is already down when the key lands.
  *
- * **No prediction on purpose:** the server owns the dash and replication brings the character along
- * with it, so this class has no idea whether the dodge happened and does not need one. **And the
- * flourish is the server's, not this one's** — `DodgeService.playDodgeAnimation` starts it there, on
- * purpose, so that every client sees somebody else's dodge rather than only the dodger seeing their
- * own. A track played here would be a private flourish, which is the one thing a dodge cue must not
+ * **The dash is predicted here, and only the dash.** The press costs a round trip before the server's
+ * `LinearVelocity` arrives, and a round trip is long enough for a ball the player watched cross the
+ * screen to land where they were standing — so `client/dashPrediction` moves the body on the frame the
+ * key was pressed and lets the server's dash confirm it rather than cause it. **Everything else stays the
+ * server's**: `DodgeService` decides whether the dash was allowed, charges the cooldown, publishes
+ * `DodgeDirection`, starts the afterimage, plays the sound and counts the badge, and this class still has
+ * no idea whether the dodge happened. See `dashPrediction` for the gates that stand in for the server's
+ * answer before the body moves, and for the two failure modes a refused prediction has.
+ *
+ * **The flourish is still the server's, not this one's** — `DodgeService.playDodgeAnimation` starts it
+ * there, on purpose, so that every client sees somebody else's dodge rather than only the dodger seeing
+ * their own. A track played here would be a private flourish, which is the one thing a dodge cue must not
  * be.
  */
 @Controller()
@@ -392,7 +400,9 @@ export class DodgeController implements OnStart {
 	 * Returns whether the request went out.
 	 */
 	private requestDodge(label: string, direction: Vector3, forward: Vector3): boolean {
-		if (!inRoundOrZone(this.player.Character)) {
+		const character = this.player.Character;
+
+		if (!inRoundOrZone(character)) {
 			logDebug(`[Dodge] ${label} + the button outside this round and outside a zone`);
 
 			return false;
@@ -424,6 +434,16 @@ export class DodgeController implements OnStart {
 					`${string.format("%.2f", forward.Z)})`,
 			);
 		}
+
+		// **The body starts moving before the request goes out, and the order is the whole point of this
+		// line.** The server's `LinearVelocity` is a round trip away, and a round trip is long enough for a
+		// ball the player watched cross the screen to land where they were standing; predicting first is what
+		// turns "pressed dodge and nothing happened" into "pressed dodge and moved". `predictDash` asks the
+		// server's own gates from the attributes it publishes and answers `false` when it cannot prove the
+		// dash would be allowed, so a body is only ever moved locally when nothing says the server would
+		// refuse it. **A `false` does not cancel the request** — the send below happens either way, because
+		// the server is the authority and this only decides whether the body may start early.
+		if (character !== undefined) predictDash(character, direction);
 
 		this.getDodgeRemote().SendToServer(direction, forward);
 		return true;

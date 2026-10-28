@@ -35,7 +35,7 @@ export const AUDIO_CONFIG = {
 	INTERMISSION_MUSIC: "rbxassetid://93779774227857",
 
 	/** **Placeholder.** The intermission track's level, against the round's. Tune by ear. */
-	INTERMISSION_MUSIC_VOLUME: 0.3,
+	INTERMISSION_MUSIC_VOLUME: 0.2,
 
 	/**
 	 * How long the intermission track takes to come back, in seconds, after an intermission begins.
@@ -93,7 +93,7 @@ export const AUDIO_CONFIG = {
 	 * **keep the crowd above the song** — that is the property the pair exists to express, and it was arrived at by
 	 * getting it wrong once.
 	 */
-	ROUND_MUSIC_VOLUME: 0.65,
+	ROUND_MUSIC_VOLUME: 0.75,
 
 	/**
 	 * How long the round's track takes to come up from silence, in seconds, after the round begins.
@@ -162,19 +162,23 @@ export const AUDIO_CONFIG = {
 	 * heard over the music is not a cue. The three numbers to move together are this, those two, and
 	 * `ROUND_MUSIC_VOLUME`.
 	 */
-	ROUND_SONG_VOLUME: 0.15,
+	ROUND_SONG_VOLUME: 0.10,
 
 	/**
 	 * **The round's song, `rbxassetid://77385580591591` — supplied by the user, and not validated here.**
 	 *
-	 * **Loops from its own middle rather than from the start**, which is the feature and is worth stating where the
-	 * id is: the first play is the whole track, `0` to the end, and **every repeat after that is the second half**,
-	 * from `TimeLength / 2` back to the end. So the first pass audibly longer than every later one is the intended
-	 * behaviour and not a fault — see `MusicController`'s `Ended` handler, which is where the rule lives and where a
-	 * reader who finds the timeline surprising is meant to land.
+	 * **It starts over when it ends, and that is a reversal of the rule this paragraph used to state.** The song
+	 * shipped looping **from its own middle** — the first play was the whole track, `0` to the end, and every repeat
+	 * after that ran from `TimeLength / 2` to the end, on the argument that the middle of a piece is where its groove
+	 * is and a round is two minutes of play rather than two minutes of listening. **The user has replaced it**: the
+	 * track simply plays again from the beginning, so the first pass and every later one are the same length. The
+	 * argument above is kept rather than deleted because it is the reason the middle was chosen and the thing to
+	 * re-read if the repeats are ever judged too long.
 	 *
-	 * **It is `Looped = false`.** The loop is a handler rather than the engine's own repetition precisely because the
-	 * engine's would restart at `0`, and restarting at `0` is the thing this track must not do.
+	 * **It is `Looped = true` now, where it used to be `false`.** The old flag was off because the engine's loop
+	 * restarts at `0` — which is exactly what is wanted — and the repeat was an `Ended` handler reading
+	 * `TimeLength / 2`. There is no handler any more; see `MusicController` where it used to be, which records what
+	 * each part of it was for.
 	 */
 	ROUND_SONG_ID: "rbxassetid://77385580591591",
 

@@ -43,6 +43,7 @@ import {
 } from "shared/throw";
 import { LaunchPlan, leftAxis } from "shared/Trajectory";
 import { DEBUG_LOGGING, logDebug, logInfo, logWarn } from "shared/logger";
+import { hasSide } from "shared/roundMembership";
 import { scheduleBallExpiry } from "./ballExpiry";
 import { BallTrail } from "./BallTrail";
 import { emitSound } from "./SoundEmitter";
@@ -50,6 +51,8 @@ import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
 import { TEAM_A, TEAM_B, TeamLabel } from "../round/team";
 import { roundCelebrating } from "../round/roundStatus";
+import { isPractising } from "../zone/practiceZoneMembership";
+import { holdSeconds, noteCharging } from "../character/chargeClock";
 import { EconomyService } from "../economy/EconomyService";
 import { FreezeService } from "../actions/FreezeService";
 import { BadgeService } from "../badges/BadgeService";
@@ -2912,8 +2915,8 @@ export class BallService implements OnStart {
 		const character = player.Character;
 		if (!character) return;
 
-		// **A decided round does not take a throw from a player, and this is the only place that can say so
-		// without saying it to a rig.** `ARENA_CONFIG.CELEBRATION_SECONDS` keeps everybody in the arena after
+		// **A decided round does not take a throw from one of its own players, and this is the only place that can say
+		// so without saying it to a rig.** `ARENA_CONFIG.CELEBRATION_SECONDS` keeps everybody in the arena after
 		// the result — walking and jumping, which is what the window is for — and a ball leaving a hand in it
 		// would be a throw at somebody who has just been told the round is over. Refused here rather than in
 		// `throwBall` for a reason worth stating: that method is the shared path, so a gate there would also
@@ -2922,11 +2925,75 @@ export class BallService implements OnStart {
 		// behaviours already stop when the phase stops being `Playing` — so the player's click is the whole of
 		// what is left. See `roundCelebrating` and `CELEBRATING_ATTRIBUTE`.
 		//
+		// **The subject is the round's own players, and the first version of this line had it wrong.** It read
+		// `roundCelebrating()` alone, which made it a refusal of *every* player's throw for ten seconds — and the
+		// report was a player practising in a practice zone, with drills landing on them, unable to throw their
+		// own ball because a match they were not in had finished. A celebration is about a round; the bodies it
+		// has anything to say about are the ones that round put on a side.
+		//
+		// **`hasSide` rather than `isParticipant`, and the difference is a lifecycle fact rather than a taste.**
+		// By the time anything is being celebrated the phase has left `Playing` and `IN_ROUND_ATTRIBUTE` has been
+		// cleared for every player — the round's members are exactly the bodies still wearing a side, because
+		// `TEAM_ATTRIBUTE` is not cleared until the next whistle. A gate built on `isParticipant` would therefore
+		// refuse nobody at all, during the one window it exists for. See `shared/roundMembership.hasSide`, which
+		// carries that argument in full.
+		//
+		// **And a practising body is exempt even if it carries a side**, which is the same carve-out `landHit`
+		// makes two hundred lines of ball code away: a throw into a practice bay lands on a rig in a bay, not on
+		// anybody the result concerns. A player who played the round and then walked to a practice floor to warm
+		// up is the case that needs this term; a player who was in the zone at the whistle never got a side at
+		// all and is already allowed by the line above.
+		//
 		// **It returns before the charge is even read**, so a throw the window took costs a player nothing and
 		// the ball stays in the hand: the spend below happens only for a throw that actually left, and
-		// `throwBall` is never reached.
-		if (roundCelebrating()) {
-			logDebug(`[Ball] ${player.Name}: throw refused — the round is celebrating`);
+		// `throwBall` is never reached. A lobby spectator's throw is no longer refused here at all — they are not
+		// in the round the celebration belongs to, and `BallComponent.landHit` still refuses damage in the window
+		// for anybody who was going to be hit by it.
+		if (roundCelebrating() && hasSide(character) && !isPractising(character)) {
+			logDebug(`[Ball] ${player.Name}: throw refused — the round this body played is celebrating`);
+
+			return;
+		}
+
+		// **And a throw that arrives after the hold was up is refused, on this server's own clock.** A charge
+		// clamps at `1.0` and the client releases it `FULL_CHARGE_HOLD_SECONDS` after the arc stops growing — but a
+		// client is a machine somebody else runs, so the deadline is enforced here as well and **only here**: this
+		// is the only path a player's throw takes, and the gate is above every effect below it (`throwBall`, the
+		// MultiBall spend, the charge spend, the badge, the sound, the afterimage) because a refused throw must
+		// cost nothing and leave the ball in the hand.
+		//
+		// **The deadline is `CHARGE_SECONDS + FULL_CHARGE_HOLD_SECONDS`, and that is exact rather than a guess.**
+		// `ThrowController.currentCharge` is `(now - began) / CHARGE_SECONDS` clamped to `1`, so the charge reaches
+		// full at exactly `CHARGE_SECONDS` after the press — a nearer aim point changes the *reach* the plan asks
+		// for, never the rate the charge grows at. A hold is therefore `CHARGE_SECONDS + <time at full>`, and the
+		// cap on the second term is the published one.
+		//
+		// **The instant comes from the `setCharging` report rather than from the wire's throw message, and that is
+		// what makes it worth anything.** The stamp is taken by this server when the client said the button went
+		// down (`WalkSpeedService.setCharging` → `chargeClock`), so the client cannot move it: the round trip
+		// cancels between the press and the release, and what is measured is the hold plus jitter. The tolerance
+		// on the end is `FULL_CHARGE_GRACE_SECONDS`, which exists so an on-time release is never refused for
+		// arriving a frame late.
+		//
+		// **`undefined` is a hold this server never heard begin, and it is accepted rather than refused.** That is
+		// a client whose report did not arrive — or one that chose not to send it — and the two cannot be told
+		// apart, so refusing would put a lockout on a player for a message fault. It is stamped as starting *now*
+		// so the next throw is capped, and the line says so: an exploit that prints a line is a report somebody
+		// can act on, and one that prints nothing is next month's "it failed at random". See `chargeClock`, which
+		// states plainly that a client omitting the report is not closed by this and cannot be without the server
+		// owning the charge.
+		const held = holdSeconds(player);
+		const cap = BALL_CONFIG.CHARGE_SECONDS + BALL_CONFIG.FULL_CHARGE_HOLD_SECONDS;
+
+		if (held === undefined) {
+			noteCharging(player, true);
+
+			logInfo(`[Throw] ${player.Name}: no charge report — the hold starts at this throw and is capped from it`);
+		} else if (held > cap + BALL_CONFIG.FULL_CHARGE_GRACE_SECONDS) {
+			logInfo(
+				`[Throw] ${player.Name}: refused — hold exceeded ${string.format("%.2f", held)}s at full charge ` +
+					`(cap ${string.format("%.2f", cap)}s + ${string.format("%.2f", BALL_CONFIG.FULL_CHARGE_GRACE_SECONDS)}s grace)`,
+			);
 
 			return;
 		}

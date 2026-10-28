@@ -512,6 +512,49 @@ export const BALL_CONFIG = {
 	CHARGE_SECONDS: 0.6,
 
 	/**
+	 * How long a player may hold a charge **at full power** before the throw releases itself, in seconds.
+	 * **Placeholder — 1.**
+	 *
+	 * **Measured from the instant the charge first reaches `1.0`, not from the press.** That is one of the two
+	 * readings this could have had and it is the one the number is written for: the hold a player is being
+	 * limited on is the *wait at the top*, which is the part that does nothing. The other reading — "one second
+	 * of total hold" — would be a shorter rule the longer the approach, and at `CHARGE_SECONDS` = 0.6 it would
+	 * leave 0.4 s at full power, which is not the sentence anybody would write. See
+	 * {@link BALL_CONFIG.FULL_CHARGE_GRACE_SECONDS} for the server's copy of the same deadline.
+	 *
+	 * **Why a ceiling at all, and what was wrong without one.** A charge clamps at `1.0` and nothing released
+	 * it, so a player could hold a loaded arm for ever: the arc sat at its full length, the ball stayed in the
+	 * hand, and — because the hold is also the *aim* stance — the body stayed capped at
+	 * `CHARACTER_CONFIG.AIMING_WALK_SPEED` for as long as the button was down. The report was a ball that
+	 * "looks stuck at max charge", and the deeper half was that a client which never let go never had to.
+	 *
+	 * **Read by `ThrowController` only**, on the client, which is the half a player sees: the timer fires the
+	 * ordinary release one second after the arc stops growing. The server has its own deadline built from this
+	 * same number plus {@link BALL_CONFIG.FULL_CHARGE_GRACE_SECONDS} — see `BallService.throwForPlayer` — and
+	 * **the two are deliberately not the same test**: a client that releases on time must never be refused, so
+	 * the server's window is this one with a tolerance on the end of it.
+	 */
+	FULL_CHARGE_HOLD_SECONDS: 1,
+
+	/**
+	 * How much later than the deadline above a throw may arrive before the server refuses it, in seconds.
+	 * **Placeholder — 0.15.**
+	 *
+	 * **Jitter, not a design number.** The client and the server time the same hold from opposite ends of a
+	 * round trip, and the two ends do not cancel exactly: an asymmetric connection leaves the difference, a
+	 * frame of input latency moves the client's edge, and the server's own stamp is taken when the *message*
+	 * announcing the hold arrives rather than when the button went down. `0.15` is a handful of frames — three
+	 * at 20 Hz — which is comfortably more than a jittering connection needs and far less than one extra
+	 * second of hold would be worth to somebody exploiting it.
+	 *
+	 * **It only ever loosens, never tightens.** The client releases at exactly
+	 * {@link BALL_CONFIG.FULL_CHARGE_HOLD_SECONDS}; this window is what stops that release being refused for
+	 * arriving a frame late. A player can therefore never see a throw refused for a hold they ended on time,
+	 * and the only throws this refuses are ones the client did not send in the window it was given.
+	 */
+	FULL_CHARGE_GRACE_SECONDS: 0.15,
+
+	/**
 	 * How long a **rig's** windup lasts at full charge, in seconds. **Placeholder — `1.25`, the figure
 	 * {@link BALL_CONFIG.CHARGE_SECONDS} held before the split.**
 	 *

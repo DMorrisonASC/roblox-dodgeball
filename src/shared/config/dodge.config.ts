@@ -57,17 +57,21 @@ export const DODGE_CONFIG = {
 
 	/**
 	 * How close an in-flight ball has to pass to the body for the dodge that avoided it to be a **perfect**
-	 * dodge, in studs. **Placeholder — 8.**
+	 * dodge, in studs. **Placeholder — 4.**
 	 *
 	 * **The number is a hitbox and a ball rather than a taste.** A contact happens at about two studs from
-	 * the root — a torso's own half-width plus `BALL_SIZE / 2` — so eight studs is a pass that came within
-	 * about two and a half ball-widths of touching, which is the sentence a player would use: *it missed me by
-	 * a couple of balls.* Lower it and only the whisker passes count; raise it and a ball that was never going
-	 * to reach the body starts counting, and a perfect dodge stops saying anything.
+	 * the root — a torso's own half-width plus `BALL_SIZE / 2` — so four studs is a pass that came within
+	 * about one ball-width of touching, which is the sentence a player would use: *it missed me by a ball.*
+	 * That is a claim about a **whisker**, and it is the one this constant exists to make: a dodge that put
+	 * the body two studs outside its own hitbox is the thing worth a word on the screen, and a dodge that
+	 * watched a ball sail five studs past is a dodge that had already worked.
 	 *
-	 * **It has been `8` while this doc said `4`**, and the mismatch is worth the line: the 2026-10-27 session
-	 * logged perfect dodges at 2.5–7.7 studs, which reads as a threshold bug until the constant is read. The
-	 * value is unchanged by that finding; only the sentence above it was wrong.
+	 * **It shipped at `8`, and `4` is the retune rather than a typo.** Eight was argued as "a pass within two
+	 * and a half ball-widths", which reads well and captions a great deal: the 2026-10-27 session logged
+	 * perfect dodges at 2.5–7.7 studs, so at eight roughly half the captions were for passes that were never
+	 * going to reach the body. The number was set to `4` in `4c381be` and **whether that is the right cut is
+	 * still unjudged** — see `HANDOFF.md` §15 item 38, which is where the question is recorded and where the
+	 * answer belongs once a session has been played at this value.
 	 *
 	 * **Measured against where the body was standing when it dodged**, not where the dash took it — see
 	 * `DodgeService.watchForPerfectDodge` for the whole argument. That is what makes this a *hitbox*

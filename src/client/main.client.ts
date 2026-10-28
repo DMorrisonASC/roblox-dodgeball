@@ -16,6 +16,7 @@ import { startPerfectDodge } from "./perfectDodge";
 import { startPracticeCountdown } from "./practiceCountdown";
 import { startCelebration } from "./celebration";
 import { startMercyWarning } from "./mercyWarning";
+import { startPositionEcho } from "./positionEcho";
 
 logInfo("[client] igniting");
 Flamework.addPaths("src/client/controllers");
@@ -150,3 +151,12 @@ startCelebration();
 // `MERCY_RULE_LEAD`, so the warning and the rule it warns about are the same number. See `mercyWarning` for why the
 // reset hangs off the phase rather than off the scores falling to nought.
 startMercyWarning();
+
+// **And the one module here that draws nothing at all: the body's own position, echoed for a measurement.**
+// `server/dev/HitDisagreementProbe` prints where the *server* thinks a tagged body was standing, and the only
+// number that can tell a replication lag from a `Touched` sweep is the same body's position as its own machine
+// had it. Started at boot rather than on the first hit because there is nothing to wait for — and it is the
+// one starter in this file that returns immediately in a normal session, because `DEBUG_LOGGING` is off: no
+// thread, no remote, no reads. See `positionEcho` for why this is a remote and not an attribute, which is the
+// question every other shared fact in the project answers the other way.
+startPositionEcho();

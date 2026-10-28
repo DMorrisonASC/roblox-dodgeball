@@ -11,6 +11,7 @@ import {
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
 import { teamColourOf } from "shared/gameMode";
+import { isParticipant, isPlaying as roundIsPlaying } from "shared/roundMembership";
 import { logDebug } from "shared/logger";
 import { OUTLINE_CONFIG } from "../../config/outline.config";
 import { NPC_TAG } from "../../npc/Behavior";
@@ -43,11 +44,14 @@ const BALL_TAG = "Ball";
  *
  * **Must match the string `RoundService` publishes** on `ROUND_STATE_ATTRIBUTE`: a phase goes out as
  * its own name, and those names are `RoundState`'s members by convention rather than by
- * construction — so there is no constant to import and this is a copy. `StatsService` keeps the same
- * one for the same reason, and so does every other file that has to test the phase: the word is
- * written out in each of them rather than imported from one.
+ * construction — so there is no constant to import.
+ *
+ * **The literal that used to follow this comment is gone, and the paragraph it carried argued the other
+ * way.** It said every file that tests the phase writes the word out for itself and named `StatsService`
+ * as keeping the same copy; that arrangement is what `shared/roundMembership.isPlaying` replaced, and this
+ * file's {@link isPlaying} delegates to it rather than spelling the phase out. What remains here is the
+ * *name* of the phase, quoted in prose, and nothing that reads it.
  */
-const PLAYING = "Playing";
 
 /**
  * How long after a phase change the round moves every body — at a boundary that is covered.
@@ -552,15 +556,11 @@ function paintRig(rig: Model, playing: boolean): void {
  * phase plus membership plus the side.
  */
 function outlineColourFor(player: Player): Color3 {
-	if (!isPlaying()) return OUTLINE_CONFIG.COLOR;
-
-	// **And "in this round", which the phase alone cannot answer for one player.** The bodies this refuses are
-	// the ones that left a live round: a surrender (`MatchService.release` plus `eliminate`) and an elimination.
-	// Both keep their side on the `Player` on purpose — see `IN_ROUND_ATTRIBUTE` — so the check below was
-	// reading a side that belonged to a round they are no longer in, and the body wore its team's colour while
-	// standing in the lobby. This is the same correction the team ring and the surrender prompt each needed, and
-	// it is the same attribute for all three.
-	if (player.GetAttribute(IN_ROUND_ATTRIBUTE) !== true) return OUTLINE_CONFIG.COLOR;
+	// **Both halves in one call, since they are one question** — `isParticipant` is the phase *and* this player's
+	// membership, which is the pair this function used to spell out on two lines. See
+	// `shared/roundMembership.isParticipant` for why the attribute rather than the side, and why the phase alone
+	// was the lobby's colour on the wrong body.
+	if (!isParticipant(player)) return OUTLINE_CONFIG.COLOR;
 
 	const label = player.GetAttribute(TEAM_ATTRIBUTE);
 	if (!typeIs(label, "string")) return OUTLINE_CONFIG.COLOR;
@@ -581,5 +581,8 @@ function statusFolder(): Instance | undefined {
  * folder that does not exist yet — the first moments of a server's life — is not a round either.
  */
 function isPlaying(): boolean {
-	return statusFolder()?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
+	// **The question moved to `shared/roundMembership.isPlaying`**, which is the same folder lookup this function
+	// was. It stays a local name because {@link outlineColourFor} and the phase subscription both read it, and
+	// because this file's argument below is about *which* bodies the phase dresses rather than about the phase.
+	return roundIsPlaying();
 }

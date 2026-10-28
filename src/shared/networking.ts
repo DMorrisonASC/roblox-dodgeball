@@ -246,6 +246,33 @@ export const events = Net.Definitions.Create({
 	multiBall: Net.Definitions.ClientToServerEvent<[]>(),
 
 	/**
+	 * Client → server: **where this player's body is, as its own machine sees it** — a diagnostic, and the
+	 * only remote in this file that exists to be read by a person rather than by the game.
+	 *
+	 * **Why a remote at all, when every other shared fact in this project is an attribute.** An attribute is
+	 * the server's publication channel: `DUCKING_ATTRIBUTE` records the rule outright — *a client's write on
+	 * its own character does not replicate* — and nothing under `src/client/` writes one. This is the one
+	 * fact that only the client has: the server's copy of a client-owned character lags a replication step,
+	 * so "where the player is" is a question the server cannot answer about itself, and the whole of the
+	 * hit-disagreement measurement in `server/dev/HitDisagreementProbe` is the difference between the two
+	 * answers. There is no attribute that could carry it.
+	 *
+	 * **`sampledAt` is the client's reading of `Workspace:GetServerTimeNow()` at the instant it read its own
+	 * root**, not a `os.clock` figure. That is the point of the pair: an instant on the shared clock can be
+	 * subtracted from the server's own reading of the same clock at the tag, so the line carries an *age*
+	 * and not just two positions. A server timestamp taken on arrival would hide the upload leg, which is
+	 * half of what the probe is trying to see.
+	 *
+	 * **Sent only while `DEBUG_CONFIG.VERBOSE_LOGS` is on**, at ten hertz, and it ships off. Nothing in the
+	 * game reads it, nothing is written back, and a client that never sends one is a client whose character
+	 * has simply never been echoed — which the probe prints as an absent sample rather than as a zero. The
+	 * delivery is unvalidated on the game's side for `markHeldBall`'s reason (the wire is not typed) and
+	 * validated on the probe's, with `typeIs`, because a value that is not a `Vector3` reaching a
+	 * subtraction would be an error inside a diagnostic.
+	 */
+	positionEcho: Net.Definitions.ClientToServerEvent<[position: Vector3, sampledAt: number]>(),
+
+	/**
 	 * Server → client: **one hit, as the two people in it** — the second entry here that travels this way,
 	 * and the second that is about the round rather than an answer to a request.
 	 *

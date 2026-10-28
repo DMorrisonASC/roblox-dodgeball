@@ -313,11 +313,13 @@ export class MusicController implements OnStart {
 		// `ROUND_SONG_VOLUME` for why the two are separate instances with separate knobs, and the note above for why
 		// none of them is under a `SoundGroup`.
 		//
-		// **`Looped` is `false` on this one and that is the feature, not an omission.** Every other track here is
-		// `true` because repeating from the start is what a bed should do. This track must repeat **from its middle**,
-		// which no property can express — the engine's own loop restarts at `0` — so the repeat is the `Ended` handler
-		// below and the flag has to be off for that handler to ever run.
-		const roundSong = this.makeSound("RoundSong", AUDIO_CONFIG.ROUND_SONG_ID, false, 0);
+		// **`Looped` is `true`, and the paragraph that used to stand here argued for `false`.** It said the song had to
+		// repeat **from its middle** — no property can express that, the engine's loop restarts at `0`, so the repeat
+		// was an `Ended` handler reading `TimeLength / 2`. That was a deliberate feature and **the user has replaced
+		// it**: the song now starts over when it ends, which is exactly what the engine's own loop does, so the
+		// handler is gone and this flag is the whole of the rule. See `ROUND_SONG_ID`, which carries the same
+		// correction and the reason the middle was chosen in the first place.
+		const roundSong = this.makeSound("RoundSong", AUDIO_CONFIG.ROUND_SONG_ID, true, 0);
 
 		// The two cues are at a fixed volume and are never faded — they are *events*, not beds, and a cue
 		// that fades is a cue nobody hears. The overlap with the tracks is handled by them being louder
@@ -347,58 +349,19 @@ export class MusicController implements OnStart {
 		// the phase edge does.
 		intermissionMusic.Play();
 
-		/**
-		 * **The song's repeat, and the whole of "loop from the middle".**
-		 *
-		 * ## The rule, stated plainly because the timeline is otherwise indistinguishable from a bug
-		 *
-		 * **The first play is the whole track — `0` to the end. Every repeat after that is the second half — from
-		 * `TimeLength / 2` to the end.** So the first pass is twice as long as every subsequent one, and a player
-		 * listening to a long round will hear the track's opening once and never again. That is the feature: the
-		 * middle of a piece is where its groove is, and a round is two minutes of play rather than two minutes of
-		 * listening, so repeating the whole thing would put the slow introduction in front of every repeat.
-		 *
-		 * **`Looped` is `false` and must stay false.** The engine's own loop restarts at `0`; this handler is the only
-		 * way to restart anywhere else, and it cannot fire on a looping sound that never ends.
-		 *
-		 * **`TimeLength` is read here rather than cached**, and that is the answer to the only question this cannot
-		 * be sure of without a session: a `Sound`'s length is `0` until its asset has loaded, so a value read at
-		 * mount — or one captured on the first `Play` — can be `0` and would stay `0` for the client's whole life. By
-		 * the time this fires the track has just played all the way through, so its length is known **if it is ever
-		 * going to be**. Reading it per repeat costs one property read once per track-length and cannot go stale.
-		 *
-		 * **And if it is still `0`, the fallback is `0` with a warning rather than silence.** A track that has not
-		 * resolved its length after playing to completion is a broken asset, not a slow one; looping from the start
-		 * is the least-bad behaviour, and saying so is what stops the next reader concluding that the half-way rule
-		 * was never implemented. **If the loop ever restarts from the beginning, this line is the thing to look at.**
-		 *
-		 * **Guarded on the phase**, because a round can end between the last sample and this callback: the phase edge
-		 * stops the track, and a handler that restarted it would put music over the intermission — which is the one
-		 * thing the phase wiring exists to prevent. The guard reads the phase as it is *now* rather than as it was
-		 * when the track started.
-		 */
-		scope.push(
-			roundSong.Ended.Connect(() => {
-				if (Fusion.peek(phase) !== PLAYING) return;
-
-				const length = roundSong.TimeLength;
-
-				if (!(length > 0)) {
-					logWarn(
-						`[Music] the round's song reported ${tostring(length)}s of length at its end — looping from ` +
-							`the start rather than the middle; the asset has not resolved`,
-					);
-
-					roundSong.TimePosition = 0;
-					roundSong.Play();
-
-					return;
-				}
-
-				roundSong.TimePosition = length / 2;
-				roundSong.Play();
-			}),
-		);
+		// **The song's repeat used to be a handler here, and it is now the engine's own loop.** It restarted the track
+		// at `TimeLength / 2` on every `Ended`, so the first play was the whole track and every repeat after it was
+		// the second half — a rule chosen because the middle of a piece is where its groove is and a round is two
+		// minutes of play rather than two minutes of listening. **The user has replaced it with "start over"**, which
+		// is `Looped = true` on the `Sound` and no code at all, so the handler, its `TimeLength` read, its
+		// unresolved-length `logWarn` and its phase guard are all gone together.
+		//
+		// **What each of those was for, recorded rather than just deleted**, because the shape is easy to re-invent:
+		// the `TimeLength` read existed only to compute an offset that is not wanted any more, the warning existed
+		// only to describe that offset failing, and the phase guard existed only because a *callback* can fire after
+		// the phase has moved — a looping `Sound` has no callback to fire, and the round-end edge is the one thing
+		// that stops this track. **If the song is ever heard restarting somewhere other than its beginning, the thing
+		// to look at is this flag**, and a handler will have to come back with it.
 
 		if (Fusion.peek(phase) === PLAYING) {
 			// **A joining player hears the round they joined**, at the volume its clock implies — full for
@@ -516,8 +479,8 @@ export class MusicController implements OnStart {
 					//
 					// **`TimePosition = 0` is written explicitly rather than trusted.** The sound is stopped at every
 					// round end, and a stopped `Sound` does remember where it was; a second round would otherwise
-					// begin the song where the last one abandoned it, which for a track that loops from its middle is
-					// exactly the confusion this feature does not need.
+					// begin the song wherever the last one abandoned it — mid-phrase, in a track whose beginning this
+					// round never played.
 					roundSong.TimePosition = 0;
 					songProgress = 0;
 					writtenSong = 0;
@@ -567,9 +530,10 @@ export class MusicController implements OnStart {
 					// `Playing`, and the tick stops it on the frame that ramp reaches zero. Stopping it here would cut it
 					// mid-bar, which is the one thing a fade exists to avoid.
 					//
-					// **What that means for a short round**: a track stopped part-way has no `Ended`, so the repeat
-					// handler never fires and `TimePosition` is simply abandoned where the fade left it. The next round
-					// writes `TimePosition = 0` on its entry edge, so nothing carries over.
+					// **What that means for a short round**: a track stopped part-way keeps its `TimePosition` where the
+					// fade left it, because `Stop()` does not rewind. The next round writes `TimePosition = 0` on its
+					// entry edge, so nothing carries over — and the song's own repeat is the engine's loop, which is
+					// a restart at `0` and therefore has nothing to carry over either.
 
 					// **No fade here, and none is needed for the two kinds of end to come out right.** A
 					// round the clock ended has already faded to exactly zero — that is what the last five

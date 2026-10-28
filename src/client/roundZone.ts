@@ -1,11 +1,6 @@
-import { Players, ReplicatedStorage, Workspace } from "@rbxts/services";
-import {
-	IN_ROUND_ATTRIBUTE,
-	PRACTICE_ZONE_TAG,
-	ROUND_STATE_ATTRIBUTE,
-	ROUND_STATUS_FOLDER,
-	TEAM_ATTRIBUTE,
-} from "shared/constants";
+import { Players, Workspace } from "@rbxts/services";
+import { PRACTICE_ZONE_TAG, TEAM_ATTRIBUTE } from "shared/constants";
+import { isParticipant as isRoundParticipant, isPlaying } from "shared/roundMembership";
 import { taggedPartsInWorkspace } from "shared/taggedParts";
 
 /**
@@ -30,23 +25,23 @@ import { taggedPartsInWorkspace } from "shared/taggedParts";
  * somebody else publishes.
  */
 
-/** What `ROUND_STATE_ATTRIBUTE` says while a round is being played. A word between two files. */
-const PLAYING = "Playing";
+/*
+ * **The `PLAYING` literal used to live here**, and the phase read it fed is `shared/roundMembership.isPlaying`'s
+ * now — see {@link inRound}, which is the name this file's callers use for it.
+ */
 
 /**
  * Whether a round is being played, as the round folder publishes it.
  *
- * Read from `ReplicatedStorage` rather than asked of a service, which is how every other reader of this
- * attribute gets at it: the folder is the server's own publication of the phase, it is replicated to
- * everyone, and there is nothing a client-side feature could add to it by asking anybody else. A folder
- * that is not there yet reads as "not in a round", which is the right answer for a client that has not
- * been told what the round is doing.
+ * **The read moved to `shared/roundMembership.isPlaying`, and this is the name this file's callers use.** The
+ * question is the same one — the phase, read off the folder, `false` when there is no folder yet — and the
+ * paragraphs that used to stand here argued it needed to be asked *here*, because the folder is the server's own
+ * publication and there is nothing a client-side feature could add to it by asking anybody else. That argument is
+ * why it is a folder read rather than a service call; it is not an argument for the read being in this file, which
+ * is what four server-side copies of the same three lines made worth moving.
  */
 export function inRound(): boolean {
-	const status = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
-	if (!status) return false;
-
-	return status.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
+	return isPlaying();
 }
 
 /** What `TEAM_ATTRIBUTE` holds for each side. Two literals between two files, spelled the same way. */
@@ -134,24 +129,24 @@ export function onASide(player: Player): boolean {
 
 /**
  * **The rule, in one place: a player is in the round when the round says it has them and a round is being
- * played.** Both conditions, not either, and the two halves fail in opposite directions: the attribute is cleared
- * where membership is cleared rather than where the phase changes, so a boundary can leave it true for a frame
- * after the phase has moved — and a round being played is true for every spectator in the lobby.
+ * played.** The definition is `shared/roundMembership.isParticipant`'s since the membership question was
+ * consolidated — this file kept its own for as long as it was the only reader, and the server's outline override
+ * was the second.
  *
  * **"On a side" was the second condition until 2026-10-20, and a surrender broke it.** `RoundService.surrender`
  * deliberately leaves a player in `teams` — the side's head count has to survive somebody walking out — so
  * `TEAM_ATTRIBUTE` stays on them while they stand in the lobby, and this predicate went on reporting them as a
  * participant. The visible result was the shift lock staying on: mouse held to the middle of the screen and a
  * crosshair over a player who had left the round. `IN_ROUND_ATTRIBUTE` is the round's own answer to the question
- * this function is actually asking, published at the four places membership changes — see it for why it exists.
+ * this function is actually asking. See the module for the whole argument, including why the phase is part of the
+ * predicate rather than a condition beside it.
  *
- * **This is what the camera and the dock ask**, and it lives here rather than inside either for the reason
- * `inTaggedZone` does: a second copy of a rule about where the game is being played does not survive itself.
- * The wipe asks a different question and says so — it plays for whoever is *moved*, which is {@link onASide}
- * alone, because at a round's end the phase has already left `Playing`.
+ * **This is what the camera and the dock ask**, and it is exported from here because those two read this file. The
+ * wipe asks a different question and says so — it plays for whoever is *moved*, which is {@link onASide} alone,
+ * because at a round's end the phase has already left `Playing`.
  */
 export function isParticipant(player: Player): boolean {
-	return inRound() && player.GetAttribute(IN_ROUND_ATTRIBUTE) === true;
+	return isRoundParticipant(player);
 }
 
 /**

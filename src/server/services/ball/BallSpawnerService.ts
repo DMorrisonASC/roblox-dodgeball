@@ -315,8 +315,22 @@ export class BallSpawnerService implements OnStart {
 	 * somebody goes back for it, and cleared by the round's own end. `BALL_CONFIG.LIFETIME_SECONDS` is
 	 * untouched and still governs a thrown ball, which is `BallService`'s business rather than this
 	 * one's.
+	 *
+	 * **`roundBudget` is the one word the practice zone needs, and it is a parameter rather than a second
+	 * method because a second method would be a second construction path.** `false` skips the
+	 * {@link ROUND_BALL_TAG} write and nothing else: the ball is made by the same factory, placed by the
+	 * same offset, and put on the same "no clock" call. **The bug it prevents is the budget**: that tag is
+	 * what {@link roundBallCount} counts and what `MATCH_BALL_COUNT` is spent against, so a practice ball
+	 * wearing it would spend one of the arena's eight on a ball nobody is playing with — and eight zones
+	 * would empty the arena's floor while the practice floors stayed stocked.
+	 *
+	 * **What the flag deliberately does not change is the ball's state**, because there is only one state a
+	 * new ball has: `BallFactory.createLoose` leaves it unarmed, unnamed to anybody, parented to
+	 * `Workspace`, and on no clock. That *is* the practice zone's inert ball, so the practice arm writes
+	 * nothing about the ball except its own tag — see `PracticeZoneService.stockAt`. A flag that also
+	 * rewrote `Armed` would be this method deciding what a practice ball is, which is the zone's job.
 	 */
-	private spawn(spawner: BasePart): void {
+	public spawn(spawner: BasePart, roundBudget = true): BasePart {
 		const range = BALL_CONFIG.SPAWN_OFFSET_RANGE;
 		const offset = new Vector3(
 			math.random(-range * 100, range * 100) / 100,
@@ -326,9 +340,11 @@ export class BallSpawnerService implements OnStart {
 		const position = spawner.Position.add(offset).add(new Vector3(0, spawner.Size.Y / 2 + 1, 0));
 
 		const ball = this.factory.createLoose(position);
-		ball.AddTag(ROUND_BALL_TAG);
+		if (roundBudget) ball.AddTag(ROUND_BALL_TAG);
 
 		scheduleBallExpiry(ball, math.huge, (expiring) => this.balls.isHeld(expiring));
+
+		return ball;
 	}
 
 	/**

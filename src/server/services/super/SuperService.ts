@@ -1,8 +1,10 @@
 import { OnStart, Service } from "@flamework/core";
 // **`Workspace` was imported for one thing: `GetServerTimeNow()`, stamped into a MultiBall window's
 // deadline.** The deadline is gone and so is the import — if it comes back for a clock, it comes back with
-// the clock rather than sitting here unused. `ReplicatedStorage` is still the round's status folder.
-import { Players, ReplicatedStorage } from "@rbxts/services";
+// the clock rather than sitting here unused. **`ReplicatedStorage` has now gone the same way**: it was here
+// for the round's status folder, and that read is `shared/roundMembership.isPlaying`'s since the phase was
+// consolidated. See the note where the local `PLAYING` used to be.
+import { Players } from "@rbxts/services";
 import { AbilityKind } from "shared/ability";
 import { SUPER_CONFIG } from "shared/config/super.config";
 import {
@@ -11,26 +13,24 @@ import {
 	MYSTERY_POWER_ATTRIBUTE,
 	POWER_READY_ATTRIBUTE,
 	PRACTICE_ZONE_ATTRIBUTE,
-	ROUND_STATE_ATTRIBUTE,
-	ROUND_STATUS_FOLDER,
 	SUPER_CHARGE_ATTRIBUTE,
 	SUPER_MULTI_BALL_COUNT_ATTRIBUTE,
 	SUPER_STREAK_ATTRIBUTE,
 	TEAM_ATTRIBUTE,
 } from "shared/constants";
+import { isPlaying } from "shared/roundMembership";
 import { LOGGING_ENABLED, logInfo } from "shared/logger";
 import { rigsOnASide } from "../../npc/rigs";
 
-/**
- * What `ROUND_STATE_ATTRIBUTE` says while a round is being played.
- *
- * A literal here rather than an import, which is what `StatsService`, `BallSpawnerService` and
- * `OutlineService` each do with the same two words — the attribute is a string on a folder and there
- * is no constant for its *values*, only for its name. Every file that has to test the phase writing
- * it out is the arrangement that already exists; the alternative is a constant in
- * `shared/constants.ts` that none of them is currently using.
+/*
+ * **The `PLAYING` literal used to live here, and the paragraph above it argued for keeping one per file.** It said
+ * the attribute is a string on a folder and there is no constant for its *values*, so every file that tests the phase
+ * writes the two words out — and that `StatsService`, `BallSpawnerService`, `OutlineService` and this file all did
+ * it. That was true, and it is the arrangement this changed: four copies of the same lookup and the same literal is
+ * four places a rename or a new exception can land alone, and the phase has one home now. The values still have no
+ * constant — `shared/roundMembership` spells `"Playing"` once, privately — and the argument against publishing the
+ * word itself stands for the reason it was made.
  */
-const PLAYING = "Playing";
 
 /**
  * A MultiBall window that is running, and how many throws it has left.
@@ -1051,9 +1051,12 @@ export class SuperService implements OnStart {
 	 * handler; this note is the record of the second time, when the mark handler moved to `mayUsePower`.)
 	 */
 	private isRoundActive(): boolean {
-		const folder = ReplicatedStorage.FindFirstChild(ROUND_STATUS_FOLDER);
-
-		return folder?.GetAttribute(ROUND_STATE_ATTRIBUTE) === PLAYING;
+		// **The question moved to `shared/roundMembership.isPlaying`**, which is the same folder and the same
+		// `"Playing"` literal this method used to spell out for itself — and the same three lines `StatsService`,
+		// `OutlineService` and `MysteryBoxService` each kept a copy of. The method stays because its name is what
+		// {@link inRoundOrZone} reads, and because this file's own doc below is about *when* the question is
+		// asked rather than about how it is answered.
+		return isPlaying();
 	}
 
 	/**

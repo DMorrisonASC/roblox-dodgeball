@@ -195,6 +195,16 @@ export class ThrowController implements OnStart {
 	 */
 	private reportedCharging = false;
 
+	/**
+	 * The `os.clock` instant this hold first reached full power, or `undefined` while it has not.
+	 *
+	 * **The crossing rather than the level**, which is the difference between a timer and a bug: a level read
+	 * every frame would restamp itself sixty times a second and never fire, and a second press at full charge is
+	 * not a second start. Written on the first frame the charge reads `1`, cleared when the hold ends — see
+	 * {@link autoReleaseDue}.
+	 */
+	private reachedFullAt?: number;
+
 	private readonly guide = new AimGuide();
 
 	// Scaffolding for tracking down a marker that moves when it should not — see `reportMarkerJitter`.
@@ -476,6 +486,17 @@ export class ThrowController implements OnStart {
 	 * focus, the bend key — so this loop's whole job is the one part that has no signal.
 	 */
 	private updateGuide() {
+		// **The auto-release comes first, before anything is drawn, and the order is deliberate.** Firing at the
+		// end of this method would mean drawing a whole frame of an arc for a throw that is about to leave, and
+		// calling `endHold` from inside the drawing path is a re-entry the release already performs for itself —
+		// `releaseThrow` redraws so the preview comes down on the frame the ball leaves. From here the sequence is
+		// one level deep and the frame is drawn once, by the release, in its released state.
+		if (this.autoReleaseDue()) {
+			this.endHold();
+
+			return;
+		}
+
 		const character = this.player.Character;
 		const ball = character?.FindFirstChild(BALL_NAME);
 
@@ -722,6 +743,62 @@ export class ThrowController implements OnStart {
 	}
 
 	/**
+	 * **Whether this hold has been at full power for its whole allowance, and should be released by the clock.**
+	 *
+	 * Checked once a frame by {@link updateGuide}, which is the only loop in this file — `RunService.RenderStepped`,
+	 * not a `Heartbeat` and not a spawned `task.wait` — and the release it answers is `endHold`, **the same call the
+	 * player's own release makes**. That is the whole design: an auto-release that built its own request would be a
+	 * second release path, and the two would disagree about the charge, the heading and the latch the first time
+	 * either was changed.
+	 *
+	 * **The timer starts on the crossing, not the level.** `reachedFullAt` is written the first frame the charge
+	 * reads `1` and is not touched again while it stays there, so holding the button at full for ten seconds is
+	 * still one hold with one start. Restamping on the level would make the timer unreachable — every frame would
+	 * push the deadline a frame further out — which is the shape of bug that reads as "the feature is not working"
+	 * rather than as an arithmetic error.
+	 *
+	 * **The charge cannot fall below `1` while the hold runs, so "reset when it drops" is the not-charging case
+	 * alone.** That is a source fact rather than an assumption: {@link currentCharge} is
+	 * `(now - press) / CHARGE_SECONDS` clamped to `1`, so it is monotonic in time — aiming nearer moves the plan's
+	 * *reach*, never the rate the charge grows at. The one case a reset was argued for (a player pulling the cursor
+	 * in during the hold-second, leaving the timer running over a charge that had decayed, so the throw fires
+	 * weaker than the arc that was drawn) therefore cannot arise. The clear below is what keeps the next hold from
+	 * inheriting this one's deadline.
+	 *
+	 * **RenderStepped rather than Heartbeat, and elapsed time rather than accumulated frames.** A client that
+	 * drops frames — or that is minimised, where `RenderStepped` stops — wakes up with `os.clock` well past the
+	 * deadline and fires on the first frame it draws, which is the right answer for a timer that means "you have
+	 * had your second". Counting frames would have made the allowance depend on the frame rate, which is the one
+	 * thing a duration may not do.
+	 */
+	private autoReleaseDue(): boolean {
+		const charge = this.currentCharge();
+
+		// A hold that has not started, or one that has ended, has no deadline. `currentCharge` answers `0` for
+		// both, so this is the reset — there is no third state to distinguish.
+		if (charge < 1) {
+			this.reachedFullAt = undefined;
+
+			return false;
+		}
+
+		const reached = this.reachedFullAt ?? os.clock();
+		this.reachedFullAt = reached;
+
+		const heldAtFull = os.clock() - reached;
+		if (heldAtFull < BALL_CONFIG.FULL_CHARGE_HOLD_SECONDS) return false;
+
+		if (DEBUG_LOGGING) {
+			logInfo(
+				`[Throw] held at full charge for ${string.format("%.2f", heldAtFull)}s — releasing ` +
+					`(${string.format("%.2f", BALL_CONFIG.FULL_CHARGE_HOLD_SECONDS)}s is the allowance)`,
+			);
+		}
+
+		return true;
+	}
+
+	/**
 	 * How much of a charge the current hold has built, from `0` to `1`.
 	 *
 	 * **One division off the clock, and therefore the same number for the preview and for the send.** That is
@@ -735,8 +812,13 @@ export class ThrowController implements OnStart {
 	 * disagreed about how long a second is.
 	 *
 	 * A hold still running when the ceiling is reached stays there — the value clamps, so holding past full
-	 * is a full charge and nothing else. **Nothing auto-throws**, deliberately: the player decides when the
-	 * ball leaves, and the alternative would take a throw away from somebody who was still aiming it.
+	 * is a full charge and nothing else. **The hold is bounded rather than open, and this paragraph used to argue
+	 * the opposite**: it said nothing auto-throws because "the player decides when the ball leaves, and the
+	 * alternative would take a throw away from somebody who was still aiming it". That is true of a *short* hold
+	 * and false of a long one — a player who is still aiming after a second at full power has stopped deciding
+	 * anything, and the report was a ball that looked stuck at max charge with the body still capped to the aiming
+	 * walk speed behind it. {@link autoReleaseDue} now ends the hold one second after the charge stops growing,
+	 * through the ordinary release. See `BALL_CONFIG.FULL_CHARGE_HOLD_SECONDS`.
 	 */
 	private currentCharge(): number {
 		const began = Fusion.peek(chargeStartedAt);
@@ -930,11 +1012,20 @@ export class ThrowController implements OnStart {
 	 * the other half — is what makes a hold past full silence until the next press, which is the intent: the
 	 * sound is the build-up to being ready, and once it has said so there is nothing left to say.
 	 *
-	 * Nothing else is set up: there is no timer, no accumulator and no state beyond the instant, because the
-	 * charge is derived from elapsed time whenever it is asked for. See {@link currentCharge}.
+	 * **Nothing else is set up but the full-charge deadline**, and the sentence that used to stand here said
+	 * there was *no timer of any kind* because the charge is derived from elapsed time whenever it is asked for.
+	 * That is still true of the charge — `currentCharge` is one division and no accumulator — but the hold now has
+	 * an allowance at the top, so `reachedFullAt` is cleared here and set by the frame that first reads full. See
+	 * {@link autoReleaseDue}, which is the only reader.
 	 */
 	private beginCharge(): void {
 		chargeStartedAt.set(os.clock());
+
+		// **A new hold starts with no deadline**, and this is the other half of {@link autoReleaseDue}'s clear: the
+		// charge itself is `undefined` for one frame here, and the loop's own reset would catch it, but saying so
+		// on the press is what makes "the timer belongs to one hold" true at the place the hold begins.
+		this.reachedFullAt = undefined;
+
 		// A new charge owns the release slot: whatever the last throw's level was, it is not this throw's.
 		releasedCharge.set(undefined);
 		this.lastCharge = 0;

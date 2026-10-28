@@ -299,6 +299,25 @@ export const MYSTERY_POWER_ATTRIBUTE = "MysteryPower";
 export const IS_DEV_ATTRIBUTE = "IsDev";
 
 /**
+ * The prefix every dev flag is published under, on the `Player` — `Dev_InfiniteBalls`, `Dev_NoCooldown`,
+ * and one per key in `DEV_CONFIG.defaultFlags`.
+ *
+ * **Here for the reason {@link IS_DEV_ATTRIBUTE} is, and it arrived later because the first client reader
+ * of a flag arrived later.** `DevService` defined this string itself for as long as nothing but the server
+ * read one; the client's dash prediction is the first reader that is not `DevService`, and it needs exactly
+ * one flag — `NoCooldown` — because a dev who is not on the dodge's clock is not published a
+ * `DODGE_READY_AT` at all, so a client gating on that attribute alone would refuse every prediction after
+ * their first dash and look broken in precisely the session that reads this feature. Two machines spelling
+ * `"Dev_"` is the copy this arrangement exists to avoid, which is the argument written on the constant above.
+ *
+ * **What a client may believe it means is narrower than it looks.** The flag is a fact about a *person*,
+ * and the only thing the client does with it is decide whether to move its own body early. Every press it
+ * predicts still goes out on the wire and is still accepted or refused by `DodgeService`, which asks
+ * `DevService.getFlag` for itself.
+ */
+export const DEV_FLAG_ATTRIBUTE_PREFIX = "Dev_";
+
+/**
  * Tags marking the two parts a player walks into to pick a side for the next match.
  *
  * **One tag per side, and the split is the whole rule: the part you touch is the side you ask for.**
@@ -407,6 +426,64 @@ export const SIDE_KEEP_OUT_B_TAG = "SideKeepOutB";
  * these are the flags to give it in the place file.
  */
 export const MATCH_SPAWNER_TAG = "MatchSpawner";
+
+/**
+ * Marks a ball as a **practice zone's own** — one per `practiceZone` part, put out by
+ * `PracticeZoneService` and replaced a second after the zone loses it.
+ *
+ * **Written by code, on a ball, and by exactly one place**: `PracticeZoneService.stockAt`, which is the
+ * only thing in the game that makes a practice ball. It goes on *after* `BallSpawnerService.spawn` has
+ * finished the ball, for the reason `BallFactory.finish` gives about its own tag — the `Ball` component's
+ * defaults are written when the tag that creates it lands, so anything set before that is overwritten.
+ *
+ * **What it means, and what it deliberately does not.** It says *this ball belongs to a practice floor*:
+ * the zone uses it to answer "is my ball still here", and nothing else reads it. It does **not** mean the
+ * ball is armed, safe, or special in any way — a practice ball is an ordinary ball with a tag, inert until
+ * somebody throws it and then exactly as dangerous as any other.
+ *
+ * **Why a tag rather than a third state on the ball.** A practice ball on the floor, before it is thrown,
+ * is indistinguishable from an arena ball somebody dropped: both are loose, unarmed and parented to
+ * `Workspace`. Without this tag the zone would have to answer "is that mine" from a compound of position
+ * and ownership, which is the same rule written where the geometry is rather than where the ball is. The
+ * tag is the one fact that says it, and it is the reason the practice arm is safe to add at all: **the two
+ * sweeps that could eat it ask about other tags.** `BallSpawnerService.cleanupRoundBalls` skips a ball
+ * inside a practice zone by position, and `roundBallCount` counts `RoundBall` alone — so a practice ball
+ * neither spends the arena's budget nor is swept by the round's end.
+ *
+ * **Placeholder** — the name, not the mechanism.
+ */
+export const PRACTICE_BALL_TAG = "PracticeBall";
+
+/**
+ * **The marker a `practiceZone` spawns its ball at** — a `BasePart` painted in Studio, one ball per marker.
+ *
+ * **A part you move rather than a position computed from the zone, which is this project's pattern for every
+ * spawn in the game** — `MatchSpawner`, `LobbySpawns`, `ArenaSpawns`, `mysterySpawnPrize`, `practiceBay`. A
+ * ball placed at the zone's centre is a ball you cannot put where the floor wants it without moving the zone,
+ * and moving the zone moves the whole practice area.
+ *
+ * **Read only while it is inside a zone.** A marker counts for a zone when its `Position` is over that zone's
+ * footprint (`PracticeZoneService.insideZonePart`) — so a marker that overlaps a zone's edge with its centre
+ * outside it belongs to nobody, which is the same footprint rule the ball itself is tested against. A marker
+ * parented under a folder inside the zone counts; one parented *outside* the zone but over its floor also
+ * counts, because the test is the position rather than the ancestry. That is deliberate:
+ * `taggedPartsInWorkspace` is how every painted marker in this project is read, and a folder is a way to
+ * organise a place file rather than a rule about what counts.
+ *
+ * **A zone with no marker falls back to its own centre** and says so once at boot — see `PracticeZoneService`,
+ * which prints `[PracticeBall] <zone>: no PracticeSpawn — using the zone's centre`. The fallback exists
+ * because a place file that has not been repainted is the state every place file is in before somebody moves
+ * a marker into it, and a ball that is visible in the wrong place is easier to fix than a floor that is
+ * silently empty.
+ *
+ * **Markers are painted and never written by code**, like every other marker tag here: nothing sets their
+ * flags, so `Anchored`, `CanCollide`, `CanTouch` and `CanQuery` are what the place file says. Nothing collides
+ * with a marker or queries it — the ball is placed from its `Position` and `Size`, and no cast in the game
+ * knows the part exists.
+ *
+ * **Placeholder** — the name, not the mechanism.
+ */
+export const PRACTICE_SPAWN_TAG = "PracticeSpawn";
 
 /**
  * Attribute naming whoever a ball belongs to, carried on the **thrower's model**.
@@ -1823,4 +1900,33 @@ export const DODGE_DIRECTION_ATTRIBUTE = "DodgeDirection";
  * action mark, which is how one clip reaches both bodies.
  */
 export const DUCKING_ATTRIBUTE = "Ducking";
+
+/**
+ * Whether a body is frozen **right now**, on the **frozen model** — player or rig, for the length of the freeze.
+ *
+ * **The same shape as {@link DUCKING_ATTRIBUTE}, and added for the same kind of reason turned around.** That
+ * one exists so an action gate can ask "is this body ducking" without a clock; this one exists so a *client*
+ * can ask "may this body move" before it moves itself. Until it was added a freeze was a fact `FreezeService`
+ * held in a `Map` and nothing else on the machine could see, which was correct while the server was the only
+ * thing that had to know — the dash is the first move a client makes on its own behalf, and a frozen body
+ * that dashes locally is the worst outcome this feature has, because the client owns the body's physics and
+ * the server's copy follows it wherever it goes.
+ *
+ * **A flag rather than an end time, for `DUCKING_ATTRIBUTE`'s reason exactly**: `FreezeService` already owns
+ * the clock that ends it, an instant would need `GetServerTimeNow` and a subtraction at every asker, and the
+ * only question anybody asks is the boolean. The duration is not published and nothing needs it — the ice
+ * block and the outline are the body's own account of how long is left.
+ *
+ * **Server-written, which is what makes it unforgeable** — see {@link DUCKING_ATTRIBUTE} for the rule about
+ * a client's write on its own character not replicating. That matters more here than anywhere else in this
+ * file, because this is the one attribute whose reader is making a decision *about its own body* from it.
+ *
+ * **What reads it.** `client/dashPrediction` refuses to predict a dash for a frozen body, which is the
+ * reader this was added for. Nothing on the server reads it: the server asks `FreezeService.isFrozen`, which
+ * is the map this is written beside, and a server that trusted a replicated copy of its own state would be
+ * reading its own mail.
+ *
+ * **Placeholder** — the name, not the mechanism.
+ */
+export const FROZEN_ATTRIBUTE = "Frozen";
 
