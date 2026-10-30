@@ -298,6 +298,14 @@ export const events = Net.Definitions.Create({
 	 * as an arbitrary string and only two values are meaningful; a client that reads a third drops the
 	 * message rather than inventing a colour for it. **Nothing about *who* is checked at all any more** —
 	 * the two names are drawn and never compared.
+	 *
+	 * **The names are account handles, and the row is drawn from `DisplayName` instead.** `Player.Name` is
+	 * what travels because it is the identity a client can act on — it is the same string `hitImpact` carries
+	 * and the same one `hitConfirm` compares its own against — and a *display* name is neither unique nor fixed.
+	 * `HitLogController` resolves each name to its `DisplayName` when it builds a row, which is the project's
+	 * existing rule for anything a player reads (see `RoundService.registerHit`'s `LAST_HIT_BY_ATTRIBUTE`), so
+	 * this payload deliberately does not change to carry it: doing so would break the two readers that need the
+	 * handle. A rig has no display name and is drawn by its own alias, which is also what its billboard shows.
 	 */
 	roundHit: Net.Definitions.ServerToClientEvent<[hitter: string, victim: string, direction: string]>(),
 

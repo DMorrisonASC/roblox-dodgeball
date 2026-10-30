@@ -239,6 +239,11 @@ const FEED_HEADING = "Hits this round";
 
 /** One hit in the feed: **what to draw, and how long it has been on screen.** */
 interface FeedEntry {
+	/**
+	 * The two names a row draws, **already resolved to what the reader recognises** — a player's
+	 * `DisplayName`, a rig's own name. See {@link loggedName} for where that happens and why it is not the
+	 * server's job.
+	 */
 	readonly hitter: string;
 	readonly victim: string;
 	/**
@@ -266,28 +271,58 @@ interface HitCard {
 }
 
 /**
- * **Whether `name` is a person's** — asked of the names in the game, and the test `hitImpact`'s rows are
- * filtered with.
+ * **The player behind `name`, or `undefined` if it is a rig** — the one lookup both name rules in this file
+ * are built on.
  *
- * **A name comparison rather than an instance lookup, because a name is all the event carries.** `hitImpact`
- * sends the victim's and thrower's *model* names, and a player's character is named after the player, so the
- * two are the same string for every body a person is behind — which is the same identity
- * `Players.GetPlayerFromCharacter` walks to, spelled the way the wire spells it.
+ * **A name comparison rather than an instance lookup, because a name is all the wire carries.** Both events
+ * this element listens to spell a body as a *string*: `roundHit` sends `Player.Name`, and `hitImpact` sends the
+ * victim's and thrower's *model* names. A player's character is named after the player, so the two are the same
+ * string for every body a person is behind — the same identity `Players.GetPlayerFromCharacter` walks to,
+ * spelled the way the wire spells it.
  *
- * **A rig is not in this set**, which is the whole point: a pooled rig is named from the spawn pool
+ * **A rig is not in this set**, which is the whole point of asking: a pooled rig is named from the spawn pool
  * (`GiantDiva`) and a hand-built one is named by whoever built it, so a rig-vs-rig or player-vs-rig hit is
- * recognised as one that `roundHit` will never announce. See the class doc's "which hits reach this list".
+ * recognised as one `roundHit` will never announce. See the class doc's "which hits reach this list".
  *
- * **Linear over the roster rather than a `Set`**, deliberately: this is asked at most twice per landed hit, on
- * a roster of at most a handful of players, and a cached set would have to be invalidated on every join and
- * leave — a subscription for a lookup this cheap.
+ * **Linear over the roster rather than a `Set`**, deliberately: the worst path asks it four times — twice to
+ * decide whether `hitImpact`'s pair is one `roundHit` will also announce, and twice more to turn those same two
+ * wire names into display names — on a roster of at most a handful of players. A cached set would have to be
+ * invalidated on every join and leave, which is a subscription for a lookup this cheap.
  */
-function isPlayerName(name: string): boolean {
+function playerNamed(name: string): Player | undefined {
 	for (const player of Players.GetPlayers()) {
-		if (player.Name === name) return true;
+		if (player.Name === name) return player;
 	}
 
-	return false;
+	return undefined;
+}
+
+/**
+ * **What a hit's name is drawn as: a player's `DisplayName`, a rig's own name.**
+ *
+ * **The user-visible name, not the account's** — and the difference mattered enough to be a report. Both events
+ * send `Name`, which is the *account* handle: the thing a client needs to resolve a body and the thing
+ * `hitConfirm` compares its own thrower against. What a player is called in the game is their `DisplayName`, and
+ * a feed of hits is read by people who know each other by that name rather than by the handle they signed up
+ * with. **So the wire keeps `Name` and the row is drawn from `DisplayName`**, resolved here at the last possible
+ * moment. Changing the payloads instead was refused because `hitImpact`'s names are doing an *identity* job for
+ * two other readers — `hitVfx` resolves a body from them and `hitConfirm` compares its own name against the
+ * thrower's — and a body lookup cannot be done with a name that is not unique to the body.
+ *
+ * **This is the project's existing rule rather than a new one**, which is why it is stated this way: a player is
+ * written by `DisplayName` and a rig by its `Name` wherever a name is *shown* — `RoundService.registerHit` writes
+ * `LAST_HIT_BY_ATTRIBUTE` that way for the respawn countdown, the catch path does the same for the kill cam, and
+ * `enemyView` and `killCam` resolve their captions the same way. This element is the last display surface that
+ * was still spelling it the other way.
+ *
+ * **A rig keeps its own name because it has nothing else**, and that is deliberate rather than a fallback: a
+ * rig's alias is what its billboard shows and what the spawn pool named it, so a row naming it by anything else
+ * would be naming a body the player cannot match to the one on the field. Nothing marks which kind of body a row
+ * is — the same decision `registerHit` records, for the same reason: a rig here is dressed and animated to be
+ * hard to tell from a person, and a marker would be the one tell on the screen that says otherwise.
+ */
+function loggedName(name: string): string {
+	return playerNamed(name)?.DisplayName ?? name;
 }
 
 /**
@@ -323,10 +358,20 @@ function isPlayerName(name: string): boolean {
  *
  * **What a rig row looks like, and why its names are one ink.** Two names, the same arrow, and no team
  * colours — `hitImpact` carries no sides, and inventing them here would be a second derivation of a fact the
- * server declined to state. **The names are what the server already sends**: the victim's and thrower's model
- * names, which for a pooled rig is its short alias (`GiantDiva`, not `GiantDiva's rig clone 3`) and for a
- * person is their username, so nothing is truncated and nothing is abbreviated. A name long enough to matter
- * wraps inside the card rather than overflowing — see `addCard`'s `Wraps` note.
+ * server declined to state. **The names are what the server already sends**, resolved for display: the victim's
+ * and thrower's model names, which for a pooled rig is its short alias (`GiantDiva`, not `GiantDiva's rig clone
+ * 3`) and for a person is their **`DisplayName`** rather than their account handle. Nothing is truncated and
+ * nothing is abbreviated. A name long enough to matter wraps inside the card rather than overflowing — see
+ * `addCard`'s `Wraps` note.
+ *
+ * **`DisplayName` rather than `Name`, and the wire is deliberately not changed to match.** Both events send the
+ * account handle, because both are about *resolving a body*: `hitVfx` finds the body from those names and
+ * `hitConfirm` compares its own handle against the thrower's, and neither can be done with a name that is not
+ * unique to the body. A feed is the opposite kind of surface — it is read by people who know each other by the
+ * name they chose — so the mapping happens here, once, at {@link loggedName}, and no payload moves. **It is also
+ * the project's existing rule**: `RoundService` writes `LAST_HIT_BY_ATTRIBUTE` as `DisplayName` for a player and
+ * `Name` for a rig, the catch path does the same for the kill cam, and `enemyView` and `killCam` resolve their
+ * captions that way. This element was the last display surface still spelling it the other way.
  *
  * **One feed of the round's hits, not two personal lists — and that is a reversal.** What was here first was
  * "Who you hit" and "Who hit you": the local player's own exchanges, split by which end of them they were.
@@ -663,17 +708,25 @@ export class HitLogController implements OnStart {
 		events.Client.Get("roundHit").Connect((hitter, victim, direction) => {
 			if (direction !== "AtoB" && direction !== "BtoA") return;
 
+			// **The names are resolved to what a reader recognises before the row exists**, rather than in `paint`:
+			// a `FeedEntry` is what the screen holds, so it holds display names and nothing downstream has to know
+			// that the wire spells people differently. See {@link loggedName}, and note the log line below uses the
+			// same resolved pair — it describes what the feed now contains, which is the question a line like that
+			// is asked.
+			const hitterNow = loggedName(hitter);
+			const victimNow = loggedName(victim);
+
 			// **Newest first, capped**, which is the whole of the record-keeping: the arrival goes on the
 			// front, and a sixth row pushes the oldest off the back. The cap is the first of the two ways a
 			// row leaves — see the class doc.
-			feed.unshift({ hitter: hitter, victim: victim, direction: direction, age: 0 });
+			feed.unshift({ hitter: hitterNow, victim: victimNow, direction: direction, age: 0 });
 
 			if (feed.size() > ROW_COUNT) feed.pop();
 
 			this.paint(feed, cards, theme);
 			anyHits.set(feed.size() > 0);
 
-			logDebug(`[HUD] hit feed — ${hitter} → ${victim} (${feed.size()} row(s))`);
+			logDebug(`[HUD] hit feed — ${hitterNow} → ${victimNow} (${feed.size()} row(s))`);
 		});
 
 		/**
@@ -683,10 +736,10 @@ export class HitLogController implements OnStart {
 		 * short version of it.
 		 *
 		 * **A pair with a person at both ends is dropped, and that is what stops every hit being drawn twice.**
-		 * The comparison is against the names of the players in the game, because `hitImpact`'s names are model
-		 * names and a player's character is named after them — the same identity, spelled the same way, and the
-		 * same fact `BallComponent`'s catch branch leans on when it asks `Players.GetPlayerFromCharacter`. A rig
-		 * is named from the spawn pool or by whoever built it, so it is not in that set.
+		 * The test is {@link playerNamed} on the raw wire names — **the identity, not the display name** — because
+		 * that is what `roundHit` is about to announce. It has to be the raw name: `DisplayName` is not unique and
+		 * not fixed, so a comparison against it could drop a player-vs-rig hit whose display name happens to
+		 * match somebody's handle, and this rule exists to remove duplicates rather than to guess.
 		 *
 		 * **It is the *pair* rather than either end**, and the difference matters: a player's throw that lands on
 		 * a rig is one name from each, which `roundHit` will never announce, so it has to get through.
@@ -696,16 +749,19 @@ export class HitLogController implements OnStart {
 
 			// The same two names `roundHit` would have carried, in which case the row there is the better one:
 			// it has a direction, so it can be painted in two colours.
-			if (isPlayerName(thrower) && isPlayerName(victim)) return;
+			if (playerNamed(thrower) !== undefined && playerNamed(victim) !== undefined) return;
 
-			feed.unshift({ hitter: thrower, victim: victim, direction: undefined, age: 0 });
+			const hitterNow = loggedName(thrower);
+			const victimNow = loggedName(victim);
+
+			feed.unshift({ hitter: hitterNow, victim: victimNow, direction: undefined, age: 0 });
 
 			if (feed.size() > ROW_COUNT) feed.pop();
 
 			this.paint(feed, cards, theme);
 			anyHits.set(feed.size() > 0);
 
-			logDebug(`[HUD] hit feed — ${thrower} → ${victim} (a rig was in it, ${feed.size()} row(s))`);
+			logDebug(`[HUD] hit feed — ${hitterNow} → ${victimNow} (a rig was in it, ${feed.size()} row(s))`);
 		});
 
 		// The second way a row leaves, and the only one on a clock.

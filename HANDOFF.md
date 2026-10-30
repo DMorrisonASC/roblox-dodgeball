@@ -6726,6 +6726,50 @@ almost no server code; 45 is what it cannot show.**
      screen narrower than about 470px, where the two can overlap in x — they cannot overlap in y, because the feed
      starts below the whole column by construction.
 
+148. **The hit feed draws `DisplayName` rather than the account handle — a client-side resolution, no wire change.**
+
+     **The request.** *"In hit log, use player's nicknames instead of usernames."* Both `roundHit` and `hitImpact`
+     send `Player.Name`, which is the account handle, so a feed of hits was spelling people by the name they signed
+     up with rather than the one the game shows on their body.
+
+     **The two events were left alone, and that is the decision worth recording.** `hitImpact`'s names are doing an
+     *identity* job for its other two readers: `hitVfx` resolves a body from them, and `hitConfirm` compares its own
+     `LocalPlayer.Name` against the thrower's to decide whether to draw the splash. Neither can be done with a
+     `DisplayName`, which is neither unique nor fixed — two players may share one, and it is not the string the
+     body is named after. So the mapping happens at the last possible moment, in `HitLogController`, and no payload
+     moves.
+
+     **It is the project's existing rule rather than a new one.** A player is written by `DisplayName` and a rig by
+     its `Name` wherever a name is *shown*: `RoundService.registerHit` writes `LAST_HIT_BY_ATTRIBUTE` that way for
+     the respawn countdown, the catch path does the same for the kill cam, and `enemyView` and `killCam` resolve
+     their captions the same way. **The hit feed was the last display surface still spelling it the other way**,
+     which is why the fix is two lines of lookup and a paragraph of comment rather than a new convention.
+
+     **Two helpers in the controller, and the split is the point:**
+     - `playerNamed(name)` → the `Player` whose *handle* is `name`, or nothing. This is what the duplicate rule uses,
+       and it must keep using the handle: that rule exists to drop a `hitImpact` pair that `roundHit` is about to
+       announce, and a comparison against `DisplayName` could drop a player-vs-rig hit whose display name happens
+       to match somebody's handle.
+     - `loggedName(name)` → `playerNamed(name)?.DisplayName ?? name`, applied when a `FeedEntry` is built. A rig has
+       no display name, so it keeps its alias — which is what its billboard shows, and the only name a player can
+       match to a body on the field.
+
+     `isPlayerName` was replaced by `playerNamed`, so the identity test and the display lookup are one walk rather
+     than two. The `logDebug` line for each row prints the resolved pair, because it describes what the feed
+     contains.
+
+     **What did not change:** the dedupe rule, the `Playing` gate, the direction gate, `roundHitLog` on the server
+     (it holds `Player` references and is an identity record, not a display one), and both payloads.
+
+     **`npm run build` exit 0; `flamework.build` unchanged.** Emitted Luau checked: `loggedName` compiles to the
+     expected nil-check chain, and both connect handlers resolve before the `unshift`. `networking.ts`'s `roundHit`
+     entry gained a paragraph saying why the payload stays a handle.
+
+     **Unverified in Studio**: that a row for a player whose display name differs from their handle shows the
+     display name, and that a rig row still shows its alias. In Studio a local test player's `DisplayName` usually
+     equals their `Name`, so **this needs a second account or a display-name change to be visible at all** — that is
+     the one thing about this change that cannot be checked single-player.
+
 ---
 
 ## 16. What a live log has actually confirmed
