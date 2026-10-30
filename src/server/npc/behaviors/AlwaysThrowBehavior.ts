@@ -84,11 +84,17 @@ function standInPoint(root: BasePart): Vector3 {
  * wide.**
  *
  * **A turn rather than an offset, and the difference is which units the error is measured in.** The roll draws a
- * few *studs*, which only becomes a direction once it is placed at a range — the gated thrower has an aim point
- * to place it against, and this rig has {@link standInPoint}'s stand-in. So the point is built, moved sideways by
- * `missedPoint` (the gated thrower's own function, so both behaviours are wide by the same studs for the same
- * draw) and turned back into a heading. Reusing that function rather than writing a rotation here is what keeps
- * "a miss is five to ten studs to one side" one rule across two rigs.
+ * few *studs*, which only becomes a direction once it is placed at a range — the gated thrower has an aim point to
+ * place it against, and this rig has {@link standInPoint}'s stand-in. So the point is built, moved sideways by
+ * `missedPoint` (the gated thrower's own function, so both behaviours are wide by the same studs for the same draw)
+ * and turned back into a heading. Reusing that function rather than writing a rotation here is what keeps "a miss
+ * is a few studs to one side" one rule across two rigs.
+ *
+ * **This is the paragraph that was deleted for one pass, and it is back with the reason it went.** The range version
+ * of the error could not be expressed as a direction at all — short and long leave along the same line, and what
+ * changed was the charge — so this function answered the bare facing and the doc said so. A *sideways* error is a
+ * direction, so the heading is the thing it moves, and a practice rig's miss is once again a dummy that throws past
+ * your shoulder rather than one that lands short of your feet.
  *
  * **The facing is read here and not carried from the decision** — see the release, which argues why a rig with no
  * target still has one thing that can change. The error is the part that is carried, on the windup row.
@@ -221,13 +227,11 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 				// used to be looking. The charge, which is measured from the hand and does not move with a turn,
 				// is the half that is carried — see `windup.charge`.
 				//
-				// **And the error, if one was rolled, is applied to this live facing rather than to a stored
-				// point** — `headingFor` builds the same stand-in point the charge was solved against, moves it
-				// sideways by the studs the roll drew, and turns the result back into a heading. So a wide practice
-				// throw is a few studs off *wherever the body is pointing now*, which is the only reading that
-				// makes a dummy's miss look like a person's: the miss is a mistake in the aim, not a throw at a
-				// remembered place. With no miss it is the plain flattened facing, which is what this line did
-				// before the roll existed at all.
+				// **And the error, if one was rolled, is in this heading** — `headingFor` turns the facing aside by the
+				// studs the roll drew, placed against the same stand-in point the charge was solved for. That is what a
+				// sideways error is: the same distance, a different line. A practice rig's miss is therefore a dummy that
+				// throws past your shoulder, exactly as an arena rig's is, and the two draw from one band in
+				// `NPC_CONFIG`. See `headingFor`, which is where the turn is built.
 				const heading = headingFor(root, windup.miss);
 
 				// **The practice rig spends its pending ability on this throw, exactly as the gated thrower
@@ -261,10 +265,10 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 				// here.
 				//
 				// **The distance is the one the charge was solved at, and that is no longer always `THROW_RANGE`.** A
-				// throw rolled wide is solved to a point a few studs to one side, so its distance is the hypotenuse
-				// — printing the nominal sixty beside a charge for sixty-one would be exactly the two-numbers-from-
-				// two-throws fault the pair exists to rule out. `windup.distance` is the solved figure, and it is
-				// `THROW_RANGE` to a tenth of a stud on the throws that are aimed true.
+				// throw rolled off to the side is solved to a point that is a hair further from the hand than the
+				// stand-in — a few studs sideways at sixty studs of range moves the distance by a fraction of a stud —
+				// so the figure printed is the throw's own rather than the nominal forty. `windup.distance` is the
+				// solved figure, and it is `THROW_RANGE` on the throws that are aimed true.
 				//
 				// **And the miss is named, in the gated thrower's own words**, so a run of practice throws can be
 				// counted for how often a dummy was deliberately wide without reading its aim off a screenshot.
@@ -272,8 +276,8 @@ export function createAlwaysThrowBehavior(balls: BallService): NpcBehavior {
 					const wide =
 						windup.miss === undefined
 							? ""
-							: `, ${string.format("%.1f", windup.miss.studs)} studs to the ` +
-								`${windup.miss.side > 0 ? "right" : "left"} (missed on purpose)`;
+							: `, ${string.format("%.1f", math.abs(windup.miss.lateral))} studs ` +
+								`${windup.miss.lateral < 0 ? "left" : "right"} (missed on purpose)`;
 
 					logInfo(
 						`[Rig] ${model.Name}: throw — charge ${string.format("%.2f", windup.charge)} at ` +

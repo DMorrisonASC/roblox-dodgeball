@@ -145,21 +145,29 @@ export const BALL_CONFIG = {
 	 *
 	 * Long enough that a ball is still there when you go back for it, short enough
 	 * that a field nobody is collecting does not become a carpet.
+	 *
+	 * **The arena's own stock is not on this clock, and that is the second correction this number has needed.**
+	 * A ball the spawner put out wears `RoundBall` and is given `math.huge` instead — see
+	 * `BallService.lifetimeOf` for the report that made the difference necessary. The short version: with the
+	 * round's supply fixed at one ball per spawner part (`HANDOFF.md` §15 item 137), a ten-second clock on those
+	 * balls drained the floor of a match nobody had finished. **This number governs litter** — a hand-out ball, a
+	 * practice ball, anything nobody owns — and the round's own sweep is what ends an arena ball.
 	 */
 	LIFETIME_SECONDS: 10,
 
 	// ---------------------------------------------------------------- spawner
 
-	/**
-	 * How far from a spawner part a ball still counts as "its", in studs.
-	 *
-	 * This is what makes the count mean *loose balls near the spawner* rather than *balls in the
-	 * game*, and it is doing two jobs at once: it stops a spawner refilling itself with balls that
-	 * have been thrown across the arena and are lying somewhere else entirely, and it stops one
-	 * spawner counting another's. A ball being carried past still counts while it is inside the
-	 * radius, which is close enough — it is a count of what is available here, not a ledger.
-	 */
-	SPAWN_RADIUS: 8,
+	// **There is no spawn radius, and `SPAWN_RADIUS: 8` was it.** It was the distance at which a loose ball
+	// counted as "belonging to" a spawner part, and its only reader was the skip in
+	// `BallSpawnerService.stockArena` — *is any loose ball within eight studs of this part*, asked as a proxy
+	// for *did I already put one here*. Those stopped being the same question the moment an arena had parts
+	// closer together than the radius: the ball put out for one part satisfied its neighbour, and a
+	// twenty-six-part arena stocked ten balls. The skip is gone rather than improved — every part gets a ball
+	// now — so the number has no reader left.
+	//
+	// **Deleted rather than kept at `8`**, because a radius that nothing measures with reads as a rule about
+	// spacing — "keep spawner parts eight studs apart" — and that was never true. How far apart the parts sit
+	// is a level-design decision and nothing in this codebase reads it.
 
 	/**
 	 * How far apart a spawner's balls land, in studs, as a maximum either side of the part.
@@ -171,33 +179,32 @@ export const BALL_CONFIG = {
 	SPAWN_OFFSET_RANGE: 2,
 
 	/**
-	 * How often each spawner's count is compared against the world, in seconds.
+	 * How often each spawner's count was compared against the world, in seconds.
 	 *
-	 * The loop that reads this is a plain `while` with a `task.wait`, so this is the period it
-	 * turns at. Loose, because nothing here is a response to the player: a ball that has been
-	 * thrown is noticed missing a second late and replaced a second late, which is invisible.
+	 * **No reader, since the arena stopped being topped up.** This was the period of the
+	 * `while`/`task.wait` that refilled any spawner part missing its ball; that loop is gone —
+	 * `BallSpawnerService.stockArena` puts one ball beside every part at the start of a round and never
+	 * again — so nothing turns at this rate. **Kept rather than deleted** because the refill design is the
+	 * one alternative a future reader may want back, and a number with a paragraph is how it stays legible:
+	 * the loop itself is a handful of lines in git history, but *why one second* is written nowhere else.
+	 * A practice zone's restock has its own rate and its own loop, under `PracticeZoneService`'s
+	 * `ZONE_TICK_INTERVAL`.
 	 */
 	SPAWN_TICK_INTERVAL: 1,
 
-	/**
-	 * **Placeholder.** Balls wanted in the world per player, as a rate rather than a headcount.
-	 *
-	 * No reader, and no longer a design this project is following: the spawner that now exists
-	 * counts one ball per part, with `MATCH_BALL_COUNT` as the arena's budget — see
-	 * `src/server/config/match.config.ts` — because a ball's *place* is what matters when deciding
-	 * whether the arena has enough of them. Kept only so the shape of the alternative is still
-	 * visible; nothing reads it, and nothing should.
-	 */
-	BALLS_PER_PLAYER: 1.2,
-
-	/** **Placeholder.** Floor on the per-player wanted count. See {@link BALL_CONFIG.BALLS_PER_PLAYER}. */
-	MIN_BALLS: 2,
-
-	/** **Placeholder.** Ceiling on the per-player wanted count. See {@link BALL_CONFIG.BALLS_PER_PLAYER}. */
-	MAX_BALLS: 40,
-
-	/** **Placeholder.** Seconds to wait after a ball goes before replacing it. See {@link BALL_CONFIG.SPAWN_TICK_INTERVAL}. */
-	RESPAWN_DELAY: 2,
+	// **There is no per-player ball count, and `BALLS_PER_PLAYER`, `MIN_BALLS`, `MAX_BALLS` and `RESPAWN_DELAY`
+	// were it.** Those four described a supply sized to the roster — a wanted count per player, floored and
+	// ceilinged, refilled after a delay — and that design never shipped: the spawner that replaced it counts one
+	// ball per round spawner part, and the budget that briefly capped *that* count is gone too, so nothing
+	// computes a wanted number and nothing read these four for two passes before they were deleted.
+	//
+	// **Deleted rather than kept at `1.2 / 2 / 40 / 2`**, because the owner's decision is that there is no limit
+	// to how many balls the arena may spawn, and a floor and a ceiling named `MIN_BALLS` and `MAX_BALLS` are a
+	// limit in the one place a reader goes looking for settings. A retired number earns its paragraph only if it
+	// describes a design somebody could still choose — and a per-player wanted count cannot be chosen without the
+	// refill tick that would spend it, which is gone as well. That is the same argument `match.config.ts` makes
+	// for deleting `MATCH_BALL_COUNT`, and the reason `SPAWN_TICK_INTERVAL` above survived it: a cadence is an
+	// alternative, a ceiling is the thing the owner has ruled out.
 
 	// ----------------------------------------------------------------- pickup
 

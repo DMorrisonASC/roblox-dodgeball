@@ -390,8 +390,9 @@ export class PracticeZoneService implements OnStart {
 	 * unarmed, in `Workspace` and **on no clock** — `BallFactory.createLoose` then `scheduleBallExpiry(…,
 	 * math.huge)`), the practice-ball tag goes on after that, and nothing else is written.
 	 *
-	 * **`false` is the flag that keeps the arena's budget out of it.** The ball is not a `RoundBall`, so
-	 * `roundBallCount` does not see it and `MATCH_BALL_COUNT` is not spent — see `BallSpawnerService.spawn`.
+	 * **`false` is the flag that keeps this ball out of the arena's set.** The ball is not a `RoundBall`, so
+	 * the arena's own tag says nothing about it — see `BallSpawnerService.spawn`, whose paragraph on the flag
+	 * records what the marker still means now that the budget it used to protect is gone.
 	 *
 	 * **Nothing here sets `Armed`, `ThrowerId` or any `BALL_TAGGED_*` attribute, and that is not an
 	 * omission.** A fresh ball already has the state this ball wants: `makeInert` writes `Armed = false` and

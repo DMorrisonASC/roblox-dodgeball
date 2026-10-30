@@ -122,11 +122,12 @@ const CARD_STROKE_THICKNESS = 1;
 /**
  * **The canvas the cards live on — deliberately much larger than they are, and the size is not a layout number.**
  *
- * The stack sizes itself (`AutomaticSize.XY`) and is pinned to the centre of this box by its own anchor, so the
- * canvas only ever needs to be *big enough*: it never clips (`ClipsDescendants = false`) and a stack smaller than
- * the canvas you can see is the only thing that draws. **`400` is a ceiling rather than a target** — a strip of
- * four badges is about a hundred pixels wide — and stating it as a square is what lets the centre be written as
- * `(0.5, 0.5)` in `mountBadges` rather than as two halves of two different numbers.
+ * The stack sizes itself (`AutomaticSize.XY`) and is pinned *horizontally* to the centre of this box and
+ * *vertically* by its bottom edge — see {@link mountBadges} — so the canvas only ever needs to be *big enough*: it
+ * never clips (`ClipsDescendants = false`) and a stack smaller than the canvas you can see is the only thing that
+ * draws. **`400` is a ceiling rather than a target** — a strip of four badges is about a hundred pixels wide — and
+ * stating it as a square is what lets the pin be written as `(0.5, 0.5)` in `mountBadges` rather than as two halves
+ * of two different numbers.
  *
  * **The offset units are the whole of "fixed size", and this number is where that rests.** Roblox's own reference
  * for `BillboardGui` states the difference in one sentence: *"While the **offset** components work the same, the
@@ -137,14 +138,34 @@ const CARD_STROKE_THICKNESS = 1;
  * `TextScaled`, because a scaled label would grow and shrink with the canvas's own box. This file is offset
  * everywhere and `TextScaled` nowhere, which is what makes the strip the same size at ten studs and at ninety.
  *
- * **What it costs**: a `BillboardGui`'s canvas is centred on the adornee, so a taller canvas does not lift the
- * stack — the stack is centred in it, which means the *stack's* centre sits `BILLBOARD_OFFSET_Y` above the head. A
- * strip tall enough to reach the face is answered by raising {@link BILLBOARD_OFFSET_Y}, not by shifting the stack
- * inside the canvas.
+ * **What it costs, and this paragraph used to argue for the arrangement that produced the bug.** A `BillboardGui`'s
+ * canvas is centred on the adornee, so a taller canvas does not lift the stack — and because the stack *was* centred
+ * in the canvas, every card that arrived pushed half its height **downwards** as well as up. A body carrying six or
+ * seven badges therefore wore the bottom three over its own chest and face: the owner's screenshot of 2026-10-28 is
+ * exactly that, and the note that used to stand here — "a strip tall enough to reach the face is answered by raising
+ * `BILLBOARD_OFFSET_Y`" — was answering the symptom, because raising the offset lifts the *centre* and leaves the
+ * same half-hanging shape above the head.
+ *
+ * **The stack is now pinned by its bottom edge to the canvas's vertical centre** (`AnchorPoint (0.5, 1)` in
+ * `mountBadges`), so it can only ever grow upward: the cards are entirely above the adornee point whatever the stack's
+ * length, and {@link BILLBOARD_OFFSET_Y} is now the *whole* of the clearance between a head and the lowest card rather
+ * than the position of a centre. The canvas's lower half goes unused; it is kept because a symmetric box is what lets
+ * the pin be one scale pair, and an asymmetric one would need a pixel offset that had to agree with a stud offset —
+ * the "constant that has to agree with something else" this file refuses everywhere else.
  */
 const BILLBOARD_SIZE = UDim2.fromOffset(400, 400);
 
-/** How far above the head the canvas floats, in studs, and how far away it is still drawn. **Placeholder.** */
+/**
+ * **How far above the head the canvas's centre floats, in studs — which since the stack is bottom-pinned is the
+ * clearance from a head to the lowest card.** And how far away the billboard is still drawn. **Placeholder.**
+ *
+ * **The two numbers are no longer the same kind of thing, and the doc used to read as though they were.** The offset
+ * places the canvas, and the stack's bottom edge sits at the canvas's centre (see `BILLBOARD_SIZE`), so `2.5` is the
+ * air between the middle of a `Head` and the bottom of the first card: about `1.9` studs of it once the head's own
+ * half-height and a hat are subtracted. A default `Head` is roughly `1.2` studs tall, so this clears a bare head and
+ * clears hair; it is *not* sized for a tall accessory, and **raising this one number is now the only correct way to
+ * ask for more room** — raising it moves the pin, and nothing else does.
+ */
 const BILLBOARD_OFFSET_Y = 2.5;
 const BILLBOARD_MAX_DISTANCE = 100;
 
@@ -164,6 +185,13 @@ const BILLBOARD_MAX_DISTANCE = 100;
  * themselves — and **the two hazards that broke the earlier attempts are written down where they bite**: in
  * `mountBadges` (no scale-width rows inside an X-auto parent) and in `makeBadgeCard` (`Top`, never `Bottom` or
  * `Center`, in a frame that sizes itself).
+ *
+ * **That sentence's "bottom-anchored" and item 134's bottom pin are two different mechanisms, and the distinction is
+ * the whole of why one failed and the other does not.** What items 109–111 did was a `UIListLayout` with
+ * `VerticalAlignment = Bottom` — a *layout pass* that needs the frame's height in order to place children while the
+ * frame's height is the children, so it settled a frame late (hazard 2). What pins the strip now is the frame's own
+ * `AnchorPoint.Y = 1`, which is a render transform applied after layout and reads no height at all. Same word, two
+ * different stages of the frame, and only the layout one is a hazard.
  *
  * **There is one card *per badge* now, and the single card that held the stack is gone.** Until this pass a white
  * `Frame` held a `UIPadding` and a transparent list, and the badges inside it were rows on that one sheet. **The
@@ -391,11 +419,18 @@ export class StatsBillboardController implements OnStart {
 	/**
 	 * **The stack of badge cards** — one construction, shared by a player's head and a rig's.
 	 *
-	 * **The self-sizing, centred element is the list, and there is no surface under it.** A `Frame` with
-	 * `AutomaticSize.XY`, pinned to the centre of the canvas by `AnchorPoint (0.5, 0.5)`, holding a vertical
-	 * `UIListLayout` whose children are cards; each card sizes itself and each line inside a card sizes itself.
-	 * The list is then exactly as tall as its cards and its gaps, and it grows outwards from its own centre. There
-	 * is no arithmetic in this function and no number that has to agree with a font.
+	 * **The self-sizing element is the list, and there is no surface under it.** A `Frame` with `AutomaticSize.XY`,
+	 * pinned by its **bottom edge** to the canvas's vertical centre by `AnchorPoint (0.5, 1)`, holding a vertical
+	 * `UIListLayout` whose children are cards; each card sizes itself and each line inside a card sizes itself. The
+	 * list is then exactly as tall as its cards and its gaps. There is no arithmetic in this function and no number
+	 * that has to agree with a font.
+	 *
+	 * **Bottom-pinned rather than centred, and that anchor is the fix for "it is covering parts of the body".** A
+	 * centred list grows in both directions from its own centre, so on a body wearing six badges the lower three sat
+	 * over the chest — the canvas is fixed pixels and does not care how many cards arrive. Pinned by its bottom, a
+	 * card can only lengthen the list *upward*, so the strip is always entirely above the head and its distance from
+	 * the head is `BILLBOARD_OFFSET_Y` and nothing else. The frame's `AnchorPoint` is a render transform rather than a
+	 * layout pass, so this costs none of the one-frame settling that hazard 2 is about.
 	 *
 	 * **It used to be a card with rows on it, and the difference is one `Frame`'s background.** The wrapper had
 	 * paper and a `UIPadding`, so every badge was a row on one sheet and the space between two badges was padding
@@ -436,9 +471,11 @@ export class StatsBillboardController implements OnStart {
 		list.Name = BADGE_LIST_NAME;
 		list.BackgroundTransparency = 1;
 		list.BorderSizePixel = 0;
-		// **The centring the wrapper used to do, and it has to be here now.** The list is the element that sizes
-		// itself, so it is the one that has to be pinned to the middle of the canvas by its own anchor.
-		list.AnchorPoint = new Vector2(0.5, 0.5);
+		// **The horizontal centring the wrapper used to do, and the vertical pin that replaced its centring.** The
+		// list is the element that sizes itself, so it is the one that has to be placed by its own anchor: `(0.5, 1)`
+		// puts the list's **bottom** edge on the canvas's centre, which is the point `BILLBOARD_OFFSET_Y` lifts off the
+		// head — so the strip grows upward and never reaches the body. See `BILLBOARD_SIZE` for what centring cost.
+		list.AnchorPoint = new Vector2(0.5, 1);
 		list.Position = UDim2.fromScale(0.5, 0.5);
 		// **Auto-sized on both axes, and no width of its own**: the canvas shows whatever the list turns out to be,
 		// so the list must be able to answer without being told. See hazard 1 in this method's doc.
@@ -449,9 +486,9 @@ export class StatsBillboardController implements OnStart {
 		layout.FillDirection = Enum.FillDirection.Vertical;
 		layout.SortOrder = Enum.SortOrder.LayoutOrder;
 		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center;
-		// **`Top` because this frame sizes itself** — see hazard 2. The stack is what makes the group appear to
-		// grow upward: the list is centred on the canvas and the canvas on the head, so a card added at the top
-		// pushes the list's centre up by half that card's height.
+		// **`Top` because this frame sizes itself** — see hazard 2. It is also what keeps the growth on one side: the
+		// bottom edge is the pinned one, so children arranged from the top push the frame's *top* up by the height of
+		// whatever was added, and nothing is ever laid out below the pin.
 		layout.VerticalAlignment = Enum.VerticalAlignment.Top;
 		// **The gap *between* cards**, which is a different space from the padding inside one. See `CARD_PADDING`.
 		layout.Padding = new UDim(0, BADGE_ROW_GAP);
@@ -725,11 +762,11 @@ function makeBillboard(head: BasePart, state: Fusion.Value<string>, scope: Fusio
 	// be anywhere.
 	billboard.AlwaysOnTop = false;
 	billboard.MaxDistance = BILLBOARD_MAX_DISTANCE;
-	// **The canvas is deliberately far larger than the card, and it never clips.** The card sizes itself and is
-	// centred on this box by its own anchor, so the canvas is a ceiling rather than a container — the only thing
-	// that draws is the card. `ClipsDescendants` is written explicitly rather than left to its default because the
-	// whole arrangement depends on that answer: a card that outgrew the canvas would be cut in half by a property
-	// nobody looked at. See `BILLBOARD_SIZE`.
+	// **The canvas is deliberately far larger than the card, and it never clips.** The card sizes itself, is centred
+	// in this box horizontally and sits on its centre vertically (see `mountBadges`), so the canvas is a ceiling
+	// rather than a container — the only thing that draws is the card. `ClipsDescendants` is written explicitly rather
+	// than left to its default because the whole arrangement depends on that answer: a card that outgrew the canvas
+	// would be cut in half by a property nobody looked at. See `BILLBOARD_SIZE`.
 	billboard.ClipsDescendants = false;
 	billboard.Parent = head;
 

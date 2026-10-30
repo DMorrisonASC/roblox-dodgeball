@@ -280,6 +280,29 @@ function registerGroups(): void {
 	Workspace.CollisionGroupSetCollidable(BARRIER_GROUP, BALL_GROUP, false);
 	Workspace.CollisionGroupSetCollidable(BALL_GROUP, PRACTICE_GROUP, false);
 
+	// ----------------------------------------------------------------- the balls
+	//
+	// **A ball is non-collidable with every other ball, and this one row is the whole of that rule.** A thrown ball
+	// has to pass through any ball it meets — one in the air, one rolling on the floor, one in somebody's hand —
+	// because a throw's job is to reach a body, and a contact between two balls is the engine turning a throw it did
+	// not decide. `BallComponent.handleTouch` has said *"a ball, and this throw owes nobody — carried on past it"*
+	// since the day it was written, and **until this row existed that sentence was a veto on a contact that had
+	// already deflected the ball**: the code declined to count the hit and physics took the throw anyway, which in a
+	// stand-off meant both throws missed. §15 item 32 found it, wrote the row down and deferred it; this is that row.
+	//
+	// **What it costs**: loose balls sink into each other where they pile up, so a heap of three reads as one blob
+	// with edges. Nothing reads that geometry. `BallPickupService` picks up by **proximity** rather than by a
+	// contact, so a pile is still one press per ball in it, and the ball that is on top or inside another is no
+	// harder to collect than the one beside it. The pile is cosmetic and the row is the fix.
+	//
+	// **What it does not touch.** `BallWall` against `Ball` stays collidable — that is a wall that stops balls, a
+	// different row, argued below. The midline still lets a ball through, a body still stops one, a practice player
+	// still does not. **The engine's bounce is all this row takes away**: whether the *contact* still fires is a
+	// separate question, and `BallComponent`'s other-ball branch is written for the answer this file's siblings give
+	// (a group does not suppress `Touched` — see the duck's block below, which needs that to be true).
+	PhysicsService.CollisionGroupSetCollidable(BALL_GROUP, BALL_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(BALL_GROUP, BALL_GROUP, false);
+
 	// ------------------------------------------------------------- the ball wall
 	//
 	// **The other wall, row for row the opposite of the one above.** `BallWall` against `Ball` is colliding, so a
@@ -360,6 +383,18 @@ function registerGroups(): void {
 		`[Collision] ${BALL_GROUP}/${PRACTICE_GROUP} collides — service ` +
 			`${PhysicsService.CollisionGroupsAreCollidable(BALL_GROUP, PRACTICE_GROUP)}, ` +
 			`world ${Workspace.CollisionGroupsAreCollidable(BALL_GROUP, PRACTICE_GROUP)}`,
+	);
+
+	// **And the ball's other half, which is the row a deflect is read against.** `false` here is a thrown ball
+	// passing through a thrown ball; `true` is the engine turning a throw it did not decide, which is §15 item 32's
+	// report and looks from a player's seat exactly like bad aim. It costs one line, and it is the only evidence a
+	// later session can read from a *live* server for a row whose whole effect is invisible until a ball crosses
+	// another one — a `false` on both sides says the row took, and a `true` on either says it did not, without
+	// anybody having to reproduce a stand-off.
+	logInfo(
+		`[Collision] ${BALL_GROUP}/${BALL_GROUP} collides — service ` +
+			`${PhysicsService.CollisionGroupsAreCollidable(BALL_GROUP, BALL_GROUP)}, ` +
+			`world ${Workspace.CollisionGroupsAreCollidable(BALL_GROUP, BALL_GROUP)}`,
 	);
 
 	logInfo(

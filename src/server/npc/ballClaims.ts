@@ -38,8 +38,10 @@ import { NPC_CONFIG } from "shared/config/npc.config";
  *   simply free, and whichever rig reaches it in its own selection gets it.
  *
  * **State, and why one map rather than two.** `Map<BasePart, Claim>` — ball to holder — with `release`
- * scanning for the rig's own entry, which is O(balls) and there are never more than `MATCH_BALL_COUNT` of
- * them. The alternative is a second map the other way round (rig to ball) so `release` is O(1), and it is
+ * scanning for the rig's own entry, which is O(balls) and there are never more balls than there are round
+ * spawner parts (the arena puts out one each per round and never replaces one — see
+ * `BallSpawnerService.stockArena`). The alternative is a second map the other way round (rig to ball) so
+ * `release` is O(1), and it is
  * worse than it looks: two maps mean two writers, and the one bug this module can have is the two
  * disagreeing about who holds what. A handful of comparisons per release is not a price worth that.
  * `claim` and `claimedBy` are O(1) single-entry reads; the sweep in `claim` is O(balls) and runs a few

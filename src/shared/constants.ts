@@ -447,8 +447,8 @@ export const MATCH_SPAWNER_TAG = "MatchSpawner";
  * and ownership, which is the same rule written where the geometry is rather than where the ball is. The
  * tag is the one fact that says it, and it is the reason the practice arm is safe to add at all: **the two
  * sweeps that could eat it ask about other tags.** `BallSpawnerService.cleanupRoundBalls` skips a ball
- * inside a practice zone by position, and `roundBallCount` counts `RoundBall` alone — so a practice ball
- * neither spends the arena's budget nor is swept by the round's end.
+ * inside a practice zone by position, and the arena's own stocking only ever walks parts wearing
+ * `MatchSpawner` — so a practice ball is neither swept by a round's end nor counted as one of the arena's.
  *
  * **Placeholder** — the name, not the mechanism.
  */

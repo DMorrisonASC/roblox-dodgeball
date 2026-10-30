@@ -212,7 +212,7 @@ interface Windup {
 	 * **An offset rather than a point, and that is the difference between a wide throw and a stale one.** A point
 	 * would be where the target stood when the rig decided; the hold is up to a second and a quarter long and the
 	 * two shapes that walk move the rig twenty studs in that time, so an absolute point would send every wide throw
-	 * at the body's *old* position — a systematic short-or-long bias every watcher could learn, which is the one
+	 * at the body's *old* position — a systematic sideways bias every watcher could learn, which is the one
 	 * kind of error a miss rate must not produce. The offset is re-applied to wherever the target is each turn, by
 	 * the same `missedPoint` call the facing and the release both use, so the facing and the ball agree and a wide
 	 * throw still leads a moving body.
@@ -276,7 +276,7 @@ interface ThrowLine {
 }
 
 /**
- * A deliberate miss: how far off this throw is aimed, and which way.
+ * A deliberate miss: **how far to the rig's left or right this throw is sent, in studs.**
  *
  * **An offset and not a point, which is the one thing about its shape worth arguing.** The obvious version of
  * this carried the offset *and* the point it produced, so the throw site could hand `throwBall` a target — and
@@ -287,39 +287,65 @@ interface ThrowLine {
  * whatever point the aim is at *now*, by {@link missedPoint}, which is why the facing and the ball can keep
  * tracking a moving body while still being wrong by the same few studs.
  *
+ * **The axis is the shoulder, and this type has now been wrong about that in both directions.** It shipped as a
+ * lateral offset, was moved onto the *range* on the argument that the enemy line is the lateral axis, and is moved
+ * back here on a measurement that the range version cannot miss. The arithmetic is worth writing down because
+ * nothing about it is subtle once it is stated: **the aim point is where the ball stops, not where it goes.** A
+ * ball sent to a point past the target travels along the same line as a ball sent to the target, and the target is
+ * standing on that line — so "long" is not a miss at all but a hit with follow-through, and the further past the
+ * body the mark is put the longer the ball stays inside the body it was aimed through. The log that settled it is
+ * the 2026-10-29 21:20 session: **twenty-seven credited hits that pair with a throw, twenty-two of them from
+ * throws already logged as deliberately long.** `rollMiss` carries the rest of the measurement.
+ *
+ * **A short range miss is no better, which is the half nobody expected.** `chargeForRange` bottoms out at
+ * `CHARGE_MIN_SPEED`, so a point closer than a tap's reach is thrown with a tap — and a tap covers about
+ * thirty-nine studs from a hand at head height down to a body's root. A rig aiming twelve studs short of a target
+ * twelve studs away therefore throws the same thirty-nine-stud ball, *through* the target, with the aim point
+ * clamped back past them; the roll happened and the outcome never heard about it. **A lateral offset has no such
+ * failure**: it is perpendicular to the flight, so it moves the body out of the swept line at every range and at
+ * every charge, including the ones the clamp owns.
+ *
  * **Exported, and it is the pair's rather than this file's**: `AlwaysThrowBehavior` records the same offset on its
- * own windups and re-applies it with {@link missedPoint}, which is what makes a practice rig wide by the same
- * studs as a gated one for the same draw.
+ * own windups and re-applies it, which is what makes a practice rig wrong by the same studs as a gated one for the
+ * same draw.
  */
 export interface Miss {
-	/** How far off the aim is, in studs. Never zero — see `THROW_MISS_STUDS_MIN`. */
-	readonly studs: number;
-
-	/** Which way, in the rig's own terms: `1` is its right, `-1` its left. */
-	readonly side: number;
+	/**
+	 * How far to the side of the target the ball is sent, in studs — **negative for the rig's own left.**
+	 *
+	 * Signed rather than a magnitude and a side, because the two directions are one axis and every reader wants
+	 * the offset rather than the pair. Nought is not a miss: see `rollMiss`, which never draws one.
+	 */
+	readonly lateral: number;
 }
 
 /**
- * Moves `aimPoint` sideways by `miss` — **the one place a deliberate miss becomes a point, used by everybody who
- * needs one.**
+ * **Moves `aimPoint` sideways** — the one place a deliberate miss becomes a point, used by everybody who needs
+ * one. Every word of the old argument for the range axis has moved to {@link Miss}, which is where that
+ * correction is now recorded.
  *
  * **Both readers of a recorded miss call this rather than doing the arithmetic**: the tick, which turns the body
  * onto the point it is about to throw at, and the release, which aims the ball at it. That is what makes the
  * telegraph honest — a rig holding a wide throw is visibly pointed a few studs off the player, and the ball goes
- * where the body is pointed. Two copies of `aimPoint.add(right * side * studs)` would be two chances for the turn
+ * where the body is pointed. Two copies of `aimPoint.add(right * miss.lateral)` would be two chances for the turn
  * and the throw to disagree about the same mistake, which would read as a rig that flinched at the last moment.
  *
- * **The rig's own right, flattened, read fresh every call** — so a rig that has turned since it decided still
- * misses to the side its body is now on. The Y component is dropped for `rollMiss`'s reason: a body leaning on a
- * slope would otherwise throw the ball over the target instead of past it, which is a different miss and the only
- * one this is not allowed to produce. A body with no usable right (which cannot happen for a live rig, and does
- * for a degenerate one) gets the point unchanged rather than a NaN.
+ * **The direction is the rig's own right, flattened and read fresh every call**, so a rig that has turned since it
+ * decided still misses to the side its body is *now* on. The Y component is dropped for the reason the throw model
+ * forces rather than for taste: `CHARGE_PEAK_HEIGHT` fixes the ball's apex half a stud above the hand, so an aim
+ * point above a head is not a point the solve can reach and "over their head" is not an error this game can
+ * express. A body with no usable right gets the point unchanged rather than a NaN.
+ *
+ * **There is no cap here, and the cap that used to be here existed to stop a range miss eating itself.** Half the
+ * reach kept a short aim point from landing behind the rig; a sideways offset cannot point behind the rig, so the
+ * only bound this needs is the one the draw already puts on it — and that bound is about bodies, not about the
+ * throw. See `THROW_MISS_STUDS_MIN`/`_MAX`.
  */
 export function missedPoint(root: BasePart, aimPoint: Vector3, miss: Miss): Vector3 {
 	const right = new Vector3(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z);
 	if (right.Magnitude < AIM_FLAT_EPSILON) return aimPoint;
 
-	return aimPoint.add(right.Unit.mul(miss.side * miss.studs));
+	return aimPoint.add(right.Unit.mul(miss.lateral));
 }
 
 /**
@@ -356,23 +382,42 @@ function holdOf(model: Model, aimPoint: Vector3): { charge: number; distance: nu
 /**
  * Rolls this throw's error: nothing at all when it is aimed true, or a few studs to one side of the target.
  *
- * **A rig is fallible on purpose, and the error is in the *aim* rather than in the charge.** A miss that lowered
- * the charge would make the ball fall short, which reads as a *weak* rig rather than as an inaccurate one — and a
- * weak rig is a worse character than a fallible one. The lateral error keeps every throw exactly as strong as the
- * one before it: the ball simply leaves for a point a few studs off the body. See
- * `NPC_CONFIG.THROW_MISS_STUDS_MAX` for why the unit is studs and not degrees, and
- * `NPC_CONFIG.THROW_MISS_CHANCE` for why this is a rate rather than a spread.
+ * **The axis went shoulder → range → shoulder, and the second move is the one this function has to explain.** The
+ * range version was reached by an argument about the enemy *line* — bodies are spread along the lateral axis, so a
+ * sideways error is an error along that line — and that argument is sound about *which body* a wide ball reaches. It
+ * is not sound about whether the throw misses, and the difference is one sentence: **an aim point is where the ball
+ * stops, not where it goes.** Both offsets are placed on the throw's own line, so a ball sent past the target
+ * travels through the target to get there. "Long" was never a miss; it was a hit with follow-through, and the
+ * further past the body the mark was put the longer the ball stayed inside it.
+ *
+ * **The measurement, because the paragraph this replaced was written without one.** The 2026-10-29 21:20 log: 111
+ * throws, 106 of them drawn as misses, 27 credited hits that pair with a throw by the same rig — and **22 of those
+ * 27 came from throws already logged as `studs long`.** The report that arrived with it, "the NPCs are too accurate",
+ * is that arithmetic rather than a tuning problem, and no value of `THROW_MISS_STUDS_*` fixes a mark placed on the
+ * far side of the thing being thrown at.
+ *
+ * **Nor does the short half survive `chargeForRange`'s clamp.** The charge bottoms out at `CHARGE_MIN_SPEED`, which
+ * covers about thirty-nine studs from a hand at head height down to a body's root; below that the solve returns `0`
+ * and the ball flies the tap's own range whatever was asked for. A rig aiming twelve studs short of a target twelve
+ * studs away therefore throws the same thirty-nine-stud ball, straight through the target, with the aim point
+ * clamped back past them. That is why the four "short" hits in that log are not an anomaly.
+ *
+ * **A lateral offset cannot fail that way, and that is the whole of why it is back.** It is perpendicular to the
+ * flight, so it moves the body out of the swept line at every range and at every charge — including the charges the
+ * clamp owns — and it does not care what the solve does with the distance. **What it depends on is the band being
+ * narrower than the gap between two rigs**, which is the one thing the version that shipped before this got
+ * backwards: fifteen to twenty studs was the spacing the enemy line happens to have, so a wide throw at that width
+ * was a pass to the next opponent along. `THROW_MISS_STUDS_MIN`/`_MAX` carry the geometry and the new numbers.
+ *
+ * **Side is a coin flip**, so the error has no shoulder of its own to learn — an always-left rig is a rig a watcher
+ * can predict, which is the argument the range version made for short/long and the reason neither survives as a
+ * one-sided error.
  *
  * **A rate and not a spread, and the difference is the whole of the design.** A spread applied to every throw
  * makes every ball slightly wrong, which reads as a rig that cannot aim and which teaches a player to distrust
- * the throw altogether. A rate leaves half the throws exactly as honest as they ever were, so the rig reads as a
+ * the throw altogether. A rate leaves some throws exactly as honest as they ever were, so the rig reads as a
  * capable opponent that occasionally gets one wrong — which is what the user asked for ("to simulate real player
- * misclicks") and what makes the *windup* worth watching. Move the chance, not the magnitude, if the rigs still
- * feel too accurate.
- *
- * **Left and right are the rig's own.** The offset is along the flattened `RightVector`, so a rig facing
- * north that misses to its right sends the ball east. World-relative sides would have a rig facing east
- * missing "right" by throwing north, which is nobody's idea of a misclick.
+ * misclicks") and what makes the *windup* worth watching.
  *
  * **It does not print, and it does not know whether the throw lands.** `throwBall` answers whether a ball
  * actually left, and it refuses some attempts — a frozen body keeps its ball — so a line from in here
@@ -389,7 +434,7 @@ function holdOf(model: Model, aimPoint: Vector3): { charge: number; distance: nu
  * one decision per throw.
  *
  * **The common case returns nothing**, so a rig that is not missing this time is throwing exactly what it
- * threw before any of this existed.
+ * threw before any of this existed. At the shipped `0.95` that is one throw in twenty.
  */
 function rollMiss(root: BasePart): Miss | undefined {
 	if (math.random() > NPC_CONFIG.THROW_MISS_CHANCE) return undefined;
@@ -404,11 +449,11 @@ function rollMiss(root: BasePart): Miss | undefined {
 		NPC_CONFIG.THROW_MISS_STUDS_MIN +
 		math.random() * (NPC_CONFIG.THROW_MISS_STUDS_MAX - NPC_CONFIG.THROW_MISS_STUDS_MIN);
 
-	// A coin flip for the side, so a rig is as likely to be wide one way as the other — the two-sided
-	// error a person makes, rather than a habitual bias toward one shoulder.
+	// A coin flip for the side, so a rig is as likely to be wide one way as the other — the two-sided error a
+	// person makes, rather than a habitual bias toward one shoulder.
 	const side = math.random() < 0.5 ? -1 : 1;
 
-	return { studs, side };
+	return { lateral: side * studs };
 }
 
 /**
@@ -470,8 +515,9 @@ export interface WindupTracker {
 	 * **`aimPoint` rather than a charge, and that is what makes one call site impossible to forget.** The roll
 	 * lives behind this signature, so a behaviour that starts a hold gets the error whether or not its author
 	 * remembered one existed — which is how a behaviour added later inherits it instead of being a second place the
-	 * rule has to be added. `root` is the body the error is measured sideways from; passing it rather than looking it
-	 * up keeps this a pure function of what the caller already resolved.
+	 * rule has to be added. `root` is the body the error is measured *from* — the offset is placed along the rig's
+	 * own flattened right, so a rig that has turned since it decided misses to the side it is *now* on — and passing
+	 * it rather than looking it up keeps this a pure function of what the caller already resolved.
 	 *
 	 * **`trueAim`, and it is the one exception the paragraph above has to make room for.** A caller that passes it
 	 * `true` suppresses the roll, and **exactly one caller does: `PracticeThrowBehavior`.** The reasoning is the
@@ -613,7 +659,7 @@ export function createWindupTracker(): WindupTracker {
 		// nothing — the common case, and the rig then throws exactly what it threw before any of this existed — or
 		// a few studs to one side of the target, which `missedPoint` turns into the point the throw is really for.
 		// The offset is what goes on the row, not the point: the release and every turn of the hold re-apply it to
-		// wherever the target is *then*, so a wide throw still tracks a moving body. See {@link Windup.miss}.
+		// wherever the target is *then*, so a missed throw still tracks a moving body. See {@link Windup.miss}.
 		//
 		// **`trueAim` skips the roll entirely rather than rolling and discarding it, and the difference is the log.**
 		// A drill that suppressed the error after drawing one would still have a `Windup.miss`-shaped hole to fill;
@@ -984,23 +1030,21 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			// stopped tracking during its own windup would throw at where the player was when it decided, which
 			// is the un-dodgeable rig this whole change is against.
 			//
-			// **And once a wide one has been rolled, this is where the body is told about it.** The point watched
-			// here is the one the ball will leave for, error included — so a rig mid-windup on a wide throw is
-			// *visibly* aiming a few studs to one side, and the telegraph points where the ball goes rather than at
-			// the player. That is the house's own rule about a preview being honest applied to a rig: a hold that
-			// said "this is coming at you" and then sent the ball elsewhere would be an invitation to a dodge that
-			// was never available. The error is re-applied to the target's *current* point each turn, so the turn
-			// still tracks a moving body — see `missedPoint` — and the release applies it the same way, which is
-			// what keeps the facing and the throw describing one point.
+			// **And once a miss has been rolled, this is where the body is told about it.** The point watched here
+			// is the one the ball will leave for, error included — and because the error is *sideways*, that point
+			// is off the line the rig was looking down, so **the facing gives the throw away**: a rig holding a wide
+			// throw is turned a few degrees off the player and the ball leaves along the pose a watcher has been
+			// reading for the whole hold. That is the telegraph rule satisfied twice over — the hold says "this is
+			// coming at you" and the aim says *what*, and the two agree because they are one point, drawn once.
+			// (The range version of this error had to give the pose up: a short or a long mark sits on the same line
+			// as a true one, so every hold looked identical and the only tell was the ball. See `Miss`.)
 			//
-			// **What that costs, named rather than discovered: a wide-windup rig's retreat is off-line too.** The
-			// seek's backpedal is the facing reversed — the legs one way, the eyes the other — so a rig winding up
-			// on a ten-stud miss at twenty studs of range walks away along a line about twenty-six degrees off
-			// straight-back. It does not break anything (`SeekBehavior.pickupWalk` reads the facing, and the facing
-			// is still a real direction), and it arguably reads better than the alternative: a body whose retreat
-			// is perfectly square while its throw is crooked is a body with two different ideas. It is a *cost*
-			// because a watcher who has learned a rig's backpedal from its accurate throws will see the wide ones
-			// drift, which is one more thing the error is visible in.
+			// **What a turned-aside facing costs, which is the thing the range version bought and this one pays
+			// again: a wide-windup rig's retreat is off-line too.** The backpedal reverses the facing, so a rig
+			// winding up on a wide throw retreats up to twenty-six degrees off straight-back rather than squarely —
+			// measured, and kept here so the next reader knows the question was asked rather than missed. It is the
+			// price of the telegraph, and the telegraph is what the windup exists for; the alternative is a rig whose
+			// pose means nothing, which is worse than a rig that shuffles a little when it is about to miss.
 			const windup = windups.get(model);
 
 			const turnTo =
@@ -1175,17 +1219,19 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 			windups.endWindup(model);
 
 			// **And the point handed over is the only thing the miss touches.** `missedPoint` reapplies the offset
-			// to the target's *current* position, which is the difference between a wide throw and a stale one: the
-			// error is a fixed number of studs to one side, so the ball still leads a moving target — it is simply
-			// a few studs off the line it would otherwise have taken. Applying the decision turn's absolute point
-			// instead would send every wide throw at where the body *was*, which is a systematic short-or-long bias
-			// and the one error a watcher can learn. The rig's own right is read off the body as it stands, so a rig
-			// that has turned since deciding still misses to the side its body is on.
+			// to the target's *current* position, which is the difference between a missed throw and a stale one:
+			// the error is a fixed number of studs to the side, so the ball still leads a moving target — it is
+			// simply a few studs off it. Applying the decision turn's absolute point instead would
+			// send every missed throw at where the body *was*, which is a bias a watcher can learn; the line is read
+			// off the target as it stands, so a rig whose target has moved since the roll misses relative to where
+			// that body is now.
 			//
 			// **The facing above already used this same point** (see the `aimAt` call, which runs whether or not the
-			// throw is a wide one), so the body is aimed at the error and the ball leaves for it — one point, drawn
-			// once, used by the turn and by the throw. See `rollMiss` for why the miss is in the aim rather than in
-			// the charge, and `NPC_CONFIG` for the numbers.
+			// throw is a missed one), so the body is aimed at the mark the ball leaves for — one point, drawn once,
+			// used by the turn and by the throw. On a wide miss the turned-aside pose and the ball are the *same*
+			// vector, which is what makes the windup honest; the distance changes by a hair, because a point moved
+			// sideways at the target's own range is at almost the same range from the hand, so the charge barely
+			// moves. See `rollMiss` for why the error sits on that axis, and `NPC_CONFIG` for the numbers.
 			const aimPoint = miss === undefined ? sighting.aimPoint : missedPoint(rigBody.root, sighting.aimPoint, miss);
 			const release = aimOf(model, rigBody.root, aimPoint);
 
@@ -1290,8 +1336,8 @@ export function createThrowBehavior(balls: BallService): NpcBehavior {
 				const wide =
 					miss === undefined
 						? ""
-						: `, ${string.format("%.1f", miss.studs)} studs to the ` +
-							`${miss.side > 0 ? "right" : "left"} (missed on purpose)`;
+						: `, ${string.format("%.1f", math.abs(miss.lateral))} studs ` +
+							`${miss.lateral < 0 ? "left" : "right"} (missed on purpose)`;
 
 				logInfo(
 					`[Rig] ${model.Name}: throw ${walk} — ` +

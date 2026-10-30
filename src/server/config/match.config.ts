@@ -33,20 +33,19 @@ export const MATCH_MIN_PLAYERS = 2;
  */
 export const MATCH_MAX_PER_TEAM = 4;
 
-/**
- * How many balls a match puts out, across every spawner in the arena. **Placeholder — 8.**
- *
- * **Currently equal to `MATCH_MAX_PER_TEAM × 2`, and deliberately not written that way.** Two sizes
- * that happen to agree are two sizes that will stop agreeing without anybody noticing: raising the cap
- * to five a side would quietly raise the ball count to ten, which is a change to the *arena* made by
- * an edit to a *roster rule*. They are two decisions, so they are two numbers.
- *
- * **It is the ceiling rather than the supply.** Each spawner part puts out one ball — see
- * `BallSpawnerService.tick` — so the budget only bites when there are more spawner parts than this;
- * below that the parts are the limit. It is counted from the balls that exist rather than tallied as
- * they are made, so a ball destroyed on impact is replaced and the count cannot drift.
- */
-export const MATCH_BALL_COUNT = 8;
+// **There is no ball budget, and `MATCH_BALL_COUNT = 8` was it.** That constant capped the arena at eight
+// spawner balls and was spent by `BallSpawnerService`'s top-up tick.
+//
+// **Both halves are gone, and deliberately**: the tick no longer exists, so nothing replaces a thrown
+// ball, and with no replacement there is nothing for a ceiling to bound. **A round contains exactly one
+// ball per round spawner part** — see `BallSpawnerService.stockArena` — so the size of a match's ball
+// supply is a property of the arena a dev can count in the Explorer rather than a number in this file.
+//
+// **Deleted rather than left at `8` with a note.** This project's rule for a retired number is that it may
+// stay if it still describes an alternative somebody might choose (see `BALL_CONFIG.SPAWN_TICK_INTERVAL`).
+// This one does not: a cap on a supply that is no longer replenished is not a design anyone can pick
+// without also picking the tick that made it mean something, and a bare `8` in `match.config` would be
+// read as "the arena has eight balls" — now false for every arena whose part count is not eight.
 
 /**
  * How long a character is ignored after touching a join part, in seconds. **Placeholder — 0.5.**
@@ -122,8 +121,42 @@ export const MATCH_SIGN_MAX_DISTANCE = 500;
 /** How far above the part the sign floats, in studs. **Placeholder — 8**, clear of a character. */
 export const MATCH_SIGN_OFFSET_Y = 8;
 
-/** The sign's size. **Placeholder — one line of text at two and a bit times a caption's height.** */
+/**
+ * The sign's size. **Placeholder — two lines of text: a headline and a line under it.**
+ *
+ * **The height is the number that changed meaning, and it is why the sign is two lines now.** It was
+ * described as "one line of text at two and a bit times a caption's height", which was the measurement
+ * that made a single label the only thing that would fit. A headline at {@link MATCH_SIGN_TEXT_SIZE} and a
+ * second line at {@link MATCH_SIGN_SUBTEXT_SIZE}, with {@link MATCH_SIGN_LINE_GAP} between them, come to
+ * about `57` pixels of a `64` box, so the box was already tall enough for the shape that reads better —
+ * what was missing was the split, not the room.
+ *
+ * **The width is unchanged and still the constraint.** `Join Blue` and `4 seats available` are both
+ * comfortably inside `220` at their own sizes; the longest form — `Join Blue` over `4 seats available` —
+ * is the one to re-measure if either type size is raised.
+ */
 export const MATCH_SIGN_SIZE = new UDim2(0, 220, 0, 64);
 
 /** The sign's type size, in pixels. **Placeholder — 30**, sized to be read across a lobby. */
 export const MATCH_SIGN_TEXT_SIZE = 30;
+
+/**
+ * The size of the sign's second line, in pixels. **Placeholder — 16.**
+ *
+ * **Smaller than the headline because it is a second question**, not because it is less important: the
+ * headline says what touching the part does, and the line under it says whether there is room. A front
+ * door reads the same way, and the size difference is the whole of the hierarchy on a sign with no panel
+ * behind it. **The colour is not dimmed to match**, which is the one place this differs from a printed
+ * panel: the sign floats over a lit lobby with a text stroke for contrast, and a half-transparency white
+ * over a pale floor is the least readable thing on the board rather than the quietest.
+ */
+export const MATCH_SIGN_SUBTEXT_SIZE = 16;
+
+/**
+ * The gap between the sign's two lines, in pixels. **Placeholder — 2.**
+ *
+ * Two pixels rather than nought, because a `TextLabel` sized to its own text leaves its line box taller
+ * than its glyphs and the two would otherwise touch; more than four and the pair stops reading as one
+ * block. It is small because the two lines are one sign rather than two signs.
+ */
+export const MATCH_SIGN_LINE_GAP = 2;

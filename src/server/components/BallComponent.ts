@@ -389,6 +389,25 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// load-bearing: a ball in somebody's hand has a `Model` above it, so it would otherwise be
 		// answered as a body contact, dropped by `struckBodyPart`, and leave the throw carrying on
 		// exactly as the second version did.
+		//
+		// **And the bounce that made a veto of this necessary is gone, in `CollisionGroups` rather than here.**
+		// That file now writes `Ball` against `Ball` as non-collidable (§15 item 135), so a throw crossing another
+		// ball is no longer *deflected* by it: what the row takes away is the engine's collision response, which is
+		// the half no branch in this file could ever have taken away. Everything above was written while that
+		// response was still happening, and it is kept for two reasons — it is the statement of what a ball contact
+		// *means* to a throw, and it is what makes the row sufficient on its own.
+		//
+		// **What the row does not take away is the contact itself, and that is deliberate rather than an oversight.**
+		// Collision and touch are separate switches in this engine — the same fact the duck's veto and the practice
+		// zone's are built on, and the one `BallService.pierceBodies` states in the same words: *`CanTouch` exists
+		// precisely because a non-colliding part still fires `Touched`*. So this branch is still expected to run,
+		// once per ball the throw crosses, and it costs one `HasTag` and one `if` when it does.
+		//
+		// **What would prove the expectation wrong is in the log rather than in this comment.** If a Studio run
+		// shows balls passing through each other *and* no `carried on past it` line for the crossing, then a group
+		// does silence the contact and this guard has become dead code — the throw is still right either way, but
+		// the two ball branches below would be unreachable and one of them (`isBall` in the world branch) is what
+		// ends a throw that has already tagged somebody. That is the line to read before deleting anything.
 		if (isBall(otherPart) && this.hitModels.size() === 0) {
 			this.noteDecidedNothing(otherPart, "a ball, and this throw owes nobody — carried on past it");
 			return;

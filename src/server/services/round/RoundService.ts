@@ -2108,6 +2108,27 @@ export class RoundService implements OnStart {
         // and leaving it running would carry a super through the respawn.
         this.abilities.clearMultiBall(player);
 
+        // **What the body was carrying goes back into the world, and this is the player half of a rule the rigs have
+        // had since item 138.** `RespawnBehavior.onDied` already calls `balls.dropBall(model)` before its corpse is
+        // replaced, for exactly this reason — a held ball is parented to the *character*, so a body that is destroyed
+        // takes the ball with it. A player death had no such line, and until the arena's ball supply became fixed at
+        // one per spawner part (item 137) nobody could see it: the spawner's top-up replaced whatever a corpse had
+        // swallowed. With a fixed supply, **every death holding a ball permanently cost the round one**, and a round
+        // of eight rigs emptied the floor without a single expiry. See item 139.
+        //
+        // **`dropBall` rather than `removeBall`, which is `RespawnBehavior`'s own choice and its own argument** —
+        // dropped so what the body was carrying is still in play rather than deleted. The lifetime it lands on is
+        // `BallService.lifetimeOf`'s answer, and for a ball the arena stocked that is no clock at all, which is what
+        // makes a dropped arena ball wait to be collected instead of vanishing ten seconds later.
+        //
+        // **Above the guards, because a death in the lobby loses a ball the same way.** The two returns below are
+        // about whether the *round* hears about a death; the ball is a fact about a body, and a body being replaced
+        // is a body being replaced whatever the phase is doing. A marked ball dropped here is forfeited rather than
+        // put down — `dropBall`'s own rule for a charge — which is the same trade the rig path makes. **Declared as
+        // its own name because `dying` is taken below**, where the same character is read for the unfreeze.
+        const carrying = player.Character;
+        if (carrying) this.balls.dropBall(carrying);
+
         // **And the freeze comes off the body before anything respawns it.** The watcher in
         // `FreezeService` fires on the same `Died` signal as this handler, and this one is connected
         // first — at `CharacterAdded`, before any ball could have frozen the body. So the watcher's

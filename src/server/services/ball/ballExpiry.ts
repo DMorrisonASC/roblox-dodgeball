@@ -11,7 +11,7 @@
  * is not reliably "the last token plus one" — and a timer that wrongly matched would destroy a ball it had
  * no business touching. One rising number for the whole server cannot collide with itself.
  */
-import { logDebug } from "shared/logger";
+import { logInfo } from "shared/logger";
 
 const clocks = new Map<BasePart, number>();
 
@@ -88,7 +88,14 @@ export function scheduleBallExpiry(
 		// why a sixty-second-old timer taking a ball mid-flight looked like the ball simply vanishing. The
 		// time is the ball's own lifetime and not the time it spent in the world, which is the distinction
 		// that makes this readable.
-		logDebug(`[Ball] ${ball.Name} expired — ${timeoutSeconds}s since it last left a hand`);
+		//
+		// **`logInfo` rather than `logDebug`, and that is a decision rather than a detail.** This is the only
+		// timer in the game that destroys something a player can see, and it was still silent to anybody
+		// reading a log — which is why *"the balls are disappearing"* has come back three times with no
+		// evidence either way. It should be rare now: `BallService.lifetimeOf` puts nothing on a clock while a
+		// round is being played, so a line here means a loose ball outside a round, which is litter doing
+		// exactly what it was left to do.
+		logInfo(`[Ball] ${ball.Name} expired — ${timeoutSeconds}s since it last left a hand`);
 
 		ball.Destroy();
 	});

@@ -50,7 +50,7 @@ import { emitSound } from "./SoundEmitter";
 import { DevService } from "../../dev/DevService";
 import { SuperService } from "../super/SuperService";
 import { TEAM_A, TEAM_B, TeamLabel } from "../round/team";
-import { roundCelebrating } from "../round/roundStatus";
+import { roundCelebrating, roundPlaying } from "../round/roundStatus";
 import { isPractising } from "../zone/practiceZoneMembership";
 import { holdSeconds, noteCharging } from "../character/chargeClock";
 import { EconomyService } from "../economy/EconomyService";
@@ -152,6 +152,30 @@ interface Pull {
  * leave a destroyed ball in it for the session. The engine maintains this one.
  */
 const BALL_TAG = "Ball";
+
+/**
+ * The tag a ball wears when **the arena's stocking** put it out, copied from
+ * `BallSpawnerService.ROUND_BALL_TAG` — which is the source of truth and cannot be imported without dragging
+ * the whole spawner in behind it. The same copy-not-import rule `BALL_TAG` above is under, and the same one
+ * `BallFactory`, `BallPickupService` and `CollisionGroups` all keep for their own strings.
+ *
+ * **What it means here, and it is the second meaning the tag has had to carry.** The spawner writes it so the
+ * round's sweep can say what the arena stocked; this file reads it for the opposite end of the same idea — **a
+ * ball the arena stocked is not litter and does not expire.** See {@link BallService.lifetimeOf} for the report
+ * that made that necessary: with the round's ball supply fixed at one per spawner part (`HANDOFF.md` §15 item
+ * 137), a ten-second clock on the arena's own balls emptied the floor of a match nobody had finished.
+ *
+ * **It is no longer the whole of that answer, and the tag's doc in `BallSpawnerService` says the same.** The
+ * second report — still "the balls are disappearing during rounds" — proved the tag was answering a narrower
+ * question than the one being asked: a hand-out ball is in a round and wears nothing. So the phase decides
+ * whether a ball is on a clock and this tag is only the fast path that skips the folder read for the balls that
+ * were never going to expire anyway. Nothing about the tag's *first* meaning changed — the sweep still strips it
+ * to say what the arena put out.
+ *
+ * **A practice ball never wears it** — `BallSpawnerService.spawn(point, false)` is the arm the zone uses — so a
+ * practice floor keeps its own clock rules untouched.
+ */
+const ARENA_BALL_TAG = "RoundBall";
 
 /**
  * What a catch sound's emitter is called.
@@ -1258,6 +1282,11 @@ export class BallService implements OnStart {
 
 		const ball = held.ball;
 
+		// The mark, read once. This method asks two questions about it — whether there is one, and whether
+		// the ball carrying it is the round's — and `abilityOn` is a `GetAttribute` through a string, which
+		// is not a thing to do twice in one call for the sake of a shorter line.
+		const marked = abilityOn(ball);
+
 		// **A marked ball is not put down — it is destroyed, and the charge goes with it.**
 		//
 		// An ability sitting on a ball in the open is an ability anybody can walk over and take, which
@@ -1269,7 +1298,19 @@ export class BallService implements OnStart {
 		// **Returning from here rather than falling through is load-bearing.** Everything below is about
 		// a ball that has to end up somewhere: a position clear of the dropper, a pickup lockout, an
 		// expiry on the ordinary clock. A destroyed ball has none of that business.
-		if (abilityOn(ball) !== undefined) {
+		//
+		// **But a round's ball is not destroyed, and this is the one case where the two rules in this method
+		// disagree.** Item 139 took the round's stock off the expiry clock on the argument that *the round's
+		// sweep is what ends it*; a forfeit that destroys the same ball is the same disappearance through a
+		// different door, and it is the only destroyer left in this file that fires from inside a round. The
+		// report — *"why are the balls still disappearing during rounds"* — arrived with this branch still
+		// here: a rig marks its hand-held ball from a mystery box and forfeits nothing when it dies, a player
+		// marks one and presses drop, and either way the ball is gone for the rest of the round even though
+		// the *ability* is the thing being forfeited. So the ball is spared and the mark is not, which is
+		// what the block below this one does. `lifetimeOf` is the predicate that already means "this ball is
+		// the round's and the round's sweep ends it", so the two paths cannot disagree about which balls
+		// those are.
+		if (marked !== undefined && this.lifetimeOf(ball) !== math.huge) {
 			// **The entry goes before the instance**, for `removeBall`'s reason: `isHeld` answers from
 			// this map, and a destroyed ball still answering `true` is a ball two other systems can
 			// still see and act on.
@@ -1278,14 +1319,21 @@ export class BallService implements OnStart {
 			// The dropper, when there is one. A rig can now mark a ball — its next throw after a mystery box
 			// applies the pending ability — but it still forfeits nothing here: a rig holds no charge, and its
 			// pending slot is the *throw's* to clear, not this path's. So the guard stays the ordinary path:
-			// an NPC dropping a marked ball destroys it exactly as a player's does, and `forfeitCharge` is the
-			// one thing a rig skips, because there is nothing of its own on the ball to forfeit.
+			// an NPC dropping a marked ball destroys it exactly as a player's does **outside a round**, and
+			// `forfeitCharge` is the one thing a rig skips, because there is nothing of its own on the ball to
+			// forfeit. Inside a round neither is destroyed — see the branch below, which is the whole of why
+			// this condition is not simply `marked !== undefined` any more.
 			const player = Players.GetPlayerFromCharacter(model);
 			if (player) this.abilities.forfeitCharge(player);
 
 			ball.Destroy();
 
-			logDebug(`[Ball] ${model.Name} dropped a marked dodgeball — it is destroyed`);
+			// **`logInfo` rather than `logDebug`, against this file's habit, and the habit is the reason.** Every
+			// destroyer of a ball used to be silent at `logInfo`, so *"the balls are disappearing"* has been
+			// unanswerable from a log three times running — a round's worth of ball events and no line saying
+			// one of them ended. This one names the ball's owner and the reason, and there are only a handful
+			// of these per round, so it costs nothing to have it always on.
+			logInfo(`[Ball] ${model.Name} dropped a marked dodgeball — it is destroyed`);
 
 			// **And an open MultiBall window fills the hand the marker emptied.** These two rules are
 			// deliberately different and must not be made consistent: the *mark* is the ball's, so losing
@@ -1301,6 +1349,37 @@ export class BallService implements OnStart {
 			this.syncArmedPower(model);
 
 			return true;
+		}
+
+		// **And the same forfeit with the ball kept, which is the branch above's other half.** The charge goes
+		// exactly as it does there — a charge belongs to a *player*, and putting the ball down is putting the
+		// ability down whether the ball survives or not — and then the ball stops being the marked one and
+		// carries on to the ordinary drop below. A rig has nothing to forfeit and takes the same path, which is
+		// why the `forfeitCharge` guard is the same one the destroy branch uses rather than a second rule.
+		if (marked !== undefined) {
+			const player = Players.GetPlayerFromCharacter(model);
+			if (player) this.abilities.forfeitCharge(player);
+
+			// **The mark comes off before the ball reaches the floor, and that is what keeps this from being a
+			// way to hand an ability away.** A mark is only ever put on in a hand — `markHeldBall` — and
+			// `attachToHandBody` clears it again on the way into the next one, so a ball that lay on the floor
+			// still carrying Pierce or Freeze would be a mark that survived a forfeit. `setBallAbility` is the
+			// one writer of the attribute and of the aura that says it out loud, and `detachPierceEffect` is the
+			// Pierce trail's other half, for `attachToHandBody`'s reason: it is a child of the ball, so it
+			// outlives the attribute that justified it unless something takes it away.
+			this.setBallAbility(ball, "");
+			this.detachPierceEffect(ball);
+
+			// **And the HUD stops saying ready here rather than at the tail.** The tail only reaches
+			// `syncArmedPower` by way of a MultiBall refill putting a ball back in the hand, and this is the one
+			// drop that leaves the ball in the world: without this line a player who puts a marked ball down
+			// keeps a `READY` plate for a power that is already forfeited, on a ball that no longer carries it.
+			this.syncArmedPower(model);
+
+			logInfo(
+				`[Ball] ${model.Name} put down a marked dodgeball — the ${marked} is forfeited, the ball is not: ` +
+					`this one is the round's, and only the round's sweep ends it`,
+			);
 		}
 
 		// Out of the hand first, so the weld is not fighting the reparent below.
@@ -1351,11 +1430,11 @@ export class BallService implements OnStart {
 
 		this.heldBalls.delete(model);
 
-		// Loose balls are cleaned up on the clock thrown ones are. A catching NPC
-		// drops every ball it takes, so without this the map collects scenery for the
-		// rest of the session; the `isHeld` guard inside leaves a ball that has since been
-		// caught to its new owner.
-		scheduleBallExpiry(ball, BALL_CONFIG.LIFETIME_SECONDS, (expiring) => this.isHeld(expiring));
+		// Loose balls are cleaned up on whatever clock they are on — which since item 139 is **not** one clock
+		// for every ball: the arena's own stocking is never on a clock at all. A catching NPC drops every ball
+		// it takes, so without a clock the map collects scenery for the rest of the session; the `isHeld` guard
+		// inside leaves a ball that has since been caught to its new owner. See {@link lifetimeOf}.
+		scheduleBallExpiry(ball, this.lifetimeOf(ball), (expiring) => this.isHeld(expiring));
 
 		logDebug(`[Ball] ${model.Name} dropped a dodgeball`);
 
@@ -1404,7 +1483,11 @@ export class BallService implements OnStart {
 		// `syncArmedPower`; the read finds an empty hand, because the entry went first.
 		this.syncArmedPower(model);
 
-		logDebug(`[Ball] ${model.Name}'s ball was destroyed`);
+		// **`logInfo`, for the reason the marked-ball destroy gives.** This is the last of the four ways a ball
+		// leaves the world and it was the quietest — a wall taking a ball, a round's sweep, a death's removal and
+		// an emptied hand all arrive here, and none of them said anything a log could be read for. The callers
+		// that matter (the sweep) print their own counts as well; this line is what names the ball.
+		logInfo(`[Ball] ${model.Name}'s ball was destroyed`);
 
 		return true;
 	}
@@ -1459,7 +1542,16 @@ export class BallService implements OnStart {
 
 		// Respawn safety, and catching safety: whatever this model was already
 		// holding goes, so two balls can never end up sharing one hand.
-		this.heldBalls.get(model)?.ball.Destroy();
+		//
+		// **Named in the log rather than destroyed quietly**, which it did until now. This is the one destroyer
+		// of a ball that had no line at all, and it is reached by a respawn that finds the old entry still in
+		// {@link heldBalls}, by a catch arriving while one is held and by a hand-out layered over one — three
+		// paths with nothing in common except the symptom, which is a ball the player was holding ceasing to
+		// exist. If it ever fires mid-round it is a bug worth reading about rather than a case worth tolerating
+		// silently, and there is no way to tell the two apart from outside.
+		const replaced = this.heldBalls.get(model);
+		if (replaced) logInfo(`[Ball] ${model.Name}: the ball already in hand is replaced — ${replaced.ball.Name} is destroyed`);
+		replaced?.ball.Destroy();
 		this.heldBalls.delete(model);
 
 		// A caught ball arrives mid-flight, still carrying the weld that held it in
@@ -2366,10 +2458,11 @@ export class BallService implements OnStart {
 
 		this.heldBalls.delete(model);
 
-		// A thrown ball is on the ordinary clock: it goes when nobody has picked it up in time, and
-		// the guard inside is what leaves a ball that has been caught since to its new owner. See
-		// `scheduleBallExpiry`, which is the one place a ball's lifetime is decided.
-		scheduleBallExpiry(ball, BALL_CONFIG.LIFETIME_SECONDS, (expiring) => this.isHeld(expiring));
+		// A thrown ball is on the ordinary clock unless the arena stocked it — see {@link lifetimeOf}, which is
+		// where that distinction lives now. The `isHeld` guard inside is what leaves a ball that has been caught
+		// since to its new owner. `scheduleBallExpiry` is still the one place a ball's lifetime is decided; what
+		// changed is that "the ordinary clock" is no longer the only answer it can be given.
+		scheduleBallExpiry(ball, this.lifetimeOf(ball), (expiring) => this.isHeld(expiring));
 
 		// **A ball that has just been thrown is answered by whatever supplies this thrower's next one**,
 		// and the two suppliers are asked in a deliberate order: the MultiBall window first, then the dev
@@ -3371,6 +3464,51 @@ export class BallService implements OnStart {
 	private hasInfiniteBalls(model: Model): boolean {
 		const player = Players.GetPlayerFromCharacter(model);
 		return player !== undefined && this.dev.getFlag(player, "InfiniteBalls");
+	}
+
+	/**
+	 * **How long `ball` lives once it has left a hand — ten seconds for litter, and no clock at all for
+	 * anything a round is using.**
+	 *
+	 * **The report this answers arrived twice, and the second time is why the rule is about the phase rather
+	 * than about the tag.** Every ball the arena stocks starts on `math.huge` — see `BallSpawnerService.spawn`
+	 * — but *throwing or dropping it re-schedules the clock*, and until item 139 that clock was
+	 * `BALL_CONFIG.LIFETIME_SECONDS` (ten) for every ball in the game. Before item 137 the spawner's
+	 * one-second top-up replaced each expired ball, so nobody could tell; after it, the arena's fixed supply
+	 * drained away, and the fix was to spare the balls wearing `ARENA_BALL_TAG`.
+	 *
+	 * **That was the right half of the answer keyed on the wrong question, which is what the second report
+	 * proved.** The tag answers *the spawner put this one out*, and most of a round's balls are not the
+	 * spawner's: `giveBall` makes one for an `AlwaysThrowing` rig, a MultiBall refill makes one, a dev's
+	 * `InfiniteBalls` makes one — and none of those ever carries the tag, so every one of them lived ten
+	 * seconds after it last landed. **On the floor, mid-round, in front of the player asking.** A bounce or a
+	 * roll only moves the moment the clock starts; it is still a ball vanishing for no reason anybody
+	 * standing there can see.
+	 *
+	 * **So the question is the phase, and the tag is now only the fast path.** While a round is being played,
+	 * nothing loose is litter — the round's own sweep ends a round's balls, and
+	 * `BallSpawnerService.cleanupRoundBalls` takes **every loose ball in the world**, not only the tagged ones,
+	 * so nothing accumulates from this. Between rounds the ten seconds is back, which is what stops a practice
+	 * floor collecting scenery for the rest of a session.
+	 *
+	 * **The cost, stated rather than hidden.** During a round the floor can hold more balls than the spawner
+	 * put out, because a hand-out is no longer cleaned up while the whistle is on: the ceiling is one ball per
+	 * `giveBall` that could not find one loose, and every one of them goes at the next sweep. That is bounded
+	 * by a round rather than by a session, and it buys a rule a player can predict — *nothing I can see
+	 * disappears mid-round* — which is the rule the tag could not describe.
+	 *
+	 * **`math.huge` is `scheduleBallExpiry`'s own word for "not on a clock", and it is passed rather than
+	 * special-cased**; a ball the round owns must still be there when somebody goes back for it, which is the
+	 * whole of a fixed supply.
+	 */
+	private lifetimeOf(ball: BasePart): number {
+		// The fast path first: a tagged ball is on no clock whatever the phase, so the status folder is never
+		// read on the throw of a ball that was never going to expire. See `roundPlaying` for why the phase is
+		// the second test rather than the only one.
+		if (ball.HasTag(ARENA_BALL_TAG)) return math.huge;
+		if (roundPlaying()) return math.huge;
+
+		return BALL_CONFIG.LIFETIME_SECONDS;
 	}
 
 	/**

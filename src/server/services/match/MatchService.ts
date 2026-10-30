@@ -7,9 +7,11 @@ import {
 	MATCH_MAX_PER_TEAM,
 	MATCH_MIN_PLAYERS,
 	MATCH_SIDE_LOCK_SECONDS,
+	MATCH_SIGN_LINE_GAP,
 	MATCH_SIGN_MAX_DISTANCE,
 	MATCH_SIGN_OFFSET_Y,
 	MATCH_SIGN_SIZE,
+	MATCH_SIGN_SUBTEXT_SIZE,
 	MATCH_SIGN_TEXT_SIZE,
 	MATCH_TOUCH_DEBOUNCE_SECONDS,
 } from "../../config/match.config";
@@ -32,9 +34,22 @@ const JOIN_PARTS: ReadonlyArray<{ readonly tag: string; readonly team: TeamLabel
 	{ tag: MATCH_JOIN_B_TAG, team: TEAM_B },
 ];
 
-/** The sign's name in the tree, and the one under it. Named so the Explorer says what they are. */
+/**
+ * The sign's name in the tree, and the three under it. Named so the Explorer says what they are.
+ *
+ * **`MatchJoinCounts` is kept rather than renamed to something about seats**, and the reason is
+ * `HANDOFF.md`'s: the name is quoted in this project's own words and in a dozen notes, and a rename buys a
+ * manifest diff and nothing a reader cannot get from the hierarchy below it — `Sign/Title` and
+ * `Sign/Seats` say exactly what the sign now contains. The stack keeps the older word `Sign` because it
+ * *is* the sign, both lines of it.
+ */
 const SIGN_NAME = "MatchJoinCounts";
-const SIGN_LABEL_NAME = "Counts";
+const SIGN_STACK_NAME = "Sign";
+const SIGN_TITLE_NAME = "Title";
+const SIGN_SEATS_NAME = "Seats";
+
+/** What the seat line says when there is no room — the one state that is not a number. */
+const FULL = "Full";
 
 /**
  * **What each side is called on its sign: the colour the side is drawn in, not the letter it is stored
@@ -82,11 +97,58 @@ export interface MatchCounts {
 /**
  * How many of `counts` are on `team`.
  *
- * **The one place a side is read out of the pair**, so the three readers that need it — `hasRoom`,
- * `sideText` and `describeCounts` — cannot disagree about which field `A` is.
+ * **The one place a side is read out of the pair**, so the three readers that need it — `hasRoom`, the
+ * sign's seat line and `describeCounts` — cannot disagree about which field `A` is.
  */
 function sideCount(team: TeamLabel, counts: MatchCounts): number {
 	return team === TEAM_A ? counts.a : counts.b;
+}
+
+/**
+ * **`Join Red` — the sign's headline, and the half of it that says what touching the part does.**
+ *
+ * **The word rather than the letter, because the letter only means something to the code.** See
+ * {@link SIGN_SIDE_WORD}: the player is choosing the red half or the blue half of the map, and `A` is the
+ * value `TEAM_ATTRIBUTE` stores.
+ *
+ * **The verb is on the headline and the count is not**, which is the whole of this pass. `Join Red 2/4`
+ * put a fill ratio where a player is asking a yes-or-no question — *is there room for me* — and `2/4`
+ * reads as "the match is empty" to somebody who has to work out that two of the four are already in. The
+ * headline now answers what the pad is for and the line under it answers whether it is possible.
+ */
+function sideTitle(team: TeamLabel): string {
+	return `Join ${SIGN_SIDE_WORD[team]}`;
+}
+
+/**
+ * **`4 seats available` — the sign's second line: the seats left, not the seats taken.**
+ *
+ * **The inversion is the fix.** The old label printed the side's *count*, so a player had to subtract to
+ * learn whether they could join, and a side with nobody on it read as a side with a problem. Seats is the
+ * same number read the other way — `MATCH_MAX_PER_TEAM − count` — and it is derived from {@link sideCount}
+ * rather than counted a second way, so the sign, `hasRoom` and the log cannot disagree.
+ *
+ * **`seat`, singular, at one**, because `1 seats available` is the kind of detail that makes a sign look
+ * generated rather than written — and one seat is exactly the case a player is most likely to be looking
+ * at.
+ *
+ * **`Full` at nought rather than `0 seats available`**, because nought seats is a different *state*
+ * rather than a smaller number: the pad is refused by `hasRoom` at that point, and a sign that says the
+ * same shape of thing whether or not the thing is possible is a sign that has to be read twice.
+ * **The guard is `<=` rather than `===`**, so a side left over-full by a `MATCH_MAX_PER_TEAM` lowered
+ * under a running roster says `Full` rather than `-1 seats available`.
+ *
+ * **The word is `seat`, and the reference photograph said `spot`.** The codebase says seat everywhere
+ * this concept appears — `release` is *"the seat they chose, given back"*, `LobbyRigService` does *"seat
+ * arithmetic"* over `seatsHeld` — and a sign that disagrees with the file that fills the seats is the
+ * cheaper thing to change.
+ */
+function seatText(team: TeamLabel, counts: MatchCounts): string {
+	const seats = MATCH_MAX_PER_TEAM - sideCount(team, counts);
+
+	if (seats <= 0) return FULL;
+
+	return `${seats} ${seats === 1 ? "seat" : "seats"} available`;
 }
 
 /**
@@ -182,19 +244,27 @@ export class MatchService implements OnStart {
 	private statusFolder?: Folder;
 
 	/**
-	 * The counts label above each tagged part, and the side that label is about.
+	 * The two labels above each tagged part, and the side they are about.
 	 *
 	 * **A list rather than the single label the project's other billboards keep**, because a tag is a
 	 * label somebody can put on more than one part and this is the one place that would notice: the
 	 * roster is one roster, and every sign of it has to keep up.
 	 *
-	 * **The side travels with the label, and that pairing is what the type is for.** Since the split
-	 * into two parts the signs no longer say the same thing — the `A` part's label is `A: n/4` and the
-	 * `B` part's is `B: m/4` — so a bare `TextLabel[]` would leave `updateSigns` unable to tell which
-	 * count a label wanted, and a side switch, which is the one event that changes *both* numbers,
-	 * would repaint them with each other's.
+	 * **The side travels with the labels, and that pairing is what the type is for.** Since the split
+	 * into two parts the signs no longer say the same thing — the `A` part's headline is `Join Red` and
+	 * the `B` part's is `Join Blue`, and their seat lines differ too — so a bare pair of `TextLabel[]`s
+	 * would leave `updateSigns` unable to tell which side a label wanted, and a side switch, which is the
+	 * one event that changes *both* signs, would repaint them with each other's.
+	 *
+	 * **Two labels rather than one with a line break**, which is this pass's change: the headline and the
+	 * seat line differ in size and weight, and a single `TextLabel` cannot say that without `RichText`. See
+	 * {@link mountSign} for the stack they sit in.
 	 */
-	private readonly signs = new Array<{ readonly team: TeamLabel; readonly label: TextLabel }>();
+	private readonly signs = new Array<{
+		readonly team: TeamLabel;
+		readonly title: TextLabel;
+		readonly seats: TextLabel;
+	}>();
 
 	public onStart(): void {
 		// **A leaver cannot be in the next match, and their side's count has to drop the moment they go.**
@@ -583,19 +653,36 @@ export class MatchService implements OnStart {
 	}
 
 	/**
-	 * This side's counts, above its part: a `BillboardGui` holding one label, made once and written to
-	 * after.
+	 * This side's sign, above its part: a `BillboardGui` holding a vertical stack of two labels, made once
+	 * and written to after.
 	 *
 	 * **A `BillboardGui` rather than a `SurfaceGui`, and the precedent is this project's own stats board**
 	 * — one billboard, `Adornee` set to the thing it is about, `AlwaysOnTop` off so it belongs to the world
 	 * rather than being drawn over it. A `SurfaceGui` would be a sign readable only from the side it
 	 * happens to face, which for a part somebody has to walk *into* is the wrong half of the lobby.
 	 *
-	 * **Each sign carries only its own side's number, since the split into two parts.** With one part the
-	 * label had to name both sides — `A: 2/4  B: 1/4` — because there was nothing else on the board to say
-	 * which team the second number was about. On two parts the board *is* the side, so `Join Red 2/4` on
-	 * the `A` sign answers the only question the player standing in front of it has, and it does it in half
-	 * the width. **The side is named by its colour rather than its letter** — see {@link SIGN_SIDE_WORD}.
+	 * **Each sign is about its own side only, since the split into two parts.** With one part the label had
+	 * to name both sides — `A: 2/4  B: 1/4` — because there was nothing else on the board to say which team
+	 * the second number was about. On two parts the board *is* the side, so `Join Red` over `2 seats
+	 * available` answers the only question the player standing in front of it has, and it does it in half the
+	 * width. **The side is named by its colour rather than its letter** — see {@link SIGN_SIDE_WORD}.
+	 *
+	 * **The note that used to stand here said a second line would not fit, and it was measuring the wrong
+	 * thing.** It read *"`Join Red 2/4` is what fits where `A: 2/4` did, and the longer form a second line
+	 * would need — `Join Red` over `2 spots available` — does not, at this size"*, which is true of **two
+	 * `MATCH_SIGN_TEXT_SIZE` lines** stacked in the board. A second line does not have to be the same size as
+	 * the first: at `MATCH_SIGN_TEXT_SIZE` over `MATCH_SIGN_SUBTEXT_SIZE` the pair is about `57` pixels of a
+	 * `64` box, and the sign that had to be one line was the one whose two halves were the same weight. The
+	 * requirement it was really answering was "do not make the board bigger", and the board is not bigger.
+	 *
+	 * **A `Frame` and a `UIListLayout` rather than two positioned labels, and the frame is not decoration.**
+	 * A `UIListLayout` lays out the children of a `GuiObject`, and a `BillboardGui` is a `LayerCollector`
+	 * rather than one — a layout parented straight to the billboard does nothing at all, and the two labels
+	 * would land on top of each other in the corner. So the billboard holds one transparent, unpadded frame
+	 * that sizes itself to its two lines, and that frame is pinned to the middle of the canvas by its own
+	 * anchor. **`AutomaticSize` on the frame and on both labels, and nothing inside sized by scale**: a label
+	 * asking for a fraction of a width the frame is still deriving is the circular question that resolves to
+	 * a zero-width label, the hazard the badge strip records in the same words.
 	 *
 	 * `Adornee` **and** `Parent`, both, matching that board: the parent is what keeps the sign alive with
 	 * the part and what it moves with, and the adornee is what it is drawn against — the same pair the
@@ -614,23 +701,42 @@ export class MatchService implements OnStart {
 		// whose whole job is to be found.
 		billboard.MaxDistance = MATCH_SIGN_MAX_DISTANCE;
 		billboard.AlwaysOnTop = false;
+		// **False explicitly, because the stack is taller than the canvas's own text size implies.** The two
+		// lines come to about `57` of a `64` box, so they fit — but a font whose line box is taller than
+		// measured would clip the second line in half rather than shrinking it, and a sign missing its
+		// answer is worse than one drawn outside its own box.
+		billboard.ClipsDescendants = false;
 		billboard.Parent = part;
 
-		const label = new Instance("TextLabel");
+		const stack = new Instance("Frame");
+		stack.Name = SIGN_STACK_NAME;
+		stack.BackgroundTransparency = 1;
+		stack.BorderSizePixel = 0;
+		// **Centred rather than bottom- or top-pinned**, unlike the badge strip: that one hangs above a head
+		// and must not reach the body, while this one *is* the object and wants its two lines centred in the
+		// box the offset was measured against.
+		stack.AnchorPoint = new Vector2(0.5, 0.5);
+		stack.Position = UDim2.fromScale(0.5, 0.5);
+		stack.AutomaticSize = Enum.AutomaticSize.XY;
+		stack.Parent = billboard;
 
-		label.Name = SIGN_LABEL_NAME;
-		label.Size = new UDim2(1, 0, 1, 0);
-		label.BackgroundTransparency = 1;
-		label.Font = Enum.Font.GothamBold;
-		label.TextSize = MATCH_SIGN_TEXT_SIZE;
-		label.TextColor3 = Color3.fromRGB(255, 255, 255);
-		// A stroke, because the sign stands in a lit lobby rather than on a HUD: a plain white label over a
-		// pale floor is a label nobody reads.
-		label.TextStrokeTransparency = 0.5;
-		label.Text = this.sideText(team);
-		label.Parent = billboard;
+		const layout = new Instance("UIListLayout");
+		layout.FillDirection = Enum.FillDirection.Vertical;
+		layout.SortOrder = Enum.SortOrder.LayoutOrder;
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center;
+		// **`Top` because this frame sizes itself.** `Center` and `Bottom` both need the height they are
+		// computing, so the arrangement settles a frame late and the two lines overlap on the first one.
+		layout.VerticalAlignment = Enum.VerticalAlignment.Top;
+		layout.Padding = new UDim(0, MATCH_SIGN_LINE_GAP);
+		layout.Parent = stack;
 
-		this.signs.push({ team: team, label: label });
+		const title = signLine(stack, SIGN_TITLE_NAME, MATCH_SIGN_TEXT_SIZE, Enum.Font.GothamBold);
+		const seats = signLine(stack, SIGN_SEATS_NAME, MATCH_SIGN_SUBTEXT_SIZE, Enum.Font.GothamMedium);
+
+		title.Text = sideTitle(team);
+		seats.Text = seatText(team, this.countsFor());
+
+		this.signs.push({ team: team, title: title, seats: seats });
 	}
 
 	// ---- Touching it ----
@@ -738,32 +844,24 @@ export class MatchService implements OnStart {
 	}
 
 	/**
-	 * Writes each side's own count to every sign that is about it.
+	 * Writes both lines of every sign.
 	 *
 	 * **Both signs are repainted on every change, and a side switch is the reason.** A move changes both
 	 * numbers at once, so a pass that only updated the sign of the side that gained a player would leave
-	 * the other one still counting somebody who has left it — and the counts are the only thing telling a
-	 * player which part to walk to.
+	 * the other one still counting somebody who has left it — and the signs are the only thing telling a
+	 * player which part to walk to, and whether walking there will work.
+	 *
+	 * **The counts are read once for the pair rather than once per sign**, which is what `sideCount` being
+	 * a free function over a `MatchCounts` is for: the two lines of one sign, and the two signs, all come
+	 * from one reading of the map.
 	 */
 	private updateSigns(): void {
-		for (const sign of this.signs) sign.label.Text = this.sideText(sign.team);
-	}
+		const counts = this.countsFor();
 
-	/**
-	 * `Join Red 2/4` — one sign's whole content. The side is named because the sign is a lone board.
-	 *
-	 * **One line, and the width is what keeps it one.** The billboard is `MATCH_SIGN_SIZE` wide at
-	 * `MATCH_SIGN_TEXT_SIZE` and nothing here is allowed to change either — that size is the look, and the
-	 * look is what the distance scaling is applied to. So the heading and the count share the line the
-	 * count already had: `Join Red 2/4` is what fits where `A: 2/4` did, and the longer form a second line
-	 * would need — `Join Red` over `2 spots available` — does not, at this size.
-	 *
-	 * **The word rather than the letter, because the letter only means something to the code.** See
-	 * {@link SIGN_SIDE_WORD}: the player is choosing the red half or the blue half of the map, and `A` is
-	 * the value `TEAM_ATTRIBUTE` stores.
-	 */
-	private sideText(team: TeamLabel): string {
-		return `Join ${SIGN_SIDE_WORD[team]} ${sideCount(team, this.countsFor())}/${MATCH_MAX_PER_TEAM}`;
+		for (const sign of this.signs) {
+			sign.title.Text = sideTitle(sign.team);
+			sign.seats.Text = seatText(sign.team, counts);
+		}
 	}
 
 	/** `A: 2/4  B: 1/4` — both sides at once, which is the shape every log line wants. */
@@ -772,4 +870,35 @@ export class MatchService implements OnStart {
 
 		return `A: ${sideCount(TEAM_A, counts)}/${MATCH_MAX_PER_TEAM}  B: ${sideCount(TEAM_B, counts)}/${MATCH_MAX_PER_TEAM}`;
 	}
+}
+
+/**
+ * **One line of a sign: a `TextLabel` sized to its own text, with nothing positioned.**
+ *
+ * The two lines differ only in type size and face, so the construction is written once and called twice —
+ * the alternative is two near-identical blocks where a change to the stroke or the colour has to be made
+ * in both, and where the second one is the one that gets forgotten.
+ *
+ * **`AutomaticSize.XY` and no `Size` at all.** The label is a child of a frame that is asking its children
+ * how big it is, so a scale size here would be asking for a fraction of an answer that does not exist yet
+ * — the engine resolves that as a zero-width label, which is the hazard `mountSign` records.
+ *
+ * **The stroke is on both lines and neither is dimmed.** A stroke, because the sign stands in a lit lobby
+ * rather than on a HUD: a plain white label over a pale floor is a label nobody reads. Not dimmed, because
+ * the second line's *size* is what makes it secondary — see `MATCH_SIGN_SUBTEXT_SIZE` for the argument.
+ */
+function signLine(parent: Frame, name: string, textSize: number, font: Enum.Font): TextLabel {
+	const label = new Instance("TextLabel");
+
+	label.Name = name;
+	label.BackgroundTransparency = 1;
+	label.BorderSizePixel = 0;
+	label.AutomaticSize = Enum.AutomaticSize.XY;
+	label.Font = font;
+	label.TextSize = textSize;
+	label.TextColor3 = Color3.fromRGB(255, 255, 255);
+	label.TextStrokeTransparency = 0.5;
+	label.Parent = parent;
+
+	return label;
 }

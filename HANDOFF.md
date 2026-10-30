@@ -787,13 +787,17 @@ comments are gone with it, and the only thing worth keeping is the one-line hist
   `MatchJoinB`, `practiceZone` (renamed from `ShiftLockZone`), the `MatchJoinTouched` debounce, which
   is the one tag that is state rather than a label, and the two new `Behavior_*` tags.
 - **`BallSpawnerService`** — still so named, but it reads `MATCH_SPAWNER_TAG`. **One ball per tagged
-  part** (not the old `BALLS_PER_SPAWNER = 3`), under a total budget of `MATCH_BALL_COUNT = 8`
-  counted from the `RoundBall`-tagged balls that exist each tick. It spawns **only while
-  `ROUND_STATE_ATTRIBUTE === "Playing"`** and tops up on the `Playing` edge, sweeps every `RoundBall`
-  on the `Playing -> Intermission` edge (leaving held balls alone), and finds its parts through
-  `taggedPartsInWorkspace` so a parked template cannot be stocked. **No replenishment timer** — every
-  match ball is scheduled with an infinite lifetime. `report()` prints
+  part, put out once**, at the `Playing` edge and never again until the next round: the number of balls
+  in a match is the number of round spawner parts, and nothing else. There is **no budget, no cap and no
+  tick** — `MATCH_BALL_COUNT` and the one-second top-up loop that spent it are both deleted (item 137), so
+  a thrown ball is not replaced. It sweeps every loose ball on the `Playing -> Intermission` edge (leaving
+  held balls and anything inside a practice zone alone, and stripping `RoundBall` as it goes), and finds
+  its parts through `taggedPartsInWorkspace` so a parked template cannot be stocked. **No replenishment
+  timer** — every match ball is scheduled with an infinite lifetime. **A part tagged mid-round stocks
+  nothing until the next round begins.** `report()` prints
   `N tagged thing(s), M usable part(s)` and is the line that says whether the tag matched at all.
+  **The practice zone is not this service's**: `PracticeZoneService` stocks its own `PracticeSpawn`
+  markers from its own loop, calling `BallSpawnerService.spawn(marker, false)`.
 - **Pickup is automatic** — `BallPickupService` runs one loop that collects a nearby loose ball for
   every player (and rigs via `Behavior_Pickup`). It owns the *search*; `BallService` does the attach.
   There is no prompt UI.
@@ -1660,10 +1664,15 @@ part — and the roster is forgotten at the end of every match, so they choose a
 - **`MatchService.prepare` forces the part's properties** — `Anchored = true`, `CanCollide = false`,
   `CanTouch = true`, `CanQuery = false` — and warns naming anything it had to correct, because an
   unanchored sign once walked off the bottom of the world with nothing in the output.
-- **The counts sign** is a `BillboardGui` above each part (`A: n/4`), repainted on every roster change.
+- **Each join sign is two lines** — a `BillboardGui` named `MatchJoinCounts` above each part holding
+  `Sign/Title` (`Join Red`, `Join Blue`) over `Sign/Seats` (`2 seats available`, `1 seat available`, or
+  `Full`), repainted on every roster change. **Seats, not the fill count**: the old single line read
+  `Join Blue 0/4`, which says how many are in rather than how many are left.
 - **Numbers** (`src/server/config/match.config.ts`, all Placeholders): `MATCH_MIN_PLAYERS = 2`,
   `MATCH_MAX_PER_TEAM = 4` (so a match is 4v4, and the cap is enforced at the part),
-  `MATCH_BALL_COUNT = 8`, `MATCH_TOUCH_DEBOUNCE_SECONDS = 0.5`, `MATCH_SETTLE_SECONDS = 5`.
+  `MATCH_TOUCH_DEBOUNCE_SECONDS = 0.5`, `MATCH_SETTLE_SECONDS = 5`. **There is no `MATCH_BALL_COUNT`
+  any more** — a round has one ball per `MatchSpawner` part, which is an arena fact rather than a number
+  in this file (item 137).
 - **How a match starts:** the intermission's **settle window** is the normal path — a startable roster
   that has not changed for `MATCH_SETTLE_SECONDS`, read against `rosterRevision` (not the counts,
   because a side switch leaves the counts identical). `!dev match` is the manual override. Both go
@@ -1899,6 +1908,8 @@ open; 33 is the measurement that would settle the report all four came out of.**
     `CollisionGroupSetCollidable(BALL_GROUP, BALL_GROUP, false)` — makes the stated rule true; the cost
     is balls sinking into each other where they pile on the floor. This is the closest thing in the code
     to "a collision knocked my throw off", so it is the first thing to try if a throw ever visibly turns.
+    **Done in item 135** — the row is written, with a `[Collision] Ball/Ball collides` read-back beside it; the
+    cost below (balls sinking into each other where they pile) is the one that was paid.
 33. **`VERBOSE_LOGS` is off, and with it every throw's commanded velocity.** The one line that can say
     whether a ball left with the speed the plan asked for —
     `[Ball] <name>: charged 1.00 … studs/s at … deg, release … -> launch … | muzzle … | boost … at N fps`
@@ -2023,7 +2034,8 @@ tuning decisions the code cannot settle, and both comments were corrected to des
     alone on the user's instruction**, because a 2026-10-23 log shows rigs `missed on purpose` on nearly every
     throw and that is what the game actually feels like. **Whether nine in ten is the wanted balance is open**:
     `0.5` is the figure the original prose described, `0` is fully accurate, and the constant is the only dial
-    either way. Nothing else reads it — `rollMiss` is the sole caller.
+    either way. Nothing else reads it — `rollMiss` is the sole caller. **Superseded in item 138**: the value is `0.95`, and the error it gates is a range error rather
+    than a sideways one — so the open question is no longer *how often* but *which way*, and that is answered.
 42. **The miss *width* is a flat band, and the comment used to describe a ladder.** `THROW_MISS_STUDS_MAX`'s
     block claimed "spread across five to ten, **most misses are small and a full-width one is occasional**";
     `rollMiss` draws `MIN + math.random() * (MAX - MIN)`, so every width in the band is equally likely — and the
@@ -2035,6 +2047,11 @@ tuning decisions the code cannot settle, and both comments were corrected to des
     unchanged and now stated where it is enforced**: `rollMiss` is called once from
     `createWindupTracker.beginWindup`, the release re-applies the stored offset rather than drawing again, and a
     per-tick or per-second roll is a body changing its mind during its own hold.
+
+    **Superseded in item 138, and the numbers here are two revisions stale.** The constant is `0.95` (one throw in
+    twenty is honest), the band is `15–20`, and the error is no longer a width to one side at all — it is a *range*
+    error, short or long, which is what makes it able to miss. This item's own conclusion still holds: one roll per
+    throw, from `createWindupTracker.beginWindup`.
 
 **Found by the 2026-10-23 stats-board pass. Item 43 is a feature nobody has opened; 44 is the reason it needed
 almost no server code; 45 is what it cannot show.**
@@ -5390,7 +5407,8 @@ almost no server code; 45 is what it cannot show.**
      put on the same `math.huge` "not on a clock" call. **The bug the flag prevents is the budget**: `RoundBall` is
      what `roundBallCount` counts, so a practice ball wearing it would spend one of `MATCH_BALL_COUNT`'s eight on a
      floor nobody is playing a round on, and eight zones would empty the arena while every practice floor stayed
-     stocked.
+     stocked. **(The budget named here is gone — item 137 deleted it, and with it `roundBallCount`; the flag now
+     only keeps the arena's marker off a practice ball, which is a label rather than an accounting.)**
 
      **The initial state is `BallFactory.createLoose`'s, and this pass writes none of it.** A fresh ball is already
      parented to `Workspace`, unarmed (`makeInert`: `Armed = false`, `ThrowerId = ""`), on no clock
@@ -5988,6 +6006,503 @@ almost no server code; 45 is what it cannot show.**
      slower, and it is the rate that makes the pose last as long as the game says the throw lasts. **Unverified in
      Studio**: that a throw now returns to idle without a flash of the default stance; that rapid charge-throw cycles
      never show it; and that the slower follow-through reads as weight rather than as sluggishness.
+
+134. **Badge cards sit entirely above the head instead of hanging over the body.** `client/controllers/hud/
+     StatsBillboardController.ts` — one anchor (`mountBadges`), no new constant and no new instance.
+     `npm run build` exit 0; `flamework.build` identical as a set.
+
+     **The bug was the anchor, and it was one number away from correct.** The badge stack is a self-sizing `Frame`
+     (`AutomaticSize.XY`) centred in a fixed-pixel canvas, and the canvas is centred on the head. Centring the stack
+     too meant **it grew in both directions from its own centre**: a body wearing six or seven badges pushed three of
+     them down over its own chest and face, and the owner's screenshot of 2026-10-28 is exactly that. Nothing was
+     wrong with the cards — a strip above a head is the right idea and it is the reason the element survived seven
+     passes — the stack was just hanging off both ends of its pin.
+
+     **`AnchorPoint` is now `(0.5, 1)` — the bottom edge on the canvas's centre — so the strip can only grow
+     upward.** `Position` is unchanged at `(0.5, 0.5)`, `VerticalAlignment` is still `Top`, and the cost is not a
+     settling frame: `AnchorPoint` is a render transform, not a layout pass, so it sidesteps the one-frame-late
+     hazard the method's doc records for `Bottom` alignment inside a self-sizing frame.
+
+     **`BILLBOARD_OFFSET_Y` changed meaning rather than value, and the comment that argued for the old meaning is
+     corrected rather than deleted.** It was "how far above the head the canvas floats", which is still true, but
+     because the *centre* of the stack used to be the thing at that height, the note in `BILLBOARD_SIZE` answered a
+     strip reaching the face with *"raise `BILLBOARD_OFFSET_Y`"* — which lifts the centre and leaves exactly the same
+     half-hanging shape. It is now the **clearance from a head's middle to the bottom of the lowest card**: `2.5`
+     studs, about `1.9` of them air once a default `Head`'s half-height is subtracted. It is the one number to raise
+     for a head wearing a tall accessory, and it is the only number that moves the strip.
+
+     **What it costs, stated**: the canvas's lower half is now unused. Kept rather than shrunk, because a symmetric
+     box is what lets the pin be one scale pair; an asymmetric one would need a pixel offset that had to agree with a
+     stud offset, which is the "constant that has to agree with something else" this file refuses everywhere else.
+     A stack taller than the canvas's upper half still draws in full — `ClipsDescendants` is written false for exactly
+     that case.
+
+     **Unverified in Studio**: that a body with six badges shows all six above the head at a normal camera distance,
+     that the strip does not clip the top of the screen with a full twenty, and that `2.5` studs still reads as a gap
+     rather than as a pole above a tall hat.
+
+135. **A thrown ball is no longer deflected by another ball — one row, `Ball` against `Ball`.** `server/collision/
+     CollisionGroups.ts` (the row, its paragraph and a boot read-back) and one comment in
+     `server/components/BallComponent.ts`. `npm run build` exit 0; `flamework.build` identical as a set.
+
+     | | |
+     | --- | --- |
+     | the row | `CollisionGroupSetCollidable(BALL_GROUP, BALL_GROUP, false)`, written to **both** surfaces — `PhysicsService` and `Workspace` — because every other row in that function is, and the pair is unresolved on purpose |
+     | the evidence | `[Collision] Ball/Ball collides — service false, world false`, in the same shape as the other per-pair lines |
+     | what it fixes | a throw crossing any ball — in the air, on the floor, in a hand — used to be *turned* by it, and in a stand-off both throws missed |
+
+     **`BallComponent.handleTouch` had said "carried on past it" since it was written, and that sentence was a veto on
+     a contact that had already deflected the ball.** The code declined to count the hit; the engine took the throw
+     anyway. This is the row §15 item 32 wrote down and deferred, and item 32 now says so.
+
+     **The accepted cost, named**: loose balls sink into each other where they pile, so a heap reads as one blob with
+     edges. Nothing reads that geometry — `BallPickupService` is **proximity**-based rather than contact-based, so a
+     pile is still one press per ball, and the ball inside another is no harder to collect than the one beside it.
+
+     **`BallWall` against `Ball` is untouched and is a different row.** That is a wall that stops balls (item 92); this
+     is a ball that stops a ball. `Barrier/Ball`, `Ball/PracticePlayer` and `DuckUpper/Ball` are unchanged, and
+     `Ball/Character` is still the engine's default — it was never written, deliberately, because a ball has to hit a
+     body.
+
+     **The preview needed nothing, and the reason is worth recording because the opposite was plausible.** The arc
+     *does* sweep for collisions and *does* stop at the first part that is not `passable` — but `ThrowController`
+     already puts `...this.looseBalls()` in the arc's `ignore` list (every `DodgeballBall` child of `Workspace`,
+     thrown or at rest) and a *held* ball is `CanQuery = false` so the sweep cannot see it. **The drawn path has been
+     flying through balls the real ball bounced off.** This row is what makes that arc truthful, rather than what
+     makes it wrong.
+
+     **One code path changes state: nothing. One comment changes its claim.** `BallComponent`'s other-ball branch is
+     *not* deleted and *not* declared unreachable — the house model is that a collision group removes the collision
+     response and **not** the `Touched` (`BallService.pierceBodies` states it: *"`CanTouch` exists precisely because a
+     non-colliding part still fires `Touched`"*), so the branch is expected to keep running once per ball crossed. The
+     comment says what would falsify that — no `carried on past it` line while balls still pass through each other —
+     and names the log as where it is settled rather than asserting it here. Item 92's warning is about *building a
+     load-bearing rule* on that engine fact; this branch is not load-bearing for the bounce any more, because the row
+     has taken the bounce.
+
+     **Unverified in Studio**: that a thrown ball crosses another thrown ball in flight on the line the arc drew; that
+     a thrown ball passes through a loose ball at rest; that a pile of loose balls settles into itself (the cost); and
+     that `carried on past it` still appears in the log for a crossing. The boot line `[Collision] Ball/Ball collides —
+     service false, world false` is the evidence the row itself took.
+
+136. **The join pad sign says `Join Red` over `2 seats available` instead of `Join Red 2/4`.** `server/services/match/
+     MatchService.ts` (`sideTitle`, `seatText`, `mountSign`, `updateSigns`, `signLine`) and two new numbers in
+     `server/config/match.config.ts`. `npm run build` exit 0; `flamework.build` identical as a set.
+
+     **What it said and why it was wrong.** The label was one string, `Join ${word} ${count}/${MATCH_MAX_PER_TEAM}` —
+     `Join Blue 0/4` on an empty side — and the owner's report is the reading it invites: *0 of 4* looks like a match
+     with nobody in it, and a player has to subtract to answer the only question they have, which is whether they can
+     join. The reference photograph is a title and a count of what is **left**.
+
+     | | |
+     | --- | --- |
+     | the headline | `Join Red` / `Join Blue` — `sideTitle`, the verb and the side's colour word, nothing else |
+     | the second line | `${seats} seat(s) available`, or `Full` at nought — `seatText`, `seats = MATCH_MAX_PER_TEAM − sideCount(team, counts)` |
+     | the shape | one transparent `Frame` (`Sign`) with a vertical `UIListLayout`, holding `Title` and `Seats`, both `AutomaticSize.XY` |
+
+     **`seat`, singular, at one, and `Full` at nought**, because `1 seats available` reads as generated output and
+     nought seats is a state rather than a smaller number — the pad is refused by `hasRoom` at that point, and a sign
+     that says the same shape of thing either way has to be read twice. The guard is `<= 0` so a side left over-full
+     by a lowered `MATCH_MAX_PER_TEAM` says `Full` rather than `-1 seats available`.
+
+     **The word is "seat" and the reference photograph said "spot"** — the codebase says seat everywhere this idea
+     appears (`release` is *"the seat they chose, given back"*; `LobbyRigService` does *"seat arithmetic"* over
+     `seatsHeld`), so the sign follows the file that fills the seats.
+
+     **A `Frame` around the two labels is load-bearing rather than decoration.** A `UIListLayout` lays out a
+     `GuiObject`'s children and a `BillboardGui` is a `LayerCollector`, so a layout parented straight to the billboard
+     does nothing and the two labels stack in the corner. Both labels are `AutomaticSize.XY` and neither has a `Size`,
+     which is the badge strip's hazard in the same words — a scale-width child inside an auto-sizing parent resolves
+     to zero.
+
+     **The claim this pass had to withdraw is in `mountSign`'s own doc**, and it is quoted there rather than deleted:
+     the old note said *"`Join Red 2/4` is what fits where `A: 2/4` did, and the longer form a second line would need
+     … does not, at this size"*. That was true of **two `MATCH_SIGN_TEXT_SIZE` lines**; a second line does not have to
+     match the first. At `30` over `16` with a `2`-pixel gap the pair is about `57` pixels of the board's `64`, so
+     `MATCH_SIGN_SIZE` is unchanged — the requirement it was really protecting was "do not make the board bigger".
+
+     **Not built, and named rather than half-done**: the reference's white panel, coloured square and checkmark. A panel
+     is a `Frame` with `UICorner` and a `UIStroke` behind this stack plus a re-measure of the offset, and the sign is
+     white-on-nothing by design today so that it belongs to the world. The checkmark alone would be one more
+     `signLine` call and a character in `seatText` — cheap, and not what the report asked for. The text split is
+     the change.
+
+     **Unverified in Studio**: that the two lines fit and are legible at lobby distance; that no line overflows the
+     `220` width (the longest is `Join Blue` over `4 seats available`); and that the frame's centred anchor keeps the
+     block centred in the board at both sides' word lengths.
+
+137. **The arena's ball supply is one ball per round spawner part, put out once at the whistle — no budget, no
+     cap, no refill.** `server/services/ball/BallSpawnerService.ts` (the tick loop is gone; `tick`/`tickBody`/
+     `roundBallCount` became one `stockArena`), `server/config/match.config.ts` (`MATCH_BALL_COUNT` deleted) and one
+     comment each in `shared/config/ball.config.ts`, `shared/config/npc.config.ts`, `shared/constants.ts`,
+     `server/npc/ballClaims.ts` and `PracticeZoneService`. `npm run build` exit 0; `flamework.build` identical as a
+     set.
+
+     **What it did, and what it does.** A `while true` loop turned once a second for the life of the server; each turn
+     walked every `MatchSpawner` part and put a ball beside any part that did not already have one, spending a global
+     `MATCH_BALL_COUNT = 8` as it went. So the floor refilled itself all round, and **how many balls a round contained
+     was a race between how fast players threw them and how fast the loop replaced them** — a quantity nobody had
+     decided. Now:
+
+     | | before | after |
+     | --- | --- | --- |
+     | when | every second, forever | once, on the `Intermission -> Playing` edge (and once if the service mounts with the phase already `Playing`) |
+     | how many | one per part, capped at 8 total | one per part, no cap: the parts are the count |
+     | refill | yes, within a second | **no** — a thrown, destroyed or lost ball is gone until the next round |
+
+     **The `countLoose` skip did not survive that pass either, and item 144 says why.** It read as idempotence rather
+     than as a limit, but it was a *distance* test — *is any loose ball within eight studs of this part* — so it
+     declined to stock a part whenever a neighbouring part's ball happened to be close enough. A twenty-six-part arena
+     stocked ten balls and reported sixteen parts as "already had one". `stockArena` now stocks every part it walks,
+     with no skip at all.
+
+     **The consequence to know before reporting a bug: a ball destroyed on impact is not replaced.** A MultiBall
+     throw marked `BALL_DESPAWN_ON_LAND` removes a ball from the arena for the rest of the round, and so does a ball
+     thrown out of the world. That is the request, not an oversight — the floor is a fixed supply and pickup is how it
+     is re-used. **A spawner part tagged mid-round also stocks nothing** until the next round begins, which is the
+     other half of the same rule.
+
+     **`MATCH_BALL_COUNT` is deleted rather than left at `8`**, because a ceiling on a supply that is no longer
+     replenished is not a design anyone can choose again, and a bare `8` in `match.config` reads as "the arena has
+     eight balls" — false for every arena whose part count is not eight. `BALL_CONFIG.SPAWN_TICK_INTERVAL` is
+     **kept** with a "no reader" note, because the refill design is the alternative a future reader may want back
+     and a paragraph is how it stays legible. **`BALL_CONFIG.BALLS_PER_PLAYER`, `MIN_BALLS`, `MAX_BALLS` and
+     `RESPAWN_DELAY` were not kept** — they were the per-player wanted count, and they are gone as of item 141.
+
+     **The practice zone was not touched and cannot be reached from here.** Its ball comes from
+     `PracticeZoneService.stockAt` → `BallSpawnerService.spawn(marker, false)`, driven by the *zone* service's own
+     `while`/`task.wait` at `ZONE_TICK_INTERVAL` over `PRACTICE_SPAWN_TAG` markers. `spawn`'s signature is unchanged,
+     so the practice arm's call site is untouched; the only thing that changed in that neighbourhood is the paragraph
+     in `spawn` explaining what the `roundBudget` flag still means.
+
+     **Unverified in Studio**: that a round now starts with exactly one ball per spawner part and that no further ball
+     appears during it; that a round with more than eight parts stocks all of them; and that a round where every ball
+     is thrown away is the empty-floor state the owner intends rather than a bug report.
+
+138. **A rig's deliberate miss was moved from a sideways offset onto the throw's range — and that was wrong, which is
+     why it is back.** `server/npc/behaviors/ThrowBehavior.ts` (`Miss`, `missedPoint`, `rollMiss`, two log lines, four
+     comment blocks), `server/npc/behaviors/AlwaysThrowBehavior.ts` (`headingFor` loses its miss parameter) and the three
+     `NPC_CONFIG` blocks. `npm run build` exit 0; `flamework.build` identical as a set. **Superseded by item 142** —
+     this entry is kept because the reasoning is the part worth having, and because the paragraphs below that argued
+     *for* the range axis are now corrected rather than deleted.
+
+     **The report was *"this variable does nothing to NPC's aim chances"*, and the variable was working.** A 2026-10-29
+     log has thirty-odd `[Rig] … throw … N.N studs to the right (missed on purpose)` lines — nineteen throws in twenty,
+     exactly `THROW_MISS_CHANCE = 0.95` — and **the rigs still connected about one throw in six.** The mechanism ran;
+     the *geometry* defeated it.
+
+     **Why a lateral miss at the old width could not miss, in one paragraph.** The enemy side stands in a line facing
+     you, so "to the side" is the axis that line is **laid out on**. Four bodies across a court are roughly fifteen
+     studs apart, and the error band was fifteen to twenty: a ball sent fifteen studs sideways of one rig arrives
+     chest-high at the next one. **Widening the error did not make the rigs miss — it gave them better coverage.**
+
+     **The conclusion drawn from that was wrong, and the error was in the conclusion.** It said lateral is the wrong
+     *axis*; what was wrong was the *width* — the band has to live **under** the gap between two bodies, not at it.
+     So this pass moved the offset onto the throw's range instead, and item 142 has the measurement that shows a range
+     offset cannot miss at all: **an aim point is where the ball stops, not where it goes**, so a mark placed past the
+     target is a ball thrown *through* the target.
+
+     | | before this pass | after this pass | after item 142 |
+     | --- | --- | --- | --- |
+     | the error | `aimPoint + right × side × studs` | `aimPoint + line × range` | `aimPoint + right × lateral` |
+     | `Miss` | `{ studs, side }` | `{ range }`, signed: negative is short | `{ lateral }`, signed: negative is left |
+     | the band | 15–20 studs — the gap between rigs | 15–20 studs of range | 4–8 studs, under the gap |
+     | the practice rig | `headingFor` turned its facing aside | the facing is untouched; the **charge** carries the error | `headingFor` turns the facing aside again |
+
+     **The half-the-reach cap was this pass's attempt to stop the range error eating itself, and it is deleted.** A
+     sixteen-stud throw drawn twenty short would put the aim point behind the rig, so `missedPoint` clamped to
+     `-reach × 0.5`. It did not save the mechanic: `chargeForRange` bottoms out at a tap, and a tap already covers
+     about thirty-nine studs, so a clamped short mark was thrown *past* the target anyway — with the aim point moved
+     back through the body it was supposed to miss. See item 142.
+
+     **The cost this pass knowingly paid, and item 142 hands back.** A range miss is **invisible in the pose**: the rig
+     is pointed at the player exactly as it would be otherwise, so the windup stopped telegraphing *which* throws were
+     off. The repayment claimed here was that the old "a wide-windup rig's retreat is off-line" cost disappeared. Both
+     halves of that trade are reversed by item 142: the pose telegraphs again, and the retreat drifts up to
+     twenty-six degrees off straight-back on a wide throw, recorded there as the price of the telegraph.
+
+     **`THROW_MISS_CHANCE` keeps its name and its value** — only the axis moves — and the three `NPC_CONFIG` blocks were
+     rewritten in this pass to `15` / `20` / `0.95`. Item 142 rewrites them again to `4` / `8` / `0.95`.
+
+139. **A ball the arena stocked is never on a clock, and a ball a dying player was holding goes back into the world
+     instead of dying with the body.** `server/services/ball/BallService.ts` (`ARENA_BALL_TAG`, `lifetimeOf`, both
+     `scheduleBallExpiry` call sites), `server/services/round/RoundService.ts` (one call in `handleDeath`) and the
+     `BALL_CONFIG.LIFETIME_SECONDS` block. `npm run build` exit 0; `flamework.build` identical as a set.
+
+     **This is the second half of item 137, and item 137 is what made it visible.** The spawner stopped topping the
+     arena up, so the round's ball supply became fixed at one per `MatchSpawner` part. What nobody had noticed is that
+     **every thrown or dropped ball was on a ten-second clock** — `BALL_CONFIG.LIFETIME_SECONDS`, `math.huge` only
+     while it sat untouched where the spawner put it. Throw a ball, let it lie for ten seconds, and it was gone for
+     the rest of the round. The report was *"the balls are disappearing during the round"*, and a log from
+     2026-10-29 shows the shape of it: ball ids climbing past seventy while thirteen spawner parts' worth of floor
+     became a handful of balls in hands.
+
+     | | before | after |
+     | --- | --- | --- |
+     | the arena's own ball, thrown or dropped | ten seconds, then `[Ball] DodgeballBall expired` | **no clock at all** — it waits to be collected, and the round's own sweep ends it |
+     | a hand-out ball (rig throw, MultiBall refill) | ten seconds | ten seconds, unchanged |
+     | a practice ball | the zone's own rules | the zone's own rules, unchanged |
+     | a ball a **player** died holding | destroyed with the body | dropped where the corpse is, then on the same no-clock rule |
+
+     **`lifetimeOf` is the one place the distinction lives, and it is two lines.** An arena ball wears `RoundBall` —
+     written by `BallSpawnerService.spawn` before the ball is ever thrown — so the question is `HasTag`, not a phase
+     read: a phase check would need `RoundService` (which this service deliberately does not depend on) or a second
+     copy of the status-folder read, and the tag already answers exactly the set that must not expire. **`math.huge`
+     is passed rather than special-cased**, because that is `scheduleBallExpiry`'s own word for "not on a clock" and
+     using it keeps the one-place rule intact.
+
+     **The death path is the rigs' rule, extended to players, and the asymmetry was the bug.** `RespawnBehavior.onDied`
+     has always called `balls.dropBall(model)` before its corpse is replaced, with a comment explaining that a held
+     ball is parented to the *character* and would otherwise leave the world welded into it. A player death never had
+     that line, so every death holding a ball permanently cost the round one — invisible while the spawner replaced
+     it, obvious once it could not. The line now sits above `handleDeath`'s two guards, because a lobby death loses a
+     ball for the same reason; `dropBall` rather than `removeBall` is `RespawnBehavior`'s own choice, and a *marked*
+     ball dropped there is forfeited, which is `dropBall`'s existing rule for a charge.
+
+     **What still destroys a round ball, deliberately, and every one of them is a decision rather than decay.**
+     `BallWall` takes one from a hand (item 92's mechanic); a marked ball put down is forfeited; a MultiBall throw
+     marked `BALL_DESPAWN_ON_LAND` removes itself on landing (the exception the owner named); the round-end sweep
+     clears the arena at the boundary; a practice ball thrown out of its bay is despawned after
+     `BAY_DESPAWN_GRACE_SECONDS`. **None of them is on a timer the player did not cause.**
+
+     **Unverified in Studio**: that a round's ball count stays at the part count for a whole match with players dying,
+     throwing and dropping; that a ball dropped at a death is reachable rather than landing inside the corpse; and that
+     no floor accumulates litter now that the arena's balls never expire (the round-end sweep is the only thing
+     collecting them, and it takes every loose ball).
+
+140. **A round's ball supply now says out loud how many it put out, and how many were still there at the end** — because
+     nothing did, and the owner's report *"not sure if it worked"* had no line in the log that could answer it. The
+     silence was symmetrical: the stocking printed nothing, and the one line that would have shown a loss,
+     `[Ball] … expired — Ns since it last left a hand`, is a `logDebug` and `DEBUG_CONFIG.VERBOSE_LOGS` is `false`, so
+     it never prints at all. **An absence of expiry lines is therefore not evidence of no expiries**, which is the trap
+     item 139's own verification fell into.
+
+     | where | line |
+     | --- | --- |
+     | `BallSpawnerService.stockArena` | `[Spawner] round stocked — N ball(s), one beside every spawner part` |
+     | `BallSpawnerService.cleanupRoundBalls` | `[Spawner] round over — cleared N ball(s), M of them the arena's own` |
+
+     **Two numbers at each end of a round is the whole of the check.** Stock 13 and clear 13 back means nothing was
+     lost; stock 13 and clear 6 back means seven were destroyed, and which seven is then a question about the four
+     paths item 139 lists rather than about the lifetime clock. The `of them the arena's own` half separates the
+     arena's fixed supply from hand-out litter, which is always the larger number: every rig throw refills itself with
+     a *new* ball rather than reusing the one it threw, which is why the 21:12 log shows ball ids climbing to `#72`
+     against thirteen spawner parts. **Rising ids are not a leak** — reading them as one cost a pass.
+
+     **`already had one` is gone, and it was the number that hid this bug.** It counted parts the skip had declined to
+     stock, so a supply smaller than the arena read as normal — `10 ball(s) put out, 16 part(s) already had one` from
+     twenty-six parts was a defect stating itself in a line nobody questioned. There is one number now, and it is the
+     number of parts, which is also the number of balls; see item 144.
+
+     **Both lines are `logInfo` and neither is gated**, so they appear in a default Studio session. One line per edge
+     is nothing next to the per-tick noise `VERBOSE_LOGS` exists to keep out.
+
+     **Unverified in Studio**: that the stocking count equals the spawner part count in every arena, and that the two
+     numbers are equal at the end of a clean round.
+
+141. **The per-player ball count is deleted rather than left as a "no reader" placeholder** — `BALLS_PER_PLAYER`,
+     `MIN_BALLS`, `MAX_BALLS` and `RESPAWN_DELAY` are gone from `BALL_CONFIG`. The instruction was *"just remove the
+     limit to ball spawns per player, I don't want a limit to how many could be spawned"*, and those four were the
+     only thing in the tree named like one.
+
+     **They were dead before this pass, and dead twice over.** The per-player supply they were written for never
+     shipped; the spawner that replaced it counted one ball per part; and `MATCH_BALL_COUNT`, the budget that capped
+     *that* count, was deleted in item 137. Nothing computed a wanted number, so nothing read them — they had carried
+     a "no reader" note for two passes.
+
+     **What a reader saw instead was a limit.** `MIN_BALLS: 2` and `MAX_BALLS: 40` under a `BALLS_PER_PLAYER: 1.2` is
+     a per-player cap to anybody who opens the file, which is how a request to delete something already inert
+     arrived. A retired number earns its paragraph only if it still describes a design somebody could choose — and a
+     per-player wanted count cannot be chosen without the refill tick that would spend it. That is the argument
+     `match.config.ts` already makes for `MATCH_BALL_COUNT`, and the four are deleted under it.
+
+     **`SPAWN_TICK_INTERVAL` stays, and the difference is the point**: a cadence is an alternative somebody could pick
+     back up, whereas a floor and a ceiling are the thing being ruled out. Its comment no longer leans on
+     `BALLS_PER_PLAYER` for its justification, and `match.config.ts`'s sentence about *which* retired numbers survive
+     now cites it as the exemplar.
+
+     **Nothing else changed.** No call site was touched, because there was no call site: the build is identical, the
+     decorator manifest is untouched, and the arena's supply is still one ball per round spawner part, put out once.
+
+
+142. **The deliberate miss is a sideways offset again, and now it is a *narrow* one — because a range offset cannot
+     miss, and the width the shoulder needs is the opposite of the width it was given.**
+     `server/npc/behaviors/ThrowBehavior.ts` (`Miss`, `missedPoint`, `rollMiss`, the tick's telegraph block, the
+     release's aim block, the throw line), `server/npc/behaviors/AlwaysThrowBehavior.ts` (`headingFor` takes the miss
+     back, imports, the throw line) and the three `NPC_CONFIG` blocks. `npm run build` exit 0; `flamework.build`
+     identical as a set. **Item 138 is the pass this reverts; read its entry for what was tried and why.**
+
+     **The report was *"the NPCs are too accurate with throws. Some calculation is not making sense!"*, and the
+     calculation was the one item 138 introduced.** The 2026-10-29 21:20 log is 111 throws, 106 of them drawn as
+     misses at `THROW_MISS_CHANCE = 0.95`, and 29 credited `[Super] … hits N` lines. Pairing each credit with the last
+     throw by the same rig gives 27 attributable hits:
+
+     | the throwing rig's throw was logged as | hits |
+     | --- | --- |
+     | `N studs long (missed on purpose)` | **22** |
+     | `N studs short (missed on purpose)` | 4 |
+     | aimed true (no miss flag) | 1 |
+
+     **Twenty-two of twenty-seven is not a tuning problem, it is geometry, and it is one sentence.** The aim point is
+     **where the ball stops, not where it goes**. A ball sent to a mark *past* the target travels along the same line
+     as a ball sent *at* the target, and the target is standing on that line — so `long` was never a miss, it was a
+     hit with follow-through, and the further past the body the mark was placed the longer the ball stayed inside it.
+     Item 138's own justification claimed the opposite in as many words — *"a long one sails over it"* — which would
+     have been true of a **vertical** error and was never true of a range one: `missedPoint` dropped the Y component.
+
+     **The four `short` hits are the second, independent fault, and it is the one that makes the game feel unfair at
+     close range.** `chargeForRange` clamps at `CHARGE_MIN_SPEED`, and with `BALL_GRAVITY 50`, `CHARGE_PEAK_HEIGHT 0.5`
+     and `CHARGE_MIN_SPEED 80`, a tap’s flight is `(v_y + √(v_y² + 2g·5))/g = 0.488 s` from a head-height hand down to a
+     body’s root, so **a tap covers about 39 studs and a full hold about 97** — and a target nearer than 39 studs is
+     therefore hit by a ball *no charge can make miss*. A rig aiming twelve studs short of a target twelve studs away
+     gets `chargeForRange = 0`, the tap’s 39-stud ball, and the aim point clamped back past the body it was avoiding.
+
+     **A sideways offset has neither failure**, which is why the axis is back: it is perpendicular to the flight, so
+     it moves the body out of the swept line at every range and at every charge, including the charges the clamp owns.
+
+     | | item 138 (range) | item 142 (lateral) |
+     | --- | --- | --- |
+     | the error | `aimPoint + line × range` | `aimPoint + right × lateral` |
+     | `Miss` | `{ range }` | `{ lateral }`, negative is the rig’s left |
+     | `missedPoint` | capped at `-reach × 0.5` | no cap |
+     | the band | 15–20 studs of *range* | **4–8 studs of *side*** |
+     | can it miss? | only when the aim point lands *short*, and not then if `chargeForRange` clamped | yes, at every range and charge |
+     | the pose | pointed at the player; the error is invisible | turned a few degrees aside; the error is the pose |
+     | the throw line | `N.N studs short/long (missed on purpose)` | `N.N studs left/right (missed on purpose)` |
+
+     **The width is the other half of the fix, and item 138 had it backwards in the same place.** The floor is a body:
+     torso ~2 studs plus the ball’s radius (1) means anything from ~3 up is a clean miss. The **ceiling is the gap
+     between two rigs**: four bodies across a court stand ~15 studs apart, so the band has to live *under* fifteen.
+     It shipped at fifteen-to-twenty, which is the gap itself — so a wide throw was a pass to the next man along, and
+     widening it twice could only make that worse. **4–8 sits under the gap with room to spare**, and the inequality
+     is now written down in `NPC_CONFIG.THROW_MISS_STUDS_MAX` as the thing to check before the band is ever widened
+     again.
+
+     **What is restored with the axis, stated rather than discovered.** The windup telegraphs a wide throw again — the
+     body turns onto the offset point, so the pose a watcher has been reading for the hold says *what* is coming, not
+     only *that* something is. The price is the one item 138 thought it had deleted: **a wide-windup rig’s retreat
+     drifts up to twenty-six degrees off straight-back**, because the facing it reverses is turned aside with the
+     error. That is accepted, and the argument is that a pose which means nothing is worse than a shuffle.
+
+     **What was *not* changed, and is reported rather than fixed.** The ~39-stud floor on a rig’s throw is
+     `CHARGE_MIN_SPEED` and is shared with the player’s tap — a rig at close range still throws a ball that overflies
+     the target and lands behind them, and only the sideways offset keeps that from connecting. Changing it moves the
+     player’s aim too, which is the owner’s call and not this pass’s. Also left alone: the stale figures in
+     `BALL_CONFIG.CHARGE_PEAK_HEIGHT`’s comment, which says `g` is 20 and the speeds are 45/90 when the config says
+     50 and 80/200 — the reach conclusion it draws (“about 34 studs at a tap”) survives the drift, the numbers in
+     the arithmetic do not.
+
+     **Unverified in Studio**: that the hit rate now falls to something near the 1-in-20 the rate implies, and that the
+     misses read as near misses rather than as wild throws at the 4-stud end; that an 8-stud miss does not clip a
+     bunched-up neighbour; and that a sideways aim point at close range still shows as a throw rather than as a
+     sideways flick. The line to read next run is the same pair item 138 named — the count of `[Super] … hits N`
+     against the count of `[Rig] … throw`, and now the `left`/`right` split as well.
+
+143. **A round's balls were still disappearing, and the tag was the wrong question — so the rule is the phase now.**
+
+     **The report, and it was the third one of these.** *"Why are the balls still disappearing during rounds"*
+     against a log from 21:32 that ran one 170-second round. Item 139 had already taken the arena's stocked balls
+     off the expiry clock, so something was still ending them.
+
+     **What the log proves first is what it is *not*.** The floor was not draining: 134 pickups in 170 s, held at
+     eight-to-thirteen per ten-second window from the whistle to the last line, next to 189 throws and a
+     `[Spawner] round stocked — 9 ball(s) put out, 4 part(s) already had one` at the start. A round whose supply
+     was being eaten would show pickups decaying toward nought and rigs standing still; neither happens. So the
+     complaint is about *individual* balls vanishing, not about the arena running dry.
+
+     | window (10 s) | 2 | 4 | 6 | 8 | 10 | 12 | 14 | 16 |
+     |---|---|---|---|---|---|---|---|---|
+     | pickups | 5 | 10 | 11 | 6 | 13 | 12 | 8 | 8 |
+     | throws | 6 | 15 | 15 | 13 | 14 | 18 | 12 | 9 |
+
+     **What the log cannot prove is anything about destruction, and that is the finding underneath the finding.**
+     Every one of the four ways a ball leaves the world logged at `logDebug` — and `DEBUG_CONFIG.VERBOSE_LOGS` is
+     `false` — or, in `attachToHandBody`'s "whatever this model was already holding goes", logged nothing at all.
+     A round with 189 throws and 134 pickups could not be told apart from one where balls were being deleted,
+     which is why this question has now come back three times with no evidence either way. **All four are
+     `logInfo` as of this item.** A confirmed destroy should be rare now, and a line in the log means litter
+     doing its job outside a round.
+
+     **Defect one: `lifetimeOf` asked the ball a question only the spawner could answer.** Item 139 spared the
+     balls wearing `ARENA_BALL_TAG`, which is the *spawner's* stock — and most of a round's balls are not the
+     spawner's. `giveBall` makes one for an `AlwaysThrowing` rig, a MultiBall refill makes one, a dev's
+     `InfiniteBalls` makes one; none of those ever wears the tag, so each lived ten seconds after it last landed,
+     mid-round, in the open. **`BallService.lifetimeOf` now returns `math.huge` while a round is being played,
+     whatever the ball is** — the tag is kept only as the fast path that skips the folder read — and the new
+     `roundStatus.roundPlaying()` is the reader. That is safe because the round's own terminator already exists
+     and is broader than the tag: `BallSpawnerService.cleanupRoundBalls` takes **every loose ball in the world**,
+     so nothing accumulates across rounds, and a held ball goes with `clearHeldBalls`.
+
+     **The trade, named.** During a round the floor can hold more balls than the spawner put out — the ceiling is
+     one per `giveBall` that could not find one loose — and every one of them is swept at the whistle. Bounded by
+     a round rather than a session. It buys the rule a player can actually predict: *nothing I can see disappears
+     while the whistle is on.*
+
+     **Defect two: the forfeit was the last destroyer firing from inside a round.** `dropBall` destroyed a marked
+     ball — rightly, while a mark was a thing anybody could pick up off the floor, because handing an ability away
+     is worse than losing it. But a rig marks its hand-held ball from a mystery box and forfeits nothing when it
+     dies, and a player marks one and presses drop: either way the arena lost a ball for the round while the
+     *ability* was the thing being forfeited. **A ball that is not on a clock is no longer destroyed by a
+     forfeit** — the mark comes off through `setBallAbility(ball, "")` and `detachPierceEffect`, the charge is
+     still forfeited, and the ball falls through to the ordinary drop. The gate is `lifetimeOf(ball) ===
+     math.huge`, deliberately the same predicate, so the two paths cannot disagree about which balls are the
+     round's. `syncArmedPower` is called there explicitly, because the ordinary drop's tail only reaches it by way
+     of a MultiBall refill and this is the one drop that leaves a ball in the world.
+
+     **Withdrawn from the item-139 comment: that the ball `#N` ids climbing was evidence of balls being made per
+     throw.** They are not. `BallComponent.identity` is assigned in the `Armed` handler, so it counts *arms*, not
+     instances — a pickup and a re-throw of one ball produces two numbers. The old `lifetimeOf` doc used that
+     reading as the shape of the bug, and it was wrong about the mechanism even though the conclusion it
+     supported (the clock was eating arena balls) was right.
+
+     **`npm run build` exit 0; `flamework.build` unchanged.** Emitted Luau checked at all four sites.
+
+     **Unverified in Studio**: that a round now shows no ball at all vanishing mid-round; that the floor does not
+     accumulate enough hand-out balls to be a nuisance before the whistle, given `AlwaysThrowBehavior`'s
+     hand-out is no longer cleaned up during a round; and that `[Ball] … expired` has gone quiet inside a round
+     while still appearing in intermission. The lines to read next run are the four new `logInfo` destroyers —
+     `expired`, `dropped a marked dodgeball — it is destroyed`, `put down a marked dodgeball`, `'s ball was
+     destroyed`.
+
+144. **Adding spawner parts added no balls — the stocking guard was a distance test in disguise.**
+
+     **The report.** *"I added more spawn parts but more balls were not spawned"*, with a log that said both halves
+     of it: `[Spawner] up — MatchSpawner: 26 tagged thing(s), 26 usable part(s)` and then
+     `[Spawner] round stocked — 10 ball(s) put out, 16 part(s) already had one`. Twenty-six parts, ten balls, and
+     the line reported the shortfall as a fact about the arena rather than as a defect.
+
+     **The cause was item 137's one surviving guard.** `stockArena` skipped a part when
+     `countLoose(part.Position) > 0`, and `countLoose` counted any loose ball within `BALL_CONFIG.SPAWN_RADIUS`
+     (eight studs). That reads as *did I already stock this part* and it answers *is there a ball near this part* —
+     which are the same only while the parts are further apart than the radius. A ball is placed within
+     `SPAWN_OFFSET_RANGE` (two studs) of its own part, so one ball satisfies every part within about ten studs of it.
+     **The number of balls in a round was therefore the size of an independent set over the parts' neighbourhood
+     graph**, not the number of parts: twenty-six parts in a row gave ten.
+
+     **And it was guarding against a case that cannot happen.** A second stocking of one round would need the phase
+     written `Playing` twice with no `Intermission` between, because `mount` seeds `previousState` from the folder
+     *before* it subscribes and the handler stocks on the edge. There is no such edge, so the guard was not
+     protecting idempotence — it was only ever subtracting balls.
+
+     **Removed outright, on the owner's instruction** — *"remove the suppression. I can manually make space between
+     the parts. I never added you to add distance based suppression."* `stockArena` stocks every part it walks, with
+     no skip of any kind; `countLoose` is deleted; `BALL_CONFIG.SPAWN_RADIUS` is deleted with the item-141 prose
+     precedent (nothing reads it now, and a radius nothing measures with reads as a spacing rule that never existed).
+     The line is `[Spawner] round stocked — N ball(s), one beside every spawner part`, one number, and it is the
+     number of parts.
+
+     **The trade, stated.** If a second stocking ever did fire for one round, that round would have two balls per
+     part — visible, and cleared by the whistle sweep like everything else. That is a better failure than a supply
+     which silently depends on how far apart somebody placed the parts. **Part spacing is a level-design choice and
+     nothing in the codebase reads it now**; the only caveat left in code is physical — two parts closer together
+     than a ball's diameter will spawn two overlapping balls and the engine will pop them apart.
+
+     **`npm run build` exit 0; `flamework.build` unchanged.** Emitted Luau checked: the walk calls `spawn` for every
+     instance with no condition between them.
+
+     **Unverified in Studio**: that the next round puts out twenty-six balls for twenty-six parts, and that the floor
+     is playable rather than a pile at whatever spacing the parts are actually at. The line to read is
+     `[Spawner] round stocked` — it should now match `MatchSpawner`'s part count printed at boot.
 
 ---
 
