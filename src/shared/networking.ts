@@ -359,14 +359,13 @@ export const events = Net.Definitions.Create({
 	 * history of a hit between two people; this is the same event told to the clients that have to draw it,
 	 * and `hitVfx`, `hitConfirm` and — since item 146 — `HitLogController` are its readers.
 	 *
-	 * **And the third reader is why the missing direction has a visible consequence rather than a silent
+	 * **And the third reader is why the missing direction had a visible consequence rather than a silent
 	 * one.** The HUD's hit feed needs the two names for *every* hit, which is the set this event carries and
-	 * `roundHit` does not; it takes a hit with a person at both ends from `roundHit` (which has the direction,
-	 * so it can paint both names in team colours) and everything else from here, drawn in one ink because this
-	 * payload has no sides to draw. That is a deliberate asymmetry and not a gap: the sides on `roundHit` are
-	 * derived by `RoundService` from two `Player`s' teams, and a rig's side is a fact this event's shape never
-	 * promised. A reader that wants rig rows coloured would have to send the direction too — which would make
-	 * the "nothing it does not need" argument below false, so it is not done quietly here.
+	 * `roundHit` does not. **It used to take a hit with a person at both ends from `roundHit` and everything else
+	 * from here, drawn in one ink** — that asymmetry was deliberate while the sides were missing from this
+	 * payload, and it is what the `direction` field below was added to remove: a hit log that colours a
+	 * player-vs-player pair and greys out a rig-vs-rig one announces which is which, which is the one thing a rig
+	 * in this project is dressed and animated to hide. Item 149 is that report.
 	 *
 	 * **A fourth field, `victimId` — and it is the fix for a name being asked to do an identity's job.** The
 	 * first field is the victim's `Name`, which is enough for `hitConfirm` (it only ever compares the *thrower*)
@@ -380,9 +379,30 @@ export const events = Net.Definitions.Create({
 	 * **Appended rather than woven in, and `hitConfirm` proves that is safe.** A Luau handler ignores arguments
 	 * it does not declare, so the splash module's `(victim, thrower, ability)` keeps working untouched — which
 	 * is why the new field went on the end of the tuple rather than beside the field it belongs with.
+	 *
+	 * **A fifth field, `direction` — and it is a reversal of this entry's own "nothing it does not need" rule,
+	 * made deliberately.** That rule was written when the only readers were two cosmetic effects, and it said a
+	 * reader that wanted rig rows coloured would have to send the direction and so would make the rule false. The
+	 * hit feed then became such a reader: it draws `hitImpact` rows for every hit with a rig at either end, and a
+	 * row with no sides can only be drawn in one ink — **which is the tell this project is trying hardest to
+	 * erase**, because a colourless hit log entry beside a two-colour one says "a bot did this" more loudly than
+	 * any pose or animation. So the field is here now, on purpose, and the rule it bends is quoted rather than
+	 * quietly dropped.
+	 *
+	 * **It is the same vocabulary `roundHit` uses, and `""` rather than a flag.** `"AtoB"` / `"BtoA"` mean the
+	 * hitter was on A or on B, exactly as they do on the feed's other event, so a client paints both ends from one
+	 * string with no second rule and no extra field. **`""` is the honest answer for a hit with no side at either
+	 * end** — a lobby ball on a practice dummy, a body outside a round — and every reader already has one empty
+	 * value to test, which is `BALL_ABILITY_ATTRIBUTE`'s convention applied to a second field of the same tuple.
+	 * A client that reads a fourth string drops the colour rather than inventing one.
+	 *
+	 * **Derived on the server from `teamOf`, which is the same call the feed's other event resolves its direction
+	 * from.** A rig carries its own `Team` attribute and a player's lives on the `Player`, so this is the one
+	 * resolver that can answer for both kinds of body — see `RoundService.teamOf`, which asks the `Player` first
+	 * and falls back to the rig's own label. Nothing new is stored and no attribute was added to carry it.
 	 */
 	hitImpact: Net.Definitions.ServerToClientEvent<
-		[victim: string, thrower: string, ability: string, victimId: string]
+		[victim: string, thrower: string, ability: string, victimId: string, direction: string]
 	>(),
 
 	/**

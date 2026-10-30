@@ -247,13 +247,12 @@ interface FeedEntry {
 	readonly hitter: string;
 	readonly victim: string;
 	/**
-	 * **Which way the hit went, or `undefined` when there is no side to say.**
+	 * **Which way the hit went, or `undefined` when the server had no side to say.**
 	 *
-	 * `"AtoB"` / `"BtoA"` come from `roundHit`, whose payload carries the direction because the server derived
-	 * it from the two people's teams. A row built from `hitImpact` has no direction at all: that event is about
-	 * a *body being hit*, its ends may be rigs, and it deliberately carries no sides. See the class doc's
-	 * "which hits reach this list" section — the two cases are drawn differently on purpose, and `undefined`
-	 * is how a row says it does not know rather than guessing a side.
+	 * Both events carry the same vocabulary — `"AtoB"` / `"BtoA"` — so a row is painted from one string whichever
+	 * event it came from: the hitter's side decides both inks and the names are only ever the *text*. `undefined`
+	 * is the server's `""`: a hit with no side at an end, which outside a round is every hit. See
+	 * `networking.ts` on `hitImpact` for why that field exists and `paint` for what one ink means.
 	 */
 	readonly direction: HitDirection | undefined;
 	/**
@@ -356,13 +355,20 @@ function loggedName(name: string): string {
  * Without this, a lobby hit would sit in the array unseen and then appear for the first seconds of the next
  * round — the one way a stale row can reach the screen.
  *
- * **What a rig row looks like, and why its names are one ink.** Two names, the same arrow, and no team
- * colours — `hitImpact` carries no sides, and inventing them here would be a second derivation of a fact the
- * server declined to state. **The names are what the server already sends**, resolved for display: the victim's
- * and thrower's model names, which for a pooled rig is its short alias (`GiantDiva`, not `GiantDiva's rig clone
- * 3`) and for a person is their **`DisplayName`** rather than their account handle. Nothing is truncated and
- * nothing is abbreviated. A name long enough to matter wraps inside the card rather than overflowing — see
- * `addCard`'s `Wraps` note.
+ * **What a rig row used to look like, and why it is now drawn exactly like a player's.** It was two names, the
+ * same arrow, and **no team colours** — `hitImpact` carried no sides, so the row could only be inked in one
+ * colour, and inventing a side on the client would have been a second derivation of a fact the server states for
+ * the hits it covers and declines for the rest. **That was the wrong trade and the report said so**: a feed that
+ * colours a player-vs-player pair red-and-blue and greys out a rig-vs-rig one *announces which is which*, and a rig
+ * in this project is dressed, named and animated specifically so a player cannot tell. **So `hitImpact` now carries
+ * a `direction`** (`networking.ts` records the reversal of its own "nothing it does not need" rule) and every row
+ * is painted the same way. A row is still drawn in one ink when the server sends no side — a lobby hit, a body
+ * outside a round — which is now the rare case rather than the rig case.
+ *
+ * **The names are what the server already sends**, resolved for display: the victim's and thrower's model names,
+ * which for a pooled rig is its short alias (`GiantDiva`, not `GiantDiva's rig clone 3`) and for a person is their
+ * **`DisplayName`** rather than their account handle. Nothing is truncated and nothing is abbreviated. A name long
+ * enough to matter wraps inside the card rather than overflowing — see `addCard`'s `Wraps` note.
  *
  * **`DisplayName` rather than `Name`, and the wire is deliberately not changed to match.** Both events send the
  * account handle, because both are about *resolving a body*: `hitVfx` finds the body from those names and
@@ -744,24 +750,32 @@ export class HitLogController implements OnStart {
 		 * **It is the *pair* rather than either end**, and the difference matters: a player's throw that lands on
 		 * a rig is one name from each, which `roundHit` will never announce, so it has to get through.
 		 */
-		events.Client.Get("hitImpact").Connect((victim, thrower) => {
+		events.Client.Get("hitImpact").Connect((victim, thrower, _ability, _victimId, direction) => {
 			if (Fusion.peek(roundPhase) !== PLAYING) return;
 
 			// The same two names `roundHit` would have carried, in which case the row there is the better one:
-			// it has a direction, so it can be painted in two colours.
+			// it is the same pair, and the record it comes from is the round's. See the class doc.
 			if (playerNamed(thrower) !== undefined && playerNamed(victim) !== undefined) return;
 
 			const hitterNow = loggedName(thrower);
 			const victimNow = loggedName(victim);
 
-			feed.unshift({ hitter: hitterNow, victim: victimNow, direction: undefined, age: 0 });
+			// **The server's direction, or none when it had none.** The same two strings `roundHit` carries and the
+			// same test: only those two are meaningful, because the wire is not typed. `""` is the server's "no side
+			// at an end", which is a lobby hit or a body outside a round — the row is still drawn, in one ink, which
+			// is now the rare case rather than the rig case. See `networking.ts` on `hitImpact`.
+			const dir = direction === "AtoB" || direction === "BtoA" ? direction : undefined;
+
+			feed.unshift({ hitter: hitterNow, victim: victimNow, direction: dir, age: 0 });
 
 			if (feed.size() > ROW_COUNT) feed.pop();
 
 			this.paint(feed, cards, theme);
 			anyHits.set(feed.size() > 0);
 
-			logDebug(`[HUD] hit feed — ${hitterNow} → ${victimNow} (a rig was in it, ${feed.size()} row(s))`);
+			logDebug(
+				`[HUD] hit feed — ${hitterNow} → ${victimNow} (${dir ?? "no side"}, ${feed.size()} row(s))`,
+			);
 		});
 
 		// The second way a row leaves, and the only one on a clock.

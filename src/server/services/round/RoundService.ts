@@ -2670,7 +2670,34 @@ export class RoundService implements OnStart {
         }
 
         if (thrower !== undefined) {
-            events.Server.Get("hitImpact").SendToAllPlayers(victim.Name, thrower.Name, power, bodyIdOf(victim));
+            // **Which way the hit went, on the feed's own vocabulary** — the fifth field, added so a row with a rig
+            // at either end can be painted in two team colours like any other. `teamOf` is the one resolver that
+            // answers for both kinds of body (a rig carries its own `Team`, a player's lives on the `Player`), and
+            // it is the same call `logHit`'s direction comes from, so the feed's two events cannot disagree about
+            // which way a hit went.
+            //
+            // **`""` rather than a made-up side, and it is the common case outside a round.** `hitImpact` is sent in
+            // every phase and on every body, so a lobby ball landing on a practice dummy has no side at either end;
+            // a client draws that row in one ink rather than guessing. Same-side is also `""` rather than a
+            // direction, which is unreachable through the damage path — friendly fire is refused before a tag — but
+            // would be a *wrong* colour rather than a missing one if it were ever reached.
+            const hitterSide = this.teamOf(thrower);
+            const victimSide = this.teamOf(victim);
+
+            const direction =
+            	hitterSide !== undefined && victimSide !== undefined && hitterSide !== victimSide
+            		? hitterSide === TEAM_A
+            			? "AtoB"
+            			: "BtoA"
+            		: "";
+
+            events.Server.Get("hitImpact").SendToAllPlayers(
+            	victim.Name,
+            	thrower.Name,
+            	power,
+            	bodyIdOf(victim),
+            	direction,
+            );
         }
 
         if (this.state !== RoundState.Playing) return;

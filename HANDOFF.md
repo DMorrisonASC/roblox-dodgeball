@@ -6770,6 +6770,42 @@ almost no server code; 45 is what it cannot show.**
      equals their `Name`, so **this needs a second account or a display-name change to be visible at all** — that is
      the one thing about this change that cannot be checked single-player.
 
+149. **`hitImpact` carries a direction, so a rig's hit is coloured in the log exactly like a player's.**
+
+     **The report.** *"Any hit logs show what models hit each other AND the team color; just like when player hits
+     player."* Item 146 made the feed draw every hit, and rig rows were drawn in **one ink** because `hitImpact`
+     carried no sides. That made the feed a tell: a red-and-blue pair beside a grey pair says which one was a bot,
+     which is the one thing a rig in this project is dressed, named and animated to hide.
+
+     **The fix is a fifth field on `hitImpact`**, `direction`, carrying the same `"AtoB"` / `"BtoA"` vocabulary
+     `roundHit` already uses — so a client paints both ends from one string with no second rule. It is sent as
+     **`""`** when there is no side at an end, on the empty-string convention `BALL_ABILITY_ATTRIBUTE` set, and the
+     feed draws such a row in one ink. That case is now *outside a round* (a lobby ball on a practice dummy) rather
+     than *a rig*, which is the whole point.
+
+     **Derived from `RoundService.teamOf`, the same call `logHit`'s direction comes from.** That is the one
+     resolver that answers for both kinds of body — a player's side lives on the `Player`, a rig carries its own
+     `Team` — so the feed's two events cannot disagree about which way a hit went, and nothing new is stored to
+     carry the fact.
+
+     **Two documents had argued the other way and both were rewritten rather than appended to.**
+     `networking.ts`'s `hitImpact` entry said *"what it deliberately does not carry is the direction, the sides or
+     a count … a field nothing reads is a field that will be believed later"*, and named the hit feed's asymmetry
+     as the deliberate consequence; that paragraph is now the record of the reversal. Item 146's paragraph in the
+     feed's class doc said the same from the other end. **The rule was right for its readers and wrong for this
+     one**, and the field is here now on purpose rather than by drift.
+
+     **Appended, so the other two readers are untouched.** A Luau handler ignores arguments it does not declare,
+     which is the property that let `victimId` be added before it: `hitConfirm`'s `(victim, thrower, ability)` and
+     `hitVfx`'s four-argument handler both keep working unchanged.
+
+     **`npm run build` exit 0; `flamework.build` unchanged.** Emitted Luau checked: the ternary chain resolves
+     `nil`-safe on both sides and the send carries five arguments in the declared order.
+
+     **Unverified in Studio**: that a rig-vs-rig hit and a player-vs-rig hit both appear in two team colours, and
+     that a lobby hit still appears in one. That needs a round with rigs on both sides — the first minutes of any
+     normal round — so it is checkable in one playtest, unlike item 148's display-name half.
+
 ---
 
 ## 16. What a live log has actually confirmed
