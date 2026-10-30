@@ -2,7 +2,7 @@ import { Controller, OnStart } from "@flamework/core";
 import { Card, Text } from "@rbxts/big-ui";
 import type { TypographyVariant } from "@rbxts/big-ui";
 import Fusion from "@rbxts/fusion-3.0";
-import { teamColourOf } from "shared/gameMode";
+import { Players } from "@rbxts/services";
 import { events, HitDirection } from "shared/networking";
 import { logDebug } from "shared/logger";
 import { killCamActive, PLAYING, roundPhase } from "../../panels";
@@ -91,15 +91,44 @@ const ROW_LIFETIME_SECONDS = 10;
 const SWEEP_SECONDS = 0.25;
 
 /**
- * The width of the element, and therefore of **every card in it**, in pixels. **Placeholder.**
+ * The width of the element, and therefore of **every card in it**, in pixels.
  *
- * 280 at `body1` fits two twenty-character usernames and the arrow on one line with room to spare, which is
- * the widest a card can be asked to be. It is one number rather than one per card on purpose: the cards are
- * a vertical stack, and a width that changed with the longest name in it would make the column twitch on
- * every hit. **Change this and every card changes width**, because each card fills the stack
- * (`Size = (1, 0, …)`) rather than carrying the number itself.
+ * **210, and it is the old `280` scaled by the text change rather than re-measured.** 280 was sized for
+ * `body1` — 16px — fitting two twenty-character usernames and the arrow on one line with room to spare. The
+ * variant is now `caption` (12px, see {@link NAME_VARIANT}), which is three quarters of that, so
+ * `280 × 12/16 = 210` keeps exactly the relationship the 280 was chosen for. A width left at 280 would have
+ * been a card holding a caption line with a third of itself empty, which is the opposite of what this pass
+ * is for.
+ *
+ * It is one number rather than one per card on purpose: the cards are a vertical stack, and a width that
+ * changed with the longest name in it would make the column twitch on every hit. **Change this and every card
+ * changes width**, because each card fills the stack (`Size = (1, 0, …)`) rather than carrying the number
+ * itself.
  */
-const CARD_WIDTH = 280;
+const CARD_WIDTH = 210;
+
+/**
+ * How see-through a card's fill is, as `Frame.BackgroundTransparency` — **`0.6`, the middle of the 0.5–0.7
+ * the brief asked for.**
+ *
+ * **Written onto the card after it is built, because big-ui's `Card` has no transparency prop.** `CardProps`
+ * is `{ children, size, padding, elevation, background, layoutOrder, childGap }` — read out of the installed
+ * typings rather than remembered — and the fill is set from `background`, a `Color3`. A `Color3` has no alpha
+ * in Roblox, so the half of "semi-transparent" that a colour cannot carry has to be the instance's own
+ * property. That is also how every other translucent surface in this project does it:
+ * `CurrencyHudController`, `DockController` and `enemyView` all write `BackgroundTransparency` on the frame
+ * after building it. See {@link addCard}, which is where this is applied.
+ *
+ * **Why 0.6 and not the palette's `PREMIUM.transparency` (0.15).** That token is this project's "glass" for
+ * panels a player *opens* and reads — a shop sheet, a dock — where the surface has to hold its own against
+ * the game behind it because there is text to read on it for as long as it is open. This element is the
+ * opposite: a corner readout of what just happened, up for ten seconds a row, which the brief asked to be
+ * quieter than a panel. 0.15 would have been indistinguishable from the opaque card it replaces.
+ *
+ * **What it costs is contrast, and the ink pays for it.** Team-coloured names on a fill that lets the arena
+ * through are the case the palette's brightened side colours exist for — see {@link paint}.
+ */
+const CARD_TRANSPARENCY = 0.6;
 
 /**
  * The gap between two cards, and between the heading and the first card, in pixels. **Placeholder.** Set as
@@ -129,23 +158,38 @@ const CARD_ELEVATION: 0 | 1 | 2 | 3 = 1;
 /**
  * The typography the two names are drawn in, and **the knob that decides the text's size.**
  *
- * **`body1` is 16px with a 24px line height**, read out of big-ui's own `Typography` (`body1.size` and
- * `body1.lineHeight` in big-ui's `ui/theme`). It was `caption` — 12px — and that is the whole of what "too
- * small" meant: this is the smallest step up that is still a step, and the next one up is `h5` (24px),
- * which is more than a two-name row can afford. **`subtitle1` is 16px as well, and it is no longer a step
- * of any kind**: that variant used to be distinguished by a heavier face, and with one font for the whole
- * game (`UI_FONT`) the two are the same type — so the ladder above this line is sizes, not weights.
+ * **`caption` — 12px — because the brief asked for a caption-sized readout, and this is the whole of what
+ * that means.** The ladder was walked twice in the other direction: this element shipped at `caption`, was
+ * raised to `body1` (16px) when *"too small"* was the report, and is back at `caption` now that the brief is
+ * for something small. **The two reports are not in conflict** — 16px was right for an opaque card that was
+ * meant to be read mid-fight, and 12px is right for a translucent corner readout that is meant to be glanced
+ * at. What changed is the element's job, not anybody's eyesight.
  *
- * **Naming it costs nothing and buys the whole of the size knob**: a variant is the *only* thing that
+ * **`caption` is also the size every other transient line in this project is drawn at**, which is the
+ * stronger reason: `notifications.ts` reads this exact variant out of `premiumHudTheme().typography` for its
+ * toasts, and `HEADING_VARIANT` below has always been `caption`. A feed of hits is the same kind of thing as
+ * a toast — something that happened, said once, then gone — so it is drawn at the same size rather than at a
+ * size of its own.
+ *
+ * **Naming it still costs nothing and buys the whole of the size knob**: a variant is the *only* thing that
  * decides the glyph height here, so changing this line changes the names, the row heights, the card heights
  * and the whole stack's height at once. **The numbers themselves are big-ui's**, not this file's —
  * `Typography` is a mutable table that `configureTheme` writes and that `ThemeController` has already run
  * by the time anything mounts, so a project-wide type change is the place to move them and this line is the
  * place to pick one.
  */
-const NAME_VARIANT: TypographyVariant = "body1";
+const NAME_VARIANT: TypographyVariant = "caption";
 
-/** The typography the heading is drawn in. **`caption` — 12px — because a heading is a label rather than a row**: it names the list and gets out of the way, and it is the one thing here that should not compete with the names for size. */
+/**
+ * The typography the heading is drawn in. **`caption` — 12px — because a heading is a label rather than a row**:
+ * it names the list and gets out of the way.
+ *
+ * **It is no longer a size below the rows, and that is a consequence worth stating rather than hiding.** While
+ * the names were `body1` this was the smaller of the two, which is what made "does not compete with the names"
+ * true. Both are `caption` now, so **the heading is held back by its two other differences instead**: it is one
+ * short line against rows of two coloured names, and it is the only label in the element that is never team
+ * coloured. Size is no longer the mechanism; the ink is.
+ */
 const HEADING_VARIANT: TypographyVariant = "caption";
 
 /** How far in from the left edge, in pixels. Matched to the coin readout's own inset, deliberately. */
@@ -191,7 +235,16 @@ const FEED_HEADING = "Hits this round";
 interface FeedEntry {
 	readonly hitter: string;
 	readonly victim: string;
-	readonly direction: HitDirection;
+	/**
+	 * **Which way the hit went, or `undefined` when there is no side to say.**
+	 *
+	 * `"AtoB"` / `"BtoA"` come from `roundHit`, whose payload carries the direction because the server derived
+	 * it from the two people's teams. A row built from `hitImpact` has no direction at all: that event is about
+	 * a *body being hit*, its ends may be rigs, and it deliberately carries no sides. See the class doc's
+	 * "which hits reach this list" section — the two cases are drawn differently on purpose, and `undefined`
+	 * is how a row says it does not know rather than guessing a side.
+	 */
+	readonly direction: HitDirection | undefined;
 	/**
 	 * Seconds since this row arrived, accumulated by the sweep — see {@link HitLogController.watchLifetime}
 	 * for why it is a number this file maintains rather than a timestamp off a clock.
@@ -207,8 +260,67 @@ interface HitCard {
 }
 
 /**
+ * **Whether `name` is a person's** — asked of the names in the game, and the test `hitImpact`'s rows are
+ * filtered with.
+ *
+ * **A name comparison rather than an instance lookup, because a name is all the event carries.** `hitImpact`
+ * sends the victim's and thrower's *model* names, and a player's character is named after the player, so the
+ * two are the same string for every body a person is behind — which is the same identity
+ * `Players.GetPlayerFromCharacter` walks to, spelled the way the wire spells it.
+ *
+ * **A rig is not in this set**, which is the whole point: a pooled rig is named from the spawn pool
+ * (`GiantDiva`) and a hand-built one is named by whoever built it, so a rig-vs-rig or player-vs-rig hit is
+ * recognised as one that `roundHit` will never announce. See the class doc's "which hits reach this list".
+ *
+ * **Linear over the roster rather than a `Set`**, deliberately: this is asked at most twice per landed hit, on
+ * a roster of at most a handful of players, and a cached set would have to be invalidated on every join and
+ * leave — a subscription for a lookup this cheap.
+ */
+function isPlayerName(name: string): boolean {
+	for (const player of Players.GetPlayers()) {
+		if (player.Name === name) return true;
+	}
+
+	return false;
+}
+
+/**
  * The hit feed: **every hit landed in the round, by anyone, newest first**, at the top left of the screen
- * while a round is being played. One opaque card per row, two names to a card, each row living ten seconds.
+ * while a round is being played. One translucent card per row, two names to a card, each row living ten
+ * seconds.
+ *
+ * ## Which hits reach this list, and why it is two events rather than one
+ *
+ * **Every hit in the round, which is not the same set as `roundHit`.** That event is the *record's*: its
+ * payload carries a direction so a row can be painted in two team colours, and `RoundService.logHit` sends it
+ * only when **both ends are people on a side** — a rig's throw and a ball that lands on a rig therefore send
+ * nothing, and in a round played against rigs those are most of the hits in it. That was the report: a round
+ * of rigs produced a feed with almost nothing in it, because the feed was subscribed to an event gated on a
+ * condition the game does not require.
+ *
+ * **So this listens to `hitImpact` as well — the event that already fires for every hit, whoever either end
+ * was.** It is the same event `hitVfx` draws the burst from and `hitConfirm` the splash, and it carries the
+ * two names this element needs. **The pair is not drawn twice, and the rule that prevents it is a fact rather
+ * than a guess**: `hitImpact`'s two names are *resolved to players* — the victim's model name and the
+ * thrower's — so a hit with a person at both ends is exactly the pair `roundHit` is about to announce, and
+ * this file drops it. Anything else has at least one rig in it, `roundHit` will never mention it, and the
+ * `hitImpact` row is the only chance it gets. **Neither event is filtered on the server for this, and
+ * `roundHit`'s payload, its sender and the round's own record are all untouched.**
+ *
+ * **And a `hitImpact` row is only taken while a round is being played, which `roundHit` does not need to be
+ * asked about.** The two events are gated differently on the server — `hitImpact` is deliberately sent in
+ * every phase, because an impact is a fact about a body and its other two readers are cosmetic — while
+ * `roundHit` is gated by `RoundService` itself. A feed is a round's, so the missing half of that gate is
+ * supplied here: a ball landing on a practice dummy in the lobby is an impact, and it is not a hit in a round.
+ * Without this, a lobby hit would sit in the array unseen and then appear for the first seconds of the next
+ * round — the one way a stale row can reach the screen.
+ *
+ * **What a rig row looks like, and why its names are one ink.** Two names, the same arrow, and no team
+ * colours — `hitImpact` carries no sides, and inventing them here would be a second derivation of a fact the
+ * server declined to state. **The names are what the server already sends**: the victim's and thrower's model
+ * names, which for a pooled rig is its short alias (`GiantDiva`, not `GiantDiva's rig clone 3`) and for a
+ * person is their username, so nothing is truncated and nothing is abbreviated. A name long enough to matter
+ * wraps inside the card rather than overflowing — see `addCard`'s `Wraps` note.
  *
  * **One feed of the round's hits, not two personal lists — and that is a reversal.** What was here first was
  * "Who you hit" and "Who hit you": the local player's own exchanges, split by which end of them they were.
@@ -227,53 +339,58 @@ interface HitCard {
  * server, and not here, where the element no longer knows or asks whether one of the two names is its own.
  * See `networking.ts` on `roundHit` for that argument and the cost it accepted.
  *
- * **Every row is two names in two different colours, and that is a guarantee rather than a hope.** Friendly
- * fire is refused globally, before any damage, by `RoundService.isFriendlyFire` — `BallComponent` calls it
- * ahead of the tag, so a same-side contact is not merely undamaging but *absent*: no bounce, no tag, no hit
- * and therefore no log entry. So **every logged hit has one end on each side**, and a row can never be one
- * colour. That single fact is what makes the whole rendering rule work: the colours follow from the
- * `direction` alone, so no colour has to travel, and the two names in a row cannot collide.
+ * **Every row is two names and an arrow, and only some rows can colour them.** Friendly fire is refused
+ * globally, before any damage, by `RoundService.isFriendlyFire` — `BallComponent` calls it ahead of the tag, so
+ * a same-side contact is not merely undamaging but *absent*: no bounce, no tag, no hit and therefore no log
+ * entry. So **every hit has one end on each side** — but the sides only reach this client on `roundHit`, whose
+ * payload carries a direction. A row built from `hitImpact` has two names and no sides, because that event's
+ * ends may be rigs and it deliberately carries nothing it does not need. Those rows are drawn in one ink and
+ * the arrow still says which way the hit went. See "which hits reach this list" below.
  *
- * **The colours are the teams' and nothing else is.** `teamColourOf` reads the one pair `TEAM_COLORS` holds
- * — the same table the character outline, the team rings and the score bar's two circles paint from — so a
- * name in this element is the same red or blue as the body it names. **No side is named in words**, which is
- * the rule the score HUD's circles were built on: the colour is the identity, and a label saying which team
- * it is would be a second vocabulary for a fact already on the screen.
+ * **The colours are the palette's side pair, not the world's, and that split is `ScoreHudController`'s.** The
+ * score bar draws its two team *discs* in `teamColourOf` — the same value that paints a body's ring in the
+ * arena, so the colour on the HUD and the colour on the character are one thing — and its two *numbers* in
+ * `PREMIUM.sideA` / `PREMIUM.sideB`, the palette's brightened versions of the same two teams. This element
+ * draws no world-shaped thing at all: there is no disc, no ring and no body, only two names. So it belongs on
+ * the text side of that split, and it used to be on the wrong side — `teamColourOf` returns the *world*
+ * values, `(158, 58, 52)` and `(56, 92, 152)`, which are muted enough to read as an outline on a character and
+ * are **the wrong inks for a translucent card**: against the mid-dark a 0.6-transparent black produces over a
+ * bright arena floor, the world red lands at roughly 1:1 and effectively disappears. The palette's pair is the
+ * one member set that keeps the two team identities against a dark ground, which is exactly what
+ * `premiumTheme.ts` says it is for.
  *
- * **The cards are opaque, and the fill is the theme's paper — which is what makes both team colours
- * readable.** This reverses what was here first, and the reversal is worth reading because the old argument
- * was not silly, it was about the wrong thing. It said: the theme is light, so an opaque card is a cream
- * slab pinned over the arena, which is the loudest thing on screen for the least information on it, and
- * `RoundStatusController` drops its own card's fill for exactly that reason during a round. All true — and
- * it made legibility the thing that paid for the quiet. **A transparent card shows whatever is behind it
- * through the one part of the element that has to be read**, and the two names are mid-dark team colours
- * chosen to survive being an *outline* on a body, not text on an arbitrary background: against a bright sky,
- * or the pale floor of the arena, both colours lose most of their contrast and the card becomes a suggestion
- * of two names. The fill is what fixes that, and the numbers are worth stating because they are the whole of
- * the decision. Team red is `(158, 58, 52)` and team blue is `(56, 92, 152)`; their relative luminances are
- * `0.105` and `0.108`, so against the theme's paper `(255, 255, 255)` they come out at **6.8:1 and 6.7:1**
- * — comfortably past the 4.5:1 a normal text contrast wants — while against a black fill they would be
- * **3.1:1**, which fails it. A light fill is what these colours need, and the light theme is what the rest
- * of the HUD is already drawn on. **The cost is the loudness, and it is paid deliberately**: five white
- * cards in the corner are unmissable, which is the point of a readout that has to be *read* mid-fight, and
- * the element is only up during a round and only when a hit has landed.
+ * **No side is named in words**, which is the rule the score HUD's circles were built on: the colour is the
+ * identity, and a label saying which team it is would be a second vocabulary for a fact already on the screen.
  *
- * **The fill is `hudTheme`'s `panel`, which is big-ui's `background.paper`** — the raised surface, the
- * colour big-ui's own `Card` fills itself with. `theme.colors.card` is the other candidate and is
- * `background.default`, the page colour, which exists to be the hole a card sits in; a card floating over
- * the game has no panel above it to cut into, so the paper is the honest one. **No colour was added to
- * `hudTheme` for this**, and none is needed: the theme's own doc says a panel is made of `panel` and a card
- * takes the page colour back, and adding a third near-white for the same job is the semantic drift its
- * `coin` entry argues against.
+ * **The cards are semi-transparent, and this is a reversal of a long argument that is worth reading rather
+ * than deleting.** It said: the theme is light, so an opaque card is a cream slab pinned over the arena, which
+ * is the loudest thing on screen for the least information on it — all true — and it made legibility the thing
+ * that paid for the quiet, because a transparent card shows whatever is behind it through the one part of the
+ * element that has to be read, and the two names are mid-dark team colours chosen to survive being an *outline*
+ * on a body rather than text on an arbitrary background. The arithmetic it did (6.8:1 and 6.7:1 against
+ * paper, 3.1:1 against black) was right about the colours it had. **Two things then changed underneath it**:
+ * the HUD moved to the dark premium palette, so the card stopped being paper at all, and the brief for this
+ * element became "semi-transparent and caption-sized" — a corner readout, not a panel. Both halves of the old
+ * argument were answered rather than overruled: the inks are now the palette's *brightened* side pair
+ * specifically because the fill is translucent, and the fill is `0.6` rather than a decorative `0.15` because
+ * the element still has to be readable. **The cost is stated**: on a very bright backdrop the names are less
+ * crisp than they were on paper, and the thing paying for it is a glow edge on the card and an ink that was
+ * chosen to survive a dark ground.
+ *
+ * **The fill is `hudTheme`'s `panel` at {@link CARD_TRANSPARENCY}** — the raised surface, the colour big-ui's
+ * own `Card` fills itself with, and in the premium palette the near-black "deep space" step. `theme.colors.card`
+ * is the other candidate and is one step *up* in lightness, the face of the thing on the sheet; a card floating
+ * over the game has no sheet above it to cut into, so the panel is the honest one. **No colour was added to
+ * `hudTheme` for this**, and none is needed.
  *
  * **`elevation: 1`, so each card carries the one-pixel hairline big-ui draws at its own divider
- * transparency.** That is not decoration either: a *white* card over a bright sky has no edge of its own,
- * and a stack of them with no edge reads as one ragged white mass. `elevation: 0` would take the stroke
- * away — which is right for a card that is *transparent*, because an outline around nothing is a floating
- * rectangle, and wrong for an opaque one. The alternative was a cast shadow from `ui/elevation.ts`, and
- * that is refused on purpose: that helper is the *furniture* hierarchy, for the dock's buttons and the
- * shop's panels — things a player presses and opens — and a readout that looks pressable is a readout that
- * invites a click.
+ * transparency.** That is not decoration: a *translucent* card over a bright sky has even less of an edge of
+ * its own than an opaque one had, and a stack of them with no edge reads as one ragged smudge. `elevation: 0`
+ * would take the stroke away — right for a card that is *fully* transparent, because an outline around nothing
+ * is a floating rectangle, and wrong here, where there is still a fill to bound. The alternative was a cast
+ * shadow from `ui/elevation.ts`, and that is refused on purpose: that helper is the *furniture* hierarchy, for
+ * the dock's buttons and the shop's panels — things a player presses and opens — and a readout that looks
+ * pressable is a readout that invites a click.
  *
  * **It is shown during a playing phase and hidden the rest of the time, which is deliberately *not* the
  * shared `sessionHudVisible` predicate.** That one is "a round is on, or you are in a practice zone", and the
@@ -392,9 +509,9 @@ export class HitLogController implements OnStart {
 		// Written onto the returned label rather than passed as a prop: big-ui's `Text.color` is a palette
 		// *vocabulary* — `"primary"`, `"errorMain"` — resolved against big-ui's own palette, and this ink is
 		// the theme's. The default would also have been drawn at `Transparency.textPrimary` (0.13); a
-		// heading over a bright arena wants all of its ink — **and now that the card behind it is solid plum,
-		// "all of its ink" is the theme's `0.15`**, which is the direction's text rule rather than a
-		// per-label call. See `PREMIUM.textTransparency`.
+		// heading over a bright arena wants all of its ink — **and now that the card behind it is the palette's
+		// deep space at 0.6, "all of its ink" is the theme's `0.15`**, which is the direction's text rule rather
+		// than a per-label call. See `PREMIUM.textTransparency` and {@link CARD_TRANSPARENCY}.
 		heading.TextColor3 = theme.colors.textPrimary;
 		heading.TextTransparency = PREMIUM.textTransparency;
 
@@ -459,10 +576,10 @@ export class HitLogController implements OnStart {
 		// for the number and what it sits under.
 		raiseZIndex(frame, HIT_LOG_Z_INDEX);
 
-		// `CARD_WIDTH` is 280px at the left edge, so a viewport narrower than that pushes the element off
-		// the right of the screen — and a HUD in a corner has nowhere to give way but its own width. The same
-		// rule as every other HUD, applied for the same reason: the element carries its own bound rather
-		// than trusting the screen to be big enough. See `addViewportConstraint` for the two caps.
+		// `CARD_WIDTH` is 210px at the left edge, so a viewport narrower than that plus {@link EDGE_INSET}
+		// pushes the element off the right of the screen — and a HUD in a corner has nowhere to give way but its
+		// own width. The same rule as every other HUD, applied for the same reason: the element carries its own
+		// bound rather than trusting the screen to be big enough. See `addViewportConstraint` for the two caps.
 		addViewportConstraint(scope, frame);
 
 		frame.Parent = getHudScreenGui();
@@ -526,6 +643,38 @@ export class HitLogController implements OnStart {
 			anyHits.set(feed.size() > 0);
 
 			logDebug(`[HUD] hit feed — ${hitter} → ${victim} (${feed.size()} row(s))`);
+		});
+
+		/**
+		 * **The second source of rows: every hit `roundHit` cannot describe.** A rig's throw, a ball landing on
+		 * a rig — the hits a round against rigs is mostly made of, and the ones the feed used to miss entirely.
+		 * See the class doc's "which hits reach this list" for the whole argument; the two rules here are the
+		 * short version of it.
+		 *
+		 * **A pair with a person at both ends is dropped, and that is what stops every hit being drawn twice.**
+		 * The comparison is against the names of the players in the game, because `hitImpact`'s names are model
+		 * names and a player's character is named after them — the same identity, spelled the same way, and the
+		 * same fact `BallComponent`'s catch branch leans on when it asks `Players.GetPlayerFromCharacter`. A rig
+		 * is named from the spawn pool or by whoever built it, so it is not in that set.
+		 *
+		 * **It is the *pair* rather than either end**, and the difference matters: a player's throw that lands on
+		 * a rig is one name from each, which `roundHit` will never announce, so it has to get through.
+		 */
+		events.Client.Get("hitImpact").Connect((victim, thrower) => {
+			if (Fusion.peek(roundPhase) !== PLAYING) return;
+
+			// The same two names `roundHit` would have carried, in which case the row there is the better one:
+			// it has a direction, so it can be painted in two colours.
+			if (isPlayerName(thrower) && isPlayerName(victim)) return;
+
+			feed.unshift({ hitter: thrower, victim: victim, direction: undefined, age: 0 });
+
+			if (feed.size() > ROW_COUNT) feed.pop();
+
+			this.paint(feed, cards, theme);
+			anyHits.set(feed.size() > 0);
+
+			logDebug(`[HUD] hit feed — ${thrower} → ${victim} (a rig was in it, ${feed.size()} row(s))`);
 		});
 
 		// The second way a row leaves, and the only one on a clock.
@@ -611,19 +760,23 @@ export class HitLogController implements OnStart {
 
 		// The names' colours are not set here: they change with every pair, and `paint` is the one place
 		// they are written. What is fixed for the card's whole life is the arrow's ink and the fact that the
-		// names take the theme's text alpha — **which is now `0.15` rather than `0`**. The old comment argued
-		// that a half-transparent name would mix with a translucent fill and lose the contrast it computes;
-		// the fill is solid plum now, so nothing is mixing, and the alpha is what every other label in this
-		// direction is drawn at. See `PREMIUM.textTransparency`.
+		// names take the theme's text alpha — **which is `0.15` rather than `0`**. An earlier version of this
+		// comment argued that a half-transparent name would mix with a translucent fill and lose the contrast it
+		// computes. That objection is answered rather than ignored, and by the two things that changed: the fill
+		// is now actually translucent ({@link CARD_TRANSPARENCY}), and the names are drawn in the palette's
+		// *brightened* side pair rather than the world's, which is the ink that was chosen for a dark ground —
+		// see `paint`. The alpha is what every other label in this direction is drawn at, and a full-ink name
+		// would be the only thing in the element shouting.
 		hitter.TextTransparency = PREMIUM.textTransparency;
 		victim.TextTransparency = PREMIUM.textTransparency;
 
 		const card = Card(scope, {
-			// The fill, the padding and the hairline, in that order. `background` names the theme's paper
-			// rather than taking big-ui's default, because the fill is a *decision* here — it is what buys
-			// the contrast — and a decision a reader can see beats one inherited from a library. The padding
-			// is a theme token rather than one of this file's pixels: it is the same inset every card in the
-			// project uses, and 8px at today's spacing scale. See the size map in the report.
+			// The fill, the padding and the hairline, in that order. `background` names the theme's panel
+			// rather than taking big-ui's default, because the fill is a *decision* here — it is what the two
+			// names are read against — and a decision a reader can see beats one inherited from a library. In the
+			// premium palette this is the deep-space step, and its see-through-ness is set on the instance below.
+			// The padding is a theme token rather than one of this file's pixels: it is the same inset every card
+			// in the project uses, and 8px at today's spacing scale. See the size map in the report.
 			background: theme.colors.panel,
 			padding: theme.spacing.sm,
 			elevation: CARD_ELEVATION,
@@ -636,8 +789,16 @@ export class HitLogController implements OnStart {
 		card.LayoutOrder = order;
 		card.Visible = false;
 
+		// **The half of "semi-transparent" that a colour cannot carry.** `CardProps.background` is a `Color3`, and
+		// a `Color3` has no alpha, so the fill's see-through-ness is the instance's own property — written here
+		// rather than passed, because big-ui's `Card` exposes no prop for it. See {@link CARD_TRANSPARENCY} for the
+		// number and for the three other surfaces in this project that do the same thing.
+		card.BackgroundTransparency = CARD_TRANSPARENCY;
+
 		// **The neon edge, over big-ui's own hairline.** `applyGlow` takes that stroke over as the core rather than
-		// adding a second one — see `ui/glow.ts` — which is what lets a card this file did not build be lit.
+		// adding a second one — see `ui/glow.ts` — which is what lets a card this file did not build be lit. On a
+		// translucent fill it is doing more work than it was: the edge is now what separates a card from the arena
+		// behind it, since the fill no longer does.
 		applyGlow(card);
 
 		return { card: card, hitter: hitter, victim: victim };
@@ -654,17 +815,24 @@ export class HitLogController implements OnStart {
 	 * from three places — a hit arriving, a row ageing out, the round ending — because all three change the
 	 * list and none of them should be able to draw a different list from the others.
 	 *
-	 * **The colours come from the direction alone, and this is the whole of that rule.** `"AtoB"` means the
-	 * hitter was on A and the victim on B, so one string decides both inks and the names are only ever the
-	 * *text*. That is the payoff from friendly fire being off: the two labels cannot come out the same
-	 * colour, so a card is always readable as "this side hit that side" rather than as two words.
+	 * **The colours come from the direction alone when there is one, and a row without one says so.**
+	 * `"AtoB"` means the hitter was on A and the victim on B, so one string decides both inks and the names are
+	 * only ever the *text*. That is the payoff from friendly fire being off: the two labels cannot come out the
+	 * same colour, so a card is always readable as "this side hit that side" rather than as two words.
+	 * **A row with no `direction` is a rig's hit**, where `hitImpact` carried no sides — see the class doc — and
+	 * both names take the theme's own ink. Two names in one colour is the honest drawing of a fact the server did
+	 * not state: the alternative would be to guess a side from a body the client happens to be able to resolve,
+	 * which would be a second answer to a question `RoundService` answers for the hits it covers, and a different
+	 * answer for the ones it does not.
+	 *
+	 * **The inks are `PREMIUM.sideA` / `PREMIUM.sideB` rather than `teamColourOf`**, which is `ScoreHudController`'s
+	 * split and the reason this element's names are readable at all on a translucent fill — see the class doc's
+	 * colour paragraph for the whole of that argument and the contrast it fixes.
 	 *
 	 * **`TextColor3` is written onto the returned labels rather than passed to `Text`.** big-ui's
 	 * `Text.color` is a palette *vocabulary* — `"primary"`, `"errorMain"` — resolved against big-ui's own
-	 * palette, so a team colour could not travel through it; the instance is where a `Color3` goes, which is
-	 * what every other HUD here does. The fallback to `textPrimary` is for a label `teamColourOf` does not
-	 * know, which the log cannot produce and the loose attribute reads elsewhere in this project are written
-	 * to tolerate anyway.
+	 * palette, so a `Color3` could not travel through it; the instance is where a `Color3` goes, which is
+	 * what every other HUD here does.
 	 */
 	private paint(entries: FeedEntry[], cards: HitCard[], theme: HudTheme): void {
 		for (let index = 0; index < ROW_COUNT; index++) {
@@ -677,15 +845,17 @@ export class HitLogController implements OnStart {
 			}
 
 			const entry = entries[index];
-			const hitterOnA = entry.direction === "AtoB";
-			const hitterColour = teamColourOf(hitterOnA ? "A" : "B");
-			const victimColour = teamColourOf(hitterOnA ? "B" : "A");
+			const direction = entry.direction;
+			const hitterColour =
+				direction === undefined ? theme.colors.textPrimary : direction === "AtoB" ? PREMIUM.sideA : PREMIUM.sideB;
+			const victimColour =
+				direction === undefined ? theme.colors.textPrimary : direction === "AtoB" ? PREMIUM.sideB : PREMIUM.sideA;
 
 			held.card.Visible = true;
 			held.hitter.Text = entry.hitter;
-			held.hitter.TextColor3 = hitterColour ?? theme.colors.textPrimary;
+			held.hitter.TextColor3 = hitterColour;
 			held.victim.Text = entry.victim;
-			held.victim.TextColor3 = victimColour ?? theme.colors.textPrimary;
+			held.victim.TextColor3 = victimColour;
 		}
 	}
 

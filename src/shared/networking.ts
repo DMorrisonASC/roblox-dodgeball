@@ -349,7 +349,16 @@ export const events = Net.Definitions.Create({
 	 *
 	 * **It is not a record and nothing accumulates from it.** `roundHit` and `roundHitLog` remain the round's
 	 * history of a hit between two people; this is the same event told to the clients that have to draw it,
-	 * and `hitVfx` and `hitConfirm` are its readers.
+	 * and `hitVfx`, `hitConfirm` and — since item 146 — `HitLogController` are its readers.
+	 *
+	 * **And the third reader is why the missing direction has a visible consequence rather than a silent
+	 * one.** The HUD's hit feed needs the two names for *every* hit, which is the set this event carries and
+	 * `roundHit` does not; it takes a hit with a person at both ends from `roundHit` (which has the direction,
+	 * so it can paint both names in team colours) and everything else from here, drawn in one ink because this
+	 * payload has no sides to draw. That is a deliberate asymmetry and not a gap: the sides on `roundHit` are
+	 * derived by `RoundService` from two `Player`s' teams, and a rig's side is a fact this event's shape never
+	 * promised. A reader that wants rig rows coloured would have to send the direction too — which would make
+	 * the "nothing it does not need" argument below false, so it is not done quietly here.
 	 *
 	 * **A fourth field, `victimId` — and it is the fix for a name being asked to do an identity's job.** The
 	 * first field is the victim's `Name`, which is enough for `hitConfirm` (it only ever compares the *thrower*)

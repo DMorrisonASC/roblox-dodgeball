@@ -6575,6 +6575,75 @@ almost no server code; 45 is what it cannot show.**
      to read for the group itself is the boot-time `[Collision] Workspace knows: …` list, which should now contain
      `LooseBall`.
 
+146. **The hit feed showed only player-on-player hits, and drew them as a panel — it now shows every hit, at caption size, on a translucent card.**
+
+     **The report, and it was a subscription bug rather than a rendering one.** The feed listened to `roundHit`,
+     which `RoundService.logHit` sends **only when both ends are players on a side**. In a round played against
+     rigs — which is most rounds — that is a minority of the hits, so the feed sat empty or nearly so.
+
+     **`hitImpact` already carried both names, so nothing was added to the wire.** Its payload is
+     `[victim, thrower, ability, victimId]` and has been since it was written; `hitVfx` and `hitConfirm` are its
+     existing readers. **The prompt's question 1 therefore answers "yes, both names were already there"**, and
+     the only change needed was a second subscription plus a rule that keeps a hit from being drawn twice.
+
+     **Two rows for one hit is the hazard, and the rule that prevents it is a fact rather than a guess.** A pair
+     with a person at *both* ends is exactly the pair `roundHit` is about to announce, so it is dropped; anything
+     else has at least one rig in it, `roundHit` will never mention it, and the `hitImpact` row is its only
+     chance. The test is `isPlayerName` — a comparison against `Players.GetPlayers()` — because `hitImpact`'s
+     names are model names and a player's character is named after them, which is the same identity
+     `Players.GetPlayerFromCharacter` walks to. A rig is named from the spawn pool or by whoever built it, so it
+     is not in that set.
+
+     **And a `hitImpact` row is only taken while a round is being played.** The two events are gated differently
+     on the server — `hitImpact` is deliberately sent in every phase, `roundHit` is gated by `RoundService` — so
+     the client supplies the missing half for the one that is not. Without it a ball landing on a practice dummy
+     in the lobby would sit in the array unseen and then appear in the first seconds of the next round.
+
+     **What a rig row shows, and how the rigs are named.** Two names and the arrow, in **one ink** — the theme's
+     `textPrimary` — because `hitImpact` carries no sides and deriving them client-side would be a second
+     derivation of a fact the server states for the hits it covers and declines to state for the rest. **Nothing
+     is truncated or abbreviated**: the names are the model names the server already sends, which for a pooled rig
+     is its short alias (`GiantDiva`) and for a person is their username, so a rig row is no longer than a player
+     row. A name long enough to matter wraps inside the card — `addCard`'s `Wraps` has always handled that.
+
+     **"Caption-sized" is `caption`: `NAME_VARIANT` went `body1` → `caption`, which is 12px.** That is
+     big-ui's `Typography.caption`, read out of the installed typings, and it is the same variant
+     `notifications.ts` draws its toasts in and the one `HEADING_VARIANT` has always used. `CARD_WIDTH` went
+     `280` → `210` (`280 × 12/16`), keeping the width-to-text relationship the 280 was chosen for.
+
+     **"Semi-transparent" is `0.6`, and it is written on the instance because big-ui cannot carry it.**
+     `CardProps` is `{ children, size, padding, elevation, background, layoutOrder, childGap }` — verified against
+     the typings — and `background` is a `Color3`, which has no alpha. So `addCard` writes
+     `card.BackgroundTransparency = CARD_TRANSPARENCY` after building it, which is what `CurrencyHudController`,
+     `DockController` and `enemyView` all do for the same reason. **`PREMIUM.transparency` (0.15) was not used**:
+     that token is the "glass" for panels a player opens and reads, and at 0.15 this would still be the opaque
+     card it replaces.
+
+     **The transparency forced one more change, and it is the one worth reviewing: the names' ink.**
+     `teamColourOf` returns the *world* pair — `(158, 58, 52)` and `(56, 92, 152)`, muted enough to read as an
+     outline on a body — and against the mid-dark a 0.6-transparent panel produces over a bright floor, the world
+     red lands at roughly 1:1 and effectively disappears. The names now use `PREMIUM.sideA` / `PREMIUM.sideB`,
+     which is **`ScoreHudController`'s documented split**: its team *discs* stay `teamColourOf` (the colour that
+     paints a body's ring, so HUD and character agree), and its team *numbers* use the palette's brightened pair.
+     This element draws no world-shaped thing at all — only names — so it belongs on the text side of that split,
+     and it was on the wrong side before. The hues shift slightly (`#9E3A34` → `#FF3C5A`, `#385C98` → `#3C8CFF`)
+     and stay recognisably the same two teams.
+
+     **Documentation corrected rather than extended.** The controller's class doc argued at length for an *opaque*
+     card against the light theme's paper; that argument is kept and answered — the theme has since moved to the
+     dark palette (so the card had stopped being paper at all, and two paragraphs in the same file already said
+     "solid plum" while the class doc said "paper") and the brief changed. `networking.ts`'s `hitImpact` entry now
+     names `HitLogController` as a third reader and states why the absent direction is now a visible asymmetry.
+
+     **`npm run build` exit 0; `flamework.build` unchanged.** Emitted Luau checked: two `Connect` calls, the
+     `isPlayerName` filter on the `hitImpact` one, the `roundPhase` gate, and the ternary pair in `paint`.
+
+     **Unverified in Studio**: that a rig-vs-rig hit and a player-vs-rig hit both appear, and that a
+     player-vs-player hit appears **once** (this is the one that could regress, and the way it would show is a
+     doubled row); that 210px holds two long usernames without wrapping to three lines; and that 0.6 reads as
+     "semi-transparent" rather than either "still a panel" or "unreadable" over a bright floor — that last is the
+     one a number cannot settle.
+
 ---
 
 ## 16. What a live log has actually confirmed
