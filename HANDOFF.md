@@ -6504,6 +6504,77 @@ almost no server code; 45 is what it cannot show.**
      is playable rather than a pile at whatever spacing the parts are actually at. The line to read is
      `[Spawner] round stocked` — it should now match `MatchSpawner`'s part count printed at boot.
 
+145. **Players were tripping over spent balls: a ball now changes collision group when it stops being a threat.**
+
+     **The report.** *"Players are tripping over resting dodgeballs."* A thrown ball lands, `resolveTags` sets
+     `Armed = false`, and the ball stays `CanCollide = true` in the `Ball` group — which collides with
+     `Character`, because that is exactly the row that lets a *thrown* ball hit anybody. So a spent ball becomes a
+     two-stud obstacle in a game about moving, and stays one until somebody collects it.
+
+     **Why not `CanCollide = false`, which is the obvious fix and is wrong.** A non-colliding ball resting on the
+     floor is holding nothing up: it sinks through the arena and falls out of the world. Anchoring it instead makes
+     every spent ball a fixed object that a later throw cannot disturb, and gives `settleBall` a state it has to
+     special-case. Both of the prompt's fallbacks (A: only disarm once settled, B: anchor) are avoidable, and the
+     third option it named is the right one.
+
+     **Why not the collision matrix, which is the other obvious fix and is also wrong.** `Ball` against
+     `Character` is a statement about a pair of *types*, not about a state. Turning that row off lets an armed ball
+     fly through a player's torso with no `Touched` to tag them — every throw a miss. A group cannot express
+     "solid while thrown, walkable when spent"; only *which group the ball is in* can.
+
+     **So: a second ball group, and the ball moves between them.**
+
+     | | armed / held / in flight | spent, on the floor |
+     | --- | --- | --- |
+     | group | `Ball` | `LooseBall` (new) |
+     | vs `Character` | **collides** — this is how a throw hits | **not** — walk over it |
+     | vs `Default` (floor, props, edge walls) | collides | **collides** — the row that keeps it off the floor's underside |
+     | vs `BallWall` | collides | **collides** — a spent ball is still kept inside a practice area |
+     | vs `Barrier` | not | **not** — the midline still lets balls through |
+     | vs `Ball`, `LooseBall`, `PracticePlayer`, `DuckUpper` | not | **not** — each mirrors its `Ball` row |
+
+     **Where the state changes: `src/server/components/BallComponent.ts`, in `onStart` and in the
+     `GetAttributeChangedSignal("Armed")` handler**, both calling `setBallLoose` from
+     `src/server/collision/CollisionGroups.ts`. The `Armed` attribute was already the single fact that means "this
+     is a live throw" — `handleTouch`'s first line, the catch refusal, the tag list and the identity all read it —
+     so the group follows it rather than inventing a second flag. The handler's write sits **above** the existing
+     early return, because that return skips throw *bookkeeping* and this is the transition the line exists for.
+
+     **`CollisionGroups.assignPart` now derives the group from `Armed` rather than assigning `Ball` flatly**, and
+     that correction is load-bearing rather than tidy: `assignPart` is reached from a character's
+     `DescendantAdded`, so a ball being *carried* passes through it constantly. A flat write would have repainted a
+     spent ball the moment anybody walked near it, and the trip hazard would have returned only for balls that had
+     been picked up and dropped.
+
+     **`Touched` still fires between a loose ball and a body, and this file already knew that.** The duck's block in
+     `CollisionGroups` states it as an engine fact the project depends on (*"a collision group does not suppress
+     `Touched`"*). So `BallComponent.handleTouch` still receives those contacts and discards them on its first
+     line, which is what it did before this change too. Nothing downstream needed touching: **damage, catch, pickup
+     and the settle sweep are unchanged.**
+
+     **Pickup was verified rather than assumed.** `BallPickupService.looseBalls` walks the tag and compares
+     `Position` distances; it reads `Armed`, `Anchored`, `Parent` and `PICKUP_LOCKED_UNTIL`, and never a contact.
+     So a ball that no longer collides with anybody is exactly as pickable as before.
+
+     **How the ball lands, and why it still lands.** By engine contact with a `Default` floor while `CanCollide`
+     stays true, then `settleBall`'s roll resistance and its freeze below `MIN_SPEED`. This change edits exactly one
+     row that a landing depends on — none — and the loose group's `Default` row is written out explicitly so a
+     reader can see the floor was considered.
+
+     **Two consequences stated rather than discovered.** A loose ball no longer *bounces off* a body, which is the
+     intent. And a ball can now rest inside a character's legs until it is collected, because nothing pushes it out
+     — scenery does not move when you walk into it.
+
+     **`npm run build` exit 0; `flamework.build` unchanged.** Emitted Luau checked: `setBallLoose` is a one-line
+     ternary, both call sites are in `BallComponent.luau`, and all sixteen `LooseBall` rows are emitted after the
+     group registrations (a row naming an unregistered group raises and would take `startCollisionGroups` with it).
+
+     **Unverified in Studio**: that a player now walks through a resting ball without being slowed or shoved; that a
+     spent ball still comes to rest visibly on the arena floor rather than sinking; that a thrown ball still tags
+     players at every range; and that a loose ball still cannot leave a practice zone past a `BallWall`. The line
+     to read for the group itself is the boot-time `[Collision] Workspace knows: …` list, which should now contain
+     `LooseBall`.
+
 ---
 
 ## 16. What a live log has actually confirmed

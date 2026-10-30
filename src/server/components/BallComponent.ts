@@ -21,6 +21,7 @@ import { SUPER_CONFIG } from "shared/config/super.config";
 import { logInfo } from "shared/logger";
 import { BallService } from "../services/ball/BallService";
 import { emitSound } from "../services/ball/SoundEmitter";
+import { setBallLoose } from "../collision/CollisionGroups";
 import { CatchService } from "../services/actions/CatchService";
 import { FreezeService } from "../services/actions/FreezeService";
 import { RoundService } from "../services/round/RoundService";
@@ -204,6 +205,23 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 	}
 
 	public onStart(): void {
+		// **A ball that is not armed is litter, and it starts in the group that says so.** `Armed` defaults to
+		// `false` in this component's decorator, so a spawner's ball, a practice ball and a ball sitting in the
+		// place file are all in this case. `CollisionGroups.assignPart` already reaches the same answer when the
+		// tag is added — it derives the group from this same attribute — and that is exactly why this line is
+		// cheap rather than redundant: **the two run off one signal and nobody can say which is first.**
+		// Whichever order they land in, both write the same group, and a ball is never briefly a trip hazard.
+		//
+		// **Read from the attribute rather than passed `true`, and that is not belt-and-braces.** A hand-out is
+		// armed one line *after* the attach that creates this component (`BallService.giveBall` explains why it
+		// has to be), so a hard-coded `true` here would be right only if `onStart` were guaranteed to run before
+		// that write. Nothing in the typings promises it. Deriving the answer means this line is correct in
+		// either order, and correct again if a future caller arms a ball at some other moment.
+		//
+		// See {@link setBallLoose} for what the group changes, and `LOOSE_BALL_GROUP` in `CollisionGroups` for why
+		// this is a group rather than `CanCollide = false`.
+		setBallLoose(this.instance, this.instance.GetAttribute("Armed") !== true);
+
 		this.instance.Touched.Connect((otherPart) => {
 			this.logTouch(otherPart);
 			this.handleTouch(otherPart);
@@ -265,6 +283,20 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// state in the ball: no service has to know a tag list exists, or reach into a
 		// component to reset one.
 		this.instance.GetAttributeChangedSignal("Armed").Connect(() => {
+			// **The one line in the game that decides whether a ball may stop a body, and it is here because this
+			// signal is the only thing that fires on both transitions.** `Armed` going *off* is the ball being
+			// spent — a landing at {@link resolveTags}'s world branch, or the pull that takes one out of the air —
+			// and a spent ball on the floor must be walkable-over rather than a two-stud obstacle, which is the
+			// report this answers. `Armed` going *on* is a new throw, which must be solid again or every throw
+			// passes through everybody. Both are written by the same call because they are the same rule read
+			// twice, and splitting them would be two places to get the pairing wrong.
+			//
+			// **Before the early return below, which is the whole of the placement argument.** That guard exists to
+			// skip the *throw bookkeeping* — the tag list, the identity, the tagged team — none of which means
+			// anything for a disarmed ball. This line is not bookkeeping: a ball that went from armed to spent is
+			// exactly the transition that has to be handled, so it cannot sit below something that returns on it.
+			setBallLoose(this.instance, this.instance.GetAttribute("Armed") !== true);
+
 			if (this.instance.GetAttribute("Armed") !== true) return;
 
 			// **A tag thrown away, said out loud, because this is the one way it can happen in
@@ -842,15 +874,23 @@ export class BallComponent extends BaseComponent<BallAttributes, BasePart> imple
 		// **An ordinary ball comes off the body it hit; a Pierce ball goes through it.**
 		//
 		// **Declining `bounceOff` is not enough on its own, and that is the whole physics of this
-		// ability.** A thrown ball is `CanCollide = true` and sits in the `Default` collision group
-		// (`BallService.throwBall` sets the flag; nothing ever moves a ball out of the group), every
-		// character is put into `Character`, and `Character` against `Default` is left at the engine's
-		// default, which is *collides*. So the engine is deflecting the ball off this body whatever this
+		// ability.** A thrown ball is `CanCollide = true` and, while it is a threat, sits in the `Ball`
+		// collision group (`BallService.throwBall` sets the flag; `setBallLoose` in `onStart` and in the
+		// `Armed` handler above is what moves it into `LooseBall` once it is spent), every character is put
+		// into `Character`, and `Ball` against `Character` is left at the engine's default, which is
+		// *collides*. So the engine is deflecting the ball off this body whatever this
 		// file does with velocities: `bounceOff` is an addition **on top of** a live contact rather than
 		// the contact itself. `CollisionIgnore` is what takes the contact away — one
 		// `NoCollisionConstraint` per part of this body, parented to the ball, so they die with the ball
 		// *instance* and nothing has to be undone here. That file's own doc describes the job as exactly
 		// this: solid against the world and everyone else, passing through the thing it was aimed at.
+		//
+		// **And `LooseBall` against `Character` being *off* does not do this job, which is worth saying
+		// because it looks like it should.** A Pierce implementation that relied on the loose group would be
+		// relying on the ball being spent, and the whole point of a Pierce throw is that it is not: it goes
+		// through this body, still armed, and on to the next. The two rules coincide only after the throw is
+		// over — a spent Pierce ball is indeed walkable-over — and that coincidence is a side effect of the
+		// loose group rather than the mechanism of the ability.
 		//
 		// **The lifetime is the ball and not the throw, and that is a known rough edge rather than an
 		// oversight — the prompt asked for "the rest of the flight" and this gives longer.** A ball that

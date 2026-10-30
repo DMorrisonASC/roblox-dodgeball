@@ -42,10 +42,54 @@ const BALL_WALL_GROUP = "BallWall";
  *
  * **What makes it affordable is that a collision group and `CanCollide` are different switches.**
  * `BallService` turns `CanCollide` on and off through a ball's whole life — held, thrown, landed — and
- * none of that changes; the group only decides *which pairs* the engine will ever consider. So a ball
- * is `Ball` from the moment it is made, whatever state it is in.
+ * none of that changes; the group only decides *which pairs* the engine will ever consider.
+ *
+ * **"A ball is `Ball` from the moment it is made, whatever state it is in" was true until item 145 and is
+ * not any more.** There are two ball groups now: this one for a ball that is a threat — held, in flight, armed —
+ * and {@link LOOSE_BALL_GROUP} for one that is spent and lying on the floor. `setBallLoose` is the switch, and
+ * `BallComponent` is what knows when to throw it. The reason for the split is that the group is a statement about
+ * a pair of *types*, so one group cannot say "solid while thrown, walkable when spent" — the ball has to change
+ * groups to change what it may collide with. What has *not* changed is the fact this paragraph was drawn for:
+ * `CanCollide` is still what decides whether the ball is a physics body at all, and the group only ever decides
+ * what it could collide with.
  */
 const BALL_GROUP = "Ball";
+
+/**
+ * **The group a ball is in while it is *not* a threat — lying on the floor, rolling, waiting to be picked up.**
+ * The sibling of {@link BALL_GROUP}, and the pair is one rule asked at two states.
+ *
+ * **A group rather than `CanCollide`, and the distinction is the whole of why this exists.** The report was
+ * *"players are tripping over resting dodgeballs"*: a spent ball rolls to a stop, stays `CanCollide = true`
+ * because that is what let it land on the floor in the first place, and becomes a two-stud obstacle in a game
+ * about moving. The obvious fix — turn `CanCollide` off when the ball disarms — is wrong in a way that is not
+ * visible for the first second: **a non-colliding ball resting on the floor sinks through it**, because nothing
+ * is holding it up, and the ball falls out of the world. Anchoring it instead would leave every spent ball as a
+ * fixed object that a later throw cannot disturb and that the settle sweep has to special-case. A group changes
+ * *which pairs the engine considers* and leaves the ball's own physics alone: still `CanCollide = true`, still
+ * landing on the floor, still rolling to a stop under `settleBall`'s resistance — and simply not colliding with
+ * a body.
+ *
+ * **Why the matrix cannot be edited instead, which is the mistake this shape avoids.** `Ball` against
+ * `Character` is currently the engine's default (colliding) and is what makes a thrown ball hit somebody. A
+ * collision group is a statement about a pair of *types*, not about a state, so turning that row off would let
+ * an armed ball fly clean through a player's torso — and `BallComponent.handleTouch` would never see the
+ * contact. That is why there are two ball groups rather than one row: **`Ball` is "a ball in play", `LooseBall`
+ * is "a ball that is litter"**, and a ball moves between them as it is thrown and as it lands.
+ *
+ * **`Touched` still fires between `LooseBall` and a character, and this file already knew that.** The duck's
+ * block below states it as an engine fact the project relies on — *"a collision group does not suppress
+ * `Touched`"* — so a spent ball the player walks through still delivers contacts, and
+ * `BallComponent.handleTouch`'s first line discards them because the ball is not armed. Nothing downstream had
+ * to change for this; the contacts were already all being declined.
+ *
+ * **What it does cost, stated rather than discovered.** A loose ball no longer *bounces off* a body — it passes
+ * through and carries on rolling, which is the intent. And a loose ball lying against a wall a body is standing
+ * in is no longer pushed aside by that body, so a ball can now sit inside a character's legs until somebody
+ * picks it up or throws something at it. Both are the same trade seen from two sides: a ball on the floor is
+ * scenery, and scenery does not move when you walk into it.
+ */
+const LOOSE_BALL_GROUP = "LooseBall";
 
 /**
  * The group a character standing in a practice zone belongs to. Assigned by `PracticeZoneService`, and
@@ -194,6 +238,17 @@ function registerGroups(): void {
 		Workspace.RegisterCollisionGroup(BALL_GROUP);
 	}
 
+	// **The loose-ball group, registered beside the ball's own** — the same placement the duck's has and for the
+	// same reason: the matrix rows below name it, and a row naming an unregistered group raises rather than
+	// returning. See {@link LOOSE_BALL_GROUP}.
+	if (!PhysicsService.IsCollisionGroupRegistered(LOOSE_BALL_GROUP)) {
+		PhysicsService.RegisterCollisionGroup(LOOSE_BALL_GROUP);
+	}
+
+	if (!Workspace.IsCollisionGroupRegistered(LOOSE_BALL_GROUP)) {
+		Workspace.RegisterCollisionGroup(LOOSE_BALL_GROUP);
+	}
+
 	if (!Workspace.IsCollisionGroupRegistered(PRACTICE_GROUP)) {
 		Workspace.RegisterCollisionGroup(PRACTICE_GROUP);
 	}
@@ -302,6 +357,52 @@ function registerGroups(): void {
 	// (a group does not suppress `Touched` — see the duck's block below, which needs that to be true).
 	PhysicsService.CollisionGroupSetCollidable(BALL_GROUP, BALL_GROUP, false);
 	Workspace.CollisionGroupSetCollidable(BALL_GROUP, BALL_GROUP, false);
+
+	// ----------------------------------------------------------- the loose balls
+	//
+	// **The second ball group's rows, and every one of them mirrors the `Ball` row above except the one the
+	// group exists for.** A ball is in {@link LOOSE_BALL_GROUP} while it is spent — see
+	// {@link setBallLoose} — and the question these rows answer is *what may a ball on the floor touch*.
+	//
+	// **`Character` is the row that matters and it is off**, which is the reported bug: a resting ball is not a
+	// threat, so a body walks through it instead of tripping over it.
+	//
+	// **Everything else is deliberately the same answer the armed ball gives**, because the ball's physical
+	// existence has not changed — only its membership of the set of things that can hurt somebody:
+	//
+	// - **`Default` stays on**, and it is the row that keeps this from being a different bug. The floor is
+	//   `Default`; a ball that does not collide with it does not rest on it either, it sinks and falls out of the
+	//   world. This is why the fix is a group rather than `CanCollide = false`.
+	// - **`BallWall` stays on**, so a loose ball is still kept inside a practice area by the wall that was built
+	//   to keep balls in. Turning this off would let spent balls roll out of the zone they were stocked for.
+	// - **`Barrier` stays off**, mirroring `Ball` against `Barrier`: the midline is a wall that stops bodies and
+	//   deliberately lets balls through, and a loose ball is still a ball.
+	// - **`PracticePlayer`, `DuckUpper` and both ball groups stay off**, each for the reason its `Ball` row gives.
+	//   `LooseBall` against `LooseBall` is off for the reason `Ball` against `Ball` is off — a heap of balls sinks
+	//   into one shape rather than fighting itself — and `LooseBall` against `Ball` is off so a spent ball lying
+	//   on the floor is not something a live throw can deflect off.
+	//
+	// **The engine's defaults are not left to do this work.** A freshly registered group collides with
+	// everything, so the three "off" rows below are the rule and the three "on" rows are statements of what was
+	// already true. Written out anyway, for the barrier's reason: the row a reader is looking for should be in the
+	// file, not in the difference between this file and the engine's default.
+	PhysicsService.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, CHARACTER_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, DEFAULT_GROUP, true);
+	PhysicsService.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, BALL_WALL_GROUP, true);
+	PhysicsService.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, BARRIER_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, PRACTICE_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, DUCK_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, BALL_GROUP, false);
+	PhysicsService.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, LOOSE_BALL_GROUP, false);
+
+	Workspace.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, CHARACTER_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, DEFAULT_GROUP, true);
+	Workspace.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, BALL_WALL_GROUP, true);
+	Workspace.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, BARRIER_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, PRACTICE_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, DUCK_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, BALL_GROUP, false);
+	Workspace.CollisionGroupSetCollidable(LOOSE_BALL_GROUP, LOOSE_BALL_GROUP, false);
 
 	// ------------------------------------------------------------- the ball wall
 	//
@@ -571,16 +672,53 @@ function assign(instance: Instance): void {
  * connection that catches a collected ball, the walk that catches a rig holding one, and the practice
  * zone's own re-application are one rule, and this is the one place it can be stated once. See
  * {@link BALL_TAG}.
+ *
+ * **Which of the two ball groups it lands in is `Armed`'s answer rather than a choice made here** — see
+ * {@link setBallLoose}. That matters because this function is reached from a character's `DescendantAdded`, so a
+ * ball being *carried* comes through it far more often than a ball being made; a flat assignment to
+ * {@link BALL_GROUP} would repaint a spent ball the moment anybody walked past it, and the trip hazard would
+ * come back only for balls somebody had been near.
  */
 function assignPart(instance: Instance, group = CHARACTER_GROUP): void {
 	if (!instance.IsA("BasePart")) return;
 
 	if (instance.HasTag(BALL_TAG)) {
-		instance.CollisionGroup = BALL_GROUP;
+		// **Derived from `Armed` rather than written flat**, and that is what keeps this function honest for a
+		// ball in every state. It used to assign {@link BALL_GROUP} unconditionally, which was right while there
+		// was one ball group; there are two now, so a flat assignment here would paint a spent ball `Ball` again
+		// every time this ran — and this runs from four places, including a character's `DescendantAdded`, which
+		// fires for a ball being carried. See {@link setBallLoose}, which is the one expression of the rule.
+		setBallLoose(instance, instance.GetAttribute("Armed") !== true);
 		return;
 	}
 
 	instance.CollisionGroup = group;
+}
+
+/**
+ * **Puts a ball in the group its state deserves: `LooseBall` while it is spent, `Ball` while it is a threat.**
+ *
+ * **Why this is exported and why it is here**, which is `setPracticePlayer`'s argument one paragraph up: a
+ * collision group is a rule about a *pair*, so naming one is a statement about what a ball may be stopped by,
+ * and that statement belongs next to the matrix that makes it true rather than in the component that happens to
+ * know whether the ball is armed. `BallComponent` knows the state; this file knows what the state means.
+ *
+ * **`loose` is passed rather than read here, and the two callers read `Armed` themselves.** The alternative — a
+ * function that looks the attribute up — would be the same line written inside a helper, and it would hide from
+ * a reader of `BallComponent` that the ball's collision group is downstream of the one attribute this whole file
+ * is about. Callers state the state they mean; this decides the group.
+ *
+ * **`true` restores `Ball` rather than merely leaving the group alone**, for `setPracticePlayer`'s reason: the
+ * group a live ball has to be in is `Ball` specifically, because that is the group every row in this file names
+ * for a ball in flight. Assigning nothing would leave a thrown ball wearing `LooseBall`, which passes through
+ * bodies and would make every throw a miss.
+ *
+ * **Both non-ball callers are already idempotent against this.** {@link assignPart} derives from the same
+ * attribute, so a walk over a character's descendants (which happens on every respawn, every pickup and every
+ * practice-zone crossing) reaches the same answer this function would.
+ */
+export function setBallLoose(ball: BasePart, loose: boolean): void {
+	ball.CollisionGroup = loose ? LOOSE_BALL_GROUP : BALL_GROUP;
 }
 
 /**
