@@ -9,19 +9,32 @@ import { pushNotification } from "../../notifications";
 import { killCamActive } from "../../panels";
 import { applyGlow } from "../../ui/glow";
 import { PREMIUM } from "../../ui/premiumTheme";
-import { getHudScreenGui } from "../../ui/screenGui";
+import { getFullScreenGui } from "../../ui/screenGui";
+import { COIN_HEIGHT, COIN_TOP, COIN_WIDTH, readoutVariant, RIGHT_INSET } from "../../ui/topRightReadouts";
 
 /**
- * The coin readout: one line under the shop button, showing the wallet the server owns.
+ * The coin readout: **the top-right corner, above the hit feed**, showing the wallet the server owns.
  *
  * **It reads one attribute and nothing else**, the same shape as the respawn countdown: `EconomyService`
  * writes `Coins` on the *player* — not the character, because the wallet outlives every body it was
  * filled in — so there is no remote here, no polling, and no second copy of the earn rules. The
  * readout changes when the attribute changes, which is exactly when the wallet changes.
  *
- * **Placed under the shop button rather than in it**, because the shop is a closed panel most of the
- * time and the balance is worth seeing without opening anything. The number is the whole of it —
- * there is no chest here, only the figure the chest will draw from.
+ * **Top right now, and the paragraph this replaces had it in the top left.** It said the readout sat *"one
+ * line under the shop button"* — and that had stopped being true long before this pass, because the shop
+ * button lives in the dock at the **bottom centre** (`DockController`) and has done since the dock replaced
+ * the corner buttons. What was left was a readout in the top-left corner explaining itself by a neighbour
+ * that was not there. The corner is now chosen rather than inherited: the top-left of a game screen is where
+ * Roblox puts its own menu button, and the two things this project reads at a glance — what the round has
+ * paid you and what just happened in it — are one column on the right, out of the way of both.
+ *
+ * **The number is the whole of it** — there is no chest here, only the figure the chest will draw from — and
+ * the balance is worth seeing without opening anything, which is the half of the old argument that survives.
+ *
+ * **Its geometry is not its own**, which is the reason this file now reads four numbers out of
+ * `ui/topRightReadouts`: the plate's box, its top, and the inset from the right edge are all shared with the
+ * hit feed directly underneath, and a column whose two halves carry their own copies of the same offsets is
+ * a column that drifts — see that module for the argument, and for the phone scale both are shrunk by.
  */
 @Controller()
 export class CurrencyHudController implements OnStart {
@@ -42,10 +55,18 @@ export class CurrencyHudController implements OnStart {
 		// keep in step with the Fusion one.
 		const wrapper = Fusion.New(scope, "Frame")({
 			Name: "CoinReadout",
-			Position: new UDim2(0, 12, 0, 64),
-			Size: new UDim2(0, 160, 0, 22),
+			// **Anchored on its own right edge, so the plate grows leftwards from the corner** rather than rightwards
+			// past the screen. `AnchorPoint (1, 0)` with a `Scale` x of 1 is the same statement the hit feed directly
+			// below makes, and it is why both read the inset from one place — see `ui/topRightReadouts`.
+			Position: new UDim2(1, -RIGHT_INSET, 0, COIN_TOP),
+			AnchorPoint: new Vector2(1, 0),
+			// **Both dimensions are fixed, on every device.** The plate was briefly scaled by 20% on a phone, which
+			// needed a factor threaded through the box and the glyphs together and had to be floored to survive the
+			// layout; the smaller copy comes from a smaller *type* instead, and the box is one number per axis. See
+			// `ui/topRightReadouts` for the whole of that correction.
+			Size: new UDim2(0, COIN_WIDTH, 0, COIN_HEIGHT),
 			// **A solid plate now, not a bare label over the arena.** The readout was invisible furniture — a
-			// number floating in the top-left — which was right while the HUD was a light one drawn over a mostly
+			// number floating in a corner — which was right while the HUD was a light one drawn over a mostly
 			// light arena and wrong on a solid-plum direction: white at `0.15` alpha over sand is unreadable, and
 			// the palette's rule is that *text* is the soft thing, never the surface behind it. Same fill, gold
 			// hairline and corner as every other panel; the geometry is untouched.
@@ -67,7 +88,11 @@ export class CurrencyHudController implements OnStart {
 
 		const label = Text(scope, {
 			text: "",
-			variant: "body1",
+			// **`body1` on a desktop, `caption` on a phone** — one step down the ladder, decided here and in
+			// `ui/topRightReadouts`. This is what replaced a hand-written `TextSize`: the variant carries the size,
+			// the line height and the face together, so there is no second number to keep in step with the plate's
+			// box and nothing to round.
+			variant: readoutVariant("body1", "caption"),
 			align: Enum.TextXAlignment.Left,
 		});
 
@@ -128,7 +153,12 @@ export class CurrencyHudController implements OnStart {
 		);
 
 		label.Parent = wrapper;
-		wrapper.Parent = getHudScreenGui();
+		// **The full-screen GUI rather than the shared one**, which is the same call the top-centre column makes
+		// and for the same reason: these readouts are placed as distances from the *screen's* corner, and on a
+		// mobile client the shared GUI's region starts below Roblox's chrome and below the device's cutouts. See
+		// `getFullScreenGui`, which also records the cost — its `DisplayOrder` is `-1`, so a panel covers this
+		// readout rather than being covered by it, which is what a shop sheet should do to a wallet figure.
+		wrapper.Parent = getFullScreenGui();
 
 		logDebug(`[HUD] coin readout up — reading ${COINS_ATTRIBUTE} on the player`);
 	}

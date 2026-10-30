@@ -250,14 +250,22 @@ const FULL_SCREEN_DISPLAY_ORDER = -1;
  * The `ScreenGui` for HUD furniture that has to be measured from **the screen's own top-left corner on every
  * device**, rather than from whatever region {@link getHudScreenGui} picks for this client.
  *
- * **Its one tenant is the round's readout column** — the score plate and the clock, both mounted through
- * {@link getHudColumn} — and the reason is the one thing about them that is not a HUD panel: they are pinned to
- * the *top edge of the screen*, and their position is the same number on every device. On a mobile client the
- * gated region starts below Roblox's chrome **and** below the device's cutouts, which on a phone puts those two
+ * **Its tenants are the three readouts pinned to the screen's own corners** — the round's readout column (the score
+ * plate and the clock, both mounted through {@link getHudColumn}) at top centre, and the two corner readouts of
+ * `ui/topRightReadouts` (the coin plate and the hit feed) at top right. The column is the one that forced this
+ * function into existence and the reason is the one thing about them that is not a HUD panel: **their position is
+ * a distance from the top of the screen, and that is the same number on every device.** On a mobile client the
+ * gated region starts below Roblox's chrome **and** below the device's cutouts, which on a phone puts those
  * readouts a topbar-plus-notch lower than they sit on a desktop for no reason the player can see. They are the
- * one pair in this client that looked wrong on a phone *because* the gate was working as written, so the gate is
+ * things in this client that looked wrong on a phone *because* the gate was working as written, so the gate is
  * not asked — question 1 of the rule at the top of this file has an answer here: the number they are placed
  * with is a distance from the top of the screen.
+ *
+ * **The corner readouts joined later, and the argument for them is the same one.** They were in the shared GUI
+ * at `y = 64` and `y = BELOW_COIN`, which means their *own* offsets were measured from a regional top while the
+ * column above them was measured from the screen's — two origins for one column of screen furniture, which is
+ * the class of thing this file keeps paying for. Both now read from one origin, so the stack is one stack on
+ * both devices.
  *
  * **Why a `ScreenGui` and not a child of the shared one, which is forced rather than chosen.** `ScreenInsets`
  * belongs to the `ScreenGui` and a child cannot opt out of its parent's, so there is no way to say "this tree's
@@ -280,9 +288,13 @@ const FULL_SCREEN_DISPLAY_ORDER = -1;
  * day one of the two needs a different `DisplayOrder` it also costs nothing to have kept them apart.
  *
  * **The cost, stated so it is not a surprise in a screenshot**: `y = 0` here is the true top of the screen, so
- * these two readouts are drawn *under* Roblox's chrome rather than below it — which on a desktop is the
- * decision {@link COLUMN_TOP_INSET} already recorded, now made on both devices. The column is centre-anchored,
- * so the one piece of that chrome with any width — the menu button in the top-left corner — clears it.
+ * these readouts are drawn *under* Roblox's chrome rather than below it — which on a desktop is the decision
+ * {@link COLUMN_TOP_INSET} already recorded, now made on both devices. The column is centre-anchored, so the menu
+ * button in the top-left corner clears it; **the two corner readouts are on the right for a related reason** —
+ * that is the side of the topbar whose chrome is the leaderboard toggle, and the whole point of moving them there
+ * was to get them out of the corner Roblox puts its own menu in. What that costs on a device whose right-hand
+ * cutout is wider than {@link RIGHT_INSET} is a question only a real phone answers; the numbers there are the
+ * ones to move if the plate is ever seen under a notch.
  */
 export function getFullScreenGui(): ScreenGui {
 	// `PlayerGui` is not a typed member of `Player` in these typings (nor is `Backpack`), so it is
@@ -310,7 +322,7 @@ export function getFullScreenGui(): ScreenGui {
 	gui.DisplayOrder = FULL_SCREEN_DISPLAY_ORDER;
 	gui.Parent = playerGui;
 
-	reportCreated(gui, "None on both devices — its tenants are pinned to the screen's own top edge");
+	reportCreated(gui, "None on both devices — its tenants are pinned to the screen's own edges");
 
 	return gui;
 }

@@ -7,11 +7,12 @@ import { events, HitDirection } from "shared/networking";
 import { logDebug } from "shared/logger";
 import { killCamActive, PLAYING, roundPhase } from "../../panels";
 import { raiseZIndex } from "../../ui/panelChrome";
-import { getHudScreenGui } from "../../ui/screenGui";
+import { getFullScreenGui } from "../../ui/screenGui";
 import { HudTheme } from "../../ui/hudTheme";
 import { applyGlow } from "../../ui/glow";
 import { PREMIUM, premiumHudTheme } from "../../ui/premiumTheme";
 import { addViewportConstraint } from "../../ui/viewportConstraint";
+import { BELOW_COIN, RIGHT_INSET, readoutVariant } from "../../ui/topRightReadouts";
 
 /**
  * # Every size this element draws at, in one place
@@ -40,11 +41,16 @@ import { addViewportConstraint } from "../../ui/viewportConstraint";
  * The `ZIndex` of the whole element, and of every descendant — see {@link raiseZIndex}, which levels the
  * tree after it is built.
  *
- * **`1`, which is the ladder's own value for "an ordinary HUD label".** The rungs above are the arena
- * countdown's `2`, the dock's `5`, the panels' `10`, the result panel's `20` and the loading overlay's
- * `30`, and `ArenaFreezeCountdownController` is where that ladder is written down in one place. Nothing at
- * this rung is anywhere near the top-left corner, so `1` is the rule being followed rather than a choice
- * made.
+ * **`1` is now a value inside this GUI rather than a rung on the HUD ladder, and the difference matters.** The
+ * element used to be mounted in the shared `HudGui`, where `1` meant "an ordinary HUD label" and had to be
+ * read against the arena countdown's `2`, the dock's `5` and the panels' `10` (the ladder
+ * `ArenaFreezeCountdownController` writes down). It is in `getFullScreenGui` now, which carries
+ * `DisplayOrder = -1` — **a whole GUI of furniture *below* the HUD plane** — so this number orders the feed
+ * against its own five cards and nothing else, and the panels cover the whole GUI rather than racing it.
+ *
+ * **`1` rather than `0`, and it is the same reason it always was**: `raiseZIndex` levels a tree, and a child is
+ * drawn above its parent only when its `ZIndex` is at least the parent's, so the frame and its fifty-three
+ * descendants all carry this one number. It is the lowest rung that can level a tree at all.
  */
 const HIT_LOG_Z_INDEX = 1;
 
@@ -156,57 +162,57 @@ const INLINE_GAP = 6;
 const CARD_ELEVATION: 0 | 1 | 2 | 3 = 1;
 
 /**
- * The typography the two names are drawn in, and **the knob that decides the text's size.**
+ * The typography the two names are drawn in, and **the knob that decides the text's size on a desktop.**
  *
- * **`caption` — 12px — because the brief asked for a caption-sized readout, and this is the whole of what
- * that means.** The ladder was walked twice in the other direction: this element shipped at `caption`, was
- * raised to `body1` (16px) when *"too small"* was the report, and is back at `caption` now that the brief is
- * for something small. **The two reports are not in conflict** — 16px was right for an opaque card that was
- * meant to be read mid-fight, and 12px is right for a translucent corner readout that is meant to be glanced
- * at. What changed is the element's job, not anybody's eyesight.
+ * **`caption` — 12px — because the brief asked for a caption-sized readout, and this is the whole of what that
+ * means.** The ladder was walked twice in the other direction: this element shipped at `caption`, was raised to
+ * `body1` (16px) when *"too small"* was the report, and came back to `caption` when the brief became a translucent
+ * corner readout rather than a panel. **The two reports are not in conflict** — 16px was right for an opaque card
+ * meant to be read mid-fight, 12px for a small corner glimpse. What changed is the element's job, not anybody's
+ * eyesight. `caption` is also what every other transient line in this project is drawn at; see
+ * `notifications.ts`, which reads this same variant for its toasts.
  *
- * **`caption` is also the size every other transient line in this project is drawn at**, which is the
- * stronger reason: `notifications.ts` reads this exact variant out of `premiumHudTheme().typography` for its
- * toasts, and `HEADING_VARIANT` below has always been `caption`. A feed of hits is the same kind of thing as
- * a toast — something that happened, said once, then gone — so it is drawn at the same size rather than at a
- * size of its own.
- *
- * **Naming it still costs nothing and buys the whole of the size knob**: a variant is the *only* thing that
- * decides the glyph height here, so changing this line changes the names, the row heights, the card heights
- * and the whole stack's height at once. **The numbers themselves are big-ui's**, not this file's —
- * `Typography` is a mutable table that `configureTheme` writes and that `ThemeController` has already run
- * by the time anything mounts, so a project-wide type change is the place to move them and this line is the
- * place to pick one.
+ * **`caption` is a desktop value, and {@link NAME_VARIANT_MOBILE} is the phone's.** The pair, not a scale factor,
+ * is what makes the phone's copy smaller — see `ui/topRightReadouts` for why a factor over every length was
+ * withdrawn in favour of this. The numbers themselves are big-ui's, not this file's: `Typography` is a mutable
+ * table that `configureTheme` writes and `ThemeController` has already run by mount, so a project-wide type change
+ * belongs there and this line is the place to pick one.
  */
 const NAME_VARIANT: TypographyVariant = "caption";
 
 /**
- * The typography the heading is drawn in. **`caption` — 12px — because a heading is a label rather than a row**:
- * it names the list and gets out of the way.
+ * The typography the two names are drawn in **on a touch device** — `overline`, which at 11px is the smallest
+ * variant big-ui has and the only step below `caption`.
  *
- * **It is no longer a size below the rows, and that is a consequence worth stating rather than hiding.** While
- * the names were `body1` this was the smaller of the two, which is what made "does not compete with the names"
- * true. Both are `caption` now, so **the heading is held back by its two other differences instead**: it is one
+ * **A step, not a 20% reduction, and that is stated rather than quietly shipped.** The brief for the phone asked
+ * for "20% ish"; the ladder has no size between 12 and 11, so this is 8%. `ui/topRightReadouts` records the whole
+ * arithmetic — including that the two honest ways to get a real 20% are a project-wide `configureTheme` override
+ * of `caption`/`overline` or a per-element `TextSize` write, and that neither is built. What this constant buys is
+ * that the phone's size is visible as a decision at the call site rather than as a multiplication that looks more
+ * precise than the vocabulary underneath it.
+ */
+const NAME_VARIANT_MOBILE: TypographyVariant = "overline";
+
+/**
+ * The typography the heading is drawn in. **`caption` — 12px, the same as a desktop row** — because a heading is a
+ * label rather than a row: it names the list and gets out of the way.
+ *
+ * **It is no longer a size below the rows, and that is a consequence worth stating rather than hiding.** While the
+ * names were `body1` this was the smaller of the two, which is what made "does not compete with the names" true.
+ * Both are `caption` on a desktop, so **the heading is held back by its two other differences instead**: it is one
  * short line against rows of two coloured names, and it is the only label in the element that is never team
  * coloured. Size is no longer the mechanism; the ink is.
  */
 const HEADING_VARIANT: TypographyVariant = "caption";
 
-/** How far in from the left edge, in pixels. Matched to the coin readout's own inset, deliberately. */
-const EDGE_INSET = 12;
-
 /**
- * How far down from the top, in pixels — **the coin readout's bottom edge plus a gap.**
+ * What the heading is drawn in on a touch device — **`overline`, tracking the rows down one step.**
  *
- * `CurrencyHudController` draws one line at `(12, 64)` sized `160×22`, so it occupies y ∈ [64, 86] in
- * exactly the corner this element wants. 96 clears it by ten pixels. **That order is the corner's own
- * convention rather than a preference**: the coin readout is up for the whole session and this is only up
- * during a round, so the permanent thing owns the top of the column and the transient one stacks under it —
- * the arrangement `notifications.ts` and `SuperHudController` describe for the bottom of the screen, where
- * the permanent power column owns the edge and the notifications stack above it. Nothing else is drawn in
- * this corner; see the class doc for what was checked.
+ * It has to move with them rather than staying at `caption`: a heading left at 12px over nine- or eleven-pixel
+ * rows would be the largest thing in the element, which is the opposite of a heading's job and the exact failure
+ * the paragraph above says the size stopped being able to prevent.
  */
-const TOP_INSET = 96;
+const HEADING_VARIANT_MOBILE: TypographyVariant = "overline";
 
 /**
  * What sits between the two names, and **the whole of how a row says which way the hit went.**
@@ -285,9 +291,9 @@ function isPlayerName(name: string): boolean {
 }
 
 /**
- * The hit feed: **every hit landed in the round, by anyone, newest first**, at the top left of the screen
- * while a round is being played. One translucent card per row, two names to a card, each row living ten
- * seconds.
+ * The hit feed: **every hit landed in the round, by anyone, newest first**, in the top-right corner of the
+ * screen while a round is being played, under the coin readout. One translucent card per row, two names to a
+ * card, each row living ten seconds.
  *
  * ## Which hits reach this list, and why it is two events rather than one
  *
@@ -462,12 +468,23 @@ function isPlayerName(name: string): boolean {
  * briefs and not a shared rule** — one is a space limit on a record and one is a row count on a HUD, and
  * moving either should not be read as moving the other.
  *
- * **What was checked in that corner, since a collision was suspected.** The coin readout is at `(12, 64)`
- * and is the only neighbour; nothing else is near it. The score bar and the round-status line are both *top
- * centre* (`AnchorPoint` `(0.5, 0)`, insets `4` and `44`), the dock is bottom centre, the cooldown card is
- * bottom left and the power column and the notifications own the bottom centre — see `notifications.ts`,
- * whose geometry is all about the bottom of the screen. `TOP_INSET` is written as the coin readout's bottom
- * edge plus a gap rather than as a number of its own.
+ * **What was checked in that corner, since a collision was suspected — and the corner has since moved.** The
+ * element used to sit at the *top left* under the coin readout; both are now an anchored column on the
+ * **top right**, and the neighbours were re-read when they moved. The score bar and the round-status line are
+ * *top centre* (`AnchorPoint` `(0.5, 0)`, `COLUMN_TOP_INSET` below the screen's top edge) and are the only
+ * things near the top of the screen: together they are about 150px wide on a desktop, which clears a 210px
+ * feed pinned 12px from the right edge of the same screen by a wide margin. On a narrow phone they can come
+ * close — the column is centred and the feed is a fixed pixel width — and the mitigation is the one this
+ * element already had: it starts *below* the whole column ({@link BELOW_COIN}), so the two can only ever
+ * overlap in x, and only on a screen narrower than roughly 470 pixels. The dock is bottom centre, the
+ * cooldown card bottom left, and the power column and the notifications own the bottom centre — see
+ * `notifications.ts`, whose geometry is all about the bottom of the screen. **Nothing else is in this corner
+ * at all**, which is why the column could be moved here without reflowing anything.
+ *
+ * **Its top is computed, not remembered.** The feed starts at {@link BELOW_COIN}, which is the coin plate's bottom
+ * edge plus a gap, derived from the plate's own height rather than written down. That lives in
+ * `ui/topRightReadouts` beside the two elements' shared inset, for `getHudColumn`'s reason: two files describing
+ * one stack in prose is how this project got a score plate drawn across a clock.
  */
 @Controller()
 export class HitLogController implements OnStart {
@@ -503,7 +520,7 @@ export class HitLogController implements OnStart {
 		// The heading is a child of the same layout as the cards, so it is numbered with them: the default
 		// sort is by name, and a card called "Card1" would sort above one called "Heading" whatever order
 		// they were created in.
-		const heading = Text(scope, { text: FEED_HEADING, variant: HEADING_VARIANT });
+		const heading = Text(scope, { text: FEED_HEADING, variant: readoutVariant(HEADING_VARIANT, HEADING_VARIANT_MOBILE) });
 		heading.Name = "Heading";
 		heading.LayoutOrder = 0;
 		// Written onto the returned label rather than passed as a prop: big-ui's `Text.color` is a palette
@@ -529,8 +546,8 @@ export class HitLogController implements OnStart {
 			const hasHitsNow = use(anyHits);
 
 			// **And nothing while a kill cam is shooting.** The feed is a list of names and outcomes over the
-			// left of the screen, which is the half a cinematic shot is composed on; the overlay the cam draws
-			// says everything about the body in frame, which is the question a feed cannot answer. Hidden and not
+			// right of the screen, and the overlay the cam draws says everything about the body in frame, which is
+			// the question a feed cannot answer. Hidden and not
 			// torn down, so `anyHits` and every card are still there when it returns — see `panels.ts`.
 			const watchingNow = use(killCamActive);
 
@@ -543,10 +560,17 @@ export class HitLogController implements OnStart {
 			// column of cards that grows downwards, so height is the axis that has something to say and
 			// width is what the two names have to fit into — the opposite of the usual HUD, and the reason
 			// `CARD_WIDTH` is a number rather than something the content decides. Each card fills this
-			// width, so one number reaches all five.
+			// width, so one number reaches all five. **The same number on a phone**: the smaller copy there is a
+			// smaller *type*, and a card narrowed around unchanged glyphs would only wrap sooner. See
+			// `ui/topRightReadouts`.
 			Size: new UDim2(0, CARD_WIDTH, 0, 0),
 			AutomaticSize: Enum.AutomaticSize.Y,
-			Position: new UDim2(0, EDGE_INSET, 0, TOP_INSET),
+			// **Anchored on its own right edge, and the top is the coin plate's bottom edge rather than a number.**
+			// `(1, 0)` with a `Scale` x of 1 means the frame grows leftwards from the corner, which is the same
+			// statement the coin readout makes one row up — the two share {@link RIGHT_INSET} so their right edges
+			// are the same edge, and {@link BELOW_COIN} so the gap between them is computed from the plate's box.
+			Position: new UDim2(1, -RIGHT_INSET, 0, BELOW_COIN),
+			AnchorPoint: new Vector2(1, 0),
 			BackgroundTransparency: 1,
 			Visible: visible,
 		});
@@ -576,13 +600,20 @@ export class HitLogController implements OnStart {
 		// for the number and what it sits under.
 		raiseZIndex(frame, HIT_LOG_Z_INDEX);
 
-		// `CARD_WIDTH` is 210px at the left edge, so a viewport narrower than that plus {@link EDGE_INSET}
-		// pushes the element off the right of the screen — and a HUD in a corner has nowhere to give way but its
-		// own width. The same rule as every other HUD, applied for the same reason: the element carries its own
-		// bound rather than trusting the screen to be big enough. See `addViewportConstraint` for the two caps.
+		// **A right-anchored element grows leftwards, so the width is the only dimension that can overflow** — and
+		// `CARD_WIDTH` scaled is 210px on a desktop and 168 on a phone, both of which are a comfortable fraction of
+		// any screen the game runs on. The constraint is kept rather than dropped for `addViewportConstraint`'s own
+		// reason: an element that carries its own bound does not have to trust the screen to be big enough, and the
+		// day a card gets wider this is the line that keeps it on screen. Its `maxFraction` is the phone cap.
 		addViewportConstraint(scope, frame);
 
-		frame.Parent = getHudScreenGui();
+		// **The full-screen GUI rather than the shared one**, which is the top-centre column's call made for the
+		// top-right corner: this element's position is a distance from the *screen's* corner, and on a mobile client
+		// the shared GUI's region starts below Roblox's chrome and below the device's cutouts. See
+		// `getFullScreenGui` — including the cost, which is that its `DisplayOrder` of `-1` puts this feed *under*
+		// every other HUD, so a shop sheet or the stats board covers it rather than the reverse. That is the right
+		// order for a corner readout.
+		frame.Parent = getFullScreenGui();
 
 		/**
 		 * **The clear: the phase leaving `Playing`.**
@@ -729,19 +760,26 @@ export class HitLogController implements OnStart {
 		rowLayout.Wraps = true;
 		rowLayout.Parent = row;
 
-		const hitter = Text(scope, { text: "", variant: NAME_VARIANT });
+		// **The row's variant, resolved once per card rather than per label.** `readoutVariant` is a platform read,
+		// and five cards at mount is the whole of how often it happens; asking it again inside the loop for the other
+		// two labels would be the same answer arrived at ten more times. The three labels in a row must agree — a
+		// separator drawn at a different size from the names it separates would set the row's height to the larger of
+		// the two — so the value is taken before the row is built.
+		const variant = readoutVariant(NAME_VARIANT, NAME_VARIANT_MOBILE);
+
+		const hitter = Text(scope, { text: "", variant: variant });
 		hitter.Name = "Hitter";
 		hitter.LayoutOrder = 1;
 		hitter.Parent = row;
 
-		const separator = Text(scope, { text: SEPARATOR, variant: NAME_VARIANT });
+		const separator = Text(scope, { text: SEPARATOR, variant: variant });
 		separator.Name = "Separator";
 		separator.LayoutOrder = 2;
 		separator.TextColor3 = theme.colors.textPrimary;
 		separator.TextTransparency = PREMIUM.textTransparency;
 		separator.Parent = row;
 
-		const victim = Text(scope, { text: "", variant: NAME_VARIANT });
+		const victim = Text(scope, { text: "", variant: variant });
 		victim.Name = "Victim";
 		victim.LayoutOrder = 3;
 		victim.Parent = row;
@@ -751,8 +789,14 @@ export class HitLogController implements OnStart {
 		// row that is sizing itself is a measurement cycle rather than a layout: the label asks the row how
 		// wide it is and the row asks the label. A zero-offset size plus `AutomaticSize.XY` is the answer,
 		// and it is the same two lines every content-sized `Text` in this project writes — see
-		// `ScoreHudController`, which states the rule and the failure it prevents. It is also why there is no
-		// row height to tune: a row is one line of `NAME_VARIANT`, whatever that variant's line height is.
+		// `ScoreHudController`, which states the rule and the failure it prevents.
+		//
+		// **No `TextSize` write, and removing it is the whole of this pass.** The glyph height used to be
+		// `scaledPixels(caption.size)` — an arithmetic multiplier over the variant's own number — which had to be
+		// floored and could disagree by a pixel with a card box rounded separately. The size now comes from the
+		// variant above, which supplies the size, the line height and the face as one statement, so there is no
+		// second number to keep in step. **A row is still one line of one size**, so there is still no row height to
+		// tune.
 		for (const label of [hitter, separator, victim]) {
 			label.Size = UDim2.fromOffset(0, 0);
 			label.AutomaticSize = Enum.AutomaticSize.XY;
@@ -776,7 +820,9 @@ export class HitLogController implements OnStart {
 			// names are read against — and a decision a reader can see beats one inherited from a library. In the
 			// premium palette this is the deep-space step, and its see-through-ness is set on the instance below.
 			// The padding is a theme token rather than one of this file's pixels: it is the same inset every card
-			// in the project uses, and 8px at today's spacing scale. See the size map in the report.
+			// in the project uses, and 8px at today's spacing scale. **Fixed on both devices**, like the card's box:
+			// the smaller phone copy is a smaller type, and a padding shrunk around it would only eat the room the
+			// smaller glyphs were meant to save. See the size map in the report.
 			background: theme.colors.panel,
 			padding: theme.spacing.sm,
 			elevation: CARD_ELEVATION,

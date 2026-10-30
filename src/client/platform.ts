@@ -47,6 +47,11 @@ import { UserInputService } from "@rbxts/services";
  * the narrowest**: it asks only to decide whether to help a thumb at all, so its answer is the gate on a whole
  * feature rather than on a control surface, and it is asked *first* in its own path — before any ray or tag walk
  * — so that a desktop client cannot reach the assist's machinery at all. See that file for the argument.
+ * **`ui/topRightReadouts` is the tenth, and it asks about *size* rather than about a control or a region**: a
+ * phone draws the coin plate and the hit feed 20% smaller, and this is the only predicate in the project that
+ * answers "is this a thumb-sized screen". It is also the only caller whose answer is multiplied into a number
+ * rather than used as an `if` for whether to build something — see that module for why one factor covers the
+ * box and the type together.
  * **This paragraph used to
  * say three**, and the count is worth re-reading rather than trusting: `ThrowController` had been asking for a
  * while before anyone counted it, and that is what a number in a comment is worth. `SprintController` remains

@@ -6644,6 +6644,88 @@ almost no server code; 45 is what it cannot show.**
      "semi-transparent" rather than either "still a panel" or "unreadable" over a bright floor — that last is the
      one a number cannot settle.
 
+147. **The coin readout and the hit feed moved to the top-right corner, into the full-screen GUI, and are 20% smaller on a phone.**
+
+     **The request.** *"Move the HitLog and coins (it is over the HitLog) to the top right. Also, for mobile, make it
+     even smaller by 20% ish … lets make these changes use `getFullScreenGui()` instead."*
+
+     **Why the corner move was more than two `Position` edits: the two elements were a column described in prose.**
+     The coin plate sat at `(0, 12, 0, 64)` and the feed at `(0, 12, 0, 96)`, in two files, and the only thing
+     keeping them stacked was two comments that each named the other — `EDGE_INSET` said *"matched to the coin
+     readout's own inset, deliberately"* and `TOP_INSET` said *"the coin readout's bottom edge plus a gap"*. **So
+     the second of those was prose describing another element's height**, which is true only while nothing about
+     that element ever changes — and this same item went on to change it twice. This is the failure `screenGui.ts`
+     documents at the top of the screen, where the score plate and the clock both sat at `14` for a release and
+     drew across each other.
+
+     **So the corner's geometry is now one module**, `src/client/ui/topRightReadouts.ts`: `RIGHT_INSET`,
+     `COIN_TOP`, `COIN_WIDTH`, `COIN_HEIGHT`, `BELOW_COIN` (arithmetic over that box rather than a literal), and
+     `readoutVariant`. Both controllers read it. The feed's own card geometry stays in the feed — the coin has no
+     opinion about card width — which is the line between "shared fact" and "one element's business".
+
+     **`getFullScreenGui()` rather than `getHudScreenGui()`, which is what the third message asked for and is the
+     right answer independently.** The two readouts' offsets are distances from the *screen's* corner, and the
+     shared GUI's region starts below Roblox's chrome and below the device's cutouts on mobile — so the same
+     `64` meant two different heights on two devices, and the score column above them was already measured from
+     the screen. One origin for one column. **The cost, from that function's own doc**: its `DisplayOrder` is
+     `-1`, so the corner readouts now draw *under* every other HUD element and a shop sheet or the stats board
+     covers them rather than the reverse — which is the right order for a corner readout. Its doc's claim that the
+     column is its *"one tenant"* was rewritten; there are three now.
+
+     **The phone copy is a smaller *type*, not a scale factor — and that is a correction made in the same session.**
+     This item first shipped a `scaledPixels` that multiplied every length (widths, heights, paddings, gaps, glyph
+     sizes) by `0.8`. The owner withdrew it immediately: *"Scaling can get tricky. Replace that method and just use
+     a smaller font size like caption (if it is the smallest) for mobile."* **The objection is right and the
+     withdrawn version's own comment was wrong about what it had bought.** Every number had to be floored to
+     survive `AutomaticSize`, so a card whose height and whose text were rounded independently is a card that clips
+     its own descenders on one device and not the other; and a factor over a layout is the technique
+     `viewportConstraint.ts` uses for a *cap*, not for a coordinate system. Multiplying a coordinate system is a
+     thing to do once at a container, and a `UIScale` at the container is what this file's class doc already
+     refuses. **So the boxes are fixed on both devices and only the words change size**, via
+     `topRightReadouts.readoutVariant(desktop, mobile)` where each caller names both ends of the step.
+
+     **What that costs, stated because the ladder is coarse.** big-ui's `Typography` is `h4 34 / h5 24 / h6 20 /
+     subtitle1 16 / subtitle2 14 / body1 16 / body2 14 / button 14 / caption 12 / overline 11` — read out of the
+     installed `theme.luau`, not remembered. **`overline` at 11px is the smallest variant there is, so the step
+     below `caption` is 8%, not the 20% the brief asked for.** The coin plate does get a real 25% step
+     (`body1` 16 → `caption` 12); the hit feed does not, and cannot, without a size the vocabulary does not have.
+     The two honest ways to get a genuine 20% on the feed are a project-wide `configureTheme` override of a variant
+     or a per-element `TextSize` write — the second is what this pass deleted, so it is recorded as an option rather
+     than quietly reintroduced.
+
+     | | desktop | phone |
+     |---|---|---|
+     | coin plate | 160 × 22 | 160 × 22 |
+     | coin text | `body1` (16) | `caption` (12) — a real 25% |
+     | hit log width | 210 | 210 |
+     | card padding / gaps | 8 / 4 / 6 | 8 / 4 / 6 |
+     | name + heading text | `caption` (12) | `overline` (11) — **8%, the floor of the ladder** |
+     | feed top (`BELOW_COIN`) | 96 | 96 |
+
+     **Three comments that were already wrong got fixed on the way past**, because the move made them
+     unavoidable: `CurrencyHudController`'s class doc said the readout sat *"one line under the shop button"*, and
+     the shop button has been in the **bottom-centre dock** since the dock replaced the corner buttons — so a
+     top-left readout was explaining itself by a neighbour two edges away. `HIT_LOG_Z_INDEX`'s doc described a
+     rung on the HUD ladder that this element no longer competes on, since its GUI is `DisplayOrder = -1` and the
+     number now only levels its own tree. And `platform.ts`'s running count of `isMobile()` callers (which asks to
+     be re-counted rather than trusted) went from nine to ten, with the new caller being the first to pick a
+     variant rather than branch on the answer.
+
+     **`npm run build` exit 0; `flamework.build` unchanged.** Emitted Luau checked at both anchors, at both
+     `readoutVariant` call sites, and that no `scaledPixels`/`cornerScale` survives anywhere in `src`. The feed's
+     top is `BELOW_COIN` — still arithmetic over the plate's box rather than a literal, so a taller plate moves
+     the feed with it.
+
+     **Unverified in Studio — and this one needs a phone, not just the emulator.** That the two readouts are
+     stacked correctly in the top-right on a desktop; that the phone's copy is smaller and the boxes are unchanged
+     (which means the feed's cards hold the same two names with more padding around them rather than wrapping);
+     and **that `RIGHT_INSET = 12` clears a landscape phone's right-hand cutout**, which is the risk the move to
+     `ScreenInsets.None` introduces — `y = 0` is now the true screen edge, so a notch on the right side could sit
+     over the plate. If it does, the number to move is `RIGHT_INSET` in `ui/topRightReadouts`, and it is the only
+     number that has to change. Also unverified: that the feed does not collide with the centred score column on a
+     screen narrower than about 470px, where the two can overlap in x — they cannot overlap in y, because the feed
+     starts below the whole column by construction.
+
 ---
 
 ## 16. What a live log has actually confirmed
