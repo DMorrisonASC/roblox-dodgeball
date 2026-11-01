@@ -86,7 +86,7 @@ export const GAME_MODE_CONFIG = {
 	 * Read by `ScoreRushMode` (to decide the round) and by `client/mercyWarning.ts` (to stay silent once the round
 	 * is about to end), so the two cannot disagree about where the line is. **Placeholder.**
 	 */
-	MERCY_RULE_LEAD: 20,
+	MERCY_RULE_LEAD: 15,
 
 	/**
 	 * **The lead at which the losing side is warned that the round is nearly over.**
@@ -98,7 +98,7 @@ export const GAME_MODE_CONFIG = {
 	 *
 	 * **Placeholder.**
 	 */
-	MERCY_WARNING_LEAD: 15,
+	MERCY_WARNING_LEAD: 10,
 
 	/**
 	 * What a caught throw is worth to the catching team, in a mode that keeps score.

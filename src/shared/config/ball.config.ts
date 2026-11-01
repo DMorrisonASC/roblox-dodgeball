@@ -392,6 +392,18 @@ export const BALL_CONFIG = {
 	 * Ceiling on a throw's launch speed, in studs per second — **and the top of the range for both bodies, which
 	 * is the property this constant is now arranged around.**
 	 *
+	 * **READ THIS FIRST, because every figure in the two paragraphs below is stale and the constant is not what they
+	 * describe.** They are written for `336` at a peak of `1.25` (`v_y = 17.89`, `t = 0.447 s`); the constant is
+	 * **`200`** and the peak is **`0.5`**. Recomputed from what the code actually holds — `v_y = sqrt(2·50·0.5) =
+	 * 7.07`, `t = 2·7.07/50 = 0.283 s`, horizontal `sqrt(200² − 50) = 199.9` — a full hold lands **56.5 studs**
+	 * measured level, and **97.5** on a body, whose mark sits `THROW_MUZZLE_HEIGHT` below the hand and so is in the
+	 * air longer. The `150` in the prose is a gate now set to the envelope rather than a target the envelope was
+	 * solved to meet; see `NPC_CONFIG.THROW_RANGE_STUDS`, which carries the arithmetic and the log that forced it.
+	 * **The prose is kept, not deleted** — the reasoning about *why* the two bodies share one envelope is still the
+	 * reasoning this constant is arranged around, and only its numbers are wrong. Retuning it to `336` is a real
+	 * choice and a much larger one than it looks: it sets the player's throw as well, and the player's throw is the
+	 * one thing in this file a seat feels directly.
+	 *
 	 * **Placeholder — `336`, and the figure is solved rather than chosen.** A charged throw's vertical launch is
 	 * fixed by {@link BALL_CONFIG.CHARGE_PEAK_HEIGHT} (`v_y = sqrt(2·g·h)`, here `17.89` studs/s), so its flight
 	 * time is fixed with it (`t = 2·v_y/g`, here `0.447 s`) and its range is `t·sqrt(v² − v_y²)`. Setting that

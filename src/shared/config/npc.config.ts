@@ -178,11 +178,37 @@ export const NPC_CONFIG = {
 	 * the print in `ThrowBehavior` reports the distance when a rig is blocked, so the next run says
 	 * whether it is still too small rather than leaving it to be inferred.
 	 *
-	 * **Placeholder — 150.** A longer range does not make a throw worse: `BallService.throwBall` solves
-	 * the arc to the target's own position, so a rig that throws at a body across the arena is throwing
-	 * a legal throw at a body it can see, not lobbing at a guess.
+	 * **Placeholder — 97, and the paragraph that stood here was wrong.** It read *"a longer range does not make a
+	 * throw worse: `BallService.throwBall` solves the arc to the target's own position, so a rig that throws at a
+	 * body across the arena is throwing a legal throw at a body it can see, not lobbing at a guess."* The solve
+	 * does not invent reach. `chargeForRange` clamps its answer to `[0, 1]`, so a distance past the envelope is
+	 * thrown at **full charge and lands short** — along the aimed line, which is somewhere in the middle of the
+	 * field rather than on the body. A gate past the envelope does not permit a legal long throw, it orders a
+	 * throw that cannot happen.
+	 *
+	 * **The envelope, in `BALL_CONFIG`'s own numbers.** A charged throw's vertical launch is fixed by
+	 * `CHARGE_PEAK_HEIGHT` — `v_y = sqrt(2·g·h) = sqrt(50) = 7.07` — and its mark is `THROW_MUZZLE_HEIGHT` (2.5)
+	 * below its hand, so the flight is `(7.07 + sqrt(50 + 2·50·2.5)) / 50 = 0.488 s`. A full charge is
+	 * `THROW_MAX_SPEED` (200), whose horizontal is `sqrt(200² − 50) = 199.9`, and `199.9 × 0.488` is **97.5
+	 * studs**. Ninety-seven is that with the rounding taken out, and it is the furthest a rig can put a ball on a
+	 * body. It is a *level-ground* figure: a target below the rig lengthens the flight and buys reach, one above it
+	 * shortens the flight and costs reach. The gate is set for level ground rather than for the worst slope, because
+	 * a gate that chased the ground under a target's feet would swing throw to throw — so **a rig shooting uphill can
+	 * still land short, and that is the known case this does not cover.**
+	 *
+	 * **The measurement, because this number has moved twice already without one.** The 2026-10-30 12:42 log:
+	 * 134 throws, **19 of them past 97.5**, the longest at 128. Each of those is a ball thrown at a charge it
+	 * could not spend, landing one to thirty studs short of the body it was aimed at — and every one of them
+	 * lands inside a court where six other bodies are standing. That is a stray ball into the crowd, and it is
+	 * one way to be hit by a throw aimed at somebody else.
+	 *
+	 * **Down rather than up is not a reversal of the paragraph above.** Sixty was too small because it sat
+	 * *inside* what the envelope could already deliver, and the symptom was rigs declining throws they could
+	 * make. A hundred and fifty is too large for the same arithmetic read the other way. The gate belongs at the
+	 * envelope's edge, which is neither of those numbers — and `SeekBehavior`'s two backpedal gates read this
+	 * constant, so a rig now closes to a distance it can actually throw from.
 	 */
-	THROW_RANGE_STUDS: 150,
+	THROW_RANGE_STUDS: 97,
 
 	/**
 	 * How far off a gated thrower's nose a target may be, in degrees, and still be thrown at.
@@ -266,20 +292,43 @@ export const NPC_CONFIG = {
 	THROW_MISS_CHANCE: 0.95,
 
 	/**
-	 * The shortest deliberate miss, in studs. **Placeholder — 4.**
+	 * The shortest deliberate miss, in studs. **Placeholder — 7, raised from 4.**
 	 *
-	 * **The floor is what makes the log line true, and it is chosen from a body's depth rather than from feel.**
-	 * A player's torso is about two studs deep and the ball is `BALL_SIZE` (2) studs in diameter, so a *centre*
-	 * offset past roughly two studs leaves both the body and its ball-radius margin — anything from three up is a
-	 * clean miss at every range a rig throws at, where a "miss" of half a stud would be a throw that landed on the
-	 * body and was logged as missed. That contradiction is what this floor prevents. Two studs is the smallest
-	 * floor that is still a miss; **four** is that plus a stud of margin, which is what makes a missed throw read as
-	 * missed from a seat rather than as a near miss.
+	 * **The floor is what makes the log line true, and it is derived from two things the paragraph here used to
+	 * get wrong.** That paragraph read *"a player's torso is about two studs deep and the ball is `BALL_SIZE` (2)
+	 * studs in diameter, so a centre offset past roughly two studs leaves both the body and its ball-radius
+	 * margin"*. Two studs was the wrong measurement, and **four was therefore not a miss at all** — the 2026-10-30
+	 * 12:42 log has the receipt: of the eight times the player was tagged in forty-five seconds, **four were on
+	 * `LeftLowerArm`**.
 	 *
-	 * **It used to be fifteen, and the number was the bug.** Fifteen studs is the *distance between two rigs* in a
-	 * line across a court, so a wide throw at that width was not a miss at all: it was a pass to the next opponent
-	 * along, which is why widening this band twice produced no visible change. `THROW_MISS_STUDS_MAX` has the
-	 * measurement and the full argument.
+	 * **First: it measured a torso's *depth* for a *sideways* offset.** Depth is the axis the withdrawn range
+	 * version needed. A lateral error has to clear the body's **width**, and a body's width at shoulder height is
+	 * its torso plus its arms: an R15 torso is two studs wide, an arm adds one more either side, and the ball adds
+	 * its own `BALL_SIZE/2` = one-stud radius on top of that. The no-hit boundary from the centreline is therefore
+	 * **three studs — an arm's outer edge at two, plus the ball.**
+	 *
+	 * **Second, and this is the part that is not obvious: the offset is only fully applied where the ball lands.**
+	 * The mark is the target's own root, which sits at the hip, so the offset is a *narrowing wedge*: nought at the
+	 * hand, the full number at the hip. The hand is `THROW_MUZZLE_HEIGHT` (2.5) above the rig's root, and the ball
+	 * spends the first fifth of its flight *climbing* — `CHARGE_PEAK_HEIGHT` puts the apex half a stud above the
+	 * hand. So the ball is at shoulder height, 1.5 above the root, at
+	 * `τ = (v_y + sqrt(v_y² + 2·g·1.0)) / g = 0.386 s` of a `0.488 s` flight — **79 per cent of the way along**,
+	 * where an offset of `N` studs is still only `0.79N`. Against the three-stud boundary above, a four-stud draw
+	 * arrives at the shoulder as **3.2 studs and clears an arm by a fifth of a stud.** That is the arithmetic
+	 * behind those four `LeftLowerArm` tags: the narrow fifth of the band was not a miss at arm height, it was a
+	 * graze.
+	 *
+	 * **So the floor is `4.0 / 0.79`, which is 5.1, and seven is that rounded up with a stud of margin behind
+	 * it.** `4.0` is the boundary for an arm flung outward to three studs rather than hanging at two — a jumping or
+	 * landing pose does that — and `0.79` is the dilution the flight applies by the time the ball reaches the arms.
+	 * Seven clears even that arm by a stud and a half, which is the property the band exists to have: **a player
+	 * standing still cannot be hit by a draw from this floor.** What was there before could hit one, and did.
+	 *
+	 * **It used to be fifteen, and that is a different mistake.** Fifteen studs is the *distance between two rigs*
+	 * in a line across a court, so a wide throw at that width was not a miss at all: it was a pass to the next
+	 * opponent along, which is why widening this band twice produced no visible change. `THROW_MISS_STUDS_MAX` has
+	 * the measurement and the full argument. The ceiling is the end of the band this paragraph is about; the floor
+	 * is only bounded by a body, and seven is nowhere near a gap.
 	 *
 	 * **Studs rather than degrees, and the units are the argument — which survives the change of axis.** What a
 	 * throw has to miss is a body of a fixed size, so the error has to be measured in the same units as that size.
@@ -287,10 +336,10 @@ export const NPC_CONFIG = {
 	 * arm's length a couple of degrees is a hit — which is precisely backwards for a mistake: a person's misclick
 	 * is about as far off in studs whatever they are aiming at.
 	 */
-	THROW_MISS_STUDS_MIN: 4,
+	THROW_MISS_STUDS_MIN: 7,
 
 	/**
-	 * The longest deliberate miss, in studs. **Placeholder — 8.**
+	 * The longest deliberate miss, in studs. **Placeholder — 11, raised from 8.**
 	 *
 	 * **A range rather than a fixed offset, which is the difference between a mistake and a rule.** A
 	 * rig that misses by exactly the same amount every time it misses has a *tell*: the missed throws all look
@@ -305,6 +354,14 @@ export const NPC_CONFIG = {
 	 * from a seat: the widths already vary throw to throw, and a watcher reading a hundred of them is reading
 	 * *a* distribution either way. **The range's own argument survives it**: the value that would be a tell is a
 	 * *fixed* offset, and no flat band is one.
+	 *
+	 * **The ceiling moved with the floor, and the width is the whole reason it moved.** Raising the floor to seven
+	 * would have left a band one stud wide — seven to eight — which is the fixed offset this paragraph refuses in a
+	 * different costume: every miss the same width to within a stud, and a watcher reading the shape of it. The band
+	 * is kept **four studs wide**, exactly as it was at four-to-eight, and eleven is the ceiling that follows.
+	 * Nothing else about it changes: the low end still clears an arm by the derivation in
+	 * {@link NPC_CONFIG.THROW_MISS_STUDS_MIN}, and the high end leaves four studs of the fifteen-stud gap below,
+	 * which is more than the ball's own two-stud diameter — so a wide throw still sails past the neighbour.
 	 *
 	 * **This ceiling is the one number in the feature that has to be derived, and getting it backwards is what
 	 * this whole constant is now about.** The floor is set by a body's size — the error has to clear a torso and
@@ -332,7 +389,7 @@ export const NPC_CONFIG = {
 	 * half a stud above the hand, so "over their head" is not a point the solve can reach — a vertical aim point
 	 * above the arc is thrown flat-out and lands short instead. See `Miss` and `missedPoint` in `ThrowBehavior`.
 	 */
-	THROW_MISS_STUDS_MAX: 8,
+	THROW_MISS_STUDS_MAX: 11,
 
 	/**
 	 * The share of a rig's throws made **on the move** — the first of the two bands a throw's shape is drawn

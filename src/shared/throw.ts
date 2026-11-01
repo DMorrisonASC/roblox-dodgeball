@@ -640,6 +640,15 @@ function ballisticFlight(speed: number, angle: number): number {
  * **On level ground that gives 18.5 studs at a tap, 52.0 at a quarter, 84.8 at a half, 117.5 at three
  * quarters and 150.1 at a full hold** — monotone, and now reaching exactly as far as a rig's own range gate.
  *
+ * **The table above is stale and the invariant it was arguing is now what makes it stale — read the number, not the
+ * prose.** It is computed for `THROW_MAX_SPEED = 336` at a peak of `1.25`; the config ships **`200`** at a peak of
+ * `0.5`, which puts a full hold at **56.5 studs level and 97.5 to a body's root**. The property the paragraph was
+ * after — *one envelope, and a gate that does not exceed it* — is true today for the opposite reason: the gate was
+ * brought down to the envelope rather than the envelope being raised to the gate. See
+ * `NPC_CONFIG.THROW_RANGE_STUDS`, which now carries the arithmetic and the log that forced it. Nothing in this
+ * function moved, and `chargeForRange` is still its exact inverse; only the two sentences that quote a reach are
+ * wrong, and they are kept so the 336 argument is still readable as an argument.
+ *
  * **The ceiling was raised, and the paragraph that stood here argued the opposite.** It read *"that loss is
  * the price of the shape and it is a real one"*, and it wrote down the numbers that would undo it "rather
  * than found by tuning later": 150 studs needs roughly `THROW_MAX_SPEED = 335`, or a peak near 18 studs,

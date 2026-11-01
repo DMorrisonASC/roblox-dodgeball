@@ -315,6 +315,10 @@ export interface Miss {
 	 *
 	 * Signed rather than a magnitude and a side, because the two directions are one axis and every reader wants
 	 * the offset rather than the pair. Nought is not a miss: see `rollMiss`, which never draws one.
+	 *
+	 * **Measured at the aim point, and it is less than this at the body's arms** — see `missedPoint`, which carries
+	 * the wedge. The number is the one the throw log prints, so a line reading `5.0 studs left` means five at the
+	 * mark and about four at the shoulder.
 	 */
 	readonly lateral: number;
 }
@@ -340,6 +344,15 @@ export interface Miss {
  * reach kept a short aim point from landing behind the rig; a sideways offset cannot point behind the rig, so the
  * only bound this needs is the one the draw already puts on it — and that bound is about bodies, not about the
  * throw. See `THROW_MISS_STUDS_MIN`/`_MAX`.
+ *
+ * **What this point is worth at the body it is beside, because it is not the whole number everywhere.** The mark is
+ * the target's own root, at the hip, and the ball arrives there from a hand `THROW_MUZZLE_HEIGHT` above the rig's
+ * root — so the offset is a *wedge*, nought at the hand and the full number at the hip. At shoulder height, which is
+ * where a body's arms are and therefore where the offset has to be widest, the ball is only `τ = 0.386 s` into a
+ * `0.488 s` flight: **79 per cent of the way along, and 79 per cent of the offset with it.** That factor is
+ * arithmetic rather than a fudge — `chargedFlight` fixes the flight and `CHARGE_PEAK_HEIGHT` fixes the apex — and it
+ * is the reason `THROW_MISS_STUDS_MIN` is seven and not three. Anyone who retunes the peak or the muzzle height moves
+ * it, and the constant's own comment is where the derivation lives.
  */
 export function missedPoint(root: BasePart, aimPoint: Vector3, miss: Miss): Vector3 {
 	const right = new Vector3(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z);

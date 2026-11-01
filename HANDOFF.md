@@ -1784,6 +1784,10 @@ Carried over from the previous handoff where still live, plus what this revision
     is the last rig-only number in the throw. Lowering it to about 80 would make the gate and the power
     agree; the alternative is leaving a deliberate "throws at anything it can see" and accepting the
     wasted windups.
+    **Resolved — §15 item 150.** The gate was brought down to the envelope (97) rather than the envelope raised,
+    and the envelope's real figures are `56.5` level / `97.5` to a body's root, not the `54` / `79` quoted above.
+    The `79` was computed for a muzzle-to-root drop of 1.11 studs; `THROW_MUZZLE_HEIGHT` is 2.5, so the flight is
+    longer and the reach is further.
 16. **`LobbyRigService`'s doc argues from a premise that is now false.** Around line 987 it explains that
     the arena freeze cannot reach a rig because "there is no speed sum for a rig to hold back". Since
     2026-10-14 **a rig has a speed sum** (`Base` + `Sprint`, §17). The conclusion is unaffected —
@@ -6805,6 +6809,98 @@ almost no server code; 45 is what it cannot show.**
      **Unverified in Studio**: that a rig-vs-rig hit and a player-vs-rig hit both appear in two team colours, and
      that a lobby hit still appears in one. That needs a round with rigs on both sides — the first minutes of any
      normal round — so it is checkable in one playtest, unlike item 148's display-name half.
+
+150. **A rig's deliberate miss was too narrow to miss an arm, and the prompt's fix for it was two mistakes and one
+     right answer.**
+
+     **The report.** *"You are fighting two separate problems… the rigs are already missing on purpose — their misses
+     are just too small to actually dodge your player's hitbox."* The proposal: widen `THROW_MISS_STUDS_*` to 15–25,
+     add a vertical offset, cut `THROW_RANGE_STUDS` from 150 to 50.
+
+     **The example the report rests on is mispaired, and that had to be said first.** It set a throw against a crown:
+
+     ```
+     12:44:07.887  [Rig] ShadowVex7: throw plantNow — charge 0.83 at 78.5 studs, … 5.0 studs left (missed on purpose)
+     12:44:07.189  [Super] PixelPhantom23: crowned at 3 hit(s)
+     ```
+
+     The crown is **0.7 s earlier than the throw it is said to come from**, and it is a *different rig's*. Its actual
+     cause is three lines above it: `#127: ended on part` → `Humanoid was hit … on UpperTorso` → the crown, and
+     `[Super] X: hits N` credits the **thrower**, so PixelPhantom23's own throw at `12:44:06.312` was the one that
+     landed — **and that throw carries no `(missed on purpose)`, because it was aimed true.** The illustration was
+     wrong; the symptom underneath it was not.
+
+     **The symptom, measured without any pairing at all.** The 12:42 log has **134 throws, 121 of them logged as
+     misses (90 per cent, against `THROW_MISS_CHANCE = 0.95`), and 23 credited `[Super] … hits N` lines.** Twelve
+     throws were aimed to hit. Twenty-three hits came off them. **At least eleven hits came from throws the log had
+     already called misses**, and that count needs no attribution — it is two frequencies. (Pairing by time is
+     worthless here and was abandoned: with 90 per cent of throws being misses, any nearest-throw attribution quotes
+     the base rate back.)
+
+     **The mechanism is a wedge, and it is what makes four studs the wrong floor.** The miss moves the *aim point*,
+     which is the target's own root — at the hip. The ball leaves a hand `THROW_MUZZLE_HEIGHT` (2.5) up and climbs
+     to an apex `CHARGE_PEAK_HEIGHT` (0.5) above it, so the offset is **nought at the hand and the full number only
+     at the hip**. At shoulder height the ball is `τ = (v_y + sqrt(v_y² + 2·g·1.0))/g = 0.386 s` into a `0.488 s`
+     flight — **79 per cent of the way along, so 79 per cent of the offset.** The no-hit boundary from a body's
+     centreline is **three studs**: an R15 arm's outer edge at two, plus the ball's one-stud radius. `0.79 × 4 = 3.2`
+     — a four-stud draw clears an arm by *a fifth of a stud*.
+
+     **And the log's own body parts agree, which is the check that made this the answer.** The player was tagged
+     eight times in forty-five seconds: **four on `LeftLowerArm`**, three on `LowerTorso`, one on `UpperTorso`. The
+     narrow fifth of the band was not a miss at arm height; it was a graze.
+
+     **`THROW_MISS_STUDS_MIN` 4 → 7, `THROW_MISS_STUDS_MAX` 8 → 11.** Seven is `4.0 / 0.79 = 5.1` — the boundary for
+     an arm flung outward to three studs — rounded up with a stud of margin. The ceiling moved only to keep the band
+     **four studs wide**, since 7–8 would be the fixed offset the band exists to avoid; eleven still leaves four
+     studs of the fifteen-stud inter-rig gap, more than the ball's own diameter. Both constants' comments were
+     rewritten rather than appended to, and `missedPoint` now carries the wedge, because the old floor's paragraph
+     had derived its number from a torso's **depth** for an axis that needs its **width**.
+
+     **The vertical miss is not built, and it cannot be.** `CHARGE_PEAK_HEIGHT` fixes the apex half a stud above the
+     hand, so a mark 15 studs up makes `reach = v_y² − 2·g·rise = 50 − 1500`, floored to zero: the flight collapses
+     to `v_y/g = 0.141 s`, `chargeForRange` clamps to **1**, and the ball is fired flat at `THROW_MAX_SPEED` and lands
+     far short. It would read as a rocket, not as a lob over a head. This is already written down beside
+     `THROW_MISS_STUDS_MAX`; the prompt had not seen it.
+
+     **15-to-25 is not built either, and it is the one proposal the config names as a mistake twice over.** "Fifteen
+     studs is the distance between two rigs in a line across a court, so a wide throw at that width was not a miss at
+     all: it was a pass to the next opponent along, which is why widening this band twice produced no visible
+     change." Widening past the gap converts misses into coverage. The new floor is *at* the body, not at the gap.
+
+     **`THROW_RANGE_STUDS` 150 → 97, and this was the prompt's right answer for the wrong reason.** The gate may not
+     exceed the envelope: `chargeForRange` clamps to `[0, 1]`, so a distance past it is thrown at full charge and
+     **lands short along the aimed line** — in the middle of the field, where six other bodies stand. That is a stray
+     ball into the crowd, and it is one way to be hit by a throw aimed at somebody else. The envelope from
+     `BALL_CONFIG`'s shipped numbers: `v_y = sqrt(2·50·0.5) = 7.07`, flight `(7.07 + sqrt(50 + 250))/50 = 0.488 s`,
+     full charge horizontal `sqrt(200² − 50) = 199.9` → **97.5 studs.** The log has **19 throws past 97.5**, longest
+     128, each landing one to thirty studs short. **Fifty was not taken**: sixty was already found too small (rigs
+     holding a ball with a live enemy in sight and declining), and fifty reinstates that. The gate now sits *on* the
+     envelope, which is neither number. `SeekBehavior`'s two backpedal gates read the same constant, so a rig closes
+     to a distance it can actually throw from.
+
+     **The fake throw was not built.** It is the one proposal with no geometry problem — a windup that never releases
+     is unambiguously a miss — but it changes what a windup *means* (the telegraph currently promises a ball), and
+     the visible half of it is already bought by a band that clears an arm. If the misses still read as too accurate
+     after this, that is the next lever and it is a behaviour branch at the release, not a config number.
+
+     **Documentation that had drifted, found on the way and corrected in place:** `BALL_CONFIG.THROW_MAX_SPEED`'s
+     comment is written for **336** at a peak of `1.25` while the constant is **200** at `0.5`, so its whole table
+     (18.5 / 52.0 / 84.8 / 117.5 / 150.1) and its claim that "a full hold lands 150.1 studs out" are stale; the same
+     table appears in `throw.ts`'s `chargeForRange` block. Both got a correction paragraph that keeps the 336
+     argument readable and states the real figures. **`THROW_MAX_SPEED` itself was not touched** — it sets the
+     player's throw too, and choosing 200 or 336 is the owner's decision, not a fix.
+
+     **`npm run build` exit 0; `flamework.build` unchanged.** Emitted Luau checked: `THROW_RANGE_STUDS = 97`,
+     `THROW_MISS_STUDS_MIN = 7`, `THROW_MISS_STUDS_MAX = 11`. The throw model used above was validated against the
+     log: for 98 of 134 throws the logged `charge` and `distance` are consistent with `chargeForRange(distance, −2.5)`
+     to within `0.02` of charge; the 36 that are not are the `moveAndAim`/`moveThenPlant` shapes, whose release
+     re-solves from a walked-to distance.
+
+     **Unverified in Studio**: that a `(missed on purpose)` throw now visibly clears a stationary player, and that
+     the hit rate falls to near the `THROW_MISS_CHANCE` rate. **And one honest warning**: this does not explain all
+     eight of those tags. Twelve throws were aimed to hit, and a ball aimed at *another rig* can cross the player on
+     its way — an offset cannot fix a bystander, so if the player is still being tagged at a rate the miss chance
+     cannot explain, the next question is where the player was standing, not how wide the band is.
 
 ---
 
