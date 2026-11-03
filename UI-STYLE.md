@@ -107,6 +107,123 @@ drifting into different grammars.
 **Text goes through theme variants, never an ad-hoc size.** If a size is not in the scale, the scale
 is missing a step — say so rather than writing a number.
 
+---
+
+## 6a. Building the theme structure, in full
+
+Section 6 says what the modules are. This says how to wire them so that a change **cascades** — and
+it starts with the thing that will trip an agent who learned UI on the web.
+
+### Roblox has no cascade
+
+In CSS a change cascades because the renderer inherits. **Roblox does not inherit.** Every
+`TextLabel` carries its own `TextColor3`, every `Frame` its own `BackgroundColor3`. A theme here is
+not a stylesheet; it is **a single source of truth plus the wiring that pushes it into every
+instance.**
+
+If any element picks its own colour, that element has opted out of the theme and will not follow
+later changes. Building the theme *is* building the cascade. Four mechanisms do it, in this order.
+
+### Step 1 — one contract type, slots named by job
+
+```ts
+export interface Theme {
+  colors: {
+    textPrimary; textSecondary; textDisabled;
+    accent; success; warning; error;
+    surface; panel; card; trough;   // ascending levels, not synonyms
+    border; onAccent; shadow;
+  };
+  spacing: Spacing;
+  typography: Typography;
+}
+```
+
+- **Name slots by what they do, not where they come from.** `textOnDark` survives a palette swap;
+  `blue500` does not.
+- **`colors` is the only overridable group.** `spacing` and `typography` live in the type so
+  consumers have one import, but see step 3 — directions may not move them.
+- **Never add a slot named after a component.** `shopTileBackground` is a bug: the tile should ask
+  for `card`. A per-component slot is custom styling wearing a theme's clothes.
+
+### Step 2 — the base theme is a function, not a constant
+
+Return a fresh object each call.
+
+A UI library's theme table is usually **mutable** and gets merged into at boot. A `const THEME =
+{...}` captured at import time is a snapshot of the pre-merge state and goes stale the moment
+anything configures the library. A function is always read at use.
+
+### Step 3 — a visual direction is an adapter over the base
+
+Each direction is its own module exporting `xxxTheme(): Theme`:
+
+```ts
+export function darkTheme(): Theme {
+  const base = baseTheme();
+  return {
+    colors: { textPrimary: RAW.text, surface: RAW.void, /* … */ },
+    spacing: base.spacing,        // pass-through, deliberately
+    typography: base.typography,  // pass-through, deliberately
+  };
+}
+```
+
+**This is the mechanism that makes the cascade hold.** Because `spacing` and `typography` are
+*passed through by construction*, a direction cannot fork them without deliberately deleting a
+line. Only `colors` is open. The cascade is enforced by the shape of the return, not by discipline.
+
+Keep the **raw palette separate** from the theme. The palette module holds design-y names (`void`,
+`raised`, `band`) and surface metrics (`corner`, `strokeThickness`, `transparency`). The adapter is
+the *bridge*, and the bridge is where you state, per slot, which raw value fills it and why. That
+mapping is a real decision — comment each line.
+
+**In a dark direction the four surface levels must be four different values.** A light theme gets
+structure for free — paper on paper. Collapse `surface`/`panel`/`card`/`trough` into one near-black
+and you delete every boundary in the UI: a name bar drawn on a tile stops existing as a bar.
+Ascending lightness buys back what the light theme got free.
+
+### Step 4 — one mount point, the earliest thing on the client
+
+A single boot step that:
+
+1. pushes the active theme's colours into the UI library's global theme, and
+2. merges **one** font into **every** typography variant.
+
+Run it before anything is constructed. Two mount points are two orderings, and the second one wins
+silently.
+
+**Things the library will not take, get a sweep.** If there is no per-instance font setting, write
+one helper that walks a subtree and forces `Font` on `TextLabel`/`TextButton`/`TextBox`, and call it
+on each root as it is built. And **write the variant list out explicitly** if variants are exposed
+as a type — a type is not enumerable, so a variant you forget silently keeps the library default.
+That is the one failure invisible until someone notices a single label looks wrong.
+
+### Step 5 — consumers import the contract and nothing else
+
+- Every HUD reads the base or active-theme accessor. **Nothing outside the theme folder imports the
+  raw palette.** That one rule is what makes "change it in one place" true, and it is greppable — so
+  state it, and verify it.
+- **Text size comes from a variant, never a literal.** If a size is missing, the scale is missing a
+  step — say so rather than writing a number.
+- **A device difference is a variant step down, not a scale multiplier.** `body1 → caption` is
+  predictable; `× 0.8` compounds through a layout and produces numbers nobody chose.
+
+### Step 6 — a one-off look is a sibling, not a branch
+
+When a surface needs to look nothing like the rest, it gets **its own module deriving from the base
+with only `colors` overridden** — not an `if (isPanel)` inside the shared theme, and not extra
+entries in the shared map. Two visual directions in one game are siblings, and each says in its own
+doc why it is separate.
+
+### The test that proves it
+
+Replace every colour in the palette module with a distinct loud one. **Every** GUI should change,
+and nothing should be left in the old colours.
+
+Anything that stays put has opted out of the theme. The fix is that element asking the contract for
+a slot — not that element getting its own colour.
+
 ## 7. Non-theme shared modules: one rule, many tenants
 
 Some things are neither a theme nor a component. Depth, glow, panel chrome, viewport bounds. These
@@ -165,4 +282,9 @@ single geometry line turns a guess into a reading.
 - [ ] Did a device difference become a type size rather than a scale factor?
 - [ ] Did any builder grow a flag to serve a second case?
 - [ ] Does the element print its geometry once at mount?
+- [ ] **Does any file outside the theme folder import the raw palette?** (It should not.)
+- [ ] **Is there a colour, font or size set on an instance anywhere that a theme slot should have
+      supplied?** That instance has opted out of the cascade.
+- [ ] **If a new direction was added:** is `spacing`/`typography` still passed through from the
+      base rather than re-declared?
 - [ ] **Could this have been smaller?** If yes, say so — I would rather hear it than have it.
